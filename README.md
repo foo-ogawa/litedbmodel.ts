@@ -2,6 +2,9 @@
 
 A lightweight TypeScript ORM for PostgreSQL, MySQL, and SQLite with Active Record pattern.
 
+[![npm version](https://img.shields.io/npm/v/litedbmodel.svg)](https://www.npmjs.com/package/litedbmodel)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 ## Features
 
 - **Symbol-Based Columns** — `Model.column` enables IDE "Find References" and "Rename Symbol"
