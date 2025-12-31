@@ -27,7 +27,67 @@ A detailed comparison of litedbmodel with popular TypeScript/JavaScript ORMs.
 
 ---
 
-## 1. Column References & IDE Support
+## 1. SQL-Friendly Design
+
+### The Problem with Query Builders
+
+Most ORMs hide SQL behind proprietary DSLs or query builders:
+
+| Approach | Problem |
+|----------|---------|
+| **Query Builder** | Generated SQL is unpredictable; debugging requires mental translation |
+| **DSL/HQL** | Learning another language; still need SQL for complex queries |
+| **Magic Methods** | `findByNameAndStatusOrderByCreatedAtDesc()` — unreadable, limited |
+
+### litedbmodel's Approach
+
+litedbmodel is **SQL-friendly**: it doesn't hide SQL, but wraps it safely with type information.
+
+```typescript
+// Other ORMs: Complex query builder syntax
+const users = await queryBuilder
+  .select('u')
+  .from(User, 'u')
+  .innerJoin('u.orders', 'o')
+  .where('o.createdAt >= :date', { date: lastMonth })
+  .groupBy('u.id')
+  .having('COUNT(o.id) >= :min', { min: 5 })
+  .orderBy('COUNT(o.id)', 'DESC')
+  .getMany();  // What SQL does this generate? 🤔
+
+// litedbmodel: Just write the SQL you want
+const users = await User.query(`
+  SELECT u.* FROM users u
+  INNER JOIN (
+    SELECT user_id FROM orders
+    WHERE created_at >= $1
+    GROUP BY user_id HAVING COUNT(*) >= $2
+  ) active ON u.id = active.user_id
+  ORDER BY ...
+`, [lastMonth, minOrders]);  // Exactly what you wrote ✅
+```
+
+### Query Approaches Comparison
+
+| Scenario | litedbmodel | Query Builder ORMs |
+|----------|-------------|-------------------|
+| **Simple CRUD** | Tuple API: `[[User.name, 'John']]` | Object: `{ name: 'John' }` |
+| **Complex WHERE** | SQL operators: `` [`${User.age} > ?`, 18] `` | DSL methods: `.where('age', '>', 18)` |
+| **JOINs, CTEs** | Real SQL via `query()` or Query-Based Models | Limited DSL or raw escape |
+| **Debugging** | See actual SQL | Translate DSL → SQL mentally |
+| **Learning** | Know SQL = Ready | Learn DSL + SQL |
+
+### Three Layers of SQL Access
+
+| Layer | Method | Use Case |
+|-------|--------|----------|
+| **1. Tuple API** | `Model.find()`, `create()`, `update()` | Simple CRUD, conditions |
+| **2. Raw SQL** | `Model.query()`, `DBModel.execute()` | One-off complex queries |
+| **3. Query-Based Models** | `static QUERY` + `find()` | Reusable complex queries (aggregations, analytics) |
+
+---
+
+## 2. Column References & IDE Support
 
 ### The Difference
 
@@ -52,20 +112,15 @@ db.select().from(users).where(eq(users.email, 'test@example.com'));
 
 ### Comparison
 
-| ORM | Column Reference | IDE "Find References" | IDE "Rename Symbol" |
-|-----|-----------------|----------------------|---------------------|
-| **litedbmodel** | `User.email` (Symbol) | ✅ Works | ✅ Works |
-| **Prisma** | `{ email: ... }` (Object key) | ❌ | ❌ |
-| **TypeORM** | `{ email: ... }` or `'email'` | ❌ | ❌ |
-| **MikroORM** | `{ email: ... }` | ❌ | ❌ |
-| **Drizzle** | `users.email` (Schema ref) | ⚠️ Schema only | ⚠️ Schema only |
-| **Kysely** | `'email'` (String) | ❌ | ❌ |
-| **Sequelize** | `{ email: ... }` | ❌ | ❌ |
-| **Objection.js** | `{ email: ... }` | ❌ | ❌ |
+| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
+|---------|-------------|--------|---------|---------|--------|
+| **Column Reference** | `User.email` (Symbol) | `{ email: ... }` | `{ email: ... }` | `users.email` | `'email'` |
+| **IDE "Find References"** | ✅ Works | ❌ | ❌ | ⚠️ Schema only | ❌ |
+| **IDE "Rename Symbol"** | ✅ Works | ❌ | ❌ | ⚠️ Schema only | ❌ |
 
 ---
 
-## 2. Design Patterns
+## 3. Design Patterns
 
 ### Active Record (litedbmodel, Sequelize, Objection.js)
 
@@ -145,7 +200,7 @@ await userRepository.save(user);
 
 ---
 
-## 3. Type Safety
+## 4. Type Safety
 
 ### litedbmodel - Compile-time (Column Symbols)
 
@@ -250,20 +305,16 @@ const users = await db
 
 ### Type Safety Comparison
 
-| ORM | Type Source | Condition Check | Result Types | Compile-Time |
-|-----|-------------|-----------------|--------------|--------------|
-| **litedbmodel** | Decorators → Column symbols | ✅ Full | ✅ Model types | ✅ |
-| **Prisma** | .prisma → Generated | ✅ Full | ✅ Generated | ✅ |
-| **TypeORM** | Decorators | ⚠️ Partial (QB weak) | ✅ Entity types | ⚠️ |
-| **MikroORM** | Decorators | ⚠️ Partial | ✅ Entity types | ⚠️ |
-| **Drizzle** | TS Schema → Inferred | ✅ Full | ✅ Inferred | ✅ |
-| **Kysely** | TS Interface → Inferred | ✅ Full | ✅ Inferred | ✅ |
-| **Sequelize** | JS Objects (runtime) | ❌ None | ⚠️ Manual | ❌ |
-| **Objection.js** | Model class | ❌ None | ⚠️ Manual | ⚠️ |
+| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
+|---------|-------------|--------|---------|---------|--------|
+| **Type Source** | Decorators → Symbols | .prisma → Generated | Decorators | TS Schema | TS Interface |
+| **Condition Check** | ✅ Full | ✅ Full | ⚠️ Partial | ✅ Full | ✅ Full |
+| **Result Types** | ✅ Model types | ✅ Generated | ✅ Entity types | ✅ Inferred | ✅ Inferred |
+| **Compile-Time** | ✅ | ✅ | ⚠️ | ✅ | ✅ |
 
 ---
 
-## 4. Conditional Updates (SKIP Pattern)
+## 5. Conditional Updates (SKIP Pattern)
 
 litedbmodel's unique feature for declarative conditional fields:
 
@@ -321,7 +372,7 @@ await db.updateTable('users').set(updates).where('id', '=', id).execute();
 
 ---
 
-## 5. Relations
+## 6. Relations
 
 ### litedbmodel - Auto Batch Loading
 
@@ -418,31 +469,239 @@ const post = await Post.query()
 
 ### Relation Comparison
 
-| ORM | Definition Style | Loading Strategy | N+1 Prevention | Composite Keys |
-|-----|-----------------|------------------|----------------|----------------|
-| **litedbmodel** | Getter methods | Auto batch | ✅ Automatic | ✅ Full |
-| **Prisma** | Schema relations | Eager (include) | ✅ Built-in | ✅ Full |
-| **TypeORM** | Decorators | Eager/Lazy | ⚠️ Manual joins | ✅ Full |
-| **MikroORM** | Decorators | Lazy (identity map) | ✅ Built-in | ✅ Full |
-| **Drizzle** | No built-in | Manual joins | ❌ N/A | ✅ Full |
-| **Kysely** | No built-in | Manual joins | ❌ N/A | ✅ Full |
-| **Sequelize** | Methods | Eager/Lazy | ⚠️ include option | ⚠️ Partial |
-| **Objection.js** | Static mapping | Graph fetching | ⚠️ withGraphFetched | ✅ Full |
+| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
+|---------|-------------|--------|---------|---------|--------|
+| **Definition Style** | Getter methods | Schema relations | Decorators | No built-in | No built-in |
+| **Loading Strategy** | Auto batch | Eager (include) | Eager/Lazy | Manual joins | Manual joins |
+| **N+1 Prevention** | ✅ Automatic | ✅ Built-in | ⚠️ Manual | ❌ N/A | ❌ N/A |
+| **Composite Keys** | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ✅ Full |
 
 ---
 
-## 6. Database Support
+## 7. Extensibility
 
-| ORM | PostgreSQL | MySQL | SQLite | MSSQL | MongoDB | Others |
-|-----|------------|-------|--------|-------|---------|--------|
-| **litedbmodel** | ✅ | ✅ | ✅ | ❌ | ❌ | - |
-| **Prisma** | ✅ | ✅ | ✅ | ✅ | ✅ | CockroachDB, PlanetScale |
-| **TypeORM** | ✅ | ✅ | ✅ | ✅ | ✅ | Oracle, SAP Hana |
-| **MikroORM** | ✅ | ✅ | ✅ | ❌ | ✅ | MariaDB |
-| **Drizzle** | ✅ | ✅ | ✅ | ❌ | ❌ | - |
-| **Kysely** | ✅ | ✅ | ✅ | ✅ | ❌ | - |
-| **Sequelize** | ✅ | ✅ | ✅ | ✅ | ❌ | MariaDB, Snowflake |
-| **Objection.js** | ✅ | ✅ | ✅ | ✅ | ❌ | Via Knex |
+How each ORM allows developers to add cross-cutting concerns (logging, authentication, tenant isolation, soft deletes, etc.).
+
+### litedbmodel — Class-Based Middleware
+
+```typescript
+import { Middleware, NextExecute, ExecuteResult, NextFind } from 'litedbmodel';
+
+class AuditMiddleware extends Middleware {
+  logs: string[] = [];
+
+  // Intercept all SQL executions
+  async execute(next: NextExecute, sql: string, params?: unknown[]): Promise<ExecuteResult> {
+    const start = Date.now();
+    const result = await next(sql, params);
+    this.logs.push(`${sql} (${Date.now() - start}ms)`);
+    return result;
+  }
+
+  // Intercept find() calls per model
+  async find<T extends typeof DBModel>(model: T, next: NextFind<T>, conditions: Conds) {
+    // Add tenant isolation automatically
+    const tenantCol = (model as any).tenant_id;
+    if (tenantCol) {
+      conditions = [[tenantCol, this.tenantId], ...conditions];
+    }
+    return next(conditions);
+  }
+}
+
+DBModel.use(AuditMiddleware);
+
+// Per-request context access
+const ctx = AuditMiddleware.getCurrentContext();
+ctx.tenantId = req.user.tenantId;
+```
+
+**Features:**
+- Class-based with instance state (per-request context)
+- Intercept `execute()`, `find()`, `create()`, `update()`, `delete()`
+- AsyncLocalStorage for request-scoped data
+- Type-safe with full model access
+
+### Prisma — Client Extensions (v4.16+)
+
+```typescript
+const prisma = new PrismaClient().$extends({
+  query: {
+    $allModels: {
+      async findMany({ model, operation, args, query }) {
+        console.log(`Query: ${model}.${operation}`);
+        return query(args);
+      },
+    },
+    user: {
+      async create({ args, query }) {
+        args.data.createdAt = new Date();
+        return query(args);
+      },
+    },
+  },
+  model: {
+    user: {
+      async softDelete(id: number) {
+        return prisma.user.update({ where: { id }, data: { deletedAt: new Date() } });
+      },
+    },
+  },
+});
+```
+
+**Features:**
+- Query extensions (intercept operations)
+- Model extensions (add custom methods)
+- Result extensions (transform output)
+- Client extensions (add properties)
+- Replaces deprecated `$use()` middleware
+
+### TypeORM — Entity Subscribers
+
+```typescript
+@EventSubscriber()
+class AuditSubscriber implements EntitySubscriberInterface<User> {
+  listenTo() {
+    return User;
+  }
+
+  beforeInsert(event: InsertEvent<User>) {
+    event.entity.createdAt = new Date();
+  }
+
+  afterLoad(entity: User) {
+    console.log(`Loaded user: ${entity.id}`);
+  }
+
+  beforeUpdate(event: UpdateEvent<User>) {
+    event.entity.updatedAt = new Date();
+  }
+}
+
+// Register in data source
+const dataSource = new DataSource({
+  subscribers: [AuditSubscriber],
+  // ...
+});
+```
+
+**Features:**
+- Entity lifecycle events (beforeInsert, afterLoad, etc.)
+- Per-entity or global subscribers
+- Decorator-based (`@BeforeInsert()`, `@AfterLoad()`)
+- Transaction-aware
+
+### Kysely — Plugins
+
+```typescript
+import { KyselyPlugin, PluginTransformQueryArgs, PluginTransformResultArgs } from 'kysely';
+
+class LoggingPlugin implements KyselyPlugin {
+  transformQuery(args: PluginTransformQueryArgs): RootOperationNode {
+    console.log('Query:', args.node);
+    return args.node;
+  }
+
+  async transformResult(args: PluginTransformResultArgs): Promise<QueryResult<unknown>> {
+    console.log('Result rows:', args.result.rows.length);
+    return args.result;
+  }
+}
+
+const db = new Kysely<Database>({
+  dialect: new PostgresDialect({ pool }),
+  plugins: [new LoggingPlugin()],
+});
+```
+
+**Features:**
+- Query transformation (AST manipulation)
+- Result transformation
+- Composable plugin chain
+- No per-model hooks (query-level only)
+
+### Drizzle — No Built-in Extension System
+
+```typescript
+// Manual wrapper approach
+async function auditedQuery<T>(queryFn: () => Promise<T>, context: string): Promise<T> {
+  const start = Date.now();
+  const result = await queryFn();
+  console.log(`${context} took ${Date.now() - start}ms`);
+  return result;
+}
+
+// Must wrap each call manually
+const users = await auditedQuery(
+  () => db.select().from(usersTable).where(eq(usersTable.isActive, true)),
+  'findActiveUsers'
+);
+```
+
+**Features:**
+- No built-in middleware/plugin system
+- Requires manual wrapper functions
+- Full control but more boilerplate
+- Relies on external logging libraries
+
+### Sequelize — Hooks
+
+```typescript
+User.addHook('beforeCreate', (user, options) => {
+  user.createdAt = new Date();
+});
+
+User.addHook('afterFind', (users, options) => {
+  console.log(`Found ${users.length} users`);
+});
+
+// Or via model definition
+@Table
+class User extends Model {
+  @BeforeCreate
+  static addTimestamp(instance: User) {
+    instance.createdAt = new Date();
+  }
+}
+```
+
+**Features:**
+- Lifecycle hooks (beforeCreate, afterFind, etc.)
+- Global and per-model hooks
+- Decorator support (@BeforeCreate)
+- Options passed through hooks
+
+### Extensibility Comparison
+
+| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
+|---------|-------------|--------|---------|---------|--------|
+| **Mechanism** | Class Middleware | Client Extensions | Subscribers | ❌ None | Plugins |
+| **Scope** | All operations | Query/Model/Result | Entity lifecycle | N/A | Query/Result |
+| **Per-Request State** | ✅ AsyncLocalStorage | ⚠️ Manual | ⚠️ Via DI | N/A | ❌ None |
+| **Type-Safe** | ✅ Full | ✅ Generated | ✅ Decorators | N/A | ⚠️ AST level |
+
+### Use Cases
+
+| Use Case | litedbmodel | Prisma | TypeORM | Kysely |
+|----------|-------------|--------|---------|--------|
+| **Logging** | execute() middleware | Query extension | Global subscriber | Plugin |
+| **Tenant Isolation** | find() middleware | Query extension | Repository pattern | Manual |
+| **Soft Deletes** | find()/delete() middleware | Model extension | Subscriber | Manual |
+| **Audit Trail** | create()/update() middleware | Query extension | BeforeInsert/Update | Plugin |
+| **Auth Context** | AsyncLocalStorage | Manual passing | DI container | Manual |
+
+---
+
+## 8. Database Support
+
+| Database | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
+|----------|-------------|--------|---------|---------|--------|
+| **PostgreSQL** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **MySQL** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **SQLite** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **MSSQL** | ❌ | ✅ | ✅ | ❌ | ✅ |
+| **MongoDB** | ❌ | ✅ | ✅ | ❌ | ❌ |
 
 **litedbmodel**: Install only the driver you need
 ```bash
@@ -453,7 +712,7 @@ npm install litedbmodel better-sqlite3  # SQLite
 
 ---
 
-## 7. Schema & Migrations
+## 9. Schema & Migrations
 
 ### litedbmodel
 
@@ -513,20 +772,16 @@ drizzle-kit generate:pg
 
 ### Migration Comparison
 
-| ORM | Schema Format | Migration Tool | Auto-Generate | Reversible |
-|-----|--------------|----------------|---------------|------------|
-| **litedbmodel** | TS Decorators | Manual | ❌ | Manual |
-| **Prisma** | Prisma DSL | Built-in | ✅ | ✅ |
-| **TypeORM** | TS Decorators | Built-in | ✅ | ✅ |
-| **MikroORM** | TS Decorators | Built-in | ✅ | ✅ |
-| **Drizzle** | TS Schema | drizzle-kit | ✅ | ⚠️ |
-| **Kysely** | TS Interface | Manual | ❌ | Manual |
-| **Sequelize** | JS/TS | CLI | ⚠️ | ✅ |
-| **Objection.js** | JS/TS | Knex | ❌ | ✅ |
+| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
+|---------|-------------|--------|---------|---------|--------|
+| **Schema Format** | TS Decorators | Prisma DSL | TS Decorators | TS Schema | TS Interface |
+| **Migration Tool** | Manual | Built-in | Built-in | drizzle-kit | Manual |
+| **Auto-Generate** | ❌ | ✅ | ✅ | ✅ | ❌ |
+| **Reversible** | Manual | ✅ | ✅ | ⚠️ | Manual |
 
 ---
 
-## 8. Query Expressiveness
+## 10. Query Expressiveness
 
 ### Complex Query Example
 
@@ -590,18 +845,14 @@ const users = await db.select().from(usersTable)
 
 ---
 
-## 9. Performance Characteristics
+## 11. Performance Characteristics
 
-| ORM | Cold Start | Query Overhead | Connection Pooling | Batch Operations |
-|-----|------------|----------------|-------------------|------------------|
-| **litedbmodel** | Fast | Minimal | Via pg pool | createMany |
-| **Prisma** | Slow (engine) | Binary protocol | Built-in | createMany |
-| **TypeORM** | Medium | Some | Built-in | insert().values() |
-| **MikroORM** | Medium | Identity map | Built-in | persistAndFlush |
-| **Drizzle** | Fast | Minimal | Via driver | insert().values() |
-| **Kysely** | Fast | Minimal | Via driver | insertInto().values() |
-| **Sequelize** | Medium | Some | Built-in | bulkCreate |
-| **Objection.js** | Fast | Minimal | Via Knex | insertGraph |
+| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
+|---------|-------------|--------|---------|---------|--------|
+| **Cold Start** | Fast | Slow (engine) | Medium | Fast | Fast |
+| **Query Overhead** | Minimal | Binary protocol | Some | Minimal | Minimal |
+| **Connection Pooling** | Via pg pool | Built-in | Built-in | Via driver | Via driver |
+| **Batch Operations** | createMany | createMany | insert().values() | insert().values() | insertInto().values() |
 
 ### Notes:
 - **Prisma** uses a Rust query engine binary, adding cold start latency
@@ -610,7 +861,7 @@ const users = await db.select().from(usersTable)
 
 ---
 
-## 10. Performance Benchmark
+## 12. Performance Benchmark
 
 Benchmark comparing litedbmodel with Prisma, Kysely, Drizzle, and TypeORM on PostgreSQL.
 
@@ -721,7 +972,7 @@ For detailed SQL analysis with 10,000+ records, see [Nested Benchmark](./BENCHMA
 
 ---
 
-## 11. SQL Quality & Debuggability
+## 13. SQL Quality & Debuggability
 
 ### Parameter Count Comparison
 
@@ -737,12 +988,11 @@ SELECT * FROM posts WHERE author_id = ANY($1::int[])
 SELECT * FROM posts WHERE author_id IN ($1, $2, $3, ..., $1000)
 ```
 
-| ORM | 100 records | 1000 records | Parameter Style |
-|-----|-------------|--------------|-----------------|
-| **litedbmodel** | **`$1`** | **`$1`** | `ANY($1::int[])` |
-| Prisma | `$1`~`$100` | `$1`~`$1000` | `IN ($1,$2,...,$N)` |
-| Kysely | `$1`~`$100` | `$1`~`$1000` | `IN ($1,$2,...,$N)` |
-| TypeORM | `$1`~`$100` | `$1`~`$1000` | `IN ($1,$2,...,$N)` |
+| Feature | litedbmodel | Prisma | TypeORM | Kysely |
+|---------|-------------|--------|---------|--------|
+| **100 records** | **`$1`** | `$1`~`$100` | `$1`~`$100` | `$1`~`$100` |
+| **1000 records** | **`$1`** | `$1`~`$1000` | `$1`~`$1000` | `$1`~`$1000` |
+| **Parameter Style** | `ANY($1::int[])` | `IN ($1,...,$N)` | `IN ($1,...,$N)` | `IN ($1,...,$N)` |
 
 ### Benefits of Fixed Parameters
 
@@ -766,17 +1016,14 @@ WHERE (tenant_id, user_id) IN (($1,$2),($3,$4),...,($1999,$2000))
 
 ### SQL Readability Comparison
 
-| ORM | Sample SQL | Readability |
-|-----|------------|-------------|
-| **litedbmodel** | `SELECT * FROM posts WHERE author_id = ANY($1::int[])` | ⭐⭐⭐⭐⭐ |
-| Kysely | `select * from "posts" where "author_id" in ($1, $2, ...)` | ⭐⭐⭐⭐ |
-| Drizzle | `select ... left join lateral (select json_agg(...))` | ⭐⭐ |
-| TypeORM | `SELECT "44e9b3e14e8c506ab5696ff82803c1017462faac"."id"...` | ⭐ |
-| Prisma | `SELECT "public"."benchmark_posts"."id", "public"."benchmark_posts"."title"...` | ⭐⭐ |
+| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
+|---------|-------------|--------|---------|---------|--------|
+| **Readability** | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ | ⭐⭐⭐⭐ |
+| **Sample SQL** | `...WHERE id = ANY($1)` | `"public"."table"."col"...` | Hash aliases | LATERAL JOIN | Quoted identifiers |
 
 ---
 
-## 12. Use Case Recommendations
+## 14. Use Case Recommendations
 
 ### Choose litedbmodel when:
 
@@ -840,7 +1087,7 @@ WHERE (tenant_id, user_id) IN (($1,$2),($3,$4),...,($1999,$2000))
 
 ---
 
-## 13. Summary
+## 15. Summary
 
 ### litedbmodel's Characteristics
 

@@ -70,6 +70,28 @@ export abstract class DBModel {
   /** Default filter conditions applied to all queries (use tuple format like find()) */
   static FIND_FILTER: Conds | null = null;
 
+  /**
+   * SQL query for query-based models (view models, aggregations, etc.)
+   * When defined, the model uses this query as a CTE instead of TABLE_NAME.
+   * 
+   * @example
+   * ```typescript
+   * // Static query
+   * static QUERY = `
+   *   SELECT users.id, COUNT(posts.id) as post_count
+   *   FROM users LEFT JOIN posts ON users.id = posts.user_id
+   *   GROUP BY users.id
+   * `;
+   * ```
+   */
+  static QUERY: string | null = null;
+
+  /**
+   * Query parameters for QUERY (set via withQuery())
+   * @internal
+   */
+  protected static _queryParams: unknown[] | null = null;
+
   /** Primary key columns (use getter to reference Model.column) */
   static PKEY_COLUMNS: Column[] | null = null;
 
@@ -285,8 +307,16 @@ export abstract class DBModel {
     options: SelectOptions = {}
   ): { sql: string; params: unknown[] } {
     const params: unknown[] = [];
-    const tableName = options.tableName || this.getTableName();
+    const isQueryBased = this.isQueryBased();
+    const cteAlias = this.getCTEAlias();
+    const tableName = options.tableName || (isQueryBased ? cteAlias : this.TABLE_NAME);
     const selectCols = options.select || this.SELECT_COLUMN;
+
+    // Handle QUERY params first (prepended to all other params)
+    const queryParams = this.getQueryParams();
+    if (queryParams.length > 0) {
+      params.push(...queryParams);
+    }
 
     // Handle JOIN params (prepended to condition params)
     if (options.joinParams && options.joinParams.length > 0) {
@@ -301,7 +331,13 @@ export abstract class DBModel {
 
     const whereClause = normalizedCond.compile(params);
 
-    let sql = `SELECT ${selectCols} FROM ${tableName}`;
+    // Build CTE prefix if query-based
+    let sql = '';
+    if (isQueryBased && this.QUERY) {
+      sql = `WITH ${cteAlias} AS (${this.QUERY}) `;
+    }
+
+    sql += `SELECT ${selectCols} FROM ${tableName}`;
     
     // Add JOIN clause if provided
     if (options.join) {
@@ -364,7 +400,15 @@ export abstract class DBModel {
     options: { tableName?: string } = {}
   ): Promise<number> {
     const params: unknown[] = [];
-    const tableName = options.tableName || this.getTableName();
+    const isQueryBased = this.isQueryBased();
+    const cteAlias = this.getCTEAlias();
+    const tableName = options.tableName || (isQueryBased ? cteAlias : this.TABLE_NAME);
+
+    // Handle QUERY params first (prepended to all other params)
+    const queryParams = this.getQueryParams();
+    if (queryParams.length > 0) {
+      params.push(...queryParams);
+    }
 
     const normalizedCond = normalizeConditions(conditions);
     if (this.FIND_FILTER) {
@@ -374,7 +418,13 @@ export abstract class DBModel {
 
     const whereClause = normalizedCond.compile(params);
 
-    let sql = `SELECT COUNT(*) as count FROM ${tableName}`;
+    // Build CTE prefix if query-based
+    let sql = '';
+    if (isQueryBased && this.QUERY) {
+      sql = `WITH ${cteAlias} AS (${this.QUERY}) `;
+    }
+
+    sql += `SELECT COUNT(*) as count FROM ${tableName}`;
     if (whereClause) {
       sql += ` WHERE ${whereClause}`;
     }
@@ -816,17 +866,112 @@ export abstract class DBModel {
   // ============================================
 
   /**
-   * Get table name for SELECT queries
+   * Get table name for SELECT queries.
+   * For query-based models, returns the CTE alias (TABLE_NAME).
    */
   static getTableName(): string {
     return this.TABLE_NAME;
   }
 
   /**
-   * Get table name for UPDATE/DELETE queries
+   * Get the CTE alias for query-based models.
+   * @internal
+   */
+  static getCTEAlias(): string {
+    return this.TABLE_NAME || 'derived';
+  }
+
+  /**
+   * Get query parameters (set via withQuery()).
+   * @internal
+   */
+  static getQueryParams(): unknown[] {
+    return this._queryParams ? [...this._queryParams] : [];
+  }
+
+  /**
+   * Check if this model is query-based (uses QUERY instead of TABLE_NAME)
+   */
+  static isQueryBased(): boolean {
+    return this.QUERY !== null;
+  }
+
+  /**
+   * Create a new model class bound to specific query parameters.
+   * Used for parameterized query-based models.
+   * 
+   * @param queryConfig - Query configuration with sql and params
+   * @returns A new model class with bound parameters
+   * 
+   * @example
+   * ```typescript
+   * class SalesReportModel extends DBModel {
+   *   static QUERY = '...'; // Base query template
+   *   
+   *   static forPeriod(startDate: string, endDate: string) {
+   *     return this.withQuery({
+   *       sql: `SELECT ... WHERE date >= $1 AND date < $2 ...`,
+   *       params: [startDate, endDate],
+   *     });
+   *   }
+   * }
+   * 
+   * const Q1Report = SalesReport.forPeriod('2024-01-01', '2024-04-01');
+   * const results = await Q1Report.find([...]);
+   * ```
+   */
+  static withQuery<T extends typeof DBModel>(
+    this: T,
+    queryConfig: { sql: string; params?: unknown[] }
+  ): T {
+    // Create a new class that extends this one
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const ParentClass = this;
+    const BoundModel = class extends (ParentClass as typeof DBModel) {
+      static QUERY = queryConfig.sql;
+      static _queryParams = queryConfig.params || null;
+    };
+    
+    // Copy static properties (TABLE_NAME, etc.)
+    Object.defineProperty(BoundModel, 'TABLE_NAME', {
+      value: ParentClass.TABLE_NAME,
+      writable: false,
+    });
+    
+    // Copy column properties
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const columnMeta = (ParentClass as any)._columnMeta;
+    if (columnMeta) {
+      Object.defineProperty(BoundModel, '_columnMeta', {
+        value: columnMeta,
+        writable: false,
+      });
+      // Copy static Column properties
+      for (const [propKey] of columnMeta) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const col = (ParentClass as any)[propKey];
+        if (col) {
+          Object.defineProperty(BoundModel, propKey, {
+            value: col,
+            writable: false,
+            enumerable: true,
+          });
+        }
+      }
+    }
+    
+    return BoundModel as unknown as T;
+  }
+
+  /**
+   * Get table name for UPDATE/DELETE queries.
+   * Query-based models cannot be updated/deleted directly.
    */
   static getUpdateTableName(): string {
-    return this.UPDATE_TABLE_NAME ?? this.getTableName();
+    if (this.QUERY) {
+      throw new Error('Query-based models cannot be updated or deleted directly');
+    }
+    return this.UPDATE_TABLE_NAME ?? this.TABLE_NAME;
   }
 
   // ============================================

@@ -1,19 +1,27 @@
 # litedbmodel
 
-A lightweight TypeScript ORM for PostgreSQL, MySQL, and SQLite with Active Record pattern.
+A lightweight, SQL-friendly TypeScript ORM for PostgreSQL, MySQL, and SQLite.
 
 [![npm version](https://img.shields.io/npm/v/litedbmodel.svg)](https://www.npmjs.com/package/litedbmodel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+## Philosophy
+
+**SQL is not the enemy.** Most ORMs hide SQL behind complex abstractions, making debugging harder and limiting what you can do. litedbmodel takes a different approach:
+
+- **Predictable** — Generated queries are simple, readable, and exactly what you'd write by hand
+- **Type-Safe** — Results map to typed model instances with full IDE support
+- **Real SQL When Needed** — Complex queries use actual SQL via `query()` or Query-Based Models, not a proprietary DSL
 
 ## Features
 
 - **Symbol-Based Columns** — `Model.column` enables IDE "Find References" and "Rename Symbol"
 - **Type-Safe Conditions** — Compile-time validation with `[Column, value]` tuples
+- **Query-Based Models** — Define models backed by complex SQL (aggregations, JOINs, CTEs)
 - **Subquery Support** — IN/NOT IN/EXISTS/NOT EXISTS with correlated subqueries
 - **Declarative SKIP** — Conditional fields without if-statements
 - **Automatic N+1 Prevention** — Batch loading for lazy relations
-- **Fixed SQL Parameters** — `ANY()` keeps param count constant (PostgreSQL; better plan caching & log analysis)
-- **Readable SQL** — Simple queries without hash aliases or deep nesting
+- **Raw SQL Escape** — `Model.query()` and `DBModel.execute()` when you need full control
 - **Middleware** — Cross-cutting concerns (logging, auth, tenant isolation)
 - **Multi-Database** — PostgreSQL, MySQL, SQLite support
 
@@ -370,21 +378,257 @@ TenantMiddleware.getCurrentContext().tenantId = req.user.tenantId;
 
 ---
 
-## Raw SQL
+## Raw SQL Methods
+
+When `find()` isn't enough, use real SQL directly. No query builder translation needed.
+
+### Model.query() — SQL with Type-Safe Results
+
+Execute any SQL and get typed model instances. The SQL you write is exactly what runs.
 
 ```typescript
-// Raw rows
-const result = await DBModel.execute(
-  'SELECT COUNT(*) as cnt FROM users WHERE status = $1',
-  ['active']
-);
+// Complex JOIN with subquery - returns User[] with full type safety
+const activeUsers = await User.query(`
+  SELECT u.* 
+  FROM users u
+  INNER JOIN (
+    SELECT user_id, COUNT(*) as order_count
+    FROM orders
+    WHERE created_at >= $1
+    GROUP BY user_id
+    HAVING COUNT(*) >= $2
+  ) active ON u.id = active.user_id
+  WHERE u.status = 'active'
+  ORDER BY active.order_count DESC
+`, [lastMonth, minOrders]);
 
-// Model instances
-const users = await User.query(
-  'SELECT * FROM users WHERE created_at > $1',
-  ['2024-01-01']
-);
+// Window functions, CTEs, recursive queries - anything PostgreSQL supports
+@model('user_rankings')
+class UserRankingModel extends DBModel {
+  @column() user_id?: number;
+  @column() score?: number;
+  @column() rank?: number;
+  @column() percentile?: number;
+}
+const UserRanking = UserRankingModel as typeof UserRankingModel & ColumnsOf<UserRankingModel>;
+
+const rankings = await UserRanking.query(`
+  WITH ranked AS (
+    SELECT 
+      user_id,
+      score,
+      RANK() OVER (PARTITION BY category ORDER BY score DESC) as rank,
+      PERCENT_RANK() OVER (PARTITION BY category ORDER BY score) as percentile
+    FROM user_scores
+    WHERE created_at >= $1
+  )
+  SELECT * FROM ranked WHERE rank <= 100
+`, [startDate]);
+// rankings: UserRanking[] - full IDE autocomplete, type checking
 ```
+
+### DBModel.execute() - Non-Model Operations
+
+Use `execute()` for DDL, maintenance, and operations that don't return model instances:
+
+```typescript
+// Materialized view refresh
+await DBModel.execute('REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_sales_summary');
+
+// Database maintenance
+await DBModel.execute('VACUUM ANALYZE orders');
+
+// Stored procedure / function calls
+await DBModel.execute('SELECT process_daily_aggregates($1)', [targetDate]);
+await DBModel.execute('SELECT pg_notify($1, $2)', ['events', JSON.stringify(payload)]);
+
+// DDL operations
+await DBModel.execute('CREATE INDEX CONCURRENTLY idx_orders_date ON orders(created_at)');
+```
+
+### When to Use Each Method
+
+| Method | Use Case | Returns |
+|--------|----------|---------|
+| `Model.find()` | Simple queries with conditions | `Model[]` |
+| `Model.query()` | Complex SQL returning model data | `Model[]` |
+| `DBModel.execute()` | DDL, maintenance, procedures | `{ rows, rowCount }` |
+| Query-Based Models | Reusable complex queries | `Model[]` via `find()` |
+
+---
+
+## Query-Based Models
+
+Define models backed by complex SQL queries instead of simple tables.
+Use `find()`, `findOne()`, `count()` on JOINs, aggregations, CTEs, and analytics queries.
+
+### Basic Concept
+
+```typescript
+import { DBModel, model, column, ColumnsOf } from 'litedbmodel';
+
+@model('user_stats')  // Alias for the CTE
+class UserStatsModel extends DBModel {
+  @column() id?: number;
+  @column() name?: string;
+  @column() post_count?: number;
+  @column() comment_count?: number;
+  @column() last_activity?: Date;
+
+  // Define the base query
+  static QUERY = `
+    SELECT 
+      u.id,
+      u.name,
+      COUNT(DISTINCT p.id) AS post_count,
+      COUNT(DISTINCT c.id) AS comment_count,
+      GREATEST(MAX(p.created_at), MAX(c.created_at)) AS last_activity
+    FROM users u
+    LEFT JOIN posts p ON u.id = p.user_id
+    LEFT JOIN comments c ON u.id = c.user_id
+    WHERE u.deleted_at IS NULL
+    GROUP BY u.id, u.name
+  `;
+}
+export const UserStats = UserStatsModel as typeof UserStatsModel & ColumnsOf<UserStatsModel>;
+
+// Use find() with additional conditions
+const topContributors = await UserStats.find([
+  [`${UserStats.post_count} >= ?`, 10],
+  [`${UserStats.last_activity} > ?`, lastWeek],
+], { order: UserStats.post_count.desc(), limit: 100 });
+```
+
+### Generated SQL (CTE-based)
+
+When `find()` is called, the QUERY becomes a CTE (WITH clause):
+
+```sql
+WITH user_stats AS (
+  SELECT 
+    u.id,
+    u.name,
+    COUNT(DISTINCT p.id) AS post_count,
+    COUNT(DISTINCT c.id) AS comment_count,
+    GREATEST(MAX(p.created_at), MAX(c.created_at)) AS last_activity
+  FROM users u
+  LEFT JOIN posts p ON u.id = p.user_id
+  LEFT JOIN comments c ON u.id = c.user_id
+  WHERE u.deleted_at IS NULL
+  GROUP BY u.id, u.name
+)
+SELECT * FROM user_stats
+WHERE post_count >= $1 AND last_activity > $2
+ORDER BY post_count DESC
+LIMIT 100
+```
+
+### Parameterized Queries
+
+For queries that need runtime parameters, define a factory method that encapsulates the query:
+
+```typescript
+@model('sales_report')
+class SalesReportModel extends DBModel {
+  @column() product_id?: number;
+  @column() product_name?: string;
+  @column() total_quantity?: number;
+  @column() total_revenue?: number;
+  @column() order_count?: number;
+
+  // Factory method - encapsulates query construction
+  static forPeriod(startDate: string, endDate: string) {
+    return this.withQuery({
+      sql: `
+        SELECT 
+          p.id AS product_id,
+          p.name AS product_name,
+          SUM(oi.quantity) AS total_quantity,
+          SUM(oi.quantity * oi.unit_price) AS total_revenue,
+          COUNT(DISTINCT o.id) AS order_count
+        FROM products p
+        INNER JOIN order_items oi ON p.id = oi.product_id
+        INNER JOIN orders o ON oi.order_id = o.id
+        WHERE o.status = 'completed'
+          AND o.created_at >= $1 
+          AND o.created_at < $2
+        GROUP BY p.id, p.name
+      `,
+      params: [startDate, endDate],
+    });
+  }
+}
+export const SalesReport = SalesReportModel as typeof SalesReportModel & ColumnsOf<SalesReportModel>;
+
+// Usage: Clean, encapsulated API
+const Q1Report = SalesReport.forPeriod('2024-01-01', '2024-04-01');
+const topProducts = await Q1Report.find([
+  [`${SalesReport.total_revenue} > ?`, 10000],
+], { order: SalesReport.total_revenue.desc() });
+```
+
+### Generated SQL
+
+```sql
+WITH sales_report AS (
+  SELECT 
+    p.id AS product_id,
+    p.name AS product_name,
+    SUM(oi.quantity) AS total_quantity,
+    SUM(oi.quantity * oi.unit_price) AS total_revenue,
+    COUNT(DISTINCT o.id) AS order_count
+  FROM products p
+  INNER JOIN order_items oi ON p.id = oi.product_id
+  INNER JOIN orders o ON oi.order_id = o.id
+  WHERE o.status = 'completed'
+    AND o.created_at >= $1 
+    AND o.created_at < $2
+  GROUP BY p.id, p.name
+)
+SELECT * FROM sales_report
+WHERE total_revenue > $3
+ORDER BY total_revenue DESC
+```
+
+### Type-Safe Column References
+
+Use Column symbols in your QUERY for refactoring safety:
+
+```typescript
+@model('user_activity')
+class UserActivityModel extends DBModel {
+  @column() user_id?: number;
+  @column() user_name?: string;
+  @column() total_posts?: number;
+
+  static QUERY = `
+    SELECT 
+      ${User.id} AS user_id,
+      ${User.name} AS user_name,
+      COUNT(${Post.id}) AS total_posts
+    FROM ${User.TABLE_NAME}
+    LEFT JOIN ${Post.TABLE_NAME} ON ${User.id} = ${Post.user_id}
+    GROUP BY ${User.id}, ${User.name}
+  `;
+}
+```
+
+### Use Cases
+
+| Use Case | Example |
+|----------|---------|
+| **Aggregations** | User stats, sales reports, leaderboards |
+| **Analytics** | Cohort analysis, funnel metrics, trend data |
+| **Denormalized Views** | Pre-joined data for read-heavy operations |
+| **Time-Series** | Period-based summaries with window functions |
+| **Recursive Queries** | Organizational hierarchies, category trees |
+
+### Design Considerations
+
+1. **Read-Only**: Query-based models don't support `create()`, `update()`, `delete()`
+2. **CTE vs Subquery**: CTE approach produces cleaner, more readable SQL
+3. **Parameter Ordering**: QUERY params come first, then `find()` condition params
+4. **Caching**: Consider materializing frequently-used query models as actual views
 
 ---
 
@@ -392,53 +636,15 @@ const users = await User.query(
 
 | Feature | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
 |---------|-------------|--------|---------|---------|--------|
-| **Install Size** | ~1MB | ~6MB | ~11MB | ~28MB | ~78MB |
+| **Complex Queries** | ✅ Real SQL | Builder DSL | Builder DSL | HQL/Builder | Prisma DSL |
+| **Query-Based Models** | ✅ | ❌ | ❌ | Views only | Views only |
 | **IDE Refactoring** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Pattern** | Active Record | Query Builder | Query Builder | Both | Data Mapper |
 | **SKIP Pattern** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Auto N+1 Prevention** | ✅ | ❌ | ❌ | Eager only | Include |
-| **Fixed SQL Params** | ✅ `ANY()`* | ❌ `IN(...)` | ✅ LATERAL | ❌ `IN(...)` | ❌ `IN(...)` |
-| **SQL Readability** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ |
-| **Middleware** | ✅ | ❌ | ❌ | Subscribers | ❌ |
+| **Extensibility** | Middleware | Plugins | ❌ Manual | Subscribers | Extensions |
+| **Performance** | 🏆 Fastest | Fast | Fast | Medium | Slow |
 
-*\* PostgreSQL only. Falls back to `IN (...)` on MySQL/SQLite.*
-
-### Performance (PostgreSQL, Median of 1,000 iterations)
-
-Based on [Prisma orm-benchmarks](https://github.com/prisma/orm-benchmarks) methodology.
-
-![ORM Benchmark Chart](./docs/benchmark-chart.svg)
-
-| Operation | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
-|-----------|-------------|--------|---------|---------|--------|
-| Filter, paginate & sort | **0.68ms** 🏆 | 0.76ms | 0.88ms | 0.95ms | 1.11ms |
-| Nested find all | **2.31ms** 🏆 | 2.69ms | 3.51ms | 5.00ms | 7.39ms |
-| Find unique | **0.28ms** 🏆 | 0.28ms | 0.30ms | 0.32ms | 0.54ms |
-| Create | **0.40ms** 🏆 | 0.41ms | 0.42ms | 0.90ms | 0.60ms |
-| Nested create | **0.80ms** 🏆 | 0.84ms | 0.89ms | 2.09ms | 1.67ms |
-| Update | **0.44ms** 🏆 | 0.45ms | 0.47ms | 0.48ms | 0.71ms |
-| Delete | **0.96ms** 🏆 | 1.00ms | 1.13ms | 1.85ms | 1.35ms |
-
-> **litedbmodel is fastest in 7 out of 14 operations**, especially in nested queries, filtering, and CRUD operations. See [COMPARISON.md](./docs/COMPARISON.md) for full benchmark results and [Nested Benchmark](./docs/BENCHMARK-NESTED.md) for detailed SQL analysis.
-
-### Choose litedbmodel when:
-
-- You need **IDE refactoring** (Find References, Rename Symbol)
-- You prefer **Active Record** pattern
-- You want **declarative** conditional fields (SKIP)
-- You need **automatic N+1 prevention**
-- You want **readable SQL** with fixed parameter counts (easier log analysis)
-- Performance matters (1.4x - 3.3x faster than Prisma)
-
-### Choose Prisma when:
-
-- You need **rich DX features** (Prisma Studio, migrations)
-- **Rapid prototyping** is priority
-
-### Choose Kysely/Drizzle when:
-
-- You prefer **Query Builder** pattern
-- Maximum single-row write performance is critical
+> See [COMPARISON.md](./docs/COMPARISON.md) for detailed analysis, benchmarks, and code examples.
 
 ---
 
