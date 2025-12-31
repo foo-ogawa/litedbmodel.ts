@@ -26,6 +26,10 @@ class TestMiddleware extends Middleware {
 }
 
 describe('Middleware', () => {
+  beforeEach(() => {
+    TestMiddleware.clearContext();
+  });
+
   afterEach(() => {
     TestMiddleware.clearContext();
   });
