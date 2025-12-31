@@ -32,6 +32,9 @@ coverage/
 # Development logs
 chat_log/
 
+# Cursor
+.cursorrules
+
 # Benchmark subdirectories
 benchmark/node_modules/
 
