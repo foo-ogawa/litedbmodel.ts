@@ -128,6 +128,10 @@ describe('Middleware', () => {
 });
 
 describe('StatisticsMiddleware', () => {
+  beforeEach(() => {
+    StatisticsMiddleware.clearContext();
+  });
+
   afterEach(() => {
     StatisticsMiddleware.clearContext();
   });
@@ -317,12 +321,13 @@ describe('StatisticsMiddleware', () => {
     it('should track execution duration', async () => {
       const ctx = StatisticsMiddleware.getCurrentContext();
       const mockNext = async () => {
-        await new Promise(r => setTimeout(r, 10));
+        await new Promise(r => setTimeout(r, 15));
         return [];
       };
 
       await ctx.find({} as any, mockNext, []);
 
+      // Use lower threshold for CI environment timer precision
       expect(ctx.find_all_msec).toBeGreaterThanOrEqual(10);
     });
   });
