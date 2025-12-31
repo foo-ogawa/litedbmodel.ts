@@ -11,7 +11,7 @@ A lightweight, SQL-friendly TypeScript ORM for PostgreSQL, MySQL, and SQLite.
 
 - **Predictable** — Generated queries are simple, readable, and exactly what you'd write by hand
 - **Type-Safe** — Results map to typed model instances with full IDE support
-- **Real SQL When Needed** — Complex queries use actual SQL via `query()` or Query-Based Models, not a proprietary DSL
+- **Real SQL When Needed** — Complex queries and DB-specific optimizations use actual SQL via `query()`, not a proprietary DSL
 - **Model-Centric** — Same model serves list/detail views; relations load on-demand with automatic batch loading
 
 > See [Design Philosophy](./docs/BENCHMARK-NESTED.md#litedbmodels-design-philosophy) for detailed comparison with query-centric ORMs.
@@ -24,9 +24,9 @@ A lightweight, SQL-friendly TypeScript ORM for PostgreSQL, MySQL, and SQLite.
 - **Subquery Support** — IN/NOT IN/EXISTS/NOT EXISTS with correlated subqueries
 - **Declarative SKIP** — Conditional fields without if-statements
 - **Transparent N+1 Prevention** — Batch loading for lazy relations (library's job, not yours)
-- **Raw SQL Escape** — `Model.query()` and `DBModel.execute()` when you need full control
+- **Raw SQL Escape** — `Model.query()` and `DBModel.execute()` when you need full control (DB-specific syntax is your responsibility)
 - **Middleware** — Cross-cutting concerns (logging, auth, tenant isolation)
-- **Multi-Database** — PostgreSQL, MySQL, SQLite support
+- **Multi-Database** — PostgreSQL, MySQL, SQLite with config-only switching (Tuple API and relations are portable; raw SQL is dialect-dependent)
 
 ## Installation
 
@@ -386,6 +386,8 @@ TenantMiddleware.getCurrentContext().tenantId = req.user.tenantId;
 ## Raw SQL Methods
 
 When `find()` isn't enough, use real SQL directly. No query builder translation needed.
+
+> **Portability note:** Tuple API (`find()`, `create()`, `update()`) and relation loading are DB-portable (config-only switching). Raw SQL via `query()` is your escape hatch for DB-specific optimizations—you control the dialect (placeholders, functions, type casts).
 
 ### Model.query() — SQL with Type-Safe Results
 

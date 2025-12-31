@@ -70,7 +70,7 @@ WHERE "public"."benchmark_posts"."author_id" IN ($1,$2,$3,...,$100)
 
 **Benefits:**
 - **Easier SQL log analysis** - Same query pattern regardless of data size
-- **PostgreSQL prepared statement cache** - Better plan caching efficiency
+- **More stable SQL fingerprints** - Prepared statements more predictable in typical setups
 - **Log readability** - Understand query intent without expanding parameters
 
 #### 3. Query Log Example
@@ -297,14 +297,17 @@ WHERE ( "tenant_id"=$1 AND "user_id"=$2
 | Characteristic | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
 |----------------|-------------|--------|---------|---------|--------|
 | Readability | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ |
-| Param Count | Fixed | Variable | Fixed | Variable | Variable |
+| IN/ANY Param Growth† | Fixed | Variable | N/A | Variable | Variable |
 | Debuggability | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ |
-| Query Cache Efficiency | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐ |
+| SQL Fingerprint Stability (PG)‡ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | N/A | ⭐⭐ | ⭐⭐ |
+
+*† "IN/ANY Param Growth" = whether parameter count grows with data size (e.g., `IN ($1,$2,...,$N)` vs `ANY($1::int[])`). Drizzle uses single-query JSON aggregation, so this axis doesn't apply.*  
+*‡ Drizzle uses a fundamentally different approach (single large query with JSON aggregation); fingerprint stability is not directly comparable to batch-query ORMs.*
 
 **Notes:**
-- **litedbmodel**: `ANY($1::int[])` produces consistent SQL patterns, ideal for log analysis and caching
-- **Kysely**: Simple SQL but variable parameter count
-- **Drizzle**: Single query is fast but LATERAL JOIN is complex to debug
+- **litedbmodel**: `ANY($1::int[])` produces consistent SQL patterns, ideal for log analysis and monitoring
+- **Kysely**: Simple SQL but variable parameter count (IN clause)
+- **Drizzle**: Standard API uses single round-trip (LATERAL JOIN + JSON aggregation) but complex to debug
 - **TypeORM**: Hash-based aliases make SQL difficult to read
 - **Prisma**: Fully qualified names add verbosity
 
@@ -312,7 +315,9 @@ WHERE ( "tenant_id"=$1 AND "user_id"=$2
 
 ## Why Drizzle is Fastest (Single Key)
 
-Drizzle uses PostgreSQL's `LATERAL JOIN` with `json_agg()` to fetch all nested data in a **single query**:
+Drizzle's **standard relation API** uses PostgreSQL's `LATERAL JOIN` with `json_agg()` to fetch all nested data in a single DB round-trip:
+
+> **Note:** This is Drizzle's idiomatic approach via `db.query.*.findMany({ with: {...} })`. Other ORMs can achieve similar results with manual SQL, but Drizzle provides this as a built-in pattern.
 
 ```sql
 SELECT "users".*, "posts"."data" as "posts"
@@ -329,7 +334,7 @@ LEFT JOIN LATERAL (
 ```
 
 **Trade-offs:**
-- ✅ 1 round-trip (fastest for network latency)
+- ✅ Single round-trip (fastest for network latency)
 - ❌ Complex SQL (difficult to debug)
 - ❌ Heavy DB-side JSON processing
 - ❌ Result parsing overhead
@@ -377,9 +382,9 @@ for (const user of users) {
 |--------|-----------------|-------------------|
 | Query definition | Must specify all relations upfront | Relations loaded on-demand |
 | List view efficiency | Fetches unused nested data | Only fetches what's accessed |
-| Detail view support | Same query works | Same query works |
+| Detail view support | ⚠️ Usually needs separate queries | ✅ Same model works |
 | Code reusability | Different queries for different views | One model, multiple use cases |
-| N+1 prevention | Query builder handles | Automatic batch loading |
+| N+1 prevention | ⚠️ If using `{ with: ... }` | ✅ Automatic batch loading |
 
 **Real-World Scenario:**
 
@@ -410,18 +415,16 @@ With litedbmodel, the same code handles both cases - relations are loaded only w
 
 ### Batch Loading Strategy
 
-### Batch Loading Strategy
-
 ```
 1. Load users           → SELECT * FROM users LIMIT 100
 2. Batch load posts     → SELECT * FROM posts WHERE author_id = ANY($1)
 3. Batch load comments  → SELECT * FROM comments WHERE post_id = ANY($1)
 ```
 
-**Advantages:**
+**Advantages (PostgreSQL):**
 - **Simple SQL** - Each query is independently understandable
-- **Fixed parameter count** - Ideal for log analysis and query caching
-- **Predictable execution plans** - PostgreSQL planner optimizes better
+- **Fixed parameter count (PG)** - `ANY($1::int[])` keeps param count stable, ideal for log analysis
+- **Stable SQL fingerprints (PG)** - Consistent patterns for prepared statements
 - **Transparent debugging** - Easy to identify issues
 
 ### Composite Key with unnest + JOIN
@@ -447,18 +450,18 @@ WHERE (tenant_id, user_id) IN (($1,$2),($3,$4),...,($1999,$2000))
 
 ## Conclusion
 
-| Scenario | Winner | Notes |
-|----------|--------|-------|
+| Scenario | Best Fit | Notes |
+|----------|----------|-------|
 | Single Key (raw speed) | Drizzle | 1 query via LATERAL JOIN + JSON |
-| Single Key (SQL quality) | **litedbmodel** | `ANY()` with fixed params |
-| Composite Key (speed) | Kysely | Manual batching |
-| Composite Key (SQL quality) | **litedbmodel** | `unnest + JOIN` with fixed params |
-| Log Analysis / Debugging | **litedbmodel** | Consistent query patterns |
-| Query Plan Caching | **litedbmodel** | Fixed parameter count |
+| Single Key (SQL quality) | **litedbmodel** | Readable + debuggable; stable query patterns across batch sizes (PG) |
+| Composite Key (speed) | Kysely | Manual batching (tenant fixed; simple IN effective in this benchmark) |
+| Composite Key (SQL quality) | **litedbmodel** | Readable + debuggable; stable patterns across batch sizes (PG) |
+| Log Analysis / Monitoring | **litedbmodel** | Consistent query patterns |
+| SQL Fingerprint Stability (PG) | **litedbmodel** | Most predictable in typical prepared-statement setups |
 | Code Maintainability | **litedbmodel** | Transparent lazy loading |
 
 **litedbmodel** offers the best balance of:
-- Performance (3-4x faster than Prisma)
+- Performance (≈2.9x faster on single-key, ≈4.1x on composite-key vs Prisma)
 - SQL readability and debuggability
 - Consistent query patterns (ideal for log analysis)
 - Transparent relation loading (developer experience)

@@ -4,30 +4,282 @@ A detailed comparison of litedbmodel with popular TypeScript/JavaScript ORMs.
 
 ## Quick Comparison Matrix
 
-| Feature | litedbmodel | Kysely | Drizzle | TypeORM | Prisma | MikroORM | Sequelize | Objection.js |
-|---------|-------------|--------|---------|---------|--------|----------|-----------|--------------|
-| **Column References** | Symbols | Strings | Strings | Strings/Decorators | Strings | Strings | Strings | Strings |
-| **IDE Refactoring** | ✅ Works | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Pattern** | Active Record | Query Builder | Query Builder | Both | Data Mapper | Data Mapper | Active Record | Active Record |
-| **Type Safety** | ✅ Compile-time | ✅ Compile-time | ✅ Compile-time | ⚠️ Partial | ✅ Compile-time | ⚠️ Partial | ❌ Runtime | ⚠️ Partial |
-| **Multi-DB** | PG/MySQL/SQLite | PG/MySQL/SQLite | PG/MySQL/SQLite | Many | PG/MySQL/SQLite/... | Many | Many | PG/MySQL/SQLite |
-| **Schema Definition** | Decorators | TypeScript | TypeScript | Decorators | Prisma Schema | Decorators | JS Objects | Knex migrations |
-| **Migrations** | Manual | Manual | Kit (optional) | Built-in | Built-in | Built-in | Built-in | Knex |
-| **Query Style** | Tuple array | Fluent | Fluent | QueryBuilder/Find | Fluent | QueryBuilder | Fluent | Fluent |
-| **N+1 Prevention** | ✅ Auto | ❌ Manual | ❌ Manual | ⚠️ Manual | ✅ Include | ✅ Identity Map | ⚠️ Include | ⚠️ Graph |
-| **Composite Keys** | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ⚠️ Partial | ✅ Full |
-| **Fixed SQL Params** | ✅ `ANY()`* | ❌ | ✅ LATERAL | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **SQL Readability** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
-| **Install Size** | ~1MB | ~6MB | ~11MB | ~28MB | ~78MB | ~300KB | ~200KB | ~100KB |
-| **Learning Curve** | Low | Low | Low | High | Medium | Medium | Medium | Medium |
+> Legend: ✅ built-in / automatic, ⚠️ possible but manual / opt-in / partial, ❌ not provided / not typical
 
-*\* PostgreSQL only. Falls back to `IN (...)` on MySQL/SQLite.*
+| Category | Feature | litedbmodel | Kysely | Drizzle | TypeORM | Prisma | MikroORM | Sequelize | Objection.js |
+|----------|---------|-------------|--------|---------|---------|--------|----------|-----------|--------------|
+| **Modeling** | Schema definition | Decorators | TS types | TS schema objects | Decorators | Prisma schema | Decorators | JS objects | Knex + Model |
+|  | Migrations | Manual | Manual | Kit (optional) | Built-in | Built-in | Built-in | Built-in | Knex |
+| **Query API** | Primary query style | Tuple array | Fluent QB | Fluent QB | QB / Find | Fluent client | QB / EM | Fluent | Fluent |
+|  | Raw SQL escape hatch† | ✅ `query()` | ⚠️ `sql` | ⚠️ `sql` | ⚠️ `query()` | ⚠️ `$queryRaw` | ⚠️ `execute()` | ⚠️ `query()` | ⚠️ `raw()` |
+| **Type Safety** | Compile-time type safety | ✅ | ✅ | ✅ | ⚠️ partial | ✅ | ⚠️ partial | ❌ runtime-heavy | ⚠️ partial |
+| **Column Refs**‡ | How columns are referenced | **Symbols** | String literals | Column objects | Strings/decorators | Object keys | Strings | Strings | Strings |
+| **IDE Support**§ | Refactoring safety (IDE) | ✅ Full | ❌ | ⚠️ Partial | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Updates** | Declarative partial update | ✅ **SKIP** | ❌ manual | ❌ manual | ❌ manual | ⚠️ `undefined` | ❌ manual | ❌ manual | ❌ manual |
+| **Relations** | Relation definition (built-in) | ✅ getters | ❌ | ❌ | ✅ decorators | ✅ schema | ✅ decorators | ✅ associations | ✅ mappings |
+|  | Default loading style | Lazy + **auto batch** | Manual joins | Manual joins | Eager/Lazy | Explicit include | UoW + populate | Include/eager | Graph fetch |
+|  | N+1 prevention behavior∥ | ✅ Auto | ❌ manual | ❌ manual | ⚠️ manual | ⚠️ if included | ⚠️ identity map | ⚠️ if included | ⚠️ if graphed |
+|  | Composite key relations | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ⚠️ Partial | ✅ Full |
+| **SQL Quality** | Stable SQL fingerprints (PG)¶ | ✅ `ANY`/`unnest` | ⚠️ possible | ⚠️ possible | ⚠️ possible | ⚠️ possible | ⚠️ possible | ⚠️ possible | ⚠️ possible |
+|  | Standard API: 1-query nested# | ❌ (by design) | ⚠️ manual SQL | ⚠️ manual SQL | ⚠️ possible | ⚠️ depends | ⚠️ possible | ⚠️ possible | ⚠️ possible |
+|  | SQL readability (typical) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
+| **Extension** | Cross-cutting hooks | ✅ middleware | ⚠️ plugins | ⚠️ manual wrappers | ⚠️ subscribers | ⚠️ extensions | ⚠️ hooks | ⚠️ hooks | ⚠️ plugins |
+| **DB Support** | Supported DBs | PG/MySQL/SQLite | PG/MySQL/SQLite | PG/MySQL/SQLite | Many | Many | Many | Many | PG/MySQL/SQLite |
+|  | DB switching cost (portability)** | ✅ config-only | ⚠️ dialect | ❌ schema rewrite | ⚠️ type/driver | ❌ regenerate | ⚠️ driver | ⚠️ dialect | ⚠️ knex |
+
+**† Raw SQL escape hatch:**  
+litedbmodel `query()` returns typed **model instances** (with methods, relations, middleware context). Others return typed records but not model instances.
+
+**‡ Column references:**  
+- **Symbols** = unique identifier per column (best for "find references")  
+- **Column objects** = schema object properties (IDE can track usage, but DB renames are separate)  
+- **String literals / object keys** = plain strings/keys (IDE cannot reliably distinguish DB usage)
+
+**§ IDE refactoring:**  
+- **Full** = IDE tracks all column usages via symbol references across the codebase  
+- **Partial** = IDE tracks *some* references (e.g., schema objects), but DB column renaming requires separate migration handling
+
+**∥ N+1 prevention:**  
+- **Auto** = batching happens transparently when accessing relations over a result set  
+- **If included/graphed** = requires explicit include/graph configuration to avoid N+1  
+- **Identity map** = reduces duplicate loads within a request, but does not automatically batch relation queries
+
+**¶ Stable SQL fingerprints (PG):**  
+Built-in patterns that keep SQL text/param shapes stable (e.g., `ANY($1::int[])`, `unnest` joins). Other tools may achieve similar shapes via driver/SQL patterns, but it is not typically a built-in default.
+
+**# Standard API: 1-query nested:**  
+Whether the *tool's standard relation API* fetches nested relations in a single DB round-trip. Raw SQL can achieve this in any tool; this row evaluates the default/idiomatic approach only.
+
+**\*\* DB portability:**  
+- **Multi-DB** = databases the tool can talk to  
+- **Portability** = code changes required when switching databases (schema + queries + build/runtime coupling)
+
+---
+
+## Why Use an ORM? (Beyond Raw SQL)
+
+**The real value of an ORM is maintainability, safety, and observability while simplifying 80% of common tasks.**
+
+```typescript
+// 80% of operations: Simple, type-safe, trackable via column symbols
+const users = await User.find([[User.is_active, true]]);
+
+// 20% of operations: DB-specific optimization in raw SQL
+const stats = await User.query(`
+  SELECT department, COUNT(*) FROM users
+  GROUP BY GROUPING SETS ((department), ())  -- PostgreSQL-specific
+`, []);
+```
+
+| Value | Raw SQL | Other ORMs | litedbmodel | Details |
+|-------|---------|------------|-------------|---------|
+| **80% Simplification** — Schema, CRUD, Queries | ❌ Verbose | ✅ Prisma, TypeORM, Drizzle, Kysely | ✅ + SKIP pattern | [§1](#1-schema--migrations), [§2](#2-query-expressiveness), [§3](#3-declarative-updates-skip-pattern) |
+| **SQL Escape Hatch** — Complex queries in raw SQL | ✅ Native | ⚠️ Prisma `$queryRaw`, Drizzle `sql` | ✅ `query()` | [§4](#4-sql-friendly-design) |
+| **Type Safety** — Catch errors at compile time | ❌ Strings | ✅ Prisma, Drizzle, Kysely | ✅ Yes | [§5](#5-type-safety) |
+| **Refactoring Safety** — IDE tracks column usage | ❌ No | ⚠️ Drizzle (partial) | ✅ Column symbols | [§6](#6-column-references--ide-support) |
+| **Model-Centric** — Active Record + lazy relations | ❌ N/A | ⚠️ TypeORM, Sequelize (partial) | ✅ Auto N+1 prevention | [§7](#7-design-patterns), [§8](#8-relations) |
+| **Observability** — Logging, SQL quality, policies | ❌ Manual | ⚠️ Prisma extensions, Kysely plugins | ✅ Middleware | [§9](#9-extensibility), [§10](#10-sql-quality--debuggability) |
+
+> See [Detailed Analysis](#detailed-analysis) for in-depth comparisons of each feature.
+
+---
 
 ## Detailed Analysis
 
 ---
 
-## 1. SQL-Friendly Design
+## 1. Schema & Migrations
+
+### litedbmodel
+
+```typescript
+// Schema: TypeScript decorators
+@model('users')
+class UserModel extends DBModel {
+  @column() id?: number;
+  @column() name?: string;
+  @column() created_at?: Date;  // Auto-inferred from Date type
+}
+
+// Migrations: Manual SQL files
+```
+
+### Prisma
+
+```prisma
+// Schema: .prisma file (DSL)
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  createdAt DateTime @default(now())
+}
+
+// Migrations: `prisma migrate dev` generates SQL
+```
+
+### TypeORM
+
+```typescript
+// Schema: Decorators
+@Entity()
+class User {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() name: string;
+  @CreateDateColumn() createdAt: Date;
+}
+
+// Migrations: Auto-generated or manual
+typeorm migration:generate -n CreateUser
+```
+
+### Drizzle
+
+```typescript
+// Schema: TypeScript
+export const users = pgTable('users', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 256 }),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Migrations: drizzle-kit (optional)
+drizzle-kit generate:pg
+```
+
+### Migration Comparison
+
+| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
+|---------|-------------|--------|---------|---------|--------|
+| **Schema Format** | TS Decorators | Prisma DSL | TS Decorators | TS Schema | TS Interface |
+| **Migration Tool** | Manual | Built-in | Built-in | drizzle-kit | Manual |
+| **Auto-Generate** | ❌ | ✅ | ✅ | ✅ | ❌ |
+| **Reversible** | Manual | ✅ | ✅ | ⚠️ | Manual |
+
+---
+
+## 2. Query Expressiveness
+
+### Complex Query Example
+
+Find active users who either:
+- Have admin role, OR
+- Have moderator role AND level >= 5
+
+```typescript
+// litedbmodel
+const users = await User.find([
+  [User.is_active, true],
+  User.or(
+    [[User.role, 'admin']],
+    [[User.role, 'moderator'], [`${User.level} >= ?`, 5]],
+  ),
+]);
+
+// Prisma
+const users = await prisma.user.findMany({
+  where: {
+    isActive: true,
+    OR: [
+      { role: 'admin' },
+      { role: 'moderator', level: { gte: 5 } },
+    ],
+  },
+});
+
+// TypeORM (QueryBuilder)
+const users = await userRepo.createQueryBuilder('u')
+  .where('u.is_active = :active', { active: true })
+  .andWhere(new Brackets(qb => {
+    qb.where('u.role = :admin', { admin: 'admin' })
+      .orWhere('u.role = :mod AND u.level >= :level', { mod: 'moderator', level: 5 });
+  }))
+  .getMany();
+
+// Kysely
+const users = await db.selectFrom('users')
+  .where('is_active', '=', true)
+  .where(eb => eb.or([
+    eb('role', '=', 'admin'),
+    eb.and([
+      eb('role', '=', 'moderator'),
+      eb('level', '>=', 5)
+    ])
+  ]))
+  .selectAll()
+  .execute();
+
+// Drizzle
+const users = await db.select().from(usersTable)
+  .where(and(
+    eq(usersTable.isActive, true),
+    or(
+      eq(usersTable.role, 'admin'),
+      and(eq(usersTable.role, 'moderator'), gte(usersTable.level, 5))
+    )
+  ));
+```
+
+---
+
+## 3. Declarative Updates (SKIP Pattern)
+
+litedbmodel's unique feature for declarative conditional fields:
+
+### litedbmodel - SKIP Sentinel
+
+```typescript
+import { SKIP } from 'litedbmodel';
+
+// All fields visible, SKIP omits undefined
+await User.update(
+  [[User.id, id]],
+  [
+    [User.name, body.name ?? SKIP],
+    [User.email, body.email ?? SKIP],
+    [User.phone, body.phone ?? SKIP],
+    [User.updated_at, new Date()],
+  ]
+);
+```
+
+### Other ORMs - Manual Building
+
+```typescript
+// Prisma - spread undefined values
+await prisma.user.update({
+  where: { id },
+  data: {
+    name: body.name,      // undefined = no update (Prisma specific)
+    email: body.email,
+    phone: body.phone,
+    updatedAt: new Date(),
+  }
+});
+
+// TypeORM - must filter manually
+const updateData: Partial<User> = { updatedAt: new Date() };
+if (body.name !== undefined) updateData.name = body.name;
+if (body.email !== undefined) updateData.email = body.email;
+await userRepo.update(id, updateData);
+
+// Kysely - manual object building
+const updates: Updateable<UsersTable> = {};
+if (body.name !== undefined) updates.name = body.name;
+if (body.email !== undefined) updates.email = body.email;
+await db.updateTable('users').set(updates).where('id', '=', id).execute();
+```
+
+### Why SKIP Matters
+
+| Approach | Readability | All Fields Visible | Mutations | Type-Safe |
+|----------|-------------|-------------------|-----------|-----------|
+| **SKIP sentinel** | ✅ Declarative | ✅ Yes | ❌ None | ✅ |
+| **Prisma undefined** | ✅ Clean | ✅ Yes | ❌ None | ✅ |
+| **Manual if/spread** | ❌ Imperative | ❌ Scattered | ✅ Mutable | ⚠️ |
+
+---
+
+## 4. SQL-Friendly Design
 
 ### The Problem with Query Builders
 
@@ -87,120 +339,7 @@ const users = await User.query(`
 
 ---
 
-## 2. Column References & IDE Support
-
-### The Difference
-
-litedbmodel uses explicit column symbols (`Model.column`), while other ORMs use string keys or object properties.
-
-```typescript
-// litedbmodel - Column symbols enable IDE "Find All References"
-await User.find([[User.email, 'test@example.com']]);
-await User.update([[User.id, 1]], [[User.email, 'new@example.com']]);
-// Right-click User.email → "Find All References" → shows both usages
-
-// Other ORMs - String-based
-// Prisma
-prisma.user.findMany({ where: { email: 'test@example.com' } });
-// TypeORM
-userRepo.find({ where: { email: 'test@example.com' } });
-// Kysely
-db.selectFrom('users').where('email', '=', 'test@example.com');
-// Drizzle
-db.select().from(users).where(eq(users.email, 'test@example.com'));
-```
-
-### Comparison
-
-| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
-|---------|-------------|--------|---------|---------|--------|
-| **Column Reference** | `User.email` (Symbol) | `{ email: ... }` | `{ email: ... }` | `users.email` | `'email'` |
-| **IDE "Find References"** | ✅ Works | ❌ | ❌ | ⚠️ Schema only | ❌ |
-| **IDE "Rename Symbol"** | ✅ Works | ❌ | ❌ | ⚠️ Schema only | ❌ |
-
----
-
-## 3. Design Patterns
-
-### Active Record (litedbmodel, Sequelize, Objection.js)
-
-Model instances have methods to persist themselves:
-
-```typescript
-// litedbmodel
-const user = await User.create([[User.name, 'John']]);
-const users = await User.find([[User.is_active, true]]);
-
-// Sequelize
-const user = await User.create({ name: 'John' });
-const users = await User.findAll({ where: { is_active: true } });
-
-// Objection.js
-const user = await User.query().insert({ name: 'John' });
-const users = await User.query().where('is_active', true);
-```
-
-**Pros**: Simple, intuitive, less boilerplate  
-**Cons**: Tight coupling between domain and persistence
-
-### Data Mapper (Prisma, MikroORM)
-
-Separate repository/client handles persistence:
-
-```typescript
-// Prisma
-const user = await prisma.user.create({ data: { name: 'John' } });
-const users = await prisma.user.findMany({ where: { isActive: true } });
-
-// MikroORM
-const user = em.create(User, { name: 'John' });
-await em.persistAndFlush(user);
-const users = await em.find(User, { isActive: true });
-```
-
-**Pros**: Clean separation, testable, flexible  
-**Cons**: More boilerplate, learning curve
-
-### Query Builder (Kysely, Drizzle)
-
-SQL-like fluent API:
-
-```typescript
-// Kysely
-const users = await db
-  .selectFrom('users')
-  .where('is_active', '=', true)
-  .selectAll()
-  .execute();
-
-// Drizzle
-const users = await db
-  .select()
-  .from(users)
-  .where(eq(users.isActive, true));
-```
-
-**Pros**: Full SQL control, composable  
-**Cons**: Verbose, no model abstraction
-
-### Hybrid (TypeORM)
-
-Supports both patterns:
-
-```typescript
-// Active Record
-const user = new User();
-user.name = 'John';
-await user.save();
-
-// Data Mapper (Repository)
-const user = userRepository.create({ name: 'John' });
-await userRepository.save(user);
-```
-
----
-
-## 4. Type Safety
+## 5. Type Safety
 
 ### litedbmodel - Compile-time (Column Symbols)
 
@@ -314,65 +453,133 @@ const users = await db
 
 ---
 
-## 5. Conditional Updates (SKIP Pattern)
+## 6. Column References & IDE Support
 
-litedbmodel's unique feature for declarative conditional fields:
+### Column Reference Types
 
-### litedbmodel - SKIP Sentinel
+| Type | Example | IDE Tracking | ORMs |
+|------|---------|--------------|------|
+| **Column Symbols** | `User.email` | ✅ Full codebase | litedbmodel |
+| **Column Objects** | `users.email` | ⚠️ Partial | Drizzle |
+| **Object Keys** | `{ email: ... }` | ❌ | Prisma, TypeORM |
+| **String Literals** | `'email'` | ❌ | Kysely |
 
-```typescript
-import { SKIP } from 'litedbmodel';
+### What "IDE Refactoring" Means
 
-// All fields visible, SKIP omits undefined
-await User.update(
-  [[User.id, id]],
-  [
-    [User.name, body.name ?? SKIP],
-    [User.email, body.email ?? SKIP],
-    [User.phone, body.phone ?? SKIP],
-    [User.updated_at, new Date()],
-  ]
-);
-```
-
-### Other ORMs - Manual Building
+- **✅ Full**: IDE tracks all usages of a column across the entire codebase via symbol references. Renaming `User.email` updates all call sites.
+- **⚠️ Partial**: Property references (e.g., `users.email`) are tracked by IDE, but DB column renaming requires separate migration handling. The schema object and its usages are connected, but the actual DB column name is a separate concern.
+- **❌ None**: Column names are strings or object keys; IDE cannot distinguish them from other strings/keys.
 
 ```typescript
-// Prisma - spread undefined values
-await prisma.user.update({
-  where: { id },
-  data: {
-    name: body.name,      // undefined = no update (Prisma specific)
-    email: body.email,
-    phone: body.phone,
-    updatedAt: new Date(),
-  }
-});
+// litedbmodel - Column symbols enable IDE "Find All References"
+await User.find([[User.email, 'test@example.com']]);
+await User.update([[User.id, 1]], [[User.email, 'new@example.com']]);
+// Right-click User.email → "Find All References" → shows both usages
 
-// TypeORM - must filter manually
-const updateData: Partial<User> = { updatedAt: new Date() };
-if (body.name !== undefined) updateData.name = body.name;
-if (body.email !== undefined) updateData.email = body.email;
-await userRepo.update(id, updateData);
+// Drizzle - Column objects (property references are trackable)
+db.select().from(users).where(eq(users.email, 'test@example.com'));
+// users.email is a property reference; IDE can track usages, but DB column name is separate
 
-// Kysely - manual object building
-const updates: Updateable<UsersTable> = {};
-if (body.name !== undefined) updates.name = body.name;
-if (body.email !== undefined) updates.email = body.email;
-await db.updateTable('users').set(updates).where('id', '=', id).execute();
+// Kysely - String literals (no tracking)
+db.selectFrom('users').where('email', '=', 'test@example.com');
+// 'email' is just a string; IDE cannot track
+
+// Prisma - Object keys (no tracking)
+prisma.user.findMany({ where: { email: 'test@example.com' } });
+// { email: ... } is an object key; IDE cannot track
 ```
 
-### Why SKIP Matters
+### Comparison
 
-| Approach | Readability | All Fields Visible | Mutations | Type-Safe |
-|----------|-------------|-------------------|-----------|-----------|
-| **SKIP sentinel** | ✅ Declarative | ✅ Yes | ❌ None | ✅ |
-| **Prisma undefined** | ✅ Clean | ✅ Yes | ❌ None | ✅ |
-| **Manual if/spread** | ❌ Imperative | ❌ Scattered | ✅ Mutable | ⚠️ |
+| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
+|---------|-------------|--------|---------|---------|--------|
+| **Column Reference** | `User.email` (Symbol) | `{ email: ... }` | `{ email: ... }` | `users.email` (Object) | `'email'` (String) |
+| **IDE "Find References"** | ✅ Full | ❌ | ❌ | ⚠️ Partial | ❌ |
+| **IDE "Rename Symbol"** | ✅ Full | ❌ | ❌ | ⚠️ Partial | ❌ |
 
 ---
 
-## 6. Relations
+## 7. Design Patterns
+
+### Active Record (litedbmodel, Sequelize, Objection.js)
+
+Model instances have methods to persist themselves:
+
+```typescript
+// litedbmodel
+const user = await User.create([[User.name, 'John']]);
+const users = await User.find([[User.is_active, true]]);
+
+// Sequelize
+const user = await User.create({ name: 'John' });
+const users = await User.findAll({ where: { is_active: true } });
+
+// Objection.js
+const user = await User.query().insert({ name: 'John' });
+const users = await User.query().where('is_active', true);
+```
+
+**Pros**: Simple, intuitive, less boilerplate  
+**Cons**: Tight coupling between domain and persistence
+
+### Data Mapper (Prisma, MikroORM)
+
+Separate repository/client handles persistence:
+
+```typescript
+// Prisma
+const user = await prisma.user.create({ data: { name: 'John' } });
+const users = await prisma.user.findMany({ where: { isActive: true } });
+
+// MikroORM
+const user = em.create(User, { name: 'John' });
+await em.persistAndFlush(user);
+const users = await em.find(User, { isActive: true });
+```
+
+**Pros**: Clean separation, testable, flexible  
+**Cons**: More boilerplate, learning curve
+
+### Query Builder (Kysely, Drizzle)
+
+SQL-like fluent API:
+
+```typescript
+// Kysely
+const users = await db
+  .selectFrom('users')
+  .where('is_active', '=', true)
+  .selectAll()
+  .execute();
+
+// Drizzle
+const users = await db
+  .select()
+  .from(users)
+  .where(eq(users.isActive, true));
+```
+
+**Pros**: Full SQL control, composable  
+**Cons**: Verbose, no model abstraction
+
+### Hybrid (TypeORM)
+
+Supports both patterns:
+
+```typescript
+// Active Record
+const user = new User();
+user.name = 'John';
+await user.save();
+
+// Data Mapper (Repository)
+const user = userRepository.create({ name: 'John' });
+await userRepository.save(user);
+```
+
+---
+
+## 8. Relations
 
 ### litedbmodel - Auto Batch Loading
 
@@ -473,12 +680,14 @@ const post = await Post.query()
 |---------|-------------|--------|---------|---------|--------|
 | **Definition Style** | Getter methods | Schema relations | Decorators | No built-in | No built-in |
 | **Loading Strategy** | Auto batch | Eager (include) | Eager/Lazy | Manual joins | Manual joins |
-| **N+1 Prevention** | ✅ Automatic | ✅ Built-in | ⚠️ Manual | ❌ N/A | ❌ N/A |
+| **N+1 Prevention** | ✅ Auto | ⚠️ If included | ⚠️ Manual | ❌ N/A | ❌ N/A |
 | **Composite Keys** | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ✅ Full |
+
+*Note: "Auto" = batch loading happens transparently when accessing relations. "If included" = N+1 prevented only when `include` is specified; forgetting it causes N+1.*
 
 ---
 
-## 7. Extensibility
+## 9. Extensibility
 
 How each ORM allows developers to add cross-cutting concerns (logging, authentication, tenant isolation, soft deletes, etc.).
 
@@ -676,10 +885,10 @@ class User extends Model {
 
 | Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
 |---------|-------------|--------|---------|---------|--------|
-| **Mechanism** | Class Middleware | Client Extensions | Subscribers | ❌ None | Plugins |
-| **Scope** | All operations | Query/Model/Result | Entity lifecycle | N/A | Query/Result |
-| **Per-Request State** | ✅ AsyncLocalStorage | ⚠️ Manual | ⚠️ Via DI | N/A | ❌ None |
-| **Type-Safe** | ✅ Full | ✅ Generated | ✅ Decorators | N/A | ⚠️ AST level |
+| **Mechanism** | Class Middleware | Client Extensions | Subscribers | ⚠️ Manual wrappers | Plugins |
+| **Scope** | All operations | Query/Model/Result | Entity lifecycle | Manual wrappers | Query/Result |
+| **Per-Request State** | ✅ AsyncLocalStorage | ⚠️ Manual | ⚠️ Via DI | ⚠️ Manual | ❌ None |
+| **Type-Safe** | ✅ Full | ✅ Generated | ✅ Decorators | ⚠️ Manual | ⚠️ AST level |
 
 ### Use Cases
 
@@ -693,7 +902,60 @@ class User extends Model {
 
 ---
 
-## 8. Database Support
+## 10. SQL Quality & Debuggability
+
+### Parameter Count Comparison
+
+litedbmodel uses PostgreSQL's `ANY()` with array parameters, resulting in **fixed parameter counts** regardless of data size:
+
+> **Note:** `ANY()` and `unnest()` are PostgreSQL-specific features. On MySQL/SQLite, litedbmodel falls back to standard `IN (...)` syntax.
+
+```sql
+-- litedbmodel: Always 1 parameter (array)
+SELECT * FROM posts WHERE author_id = ANY($1::int[])
+
+-- Other ORMs: Variable parameters (grows with data)
+SELECT * FROM posts WHERE author_id IN ($1, $2, $3, ..., $1000)
+```
+
+| Feature | litedbmodel | Prisma | TypeORM | Kysely |
+|---------|-------------|--------|---------|--------|
+| **100 records** | **`$1`** | `$1`~`$100`* | `$1`~`$100`* | `$1`~`$100`* |
+| **1000 records** | **`$1`** | `$1`~`$1000`* | `$1`~`$1000`* | `$1`~`$1000`* |
+| **Parameter Style** | `ANY($1::int[])` | `IN ($1,...,$N)` | `IN ($1,...,$N)` | `IN ($1,...,$N)` |
+
+*\* Typical behavior. Some ORMs may use array parameters in certain configurations or drivers.*
+
+### Benefits of Fixed Parameters
+
+1. **SQL Log Analysis** - Same query pattern makes grep/analysis easier
+2. **Stable SQL Fingerprints** - Consistent SQL text makes monitoring, profiling, and prepared statements more predictable
+3. **Readability** - Understand query intent without expanding 1000 parameters
+
+### Composite Key Handling
+
+For composite keys, litedbmodel uses `unnest + JOIN`:
+
+```sql
+-- litedbmodel: Always 2 parameters (2 arrays)
+SELECT * FROM posts 
+JOIN unnest($1::int[], $2::int[]) AS _keys(tenant_id, user_id)
+ON posts.tenant_id = _keys.tenant_id AND posts.user_id = _keys.user_id
+
+-- Other ORMs (typical): Variable parameters for composite keys
+WHERE (tenant_id, user_id) IN (($1,$2),($3,$4),...,($1999,$2000))
+```
+
+### SQL Readability Comparison
+
+| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
+|---------|-------------|--------|---------|---------|--------|
+| **Readability** | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ | ⭐⭐⭐⭐ |
+| **Sample SQL** | `...WHERE id = ANY($1)` | `"public"."table"."col"...` | Hash aliases | LATERAL JOIN | Quoted identifiers |
+
+---
+
+## 11. Database Support
 
 | Database | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
 |----------|-------------|--------|---------|---------|--------|
@@ -710,158 +972,74 @@ npm install litedbmodel mysql2    # MySQL
 npm install litedbmodel better-sqlite3  # SQLite
 ```
 
+### DB Portability (When It Matters)
+
+**Note:** Most teams never switch databases in production. DB portability is valuable primarily in these scenarios:
+- Dev/Test uses SQLite, Production uses PostgreSQL
+- Multi-tenant SaaS with customer-specific DB requirements
+- Migration from legacy database planned
+
+| What Changes | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
+|--------------|-------------|--------|---------|---------|--------|
+| **Config** | 1 file | 1 file | 1 file | 1 file | 1 file |
+| **Imports** | ✅ None | 1 file (dialect) | ❌ All schemas | ✅ None | ✅ None |
+| **Schema** | ✅ None | ✅ None | ❌ All schemas | ✅ None | Regenerate |
+| **Build step** | ✅ None | ✅ None | ✅ None | ✅ None | ❌ Required |
+
+Drizzle requires different packages per DB (`pgTable` vs `mysqlTable` vs `sqliteTable`), meaning all schema files must be rewritten when switching databases. This is a design choice prioritizing DB-specific type safety over portability.
+
 ---
 
-## 9. Schema & Migrations
+## 12. Other Characteristics
 
-### litedbmodel
+| Feature | litedbmodel | Kysely | Drizzle | TypeORM | Prisma | MikroORM | Sequelize | Objection.js |
+|---------|-------------|--------|---------|---------|--------|----------|-----------|--------------|
+| **Install Size** | ~1MB | ~6MB | ~11MB | ~28MB | ~78MB | ~300KB | ~200KB | ~100KB |
+| **Learning Curve** | Low | Low | Low | High | Medium | Medium | Medium | Medium |
+| **Cold Start** | Fast | Fast | Fast | Medium | Slow (engine) | Fast | Medium | Fast |
+| **Query Overhead** | Minimal | Minimal | Minimal | Some | Binary protocol | Some | Some | Minimal |
+
+### ORM-Specific Notes
+
+- **Prisma** — Uses a Rust query engine binary, adding cold start latency (~1s on serverless)
+- **MikroORM** — Uses identity map for caching, reducing duplicate queries within a request
+- **Query Builders** (Kysely, Drizzle) — Minimal abstraction overhead, closest to raw SQL performance
+
+### Nested Relation Loading Strategies
+
+Different ORMs use different approaches for loading nested relations. See [Nested Benchmark](./BENCHMARK-NESTED.md) for detailed SQL analysis.
+
+**Drizzle — LATERAL JOIN (Single Query)**
+
+Uses PostgreSQL's `LATERAL JOIN` with `json_agg()` to fetch all nested data in one query:
+- ✅ 1 round-trip (fastest for network latency)
+- ❌ Complex SQL (difficult to debug), heavy DB-side JSON processing
+- ❌ Query must be pre-defined with all relations upfront
+
+**litedbmodel — Transparent Lazy Loading (Batch Queries)**
+
+Relations are statically defined but dynamically loaded only when accessed:
+- ✅ Same model works for list/detail views (no query duplication)
+- ✅ Only fetches what's accessed (efficient for list views)
+- ✅ Automatic N+1 prevention via batch loading
+- ❌ Multiple round-trips (2-3 queries for nested relations)
 
 ```typescript
-// Schema: TypeScript decorators
-@model('users')
-class UserModel extends DBModel {
-  @column() id?: number;
-  @column() name?: string;
-  @column() created_at?: Date;  // Auto-inferred from Date type
+// One model, multiple use cases
+const users = await User.find([], { limit: 100 });
+
+// List view: No additional queries
+for (const user of users) console.log(user.name);
+
+// Detail view: Batch loads all posts in ONE query
+for (const user of users) {
+  const posts = await user.posts;  // Not N+1!
 }
-
-// Migrations: Manual SQL files
-```
-
-### Prisma
-
-```prisma
-// Schema: .prisma file (DSL)
-model User {
-  id        Int      @id @default(autoincrement())
-  name      String
-  createdAt DateTime @default(now())
-}
-
-// Migrations: `prisma migrate dev` generates SQL
-```
-
-### TypeORM
-
-```typescript
-// Schema: Decorators
-@Entity()
-class User {
-  @PrimaryGeneratedColumn() id: number;
-  @Column() name: string;
-  @CreateDateColumn() createdAt: Date;
-}
-
-// Migrations: Auto-generated or manual
-typeorm migration:generate -n CreateUser
-```
-
-### Drizzle
-
-```typescript
-// Schema: TypeScript
-export const users = pgTable('users', {
-  id: serial('id').primaryKey(),
-  name: varchar('name', { length: 256 }),
-  createdAt: timestamp('created_at').defaultNow(),
-});
-
-// Migrations: drizzle-kit (optional)
-drizzle-kit generate:pg
-```
-
-### Migration Comparison
-
-| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
-|---------|-------------|--------|---------|---------|--------|
-| **Schema Format** | TS Decorators | Prisma DSL | TS Decorators | TS Schema | TS Interface |
-| **Migration Tool** | Manual | Built-in | Built-in | drizzle-kit | Manual |
-| **Auto-Generate** | ❌ | ✅ | ✅ | ✅ | ❌ |
-| **Reversible** | Manual | ✅ | ✅ | ⚠️ | Manual |
-
----
-
-## 10. Query Expressiveness
-
-### Complex Query Example
-
-Find active users who either:
-- Have admin role, OR
-- Have moderator role AND level >= 5
-
-```typescript
-// litedbmodel
-const users = await User.find([
-  [User.is_active, true],
-  User.or(
-    [[User.role, 'admin']],
-    [[User.role, 'moderator'], [`${User.level} >= ?`, 5]],
-  ),
-]);
-
-// Prisma
-const users = await prisma.user.findMany({
-  where: {
-    isActive: true,
-    OR: [
-      { role: 'admin' },
-      { role: 'moderator', level: { gte: 5 } },
-    ],
-  },
-});
-
-// TypeORM (QueryBuilder)
-const users = await userRepo.createQueryBuilder('u')
-  .where('u.is_active = :active', { active: true })
-  .andWhere(new Brackets(qb => {
-    qb.where('u.role = :admin', { admin: 'admin' })
-      .orWhere('u.role = :mod AND u.level >= :level', { mod: 'moderator', level: 5 });
-  }))
-  .getMany();
-
-// Kysely
-const users = await db.selectFrom('users')
-  .where('is_active', '=', true)
-  .where(eb => eb.or([
-    eb('role', '=', 'admin'),
-    eb.and([
-      eb('role', '=', 'moderator'),
-      eb('level', '>=', 5)
-    ])
-  ]))
-  .selectAll()
-  .execute();
-
-// Drizzle
-const users = await db.select().from(usersTable)
-  .where(and(
-    eq(usersTable.isActive, true),
-    or(
-      eq(usersTable.role, 'admin'),
-      and(eq(usersTable.role, 'moderator'), gte(usersTable.level, 5))
-    )
-  ));
 ```
 
 ---
 
-## 11. Performance Characteristics
-
-| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
-|---------|-------------|--------|---------|---------|--------|
-| **Cold Start** | Fast | Slow (engine) | Medium | Fast | Fast |
-| **Query Overhead** | Minimal | Binary protocol | Some | Minimal | Minimal |
-| **Connection Pooling** | Via pg pool | Built-in | Built-in | Via driver | Via driver |
-| **Batch Operations** | createMany | createMany | insert().values() | insert().values() | insertInto().values() |
-
-### Notes:
-- **Prisma** uses a Rust query engine binary, adding cold start latency
-- **MikroORM** uses identity map for caching, reducing duplicate queries
-- **Query Builders** (Kysely, Drizzle) have minimal overhead
-
----
-
-## 12. Performance Benchmark
+## 13. Performance Benchmark
 
 Benchmark comparing litedbmodel with Prisma, Kysely, Drizzle, and TypeORM on PostgreSQL.
 
@@ -969,57 +1147,6 @@ For large-scale nested queries (10K+ records), see [Nested Benchmark](./BENCHMAR
 > - Active Record pattern simplicity
 
 For detailed SQL analysis with 10,000+ records, see [Nested Benchmark](./BENCHMARK-NESTED.md).
-
----
-
-## 13. SQL Quality & Debuggability
-
-### Parameter Count Comparison
-
-litedbmodel uses PostgreSQL's `ANY()` with array parameters, resulting in **fixed parameter counts** regardless of data size:
-
-> **Note:** `ANY()` and `unnest()` are PostgreSQL-specific features. On MySQL/SQLite, litedbmodel falls back to standard `IN (...)` syntax.
-
-```sql
--- litedbmodel: Always 1 parameter (array)
-SELECT * FROM posts WHERE author_id = ANY($1::int[])
-
--- Other ORMs: Variable parameters (grows with data)
-SELECT * FROM posts WHERE author_id IN ($1, $2, $3, ..., $1000)
-```
-
-| Feature | litedbmodel | Prisma | TypeORM | Kysely |
-|---------|-------------|--------|---------|--------|
-| **100 records** | **`$1`** | `$1`~`$100` | `$1`~`$100` | `$1`~`$100` |
-| **1000 records** | **`$1`** | `$1`~`$1000` | `$1`~`$1000` | `$1`~`$1000` |
-| **Parameter Style** | `ANY($1::int[])` | `IN ($1,...,$N)` | `IN ($1,...,$N)` | `IN ($1,...,$N)` |
-
-### Benefits of Fixed Parameters
-
-1. **SQL Log Analysis** - Same query pattern makes grep/analysis easier
-2. **Query Plan Caching** - PostgreSQL caches plans by SQL text; fixed params = better cache hits
-3. **Readability** - Understand query intent without expanding 1000 parameters
-
-### Composite Key Handling
-
-For composite keys, litedbmodel uses `unnest + JOIN`:
-
-```sql
--- litedbmodel: Always 2 parameters (2 arrays)
-SELECT * FROM posts 
-JOIN unnest($1::int[], $2::int[]) AS _keys(tenant_id, user_id)
-ON posts.tenant_id = _keys.tenant_id AND posts.user_id = _keys.user_id
-
--- Other ORMs: 2000 parameters for 1000 composite keys
-WHERE (tenant_id, user_id) IN (($1,$2),($3,$4),...,($1999,$2000))
-```
-
-### SQL Readability Comparison
-
-| Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
-|---------|-------------|--------|---------|---------|--------|
-| **Readability** | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ | ⭐⭐⭐⭐ |
-| **Sample SQL** | `...WHERE id = ANY($1)` | `"public"."table"."col"...` | Hash aliases | LATERAL JOIN | Quoted identifiers |
 
 ---
 
