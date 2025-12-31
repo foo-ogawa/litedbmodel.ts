@@ -306,7 +306,7 @@ const user = await DBModel.transaction(async () => {
 // Auto-retry on deadlock
 await DBModel.transaction(
   async () => { /* ... */ },
-  { retry_on_error: true, retry_limit: 3 }
+  { retryOnError: true, retryLimit: 3 }
 );
 
 // Preview mode (rollback after execution)

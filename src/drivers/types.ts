@@ -24,7 +24,7 @@ export interface DBConfig {
   /** Connection timeout in seconds */
   timeout?: number;
   /** Query timeout in seconds */
-  query_timeout?: number;
+  queryTimeout?: number;
 }
 
 /**

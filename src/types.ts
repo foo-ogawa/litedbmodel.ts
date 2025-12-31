@@ -27,8 +27,8 @@ export interface DBConfig {
   password?: string;
   charset?: string;
   timeout?: number;
-  query_timeout?: number;
-  search_path?: string;
+  queryTimeout?: number;
+  searchPath?: string;
   /** Pool max connections */
   max?: number;
 }
@@ -44,9 +44,9 @@ export interface SelectOptions {
   offset?: number;
   select?: string;
   group?: string;
-  table_name?: string;
+  tableName?: string;
   append?: string;
-  for_update?: boolean;
+  forUpdate?: boolean;
 }
 
 /**
@@ -54,7 +54,7 @@ export interface SelectOptions {
  * @typeParam Model - The model class for type-safe column constraints
  */
 export interface InsertOptions<Model = unknown> {
-  table_name?: string;
+  tableName?: string;
   returning?: string;
   /** @deprecated Use onConflict instead */
   conflict?: string;
@@ -88,19 +88,19 @@ export interface InsertOptions<Model = unknown> {
 }
 
 export interface UpdateOptions {
-  table_name?: string;
+  tableName?: string;
   returning?: string;
 }
 
 export interface DeleteOptions {
-  table_name?: string;
+  tableName?: string;
   returning?: string;
 }
 
 export interface TransactionOptions {
-  retry_on_error?: boolean;
-  retry_limit?: number;
-  retry_duration?: number;
+  retryOnError?: boolean;
+  retryLimit?: number;
+  retryDuration?: number;
   /** If true, always rollback instead of commit (useful for preview/dry-run) */
   rollbackOnly?: boolean;
 }

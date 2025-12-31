@@ -59,7 +59,7 @@ function getPool(config: DBConfig): Pool {
       password: config.password,
       max: config.max || 10,
       connectionTimeoutMillis: (config.timeout || 30) * 1000,
-      query_timeout: (config.query_timeout || 30) * 1000,
+      query_timeout: (config.queryTimeout || 30) * 1000,
     });
     pools.set(key, pool);
   }

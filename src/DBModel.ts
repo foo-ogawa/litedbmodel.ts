@@ -268,7 +268,7 @@ export abstract class DBModel {
     options: SelectOptions = {}
   ): { sql: string; params: unknown[] } {
     const params: unknown[] = [];
-    const tableName = options.table_name || this.getTableName();
+    const tableName = options.tableName || this.getTableName();
     const selectCols = options.select || this.SELECT_COLUMN;
 
     const normalizedCond = normalizeConditions(conditions);
@@ -300,7 +300,7 @@ export abstract class DBModel {
       sql += ` OFFSET ${options.offset}`;
     }
 
-    if (options.for_update) {
+    if (options.forUpdate) {
       sql += ' FOR UPDATE';
     }
 
@@ -331,10 +331,10 @@ export abstract class DBModel {
   private static async _count<T extends typeof DBModel>(
     this: T,
     conditions: ConditionObject,
-    options: { table_name?: string } = {}
+    options: { tableName?: string } = {}
   ): Promise<number> {
     const params: unknown[] = [];
-    const tableName = options.table_name || this.getTableName();
+    const tableName = options.tableName || this.getTableName();
 
     const normalizedCond = normalizeConditions(conditions);
     if (this.FIND_FILTER) {
@@ -362,7 +362,7 @@ export abstract class DBModel {
     values: Record<string, unknown> | Record<string, unknown>[],
     options: InsertOptions<unknown> = {}
   ): Promise<InstanceType<T>[]> {
-    const tableName = options.table_name || this.getUpdateTableName();
+    const tableName = options.tableName || this.getUpdateTableName();
     const rawRecords = Array.isArray(values) ? values : [values];
 
     if (rawRecords.length === 0) {
@@ -441,7 +441,7 @@ export abstract class DBModel {
     values: Record<string, unknown>,
     options: UpdateOptions = {}
   ): Promise<InstanceType<T>[]> {
-    const tableName = options.table_name || this.getUpdateTableName();
+    const tableName = options.tableName || this.getUpdateTableName();
     const params: unknown[] = [];
 
     // Apply serialization based on column metadata
@@ -488,7 +488,7 @@ export abstract class DBModel {
     conditions: ConditionObject,
     options: DeleteOptions = {}
   ): Promise<InstanceType<T>[]> {
-    const tableName = options.table_name || this.getUpdateTableName();
+    const tableName = options.tableName || this.getUpdateTableName();
     const params: unknown[] = [];
 
     const normalizedCond = normalizeConditions(conditions);
@@ -1564,7 +1564,7 @@ export abstract class DBModel {
    * // Transaction with options
    * await DBModel.transaction(
    *   async () => { ... },
-   *   { retry_limit: 5, retry_duration: 100 }
+   *   { retryLimit: 5, retryDuration: 100 }
    * );
    * ```
    */
@@ -1581,9 +1581,9 @@ export abstract class DBModel {
     // Get handler
     const handler = this.getHandler();
 
-    const retryOnError = options.retry_on_error ?? true;
-    const retryLimit = options.retry_limit ?? 3;
-    const retryDuration = options.retry_duration ?? 200;
+    const retryOnError = options.retryOnError ?? true;
+    const retryLimit = options.retryLimit ?? 3;
+    const retryDuration = options.retryDuration ?? 200;
     const rollbackOnly = options.rollbackOnly ?? false;
 
     let attempt = 0;
@@ -1774,7 +1774,7 @@ export abstract class DBModel {
 
     const options: SelectOptions = { limit: 1 };
     if (forUpdate) {
-      options.for_update = true;
+      options.forUpdate = true;
     }
 
     // Convert pkey to condition tuples
