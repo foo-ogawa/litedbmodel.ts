@@ -12,6 +12,8 @@ A lightweight TypeScript ORM for PostgreSQL, MySQL, and SQLite with Active Recor
 - **Subquery Support** — IN/NOT IN/EXISTS/NOT EXISTS with correlated subqueries
 - **Declarative SKIP** — Conditional fields without if-statements
 - **Automatic N+1 Prevention** — Batch loading for lazy relations
+- **Fixed SQL Parameters** — `ANY()` keeps param count constant (PostgreSQL; better plan caching & log analysis)
+- **Readable SQL** — Simple queries without hash aliases or deep nesting
 - **Middleware** — Cross-cutting concerns (logging, auth, tenant isolation)
 - **Multi-Database** — PostgreSQL, MySQL, SQLite support
 
@@ -395,7 +397,11 @@ const users = await User.query(
 | **Pattern** | Active Record | Query Builder | Query Builder | Both | Data Mapper |
 | **SKIP Pattern** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Auto N+1 Prevention** | ✅ | ❌ | ❌ | Eager only | Include |
+| **Fixed SQL Params** | ✅ `ANY()`* | ❌ `IN(...)` | ✅ LATERAL | ❌ `IN(...)` | ❌ `IN(...)` |
+| **SQL Readability** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ |
 | **Middleware** | ✅ | ❌ | ❌ | Subscribers | ❌ |
+
+*\* PostgreSQL only. Falls back to `IN (...)` on MySQL/SQLite.*
 
 ### Performance (PostgreSQL, Median of 1,000 iterations)
 
@@ -413,7 +419,7 @@ Based on [Prisma orm-benchmarks](https://github.com/prisma/orm-benchmarks) metho
 | Update | **0.44ms** 🏆 | 0.45ms | 0.47ms | 0.48ms | 0.71ms |
 | Delete | **0.96ms** 🏆 | 1.00ms | 1.13ms | 1.85ms | 1.35ms |
 
-> **litedbmodel is fastest in 7 out of 14 operations**, especially in nested queries, filtering, and CRUD operations. See [COMPARISON.md](./COMPARISON.md) for full benchmark results.
+> **litedbmodel is fastest in 7 out of 14 operations**, especially in nested queries, filtering, and CRUD operations. See [COMPARISON.md](./docs/COMPARISON.md) for full benchmark results and [Nested Benchmark](./docs/BENCHMARK-NESTED.md) for detailed SQL analysis.
 
 ### Choose litedbmodel when:
 
@@ -421,6 +427,7 @@ Based on [Prisma orm-benchmarks](https://github.com/prisma/orm-benchmarks) metho
 - You prefer **Active Record** pattern
 - You want **declarative** conditional fields (SKIP)
 - You need **automatic N+1 prevention**
+- You want **readable SQL** with fixed parameter counts (easier log analysis)
 - Performance matters (1.4x - 3.3x faster than Prisma)
 
 ### Choose Prisma when:

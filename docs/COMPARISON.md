@@ -16,8 +16,12 @@ A detailed comparison of litedbmodel with popular TypeScript/JavaScript ORMs.
 | **Query Style** | Tuple array | Fluent | Fluent | QueryBuilder/Find | Fluent | QueryBuilder | Fluent | Fluent |
 | **N+1 Prevention** | ✅ Auto | ❌ Manual | ❌ Manual | ⚠️ Manual | ✅ Include | ✅ Identity Map | ⚠️ Include | ⚠️ Graph |
 | **Composite Keys** | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ✅ Full | ⚠️ Partial | ✅ Full |
+| **Fixed SQL Params** | ✅ `ANY()`* | ❌ | ✅ LATERAL | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **SQL Readability** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
 | **Install Size** | ~1MB | ~6MB | ~11MB | ~28MB | ~78MB | ~300KB | ~200KB | ~100KB |
 | **Learning Curve** | Low | Low | Low | High | Medium | Medium | Medium | Medium |
+
+*\* PostgreSQL only. Falls back to `IN (...)` on MySQL/SQLite.*
 
 ## Detailed Analysis
 
@@ -623,7 +627,7 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
 
 ### Visual Comparison
 
-![ORM Benchmark Chart](./docs/benchmark-chart.svg)
+![ORM Benchmark Chart](../docs/benchmark-chart.svg)
 
 ### Results Table (Median of 1,000 iterations)
 
@@ -643,6 +647,20 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
 | Upsert | 0.50ms | **0.46ms** | 0.49ms | 0.58ms | 2.01ms |
 | Nested upsert | 0.99ms | **0.97ms** | 1.06ms | **0.97ms** | 2.27ms |
 | Delete | **0.96ms** 🏆 | 1.00ms | 1.13ms | 1.85ms | 1.35ms |
+
+### Deep Nested Relations (10,000 records)
+
+Separate benchmark for large-scale nested relation queries (100 users → 1000 posts → 10000 comments).  
+**5 rounds × 20 iterations = 100 total per ORM**
+
+![Deep Nested Benchmark Chart](./benchmark-nested-chart.svg)
+
+| Operation | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
+|-----------|-------------|--------|---------|---------|--------|
+| Single Key (10K) | 28.05ms | 28.84ms | **23.23ms** 🏆 | 32.50ms | 81.73ms |
+| Composite Key (10K) | 24.63ms | **13.19ms** 🏆 | 17.84ms | 35.52ms | 101.94ms |
+
+> See [Nested Benchmark](./BENCHMARK-NESTED.md) for detailed SQL analysis.
 
 ### Analysis
 
@@ -670,8 +688,15 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
 5. **Prisma** - Convenience over speed
    - **Slowest in most operations** (1.4x - 4.4x slower)
    - Nested find all: 7.39ms vs litedbmodel's 2.31ms (3.2x slower)
-   - Upsert: 4.4x slower than Kysely
    - Trade-off: Rich DX features (Prisma Studio, migrations, etc.)
+
+### Deep Nested Analysis
+
+For large-scale nested queries (10K+ records), see [Nested Benchmark](./BENCHMARK-NESTED.md):
+
+- **Single Key:** Drizzle wins with LATERAL JOIN (23ms), litedbmodel close (28ms), Prisma slowest (82ms)
+- **Composite Key:** Kysely wins (13ms), litedbmodel good (25ms), Prisma slowest (102ms)
+- **litedbmodel advantage:** Readable SQL with fixed parameter count (ideal for log analysis)
 
 
 ### Conclusion
@@ -692,9 +717,66 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
 > - Middleware support for cross-cutting concerns
 > - Active Record pattern simplicity
 
+For detailed SQL analysis with 10,000+ records, see [Nested Benchmark](./BENCHMARK-NESTED.md).
+
 ---
 
-## 11. Use Case Recommendations
+## 11. SQL Quality & Debuggability
+
+### Parameter Count Comparison
+
+litedbmodel uses PostgreSQL's `ANY()` with array parameters, resulting in **fixed parameter counts** regardless of data size:
+
+> **Note:** `ANY()` and `unnest()` are PostgreSQL-specific features. On MySQL/SQLite, litedbmodel falls back to standard `IN (...)` syntax.
+
+```sql
+-- litedbmodel: Always 1 parameter (array)
+SELECT * FROM posts WHERE author_id = ANY($1::int[])
+
+-- Other ORMs: Variable parameters (grows with data)
+SELECT * FROM posts WHERE author_id IN ($1, $2, $3, ..., $1000)
+```
+
+| ORM | 100 records | 1000 records | Parameter Style |
+|-----|-------------|--------------|-----------------|
+| **litedbmodel** | **`$1`** | **`$1`** | `ANY($1::int[])` |
+| Prisma | `$1`~`$100` | `$1`~`$1000` | `IN ($1,$2,...,$N)` |
+| Kysely | `$1`~`$100` | `$1`~`$1000` | `IN ($1,$2,...,$N)` |
+| TypeORM | `$1`~`$100` | `$1`~`$1000` | `IN ($1,$2,...,$N)` |
+
+### Benefits of Fixed Parameters
+
+1. **SQL Log Analysis** - Same query pattern makes grep/analysis easier
+2. **Query Plan Caching** - PostgreSQL caches plans by SQL text; fixed params = better cache hits
+3. **Readability** - Understand query intent without expanding 1000 parameters
+
+### Composite Key Handling
+
+For composite keys, litedbmodel uses `unnest + JOIN`:
+
+```sql
+-- litedbmodel: Always 2 parameters (2 arrays)
+SELECT * FROM posts 
+JOIN unnest($1::int[], $2::int[]) AS _keys(tenant_id, user_id)
+ON posts.tenant_id = _keys.tenant_id AND posts.user_id = _keys.user_id
+
+-- Other ORMs: 2000 parameters for 1000 composite keys
+WHERE (tenant_id, user_id) IN (($1,$2),($3,$4),...,($1999,$2000))
+```
+
+### SQL Readability Comparison
+
+| ORM | Sample SQL | Readability |
+|-----|------------|-------------|
+| **litedbmodel** | `SELECT * FROM posts WHERE author_id = ANY($1::int[])` | ⭐⭐⭐⭐⭐ |
+| Kysely | `select * from "posts" where "author_id" in ($1, $2, ...)` | ⭐⭐⭐⭐ |
+| Drizzle | `select ... left join lateral (select json_agg(...))` | ⭐⭐ |
+| TypeORM | `SELECT "44e9b3e14e8c506ab5696ff82803c1017462faac"."id"...` | ⭐ |
+| Prisma | `SELECT "public"."benchmark_posts"."id", "public"."benchmark_posts"."title"...` | ⭐⭐ |
+
+---
+
+## 12. Use Case Recommendations
 
 ### Choose litedbmodel when:
 
@@ -706,6 +788,8 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
 - ✅ **Cross-cutting concerns** (middleware for logging, auth, metrics)
 - ✅ **Auto N+1 prevention** without explicit includes/joins
 - ✅ **Composite key relations** (multi-tenant systems)
+- ✅ **SQL log analysis** (fixed param count = consistent patterns)
+- ✅ **Readable SQL output** for debugging and performance tuning
 
 ### Choose Prisma when:
 
@@ -756,7 +840,7 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
 
 ---
 
-## 12. Summary
+## 13. Summary
 
 ### litedbmodel's Characteristics
 
@@ -766,6 +850,8 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
 4. **Middleware**: Cross-cutting concern support (logging, auth, metrics)
 5. **Auto N+1 Prevention**: Batch loading enabled automatically for multiple records
 6. **Composite Key Support**: Full support for composite keys in relations
+7. **Fixed SQL Parameters**: `ANY()` and `unnest()` keep parameter count constant
+8. **Readable SQL**: Simple, debuggable queries (no hash aliases or deep nesting)
 
 ### Trade-offs
 
@@ -777,6 +863,8 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
 | Middleware support | Less documentation |
 | Auto N+1 prevention | |
 | Composite key relations | |
+| Fixed SQL params (log analysis) | |
+| Readable SQL output | |
 
 ### When NOT to use litedbmodel
 

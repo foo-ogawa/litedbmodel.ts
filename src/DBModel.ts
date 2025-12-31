@@ -119,6 +119,14 @@ export abstract class DBModel {
   }
 
   /**
+   * Get the database driver type.
+   * Returns 'postgres', 'mysql', or 'sqlite'.
+   */
+  static getDriverType(): 'postgres' | 'mysql' | 'sqlite' {
+    return getDBHandler().getDriverType();
+  }
+
+  /**
    * Get a DBHandler instance for this model
    * If in a transaction, uses the transaction connection
    */
@@ -280,6 +288,11 @@ export abstract class DBModel {
     const tableName = options.tableName || this.getTableName();
     const selectCols = options.select || this.SELECT_COLUMN;
 
+    // Handle JOIN params (prepended to condition params)
+    if (options.joinParams && options.joinParams.length > 0) {
+      params.push(...options.joinParams);
+    }
+
     const normalizedCond = normalizeConditions(conditions);
     if (this.FIND_FILTER) {
       const filterCondition = condsToRecord(this.FIND_FILTER) as ConditionObject;
@@ -289,6 +302,12 @@ export abstract class DBModel {
     const whereClause = normalizedCond.compile(params);
 
     let sql = `SELECT ${selectCols} FROM ${tableName}`;
+    
+    // Add JOIN clause if provided
+    if (options.join) {
+      sql += ` ${options.join}`;
+    }
+    
     if (whereClause) {
       sql += ` WHERE ${whereClause}`;
     }

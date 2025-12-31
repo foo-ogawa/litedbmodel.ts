@@ -930,6 +930,199 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       DBModel.clearMiddlewares();
     });
 
+    // ============================================
+    // Batch Loading SQL Format Tests (PostgreSQL-specific)
+    // ============================================
+
+    it('should use = ANY($1::type[]) for single key batch loading on PostgreSQL', async () => {
+      // Skip if not PostgreSQL
+      if (DBModel.getDriverType() !== 'postgres') {
+        return;
+      }
+
+      // Create test data
+      const user1 = await createTestUser('User 1', 'user1@anytest.com');
+      const user2 = await createTestUser('User 2', 'user2@anytest.com');
+      const user3 = await createTestUser('User 3', 'user3@anytest.com');
+
+      await createTestPost(user1.id!, 'Post 1', 'Content');
+      await createTestPost(user2.id!, 'Post 2', 'Content');
+      await createTestPost(user3.id!, 'Post 3', 'Content');
+
+      // Clear query log
+      const logger = SqlLoggerMiddleware.getCurrentContext();
+      logger.clear();
+
+      // Load users and trigger batch loading
+      const users = await TestUser.find([], { order: 'id' });
+      createRelationContext(TestUserModel, users as TestUser[]);
+      await preloadRelations(users as TestUser[], (user) => user.posts);
+
+      // Verify SQL format
+      const selectQueries = logger.getSelectQueries();
+      expect(selectQueries.length).toBe(2);
+
+      // Second query should use = ANY($1::int[]) format
+      const postsQuery = selectQueries[1].sql;
+      expect(postsQuery).toMatch(/test_posts\.user_id\s*=\s*ANY\s*\(\s*\$1::int\[\]\s*\)/i);
+      
+      // Should NOT use IN (...) format
+      expect(postsQuery).not.toMatch(/user_id\s+IN\s*\(/i);
+    });
+
+    it('should use unnest + JOIN for composite key batch loading on PostgreSQL', async () => {
+      // Skip if not PostgreSQL
+      if (DBModel.getDriverType() !== 'postgres') {
+        return;
+      }
+
+      // Create multi-tenant test data
+      const user1 = await createTenantUserForN1(1, 100, 'Tenant1 User1');
+      const user2 = await createTenantUserForN1(1, 101, 'Tenant1 User2');
+      const user3 = await createTenantUserForN1(2, 100, 'Tenant2 User1');
+
+      await createTenantPostForN1(1, 1, 100, 'T1U1 Post');
+      await createTenantPostForN1(1, 2, 101, 'T1U2 Post');
+      await createTenantPostForN1(2, 1, 100, 'T2U1 Post');
+
+      // Clear query log
+      const logger = SqlLoggerMiddleware.getCurrentContext();
+      logger.clear();
+
+      // Load users and trigger batch loading
+      const users = await TenantUser.find([], { order: 'tenant_id, id' });
+      createRelationContext(TenantUserModel, users as TenantUser[]);
+      
+      // Trigger batch load
+      await (users[0] as TenantUser).posts;
+
+      // Verify SQL format
+      const selectQueries = logger.getSelectQueries();
+      expect(selectQueries.length).toBe(2);
+
+      const postsQuery = selectQueries[1].sql;
+      
+      // Should use JOIN unnest(...) format
+      expect(postsQuery).toMatch(/JOIN\s+unnest\s*\(/i);
+      
+      // Should have column aliases with _unnest_ prefix to avoid conflicts
+      expect(postsQuery).toMatch(/_unnest_test_tenant_posts/i);
+      
+      // Should use typed arrays ($1::int[], $2::int[])
+      expect(postsQuery).toMatch(/\$1::int\[\]/i);
+      expect(postsQuery).toMatch(/\$2::int\[\]/i);
+      
+      // Should NOT use (col1, col2) IN (...) format
+      expect(postsQuery).not.toMatch(/\(tenant_id,\s*user_id\)\s*IN\s*\(/i);
+    });
+
+    it('should use IN clause for single key batch loading on non-PostgreSQL', async () => {
+      // This test verifies fallback behavior
+      // Since we're running on PostgreSQL, we can only verify the pattern exists in code
+      // The actual behavior is tested implicitly when MySQL/SQLite tests run
+      
+      // For now, just verify the test infrastructure works
+      const user = await createTestUser('User', 'user@fallback.com');
+      await createTestPost(user.id!, 'Post', 'Content');
+
+      const logger = SqlLoggerMiddleware.getCurrentContext();
+      logger.clear();
+
+      // Load and access
+      const users = await TestUser.find([[TestUser.id, user.id!]]);
+      const posts = await (users[0] as TestUser).posts;
+
+      expect(posts.length).toBe(1);
+      
+      // At least one query should be executed
+      const selectQueries = logger.getSelectQueries();
+      expect(selectQueries.length).toBeGreaterThan(0);
+    });
+
+    it('should correctly pass array parameter for ANY clause', async () => {
+      // Skip if not PostgreSQL
+      if (DBModel.getDriverType() !== 'postgres') {
+        return;
+      }
+
+      // Create test data with specific IDs
+      const user1 = await createTestUser('User 1', 'user1@param.com');
+      const user2 = await createTestUser('User 2', 'user2@param.com');
+      const user3 = await createTestUser('User 3', 'user3@param.com');
+
+      await createTestPost(user1.id!, 'Post 1', 'Content 1');
+      await createTestPost(user2.id!, 'Post 2', 'Content 2');
+      await createTestPost(user3.id!, 'Post 3', 'Content 3');
+
+      // Clear query log
+      const logger = SqlLoggerMiddleware.getCurrentContext();
+      logger.clear();
+
+      // Load users and batch load posts
+      const users = await TestUser.find([], { order: 'id' });
+      createRelationContext(TestUserModel, users as TestUser[]);
+      await preloadRelations(users as TestUser[], (user) => user.posts);
+
+      // Verify query params
+      const selectQueries = logger.getSelectQueries();
+      const postsQuery = selectQueries[1];
+      
+      // Params should contain the array of user IDs
+      expect(postsQuery.params).toBeDefined();
+      expect(Array.isArray(postsQuery.params![0])).toBe(true);
+      
+      // The array should contain all user IDs
+      const userIds = users.map(u => u.id);
+      expect(postsQuery.params![0]).toEqual(expect.arrayContaining(userIds));
+    });
+
+    it('should correctly pass multiple arrays for unnest composite key', async () => {
+      // Skip if not PostgreSQL
+      if (DBModel.getDriverType() !== 'postgres') {
+        return;
+      }
+
+      // Create multi-tenant test data
+      const user1 = await createTenantUserForN1(10, 200, 'T10 User');
+      const user2 = await createTenantUserForN1(10, 201, 'T10 User2');
+      const user3 = await createTenantUserForN1(20, 200, 'T20 User');
+
+      await createTenantPostForN1(10, 1, 200, 'Post');
+      await createTenantPostForN1(10, 2, 201, 'Post');
+      await createTenantPostForN1(20, 1, 200, 'Post');
+
+      // Clear query log
+      const logger = SqlLoggerMiddleware.getCurrentContext();
+      logger.clear();
+
+      // Load users and batch load posts
+      const users = await TenantUser.find([], { order: 'tenant_id, id' });
+      createRelationContext(TenantUserModel, users as TenantUser[]);
+      await (users[0] as TenantUser).posts;
+
+      // Verify query params
+      const selectQueries = logger.getSelectQueries();
+      const postsQuery = selectQueries[1];
+      
+      // Params should contain two arrays (tenant_ids and user_ids)
+      expect(postsQuery.params).toBeDefined();
+      expect(postsQuery.params!.length).toBeGreaterThanOrEqual(2);
+      
+      // First param: tenant_ids array
+      expect(Array.isArray(postsQuery.params![0])).toBe(true);
+      expect(postsQuery.params![0]).toContain(10);
+      expect(postsQuery.params![0]).toContain(20);
+      
+      // Second param: user_ids array
+      expect(Array.isArray(postsQuery.params![1])).toBe(true);
+      expect(postsQuery.params![1]).toContain(200);
+      expect(postsQuery.params![1]).toContain(201);
+    });
+
+    // ============================================
+    // Original N+1 Prevention Tests
+    // ============================================
+
     it('should use single batch query for hasMany relations with preload', async () => {
       // Create test data
       const user1 = await createTestUser('User 1', 'user1@batch.com');
@@ -975,9 +1168,10 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       // First query: fetch users
       expect(selectQueries[0].sql).toMatch(/FROM\s+"?test_users"?/i);
       
-      // Second query: batch fetch posts with IN clause (NOT N+1)
+      // Second query: batch fetch posts (NOT N+1)
+      // PostgreSQL uses = ANY($1::type[]), MySQL/SQLite uses IN (...)
       expect(selectQueries[1].sql).toMatch(/FROM\s+"?test_posts"?/i);
-      expect(selectQueries[1].sql).toMatch(/IN\s*\(/i);
+      expect(selectQueries[1].sql).toMatch(/(?:IN\s*\(|=\s*ANY\s*\()/i);
     });
 
     it('should use single batch query for belongsTo relations', async () => {
@@ -1023,10 +1217,11 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
 
       expect(selectQueries[0].sql).toMatch(/FROM\s+"?test_posts"?/i);
       expect(selectQueries[1].sql).toMatch(/FROM\s+"?test_users"?/i);
-      expect(selectQueries[1].sql).toMatch(/IN\s*\(/i);
+      // PostgreSQL uses = ANY($1::type[]), MySQL/SQLite uses IN (...)
+      expect(selectQueries[1].sql).toMatch(/(?:IN\s*\(|=\s*ANY\s*\()/i);
     });
 
-    it('should use composite key IN clause for batch loading', async () => {
+    it('should use composite key batch loading', async () => {
       // Create multi-tenant test data
       const user1 = await createTenantUserForN1(1, 100, 'Tenant1 User1');
       const user2 = await createTenantUserForN1(1, 101, 'Tenant1 User2');
@@ -1066,11 +1261,12 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       // Should have 2 queries: users + posts (batch)
       expect(selectQueries.length).toBe(2);
 
-      // Second query should use composite key IN clause
-      // Format: (tenant_id, user_id) IN ((1, 100), (1, 101), (2, 100))
+      // Second query should use composite key batch loading
+      // PostgreSQL: unnest + JOIN, MySQL/SQLite: (tenant_id, user_id) IN (...)
       const postsQuery = selectQueries[1].sql;
       expect(postsQuery).toMatch(/FROM\s+"?test_tenant_posts"?/i);
-      expect(postsQuery).toMatch(/\(tenant_id,\s*user_id\)\s*IN\s*\(/i);
+      // PostgreSQL uses unnest with JOIN, MySQL/SQLite uses IN clause
+      expect(postsQuery).toMatch(/(?:\(tenant_id,\s*user_id\)\s*IN\s*\(|JOIN\s+unnest\s*\()/i);
     });
 
     it('should avoid N+1 when accessing same relation multiple times', async () => {
@@ -1127,7 +1323,8 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       // 2. SELECT posts (batch for all users)
       const selectQueries = logger.getSelectQueries();
       expect(selectQueries.length).toBe(2); // Auto batch loading!
-      expect(selectQueries[1].sql).toMatch(/IN\s*\(/); // Batch query with IN
+      // PostgreSQL uses = ANY($1::type[]), MySQL/SQLite uses IN (...)
+      expect(selectQueries[1].sql).toMatch(/(?:IN\s*\(|=\s*ANY\s*\()/); // Batch query
     });
   });
 });

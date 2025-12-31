@@ -4,6 +4,10 @@
  * Provides efficient batch loading of relations to avoid N+1 query problems.
  * Records in the same context share relation cache for optimal performance.
  *
+ * Batch loading strategies by driver:
+ * - PostgreSQL: Uses `= ANY($1::type[])` for single keys, `unnest + JOIN` for composite keys
+ * - MySQL/SQLite: Uses traditional `IN (?, ?, ...)` clause
+ *
  * Usage:
  * ```typescript
  * class Post extends DBModel {
@@ -33,6 +37,30 @@
 import { DBModel } from './DBModel';
 import { type ConditionObject } from './DBConditions';
 import { type ColumnOf, type OrderSpec, type Conds, orderToString, condsToRecord, createColumn } from './Column';
+
+// ============================================
+// Type Inference Helpers
+// ============================================
+
+/**
+ * Infer PostgreSQL array type from sample values
+ */
+function inferPgArrayType(values: unknown[]): string {
+  if (values.length === 0) return 'text[]';
+  
+  const sample = values[0];
+  if (typeof sample === 'number') {
+    // Check if all are integers
+    if (values.every(v => Number.isInteger(v))) {
+      return 'int[]';
+    }
+    return 'numeric[]';
+  }
+  if (typeof sample === 'bigint') return 'bigint[]';
+  if (typeof sample === 'boolean') return 'boolean[]';
+  if (sample instanceof Date) return 'timestamp[]';
+  return 'text[]';
+}
 
 // ============================================
 // Relation Option Types
@@ -204,13 +232,11 @@ export class LazyRelationContext {
     
     let mapKey: string;
     if (isCompositeKey) {
-      // Composite key: build JSON key from source values
+      // Composite key: join with NUL separator (faster than JSON.stringify)
       const sourceKeys = config.sourceKeys || [config.sourceKey || this.inferSourceKey(relationType, config)];
-      const values: unknown[] = [];
-      for (const key of sourceKeys) {
-        values.push((record as unknown as Record<string, unknown>)[key]);
-      }
-      mapKey = JSON.stringify(values);
+      mapKey = sourceKeys
+        .map(key => (record as unknown as Record<string, unknown>)[key])
+        .join('\x00');
     } else {
       const sourceKeyValue = this.getSourceKeyValue(record, relationType, config);
       mapKey = String(sourceKeyValue);
@@ -256,15 +282,18 @@ export class LazyRelationContext {
   }
 
   /**
-   * Batch load relation for all records
+   * Batch load relation for all records.
+   * Uses optimized loading strategy based on database driver:
+   * - PostgreSQL: `= ANY($1::type[])` for single keys, `unnest + JOIN` for composite keys
+   * - MySQL/SQLite: Traditional `IN (?, ?, ...)` clause
    */
   private async batchLoadRelation(
     relationType: RelationType,
     config: RelationConfig
   ): Promise<void> {
     const TargetClass = config.targetClass;
-    const isCompositeKey = (config.targetKeys && config.targetKeys.length > 0) || 
-                           (config.sourceKeys && config.sourceKeys.length > 0);
+    const isCompositeKey = (config.targetKeys && config.targetKeys.length > 1) || 
+                           (config.sourceKeys && config.sourceKeys.length > 1);
 
     // Get all source key values from records
     const sourceKeyValues: unknown[] = [];
@@ -291,15 +320,16 @@ export class LazyRelationContext {
       return;
     }
 
+    const driverType = DBModel.getDriverType();
     let results: DBModel[];
     let targetKeys: string[];
 
     if (isCompositeKey && compositeKeyValues.length > 0) {
-      // Composite key: use (col1, col2) IN ((v1, v2), (v3, v4), ...) for batch query
+      // Composite key batch loading
       targetKeys = config.targetKeys || [this.inferTargetKey(relationType)];
       const sourceKeys = config.sourceKeys || [config.sourceKey || 'id'];
       
-      // Build unique tuples for IN clause
+      // Build unique tuples
       const uniqueTuples = this.getUniqueCompositeKeyTuples(compositeKeyValues, sourceKeys);
       
       if (uniqueTuples.length === 0) {
@@ -308,28 +338,28 @@ export class LazyRelationContext {
         return;
       }
 
-      // Build conditions with composite key IN clause: [[col1, col2], [[v1, v2], ...]]
-      const baseConds = Object.entries(config.conditions || {}).map(([k, v]) => [k, v] as [string, unknown]);
-      // Convert string keys to Column objects for the IN clause
-      const targetColumns = targetKeys.map(k => createColumn(k, TargetClass.TABLE_NAME, TargetClass.name));
-      const condTuples = [
-        ...baseConds,
-        [targetColumns, uniqueTuples],  // Composite key IN condition with Column[]
-      ];
-      const options = config.order ? { order: config.order } : undefined;
-      results = await TargetClass.find(condTuples as unknown as Conds, options);
+      if (driverType === 'postgres') {
+        // PostgreSQL: Use unnest + JOIN for composite keys
+        results = await this.batchLoadWithUnnestJoin(TargetClass, targetKeys, uniqueTuples, config);
+      } else {
+        // MySQL/SQLite: Use traditional (col1, col2) IN ((v1, v2), ...) clause
+        results = await this.batchLoadWithCompositeIn(TargetClass, targetKeys, uniqueTuples, config);
+      }
     } else {
-      // Simple key: use IN query
+      // Single key batch loading
       const targetKey = config.targetKey || this.inferTargetKey(relationType);
       targetKeys = [targetKey];
-      const conditions: ConditionObject = {
-        ...config.conditions,
-        [targetKey]: sourceKeyValues,
-      };
-
-      const condTuples: [string, unknown][] = Object.entries(conditions).map(([k, v]) => [k, v]);
-      const options = config.order ? { order: config.order } : undefined;
-      results = await TargetClass.find(condTuples as unknown as Conds, options);
+      
+      // Remove duplicates
+      const uniqueValues = [...new Set(sourceKeyValues.map(v => JSON.stringify(v)))].map(v => JSON.parse(v));
+      
+      if (driverType === 'postgres') {
+        // PostgreSQL: Use = ANY($1::type[]) for single key
+        results = await this.batchLoadWithAnyArray(TargetClass, targetKey, uniqueValues, config);
+      } else {
+        // MySQL/SQLite: Use traditional IN (?, ?, ...) clause
+        results = await this.batchLoadWithIn(TargetClass, targetKey, uniqueValues, config);
+      }
     }
 
     // Build relation map
@@ -354,6 +384,128 @@ export class LazyRelationContext {
 
     const cacheKey = this.getCacheKey(relationType, config);
     this.batchCache.set(cacheKey, relationMap);
+  }
+
+  /**
+   * PostgreSQL optimized: Single key batch load using = ANY($1::type[])
+   * Uses find() with custom condition tuple for ANY clause.
+   */
+  private async batchLoadWithAnyArray(
+    TargetClass: typeof DBModel,
+    targetKey: string,
+    values: unknown[],
+    config: RelationConfig
+  ): Promise<DBModel[]> {
+    const tableName = TargetClass.TABLE_NAME;
+    const pgType = inferPgArrayType(values);
+    
+    // Build conditions: ANY clause + additional conditions from config
+    // Note: Wrap values in array [[values]] so DBConditions treats it as single array parameter
+    const condTuples: Array<[string, unknown] | readonly [string, unknown]> = [
+      [`${tableName}.${targetKey} = ANY(?::${pgType})`, [values]],
+    ];
+    
+    // Add additional conditions from config
+    if (config.conditions) {
+      for (const [key, value] of Object.entries(config.conditions)) {
+        condTuples.push([key, value]);
+      }
+    }
+    
+    const options = config.order ? { order: config.order } : undefined;
+    return await TargetClass.find(condTuples as unknown as Conds, options);
+  }
+
+  /**
+   * PostgreSQL optimized: Composite key batch load using unnest + JOIN
+   * Uses find() with JOIN option for unnest clause.
+   */
+  private async batchLoadWithUnnestJoin(
+    TargetClass: typeof DBModel,
+    targetKeys: string[],
+    tuples: unknown[][],
+    config: RelationConfig
+  ): Promise<DBModel[]> {
+    const tableName = TargetClass.TABLE_NAME;
+    
+    // Transpose tuples to column arrays: [[1,a], [2,b]] -> [[1,2], [a,b]]
+    const columnArrays: unknown[][] = targetKeys.map((_, colIndex) => 
+      tuples.map(tuple => tuple[colIndex])
+    );
+    
+    // Build unnest parameters with type inference
+    // Column aliases use format: _unnest_{table}_{column} to avoid conflicts
+    const unnestParams = columnArrays.map((arr, i) => {
+      const pgType = inferPgArrayType(arr);
+      return `$${i + 1}::${pgType}`;
+    }).join(', ');
+    
+    const unnestAlias = `_unnest_${tableName}`;
+    const columnAliases = targetKeys.map(k => `_unnest_${tableName}_${k}`).join(', ');
+    
+    // Build JOIN clause with unnest
+    const joinConditions = targetKeys
+      .map(key => `${tableName}.${key} = ${unnestAlias}._unnest_${tableName}_${key}`)
+      .join(' AND ');
+    
+    const joinClause = `JOIN unnest(${unnestParams}) AS ${unnestAlias}(${columnAliases}) ON ${joinConditions}`;
+    
+    // Build conditions from config
+    const condTuples: Array<[string, unknown] | readonly [string, unknown]> = [];
+    if (config.conditions) {
+      for (const [key, value] of Object.entries(config.conditions)) {
+        condTuples.push([key, value]);
+      }
+    }
+    
+    const options: { order?: string; join?: string; joinParams?: unknown[] } = {
+      join: joinClause,
+      joinParams: columnArrays,
+    };
+    if (config.order) {
+      options.order = config.order;
+    }
+    
+    return await TargetClass.find(condTuples as unknown as Conds, options);
+  }
+
+  /**
+   * MySQL/SQLite: Single key batch load using IN (?, ?, ...)
+   */
+  private async batchLoadWithIn(
+    TargetClass: typeof DBModel,
+    targetKey: string,
+    values: unknown[],
+    config: RelationConfig
+  ): Promise<DBModel[]> {
+    const conditions: ConditionObject = {
+      ...config.conditions,
+      [targetKey]: values,
+    };
+
+    const condTuples: [string, unknown][] = Object.entries(conditions).map(([k, v]) => [k, v]);
+    const options = config.order ? { order: config.order } : undefined;
+    return await TargetClass.find(condTuples as unknown as Conds, options);
+  }
+
+  /**
+   * MySQL/SQLite: Composite key batch load using (col1, col2) IN ((v1, v2), ...)
+   */
+  private async batchLoadWithCompositeIn(
+    TargetClass: typeof DBModel,
+    targetKeys: string[],
+    tuples: unknown[][],
+    config: RelationConfig
+  ): Promise<DBModel[]> {
+    const baseConds = Object.entries(config.conditions || {}).map(([k, v]) => [k, v] as [string, unknown]);
+    // Convert string keys to Column objects for the IN clause
+    const targetColumns = targetKeys.map(k => createColumn(k, TargetClass.TABLE_NAME, TargetClass.name));
+    const condTuples = [
+      ...baseConds,
+      [targetColumns, tuples],  // Composite key IN condition with Column[]
+    ];
+    const options = config.order ? { order: config.order } : undefined;
+    return await TargetClass.find(condTuples as unknown as Conds, options);
   }
 
   /**
@@ -383,12 +535,10 @@ export class LazyRelationContext {
     if (targetKeys.length === 1) {
       return String((result as unknown as Record<string, unknown>)[targetKeys[0]]);
     }
-    // Composite key: JSON representation
-    const values: unknown[] = [];
-    for (const key of targetKeys) {
-      values.push((result as unknown as Record<string, unknown>)[key]);
-    }
-    return JSON.stringify(values);
+    // Composite key: join with NUL separator (faster than JSON.stringify)
+    return targetKeys
+      .map(key => (result as unknown as Record<string, unknown>)[key])
+      .join('\x00');
   }
 
   /**

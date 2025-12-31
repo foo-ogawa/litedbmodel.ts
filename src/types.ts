@@ -46,6 +46,17 @@ export interface SelectOptions {
   tableName?: string;
   append?: string;
   forUpdate?: boolean;
+  /**
+   * JOIN clause to add to the query.
+   * Can include parameters using $N placeholders.
+   * @example
+   * join: 'JOIN unnest($1::int[]) AS _keys(id) ON t.id = _keys.id'
+   */
+  join?: string;
+  /**
+   * Parameters for the JOIN clause (prepended to condition params).
+   */
+  joinParams?: unknown[];
 }
 
 /**

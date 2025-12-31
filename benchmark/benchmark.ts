@@ -84,8 +84,30 @@ class LitePostModel extends DBModel {
       targetKey: LiteUser.id,
     });
   }
+  
+  get comments(): Promise<LiteCommentModel[]> {
+    return this._hasMany(LiteComment, {
+      targetKey: LiteComment.post_id,
+    });
+  }
 }
 const LitePost = LitePostModel as typeof LitePostModel & ColumnsOf<LitePostModel>;
+
+@model('benchmark_comments')
+class LiteCommentModel extends DBModel {
+  @column() id?: number;
+  @column() body?: string;
+  @column() post_id?: number;
+  @column() created_at?: Date;
+  
+  get post(): Promise<LitePostModel | null> {
+    return this._belongsTo(LitePost, {
+      sourceKey: LiteComment.post_id,
+      targetKey: LitePost.id,
+    });
+  }
+}
+const LiteComment = LiteCommentModel as typeof LiteCommentModel & ColumnsOf<LiteCommentModel>;
 
 // ============================================
 // Prisma Setup
@@ -116,6 +138,12 @@ interface KyselyDB {
     author_id: number;
     created_at: Date;
   };
+  benchmark_comments: {
+    id: Generated<number>;
+    body: string;
+    post_id: number;
+    created_at: Date;
+  };
 }
 
 // ============================================
@@ -140,6 +168,13 @@ const drizzlePosts = pgTable('benchmark_posts', {
   content: text('content'),
   published: boolean('published').default(false),
   author_id: integer('author_id').notNull(),
+  created_at: timestamp('created_at').defaultNow(),
+});
+
+const drizzleComments = pgTable('benchmark_comments', {
+  id: serial('id').primaryKey(),
+  body: text('body').notNull(),
+  post_id: integer('post_id').notNull(),
   created_at: timestamp('created_at').defaultNow(),
 });
 
@@ -193,6 +228,28 @@ class TypeORMPost {
   @ManyToOne(() => TypeORMUser, user => user.posts)
   @JoinColumn({ name: 'author_id' })
   author!: TypeORMUser;
+  
+  @OneToMany(() => TypeORMComment, comment => comment.post)
+  comments!: TypeORMComment[];
+}
+
+@Entity('benchmark_comments')
+class TypeORMComment {
+  @PrimaryGeneratedColumn()
+  id!: number;
+  
+  @TypeORMColumn({ type: 'text' })
+  body!: string;
+  
+  @TypeORMColumn({ type: 'int' })
+  post_id!: number;
+  
+  @TypeORMColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  created_at!: Date;
+  
+  @ManyToOne(() => TypeORMPost, post => post.comments)
+  @JoinColumn({ name: 'post_id' })
+  post!: TypeORMPost;
 }
 
 // ============================================
@@ -349,7 +406,7 @@ async function main() {
     database: config.database,
     username: config.user,
     password: config.password,
-    entities: [TypeORMUser, TypeORMPost],
+    entities: [TypeORMUser, TypeORMPost, TypeORMComment],
     synchronize: false,
     logging: false,
   });
@@ -1158,6 +1215,186 @@ async function main() {
         },
       ],
     },
+    
+    // ============================================
+    // Nested Relations (100 users → 1000 posts → 10000 comments)
+    // Simulates real-world deep relation traversal
+    // ============================================
+    {
+      name: 'Nested relations (100→1000→10000)',
+      tests: [
+        { 
+          orm: 'litedbmodel', 
+          fn: async () => {
+            // Fetch first 100 users by ID (they have 10 posts each = 1000 posts)
+            const users = await LiteUser.find([], { limit: 100, order: LiteUser.id.asc() });
+            let commentCount = 0;
+            // Access all posts via lazy loading (triggers batch load)
+            for (const user of users) {
+              const posts = await user.posts;
+              for (const post of posts) {
+                // Access all comments via lazy loading (triggers batch load)
+                const comments = await post.comments;
+                for (const _comment of comments) {
+                  commentCount++;
+                }
+              }
+            }
+            // Verify we accessed all 10000 comments
+            if (commentCount !== 10000) {
+              console.warn(`litedbmodel: Expected 10000 comments, got ${commentCount}`);
+            }
+            return users;
+          }
+        },
+        { 
+          orm: 'Prisma', 
+          fn: async () => {
+            const users = await prisma.user.findMany({
+              take: 100,
+              orderBy: { id: 'asc' },
+              include: { 
+                posts: {
+                  include: { comments: true }
+                }
+              },
+            });
+            let commentCount = 0;
+            for (const user of users) {
+              for (const post of user.posts) {
+                for (const _comment of post.comments) {
+                  commentCount++;
+                }
+              }
+            }
+            if (commentCount !== 10000) {
+              console.warn(`Prisma: Expected 10000 comments, got ${commentCount}`);
+            }
+            return users;
+          }
+        },
+        { 
+          orm: 'Kysely', 
+          fn: async () => {
+            // Load users
+            const users = await kysely.selectFrom('benchmark_users').selectAll().orderBy('id').limit(100).execute();
+            const userIds = users.map(u => u.id);
+            
+            // Load posts for these users
+            const posts = await kysely.selectFrom('benchmark_posts')
+              .where('author_id', 'in', userIds)
+              .selectAll()
+              .execute();
+            const postIds = posts.map(p => p.id);
+            
+            // Load comments for these posts
+            const comments = await kysely.selectFrom('benchmark_comments')
+              .where('post_id', 'in', postIds)
+              .selectAll()
+              .execute();
+            
+            // Group posts by user
+            const postsByUser = new Map<number, typeof posts>();
+            for (const post of posts) {
+              if (!postsByUser.has(post.author_id)) postsByUser.set(post.author_id, []);
+              postsByUser.get(post.author_id)!.push(post);
+            }
+            
+            // Group comments by post
+            const commentsByPost = new Map<number, typeof comments>();
+            for (const comment of comments) {
+              if (!commentsByPost.has(comment.post_id)) commentsByPost.set(comment.post_id, []);
+              commentsByPost.get(comment.post_id)!.push(comment);
+            }
+            
+            // Iterate through all
+            let commentCount = 0;
+            for (const user of users) {
+              const userPosts = postsByUser.get(user.id) || [];
+              for (const post of userPosts) {
+                const postComments = commentsByPost.get(post.id) || [];
+                for (const _comment of postComments) {
+                  commentCount++;
+                }
+              }
+            }
+            if (commentCount !== 10000) {
+              console.warn(`Kysely: Expected 10000 comments, got ${commentCount}`);
+            }
+            return users;
+          }
+        },
+        { 
+          orm: 'Drizzle', 
+          fn: async () => {
+            // Load users
+            const users = await drizzleDb.select().from(drizzleUsers).orderBy(asc(drizzleUsers.id)).limit(100);
+            const userIds = users.map(u => u.id);
+            
+            // Load posts for these users
+            const posts = await drizzleDb.select().from(drizzlePosts)
+              .where(drizzleSql`${drizzlePosts.author_id} IN ${userIds}`);
+            const postIds = posts.map(p => p.id);
+            
+            // Load comments for these posts
+            const comments = await drizzleDb.select().from(drizzleComments)
+              .where(drizzleSql`${drizzleComments.post_id} IN ${postIds}`);
+            
+            // Group posts by user
+            const postsByUser = new Map<number, typeof posts>();
+            for (const post of posts) {
+              if (!postsByUser.has(post.author_id)) postsByUser.set(post.author_id, []);
+              postsByUser.get(post.author_id)!.push(post);
+            }
+            
+            // Group comments by post
+            const commentsByPost = new Map<number, typeof comments>();
+            for (const comment of comments) {
+              if (!commentsByPost.has(comment.post_id)) commentsByPost.set(comment.post_id, []);
+              commentsByPost.get(comment.post_id)!.push(comment);
+            }
+            
+            // Iterate through all
+            let commentCount = 0;
+            for (const user of users) {
+              const userPosts = postsByUser.get(user.id) || [];
+              for (const post of userPosts) {
+                const postComments = commentsByPost.get(post.id) || [];
+                for (const _comment of postComments) {
+                  commentCount++;
+                }
+              }
+            }
+            if (commentCount !== 10000) {
+              console.warn(`Drizzle: Expected 10000 comments, got ${commentCount}`);
+            }
+            return users;
+          }
+        },
+        { 
+          orm: 'TypeORM', 
+          fn: async () => {
+            const users = await typeormUserRepo.find({
+              take: 100,
+              order: { id: 'ASC' },
+              relations: ['posts', 'posts.comments'],
+            });
+            let commentCount = 0;
+            for (const user of users) {
+              for (const post of user.posts) {
+                for (const _comment of post.comments) {
+                  commentCount++;
+                }
+              }
+            }
+            if (commentCount !== 10000) {
+              console.warn(`TypeORM: Expected 10000 comments, got ${commentCount}`);
+            }
+            return users;
+          }
+        },
+      ],
+    },
   ];
   
   // Store all results
@@ -1180,8 +1417,8 @@ async function main() {
     }
   }
   
-  // Cleanup warmup data
-  await DBModel.execute('DELETE FROM benchmark_posts WHERE id > 5000');
+  // Cleanup warmup data (keep seed data: 1000 users, 5500 posts)
+  await DBModel.execute('DELETE FROM benchmark_posts WHERE id > 5500');
   await DBModel.execute('DELETE FROM benchmark_users WHERE id > 1000');
   
   // Reset counters
@@ -1208,9 +1445,9 @@ async function main() {
       }
     }
     
-    // Cleanup inserted data after each round
+    // Cleanup inserted data after each round (keep seed data: 1000 users, 5500 posts)
     if (round < ROUNDS) {
-      await DBModel.execute('DELETE FROM benchmark_posts WHERE id > 5000');
+      await DBModel.execute('DELETE FROM benchmark_posts WHERE id > 5500');
       await DBModel.execute('DELETE FROM benchmark_users WHERE id > 1000');
     }
   }
@@ -1285,8 +1522,8 @@ async function main() {
   
   console.log('\n⏳ Cleaning up...');
   
-  // Delete benchmark-inserted data
-  await DBModel.execute('DELETE FROM benchmark_posts WHERE id > 5000');
+  // Delete benchmark-inserted data (keep seed data: 1000 users, 5500 posts)
+  await DBModel.execute('DELETE FROM benchmark_posts WHERE id > 5500');
   await DBModel.execute('DELETE FROM benchmark_users WHERE id > 1000');
   
   await closeAllPools();

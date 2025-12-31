@@ -22,14 +22,67 @@ model User {
 }
 
 model Post {
-  id        Int      @id @default(autoincrement())
+  id        Int       @id @default(autoincrement())
   title     String
   content   String?
-  published Boolean  @default(false)
-  author    User     @relation(fields: [authorId], references: [id])
-  authorId  Int      @map("author_id")
-  createdAt DateTime @default(now()) @map("created_at")
+  published Boolean   @default(false)
+  author    User      @relation(fields: [authorId], references: [id])
+  authorId  Int       @map("author_id")
+  createdAt DateTime  @default(now()) @map("created_at")
+  comments  Comment[]
 
   @@map("benchmark_posts")
+}
+
+model Comment {
+  id        Int      @id @default(autoincrement())
+  body      String
+  post      Post     @relation(fields: [postId], references: [id])
+  postId    Int      @map("post_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("benchmark_comments")
+}
+
+model Tenant {
+  id    Int          @id @default(autoincrement())
+  name  String
+  users TenantUser[]
+
+  @@map("benchmark_tenants")
+}
+
+model TenantUser {
+  tenant_id Int
+  user_id   Int
+  name      String?
+  tenant    Tenant       @relation(fields: [tenant_id], references: [id])
+  posts     TenantPost[]
+
+  @@id([tenant_id, user_id])
+  @@map("benchmark_tenant_users")
+}
+
+model TenantPost {
+  tenant_id Int
+  post_id   Int
+  user_id   Int
+  title     String
+  user      TenantUser    @relation(fields: [tenant_id, user_id], references: [tenant_id, user_id])
+  comments  TenantComment[]
+
+  @@id([tenant_id, post_id])
+  @@map("benchmark_tenant_posts")
+}
+
+model TenantComment {
+  tenant_id  Int
+  comment_id Int
+  post_id    Int
+  body       String
+  post       TenantPost @relation(fields: [tenant_id, post_id], references: [tenant_id, post_id])
+
+  @@id([tenant_id, comment_id])
+  @@map("benchmark_tenant_comments")
 }
 

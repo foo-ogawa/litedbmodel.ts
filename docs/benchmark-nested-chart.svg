@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 850 400" font-family="system-ui, -apple-system, sans-serif">
+  <!-- White background -->
+  <rect width="100%" height="100%" fill="white"/>
+  <style>
+    .title { font-size: 18px; font-weight: bold; fill: #1f2937; }
+    .subtitle { font-size: 12px; fill: #6b7280; }
+    .op-label { font-size: 11px; fill: #374151; }
+    .orm-label { font-size: 9px; fill: #6b7280; }
+    .value-label { font-size: 8px; fill: #374151; }
+    .axis-label { font-size: 10px; fill: #9ca3af; }
+    .grid-line { stroke: #e5e7eb; stroke-width: 1; }
+    .baseline { stroke: #3b82f6; stroke-width: 2; stroke-dasharray: 6,3; }
+    .legend-text { font-size: 10px; fill: #374151; }
+  </style>
+  
+  <!-- Title -->
+  <text x="425" y="25" text-anchor="middle" class="title">Deep Nested Relations Benchmark (10K records)</text>
+  <text x="425" y="45" text-anchor="middle" class="subtitle">Relative speed (litedbmodel = 1.0, lower is faster)</text>
+  
+  <!-- Chart area -->
+  <g transform="translate(200, 70)">
+    <!-- Grid lines (scale: 121.95px per 1.0x, max ~4.2x = ~512px) -->
+    <line x1="60.98" y1="0" x2="60.98" y2="270" class="grid-line" />
+    <text x="60.98" y="285" text-anchor="middle" class="axis-label">0.5</text>
+    <line x1="121.95" y1="0" x2="121.95" y2="270" class="grid-line" />
+    <text x="121.95" y="285" text-anchor="middle" class="axis-label">1.0</text>
+    <line x1="182.93" y1="0" x2="182.93" y2="270" class="grid-line" />
+    <text x="182.93" y="285" text-anchor="middle" class="axis-label">1.5</text>
+    <line x1="243.90" y1="0" x2="243.90" y2="270" class="grid-line" />
+    <text x="243.90" y="285" text-anchor="middle" class="axis-label">2.0</text>
+    <line x1="304.88" y1="0" x2="304.88" y2="270" class="grid-line" />
+    <text x="304.88" y="285" text-anchor="middle" class="axis-label">2.5</text>
+    <line x1="365.85" y1="0" x2="365.85" y2="270" class="grid-line" />
+    <text x="365.85" y="285" text-anchor="middle" class="axis-label">3.0</text>
+    <line x1="426.83" y1="0" x2="426.83" y2="270" class="grid-line" />
+    <text x="426.83" y="285" text-anchor="middle" class="axis-label">3.5</text>
+    <line x1="487.80" y1="0" x2="487.80" y2="270" class="grid-line" />
+    <text x="487.80" y="285" text-anchor="middle" class="axis-label">4.0</text>
+    
+    <!-- Baseline at 1.0 -->
+    <line x1="121.95" y1="-5" x2="121.95" y2="275" class="baseline" />
+    
+    <!-- Single Key (100→1000→10000) -->
+    <text x="-10" y="50" text-anchor="end" dominant-baseline="middle" class="op-label">Single Key (100→1K→10K)</text>
+    <!-- litedbmodel: 1.00x (28.05ms) = 121.95px -->
+    <rect x="0" y="10" width="121.95" height="12" fill="#3b82f6" rx="2" />
+    <text x="126.95" y="17" dominant-baseline="middle" class="value-label">1.00x (28.05ms)</text>
+    <!-- Kysely: 1.03x (28.84ms) = 125.61px -->
+    <rect x="0" y="26" width="125.61" height="12" fill="#22c55e" rx="2" />
+    <text x="130.61" y="33" dominant-baseline="middle" class="value-label">1.03x (28.84ms)</text>
+    <!-- Drizzle: 0.83x (23.23ms) = 101.22px -->
+    <rect x="0" y="42" width="101.22" height="12" fill="#f59e0b" rx="2" />
+    <text x="106.22" y="49" dominant-baseline="middle" class="value-label">0.83x (23.23ms)</text>
+    <!-- TypeORM: 1.16x (32.50ms) = 141.46px -->
+    <rect x="0" y="58" width="141.46" height="12" fill="#ef4444" rx="2" />
+    <text x="146.46" y="65" dominant-baseline="middle" class="value-label">1.16x (32.50ms)</text>
+    <!-- Prisma: 2.91x (81.73ms) = 354.87px -->
+    <rect x="0" y="74" width="354.87" height="12" fill="#8b5cf6" rx="2" />
+    <text x="359.87" y="81" dominant-baseline="middle" class="value-label">2.91x (81.73ms)</text>
+    
+    <!-- Composite Key (100→1000→10000) -->
+    <text x="-10" y="185" text-anchor="end" dominant-baseline="middle" class="op-label">Composite Key (100→1K→10K)</text>
+    <!-- litedbmodel: 1.00x (24.63ms) = 121.95px -->
+    <rect x="0" y="145" width="121.95" height="12" fill="#3b82f6" rx="2" />
+    <text x="126.95" y="152" dominant-baseline="middle" class="value-label">1.00x (24.63ms)</text>
+    <!-- Kysely: 0.54x (13.19ms) = 65.85px -->
+    <rect x="0" y="161" width="65.85" height="12" fill="#22c55e" rx="2" />
+    <text x="70.85" y="168" dominant-baseline="middle" class="value-label">0.54x (13.19ms)</text>
+    <!-- Drizzle: 0.72x (17.84ms) = 87.80px -->
+    <rect x="0" y="177" width="87.80" height="12" fill="#f59e0b" rx="2" />
+    <text x="92.80" y="184" dominant-baseline="middle" class="value-label">0.72x (17.84ms)</text>
+    <!-- TypeORM: 1.44x (35.52ms) = 175.61px -->
+    <rect x="0" y="193" width="175.61" height="12" fill="#ef4444" rx="2" />
+    <text x="180.61" y="200" dominant-baseline="middle" class="value-label">1.44x (35.52ms)</text>
+    <!-- Prisma: 4.14x (101.94ms) = 504.88px -->
+    <rect x="0" y="209" width="504.88" height="12" fill="#8b5cf6" rx="2" />
+    <text x="509.88" y="216" dominant-baseline="middle" class="value-label">4.14x (101.94ms)</text>
+  </g>
+  
+  <!-- Legend -->
+  <g transform="translate(720, 70)">
+    <rect x="0" y="0" width="14" height="14" fill="#3b82f6" rx="2" />
+    <text x="20" y="11" class="legend-text">litedbmodel</text>
+    <rect x="0" y="20" width="14" height="14" fill="#22c55e" rx="2" />
+    <text x="20" y="31" class="legend-text">Kysely</text>
+    <rect x="0" y="40" width="14" height="14" fill="#f59e0b" rx="2" />
+    <text x="20" y="51" class="legend-text">Drizzle</text>
+    <rect x="0" y="60" width="14" height="14" fill="#ef4444" rx="2" />
+    <text x="20" y="71" class="legend-text">TypeORM</text>
+    <rect x="0" y="80" width="14" height="14" fill="#8b5cf6" rx="2" />
+    <text x="20" y="91" class="legend-text">Prisma</text>
+  </g>
+  
+  <!-- Note -->
+  <text x="425" y="385" text-anchor="middle" class="subtitle">100 users → 1000 posts → 10000 comments (5 rounds × 20 iterations)</text>
+</svg>
