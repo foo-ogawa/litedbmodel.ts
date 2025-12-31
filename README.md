@@ -405,14 +405,15 @@ Based on [Prisma orm-benchmarks](https://github.com/prisma/orm-benchmarks) metho
 
 | Operation | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
 |-----------|-------------|--------|---------|---------|--------|
-| Filter, paginate & sort | **0.70ms** 🏆 | 0.71ms | 0.75ms | 0.81ms | 1.15ms |
-| Nested find all | **2.41ms** 🏆 | 2.84ms | 3.49ms | 5.35ms | 8.02ms |
-| Create | **0.41ms** 🏆 | 0.43ms | 0.44ms | 0.94ms | 0.60ms |
-| Nested create | **0.86ms** 🏆 | 0.88ms | 0.96ms | 2.20ms | 1.79ms |
-| Delete | **1.01ms** 🏆 | 1.01ms | 1.08ms | 1.88ms | 1.41ms |
-| Find all | 0.64ms | 0.64ms | **0.59ms** | 0.73ms | 1.39ms |
+| Filter, paginate & sort | **0.68ms** 🏆 | 0.76ms | 0.88ms | 0.95ms | 1.11ms |
+| Nested find all | **2.31ms** 🏆 | 2.69ms | 3.51ms | 5.00ms | 7.39ms |
+| Find unique | **0.28ms** 🏆 | 0.28ms | 0.30ms | 0.32ms | 0.54ms |
+| Create | **0.40ms** 🏆 | 0.41ms | 0.42ms | 0.90ms | 0.60ms |
+| Nested create | **0.80ms** 🏆 | 0.84ms | 0.89ms | 2.09ms | 1.67ms |
+| Update | **0.44ms** 🏆 | 0.45ms | 0.47ms | 0.48ms | 0.71ms |
+| Delete | **0.96ms** 🏆 | 1.00ms | 1.13ms | 1.85ms | 1.35ms |
 
-> **litedbmodel is fastest in 4 out of 14 operations**, especially in nested queries and complex filtering. See [COMPARISON.md](./COMPARISON.md) for full benchmark results.
+> **litedbmodel is fastest in 7 out of 14 operations**, especially in nested queries, filtering, and CRUD operations. See [COMPARISON.md](./COMPARISON.md) for full benchmark results.
 
 ### Choose litedbmodel when:
 

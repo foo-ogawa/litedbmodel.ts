@@ -70,12 +70,8 @@ export type Post = PostModel;
 
 @model('post_tags')
 class PostTagModel extends DBModel {
-  static getPkeyColumns() {
-    return [PostTag.post_id, PostTag.tag_id];
-  }
-
-  @column() post_id?: number;
-  @column() tag_id?: number;
+  @column({ primaryKey: true }) post_id?: number;
+  @column({ primaryKey: true }) tag_id?: number;
   @column.datetime() created_at?: Date;
 }
 export const PostTag = PostTagModel as typeof PostTagModel & ColumnsOf<PostTagModel>;

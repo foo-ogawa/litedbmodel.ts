@@ -134,6 +134,9 @@ export interface Column<ValueType = unknown, ModelType = unknown> {
   /** The database column name */
   readonly columnName: string;
 
+  /** The property name on the model class (may differ from columnName) */
+  readonly propertyName: string;
+
   /** The database table name */
   readonly tableName: string;
 
@@ -314,16 +317,25 @@ export interface Column<ValueType = unknown, ModelType = unknown> {
 export function createColumn<ValueType, ModelType = unknown>(
   columnName: string,
   tableName: string,
-  modelName: string
+  modelName: string,
+  propertyName?: string
 ): Column<ValueType, ModelType> {
   // The callable function itself - returns column name as string
   const fn = function (): string {
     return columnName;
   } as Column<ValueType, ModelType>;
 
+  // Property name defaults to column name if not provided
+  const propName = propertyName ?? columnName;
+
   // Add readonly properties
   Object.defineProperty(fn, 'columnName', {
     value: columnName,
+    writable: false,
+    enumerable: true,
+  });
+  Object.defineProperty(fn, 'propertyName', {
+    value: propName,
     writable: false,
     enumerable: true,
   });

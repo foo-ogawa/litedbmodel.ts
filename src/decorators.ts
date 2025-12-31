@@ -41,6 +41,7 @@ export interface ColumnMeta {
   columnName: string;
   typeCast?: TypeCastFn;
   serialize?: SerializeFn;
+  primaryKey?: boolean;
 }
 
 // ============================================
@@ -94,16 +95,22 @@ function inferTypeCastFromDesignType(
   }
 }
 
+/** Options for registerColumn */
+interface RegisterColumnOptions {
+  columnName: string;
+  typeCast?: TypeCastFn;
+  serialize?: SerializeFn;
+  skipAutoInfer?: boolean;
+  primaryKey?: boolean;
+}
+
 /**
  * Register column metadata on the model class
  */
 function registerColumn(
   target: object,
   propertyKey: string,
-  columnName: string,
-  typeCast?: TypeCastFn,
-  serialize?: SerializeFn,
-  skipAutoInfer = false
+  options: RegisterColumnOptions
 ): void {
   const constructor = target.constructor;
 
@@ -112,18 +119,27 @@ function registerColumn(
     Reflect.getMetadata(COLUMNS_KEY, constructor) || new Map();
 
   // Auto-infer type cast if not explicitly provided
-  let finalTypeCast = typeCast;
-  if (!finalTypeCast && !skipAutoInfer) {
+  let finalTypeCast = options.typeCast;
+  if (!finalTypeCast && !options.skipAutoInfer) {
     finalTypeCast = inferTypeCastFromDesignType(target, propertyKey);
   }
 
   columns.set(propertyKey, {
-    columnName,
+    columnName: options.columnName,
     typeCast: finalTypeCast,
-    serialize,
+    serialize: options.serialize,
+    primaryKey: options.primaryKey,
   });
 
   Reflect.defineMetadata(COLUMNS_KEY, columns, constructor);
+}
+
+/** Options that can be passed to @column decorator */
+export interface ColumnOptions {
+  /** Custom column name (defaults to property name) */
+  columnName?: string;
+  /** Mark this column as part of the primary key */
+  primaryKey?: boolean;
 }
 
 /**
@@ -137,12 +153,32 @@ function createColumnDecorator(
   serialize?: SerializeFn,
   skipAutoInfer = false
 ) {
-  return function (columnName?: string): PropertyDecorator {
+  return function (columnNameOrOptions?: string | ColumnOptions): PropertyDecorator {
     return function (target: object, propertyKey: string | symbol) {
       const propKey = String(propertyKey);
       // If typeCast is explicitly provided, skip auto-inference
       const shouldSkipAutoInfer = skipAutoInfer || typeCast !== undefined;
-      registerColumn(target, propKey, columnName || propKey, typeCast, serialize, shouldSkipAutoInfer);
+      
+      // Parse options
+      let columnName: string;
+      let primaryKey: boolean | undefined;
+      
+      if (typeof columnNameOrOptions === 'string') {
+        columnName = columnNameOrOptions;
+      } else if (columnNameOrOptions) {
+        columnName = columnNameOrOptions.columnName || propKey;
+        primaryKey = columnNameOrOptions.primaryKey;
+      } else {
+        columnName = propKey;
+      }
+      
+      registerColumn(target, propKey, {
+        columnName,
+        typeCast,
+        serialize,
+        skipAutoInfer: shouldSkipAutoInfer,
+        primaryKey,
+      });
     };
   };
 }
@@ -510,7 +546,7 @@ function applyModelDecorator<T extends { new (...args: unknown[]): object }>(
   const effectiveTableName = tableName ?? modelName.toLowerCase();
   for (const [propKey, meta] of columns) {
     Object.defineProperty(constructor, propKey, {
-      value: createColumn(meta.columnName, effectiveTableName, modelName),
+      value: createColumn(meta.columnName, effectiveTableName, modelName, propKey),
       writable: false,
       enumerable: true,
       configurable: false,

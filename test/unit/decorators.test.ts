@@ -463,5 +463,80 @@ describe('decorators', () => {
       expect(instance.tags).toBeNull();
     });
   });
+
+  describe('@column({ primaryKey: true })', () => {
+    it('should detect single primary key from decorator', () => {
+      @model('single_pk_test')
+      class SinglePkModel extends DBModel {
+        @column({ primaryKey: true }) id?: number;
+        @column() name?: string;
+      }
+
+      const meta = getColumnMeta(SinglePkModel);
+      expect(meta!.get('id')?.primaryKey).toBe(true);
+      expect(meta!.get('name')?.primaryKey).toBeUndefined();
+
+      // Test getPkey works correctly
+      const instance = new SinglePkModel();
+      instance.id = 42;
+      instance.name = 'Test';
+      const pkey = instance.getPkey();
+      expect(pkey).toEqual({ id: 42 });
+    });
+
+    it('should detect composite primary key from decorators', () => {
+      @model('composite_pk_test')
+      class CompositePkModel extends DBModel {
+        @column({ primaryKey: true }) post_id?: number;
+        @column({ primaryKey: true }) tag_id?: number;
+        @column.datetime() created_at?: Date;
+      }
+
+      const meta = getColumnMeta(CompositePkModel);
+      expect(meta!.get('post_id')?.primaryKey).toBe(true);
+      expect(meta!.get('tag_id')?.primaryKey).toBe(true);
+      expect(meta!.get('created_at')?.primaryKey).toBeUndefined();
+
+      // Test getPkey works correctly
+      const instance = new CompositePkModel();
+      instance.post_id = 1;
+      instance.tag_id = 5;
+      const pkey = instance.getPkey();
+      expect(pkey).toEqual({ post_id: 1, tag_id: 5 });
+    });
+
+    it('should support primaryKey with custom column name', () => {
+      @model('custom_name_pk_test')
+      class CustomNamePkModel extends DBModel {
+        @column({ primaryKey: true, columnName: 'user_id' }) id?: number;
+        @column() name?: string;
+      }
+
+      const meta = getColumnMeta(CustomNamePkModel);
+      expect(meta!.get('id')?.columnName).toBe('user_id');
+      expect(meta!.get('id')?.primaryKey).toBe(true);
+
+      // Test getPkey uses column name
+      const instance = new CustomNamePkModel();
+      instance.id = 99;
+      const pkey = instance.getPkey();
+      expect(pkey).toEqual({ user_id: 99 });
+    });
+
+    it('should fall back to id when no primaryKey specified', () => {
+      @model('no_pk_test')
+      class NoPkModel extends DBModel {
+        @column() id?: number;
+        @column() name?: string;
+      }
+
+      // No primaryKey specified, should use 'id' as default
+      const instance = new NoPkModel();
+      instance.id = 123;
+      instance.name = 'Test';
+      const pkey = instance.getPkey();
+      expect(pkey).toEqual({ id: 123 });
+    });
+  });
 });
 

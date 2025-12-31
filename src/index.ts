@@ -106,6 +106,8 @@ export {
   getColumnMeta,
   getModelColumnNames,
   getModelPropertyNames,
+  type ColumnOptions,
+  type ColumnMeta,
 } from './decorators';
 
 // ============================================

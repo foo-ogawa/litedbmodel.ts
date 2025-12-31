@@ -629,31 +629,31 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
 
 | Operation | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
 |-----------|-------------|--------|---------|---------|--------|
-| Find all (limit 100) | 0.64ms | 0.64ms | **0.59ms** | 0.73ms | 1.39ms |
-| Filter, paginate & sort | **0.70ms** 🏆 | 0.71ms | 0.75ms | 0.81ms | 1.15ms |
-| Nested find all | **2.41ms** 🏆 | 2.84ms | 3.49ms | 5.35ms | 8.02ms |
-| Find first | 0.34ms | 0.33ms | **0.30ms** | 0.31ms | 0.61ms |
-| Nested find first | 0.57ms | 0.57ms | 0.61ms | **0.50ms** | 0.98ms |
-| Find unique (by email) | 0.29ms | **0.28ms** | 0.31ms | 0.32ms | 0.54ms |
-| Nested find unique | 0.58ms | **0.57ms** | 0.63ms | 1.03ms | 0.94ms |
-| Create | **0.41ms** 🏆 | 0.43ms | 0.44ms | 0.94ms | 0.60ms |
-| Nested create | **0.86ms** 🏆 | 0.88ms | 0.96ms | 2.20ms | 1.79ms |
-| Update | 0.49ms | **0.48ms** | 0.51ms | 0.50ms | 0.80ms |
-| Nested update | 1.03ms | **0.95ms** | 1.01ms | 1.09ms | 2.48ms |
-| Upsert | 0.50ms | **0.47ms** | 0.54ms | 0.62ms | 2.03ms |
-| Nested upsert | 1.01ms | **0.97ms** | 1.13ms | 0.99ms | 2.34ms |
-| Delete | **1.01ms** 🏆 | **1.01ms** | 1.08ms | 1.88ms | 1.41ms |
+| Find all (limit 100) | 0.62ms | 0.62ms | **0.57ms** | 0.71ms | 1.36ms |
+| Filter, paginate & sort | **0.68ms** 🏆 | 0.76ms | 0.88ms | 0.95ms | 1.11ms |
+| Nested find all | **2.31ms** 🏆 | 2.69ms | 3.51ms | 5.00ms | 7.39ms |
+| Find first | 0.34ms | 0.31ms | **0.29ms** | 0.31ms | 0.61ms |
+| Nested find first | 0.57ms | 0.56ms | 0.59ms | **0.50ms** | 0.97ms |
+| Find unique (by email) | **0.28ms** 🏆 | **0.28ms** | 0.30ms | 0.32ms | 0.54ms |
+| Nested find unique | 0.58ms | **0.57ms** | 0.61ms | 0.98ms | 0.94ms |
+| Create | **0.40ms** 🏆 | 0.41ms | 0.42ms | 0.90ms | 0.60ms |
+| Nested create | **0.80ms** 🏆 | 0.84ms | 0.89ms | 2.09ms | 1.67ms |
+| Update | **0.44ms** 🏆 | 0.45ms | 0.47ms | 0.48ms | 0.71ms |
+| Nested update | 1.01ms | **0.91ms** | 1.04ms | 1.09ms | 2.40ms |
+| Upsert | 0.50ms | **0.46ms** | 0.49ms | 0.58ms | 2.01ms |
+| Nested upsert | 0.99ms | **0.97ms** | 1.06ms | **0.97ms** | 2.27ms |
+| Delete | **0.96ms** 🏆 | 1.00ms | 1.13ms | 1.85ms | 1.35ms |
 
 ### Analysis
 
-1. **litedbmodel** - **Fastest in 4 operations!** 🏆
-   - **#1 in Filter/paginate/sort, Nested find all, Create, Nested create, Delete**
-   - Excellent auto N+1 prevention (Nested find all: 3.3x faster than Prisma)
-   - Competitive in all other operations (within 10% of fastest)
+1. **litedbmodel** - **Fastest in 7 operations!** 🏆
+   - **#1 in Filter/paginate/sort, Nested find all, Find unique, Create, Nested create, Update, Delete**
+   - Excellent auto N+1 prevention (Nested find all: 3.2x faster than Prisma)
+   - Competitive in all other operations (within 15% of fastest)
    - Best for applications with complex queries and relations
 
-2. **Kysely** - Fastest in single-row operations
-   - Best for Find unique, Nested find unique, Update, Nested update, Upsert, Nested upsert
+2. **Kysely** - Fastest in upsert and nested update operations
+   - Best for Nested update, Upsert, Nested upsert, Nested find unique
    - Minimal abstraction overhead
    - Best for write-heavy apps needing raw SQL control
 
@@ -668,9 +668,9 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
    - Higher overhead for nested operations
 
 5. **Prisma** - Convenience over speed
-   - **Slowest in most operations** (1.4x - 4.3x slower)
-   - Nested find all: 8.02ms vs litedbmodel's 2.41ms (3.3x slower)
-   - Upsert: 4.3x slower than Kysely
+   - **Slowest in most operations** (1.4x - 4.4x slower)
+   - Nested find all: 7.39ms vs litedbmodel's 2.31ms (3.2x slower)
+   - Upsert: 4.4x slower than Kysely
    - Trade-off: Rich DX features (Prisma Studio, migrations, etc.)
 
 
@@ -679,11 +679,11 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
 **litedbmodel excels at:**
 - **Nested/relation queries** (auto N+1 prevention)
 - **Complex filtering with pagination**
-- **Create operations**
-- **Delete operations**
+- **CRUD operations** (Create, Update, Delete)
+- **Unique lookups**
 
-**vs Prisma:** litedbmodel is **1.4x - 3.3x faster** across all operations  
-**vs Query Builders:** litedbmodel is competitive (within 10%), with better DX
+**vs Prisma:** litedbmodel is **1.5x - 3.2x faster** across all operations  
+**vs Query Builders:** litedbmodel is competitive (within 15%), with better DX
 
 > **litedbmodel provides best-in-class performance while offering:**
 > - Type-safe column symbols (IDE refactoring)

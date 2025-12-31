@@ -9,7 +9,7 @@ import { initDBHandler, getDBHandler, createHandlerWithConnection, type DBHandle
 import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, TransactionOptions } from './types';
 import { type Column, type OrderSpec, type CVs, type Conds, type CondsOf, type OrCondOf, createColumn, columnsToNames, pairsToRecord, condsToRecord, orderToString, createOrCond } from './Column';
 import type { MiddlewareClass, ExecuteResult } from './Middleware';
-import { serializeRecord } from './decorators';
+import { serializeRecord, getColumnMeta } from './decorators';
 
 // Import LazyRelation module (static import for Vitest compatibility)
 import { LazyRelationContext, buildRelationConfig, type BelongsToOptions, type HasManyOptions } from './LazyRelation';
@@ -64,11 +64,20 @@ export abstract class DBModel {
   /** Default ORDER BY clause (type-safe OrderColumn or OrderColumn[]) */
   static DEFAULT_ORDER: OrderSpec | null = null;
 
-  /** Default GROUP BY clause */
-  static DEFAULT_GROUP: string | null = null;
+  /** Default GROUP BY clause (Column, Column[], or raw string) */
+  static DEFAULT_GROUP: Column | Column[] | string | null = null;
 
-  /** Default filter conditions applied to all queries */
-  static FIND_FILTER: Record<string, unknown> | null = null;
+  /** Default filter conditions applied to all queries (use tuple format like find()) */
+  static FIND_FILTER: Conds | null = null;
+
+  /** Primary key columns (use getter to reference Model.column) */
+  static PKEY_COLUMNS: Column[] | null = null;
+
+  /** Sequence name for auto-increment (use getter if needed) */
+  static SEQ_NAME: string | null = null;
+
+  /** ID type: 'serial' for auto-increment, 'uuid' for UUID generation */
+  static ID_TYPE: 'serial' | 'uuid' | null = null;
 
   // ============================================
   // Database Configuration
@@ -273,7 +282,8 @@ export abstract class DBModel {
 
     const normalizedCond = normalizeConditions(conditions);
     if (this.FIND_FILTER) {
-      normalizedCond.add(this.FIND_FILTER as ConditionObject);
+      const filterCondition = condsToRecord(this.FIND_FILTER) as ConditionObject;
+      normalizedCond.add(filterCondition);
     }
 
     const whereClause = normalizedCond.compile(params);
@@ -283,8 +293,9 @@ export abstract class DBModel {
       sql += ` WHERE ${whereClause}`;
     }
 
-    if (options.group || this.DEFAULT_GROUP) {
-      sql += ` GROUP BY ${options.group || this.DEFAULT_GROUP}`;
+    const groupClause = options.group || this.getGroupByClause();
+    if (groupClause) {
+      sql += ` GROUP BY ${groupClause}`;
     }
 
     const orderClause = options.order || orderToString(this.DEFAULT_ORDER);
@@ -338,7 +349,8 @@ export abstract class DBModel {
 
     const normalizedCond = normalizeConditions(conditions);
     if (this.FIND_FILTER) {
-      normalizedCond.add(this.FIND_FILTER as ConditionObject);
+      const filterCondition = condsToRecord(this.FIND_FILTER) as ConditionObject;
+      normalizedCond.add(filterCondition);
     }
 
     const whereClause = normalizedCond.compile(params);
@@ -716,31 +728,68 @@ export abstract class DBModel {
   // Static Primary Key Configuration
   // ============================================
 
+  /** Cache for primary key columns detected from @column({ primaryKey: true }) */
+  private static _pkeyColumnsCache: WeakMap<object, Column[]> = new WeakMap();
+
   /**
-   * Get primary key columns
-   * Override in derived class for composite keys
-   * @returns Array of Column references (e.g., [User.id])
+   * Get primary key columns with fallback to ['id']
+   * Priority: 1. PKEY_COLUMNS getter  2. @column({ primaryKey: true })  3. 'id' default
+   * @internal
    */
-  static getPkeyColumns(): Column[] {
-    // Default: create a Column for 'id'
-    // Note: For production use, override this with actual Model.column references
-    return [createColumn('id', this.TABLE_NAME, this.name)];
+  protected static _getPkeyColumnsWithDefault(): Column[] {
+    // 1. Explicit PKEY_COLUMNS takes precedence
+    if (this.PKEY_COLUMNS) {
+      return this.PKEY_COLUMNS;
+    }
+
+    // 2. Check cache for decorator-detected primary keys
+    const cached = DBModel._pkeyColumnsCache.get(this);
+    if (cached) {
+      return cached;
+    }
+
+    // 3. Detect from @column({ primaryKey: true }) decorator
+    const meta = getColumnMeta(this);
+    if (meta) {
+      const pkeyColumns: Column[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const thisClass = this as any;
+      for (const [propKey, colMeta] of meta) {
+        if (colMeta.primaryKey) {
+          // Get the static Column property from the class
+          // Note: Column is a callable function, so typeof is 'function', not 'object'
+          const col = thisClass[propKey];
+          if (col && typeof col === 'function' && 'columnName' in col) {
+            pkeyColumns.push(col as Column);
+          }
+        }
+      }
+      if (pkeyColumns.length > 0) {
+        DBModel._pkeyColumnsCache.set(this, pkeyColumns);
+        return pkeyColumns;
+      }
+    }
+
+    // 4. Default: create a Column for 'id'
+    const defaultPkey = [createColumn('id', this.TABLE_NAME, this.name)];
+    DBModel._pkeyColumnsCache.set(this, defaultPkey);
+    return defaultPkey;
   }
 
   /**
-   * Get sequence name for auto-increment
-   * Override in derived class if using named sequence
+   * Get GROUP BY clause as string
+   * Converts Column or Column[] to comma-separated column names
+   * @internal
    */
-  static getSeqName(): string | null {
-    return null;
-  }
-
-  /**
-   * Get ID type (serial or uuid)
-   * Override in derived class
-   */
-  static getIdType(): 'serial' | 'uuid' | null {
-    return null;
+  static getGroupByClause(): string | null {
+    const group = this.DEFAULT_GROUP;
+    if (!group) return null;
+    if (typeof group === 'string') return group;
+    if (Array.isArray(group)) {
+      return columnsToNames(group).join(', ');
+    }
+    // Single Column
+    return group.columnName;
   }
 
   // ============================================
@@ -959,16 +1008,17 @@ export abstract class DBModel {
    * @returns Object with primary key column names and values, or null if not set
    */
   getPkey(): Record<string, unknown> | null {
-    const columnNames = columnsToNames(this._modelClass.getPkeyColumns());
+    const pkeyColumns = this._modelClass._getPkeyColumnsWithDefault();
     const result: Record<string, unknown> = {};
     let hasValue = false;
 
-    for (const col of columnNames) {
-      const value = (this as Record<string, unknown>)[col];
+    for (const col of pkeyColumns) {
+      // Use propertyName to get value from instance, columnName as result key
+      const value = (this as Record<string, unknown>)[col.propertyName];
       if (value !== undefined && value !== null) {
         hasValue = true;
       }
-      result[col] = value;
+      result[col.columnName] = value;
     }
 
     return hasValue ? result : null;
@@ -979,7 +1029,7 @@ export abstract class DBModel {
    * @param key - Single value for single-column PK, or object for composite PK
    */
   setPkey(key: unknown): void {
-    const columnNames = columnsToNames(this._modelClass.getPkeyColumns());
+    const columnNames = columnsToNames(this._modelClass._getPkeyColumnsWithDefault());
 
     if (columnNames.length === 1) {
       (this as Record<string, unknown>)[columnNames[0]] = key;
@@ -1009,7 +1059,7 @@ export abstract class DBModel {
    * @returns ID value or undefined
    */
   getSingleColId(): unknown {
-    const columnNames = columnsToNames(this._modelClass.getPkeyColumns());
+    const columnNames = columnsToNames(this._modelClass._getPkeyColumnsWithDefault());
     if (columnNames.length !== 1) {
       throw new Error('getSingleColId() can only be used with single-column primary keys');
     }
@@ -1133,7 +1183,7 @@ export abstract class DBModel {
    * Get ID list from records
    */
   static idList<T extends DBModel>(records: T[], column?: string): unknown[] {
-    const col = column || columnsToNames(this.getPkeyColumns())[0];
+    const col = column || columnsToNames(this._getPkeyColumnsWithDefault())[0];
     return this.columnList(records, col);
   }
 
@@ -1270,7 +1320,7 @@ export abstract class DBModel {
     options?: SelectOptions
   ): Promise<InstanceType<T> | null> {
     const core = async (idVal: unknown, opts?: SelectOptions): Promise<InstanceType<T> | null> => {
-      const pkeyColumnNames = columnsToNames(this.getPkeyColumns());
+      const pkeyColumnNames = columnsToNames(this._getPkeyColumnsWithDefault());
       let idCondition: ConditionObject;
       if (pkeyColumnNames.length === 1) {
         idCondition = { [pkeyColumnNames[0]]: idVal } as ConditionObject;

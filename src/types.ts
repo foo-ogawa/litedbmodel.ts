@@ -2,8 +2,7 @@
  * litedbmodel - Type Definitions
  */
 
-import type { ConditionObject } from './DBConditions';
-import type { Column, OrderSpec } from './Column';
+import type { Column, OrderSpec, Conds } from './Column';
 
 // ============================================
 // Database Configuration
@@ -155,13 +154,14 @@ export interface DBModelStatic<T extends DBModelInstance = DBModelInstance> {
   UPDATE_TABLE_NAME: string | null;
   SELECT_COLUMN: string;
   DEFAULT_ORDER: OrderSpec | null;
-  DEFAULT_GROUP: string | null;
-  FIND_FILTER: ConditionObject | null;
-  getPkeyColumns(): Column[];
-  getSeqName(): string | null;
-  getIdType(): 'serial' | 'uuid' | null;
+  DEFAULT_GROUP: Column | Column[] | string | null;
+  FIND_FILTER: Conds | null;
+  PKEY_COLUMNS: Column[] | null;
+  SEQ_NAME: string | null;
+  ID_TYPE: 'serial' | 'uuid' | null;
   getTableName(): string;
   getUpdateTableName(): string;
+  getGroupByClause(): string | null;
 }
 
 export interface DBModelInstance {
