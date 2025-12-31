@@ -146,11 +146,7 @@ export class SqliteDriver implements DBDriver {
    * Convert PostgreSQL-style placeholders ($1, $2) to SQLite-style (?, ?)
    */
   private convertPlaceholders(sql: string): string {
-    let index = 0;
-    return sql.replace(/\$\d+/g, () => {
-      index++;
-      return '?';
-    });
+    return sql.replace(/\$\d+/g, '?');
   }
 
   /**
