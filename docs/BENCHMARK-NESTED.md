@@ -355,8 +355,9 @@ class UserModel extends DBModel {
   @column() id?: number;
   @column() name?: string;
   
-  @hasMany(() => Post, 'author_id')
-  posts?: Post[];
+  // Use 'declare' for relation properties
+  @hasMany(() => [User.id, Post.author_id])
+  declare posts: Promise<Post[]>;
 }
 
 // Same model works for both list and detail views
@@ -394,10 +395,10 @@ async function getUsers(includeDetails: boolean) {
   const users = await User.find([], { limit: 100 });
   
   if (includeDetails) {
-    // Accessing .posts triggers batch loading
-    // All 100 users' posts loaded in 1 query, not 100
+    // First access triggers batch loading for ALL users
+    // Subsequent accesses return from cache
     for (const user of users) {
-      user.postsData = await user.posts;
+      await user.posts;  // 1st: batch query, rest: cache
     }
   }
   

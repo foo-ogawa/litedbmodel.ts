@@ -5,10 +5,11 @@
  * - Setting TABLE_NAME from @model('table_name') decorator
  * - Creating static Column properties for type-safe column references
  * - Generating typeCastFromDB() for automatic type conversion
+ * - Creating relation getters from @hasMany, @belongsTo, @hasOne decorators
  */
 
 import 'reflect-metadata';
-import { createColumn } from './Column';
+import { type Column, type OrderSpec, createColumn, orderToString, type Conds, condsToRecord } from './Column';
 import {
   castToBoolean,
   castToDatetime,
@@ -25,6 +26,7 @@ import {
 // ============================================
 
 const COLUMNS_KEY = Symbol('litedbmodel:columns');
+const RELATIONS_KEY = Symbol('litedbmodel:relations');
 
 // ============================================
 // Types
@@ -42,6 +44,38 @@ export interface ColumnMeta {
   typeCast?: TypeCastFn;
   serialize?: SerializeFn;
   primaryKey?: boolean;
+}
+
+// ============================================
+// Relation Types
+// ============================================
+
+/** Relation type */
+export type RelationType = 'hasMany' | 'belongsTo' | 'hasOne';
+
+/** Key pair: [sourceKey, targetKey] */
+export type KeyPair = readonly [Column<unknown, unknown>, Column<unknown, unknown>];
+
+/** Composite key pairs: [[sourceKey1, targetKey1], [sourceKey2, targetKey2], ...] */
+export type CompositeKeyPairs = readonly KeyPair[];
+
+/** Factory function that returns key pair(s) */
+export type KeysFactory = () => KeyPair | CompositeKeyPairs;
+
+/** Relation options (order, where) */
+export interface RelationDecoratorOptions {
+  /** Order by specification */
+  order?: () => OrderSpec;
+  /** Additional filter conditions */
+  where?: () => Conds;
+}
+
+/** Relation metadata stored by decorators */
+export interface RelationMeta {
+  propertyKey: string;
+  type: RelationType;
+  keysFactory: KeysFactory;
+  options?: RelationDecoratorOptions;
 }
 
 // ============================================
@@ -459,6 +493,145 @@ export const column = Object.assign(
 );
 
 // ============================================
+// Relation Decorators
+// ============================================
+
+/**
+ * Register relation metadata on the model class
+ */
+function registerRelation(
+  target: object,
+  propertyKey: string,
+  type: RelationType,
+  keysFactory: KeysFactory,
+  options?: RelationDecoratorOptions
+): void {
+  const constructor = target.constructor;
+
+  // Get or create relations array
+  const relations: RelationMeta[] =
+    Reflect.getMetadata(RELATIONS_KEY, constructor) || [];
+
+  relations.push({
+    propertyKey,
+    type,
+    keysFactory,
+    options,
+  });
+
+  Reflect.defineMetadata(RELATIONS_KEY, relations, constructor);
+}
+
+/**
+ * HasMany relation decorator (1:N).
+ * Defines a one-to-many relationship where this model has many related records.
+ *
+ * @param keys - Factory function returning [sourceKey, targetKey] or composite key pairs
+ * @param options - Optional order and where clauses
+ *
+ * @example
+ * ```typescript
+ * // Single key relation
+ * @hasMany(() => [User.id, Post.author_id])
+ * posts!: Promise<Post[]>;
+ *
+ * // With options
+ * @hasMany(() => [User.id, Post.author_id], {
+ *   order: () => Post.created_at.desc(),
+ *   where: () => [[Post.is_deleted, false]],
+ * })
+ * activePosts!: Promise<Post[]>;
+ *
+ * // Composite key relation
+ * @hasMany(() => [
+ *   [TenantUser.tenant_id, TenantPost.tenant_id],
+ *   [TenantUser.id, TenantPost.author_id],
+ * ])
+ * posts!: Promise<TenantPost[]>;
+ * ```
+ */
+export function hasMany(
+  keys: KeysFactory,
+  options?: RelationDecoratorOptions
+): PropertyDecorator {
+  return function (target: object, propertyKey: string | symbol) {
+    registerRelation(target, String(propertyKey), 'hasMany', keys, options);
+  };
+}
+
+/**
+ * BelongsTo relation decorator (N:1).
+ * Defines a many-to-one relationship where this model belongs to a parent record.
+ *
+ * @param keys - Factory function returning [sourceKey, targetKey] or composite key pairs
+ * @param options - Optional order and where clauses
+ *
+ * @example
+ * ```typescript
+ * // Single key relation
+ * @belongsTo(() => [Post.author_id, User.id])
+ * author!: Promise<User | null>;
+ *
+ * // Composite key relation
+ * @belongsTo(() => [
+ *   [TenantPost.tenant_id, TenantUser.tenant_id],
+ *   [TenantPost.author_id, TenantUser.id],
+ * ])
+ * author!: Promise<TenantUser | null>;
+ * ```
+ */
+export function belongsTo(
+  keys: KeysFactory,
+  options?: RelationDecoratorOptions
+): PropertyDecorator {
+  return function (target: object, propertyKey: string | symbol) {
+    registerRelation(target, String(propertyKey), 'belongsTo', keys, options);
+  };
+}
+
+/**
+ * HasOne relation decorator (1:1).
+ * Defines a one-to-one relationship where this model has one related record.
+ *
+ * @param keys - Factory function returning [sourceKey, targetKey] or composite key pairs
+ * @param options - Optional order and where clauses
+ *
+ * @example
+ * ```typescript
+ * // Single key relation
+ * @hasOne(() => [User.id, UserProfile.user_id])
+ * profile!: Promise<UserProfile | null>;
+ *
+ * // Composite key relation
+ * @hasOne(() => [
+ *   [TenantUser.tenant_id, TenantProfile.tenant_id],
+ *   [TenantUser.id, TenantProfile.user_id],
+ * ])
+ * profile!: Promise<TenantProfile | null>;
+ * ```
+ */
+export function hasOne(
+  keys: KeysFactory,
+  options?: RelationDecoratorOptions
+): PropertyDecorator {
+  return function (target: object, propertyKey: string | symbol) {
+    registerRelation(target, String(propertyKey), 'hasOne', keys, options);
+  };
+}
+
+/**
+ * Get relation metadata from a model class
+ * @internal
+ */
+export function getRelationMeta(modelClass: object): RelationMeta[] {
+  return (
+    (modelClass as { _relationMeta?: RelationMeta[] })._relationMeta ||
+    Reflect.getMetadata(RELATIONS_KEY, modelClass) ||
+    []
+  );
+}
+
+// ============================================
 // @model Class Decorator
 // ============================================
 
@@ -473,6 +646,7 @@ export const column = Object.assign(
  * 1. Sets static TABLE_NAME property (if table name provided)
  * 2. Creates static Column properties for each @column decorated property
  * 3. Generates typeCastFromDB() method from @column type conversion settings
+ * 4. Creates relation getters from @hasMany, @belongsTo, @hasOne decorators
  *
  * @example
  * ```typescript
@@ -482,6 +656,9 @@ export const column = Object.assign(
  *   @column() name?: string;
  *   @column.boolean() is_active?: boolean;
  *   @column.datetime() created_at?: Date;
+ *
+ *   @hasMany(() => [User.id, Post.author_id])
+ *   posts!: Promise<Post[]>;
  * }
  *
  * // Usage - call column to get name as string for computed property key
@@ -490,8 +667,9 @@ export const column = Object.assign(
  * // Or use condition builders with spread
  * await User.findAll({ ...User.is_active.eq(true) });
  *
- * // Template literals also work
- * await User.findAll({ [`${User.name} LIKE ?`]: '%test%' });
+ * // Access relations
+ * const user = await User.findOne([[User.id, 1]]);
+ * const posts = await user.posts;  // Batch loads with other users in context
  * ```
  */
 // Overload 1: @model (without arguments)
@@ -521,6 +699,42 @@ export function model<T extends { new (...args: unknown[]): object }>(
 }
 
 /**
+ * Check if keys are composite (array of pairs) or single pair
+ * Single pair: [sourceColumn, targetColumn]
+ * Composite: [[sourceCol1, targetCol1], [sourceCol2, targetCol2], ...]
+ */
+function isCompositeKeys(keys: KeyPair | CompositeKeyPairs): keys is CompositeKeyPairs {
+  // If first element is an array, it's composite (array of pairs)
+  // If first element is a Column (function), it's a single pair
+  return Array.isArray(keys[0]);
+}
+
+/**
+ * Parse key pair(s) into source and target key arrays
+ */
+function parseKeys(keys: KeyPair | CompositeKeyPairs): {
+  sourceKeys: string[];
+  targetKeys: string[];
+  targetModelName: string;
+} {
+  if (isCompositeKeys(keys)) {
+    // Composite keys: [[sourceKey1, targetKey1], [sourceKey2, targetKey2], ...]
+    const sourceKeys = keys.map(pair => pair[0].columnName);
+    const targetKeys = keys.map(pair => pair[1].columnName);
+    const targetModelName = keys[0][1].modelName;
+    return { sourceKeys, targetKeys, targetModelName };
+  } else {
+    // Single key pair: [sourceKey, targetKey]
+    const [sourceKey, targetKey] = keys;
+    return {
+      sourceKeys: [sourceKey.columnName],
+      targetKeys: [targetKey.columnName],
+      targetModelName: targetKey.modelName,
+    };
+  }
+}
+
+/**
  * Internal function to apply the model decorator
  */
 function applyModelDecorator<T extends { new (...args: unknown[]): object }>(
@@ -529,6 +743,8 @@ function applyModelDecorator<T extends { new (...args: unknown[]): object }>(
 ): T {
   const columns: Map<string, ColumnMeta> =
     Reflect.getMetadata(COLUMNS_KEY, constructor) || new Map();
+  const relations: RelationMeta[] =
+    Reflect.getMetadata(RELATIONS_KEY, constructor) || [];
   const modelName = constructor.name;
 
   // 0. Set TABLE_NAME if provided
@@ -591,6 +807,49 @@ function applyModelDecorator<T extends { new (...args: unknown[]): object }>(
     enumerable: false,
     configurable: false,
   });
+
+  // 5. Create relation getters from @hasMany, @belongsTo, @hasOne decorators
+  for (const relation of relations) {
+    const { propertyKey, type, keysFactory, options } = relation;
+
+    Object.defineProperty(constructor.prototype, propertyKey, {
+      get: function () {
+        // Call the factory to get keys (lazy resolution for circular references)
+        const keys = keysFactory();
+        const { sourceKeys, targetKeys, targetModelName } = parseKeys(keys);
+
+        // Build relation config
+        const order = options?.order ? orderToString(options.order()) : null;
+        const conditions = options?.where ? condsToRecord(options.where()) : undefined;
+
+        // Call internal relation method
+        return this._loadRelation(type, targetModelName, {
+          sourceKeys,
+          targetKeys,
+          order,
+          conditions,
+        });
+      },
+      enumerable: true,
+      configurable: false,
+    });
+  }
+
+  // 6. Store relation metadata for introspection
+  Object.defineProperty(constructor, '_relationMeta', {
+    value: relations,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+
+  // 7. Register model in the registry for relation resolution
+  // This is done lazily to support circular references
+  // The DBModel._registerModel method is called with the constructor
+  const ctor = constructor as unknown as { _registerModel?: (name: string, cls: unknown) => void };
+  if (typeof ctor._registerModel === 'function') {
+    ctor._registerModel(modelName, constructor);
+  }
 
   return constructor;
 }

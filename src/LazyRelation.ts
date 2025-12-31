@@ -8,22 +8,20 @@
  * - PostgreSQL: Uses `= ANY($1::type[])` for single keys, `unnest + JOIN` for composite keys
  * - MySQL/SQLite: Uses traditional `IN (?, ?, ...)` clause
  *
- * Usage:
+ * Usage with decorators:
  * ```typescript
+ * @model('posts')
  * class Post extends DBModel {
- *   get author(): Promise<User | null> {
- *     return this._belongsTo(User, {
- *       targetKey: User.id,
- *       sourceKey: Post.user_id,
- *     });
- *   }
+ *   @column() id?: number;
+ *   @column() author_id?: number;
  *
- *   get comments(): Promise<Comment[]> {
- *     return this._hasMany(Comment, {
- *       targetKey: Comment.post_id,
- *       order: Comment.created_at.asc(),
- *     });
- *   }
+ *   @belongsTo(() => [Post.author_id, User.id])
+ *   author!: Promise<User | null>;
+ *
+ *   @hasMany(() => [Post.id, Comment.post_id], {
+ *     order: () => Comment.created_at.asc(),
+ *   })
+ *   comments!: Promise<Comment[]>;
  * }
  *
  * // Access with await
@@ -36,7 +34,7 @@
 
 import { DBModel } from './DBModel';
 import { type ConditionObject } from './DBConditions';
-import { type ColumnOf, type OrderSpec, type Conds, orderToString, condsToRecord, createColumn } from './Column';
+import { type Conds, createColumn, orderToString } from './Column';
 
 // ============================================
 // Type Inference Helpers
@@ -63,62 +61,6 @@ function inferPgArrayType(values: unknown[]): string {
 }
 
 // ============================================
-// Relation Option Types
-// ============================================
-
-/**
- * Options for belongsTo relation
- */
-export interface BelongsToOptions<Target, Source> {
-  /** Target model's key (usually primary key) - for single-column key */
-  targetKey?: ColumnOf<Target>;
-  /** This model's foreign key - for single-column key */
-  sourceKey?: ColumnOf<Source>;
-  /**
-   * Target model's keys (for composite key relation)
-   * @example
-   * targetKeys: [User.tenant_id, User.id]
-   */
-  targetKeys?: ColumnOf<Target>[];
-  /**
-   * This model's foreign keys (for composite key relation)
-   * @example
-   * sourceKeys: [Post.tenant_id, Post.user_id]
-   */
-  sourceKeys?: ColumnOf<Source>[];
-  /** Additional filter conditions (tuple array or object) */
-  where?: Conds | ConditionObject;
-  /** Order by clause */
-  order?: OrderSpec;
-}
-
-/**
- * Options for hasMany/hasOne relation
- */
-export interface HasManyOptions<Target, Source> {
-  /** Target model's foreign key - for single-column key */
-  targetKey?: ColumnOf<Target>;
-  /** This model's key (defaults to 'id') - for single-column key */
-  sourceKey?: ColumnOf<Source>;
-  /**
-   * Target model's foreign keys (for composite key relation)
-   * @example
-   * targetKeys: [Comment.tenant_id, Comment.post_id]
-   */
-  targetKeys?: ColumnOf<Target>[];
-  /**
-   * This model's keys (for composite key relation)
-   * @example
-   * sourceKeys: [Post.tenant_id, Post.id]
-   */
-  sourceKeys?: ColumnOf<Source>[];
-  /** Additional filter conditions (tuple array or object) */
-  where?: Conds | ConditionObject;
-  /** Order by clause */
-  order?: OrderSpec;
-}
-
-// ============================================
 // Types
 // ============================================
 
@@ -141,48 +83,6 @@ export interface RelationConfig {
 // ============================================
 // Helper Functions
 // ============================================
-
-/**
- * Convert where option to ConditionObject
- */
-function normalizeWhere(where?: Conds | ConditionObject): ConditionObject | undefined {
-  if (!where) return undefined;
-  if (Array.isArray(where)) {
-    return condsToRecord(where as Conds) as ConditionObject;
-  }
-  return where as ConditionObject;
-}
-
-/**
- * Build RelationConfig from options
- * @internal
- */
-export function buildRelationConfig<Target, Source>(
-  targetClass: new () => Target,
-  _relationType: RelationType,
-  options?: BelongsToOptions<Target, Source> | HasManyOptions<Target, Source>
-): RelationConfig {
-  const config: RelationConfig = {
-    targetClass: targetClass as unknown as typeof DBModel,
-    conditions: normalizeWhere(options?.where),
-    order: orderToString(options?.order) || null,
-  };
-
-  // Handle composite keys (takes precedence over single keys)
-  if (options?.targetKeys && options.targetKeys.length > 0) {
-    config.targetKeys = options.targetKeys.map(col => col.columnName);
-  } else if (options?.targetKey) {
-    config.targetKey = options.targetKey.columnName;
-  }
-
-  if (options?.sourceKeys && options.sourceKeys.length > 0) {
-    config.sourceKeys = options.sourceKeys.map(col => col.columnName);
-  } else if (options?.sourceKey) {
-    config.sourceKey = options.sourceKey.columnName;
-  }
-
-  return config;
-}
 
 // ============================================
 // LazyRelationContext

@@ -255,23 +255,41 @@ await UserPref.create(
 
 ---
 
-## Lazy Loading Relations
+## Relation Decorators
+
+Define relations declaratively with type-safe decorators:
 
 ```typescript
+import { DBModel, model, column, hasMany, belongsTo, hasOne, ColumnsOf } from 'litedbmodel';
+
+@model('users')
+class UserModel extends DBModel {
+  @column() id?: number;
+  @column() name?: string;
+
+  // Use 'declare' for relation properties (not '!' assertion)
+  // This prevents TypeScript from creating instance properties that shadow the getter
+  @hasMany(() => [User.id, Post.author_id])
+  declare posts: Promise<Post[]>;
+
+  @hasOne(() => [User.id, UserProfile.user_id])
+  declare profile: Promise<UserProfile | null>;
+}
+export const User = UserModel as typeof UserModel & ColumnsOf<UserModel>;
+
 @model('posts')
 class PostModel extends DBModel {
   @column() id?: number;
-  @column() user_id?: number;
+  @column() author_id?: number;
   @column() title?: string;
 
-  get author(): Promise<User | null> {
-    return this._belongsTo(User, { targetKey: User.id, sourceKey: Post.user_id });
-  }
+  @belongsTo(() => [Post.author_id, User.id])
+  declare author: Promise<User | null>;
 
-  get comments(): Promise<Comment[]> {
-    return this._hasMany(Comment, { targetKey: Comment.post_id });
-  }
+  @hasMany(() => [Post.id, Comment.post_id])
+  declare comments: Promise<Comment[]>;
 }
+export const Post = PostModel as typeof PostModel & ColumnsOf<PostModel>;
 
 // Usage
 const post = await Post.findOne([[Post.id, 1]]);
@@ -279,14 +297,32 @@ const author = await post.author;       // Lazy loaded
 const comments = await post.comments;   // Lazy loaded
 ```
 
+> **Important:** Use `declare` (not `!`) for relation properties. TypeScript class field declarations with `!` create instance properties that shadow the prototype getter.
+
+### With Options (order, where)
+
+```typescript
+@hasMany(() => [User.id, Post.author_id], {
+  order: () => Post.created_at.desc(),
+  where: () => [[Post.is_deleted, false]],
+})
+declare activePosts: Promise<Post[]>;
+```
+
 ### Composite Key Relations
 
 ```typescript
-get author(): Promise<User | null> {
-  return this._belongsTo(User, {
-    targetKeys: [User.tenant_id, User.id],
-    sourceKeys: [Post.tenant_id, Post.user_id],
-  });
+@model('tenant_posts')
+class TenantPostModel extends DBModel {
+  @column({ primaryKey: true }) tenant_id?: number;
+  @column({ primaryKey: true }) id?: number;
+  @column() author_id?: number;
+
+  @belongsTo(() => [
+    [TenantPost.tenant_id, TenantUser.tenant_id],
+    [TenantPost.author_id, TenantUser.id],
+  ])
+  declare author: Promise<TenantUser | null>;
 }
 ```
 
@@ -365,11 +401,13 @@ console.log(ctx.queries);
 ### Tenant Isolation Example
 
 ```typescript
+import { Column } from 'litedbmodel';
+
 class TenantMiddleware extends Middleware {
   tenantId: number = 0;
 
   async find<T extends typeof DBModel>(model: T, next: NextFind<T>, conditions: Conds) {
-    const tenantCol = (model as any).tenant_id;
+    const tenantCol = (model as { tenant_id?: Column }).tenant_id;
     if (tenantCol) {
       conditions = [[tenantCol, this.tenantId], ...conditions];
     }

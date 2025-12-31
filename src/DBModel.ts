@@ -12,7 +12,7 @@ import type { MiddlewareClass, ExecuteResult } from './Middleware';
 import { serializeRecord, getColumnMeta } from './decorators';
 
 // Import LazyRelation module (static import for Vitest compatibility)
-import { LazyRelationContext, buildRelationConfig, type BelongsToOptions, type HasManyOptions } from './LazyRelation';
+import { LazyRelationContext, type RelationType, type RelationConfig } from './LazyRelation';
 
 // Transaction context stored in AsyncLocalStorage
 interface TransactionContext {
@@ -1028,119 +1028,91 @@ export abstract class DBModel {
   }
 
   /**
-   * BelongsTo relation (N:1) - This record belongs to one parent record.
-   * Returns cached value if available, otherwise loads from DB.
+   * Internal method called by relation decorators (@hasMany, @belongsTo, @hasOne).
+   * Loads relation data with batch loading support.
    *
-   * @param targetClass - The parent model class
-   * @param options - Relation options with type-safe Column references
-   *
-   * @example
-   * ```typescript
-   * class Post extends DBModel {
-   *   get author(): Promise<User | null> {
-   *     return this._belongsTo(User, {
-   *       targetKey: User.id,
-   *       sourceKey: Post.user_id,
-   *     });
-   *   }
-   * }
-   * ```
+   * @param relationType - The type of relation ('hasMany', 'belongsTo', 'hasOne')
+   * @param targetModelName - The target model class name (for lookup)
+   * @param config - Relation configuration from decorator
+   * @returns Promise of related records
+   * @internal
    */
-  protected async _belongsTo<
-    Target extends DBModel,
-    Source extends DBModel = this,
-  >(
-    targetClass: new () => Target,
-    options?: BelongsToOptions<Target, Source>
-  ): Promise<Target | null> {
-    const config = buildRelationConfig(targetClass, 'belongsTo', options);
-    const context = this._getRelationContext();
-    const cacheKey = context.getCacheKey('belongsTo', config);
-
-    if (this._relationCache.has(cacheKey)) {
-      return this._relationCache.get(cacheKey) as Target | null;
+  async _loadRelation(
+    relationType: RelationType,
+    targetModelName: string,
+    config: {
+      sourceKeys: string[];
+      targetKeys: string[];
+      order: string | null;
+      conditions?: Record<string, unknown>;
+    }
+  ): Promise<DBModel | DBModel[] | null> {
+    // Get target class from registry
+    const TargetClass = DBModel._getModelByName(targetModelName);
+    if (!TargetClass) {
+      throw new Error(`Model '${targetModelName}' not found. Ensure it is decorated with @model and imported before use.`);
     }
 
-    const result = await context.getRelation<Target>(this, 'belongsTo', config);
+    // Build RelationConfig
+    const relationConfig: RelationConfig = {
+      targetClass: TargetClass,
+      conditions: config.conditions as ConditionObject | undefined,
+      order: config.order,
+    };
+
+    // Set keys based on whether composite or single
+    if (config.sourceKeys.length === 1) {
+      relationConfig.sourceKey = config.sourceKeys[0];
+      relationConfig.targetKey = config.targetKeys[0];
+    } else {
+      relationConfig.sourceKeys = config.sourceKeys;
+      relationConfig.targetKeys = config.targetKeys;
+    }
+
+    const context = this._getRelationContext();
+    const cacheKey = context.getCacheKey(relationType, relationConfig);
+
+    // Return cached value if available
+    if (this._relationCache.has(cacheKey)) {
+      const cached = this._relationCache.get(cacheKey);
+      if (relationType === 'hasMany') {
+        return cached as DBModel[];
+      }
+      return cached as DBModel | null;
+    }
+
+    // Load from context (batch loading)
+    const result = await context.getRelation<DBModel>(this, relationType, relationConfig);
     this._relationCache.set(cacheKey, result);
-    return result as Target | null;
+
+    if (relationType === 'hasMany') {
+      return result as DBModel[];
+    }
+    return result as DBModel | null;
+  }
+
+  // ============================================
+  // Model Registry (for relation decorator support)
+  // ============================================
+
+  /** Registry of model classes by name */
+  private static _modelRegistry: Map<string, typeof DBModel> = new Map();
+
+  /**
+   * Register a model class in the registry.
+   * Called automatically by @model decorator.
+   * @internal
+   */
+  static _registerModel(name: string, modelClass: typeof DBModel): void {
+    DBModel._modelRegistry.set(name, modelClass);
   }
 
   /**
-   * HasMany relation (1:N) - This record has many child records.
-   * Returns cached value if available, otherwise loads from DB.
-   *
-   * @param targetClass - The child model class
-   * @param options - Relation options
-   *
-   * @example
-   * ```typescript
-   * class User extends DBModel {
-   *   get posts(): Promise<Post[]> {
-   *     return this._hasMany(Post, {
-   *       targetKey: Post.user_id,
-   *       order: Post.created_at.desc(),
-   *     });
-   *   }
-   * }
-   * ```
+   * Get a model class by name from the registry.
+   * @internal
    */
-  protected async _hasMany<
-    Target extends DBModel,
-    Source extends DBModel = this,
-  >(
-    targetClass: new () => Target,
-    options?: HasManyOptions<Target, Source>
-  ): Promise<Target[]> {
-    const config = buildRelationConfig(targetClass, 'hasMany', options);
-    const context = this._getRelationContext();
-    const cacheKey = context.getCacheKey('hasMany', config);
-
-    if (this._relationCache.has(cacheKey)) {
-      return this._relationCache.get(cacheKey) as Target[];
-    }
-
-    const result = await context.getRelation<Target>(this, 'hasMany', config);
-    this._relationCache.set(cacheKey, result);
-    return result as Target[];
-  }
-
-  /**
-   * HasOne relation (1:1) - This record has one related record.
-   * Returns cached value if available, otherwise loads from DB.
-   *
-   * @param targetClass - The related model class
-   * @param options - Relation options
-   *
-   * @example
-   * ```typescript
-   * class User extends DBModel {
-   *   get profile(): Promise<UserProfile | null> {
-   *     return this._hasOne(UserProfile, {
-   *       targetKey: UserProfile.user_id,
-   *     });
-   *   }
-   * }
-   * ```
-   */
-  protected async _hasOne<
-    Target extends DBModel,
-    Source extends DBModel = this,
-  >(
-    targetClass: new () => Target,
-    options?: HasManyOptions<Target, Source>
-  ): Promise<Target | null> {
-    const config = buildRelationConfig(targetClass, 'hasOne', options);
-    const context = this._getRelationContext();
-    const cacheKey = context.getCacheKey('hasOne', config);
-
-    if (this._relationCache.has(cacheKey)) {
-      return this._relationCache.get(cacheKey) as Target | null;
-    }
-
-    const result = await context.getRelation<Target>(this, 'hasOne', config);
-    this._relationCache.set(cacheKey, result);
-    return result as Target | null;
+  static _getModelByName(name: string): typeof DBModel | undefined {
+    return DBModel._modelRegistry.get(name);
   }
 
   // ============================================

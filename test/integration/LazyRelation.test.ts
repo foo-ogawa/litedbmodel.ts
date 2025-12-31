@@ -16,6 +16,9 @@ import {
   DBModel,
   model,
   column,
+  hasMany,
+  belongsTo,
+  hasOne,
   ColumnsOf,
   closeAllPools,
   Middleware,
@@ -107,18 +110,14 @@ class TestUserModel extends DBModel {
   @column() created_at?: Date;
 
   // Relations - accessed with await
-  get posts(): Promise<TestPostModel[]> {
-    return this._hasMany(TestPostModel, {
-      targetKey: TestPost.user_id,
-      order: TestPost.created_at.desc(),
-    });
-  }
+  // Use 'declare' to avoid creating instance property that shadows the getter
+  @hasMany(() => [TestUser.id, TestPost.user_id], {
+    order: () => TestPost.created_at.desc(),
+  })
+  declare posts: Promise<TestPostModel[]>;
 
-  get profile(): Promise<TestUserProfileModel | null> {
-    return this._hasOne(TestUserProfileModel, {
-      targetKey: TestUserProfile.user_id,
-    });
-  }
+  @hasOne(() => [TestUser.id, TestUserProfile.user_id])
+  declare profile: Promise<TestUserProfileModel | null>;
 
   // Reload methods (bypass cache)
   reloadPosts(): Promise<TestPostModel[]> {
@@ -139,27 +138,25 @@ class TestPostModel extends DBModel {
   @column() created_at?: Date;
 
   // Relations - accessed with await
-  get author(): Promise<TestUserModel | null> {
-    return this._belongsTo(TestUserModel, {
-      targetKey: TestUser.id,
-      sourceKey: TestPost.user_id,
-    });
-  }
+  // Use 'declare' to avoid creating instance property that shadows the getter
+  @belongsTo(() => [TestPost.user_id, TestUser.id])
+  declare author: Promise<TestUserModel | null>;
 
-  get comments(): Promise<TestPostCommentModel[]> {
-    return this._hasMany(TestPostCommentModel, {
-      targetKey: TestPostComment.post_id,
-      order: TestPostComment.created_at.asc(),
-    });
-  }
+  @hasMany(() => [TestPost.id, TestPostComment.post_id], {
+    order: () => TestPostComment.created_at.asc(),
+  })
+  declare comments: Promise<TestPostCommentModel[]>;
 
-  // Filtered relation example
+  // Filtered relation example using decorator with where
+  @hasMany(() => [TestPost.id, TestPostComment.post_id], {
+    where: () => [[TestPostComment.published, true]],
+    order: () => TestPostComment.created_at.asc(),
+  })
+  declare publishedCommentsRel: Promise<TestPostCommentModel[]>;
+
+  // Keep method for backward compatibility in tests
   publishedComments(): Promise<TestPostCommentModel[]> {
-    return this._hasMany(TestPostCommentModel, {
-      targetKey: TestPostComment.post_id,
-      where: [[TestPostComment.published, true]],
-      order: TestPostComment.created_at.asc(),
-    });
+    return this.publishedCommentsRel;
   }
 }
 TestPost = TestPostModel as typeof TestPostModel & ColumnsOf<TestPostModel>;
@@ -175,19 +172,11 @@ class TestPostCommentModel extends DBModel {
   @column() created_at?: Date;
 
   // Relations
-  get post(): Promise<TestPostModel | null> {
-    return this._belongsTo(TestPostModel, {
-      targetKey: TestPost.id,
-      sourceKey: TestPostComment.post_id,
-    });
-  }
+  @belongsTo(() => [TestPostComment.post_id, TestPost.id])
+  declare post: Promise<TestPostModel | null>;
 
-  get user(): Promise<TestUserModel | null> {
-    return this._belongsTo(TestUserModel, {
-      targetKey: TestUser.id,
-      sourceKey: TestPostComment.user_id,
-    });
-  }
+  @belongsTo(() => [TestPostComment.user_id, TestUser.id])
+  declare user: Promise<TestUserModel | null>;
 }
 TestPostComment = TestPostCommentModel as typeof TestPostCommentModel & ColumnsOf<TestPostCommentModel>;
 type TestPostComment = TestPostCommentModel;
@@ -201,12 +190,8 @@ class TestUserProfileModel extends DBModel {
   @column() created_at?: Date;
 
   // Relations
-  get user(): Promise<TestUserModel | null> {
-    return this._belongsTo(TestUserModel, {
-      targetKey: TestUser.id,
-      sourceKey: TestUserProfile.user_id,
-    });
-  }
+  @belongsTo(() => [TestUserProfile.user_id, TestUser.id])
+  declare user: Promise<TestUserModel | null>;
 }
 TestUserProfile = TestUserProfileModel as typeof TestUserProfileModel & ColumnsOf<TestUserProfileModel>;
 type TestUserProfile = TestUserProfileModel;
@@ -231,13 +216,13 @@ class TenantUserModel extends DBModel {
   }
 
   // HasMany with composite key
-  get posts(): Promise<TenantPostModel[]> {
-    return this._hasMany(TenantPostModel, {
-      targetKeys: [TenantPost.tenant_id, TenantPost.user_id],
-      sourceKeys: [TenantUser.tenant_id, TenantUser.id],
-      order: TenantPost.created_at.desc(),
-    });
-  }
+  @hasMany(() => [
+    [TenantUser.tenant_id, TenantPost.tenant_id],
+    [TenantUser.id, TenantPost.user_id],
+  ], {
+    order: () => TenantPost.created_at.desc(),
+  })
+  declare posts: Promise<TenantPostModel[]>;
 }
 TenantUser = TenantUserModel as typeof TenantUserModel & ColumnsOf<TenantUserModel>;
 type TenantUser = TenantUserModel;
@@ -257,12 +242,11 @@ class TenantPostModel extends DBModel {
   }
 
   // BelongsTo with composite key
-  get author(): Promise<TenantUserModel | null> {
-    return this._belongsTo(TenantUserModel, {
-      targetKeys: [TenantUser.tenant_id, TenantUser.id],
-      sourceKeys: [TenantPost.tenant_id, TenantPost.user_id],
-    });
-  }
+  @belongsTo(() => [
+    [TenantPost.tenant_id, TenantUser.tenant_id],
+    [TenantPost.user_id, TenantUser.id],
+  ])
+  declare author: Promise<TenantUserModel | null>;
 }
 TenantPost = TenantPostModel as typeof TenantPostModel & ColumnsOf<TenantPostModel>;
 type TenantPost = TenantPostModel;

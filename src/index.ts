@@ -103,11 +103,21 @@ export {
 export {
   model,
   column,
+  hasMany,
+  belongsTo,
+  hasOne,
   getColumnMeta,
+  getRelationMeta,
   getModelColumnNames,
   getModelPropertyNames,
   type ColumnOptions,
   type ColumnMeta,
+  type RelationMeta,
+  type RelationType,
+  type KeyPair,
+  type CompositeKeyPairs,
+  type KeysFactory,
+  type RelationDecoratorOptions,
 } from './decorators';
 
 // ============================================
@@ -139,11 +149,7 @@ export {
   LazyRelationContext,
   createRelationContext,
   preloadRelations,
-  buildRelationConfig,
-  type RelationType,
   type RelationConfig,
-  type BelongsToOptions,
-  type HasManyOptions,
 } from './LazyRelation';
 
 // Backward compatibility: LazyLoadingDBModel is now just DBModel
