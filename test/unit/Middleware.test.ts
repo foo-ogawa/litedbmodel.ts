@@ -48,13 +48,24 @@ describe('Middleware', () => {
   });
 
   describe('hasContext', () => {
-    it('should return false before any access', () => {
-      expect(TestMiddleware.hasContext()).toBe(false);
+    it('should return false before any access (using fresh class)', () => {
+      // Use a fresh middleware class to avoid test interference
+      class FreshMiddleware extends Middleware {}
+      expect(FreshMiddleware.hasContext()).toBe(false);
     });
 
     it('should return true after access', () => {
-      TestMiddleware.getCurrentContext();
-      expect(TestMiddleware.hasContext()).toBe(true);
+      class FreshMiddleware extends Middleware {}
+      FreshMiddleware.getCurrentContext();
+      expect(FreshMiddleware.hasContext()).toBe(true);
+    });
+
+    it('should return false after clearContext', () => {
+      class FreshMiddleware extends Middleware {}
+      FreshMiddleware.getCurrentContext();
+      expect(FreshMiddleware.hasContext()).toBe(true);
+      FreshMiddleware.clearContext();
+      expect(FreshMiddleware.hasContext()).toBe(false);
     });
   });
 
