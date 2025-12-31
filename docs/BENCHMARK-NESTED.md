@@ -62,12 +62,11 @@ WHERE "public"."benchmark_posts"."author_id" IN ($1,$2,$3,...,$100)
 
 > **Note:** `ANY()` and `unnest()` are PostgreSQL-specific features. On MySQL/SQLite, litedbmodel falls back to standard `IN (...)` syntax.
 
-| ORM | 100 records | 1000 records | Parameter Style |
-|-----|-------------|--------------|-----------------|
-| **litedbmodel** | **`$1`** | **`$1`** | `ANY($1::int[])` |
-| Prisma | `$1`~`$100` | `$1`~`$1000` | `IN ($1,$2,...,$N)` |
-| Kysely | `$1`~`$100` | `$1`~`$1000` | `IN ($1,$2,...,$N)` |
-| TypeORM | `$1`~`$100` | `$1`~`$1000` | `IN ($1,$2,...,$N)` |
+| Feature | litedbmodel | Prisma | Kysely | TypeORM |
+|---------|-------------|--------|--------|---------|
+| 100 records | **`$1`** | `$1`~`$100` | `$1`~`$100` | `$1`~`$100` |
+| 1000 records | **`$1`** | `$1`~`$1000` | `$1`~`$1000` | `$1`~`$1000` |
+| Parameter Style | `ANY($1::int[])` | `IN ($1,$2,...,$N)` | `IN ($1,$2,...,$N)` | `IN ($1,$2,...,$N)` |
 
 **Benefits:**
 - **Easier SQL log analysis** - Same query pattern regardless of data size
@@ -295,13 +294,12 @@ WHERE ( "tenant_id"=$1 AND "user_id"=$2
 
 ## SQL Characteristics Summary
 
-| ORM | Readability | Param Count | Debuggability | Query Cache Efficiency |
-|-----|-------------|-------------|---------------|----------------------|
-| **litedbmodel** | ⭐⭐⭐⭐⭐ | Fixed | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
-| Kysely | ⭐⭐⭐⭐ | Variable | ⭐⭐⭐⭐ | ⭐⭐⭐ |
-| Drizzle | ⭐⭐ | Fixed | ⭐⭐ | ⭐⭐⭐⭐ |
-| TypeORM | ⭐ | Variable | ⭐ | ⭐⭐ |
-| Prisma | ⭐⭐ | Variable | ⭐⭐ | ⭐⭐ |
+| Characteristic | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
+|----------------|-------------|--------|---------|---------|--------|
+| Readability | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ |
+| Param Count | Fixed | Variable | Fixed | Variable | Variable |
+| Debuggability | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐ | ⭐⭐ |
+| Query Cache Efficiency | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐ |
 
 **Notes:**
 - **litedbmodel**: `ANY($1::int[])` produces consistent SQL patterns, ideal for log analysis and caching
@@ -335,10 +333,82 @@ LEFT JOIN LATERAL (
 - ❌ Complex SQL (difficult to debug)
 - ❌ Heavy DB-side JSON processing
 - ❌ Result parsing overhead
+- ❌ Query must be pre-defined with all relations upfront
 
 ---
 
 ## litedbmodel's Design Philosophy
+
+### Transparent Lazy Loading
+
+litedbmodel takes a fundamentally different approach: **relations are statically defined, but data is dynamically loaded only when accessed**.
+
+```typescript
+// Define relations once in your model
+@model('users')
+class UserModel extends DBModel {
+  @column() id?: number;
+  @column() name?: string;
+  
+  @hasMany(() => Post, 'author_id')
+  posts?: Post[];
+}
+
+// Same model works for both list and detail views
+const users = await User.find([], { limit: 100 });
+
+// List view: Only access user data
+for (const user of users) {
+  console.log(user.name);  // No additional queries
+}
+
+// Detail view: Access relations when needed
+for (const user of users) {
+  const posts = await user.posts;  // Batch loads all posts for 100 users in ONE query
+  for (const post of posts) {
+    const comments = await post.comments;  // Batch loads comments in ONE query
+  }
+}
+```
+
+**Key Advantages:**
+
+| Aspect | Drizzle (Eager) | litedbmodel (Lazy) |
+|--------|-----------------|-------------------|
+| Query definition | Must specify all relations upfront | Relations loaded on-demand |
+| List view efficiency | Fetches unused nested data | Only fetches what's accessed |
+| Detail view support | Same query works | Same query works |
+| Code reusability | Different queries for different views | One model, multiple use cases |
+| N+1 prevention | Query builder handles | Automatic batch loading |
+
+**Real-World Scenario:**
+
+```typescript
+// API endpoint that serves both list and detail
+async function getUsers(includeDetails: boolean) {
+  const users = await User.find([], { limit: 100 });
+  
+  if (includeDetails) {
+    // Accessing .posts triggers batch loading
+    // All 100 users' posts loaded in 1 query, not 100
+    for (const user of users) {
+      user.postsData = await user.posts;
+    }
+  }
+  
+  return users;
+}
+```
+
+With Drizzle's approach, you'd need two different queries:
+- `db.query.users.findMany()` for list view
+- `db.query.users.findMany({ with: { posts: true } })` for detail view
+
+With litedbmodel, the same code handles both cases - relations are loaded only when accessed, and always batch-loaded to prevent N+1.
+
+---
+
+### Batch Loading Strategy
 
 ### Batch Loading Strategy
 
