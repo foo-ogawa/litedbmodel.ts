@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, 'release/**', 'feature/**', 'hotfix/**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Lint
+        run: npm run lint
+
+  integration-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpass
+          MYSQL_USER: testuser
+          MYSQL_PASSWORD: testpass
+          MYSQL_DATABASE: testdb
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Wait for databases
+        run: sleep 5
+
+      - name: Initialize PostgreSQL
+        run: |
+          PGPASSWORD=testpass psql -h localhost -p 5433 -U testuser -d testdb -f test/fixtures/init.sql
+
+      - name: Initialize MySQL
+        run: |
+          mysql -h 127.0.0.1 -P 3307 -u testuser -ptestpass testdb < test/fixtures/init-mysql.sql
+
+      - name: Run integration tests
+        run: npm run test:integration
+        env:
+          TEST_DB_HOST: localhost
+          TEST_DB_PORT: 5433
+          TEST_DB_USER: testuser
+          TEST_DB_PASSWORD: testpass
+          TEST_DB_NAME: testdb
+          TEST_MYSQL_HOST: localhost
+          TEST_MYSQL_PORT: 3307
+          TEST_MYSQL_USER: testuser
+          TEST_MYSQL_PASSWORD: testpass
+          TEST_MYSQL_NAME: testdb
+
