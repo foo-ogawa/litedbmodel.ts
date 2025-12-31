@@ -7,91 +7,23 @@ A lightweight, SQL-friendly TypeScript ORM for PostgreSQL, MySQL, and SQLite.
 
 ## Philosophy
 
-**SQL is not the enemy.** Most ORMs hide SQL behind complex abstractions, making debugging harder and limiting what you can do. litedbmodel takes a different approach.
+**SQL is not the enemy.** Most ORMs hide SQL behind complex abstractions, making debugging harder and limiting what you can do. litedbmodel takes a different approach:
 
-### 1. Model-Centric, Not Query-Centric
+- **Predictable** — Generated queries are simple, readable, and exactly what you'd write by hand
+- **Type-Safe** — Results map to typed model instances with full IDE support
+- **Real SQL When Needed** — Complex queries use actual SQL via `query()` or Query-Based Models, not a proprietary DSL
+- **Model-Centric** — Same model serves list/detail views; relations load on-demand with automatic batch loading
 
-Most ORMs (Drizzle, Prisma) require you to **define what relations to fetch upfront**. Different views need different queries:
-
-```typescript
-// Drizzle: Two different queries for two use cases
-const listView = await db.query.users.findMany();                           // List only
-const detailView = await db.query.users.findMany({ with: { posts: true }}); // With relations
-```
-
-litedbmodel takes a **model-centric** approach. Define relations once, and they load **only when accessed**:
-
-```typescript
-// litedbmodel: Same code handles both
-const users = await User.find([], { limit: 100 });
-
-// List view - no extra queries
-for (const user of users) console.log(user.name);
-
-// Detail view - relations batch-load on first access
-for (const user of users) {
-  const posts = await user.posts;  // All 100 users' posts in ONE query
-}
-```
-
-**Key insight**: The same model works for list views, detail views, and everything in between. No query proliferation.
-
-### 2. Transparent Batch Loading (N+1 is the Library's Problem)
-
-Lazy loading normally causes N+1 problems. litedbmodel solves this **transparently**:
-
-```typescript
-const users = await User.find([]);  // Returns 100 users
-
-for (const user of users) {
-  const posts = await user.posts;   // First access triggers batch load for ALL users
-}
-// Result: 2 queries total (users + posts), not 101
-```
-
-**The developer writes natural code** (`await user.posts`). The library ensures performance. This is a **separation of concerns** — human attention shouldn't be the only defense against N+1.
-
-### 3. SQL as Observable Infrastructure
-
-Generated SQL is designed for **production observability**, not just correctness:
-
-```sql
--- litedbmodel: Same SQL pattern regardless of data size
-SELECT * FROM posts WHERE author_id = ANY($1::int[])
--- Parameters: [{1,2,3,...,100}]
-
--- Other ORMs: SQL pattern changes with data size
-SELECT * FROM posts WHERE author_id IN ($1,$2,$3,...,$100)
--- 100 parameters for 100 records, 1000 for 1000...
-```
-
-**Why this matters:**
-- **Log analysis**: Same query pattern = easy to track and aggregate
-- **Prepared statement cache**: Fixed SQL shape = better plan reuse
-- **Debugging**: Understand query intent without expanding parameters
-
-### Summary
-
-| Aspect | Query-Centric ORMs | litedbmodel |
-|--------|-------------------|-------------|
-| Relation loading | Specified upfront per query | Loaded on-demand from model |
-| List vs Detail views | Different queries | Same code |
-| N+1 prevention | Developer's responsibility | Library handles transparently |
-| SQL patterns | Variable (changes with data) | Fixed (observable, cacheable) |
-| Design goal | Query flexibility | Model reusability + operational clarity |
-
-> See [BENCHMARK-NESTED.md](./docs/BENCHMARK-NESTED.md) for detailed performance comparison and SQL analysis.
+> See [Design Philosophy](./docs/BENCHMARK-NESTED.md#litedbmodels-design-philosophy) for detailed comparison with query-centric ORMs.
 
 ## Features
 
-- **Model-Centric Relations** — Same model for list/detail views; relations load on-demand
-- **Transparent N+1 Prevention** — Batch loading happens automatically, not manually specified
 - **Symbol-Based Columns** — `Model.column` enables IDE "Find References" and "Rename Symbol"
 - **Type-Safe Conditions** — Compile-time validation with `[Column, value]` tuples
 - **Query-Based Models** — Define models backed by complex SQL (aggregations, JOINs, CTEs)
 - **Subquery Support** — IN/NOT IN/EXISTS/NOT EXISTS with correlated subqueries
 - **Declarative SKIP** — Conditional fields without if-statements
-- **Observable SQL** — Fixed parameter counts for consistent log patterns
+- **Transparent N+1 Prevention** — Batch loading for lazy relations (library's job, not yours)
 - **Raw SQL Escape** — `Model.query()` and `DBModel.execute()` when you need full control
 - **Middleware** — Cross-cutting concerns (logging, auth, tenant isolation)
 - **Multi-Database** — PostgreSQL, MySQL, SQLite support
@@ -358,7 +290,7 @@ get author(): Promise<User | null> {
 }
 ```
 
-### Automatic N+1 Prevention
+### Transparent N+1 Prevention
 
 When `find()` returns multiple records, batch loading is **automatic** — no eager loading specification needed:
 
@@ -371,7 +303,7 @@ for (const user of users) {
 // Total: 2 queries instead of N+1!
 ```
 
-**This is the library's job, not yours.** Write natural code; litedbmodel handles the optimization.
+Write natural code (`await user.posts`); litedbmodel handles the optimization.
 
 ---
 
@@ -710,17 +642,16 @@ class UserActivityModel extends DBModel {
 | Feature | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
 |---------|-------------|--------|---------|---------|--------|
 | **Relation Loading** | On-demand | Manual | Eager/upfront | Eager/upfront | Include |
-| **N+1 Prevention** | ✅ Transparent | Manual | Manual | Eager only | Include |
-| **Same Model for List/Detail** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Complex Queries** | ✅ Real SQL | Builder DSL | Builder DSL | HQL/Builder | Prisma DSL |
 | **Query-Based Models** | ✅ | ❌ | ❌ | Views only | Views only |
-| **SQL Observability** | ✅ Fixed params | Variable | Variable | Variable | Variable |
+| **Model-Centric Relations** | ✅ On-demand | ❌ | ❌ Eager | ❌ Eager | ❌ Include |
+| **Transparent N+1 Prevention** | ✅ | ❌ Manual | ❌ Manual | Eager only | Include |
 | **IDE Refactoring** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **SKIP Pattern** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Extensibility** | Middleware | Plugins | ❌ Manual | Subscribers | Extensions |
 | **Performance** | 🏆 Fastest | Fast | Fast | Medium | Slow |
 
-> See [COMPARISON.md](./docs/COMPARISON.md) for detailed analysis and [BENCHMARK-NESTED.md](./docs/BENCHMARK-NESTED.md) for performance benchmarks.
+> See [COMPARISON.md](./docs/COMPARISON.md) for detailed analysis and [BENCHMARK-NESTED.md](./docs/BENCHMARK-NESTED.md) for benchmarks.
 
 ---
 
