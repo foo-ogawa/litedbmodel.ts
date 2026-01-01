@@ -429,8 +429,7 @@ export abstract class DBModel {
       sql += ` WHERE ${whereClause}`;
     }
 
-    const handler = this.getHandler();
-    const result = await handler.execute(sql, params);
+    const result = await this.execute(sql, params);
     return parseInt(String((result.rows as Record<string, unknown>[])[0].count), 10);
   }
 
@@ -507,8 +506,7 @@ export abstract class DBModel {
       sql += ` RETURNING ${options.returning}`;
     }
 
-    const handler = this.getHandler();
-    const result = await handler.execute(sql, params);
+    const result = await this.execute(sql, params);
     return (result.rows as Record<string, unknown>[]).map((row) => this._createInstance<T>(row));
   }
 
@@ -555,8 +553,7 @@ export abstract class DBModel {
       sql += ` RETURNING ${options.returning}`;
     }
 
-    const handler = this.getHandler();
-    const result = await handler.execute(sql, params);
+    const result = await this.execute(sql, params);
     return (result.rows as Record<string, unknown>[]).map((row) => this._createInstance<T>(row));
   }
 
@@ -585,8 +582,7 @@ export abstract class DBModel {
       sql += ` RETURNING ${options.returning}`;
     }
 
-    const handler = this.getHandler();
-    const result = await handler.execute(sql, params);
+    const result = await this.execute(sql, params);
     return (result.rows as Record<string, unknown>[]).map((row) => this._createInstance<T>(row));
   }
 

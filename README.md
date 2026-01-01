@@ -374,7 +374,57 @@ await DBModel.transaction(
 
 ## Middleware
 
-Class-based middleware for cross-cutting concerns:
+Class-based middleware for cross-cutting concerns.
+
+### Call Flow
+
+All database operations flow through the middleware system:
+
+```mermaid
+flowchart LR
+    subgraph "High-Level API"
+        find["find()"]
+        findOne["findOne()"]
+        findById["findById()"]
+        count["count()"]
+        create["create()"]
+        createMany["createMany()"]
+        update["update()"]
+        delete["delete()"]
+    end
+    
+    subgraph "Middle-Level API"
+        query["query()"]
+    end
+    
+    subgraph "Low-Level API"
+        execute["execute()"]
+    end
+    
+    subgraph "Database"
+        DB[(DB)]
+    end
+    
+    find --> query
+    findOne --> query
+    findById --> query
+    
+    count --> execute
+    create --> execute
+    createMany --> execute
+    update --> execute
+    delete --> execute
+    
+    query --> execute
+    execute --> DB
+```
+
+**Middleware hooks:**
+- **Method-level**: `find`, `findOne`, `findById`, `count`, `create`, `createMany`, `update`, `delete`
+- **Instantiation-level**: `query` — returns model instances from raw SQL
+- **SQL-level**: `execute` — intercepts ALL SQL queries (SELECT, INSERT, UPDATE, DELETE)
+
+### Example
 
 ```typescript
 import { Middleware, NextExecute, ExecuteResult } from 'litedbmodel';
