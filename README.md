@@ -361,7 +361,9 @@ for (const user of users) {
 
 Write natural code (`await user.posts`); litedbmodel handles the optimization.
 
-### Query Limits (Safety Guards)
+---
+
+## Query Limits (Safety Guards)
 
 Prevent accidental loading of too many records with configurable hardLimits:
 
