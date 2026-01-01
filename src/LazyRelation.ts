@@ -81,7 +81,7 @@ export interface RelationConfig {
   sourceKeys?: string[];
   /** SQL LIMIT for hasMany (per parent key) */
   limit?: number;
-  /** Hard limit - throws if exceeded (overrides global lazyLoadLimit) */
+  /** Hard limit - throws if exceeded (overrides global hasManyHardLimit) */
   hardLimit?: number | null;
   /** Relation name for error messages */
   relationName?: string;

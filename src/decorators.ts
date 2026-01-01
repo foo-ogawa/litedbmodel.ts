@@ -84,7 +84,7 @@ export interface RelationDecoratorOptions {
   limit?: number;
   /**
    * Hard limit for hasMany relations (throws exception if exceeded).
-   * Overrides the global lazyLoadLimit setting.
+   * Overrides the global hasManyHardLimit setting.
    * Set to null to disable the limit check for this relation.
    * @example
    * ```typescript

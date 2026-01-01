@@ -128,8 +128,8 @@ export abstract class DBModel {
    *   password: 'pass',
    * }, {
    *   // Optional: Set global limits
-   *   hardLimit: 10000,      // find() throws if > 10000 records
-   *   lazyLoadLimit: 1000,   // hasMany throws if > 1000 records per key
+   *   findHardLimit: 10000,      // find() throws if > 10000 records
+   *   hasManyHardLimit: 1000,    // hasMany throws if > 1000 records per key
    * });
    * 
    * // Now you can use all DBModel methods
@@ -142,16 +142,16 @@ export abstract class DBModel {
       writerConfig?: DBConfig;
       logger?: import('./types').Logger;
       /** Hard limit for find() - throws if exceeded */
-      hardLimit?: number | null;
+      findHardLimit?: number | null;
       /** Hard limit for hasMany lazy loading - throws if exceeded */
-      lazyLoadLimit?: number | null;
+      hasManyHardLimit?: number | null;
     }
   ): void {
     initDBHandler(config, { writerConfig: options?.writerConfig, logger: options?.logger });
     this._dbConfig = config;
     this._limitConfig = {
-      hardLimit: options?.hardLimit,
-      lazyLoadLimit: options?.lazyLoadLimit,
+      findHardLimit: options?.findHardLimit,
+      hasManyHardLimit: options?.hasManyHardLimit,
     };
   }
 
@@ -167,10 +167,10 @@ export abstract class DBModel {
    * @example
    * ```typescript
    * // Set limits after initial config
-   * DBModel.setLimitConfig({ hardLimit: 5000, lazyLoadLimit: 500 });
+   * DBModel.setLimitConfig({ findHardLimit: 5000, hasManyHardLimit: 500 });
    * 
    * // Disable limits
-   * DBModel.setLimitConfig({ hardLimit: null, lazyLoadLimit: null });
+   * DBModel.setLimitConfig({ findHardLimit: null, hasManyHardLimit: null });
    * ```
    */
   static setLimitConfig(config: LimitConfig): void {
@@ -548,7 +548,7 @@ export abstract class DBModel {
 
   /**
    * Select for lazy relation loading.
-   * Applies lazyLoadLimit check and supports CTE/raw conditions.
+   * Applies hasManyHardLimit check and supports CTE/raw conditions.
    * Can also accept raw SQL for complex queries (LATERAL JOIN, ROW_NUMBER).
    * 
    * @param conditionsOrSql - Condition object or raw SQL string
@@ -568,13 +568,13 @@ export abstract class DBModel {
     }
   ): Promise<InstanceType<T>[]> {
     // Determine effective hardLimit
-    const globalLazyLoadLimit = DBModel._limitConfig.lazyLoadLimit;
-    const relationHardLimit = relationConfig?.hardLimit;
+    const globalHasManyHardLimit = DBModel._limitConfig.hasManyHardLimit;
+    const perRelationHardLimit = relationConfig?.hardLimit;
     
     // null means disabled, undefined means use global
-    const effectiveHardLimit = relationHardLimit === null
+    const effectiveHardLimit = perRelationHardLimit === null
       ? null
-      : relationHardLimit ?? globalLazyLoadLimit;
+      : perRelationHardLimit ?? globalHasManyHardLimit;
     
     let sql: string;
     let params: unknown[];
@@ -1327,10 +1327,10 @@ export abstract class DBModel {
     
     // Check hardLimit for hasMany relations
     if (relationType === 'hasMany' && Array.isArray(result)) {
-      // Determine effective limit: per-relation hardLimit > global lazyLoadLimit
+      // Determine effective limit: per-relation hardLimit > global hasManyHardLimit
       // undefined = use global, null = no limit
       const effectiveLimit = config.hardLimit === undefined
-        ? DBModel._limitConfig.lazyLoadLimit
+        ? DBModel._limitConfig.hasManyHardLimit
         : config.hardLimit;
       
       if (effectiveLimit != null && result.length > effectiveLimit) {
@@ -1669,7 +1669,7 @@ export abstract class DBModel {
       const conditionRecord = condsToRecord(conds) as ConditionObject;
       
       // Apply hardLimit + 1 to detect overflow without fetching all records
-      const hardLimit = DBModel._limitConfig.hardLimit;
+      const hardLimit = DBModel._limitConfig.findHardLimit;
       const shouldCheckLimit = hardLimit != null && !opts?.limit;
       const effectiveOpts = shouldCheckLimit
         ? { ...opts, limit: hardLimit + 1 }

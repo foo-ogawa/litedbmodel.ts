@@ -167,7 +167,7 @@ export interface LimitConfig {
    * Set to null to disable.
    * @default null (no limit)
    */
-  hardLimit?: number | null;
+  findHardLimit?: number | null;
 
   /**
    * Hard limit for hasMany relation loading.
@@ -176,7 +176,7 @@ export interface LimitConfig {
    * Set to null to disable.
    * @default null (no limit)
    */
-  lazyLoadLimit?: number | null;
+  hasManyHardLimit?: number | null;
 }
 
 /**
@@ -186,7 +186,7 @@ export class LimitExceededError extends Error {
   constructor(
     public readonly limit: number,
     /** 
-     * Number of records returned. For find() with hardLimit, this is limit+1 
+     * Number of records returned. For find() with findHardLimit, this is limit+1 
      * (actual total may be higher). For relation loading, this is the exact count.
      */
     public readonly actualCount: number,

@@ -363,17 +363,17 @@ Write natural code (`await user.posts`); litedbmodel handles the optimization.
 
 ### Query Limits (Safety Guards)
 
-Prevent accidental loading of too many records with configurable limits:
+Prevent accidental loading of too many records with configurable hardLimits:
 
 ```typescript
 // Global configuration
 DBModel.setConfig(config, {
-  hardLimit: 10000,      // find() throws if > 10000 records
-  lazyLoadLimit: 1000,   // hasMany throws if > 1000 records per key
+  findHardLimit: 10000,      // find() throws if > 10000 records
+  hasManyHardLimit: 1000,    // hasMany throws if > 1000 records per key
 });
 
 // Or update later
-DBModel.setLimitConfig({ hardLimit: 5000, lazyLoadLimit: 500 });
+DBModel.setLimitConfig({ findHardLimit: 5000, hasManyHardLimit: 500 });
 ```
 
 When limits are exceeded, `LimitExceededError` is thrown:
@@ -392,9 +392,11 @@ try {
 
 **Per-relation hardLimit override:**
 
+You can override the global `hasManyHardLimit` for specific relations:
+
 ```typescript
 @hasMany(() => [User.id, Post.author_id], {
-  hardLimit: 500,   // Override global lazyLoadLimit for this relation
+  hardLimit: 500,   // Override global hasManyHardLimit for this relation
 })
 declare posts: Promise<Post[]>;
 
@@ -404,7 +406,7 @@ declare posts: Promise<Post[]>;
 declare logs: Promise<Log[]>;
 ```
 
-> **Note:** `hardLimit` is a safety guard implemented as `LIMIT hardLimit+1` at SQL level. If the result exceeds `hardLimit`, it throws immediately — this minimizes data transfer while detecting overflow. For explicit SQL-level limiting (e.g., "N records per parent"), use the `limit` option described in [With Options](#with-options-order-where-limit).
+> **Note:** `findHardLimit` and `hasManyHardLimit` are safety guards implemented as `LIMIT N+1` at SQL level. If the result exceeds the limit, it throws immediately — this minimizes data transfer while detecting overflow. For explicit SQL-level limiting (e.g., "N records per parent"), use the `limit` option described in [With Options](#with-options-order-where-limit).
 
 ---
 

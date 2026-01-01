@@ -1324,13 +1324,13 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
   describe('Limit Configuration', () => {
     afterEach(() => {
       // Reset limit config after each test
-      DBModel.setLimitConfig({ hardLimit: null, lazyLoadLimit: null });
+      DBModel.setLimitConfig({ findHardLimit: null, hasManyHardLimit: null });
     });
 
-    describe('Global hardLimit for find()', () => {
-      it('should throw LimitExceededError when find() exceeds hardLimit', async () => {
+    describe('Global findHardLimit for find()', () => {
+      it('should throw LimitExceededError when find() exceeds findHardLimit', async () => {
         // Set a low hard limit
-        DBModel.setLimitConfig({ hardLimit: 2 });
+        DBModel.setLimitConfig({ findHardLimit: 2 });
 
         // Create more records than the limit
         await createTestUser('User 1', 'user1@limit.com');
@@ -1356,7 +1356,7 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       });
 
       it('should not throw when find() has explicit limit option', async () => {
-        DBModel.setLimitConfig({ hardLimit: 2 });
+        DBModel.setLimitConfig({ findHardLimit: 2 });
 
         await createTestUser('User 1', 'user1@limit.com');
         await createTestUser('User 2', 'user2@limit.com');
@@ -1367,8 +1367,8 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
         expect(users.length).toBe(3);
       });
 
-      it('should not throw when result count is within hardLimit', async () => {
-        DBModel.setLimitConfig({ hardLimit: 5 });
+      it('should not throw when result count is within findHardLimit', async () => {
+        DBModel.setLimitConfig({ findHardLimit: 5 });
 
         await createTestUser('User 1', 'user1@limit.com');
         await createTestUser('User 2', 'user2@limit.com');
@@ -1378,9 +1378,9 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       });
     });
 
-    describe('Global lazyLoadLimit for hasMany', () => {
-      it('should throw LimitExceededError when hasMany exceeds lazyLoadLimit', async () => {
-        DBModel.setLimitConfig({ lazyLoadLimit: 2 });
+    describe('Global hasManyHardLimit for hasMany', () => {
+      it('should throw LimitExceededError when hasMany exceeds hasManyHardLimit', async () => {
+        DBModel.setLimitConfig({ hasManyHardLimit: 2 });
 
         const user = await createTestUser('User', 'user@lazylimit.com');
         await createTestPost(user.id!, 'Post 1', 'Content');
@@ -1403,8 +1403,8 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
         }
       });
 
-      it('should not throw when hasMany result is within lazyLoadLimit', async () => {
-        DBModel.setLimitConfig({ lazyLoadLimit: 5 });
+      it('should not throw when hasMany result is within hasManyHardLimit', async () => {
+        DBModel.setLimitConfig({ hasManyHardLimit: 5 });
 
         const user = await createTestUser('User', 'user@lazylimit.com');
         await createTestPost(user.id!, 'Post 1', 'Content');
@@ -1616,12 +1616,12 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
     });
 
     afterEach(() => {
-      DBModel.setLimitConfig({ hardLimit: null, lazyLoadLimit: null });
+      DBModel.setLimitConfig({ findHardLimit: null, hasManyHardLimit: null });
     });
 
     it('should use per-relation hardLimit instead of global', async () => {
       // Set global limit higher than per-relation limit
-      DBModel.setLimitConfig({ lazyLoadLimit: 10 });
+      DBModel.setLimitConfig({ hasManyHardLimit: 10 });
 
       const user = await createTestUser('User', 'user@hardlimit.com');
       for (let i = 1; i <= 5; i++) {
@@ -1643,7 +1643,7 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
 
     it('should allow unlimited when hardLimit is null', async () => {
       // Set a global limit
-      DBModel.setLimitConfig({ lazyLoadLimit: 2 });
+      DBModel.setLimitConfig({ hasManyHardLimit: 2 });
 
       const user = await createTestUser('User', 'user@unlim.com');
       for (let i = 1; i <= 5; i++) {
