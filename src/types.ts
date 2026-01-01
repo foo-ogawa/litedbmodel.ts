@@ -48,15 +48,31 @@ export interface SelectOptions {
   forUpdate?: boolean;
   /**
    * JOIN clause to add to the query.
-   * Can include parameters using $N placeholders.
+   * Can include parameters using ? placeholders.
    * @example
-   * join: 'JOIN unnest($1::int[]) AS _keys(id) ON t.id = _keys.id'
+   * join: 'JOIN unnest(?::int[]) AS _keys(id) ON t.id = _keys.id'
    */
   join?: string;
   /**
    * Parameters for the JOIN clause (prepended to condition params).
    */
   joinParams?: unknown[];
+  /**
+   * CTE (Common Table Expression) to prepend to the query.
+   * Used for window functions like ROW_NUMBER() or complex subqueries.
+   * The SQL should use ? placeholders for parameters.
+   * @example
+   * cte: {
+   *   name: 'ranked',
+   *   sql: 'SELECT *, ROW_NUMBER() OVER (PARTITION BY user_id) AS _rn FROM posts WHERE user_id IN (?, ?)',
+   *   params: [1, 2]
+   * }
+   */
+  cte?: {
+    name: string;
+    sql: string;
+    params: unknown[];
+  };
 }
 
 /**
@@ -134,6 +150,63 @@ export interface Logger {
   info(message: string, ...args: unknown[]): void;
   warn(message: string, ...args: unknown[]): void;
   error(message: string, ...args: unknown[]): void;
+}
+
+// ============================================
+// Limit Configuration
+// ============================================
+
+/**
+ * Configuration for query result limits.
+ * Used to prevent accidentally loading too many records.
+ */
+export interface LimitConfig {
+  /**
+   * Hard limit for find() queries.
+   * If a query returns more than this many records, an exception is thrown.
+   * Set to null to disable.
+   * @default null (no limit)
+   */
+  hardLimit?: number | null;
+
+  /**
+   * Hard limit for hasMany relation loading.
+   * If a hasMany relation returns more than this many records per key,
+   * an exception is thrown.
+   * Set to null to disable.
+   * @default null (no limit)
+   */
+  lazyLoadLimit?: number | null;
+}
+
+/**
+ * Error thrown when a query exceeds the configured limit.
+ */
+export class LimitExceededError extends Error {
+  constructor(
+    public readonly limit: number,
+    /** 
+     * Number of records returned. For find() with hardLimit, this is limit+1 
+     * (actual total may be higher). For relation loading, this is the exact count.
+     */
+    public readonly actualCount: number,
+    public readonly context: 'find' | 'relation',
+    public readonly modelName?: string,
+    public readonly relationName?: string
+  ) {
+    const contextMsg = context === 'find'
+      ? `find() on ${modelName || 'unknown'}`
+      : `relation '${relationName}' on ${modelName || 'unknown'}`;
+    const countMsg = context === 'find'
+      ? `more than ${limit}`  // find() uses LIMIT N+1, so we only know it exceeded
+      : `${actualCount}`;     // relation loading fetches N+1, so we know at least this many
+    super(
+      `Query limit exceeded: ${contextMsg} returned ${countMsg} records, ` +
+      `but limit is ${limit}. This usually indicates a missing WHERE clause or ` +
+      `an N+1 query pattern. Set a higher limit or use pagination.`
+    );
+    this.name = 'LimitExceededError';
+  }
 }
 
 // ============================================

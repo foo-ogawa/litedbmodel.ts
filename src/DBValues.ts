@@ -23,11 +23,10 @@ export class DBToken {
    */
   compile(params: unknown[], key?: string): string {
     params.push(this.value);
-    const paramIndex = params.length;
     if (key) {
-      return `${key} ${this.operator} $${paramIndex}`;
+      return `${key} ${this.operator} ?`;
     }
-    return `$${paramIndex}`;
+    return '?';
   }
 }
 
@@ -112,7 +111,7 @@ export class DBArrayValue extends DBToken {
 
     const placeholders = arr.map((v) => {
       params.push(v);
-      return `$${params.length}`;
+      return '?';
     });
 
     if (key) {
@@ -137,17 +136,15 @@ export class DBDynamicValue extends DBToken {
   }
 
   compile(params: unknown[], key?: string): string {
-    // Replace ? placeholders with $n
-    let sql = this.func;
+    // Push values to params (? placeholders in func are used directly)
     for (const val of this.values) {
       params.push(val);
-      sql = sql.replace('?', `$${params.length}`);
     }
 
     if (key) {
-      return `${key} ${this.operator} ${sql}`;
+      return `${key} ${this.operator} ${this.func}`;
     }
-    return sql;
+    return this.func;
   }
 }
 
@@ -200,7 +197,7 @@ export class DBTupleIn extends DBToken {
     const tuplePlaceholders = this.tuples.map(tuple => {
       const placeholders = tuple.map(val => {
         params.push(val);
-        return `$${params.length}`;
+        return '?';
       });
       return `(${placeholders.join(', ')})`;
     });
@@ -439,14 +436,14 @@ export class DBSubquery extends DBToken {
         } else {
           const placeholders = cond.value.map(v => {
             params.push(v);
-            return `$${params.length}`;
+            return '?';
           });
           whereParts.push(`${colRef} IN (${placeholders.join(', ')})`);
         }
       } else {
         // Regular value
         params.push(cond.value);
-        whereParts.push(`${colRef} = $${params.length}`);
+        whereParts.push(`${colRef} = ?`);
       }
     }
 
@@ -519,14 +516,14 @@ export class DBExists extends DBToken {
         } else {
           const placeholders = cond.value.map(v => {
             params.push(v);
-            return `$${params.length}`;
+            return '?';
           });
           whereParts.push(`${colRef} IN (${placeholders.join(', ')})`);
         }
       } else {
         // Regular value
         params.push(cond.value);
-        whereParts.push(`${colRef} = $${params.length}`);
+        whereParts.push(`${colRef} = ?`);
       }
     }
 

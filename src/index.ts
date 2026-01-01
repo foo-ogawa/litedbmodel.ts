@@ -189,7 +189,9 @@ export type {
   DeleteOptions,
   TransactionOptions,
   Logger,
+  LimitConfig,
 } from './types';
+export { LimitExceededError } from './types';
 
 // ============================================
 // Database Drivers

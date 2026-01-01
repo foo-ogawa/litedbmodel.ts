@@ -131,13 +131,6 @@ function convertParams(params: unknown[]): unknown[] {
 }
 
 /**
- * Convert PostgreSQL-style placeholders ($1, $2) to MySQL-style (?)
- */
-function convertPlaceholders(sql: string): string {
-  return sql.replace(/\$\d+/g, '?');
-}
-
-/**
  * Convert ON CONFLICT syntax to MySQL ON DUPLICATE KEY syntax
  */
 function convertOnConflictToMysql(sql: string): string {
@@ -197,8 +190,7 @@ class MysqlConnection implements DBConnection {
 
   async query(sql: string, params?: unknown[]): Promise<QueryResult> {
     // Handle MySQL-specific conversions
-    let convertedSql = convertPlaceholders(sql);
-    convertedSql = convertOnConflictToMysql(convertedSql);
+    const convertedSql = convertOnConflictToMysql(sql);
     
     // Handle RETURNING clause
     const { sql: sqlWithoutReturning, hasReturning, returningCols } = removeReturning(convertedSql);
@@ -281,8 +273,7 @@ export class MysqlDriver implements DBDriver {
    */
   async execute(sql: string, params: unknown[] = []): Promise<QueryResult> {
     // Handle MySQL-specific conversions
-    let convertedSql = convertPlaceholders(sql);
-    convertedSql = convertOnConflictToMysql(convertedSql);
+    const convertedSql = convertOnConflictToMysql(sql);
     
     // Handle RETURNING clause (MySQL doesn't support it natively)
     const { sql: sqlWithoutReturning, hasReturning, returningCols } = removeReturning(convertedSql);
@@ -351,8 +342,7 @@ export class MysqlDriver implements DBDriver {
     const conn = this.writerPool || this.pool;
     
     // Handle MySQL-specific conversions
-    let convertedSql = convertPlaceholders(sql);
-    convertedSql = convertOnConflictToMysql(convertedSql);
+    const convertedSql = convertOnConflictToMysql(sql);
     
     // Handle RETURNING clause
     const { sql: sqlWithoutReturning, hasReturning, returningCols } = removeReturning(convertedSql);

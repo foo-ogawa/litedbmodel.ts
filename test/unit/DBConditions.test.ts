@@ -13,7 +13,7 @@ describe('DBConditions', () => {
       const params: unknown[] = [];
       const sql = cond.compile(params);
 
-      expect(sql).toBe('id = $1');
+      expect(sql).toBe('id = ?');
       expect(params).toEqual([1]);
     });
 
@@ -22,7 +22,7 @@ describe('DBConditions', () => {
       const params: unknown[] = [];
       const sql = cond.compile(params);
 
-      expect(sql).toBe('id = $1 AND name = $2');
+      expect(sql).toBe('id = ? AND name = ?');
       expect(params).toEqual([1, 'test']);
     });
 
@@ -49,7 +49,7 @@ describe('DBConditions', () => {
       const params: unknown[] = [];
       const sql = cond.compile(params);
 
-      expect(sql).toBe('id IN ($1, $2, $3)');
+      expect(sql).toBe('id IN (?, ?, ?)');
       expect(params).toEqual([1, 2, 3]);
     });
 
@@ -67,7 +67,7 @@ describe('DBConditions', () => {
       const params: unknown[] = [];
       const sql = cond.compile(params);
 
-      expect(sql).toBe('amount > $1');
+      expect(sql).toBe('amount > ?');
       expect(params).toEqual([1000]);
     });
 
@@ -78,7 +78,7 @@ describe('DBConditions', () => {
       const params: unknown[] = [];
       const sql = cond.compile(params);
 
-      expect(sql).toBe('created_at BETWEEN $1 AND $2');
+      expect(sql).toBe('created_at BETWEEN ? AND ?');
       expect(params.length).toBe(2);
     });
 
@@ -105,7 +105,7 @@ describe('DBConditions', () => {
       const params: unknown[] = [];
       const sql = cond.compile(params);
 
-      expect(sql).toBe('status IN ($1, $2)');
+      expect(sql).toBe('status IN (?, ?)');
       expect(params).toEqual(['active', 'pending']);
     });
 
@@ -127,7 +127,7 @@ describe('DBConditions', () => {
       const params: unknown[] = [];
       const sql = cond.compile(params);
 
-      expect(sql).toBe('status = $1 OR role = $2');
+      expect(sql).toBe('status = ? OR role = ?');
       expect(params).toEqual(['active', 'admin']);
     });
   });
@@ -141,8 +141,8 @@ describe('DBConditions', () => {
       const params: unknown[] = [];
       const sql = cond.compile(params);
 
-      expect(sql).toContain('user_id = $1');
-      expect(sql).toContain('status = $2 OR status2 = $3');
+      expect(sql).toContain('user_id = ?');
+      expect(sql).toContain('status = ? OR status2 = ?');
     });
 
     it('should handle add method', () => {
@@ -152,8 +152,8 @@ describe('DBConditions', () => {
       const params: unknown[] = [];
       const sql = cond.compile(params);
 
-      expect(sql).toContain('user_id = $1');
-      expect(sql).toContain('status = $2 OR role = $3');
+      expect(sql).toContain('user_id = ?');
+      expect(sql).toContain('status = ? OR role = ?');
     });
   });
 
@@ -163,7 +163,7 @@ describe('DBConditions', () => {
       const params: unknown[] = [];
       const sql = cond.compile(params);
 
-      expect(sql).toBe('id = $1 AND name = $2');
+      expect(sql).toBe('id = ? AND name = ?');
     });
 
     it('or() should create OR conditions', () => {
@@ -171,7 +171,7 @@ describe('DBConditions', () => {
       const params: unknown[] = [];
       const sql = cond.compile(params);
 
-      expect(sql).toBe('id = $1 OR name = $2');
+      expect(sql).toBe('id = ? OR name = ?');
     });
   });
 });

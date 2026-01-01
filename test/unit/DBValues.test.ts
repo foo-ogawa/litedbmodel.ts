@@ -44,7 +44,7 @@ describe('DBToken', () => {
       const token = new DBToken('test');
       const params: unknown[] = [];
       const sql = token.compile(params);
-      expect(sql).toBe('$1');
+      expect(sql).toBe('?');
       expect(params).toEqual(['test']);
     });
 
@@ -52,7 +52,7 @@ describe('DBToken', () => {
       const token = new DBToken('test', '>');
       const params: unknown[] = [];
       const sql = token.compile(params, 'age');
-      expect(sql).toBe('age > $1');
+      expect(sql).toBe('age > ?');
       expect(params).toEqual(['test']);
     });
 
@@ -60,7 +60,7 @@ describe('DBToken', () => {
       const token = new DBToken('test');
       const params: unknown[] = ['existing'];
       const sql = token.compile(params);
-      expect(sql).toBe('$2');
+      expect(sql).toBe('?');
       expect(params).toEqual(['existing', 'test']);
     });
   });
@@ -159,7 +159,7 @@ describe('DBArrayValue', () => {
       const arrVal = new DBArrayValue([1, 2, 3]);
       const params: unknown[] = [];
       const sql = arrVal.compile(params, 'id');
-      expect(sql).toBe('id IN ($1, $2, $3)');
+      expect(sql).toBe('id IN (?, ?, ?)');
       expect(params).toEqual([1, 2, 3]);
     });
 
@@ -167,7 +167,7 @@ describe('DBArrayValue', () => {
       const arrVal = new DBArrayValue([1, 2]);
       const params: unknown[] = [];
       const sql = arrVal.compile(params);
-      expect(sql).toBe('($1, $2)');
+      expect(sql).toBe('(?, ?)');
     });
 
     it('should return 1=0 for empty array', () => {
@@ -182,7 +182,7 @@ describe('DBArrayValue', () => {
       const arrVal = new DBArrayValue(['a', 'b']);
       const params: unknown[] = ['existing'];
       const sql = arrVal.compile(params, 'status');
-      expect(sql).toBe('status IN ($2, $3)');
+      expect(sql).toBe('status IN (?, ?)');
       expect(params).toEqual(['existing', 'a', 'b']);
     });
   });
@@ -209,7 +209,7 @@ describe('DBDynamicValue', () => {
       const dynVal = new DBDynamicValue('UPPER(?)', ['test']);
       const params: unknown[] = [];
       const sql = dynVal.compile(params);
-      expect(sql).toBe('UPPER($1)');
+      expect(sql).toBe('UPPER(?)');
       expect(params).toEqual(['test']);
     });
 
@@ -217,14 +217,14 @@ describe('DBDynamicValue', () => {
       const dynVal = new DBDynamicValue('LOWER(?)', ['TEST']);
       const params: unknown[] = [];
       const sql = dynVal.compile(params, 'name');
-      expect(sql).toBe('name = LOWER($1)');
+      expect(sql).toBe('name = LOWER(?)');
     });
 
     it('should handle multiple placeholders', () => {
       const dynVal = new DBDynamicValue('CONCAT(?, ?)', ['Hello', 'World']);
       const params: unknown[] = [];
       const sql = dynVal.compile(params);
-      expect(sql).toBe('CONCAT($1, $2)');
+      expect(sql).toBe('CONCAT(?, ?)');
       expect(params).toEqual(['Hello', 'World']);
     });
 
@@ -343,7 +343,7 @@ describe('Factory functions', () => {
       const params: unknown[] = [];
       const sql = val.compile(params);
       
-      expect(sql).toBe('(tenant_id, id) IN (($1, $2), ($3, $4))');
+      expect(sql).toBe('(tenant_id, id) IN ((?, ?), (?, ?))');
       expect(params).toEqual([1, 10, 2, 20]);
     });
 
@@ -352,7 +352,7 @@ describe('Factory functions', () => {
       const params: unknown[] = [];
       const sql = val.compile(params);
       
-      expect(sql).toBe('(a, b, c) IN (($1, $2, $3), ($4, $5, $6))');
+      expect(sql).toBe('(a, b, c) IN ((?, ?, ?), (?, ?, ?))');
       expect(params).toEqual([1, 2, 3, 4, 5, 6]);
     });
 
@@ -370,7 +370,7 @@ describe('Factory functions', () => {
       const params: unknown[] = [];
       const sql = val.compile(params, 'ignored_key');
       
-      expect(sql).toBe('(col1, col2) IN (($1, $2))');
+      expect(sql).toBe('(col1, col2) IN ((?, ?))');
     });
   });
 });

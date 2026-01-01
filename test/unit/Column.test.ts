@@ -438,7 +438,7 @@ describe('condsToRecord', () => {
     // Compile and verify SQL
     const params: unknown[] = [];
     const sql = (result.__tuple__ as { compile: (p: unknown[]) => string }).compile(params);
-    expect(sql).toBe('(tenant_id, id) IN (($1, $2), ($3, $4), ($5, $6))');
+    expect(sql).toBe('(tenant_id, id) IN ((?, ?), (?, ?), (?, ?))');
     expect(params).toEqual([1, 10, 1, 20, 2, 30]);
   });
 });

@@ -34,7 +34,8 @@
 
 import { DBModel } from './DBModel';
 import { type ConditionObject } from './DBConditions';
-import { type Conds, createColumn, orderToString } from './Column';
+import { type Conds, createColumn, orderToString, condsToRecord } from './Column';
+import type { SelectOptions } from './types';
 
 // ============================================
 // Type Inference Helpers
@@ -78,6 +79,12 @@ export interface RelationConfig {
   targetKeys?: string[];
   /** Multiple source keys (for composite key relation) */
   sourceKeys?: string[];
+  /** SQL LIMIT for hasMany (per parent key) */
+  limit?: number;
+  /** Hard limit - throws if exceeded (overrides global lazyLoadLimit) */
+  hardLimit?: number | null;
+  /** Relation name for error messages */
+  relationName?: string;
 }
 
 // ============================================
@@ -163,6 +170,8 @@ export class LazyRelationContext {
       config.sourceKey || '',
       JSON.stringify(config.targetKeys || []),
       JSON.stringify(config.sourceKeys || []),
+      config.limit != null ? String(config.limit) : '',
+      config.relationName || '',
     ];
     return parts.join('|');
   }
@@ -185,7 +194,9 @@ export class LazyRelationContext {
    * Batch load relation for all records.
    * Uses optimized loading strategy based on database driver:
    * - PostgreSQL: `= ANY($1::type[])` for single keys, `unnest + JOIN` for composite keys
+   *   - With limit: Uses LATERAL JOIN for efficient per-key limiting
    * - MySQL/SQLite: Traditional `IN (?, ?, ...)` clause
+   *   - With limit: Uses ROW_NUMBER() OVER (PARTITION BY ...) window function
    */
   private async batchLoadRelation(
     relationType: RelationType,
@@ -224,6 +235,9 @@ export class LazyRelationContext {
     let results: DBModel[];
     let targetKeys: string[];
 
+    // Check if we need limited loading (hasMany with limit option)
+    const needsLimitedLoading = relationType === 'hasMany' && config.limit != null;
+
     if (isCompositeKey && compositeKeyValues.length > 0) {
       // Composite key batch loading
       targetKeys = config.targetKeys || [this.inferTargetKey(relationType)];
@@ -238,7 +252,14 @@ export class LazyRelationContext {
         return;
       }
 
-      if (driverType === 'postgres') {
+      if (needsLimitedLoading) {
+        // Limited loading for composite keys
+        if (driverType === 'postgres') {
+          results = await this.batchLoadWithLateralComposite(TargetClass, targetKeys, uniqueTuples, config);
+        } else {
+          results = await this.batchLoadWithRowNumberComposite(TargetClass, targetKeys, uniqueTuples, config);
+        }
+      } else if (driverType === 'postgres') {
         // PostgreSQL: Use unnest + JOIN for composite keys
         results = await this.batchLoadWithUnnestJoin(TargetClass, targetKeys, uniqueTuples, config);
       } else {
@@ -253,7 +274,14 @@ export class LazyRelationContext {
       // Remove duplicates
       const uniqueValues = [...new Set(sourceKeyValues.map(v => JSON.stringify(v)))].map(v => JSON.parse(v));
       
-      if (driverType === 'postgres') {
+      if (needsLimitedLoading) {
+        // Limited loading for single key
+        if (driverType === 'postgres') {
+          results = await this.batchLoadWithLateral(TargetClass, targetKey, uniqueValues, config);
+        } else {
+          results = await this.batchLoadWithRowNumber(TargetClass, targetKey, uniqueValues, config);
+        }
+      } else if (driverType === 'postgres') {
         // PostgreSQL: Use = ANY($1::type[]) for single key
         results = await this.batchLoadWithAnyArray(TargetClass, targetKey, uniqueValues, config);
       } else {
@@ -288,7 +316,6 @@ export class LazyRelationContext {
 
   /**
    * PostgreSQL optimized: Single key batch load using = ANY($1::type[])
-   * Uses find() with custom condition tuple for ANY clause.
    */
   private async batchLoadWithAnyArray(
     TargetClass: typeof DBModel,
@@ -299,26 +326,24 @@ export class LazyRelationContext {
     const tableName = TargetClass.TABLE_NAME;
     const pgType = inferPgArrayType(values);
     
-    // Build conditions: ANY clause + additional conditions from config
-    // Note: Wrap values in array [[values]] so DBConditions treats it as single array parameter
-    const condTuples: Array<[string, unknown] | readonly [string, unknown]> = [
-      [`${tableName}.${targetKey} = ANY(?::${pgType})`, [values]],
-    ];
+    // Build conditions
+    const conditions: ConditionObject = {
+      __raw__: [`${tableName}.${targetKey} = ANY(?::${pgType})`, [values]],
+      ...config.conditions,
+    };
     
-    // Add additional conditions from config
-    if (config.conditions) {
-      for (const [key, value] of Object.entries(config.conditions)) {
-        condTuples.push([key, value]);
-      }
-    }
+    const options: SelectOptions = {};
+    if (config.order) options.order = config.order;
     
-    const options = config.order ? { order: config.order } : undefined;
-    return await TargetClass.find(condTuples as unknown as Conds, options);
+    return await TargetClass._selectForRelation(conditions, options, {
+      hardLimit: config.hardLimit,
+      propertyKey: config.relationName,
+      sourceModelName: this.sourceClass.name,
+    });
   }
 
   /**
    * PostgreSQL optimized: Composite key batch load using unnest + JOIN
-   * Uses find() with JOIN option for unnest clause.
    */
   private async batchLoadWithUnnestJoin(
     TargetClass: typeof DBModel,
@@ -334,10 +359,9 @@ export class LazyRelationContext {
     );
     
     // Build unnest parameters with type inference
-    // Column aliases use format: _unnest_{table}_{column} to avoid conflicts
-    const unnestParams = columnArrays.map((arr, i) => {
+    const unnestParams = columnArrays.map((arr) => {
       const pgType = inferPgArrayType(arr);
-      return `$${i + 1}::${pgType}`;
+      return `?::${pgType}`;
     }).join(', ');
     
     const unnestAlias = `_unnest_${tableName}`;
@@ -350,23 +374,17 @@ export class LazyRelationContext {
     
     const joinClause = `JOIN unnest(${unnestParams}) AS ${unnestAlias}(${columnAliases}) ON ${joinConditions}`;
     
-    // Build conditions from config
-    const condTuples: Array<[string, unknown] | readonly [string, unknown]> = [];
-    if (config.conditions) {
-      for (const [key, value] of Object.entries(config.conditions)) {
-        condTuples.push([key, value]);
-      }
-    }
-    
-    const options: { order?: string; join?: string; joinParams?: unknown[] } = {
+    const options: SelectOptions = {
       join: joinClause,
       joinParams: columnArrays,
     };
-    if (config.order) {
-      options.order = config.order;
-    }
+    if (config.order) options.order = config.order;
     
-    return await TargetClass.find(condTuples as unknown as Conds, options);
+    return await TargetClass._selectForRelation(config.conditions || {}, options, {
+      hardLimit: config.hardLimit,
+      propertyKey: config.relationName,
+      sourceModelName: this.sourceClass.name,
+    });
   }
 
   /**
@@ -383,9 +401,14 @@ export class LazyRelationContext {
       [targetKey]: values,
     };
 
-    const condTuples: [string, unknown][] = Object.entries(conditions).map(([k, v]) => [k, v]);
-    const options = config.order ? { order: config.order } : undefined;
-    return await TargetClass.find(condTuples as unknown as Conds, options);
+    const options: SelectOptions = {};
+    if (config.order) options.order = config.order;
+    
+    return await TargetClass._selectForRelation(conditions, options, {
+      hardLimit: config.hardLimit,
+      propertyKey: config.relationName,
+      sourceModelName: this.sourceClass.name,
+    });
   }
 
   /**
@@ -400,12 +423,239 @@ export class LazyRelationContext {
     const baseConds = Object.entries(config.conditions || {}).map(([k, v]) => [k, v] as [string, unknown]);
     // Convert string keys to Column objects for the IN clause
     const targetColumns = targetKeys.map(k => createColumn(k, TargetClass.TABLE_NAME, TargetClass.name));
-    const condTuples = [
+    const condTuples: Conds = [
       ...baseConds,
       [targetColumns, tuples],  // Composite key IN condition with Column[]
     ];
-    const options = config.order ? { order: config.order } : undefined;
-    return await TargetClass.find(condTuples as unknown as Conds, options);
+    
+    // Convert Conds to ConditionObject using existing utility
+    const conditions = condsToRecord(condTuples) as ConditionObject;
+    
+    const options: SelectOptions = {};
+    if (config.order) options.order = config.order;
+    
+    return await TargetClass._selectForRelation(conditions, options, {
+      hardLimit: config.hardLimit,
+      propertyKey: config.relationName,
+      sourceModelName: this.sourceClass.name,
+    });
+  }
+
+  // ============================================
+  // Limited Loading Methods (with LIMIT per parent key)
+  // ============================================
+
+  /**
+   * PostgreSQL: Single key batch load with LIMIT using LATERAL JOIN.
+   * More efficient than ROW_NUMBER because it stops scanning after limit is reached.
+   * 
+   * Generated SQL:
+   * ```sql
+   * SELECT t.* FROM unnest($1::int[]) AS _keys(key)
+   * CROSS JOIN LATERAL (
+   *   SELECT * FROM target_table
+   *   WHERE target_key = _keys.key [AND conditions]
+   *   ORDER BY order_column
+   *   LIMIT N
+   * ) t
+   * ```
+   */
+  private async batchLoadWithLateral(
+    TargetClass: typeof DBModel,
+    targetKey: string,
+    values: unknown[],
+    config: RelationConfig
+  ): Promise<DBModel[]> {
+    const tableName = TargetClass.TABLE_NAME;
+    const pgType = inferPgArrayType(values);
+    const limit = config.limit!;
+    
+    // Build LATERAL inner SQL using buildSelectSQL
+    const lateralParams: unknown[] = [];
+    const lateralConditions: ConditionObject = {
+      __raw__: `${tableName}.${targetKey} = _keys.key`,
+      ...config.conditions,
+    };
+    const { sql: lateralSql } = TargetClass.buildSelectSQL(
+      lateralConditions,
+      {
+        tableName,
+        order: config.order || undefined,
+        limit,
+      },
+      lateralParams
+    );
+    
+    // Build final SQL
+    const sql = `SELECT ${tableName}.* FROM unnest(?::${pgType}) AS _keys(key) CROSS JOIN LATERAL (${lateralSql}) ${tableName}`;
+    const params = [values, ...lateralParams];
+    
+    // Use raw SQL mode - limit is already applied at SQL level, so no hardLimit check needed
+    return await TargetClass._selectForRelation(sql, params);
+  }
+
+  /**
+   * PostgreSQL: Composite key batch load with LIMIT using LATERAL JOIN.
+   */
+  private async batchLoadWithLateralComposite(
+    TargetClass: typeof DBModel,
+    targetKeys: string[],
+    tuples: unknown[][],
+    config: RelationConfig
+  ): Promise<DBModel[]> {
+    const tableName = TargetClass.TABLE_NAME;
+    const limit = config.limit!;
+    
+    // Transpose tuples to column arrays
+    const columnArrays: unknown[][] = targetKeys.map((_, colIndex) => 
+      tuples.map(tuple => tuple[colIndex])
+    );
+    
+    // Build unnest parameters
+    const unnestParams = columnArrays.map((arr) => {
+      const pgType = inferPgArrayType(arr);
+      return `?::${pgType}`;
+    }).join(', ');
+    
+    const keyAliases = targetKeys.map((_, i) => `key${i}`).join(', ');
+    
+    // Build LATERAL inner SQL using buildSelectSQL
+    const lateralParams: unknown[] = [];
+    const keyConditions = targetKeys
+      .map((key, i) => `${tableName}.${key} = _keys.key${i}`)
+      .join(' AND ');
+    
+    const lateralConditions: ConditionObject = {
+      __raw__: keyConditions,
+      ...config.conditions,
+    };
+    const { sql: lateralSql } = TargetClass.buildSelectSQL(
+      lateralConditions,
+      {
+        tableName,
+        order: config.order || undefined,
+        limit,
+      },
+      lateralParams
+    );
+    
+    // Build final SQL
+    const sql = `SELECT ${tableName}.* FROM unnest(${unnestParams}) AS _keys(${keyAliases}) CROSS JOIN LATERAL (${lateralSql}) ${tableName}`;
+    const params = [...columnArrays, ...lateralParams];
+    
+    // Use raw SQL mode - limit is already applied at SQL level, so no hardLimit check needed
+    return await TargetClass._selectForRelation(sql, params);
+  }
+
+  /**
+   * MySQL/SQLite: Single key batch load with LIMIT using ROW_NUMBER().
+   * Uses window function to assign row numbers per partition, then filters.
+   * 
+   * Generated SQL:
+   * ```sql
+   * WITH ranked AS (
+   *   SELECT *, ROW_NUMBER() OVER (
+   *     PARTITION BY target_key ORDER BY order_column
+   *   ) AS _rn
+   *   FROM target_table
+   *   WHERE target_key IN (?, ?, ...) [AND conditions]
+   * )
+   * SELECT * FROM ranked WHERE _rn <= N
+   * ```
+   */
+  private async batchLoadWithRowNumber(
+    TargetClass: typeof DBModel,
+    targetKey: string,
+    values: unknown[],
+    config: RelationConfig
+  ): Promise<DBModel[]> {
+    const tableName = TargetClass.TABLE_NAME;
+    const limit = config.limit!;
+    const orderBy = config.order || targetKey;
+    
+    // Build CTE SQL using buildSelectSQL for the inner query
+    const cteParams: unknown[] = [];
+    const cteConditions: ConditionObject = {
+      [targetKey]: values,
+      ...config.conditions,
+    };
+    const { sql: cteSql } = TargetClass.buildSelectSQL(
+      cteConditions,
+      {
+        select: `*, ROW_NUMBER() OVER (PARTITION BY ${targetKey} ORDER BY ${orderBy}) AS _rn`,
+        tableName,
+      },
+      cteParams
+    );
+    
+    // Build final query using cte option
+    const finalParams: unknown[] = [];
+    const { sql } = TargetClass.buildSelectSQL(
+      { __raw__: `_rn <= ${limit}` },
+      {
+        tableName: 'ranked',
+        cte: { name: 'ranked', sql: cteSql, params: cteParams },
+      },
+      finalParams
+    );
+    
+    // Use raw SQL mode - limit is already applied at SQL level, so no hardLimit check needed
+    return await TargetClass._selectForRelation(sql, finalParams);
+  }
+
+  /**
+   * MySQL/SQLite: Composite key batch load with LIMIT using ROW_NUMBER().
+   */
+  private async batchLoadWithRowNumberComposite(
+    TargetClass: typeof DBModel,
+    targetKeys: string[],
+    tuples: unknown[][],
+    config: RelationConfig
+  ): Promise<DBModel[]> {
+    const tableName = TargetClass.TABLE_NAME;
+    const limit = config.limit!;
+    const orderBy = config.order || targetKeys.join(', ');
+    const partitionBy = targetKeys.join(', ');
+    
+    // Build CTE params and SQL
+    const cteParams: unknown[] = tuples.flat();
+    
+    // Build composite IN clause placeholders
+    const tuplePlaceholders = tuples.map(() => {
+      const placeholders = targetKeys.map(() => '?').join(', ');
+      return `(${placeholders})`;
+    }).join(', ');
+    
+    // Build CTE conditions (composite IN + additional conditions)
+    const inClause = `(${targetKeys.join(', ')}) IN (${tuplePlaceholders})`;
+    const cteConditions: ConditionObject = {
+      __raw__: inClause,
+      ...config.conditions,
+    };
+    
+    // Build inner SQL using buildSelectSQL
+    const { sql: cteSql } = TargetClass.buildSelectSQL(
+      cteConditions,
+      {
+        select: `*, ROW_NUMBER() OVER (PARTITION BY ${partitionBy} ORDER BY ${orderBy}) AS _rn`,
+        tableName,
+      },
+      cteParams
+    );
+    
+    // Build final query using cte option
+    const finalParams: unknown[] = [];
+    const { sql } = TargetClass.buildSelectSQL(
+      { __raw__: `_rn <= ${limit}` },
+      {
+        tableName: 'ranked',
+        cte: { name: 'ranked', sql: cteSql, params: cteParams },
+      },
+      finalParams
+    );
+    
+    // Use raw SQL mode - limit is already applied at SQL level, so no hardLimit check needed
+    return await TargetClass._selectForRelation(sql, finalParams);
   }
 
   /**

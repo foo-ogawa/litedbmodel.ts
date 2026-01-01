@@ -304,7 +304,7 @@ const comments = await post.comments;   // Lazy loaded
 
 > **Important:** Use `declare` (not `!`) for relation properties. TypeScript class field declarations with `!` create instance properties that shadow the prototype getter. The ESLint plugin detects this mistake.
 
-### With Options (order, where)
+### With Options (order, where, limit)
 
 ```typescript
 @hasMany(() => [User.id, Post.author_id], {
@@ -312,7 +312,20 @@ const comments = await post.comments;   // Lazy loaded
   where: () => [[Post.is_deleted, false]],
 })
 declare activePosts: Promise<Post[]>;
+
+// Per-parent limit - fetch only N records per parent key
+@hasMany(() => [User.id, Post.author_id], {
+  limit: 5,
+  order: () => Post.created_at.desc(),
+})
+declare recentPosts: Promise<Post[]>;  // Each user gets their 5 most recent posts
 ```
+
+The `limit` option applies SQL-level limiting **per parent key** during batch loading:
+- **PostgreSQL**: Uses `LATERAL JOIN` for efficient per-group limiting
+- **MySQL/SQLite**: Uses `ROW_NUMBER() OVER (PARTITION BY ...)` window function
+
+This is more efficient than fetching all records and filtering in application code.
 
 ### Composite Key Relations
 
@@ -345,6 +358,51 @@ for (const user of users) {
 ```
 
 Write natural code (`await user.posts`); litedbmodel handles the optimization.
+
+### Query Limits (Safety Guards)
+
+Prevent accidental loading of too many records with configurable limits:
+
+```typescript
+// Global configuration
+DBModel.setConfig(config, {
+  hardLimit: 10000,      // find() throws if > 10000 records
+  lazyLoadLimit: 1000,   // hasMany throws if > 1000 records per key
+});
+
+// Or update later
+DBModel.setLimitConfig({ hardLimit: 5000, lazyLoadLimit: 500 });
+```
+
+When limits are exceeded, `LimitExceededError` is thrown:
+
+```typescript
+import { LimitExceededError } from 'litedbmodel';
+
+try {
+  const users = await User.find([]);  // May throw if too many records
+} catch (e) {
+  if (e instanceof LimitExceededError) {
+    console.log(`Limit ${e.limit} exceeded: got ${e.actualCount} records`);
+  }
+}
+```
+
+**Per-relation hardLimit override:**
+
+```typescript
+@hasMany(() => [User.id, Post.author_id], {
+  hardLimit: 500,   // Override global lazyLoadLimit for this relation
+})
+declare posts: Promise<Post[]>;
+
+@hasMany(() => [User.id, Log.user_id], {
+  hardLimit: null,  // Disable limit check for this relation
+})
+declare logs: Promise<Log[]>;
+```
+
+> **Note:** `hardLimit` is a safety guard that throws after fetching if exceeded. For SQL-level limiting (pagination-like behavior), use the `limit` option described in [With Options](#with-options-order-where-limit).
 
 ---
 
@@ -398,6 +456,12 @@ flowchart TD
         delete["delete()"]
     end
     
+    subgraph RelationAPI["Relation API"]
+        belongsTo["@belongsTo"]
+        hasMany["@hasMany"]
+        hasOne["@hasOne"]
+    end
+    
     subgraph "Middle-Level API"
         query["query()"]
     end
@@ -414,6 +478,10 @@ flowchart TD
     findOne --> query
     findById --> query
     
+    belongsTo --> query
+    hasMany --> query
+    hasOne --> query
+    
     count --> execute
     create --> execute
     createMany --> execute
@@ -422,12 +490,16 @@ flowchart TD
     
     query --> execute
     execute --> DB
+    
+    style RelationAPI fill:#e0e0e0,stroke:#999
 ```
 
 **Middleware hooks:**
 - **Method-level**: `find`, `findOne`, `findById`, `count`, `create`, `createMany`, `update`, `delete`
 - **Instantiation-level**: `query` — returns model instances from raw SQL
 - **SQL-level**: `execute` — intercepts ALL SQL queries (SELECT, INSERT, UPDATE, DELETE)
+
+> **Note:** Relation API (`@belongsTo`, `@hasMany`, `@hasOne`) bypasses method-level middleware hooks and calls `query()` directly. To intercept relation queries, use Instantiation-level (`query`) middleware.
 
 ### Example
 

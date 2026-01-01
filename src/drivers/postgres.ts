@@ -89,6 +89,14 @@ export async function closeAllPools(): Promise<void> {
   pools.clear();
 }
 
+/**
+ * Convert ?-style placeholders to PostgreSQL-style ($1, $2, ...)
+ */
+function convertPlaceholders(sql: string): string {
+  let index = 0;
+  return sql.replace(/\?/g, () => `$${++index}`);
+}
+
 // ============================================
 // PostgreSQL Connection Wrapper
 // ============================================
@@ -97,7 +105,8 @@ class PostgresConnection implements DBConnection {
   constructor(private client: PoolClient) {}
 
   async query(sql: string, params?: unknown[]): Promise<QueryResult> {
-    const result = await this.client.query(sql, params);
+    const convertedSql = convertPlaceholders(sql);
+    const result = await this.client.query(convertedSql, params);
     return {
       rows: result.rows as Record<string, unknown>[],
       rowCount: result.rowCount ?? 0,
@@ -137,11 +146,12 @@ export class PostgresDriver implements DBDriver {
    * Execute a read query
    */
   async execute(sql: string, params: unknown[] = []): Promise<QueryResult> {
-    this.logger.debug(`SQL: ${sql}`, params);
+    const convertedSql = convertPlaceholders(sql);
+    this.logger.debug(`SQL: ${convertedSql}`, params);
 
     const startTime = Date.now();
     try {
-      const result = await this.pool.query(sql, params);
+      const result = await this.pool.query(convertedSql, params);
       const duration = Date.now() - startTime;
       this.logger.debug(`Query completed in ${duration}ms, rows: ${result.rowCount}`);
       return {
@@ -149,7 +159,7 @@ export class PostgresDriver implements DBDriver {
         rowCount: result.rowCount ?? 0,
       };
     } catch (error) {
-      this.logger.error(`Query failed: ${sql}`, error);
+      this.logger.error(`Query failed: ${convertedSql}`, error);
       throw error;
     }
   }
@@ -159,11 +169,12 @@ export class PostgresDriver implements DBDriver {
    */
   async executeWrite(sql: string, params: unknown[] = []): Promise<QueryResult> {
     const conn = this.writerPool || this.pool;
-    this.logger.debug(`SQL: ${sql}`, params);
+    const convertedSql = convertPlaceholders(sql);
+    this.logger.debug(`SQL: ${convertedSql}`, params);
 
     const startTime = Date.now();
     try {
-      const result = await conn.query(sql, params);
+      const result = await conn.query(convertedSql, params);
       const duration = Date.now() - startTime;
       this.logger.debug(`Write completed in ${duration}ms, rows: ${result.rowCount}`);
       return {
@@ -171,7 +182,7 @@ export class PostgresDriver implements DBDriver {
         rowCount: result.rowCount ?? 0,
       };
     } catch (error) {
-      this.logger.error(`Write failed: ${sql}`, error);
+      this.logger.error(`Write failed: ${convertedSql}`, error);
       throw error;
     }
   }

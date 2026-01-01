@@ -10,7 +10,6 @@
 import 'reflect-metadata';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import {
-  LazyRelationContext,
   createRelationContext,
   preloadRelations,
   DBModel,
@@ -22,6 +21,7 @@ import {
   ColumnsOf,
   closeAllPools,
   Middleware,
+  LimitExceededError,
 } from '../../src';
 import type { DBConfig, ExecuteResult } from '../../src';
 
@@ -97,9 +97,13 @@ const testConfig: DBConfig = {
 // ============================================
 
 // Forward declarations for circular references
+// eslint-disable-next-line prefer-const
 let TestUser: typeof TestUserModel & ColumnsOf<TestUserModel>;
+// eslint-disable-next-line prefer-const
 let TestPost: typeof TestPostModel & ColumnsOf<TestPostModel>;
+// eslint-disable-next-line prefer-const
 let TestPostComment: typeof TestPostCommentModel & ColumnsOf<TestPostCommentModel>;
+// eslint-disable-next-line prefer-const
 let TestUserProfile: typeof TestUserProfileModel & ColumnsOf<TestUserProfileModel>;
 
 @model('test_users')
@@ -200,7 +204,9 @@ type TestUserProfile = TestUserProfileModel;
 // Composite Key Test Models (for multi-tenant scenarios)
 // ============================================
 
+// eslint-disable-next-line prefer-const
 let TenantUser: typeof TenantUserModel & ColumnsOf<TenantUserModel>;
+// eslint-disable-next-line prefer-const
 let TenantPost: typeof TenantPostModel & ColumnsOf<TenantPostModel>;
 
 @model('test_tenant_users')
@@ -572,7 +578,7 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       const users = await TestUser.find([], { order: 'id' });
 
       // Create a context and preload relations
-      const context = createRelationContext(TestUserModel, users as TestUser[]);
+      const _context = createRelationContext(TestUserModel, users as TestUser[]);
 
       // Preload posts using accessor function
       await preloadRelations(users as TestUser[], (user) => user.posts);
@@ -587,15 +593,15 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       const user1 = await createTestUser('User 1', 'user1@test.com');
       const user2 = await createTestUser('User 2', 'user2@test.com');
 
-      const post1 = await createTestPost(user1.id!, 'Post 1', 'Content');
-      const post2 = await createTestPost(user1.id!, 'Post 2', 'Content');
-      const post3 = await createTestPost(user2.id!, 'Post 3', 'Content');
+      const _post1 = await createTestPost(user1.id!, 'Post 1', 'Content');
+      const _post2 = await createTestPost(user1.id!, 'Post 2', 'Content');
+      const _post3 = await createTestPost(user2.id!, 'Post 3', 'Content');
 
       // Load posts
       const posts = await TestPost.find([], { order: 'id' });
 
       // Create a context and preload relations
-      const context = createRelationContext(TestPostModel, posts as TestPost[]);
+      const _context = createRelationContext(TestPostModel, posts as TestPost[]);
 
       // Preload authors using accessor function
       await preloadRelations(posts as TestPost[], (post) => post.author);
@@ -618,14 +624,14 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
   describe('LazyRelationContext', () => {
     it('should share cache between records in same context', async () => {
       const user = await createTestUser('User', 'user@test.com');
-      const post1 = await createTestPost(user.id!, 'Post 1', 'Content');
-      const post2 = await createTestPost(user.id!, 'Post 2', 'Content');
+      const _post1 = await createTestPost(user.id!, 'Post 1', 'Content');
+      const _post2 = await createTestPost(user.id!, 'Post 2', 'Content');
 
       // Load posts in same context
       const posts = await TestPost.find([], { order: 'id' });
 
       // Create context and set it for all posts
-      const context = createRelationContext(TestPostModel, posts as TestPost[]);
+      const _context = createRelationContext(TestPostModel, posts as TestPost[]);
 
       // Access author for first post - loads from DB
       const author1 = await (posts[0] as TestPost).author;
@@ -759,7 +765,7 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
 
     it('should handle belongsTo with composite key', async () => {
       // Create user in tenant 1
-      const user = await createTenantUser(1, 100, 'Tenant1 User');
+      const _user = await createTenantUser(1, 100, 'Tenant1 User');
       
       // Create post by this user
       const post = await createTenantPost(1, 1, 100, 'Test Post');
@@ -815,9 +821,9 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
 
     it('should batch load composite key relations efficiently', async () => {
       // Create multiple users across tenants
-      const user1 = await createTenantUser(1, 100, 'User 1');
-      const user2 = await createTenantUser(1, 101, 'User 2');
-      const user3 = await createTenantUser(2, 100, 'User 3');
+      const _user1 = await createTenantUser(1, 100, 'User 1');
+      const _user2 = await createTenantUser(1, 101, 'User 2');
+      const _user3 = await createTenantUser(2, 100, 'User 3');
 
       // Create posts for each user
       await createTenantPost(1, 1, 100, 'User1 Post 1');
@@ -918,7 +924,7 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
     // Batch Loading SQL Format Tests (PostgreSQL-specific)
     // ============================================
 
-    it('should use = ANY($1::type[]) for single key batch loading on PostgreSQL', async () => {
+    it('should use = ANY(?::type[]) for single key batch loading on PostgreSQL', async () => {
       // Skip if not PostgreSQL
       if (DBModel.getDriverType() !== 'postgres') {
         return;
@@ -946,9 +952,9 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       const selectQueries = logger.getSelectQueries();
       expect(selectQueries.length).toBe(2);
 
-      // Second query should use = ANY($1::int[]) format
+      // Second query should use = ANY(?::int[]) format (? is converted to $1 by driver)
       const postsQuery = selectQueries[1].sql;
-      expect(postsQuery).toMatch(/test_posts\.user_id\s*=\s*ANY\s*\(\s*\$1::int\[\]\s*\)/i);
+      expect(postsQuery).toMatch(/test_posts\.user_id\s*=\s*ANY\s*\(\s*\?::int\[\]\s*\)/i);
       
       // Should NOT use IN (...) format
       expect(postsQuery).not.toMatch(/user_id\s+IN\s*\(/i);
@@ -961,9 +967,9 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       }
 
       // Create multi-tenant test data
-      const user1 = await createTenantUserForN1(1, 100, 'Tenant1 User1');
-      const user2 = await createTenantUserForN1(1, 101, 'Tenant1 User2');
-      const user3 = await createTenantUserForN1(2, 100, 'Tenant2 User1');
+      const _user1 = await createTenantUserForN1(1, 100, 'Tenant1 User1');
+      const _user2 = await createTenantUserForN1(1, 101, 'Tenant1 User2');
+      const _user3 = await createTenantUserForN1(2, 100, 'Tenant2 User1');
 
       await createTenantPostForN1(1, 1, 100, 'T1U1 Post');
       await createTenantPostForN1(1, 2, 101, 'T1U2 Post');
@@ -992,9 +998,8 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       // Should have column aliases with _unnest_ prefix to avoid conflicts
       expect(postsQuery).toMatch(/_unnest_test_tenant_posts/i);
       
-      // Should use typed arrays ($1::int[], $2::int[])
-      expect(postsQuery).toMatch(/\$1::int\[\]/i);
-      expect(postsQuery).toMatch(/\$2::int\[\]/i);
+      // Should use typed arrays (?::int[]) - ? is converted to $1, $2 by driver
+      expect(postsQuery).toMatch(/\?::int\[\]/i);
       
       // Should NOT use (col1, col2) IN (...) format
       expect(postsQuery).not.toMatch(/\(tenant_id,\s*user_id\)\s*IN\s*\(/i);
@@ -1067,9 +1072,9 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       }
 
       // Create multi-tenant test data
-      const user1 = await createTenantUserForN1(10, 200, 'T10 User');
-      const user2 = await createTenantUserForN1(10, 201, 'T10 User2');
-      const user3 = await createTenantUserForN1(20, 200, 'T20 User');
+      const _user1 = await createTenantUserForN1(10, 200, 'T10 User');
+      const _user2 = await createTenantUserForN1(10, 201, 'T10 User2');
+      const _user3 = await createTenantUserForN1(20, 200, 'T20 User');
 
       await createTenantPostForN1(10, 1, 200, 'Post');
       await createTenantPostForN1(10, 2, 201, 'Post');
@@ -1207,9 +1212,9 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
 
     it('should use composite key batch loading', async () => {
       // Create multi-tenant test data
-      const user1 = await createTenantUserForN1(1, 100, 'Tenant1 User1');
-      const user2 = await createTenantUserForN1(1, 101, 'Tenant1 User2');
-      const user3 = await createTenantUserForN1(2, 100, 'Tenant2 User1');
+      const _user1 = await createTenantUserForN1(1, 100, 'Tenant1 User1');
+      const _user2 = await createTenantUserForN1(1, 101, 'Tenant1 User2');
+      const _user3 = await createTenantUserForN1(2, 100, 'Tenant2 User1');
 
       await createTenantPostForN1(1, 1, 100, 'T1U1 Post 1');
       await createTenantPostForN1(1, 2, 100, 'T1U1 Post 2');
@@ -1309,6 +1314,347 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
       expect(selectQueries.length).toBe(2); // Auto batch loading!
       // PostgreSQL uses = ANY($1::type[]), MySQL/SQLite uses IN (...)
       expect(selectQueries[1].sql).toMatch(/(?:IN\s*\(|=\s*ANY\s*\()/); // Batch query
+    });
+  });
+
+  // ============================================
+  // Limit Configuration Tests
+  // ============================================
+
+  describe('Limit Configuration', () => {
+    afterEach(() => {
+      // Reset limit config after each test
+      DBModel.setLimitConfig({ hardLimit: null, lazyLoadLimit: null });
+    });
+
+    describe('Global hardLimit for find()', () => {
+      it('should throw LimitExceededError when find() exceeds hardLimit', async () => {
+        // Set a low hard limit
+        DBModel.setLimitConfig({ hardLimit: 2 });
+
+        // Create more records than the limit
+        await createTestUser('User 1', 'user1@limit.com');
+        await createTestUser('User 2', 'user2@limit.com');
+        await createTestUser('User 3', 'user3@limit.com');
+
+        // find() without limit should throw
+        await expect(TestUser.find([])).rejects.toThrow(LimitExceededError);
+        
+        // Verify error details
+        try {
+          await TestUser.find([]);
+        } catch (e) {
+          expect(e).toBeInstanceOf(LimitExceededError);
+          const err = e as LimitExceededError;
+          expect(err.limit).toBe(2);
+          // actualCount is limit+1 for find() (query uses LIMIT N+1 to detect overflow)
+          expect(err.actualCount).toBe(3);  // 2 + 1 = 3
+          expect(err.context).toBe('find');
+          // modelName contains class name (TestUserModel)
+          expect(err.modelName).toBeDefined();
+        }
+      });
+
+      it('should not throw when find() has explicit limit option', async () => {
+        DBModel.setLimitConfig({ hardLimit: 2 });
+
+        await createTestUser('User 1', 'user1@limit.com');
+        await createTestUser('User 2', 'user2@limit.com');
+        await createTestUser('User 3', 'user3@limit.com');
+
+        // find() with explicit limit should not throw
+        const users = await TestUser.find([], { limit: 10 });
+        expect(users.length).toBe(3);
+      });
+
+      it('should not throw when result count is within hardLimit', async () => {
+        DBModel.setLimitConfig({ hardLimit: 5 });
+
+        await createTestUser('User 1', 'user1@limit.com');
+        await createTestUser('User 2', 'user2@limit.com');
+
+        const users = await TestUser.find([]);
+        expect(users.length).toBe(2);
+      });
+    });
+
+    describe('Global lazyLoadLimit for hasMany', () => {
+      it('should throw LimitExceededError when hasMany exceeds lazyLoadLimit', async () => {
+        DBModel.setLimitConfig({ lazyLoadLimit: 2 });
+
+        const user = await createTestUser('User', 'user@lazylimit.com');
+        await createTestPost(user.id!, 'Post 1', 'Content');
+        await createTestPost(user.id!, 'Post 2', 'Content');
+        await createTestPost(user.id!, 'Post 3', 'Content');
+
+        // Accessing posts should throw
+        await expect(user.posts).rejects.toThrow(LimitExceededError);
+
+        // Verify error details
+        try {
+          await user.posts;
+        } catch (e) {
+          expect(e).toBeInstanceOf(LimitExceededError);
+          const err = e as LimitExceededError;
+          expect(err.limit).toBe(2);
+          expect(err.actualCount).toBe(3);
+          expect(err.context).toBe('relation');
+          expect(err.relationName).toBe('posts');
+        }
+      });
+
+      it('should not throw when hasMany result is within lazyLoadLimit', async () => {
+        DBModel.setLimitConfig({ lazyLoadLimit: 5 });
+
+        const user = await createTestUser('User', 'user@lazylimit.com');
+        await createTestPost(user.id!, 'Post 1', 'Content');
+        await createTestPost(user.id!, 'Post 2', 'Content');
+
+        const posts = await user.posts;
+        expect(posts.length).toBe(2);
+      });
+    });
+  });
+
+  // ============================================
+  // Per-Relation Limit Tests (SQL LIMIT)
+  // ============================================
+
+  describe('Per-Relation Limit (SQL LIMIT)', () => {
+    // Model with limit option on hasMany
+    // eslint-disable-next-line prefer-const
+    let LimitedUser: typeof LimitedUserModel & ColumnsOf<LimitedUserModel>;
+
+    @model('test_users')
+    class LimitedUserModel extends DBModel {
+      @column() id?: number;
+      @column() name?: string;
+      @column() email?: string;
+
+      // Limited relation - only 2 posts per user
+      @hasMany(() => [LimitedUser.id, TestPost.user_id], {
+        limit: 2,
+        order: () => TestPost.created_at.desc(),
+      })
+      declare recentPosts: Promise<TestPostModel[]>;
+
+      // Unlimited relation for comparison
+      @hasMany(() => [LimitedUser.id, TestPost.user_id], {
+        order: () => TestPost.created_at.desc(),
+      })
+      declare allPosts: Promise<TestPostModel[]>;
+    }
+    LimitedUser = LimitedUserModel as typeof LimitedUserModel & ColumnsOf<LimitedUserModel>;
+
+    beforeEach(() => {
+      // Register model in registry
+      DBModel['_registerModel']('LimitedUserModel', LimitedUser);
+    });
+
+    it('should limit hasMany results per parent key', async () => {
+      const user = await createTestUser('User', 'user@perlimit.com');
+      // Create 5 posts
+      for (let i = 1; i <= 5; i++) {
+        await DBModel.execute(
+          `INSERT INTO test_posts (user_id, title, content, created_at) VALUES ($1, $2, $3, NOW() + interval '${i} minutes')`,
+          [user.id!, `Post ${i}`, `Content ${i}`]
+        );
+      }
+
+      // Find user using LimitedUser model
+      const [limitedUser] = await LimitedUser.find([[LimitedUser.id, user.id!]]);
+
+      // recentPosts should only return 2 (most recent due to ORDER BY)
+      const recentPosts = await (limitedUser as LimitedUserModel).recentPosts;
+      expect(recentPosts.length).toBe(2);
+      expect(recentPosts[0].title).toBe('Post 5'); // Most recent
+      expect(recentPosts[1].title).toBe('Post 4');
+
+      // allPosts should return all 5
+      const allPosts = await (limitedUser as LimitedUserModel).allPosts;
+      expect(allPosts.length).toBe(5);
+    });
+
+    it('should batch load with limit for multiple parents', async () => {
+      const user1 = await createTestUser('User 1', 'user1@batchlimit.com');
+      const user2 = await createTestUser('User 2', 'user2@batchlimit.com');
+
+      // Create posts for user1
+      for (let i = 1; i <= 4; i++) {
+        await DBModel.execute(
+          `INSERT INTO test_posts (user_id, title, content, created_at) VALUES ($1, $2, $3, NOW() + interval '${i} minutes')`,
+          [user1.id!, `U1 Post ${i}`, `Content`]
+        );
+      }
+
+      // Create posts for user2
+      for (let i = 1; i <= 3; i++) {
+        await DBModel.execute(
+          `INSERT INTO test_posts (user_id, title, content, created_at) VALUES ($1, $2, $3, NOW() + interval '${i} minutes')`,
+          [user2.id!, `U2 Post ${i}`, `Content`]
+        );
+      }
+
+      // Load both users
+      const users = await LimitedUser.find([], { order: 'id' });
+      createRelationContext(LimitedUserModel, users as LimitedUserModel[]);
+
+      // Access recentPosts - should batch load with LIMIT per user
+      const u1Posts = await (users[0] as LimitedUserModel).recentPosts;
+      const u2Posts = await (users[1] as LimitedUserModel).recentPosts;
+
+      // Each user should get at most 2 posts
+      expect(u1Posts.length).toBe(2);
+      expect(u2Posts.length).toBe(2);
+
+      // Should be ordered correctly
+      expect(u1Posts[0].title).toBe('U1 Post 4');
+      expect(u2Posts[0].title).toBe('U2 Post 3');
+    });
+
+    it('should limit hasMany results with composite key', async () => {
+      // Create tenant users
+      await DBModel.execute(
+        `INSERT INTO test_tenant_users (tenant_id, id, name) VALUES (1, 100, 'T1 User')`,
+        []
+      );
+      await DBModel.execute(
+        `INSERT INTO test_tenant_users (tenant_id, id, name) VALUES (2, 100, 'T2 User')`,
+        []
+      );
+
+      // Create posts for tenant 1 user (5 posts)
+      for (let i = 1; i <= 5; i++) {
+        await DBModel.execute(
+          `INSERT INTO test_tenant_posts (tenant_id, id, user_id, title) VALUES (1, ?, 100, ?)`,
+          [i, `T1 Post ${i}`]
+        );
+      }
+
+      // Create posts for tenant 2 user (3 posts)
+      for (let i = 1; i <= 3; i++) {
+        await DBModel.execute(
+          `INSERT INTO test_tenant_posts (tenant_id, id, user_id, title) VALUES (2, ?, 100, ?)`,
+          [i, `T2 Post ${i}`]
+        );
+      }
+
+      // Define model with composite key limit
+      @model('test_tenant_users')
+      class LimitedTenantUserModel extends DBModel {
+        @column() tenant_id?: number;
+        @column() id?: number;
+        @column() name?: string;
+
+        // Composite key: [sourceKey, targetKey] pairs
+        // Source: (tenant_id, id), Target: (tenant_id, user_id)
+        @hasMany(() => [
+          [LimitedTenantUserCls.tenant_id, TenantPost.tenant_id],
+          [LimitedTenantUserCls.id, TenantPost.user_id],
+        ], {
+          limit: 2,
+          order: () => TenantPost.id.desc(),
+        })
+        declare recentPosts: Promise<TenantPostModel[]>;
+      }
+      const LimitedTenantUserCls = LimitedTenantUserModel as typeof LimitedTenantUserModel & ColumnsOf<LimitedTenantUserModel>;
+      DBModel['_registerModel']('LimitedTenantUserModel', LimitedTenantUserCls);
+
+      // Load users
+      const users = await LimitedTenantUserCls.find([], { order: 'tenant_id, id' });
+      createRelationContext(LimitedTenantUserModel, users as LimitedTenantUserModel[]);
+
+      // Access recentPosts - should batch load with LIMIT per composite key
+      const t1Posts = await (users[0] as LimitedTenantUserModel).recentPosts;
+      const t2Posts = await (users[1] as LimitedTenantUserModel).recentPosts;
+
+      // Each user should get at most 2 posts (limit: 2)
+      expect(t1Posts.length).toBe(2);
+      expect(t2Posts.length).toBe(2);
+
+      // Should be ordered correctly (desc by id)
+      expect(t1Posts[0].title).toBe('T1 Post 5');
+      expect(t1Posts[1].title).toBe('T1 Post 4');
+      expect(t2Posts[0].title).toBe('T2 Post 3');
+      expect(t2Posts[1].title).toBe('T2 Post 2');
+    });
+  });
+
+  // ============================================
+  // Per-Relation hardLimit Override Tests
+  // ============================================
+
+  describe('Per-Relation hardLimit Override', () => {
+    // Model with hardLimit option on hasMany
+    // eslint-disable-next-line prefer-const
+    let HardLimitUser: typeof HardLimitUserModel & ColumnsOf<HardLimitUserModel>;
+
+    @model('test_users')
+    class HardLimitUserModel extends DBModel {
+      @column() id?: number;
+      @column() name?: string;
+      @column() email?: string;
+
+      // Relation with custom hardLimit (overrides global)
+      @hasMany(() => [HardLimitUser.id, TestPost.user_id], {
+        hardLimit: 3,
+        order: () => TestPost.created_at.desc(),
+      })
+      declare posts: Promise<TestPostModel[]>;
+
+      // Relation with hardLimit: null (unlimited, ignores global)
+      @hasMany(() => [HardLimitUser.id, TestPost.user_id], {
+        hardLimit: null,
+        order: () => TestPost.created_at.desc(),
+      })
+      declare unlimitedPosts: Promise<TestPostModel[]>;
+    }
+    HardLimitUser = HardLimitUserModel as typeof HardLimitUserModel & ColumnsOf<HardLimitUserModel>;
+
+    beforeEach(() => {
+      DBModel['_registerModel']('HardLimitUserModel', HardLimitUser);
+    });
+
+    afterEach(() => {
+      DBModel.setLimitConfig({ hardLimit: null, lazyLoadLimit: null });
+    });
+
+    it('should use per-relation hardLimit instead of global', async () => {
+      // Set global limit higher than per-relation limit
+      DBModel.setLimitConfig({ lazyLoadLimit: 10 });
+
+      const user = await createTestUser('User', 'user@hardlimit.com');
+      for (let i = 1; i <= 5; i++) {
+        await createTestPost(user.id!, `Post ${i}`, 'Content');
+      }
+
+      const [hlUser] = await HardLimitUser.find([[HardLimitUser.id, user.id!]]);
+
+      // Should throw because per-relation hardLimit is 3, but there are 5 posts
+      await expect((hlUser as HardLimitUserModel).posts).rejects.toThrow(LimitExceededError);
+
+      try {
+        await (hlUser as HardLimitUserModel).posts;
+      } catch (e) {
+        const err = e as LimitExceededError;
+        expect(err.limit).toBe(3); // Per-relation limit, not global
+      }
+    });
+
+    it('should allow unlimited when hardLimit is null', async () => {
+      // Set a global limit
+      DBModel.setLimitConfig({ lazyLoadLimit: 2 });
+
+      const user = await createTestUser('User', 'user@unlim.com');
+      for (let i = 1; i <= 5; i++) {
+        await createTestPost(user.id!, `Post ${i}`, 'Content');
+      }
+
+      const [hlUser] = await HardLimitUser.find([[HardLimitUser.id, user.id!]]);
+
+      // unlimitedPosts has hardLimit: null, so it ignores global limit
+      const posts = await (hlUser as HardLimitUserModel).unlimitedPosts;
+      expect(posts.length).toBe(5);
     });
   });
 });

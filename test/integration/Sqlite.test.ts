@@ -6,7 +6,7 @@
 
 import 'reflect-metadata';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { DBModel, model, column, ColumnsOf, closeAllPools } from '../../src';
+import { DBModel, model, column, ColumnsOf, closeAllPools, hasMany, createRelationContext } from '../../src';
 import type { DBConfig } from '../../src';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -621,6 +621,269 @@ describe('SQLite Driver', () => {
       const record3 = await SqliteAllTypes.create([[SqliteAllTypes.timestamp_val, minDate]]);
       const found3 = await SqliteAllTypes.findOne([[SqliteAllTypes.id, record3.id]]);
       expect(found3!.timestamp_val?.toISOString()).toBe(minDate.toISOString());
+    });
+  });
+
+  // ============================================
+  // Lazy Loading with LIMIT Tests (ROW_NUMBER)
+  // ============================================
+
+  describe('Lazy Loading with LIMIT (ROW_NUMBER)', () => {
+    // Model with hasMany relation and limit
+    @model('posts')
+    class SqlitePostModel extends DBModel {
+      @column() id?: number;
+      @column() user_id?: number;
+      @column() title?: string;
+      @column() content?: string;
+    }
+    const SqlitePost = SqlitePostModel as typeof SqlitePostModel & ColumnsOf<SqlitePostModel>;
+
+    @model('users')
+    class SqliteUserWithPostsModel extends DBModel {
+      @column() id?: number;
+      @column() name?: string;
+      @column() email?: string;
+
+      @hasMany(() => [SqliteUserWithPosts.id, SqlitePost.user_id], {
+        limit: 2,
+        order: () => SqlitePost.id.desc(),
+      })
+      declare recentPosts: Promise<SqlitePostModel[]>;
+
+      @hasMany(() => [SqliteUserWithPosts.id, SqlitePost.user_id])
+      declare allPosts: Promise<SqlitePostModel[]>;
+    }
+    const SqliteUserWithPosts = SqliteUserWithPostsModel as typeof SqliteUserWithPostsModel & ColumnsOf<SqliteUserWithPostsModel>;
+
+    beforeAll(() => {
+      DBModel['_registerModel']('SqliteUserWithPostsModel', SqliteUserWithPosts);
+      DBModel['_registerModel']('SqlitePostModel', SqlitePost);
+    });
+
+    it('should limit hasMany results using ROW_NUMBER (single key)', async () => {
+      // Create user
+      const user = await UserModel.create([
+        [UserModel.name, 'Test User'],
+        [UserModel.email, 'rownum@test.com'],
+      ]);
+
+      // Create 5 posts for the user
+      for (let i = 1; i <= 5; i++) {
+        await PostModel.create([
+          [PostModel.user_id, user.id!],
+          [PostModel.title, `Post ${i}`],
+          [PostModel.content, `Content ${i}`],
+        ]);
+      }
+
+      // Find user using model with limit
+      const [foundUser] = await SqliteUserWithPosts.find([[SqliteUserWithPosts.id, user.id!]]);
+
+      // recentPosts should only return 2 (most recent due to ORDER BY desc)
+      const recentPosts = await (foundUser as SqliteUserWithPostsModel).recentPosts;
+      expect(recentPosts.length).toBe(2);
+      expect(recentPosts[0].title).toBe('Post 5');
+      expect(recentPosts[1].title).toBe('Post 4');
+
+      // allPosts should return all 5
+      const allPosts = await (foundUser as SqliteUserWithPostsModel).allPosts;
+      expect(allPosts.length).toBe(5);
+    });
+
+    it('should batch load with limit for multiple parents (single key)', async () => {
+      // Create users
+      const user1 = await UserModel.create([
+        [UserModel.name, 'User 1'],
+        [UserModel.email, 'batch1@test.com'],
+      ]);
+      const user2 = await UserModel.create([
+        [UserModel.name, 'User 2'],
+        [UserModel.email, 'batch2@test.com'],
+      ]);
+
+      // Create posts for user1 (4 posts)
+      for (let i = 1; i <= 4; i++) {
+        await PostModel.create([
+          [PostModel.user_id, user1.id!],
+          [PostModel.title, `U1 Post ${i}`],
+          [PostModel.content, 'Content'],
+        ]);
+      }
+
+      // Create posts for user2 (3 posts)
+      for (let i = 1; i <= 3; i++) {
+        await PostModel.create([
+          [PostModel.user_id, user2.id!],
+          [PostModel.title, `U2 Post ${i}`],
+          [PostModel.content, 'Content'],
+        ]);
+      }
+
+      // Load both users
+      const users = await SqliteUserWithPosts.find([], { order: 'id' });
+      createRelationContext(SqliteUserWithPostsModel, users as SqliteUserWithPostsModel[]);
+
+      // Access recentPosts - should batch load with LIMIT per user
+      const u1Posts = await (users[0] as SqliteUserWithPostsModel).recentPosts;
+      const u2Posts = await (users[1] as SqliteUserWithPostsModel).recentPosts;
+
+      // Each user should get at most 2 posts (limit: 2)
+      expect(u1Posts.length).toBe(2);
+      expect(u2Posts.length).toBe(2);
+
+      // Should be ordered correctly (desc by id)
+      expect(u1Posts[0].title).toBe('U1 Post 4');
+      expect(u2Posts[0].title).toBe('U2 Post 3');
+    });
+  });
+
+  // ============================================
+  // Lazy Loading with LIMIT Tests (Composite Key)
+  // ============================================
+
+  describe('Lazy Loading with LIMIT - Composite Key (ROW_NUMBER)', () => {
+    beforeAll(async () => {
+      // Create composite key tables
+      await DBModel.execute(`
+        CREATE TABLE IF NOT EXISTS tenant_users (
+          tenant_id INTEGER NOT NULL,
+          id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          PRIMARY KEY (tenant_id, id)
+        )
+      `);
+
+      await DBModel.execute(`
+        CREATE TABLE IF NOT EXISTS tenant_posts (
+          tenant_id INTEGER NOT NULL,
+          id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          PRIMARY KEY (tenant_id, id)
+        )
+      `);
+    });
+
+    afterAll(async () => {
+      await DBModel.execute('DROP TABLE IF EXISTS tenant_posts');
+      await DBModel.execute('DROP TABLE IF EXISTS tenant_users');
+    });
+
+    beforeEach(async () => {
+      await DBModel.execute('DELETE FROM tenant_posts');
+      await DBModel.execute('DELETE FROM tenant_users');
+    });
+
+    // Define models for composite key
+    @model('tenant_posts')
+    class SqliteTenantPostModel extends DBModel {
+      @column() tenant_id?: number;
+      @column() id?: number;
+      @column() user_id?: number;
+      @column() title?: string;
+    }
+    const SqliteTenantPost = SqliteTenantPostModel as typeof SqliteTenantPostModel & ColumnsOf<SqliteTenantPostModel>;
+
+    @model('tenant_users')
+    class SqliteTenantUserModel extends DBModel {
+      @column() tenant_id?: number;
+      @column() id?: number;
+      @column() name?: string;
+
+      @hasMany(() => [
+        [SqliteTenantUser.tenant_id, SqliteTenantPost.tenant_id],
+        [SqliteTenantUser.id, SqliteTenantPost.user_id],
+      ], {
+        limit: 2,
+        order: () => SqliteTenantPost.id.desc(),
+      })
+      declare recentPosts: Promise<SqliteTenantPostModel[]>;
+
+      @hasMany(() => [
+        [SqliteTenantUser.tenant_id, SqliteTenantPost.tenant_id],
+        [SqliteTenantUser.id, SqliteTenantPost.user_id],
+      ])
+      declare allPosts: Promise<SqliteTenantPostModel[]>;
+    }
+    const SqliteTenantUser = SqliteTenantUserModel as typeof SqliteTenantUserModel & ColumnsOf<SqliteTenantUserModel>;
+
+    it('should limit hasMany results using ROW_NUMBER (composite key)', async () => {
+      DBModel['_registerModel']('SqliteTenantUserModel', SqliteTenantUser);
+      DBModel['_registerModel']('SqliteTenantPostModel', SqliteTenantPost);
+
+      // Create tenant user
+      await DBModel.execute(
+        `INSERT INTO tenant_users (tenant_id, id, name) VALUES (?, ?, ?)`,
+        [1, 100, 'Tenant1 User']
+      );
+
+      // Create 5 posts
+      for (let i = 1; i <= 5; i++) {
+        await DBModel.execute(
+          `INSERT INTO tenant_posts (tenant_id, id, user_id, title) VALUES (?, ?, ?, ?)`,
+          [1, i, 100, `Post ${i}`]
+        );
+      }
+
+      // Find user
+      const [user] = await SqliteTenantUser.find([
+        [SqliteTenantUser.tenant_id, 1],
+        [SqliteTenantUser.id, 100],
+      ]);
+
+      // recentPosts should only return 2 (most recent)
+      const recentPosts = await (user as SqliteTenantUserModel).recentPosts;
+      expect(recentPosts.length).toBe(2);
+      expect(recentPosts[0].title).toBe('Post 5');
+      expect(recentPosts[1].title).toBe('Post 4');
+
+      // allPosts should return all 5
+      const allPosts = await (user as SqliteTenantUserModel).allPosts;
+      expect(allPosts.length).toBe(5);
+    });
+
+    it('should batch load with limit for multiple parents (composite key)', async () => {
+      DBModel['_registerModel']('SqliteTenantUserModel', SqliteTenantUser);
+      DBModel['_registerModel']('SqliteTenantPostModel', SqliteTenantPost);
+
+      // Create users in different tenants
+      await DBModel.execute(`INSERT INTO tenant_users (tenant_id, id, name) VALUES (1, 100, 'T1 User')`, []);
+      await DBModel.execute(`INSERT INTO tenant_users (tenant_id, id, name) VALUES (2, 100, 'T2 User')`, []);
+
+      // Create posts for tenant 1 user (4 posts)
+      for (let i = 1; i <= 4; i++) {
+        await DBModel.execute(
+          `INSERT INTO tenant_posts (tenant_id, id, user_id, title) VALUES (1, ?, 100, ?)`,
+          [i, `T1 Post ${i}`]
+        );
+      }
+
+      // Create posts for tenant 2 user (3 posts)
+      for (let i = 1; i <= 3; i++) {
+        await DBModel.execute(
+          `INSERT INTO tenant_posts (tenant_id, id, user_id, title) VALUES (2, ?, 100, ?)`,
+          [i, `T2 Post ${i}`]
+        );
+      }
+
+      // Load both users
+      const users = await SqliteTenantUser.find([], { order: 'tenant_id, id' });
+      createRelationContext(SqliteTenantUserModel, users as SqliteTenantUserModel[]);
+
+      // Access recentPosts - should batch load with LIMIT per composite key
+      const t1Posts = await (users[0] as SqliteTenantUserModel).recentPosts;
+      const t2Posts = await (users[1] as SqliteTenantUserModel).recentPosts;
+
+      // Each user should get at most 2 posts (limit: 2)
+      expect(t1Posts.length).toBe(2);
+      expect(t2Posts.length).toBe(2);
+
+      // Should be ordered correctly (desc by id)
+      expect(t1Posts[0].title).toBe('T1 Post 4');
+      expect(t1Posts[1].title).toBe('T1 Post 3');
+      expect(t2Posts[0].title).toBe('T2 Post 3');
+      expect(t2Posts[1].title).toBe('T2 Post 2');
     });
   });
 });

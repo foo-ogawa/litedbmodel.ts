@@ -6,7 +6,8 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { DBBoolValue, DBNullValue, DBNotNullValue, DBImmediateValue, DBToken, DBSubquery, DBExists, type SubqueryCondition } from './DBValues';
 import { normalizeConditions, type ConditionObject } from './DBConditions';
 import { initDBHandler, getDBHandler, createHandlerWithConnection, type DBHandler, type DBConfig, type DBConnection } from './DBHandler';
-import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, TransactionOptions } from './types';
+import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, TransactionOptions, LimitConfig } from './types';
+import { LimitExceededError } from './types';
 import { type Column, type OrderSpec, type CVs, type Conds, type CondsOf, type OrCondOf, createColumn, columnsToNames, pairsToRecord, condsToRecord, orderToString, createOrCond } from './Column';
 import type { MiddlewareClass, ExecuteResult } from './Middleware';
 import { serializeRecord, getColumnMeta, type KeyPair, type CompositeKeyPairs } from './decorators';
@@ -108,6 +109,9 @@ export abstract class DBModel {
   /** Database config */
   private static _dbConfig: DBConfig | null = null;
 
+  /** Limit config for safety guards */
+  private static _limitConfig: LimitConfig = {};
+
   /**
    * Initialize DBModel with database config.
    * Call this once at application startup.
@@ -122,15 +126,55 @@ export abstract class DBModel {
    *   database: 'mydb',
    *   user: 'user',
    *   password: 'pass',
+   * }, {
+   *   // Optional: Set global limits
+   *   hardLimit: 10000,      // find() throws if > 10000 records
+   *   lazyLoadLimit: 1000,   // hasMany throws if > 1000 records per key
    * });
    * 
    * // Now you can use all DBModel methods
    * const users = await User.find([[User.is_active, true]]);
    * ```
    */
-  static setConfig(config: DBConfig, options?: { writerConfig?: DBConfig; logger?: import('./types').Logger }): void {
-    initDBHandler(config, options);
+  static setConfig(
+    config: DBConfig,
+    options?: {
+      writerConfig?: DBConfig;
+      logger?: import('./types').Logger;
+      /** Hard limit for find() - throws if exceeded */
+      hardLimit?: number | null;
+      /** Hard limit for hasMany lazy loading - throws if exceeded */
+      lazyLoadLimit?: number | null;
+    }
+  ): void {
+    initDBHandler(config, { writerConfig: options?.writerConfig, logger: options?.logger });
     this._dbConfig = config;
+    this._limitConfig = {
+      hardLimit: options?.hardLimit,
+      lazyLoadLimit: options?.lazyLoadLimit,
+    };
+  }
+
+  /**
+   * Get current limit configuration.
+   */
+  static getLimitConfig(): LimitConfig {
+    return { ...this._limitConfig };
+  }
+
+  /**
+   * Update limit configuration.
+   * @example
+   * ```typescript
+   * // Set limits after initial config
+   * DBModel.setLimitConfig({ hardLimit: 5000, lazyLoadLimit: 500 });
+   * 
+   * // Disable limits
+   * DBModel.setLimitConfig({ hardLimit: null, lazyLoadLimit: null });
+   * ```
+   */
+  static setLimitConfig(config: LimitConfig): void {
+    this._limitConfig = { ...this._limitConfig, ...config };
   }
 
   /**
@@ -312,7 +356,18 @@ export abstract class DBModel {
     const tableName = options.tableName || (isQueryBased ? cteAlias : this.TABLE_NAME);
     const selectCols = options.select || this.SELECT_COLUMN;
 
-    // Handle QUERY params first (prepended to all other params)
+    // Parameter order (matches SQL order):
+    // 1. CTE params (WITH clause)
+    // 2. Query params (query-based model)
+    // 3. Join params (FROM/JOIN clause)
+    // 4. Condition params (WHERE clause, added by compile)
+
+    // Handle custom CTE params first
+    if (options.cte?.params && options.cte.params.length > 0) {
+      params.push(...options.cte.params);
+    }
+
+    // Handle QUERY params (prepended to all other params)
     const queryParams = this.getQueryParams();
     if (queryParams.length > 0) {
       params.push(...queryParams);
@@ -331,10 +386,22 @@ export abstract class DBModel {
 
     const whereClause = normalizedCond.compile(params);
 
-    // Build CTE prefix if query-based
+    // Build CTE prefix
     let sql = '';
+    
+    // Custom CTE takes precedence
+    if (options.cte) {
+      sql = `WITH ${options.cte.name} AS (${options.cte.sql}) `;
+    }
+    
+    // Query-based CTE (append with comma if custom CTE exists)
     if (isQueryBased && this.QUERY) {
-      sql = `WITH ${cteAlias} AS (${this.QUERY}) `;
+      if (sql) {
+        // Remove trailing space and add comma
+        sql = sql.slice(0, -1) + `, ${cteAlias} AS (${this.QUERY}) `;
+      } else {
+        sql = `WITH ${cteAlias} AS (${this.QUERY}) `;
+      }
     }
 
     sql += `SELECT ${selectCols} FROM ${tableName}`;
@@ -378,6 +445,95 @@ export abstract class DBModel {
   }
 
   /**
+   * Build SELECT SQL without executing.
+   * Useful for constructing CTE/subquery SQL fragments.
+   * Returns SQL with ? placeholders and params array.
+   * 
+   * @param conditions - WHERE conditions
+   * @param options - SELECT options (order, limit, select, etc.)
+   * @param params - Optional parameter array to append to (for joining with outer query)
+   * @returns Object with sql and params
+   * 
+   * @example
+   * ```typescript
+   * // Build a subquery SQL
+   * const { sql, params } = User.buildSelectSQL(
+   *   { status: 'active' },
+   *   { select: 'id', order: 'created_at DESC', limit: 10 }
+   * );
+   * // sql: "SELECT id FROM users WHERE status = ? ORDER BY created_at DESC LIMIT 10"
+   * // params: ['active']
+   * ```
+   */
+  public static buildSelectSQL<T extends typeof DBModel>(
+    this: T,
+    conditions: ConditionObject,
+    options: SelectOptions = {},
+    params: unknown[] = []
+  ): { sql: string; params: unknown[] } {
+    // Build SQL fragment (without FIND_FILTER for flexibility)
+    const tableName = options.tableName || this.TABLE_NAME;
+    const selectCols = options.select || this.SELECT_COLUMN;
+
+    // Handle CTE params first
+    if (options.cte?.params && options.cte.params.length > 0) {
+      params.push(...options.cte.params);
+    }
+
+    // Handle JOIN params
+    if (options.joinParams && options.joinParams.length > 0) {
+      params.push(...options.joinParams);
+    }
+
+    const normalizedCond = normalizeConditions(conditions);
+    const whereClause = normalizedCond.compile(params);
+
+    // Build SQL
+    let sql = '';
+    
+    // Custom CTE
+    if (options.cte) {
+      sql = `WITH ${options.cte.name} AS (${options.cte.sql}) `;
+    }
+
+    sql += `SELECT ${selectCols} FROM ${tableName}`;
+    
+    // Add JOIN clause if provided
+    if (options.join) {
+      sql += ` ${options.join}`;
+    }
+    
+    if (whereClause) {
+      sql += ` WHERE ${whereClause}`;
+    }
+
+    if (options.group) {
+      sql += ` GROUP BY ${options.group}`;
+    }
+
+    if (options.order) {
+      const orderStr = typeof options.order === 'string' ? options.order : orderToString(options.order);
+      if (orderStr) {
+        sql += ` ORDER BY ${orderStr}`;
+      }
+    }
+
+    if (options.limit !== undefined) {
+      sql += ` LIMIT ${options.limit}`;
+    }
+
+    if (options.offset !== undefined) {
+      sql += ` OFFSET ${options.offset}`;
+    }
+
+    if (options.append) {
+      sql += ` ${options.append}`;
+    }
+
+    return { sql, params };
+  }
+
+  /**
    * Build SELECT SQL and execute via query()
    * @internal
    */
@@ -388,6 +544,76 @@ export abstract class DBModel {
   ): Promise<InstanceType<T>[]> {
     const { sql, params } = this._buildSelectSQL(conditions, options);
     return this.query(sql, params);
+  }
+
+  /**
+   * Select for lazy relation loading.
+   * Applies lazyLoadLimit check and supports CTE/raw conditions.
+   * Can also accept raw SQL for complex queries (LATERAL JOIN, ROW_NUMBER).
+   * 
+   * @param conditionsOrSql - Condition object or raw SQL string
+   * @param optionsOrParams - Select options or raw SQL params (when using raw SQL)
+   * @param relationConfig - Relation configuration for limit checking
+   * @returns Model instances
+   * @internal - Used by LazyRelation
+   */
+  static async _selectForRelation<T extends typeof DBModel>(
+    this: T,
+    conditionsOrSql: ConditionObject | string,
+    optionsOrParams: SelectOptions | unknown[] = {},
+    relationConfig?: {
+      hardLimit?: number | null;
+      propertyKey?: string;
+      sourceModelName?: string;
+    }
+  ): Promise<InstanceType<T>[]> {
+    // Determine effective hardLimit
+    const globalLazyLoadLimit = DBModel._limitConfig.lazyLoadLimit;
+    const relationHardLimit = relationConfig?.hardLimit;
+    
+    // null means disabled, undefined means use global
+    const effectiveHardLimit = relationHardLimit === null
+      ? null
+      : relationHardLimit ?? globalLazyLoadLimit;
+    
+    let sql: string;
+    let params: unknown[];
+    let shouldCheckLimit: boolean;
+    
+    if (typeof conditionsOrSql === 'string') {
+      // Raw SQL mode - for complex queries like LATERAL JOIN, ROW_NUMBER
+      sql = conditionsOrSql;
+      params = optionsOrParams as unknown[];
+      // For raw SQL with limit (LATERAL/ROW_NUMBER), skip hardLimit check
+      // as limit is already applied at SQL level
+      shouldCheckLimit = false;
+    } else {
+      // Condition object mode
+      const options = optionsOrParams as SelectOptions;
+      shouldCheckLimit = effectiveHardLimit != null && !options.limit;
+      const effectiveOptions = (shouldCheckLimit && effectiveHardLimit != null)
+        ? { ...options, limit: effectiveHardLimit + 1 }
+        : options;
+      
+      const built = this._buildSelectSQL(conditionsOrSql, effectiveOptions);
+      sql = built.sql;
+      params = built.params;
+    }
+    
+    const results = await this.query(sql, params);
+    
+    // Check if hardLimit was exceeded
+    if (shouldCheckLimit && results.length > effectiveHardLimit!) {
+      throw new LimitExceededError(
+        effectiveHardLimit!,
+        results.length,
+        'relation',
+        relationConfig?.sourceModelName || this.name,
+        relationConfig?.propertyKey
+      );
+    }
+    
+    return results;
   }
 
   /**
@@ -469,7 +695,7 @@ export abstract class DBModel {
           rowValues.push('DEFAULT');
         } else {
           params.push(val);
-          rowValues.push(`$${params.length}`);
+          rowValues.push('?');
         }
       }
       valueRows.push(`(${rowValues.join(', ')})`);
@@ -532,7 +758,7 @@ export abstract class DBModel {
         setClauses.push(`${col} = ${val.compile(params)}`);
       } else {
         params.push(val);
-        setClauses.push(`${col} = $${params.length}`);
+        setClauses.push(`${col} = ?`);
       }
     }
 
@@ -1054,6 +1280,9 @@ export abstract class DBModel {
       targetKeys: string[];
       order: string | null;
       conditions?: Record<string, unknown>;
+      limit?: number;
+      hardLimit?: number | null;
+      relationName?: string;
     }
   ): Promise<DBModel | DBModel[] | null> {
     // Get target class from registry
@@ -1067,6 +1296,9 @@ export abstract class DBModel {
       targetClass: TargetClass,
       conditions: config.conditions as ConditionObject | undefined,
       order: config.order,
+      limit: config.limit,
+      hardLimit: config.hardLimit,
+      relationName: config.relationName,
     };
 
     // Set keys based on whether composite or single
@@ -1092,6 +1324,26 @@ export abstract class DBModel {
 
     // Load from context (batch loading)
     const result = await context.getRelation<DBModel>(this, relationType, relationConfig);
+    
+    // Check hardLimit for hasMany relations
+    if (relationType === 'hasMany' && Array.isArray(result)) {
+      // Determine effective limit: per-relation hardLimit > global lazyLoadLimit
+      // undefined = use global, null = no limit
+      const effectiveLimit = config.hardLimit === undefined
+        ? DBModel._limitConfig.lazyLoadLimit
+        : config.hardLimit;
+      
+      if (effectiveLimit != null && result.length > effectiveLimit) {
+        throw new LimitExceededError(
+          effectiveLimit,
+          result.length,
+          'relation',
+          this.constructor.name,
+          config.relationName
+        );
+      }
+    }
+    
     this._relationCache.set(cacheKey, result);
 
     if (relationType === 'hasMany') {
@@ -1415,7 +1667,27 @@ export abstract class DBModel {
   ): Promise<InstanceType<T>[]> {
     const core = async (conds: Conds, opts?: SelectOptions): Promise<InstanceType<T>[]> => {
       const conditionRecord = condsToRecord(conds) as ConditionObject;
-      return this._select(conditionRecord, opts);
+      
+      // Apply hardLimit + 1 to detect overflow without fetching all records
+      const hardLimit = DBModel._limitConfig.hardLimit;
+      const shouldCheckLimit = hardLimit != null && !opts?.limit;
+      const effectiveOpts = shouldCheckLimit
+        ? { ...opts, limit: hardLimit + 1 }
+        : opts;
+      
+      const results = await this._select(conditionRecord, effectiveOpts);
+      
+      // Check if hardLimit was exceeded
+      if (shouldCheckLimit && results.length > hardLimit) {
+        throw new LimitExceededError(
+          hardLimit,
+          results.length,  // At least this many (actually more may exist)
+          'find',
+          this.name
+        );
+      }
+      
+      return results;
     };
     return this._applyMiddleware('find', core, [conditions, options]);
   }

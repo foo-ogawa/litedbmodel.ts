@@ -118,6 +118,27 @@ export class DBConditions {
       return value.compile(params);
     }
 
+    // Handle __raw__ special key for raw SQL conditions
+    if (key === '__raw__') {
+      if (typeof value === 'string') {
+        return value;
+      }
+      if (Array.isArray(value)) {
+        // Check if it's [sql, params] format (first element is string, second is array)
+        if (value.length === 2 && typeof value[0] === 'string' && Array.isArray(value[1])) {
+          const [sql, rawParams] = value as [string, unknown[]];
+          params.push(...rawParams);
+          return sql;
+        }
+        // Multiple raw conditions - join with AND
+        const rawParts = value.filter(v => typeof v === 'string') as string[];
+        if (rawParts.length > 0) {
+          return rawParts.join(' AND ');
+        }
+      }
+      return '';
+    }
+
     // Handle DBToken instances (must be before __ key skip to handle __tuple__)
     if (value instanceof DBToken) {
       return value.compile(params, key);
@@ -159,44 +180,42 @@ export class DBConditions {
 
       const placeholders = value.map((v) => {
         params.push(v);
-        return `$${params.length}`;
+        return '?';
       });
       return `${key} IN (${placeholders.join(', ')})`;
     }
 
     // Check if key contains custom operator (e.g., "column > ?")
+    // The ? in the key is the placeholder itself, just push params
     if (key.includes('?')) {
       return this.compileCustomOperator(key, value, params);
     }
 
     // Default: equality
     params.push(value);
-    return `${key} = $${params.length}`;
+    return `${key} = ?`;
   }
 
   /**
    * Compile custom operator condition
+   * Key already contains ? placeholders, just push params in order
    */
   protected compileCustomOperator(
     key: string,
     value: ConditionValue,
     params: unknown[]
   ): string {
-    let sql = key;
-
     if (Array.isArray(value)) {
-      // Multiple placeholders
+      // Multiple placeholders - push all values
       for (const v of value) {
         params.push(v);
-        sql = sql.replace('?', `$${params.length}`);
       }
     } else {
       // Single placeholder
       params.push(value);
-      sql = sql.replace('?', `$${params.length}`);
     }
-
-    return sql;
+    // Return key as-is (already contains ? placeholders)
+    return key;
   }
 
   /**

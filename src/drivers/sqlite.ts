@@ -62,16 +62,8 @@ function convertParams(params: unknown[]): unknown[] {
 class SqliteConnection implements DBConnection {
   constructor(private db: BetterSqlite3Database) {}
 
-  /**
-   * Convert PostgreSQL-style placeholders ($1, $2) to SQLite-style (?, ?)
-   */
-  private convertPlaceholders(sql: string): string {
-    return sql.replace(/\$\d+/g, '?');
-  }
-
   async query(sql: string, params?: unknown[]): Promise<QueryResult> {
-    const convertedSql = this.convertPlaceholders(sql);
-    const stmt = this.db.prepare(convertedSql);
+    const stmt = this.db.prepare(sql);
     const normalizedSql = sql.trim().toUpperCase();
     const convertedParams = convertParams(params || []);
 
@@ -143,24 +135,16 @@ export class SqliteDriver implements DBDriver {
   }
 
   /**
-   * Convert PostgreSQL-style placeholders ($1, $2) to SQLite-style (?, ?)
-   */
-  private convertPlaceholders(sql: string): string {
-    return sql.replace(/\$\d+/g, '?');
-  }
-
-  /**
    * Execute a read query
    */
   async execute(sql: string, params: unknown[] = []): Promise<QueryResult> {
     const db = this.getDb();
-    const convertedSql = this.convertPlaceholders(sql);
     const convertedParams = convertParams(params);
-    this.logger.debug(`SQL: ${convertedSql}`, convertedParams);
+    this.logger.debug(`SQL: ${sql}`, convertedParams);
 
     const startTime = Date.now();
     try {
-      const stmt = db.prepare(convertedSql);
+      const stmt = db.prepare(sql);
       const normalizedSql = sql.trim().toUpperCase();
 
       let result: QueryResult;
@@ -180,7 +164,7 @@ export class SqliteDriver implements DBDriver {
       this.logger.debug(`Query completed in ${duration}ms, rows: ${result.rowCount}`);
       return result;
     } catch (error) {
-      this.logger.error(`Query failed: ${convertedSql}`, error);
+      this.logger.error(`Query failed: ${sql}`, error);
       throw error;
     }
   }

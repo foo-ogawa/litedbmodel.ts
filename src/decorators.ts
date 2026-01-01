@@ -62,12 +62,44 @@ export type CompositeKeyPairs = readonly KeyPair[];
 /** Factory function that returns key pair(s) */
 export type KeysFactory = () => KeyPair | CompositeKeyPairs;
 
-/** Relation options (order, where) */
+/** Relation options (order, where, limit) */
 export interface RelationDecoratorOptions {
   /** Order by specification */
   order?: () => OrderSpec;
   /** Additional filter conditions */
   where?: () => Conds;
+  /**
+   * SQL LIMIT for hasMany relations.
+   * Limits the number of records returned per parent key.
+   * Uses LATERAL JOIN (PostgreSQL) or ROW_NUMBER (MySQL/SQLite) for efficient batch loading.
+   * @example
+   * ```typescript
+   * @hasMany(() => [User.id, Post.author_id], {
+   *   limit: 10,  // Only load 10 posts per user
+   *   order: () => Post.created_at.desc(),
+   * })
+   * declare recentPosts: Promise<Post[]>;
+   * ```
+   */
+  limit?: number;
+  /**
+   * Hard limit for hasMany relations (throws exception if exceeded).
+   * Overrides the global lazyLoadLimit setting.
+   * Set to null to disable the limit check for this relation.
+   * @example
+   * ```typescript
+   * @hasMany(() => [User.id, Post.author_id], {
+   *   hardLimit: 500,  // Throw if user has > 500 posts
+   * })
+   * declare posts: Promise<Post[]>;
+   * 
+   * @hasMany(() => [User.id, Log.user_id], {
+   *   hardLimit: null,  // Allow unlimited logs
+   * })
+   * declare logs: Promise<Log[]>;
+   * ```
+   */
+  hardLimit?: number | null;
 }
 
 /** Relation metadata stored by decorators */
@@ -828,6 +860,9 @@ function applyModelDecorator<T extends { new (...args: unknown[]): object }>(
           targetKeys,
           order,
           conditions,
+          limit: options?.limit,
+          hardLimit: options?.hardLimit,
+          relationName: propertyKey,
         });
       },
       enumerable: true,

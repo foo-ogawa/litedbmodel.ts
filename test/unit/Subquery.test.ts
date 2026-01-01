@@ -97,7 +97,7 @@ describe('DBSubquery with Column type', () => {
       const params: unknown[] = [];
       const sql = subquery.compile(params);
 
-      expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = $1)');
+      expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = ?)');
       expect(params).toEqual(['paid']);
     });
 
@@ -132,7 +132,7 @@ describe('DBSubquery with Column type', () => {
       const params: unknown[] = [];
       const sql = subquery.compile(params);
 
-      expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = $1 AND orders.amount = $2)');
+      expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = ? AND orders.amount = ?)');
       expect(params).toEqual(['paid', 1000]);
     });
 
@@ -164,7 +164,7 @@ describe('DBSubquery with Column type', () => {
       const params: unknown[] = [];
       const sql = subquery.compile(params);
 
-      expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status IN ($1, $2))');
+      expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status IN (?, ?))');
       expect(params).toEqual(['paid', 'shipped']);
     });
   });
@@ -182,7 +182,7 @@ describe('DBSubquery with Column type', () => {
       const params: unknown[] = [];
       const sql = subquery.compile(params);
 
-      expect(sql).toBe('(users.id, users.group_id) IN (SELECT orders.user_id, orders.group_id FROM orders WHERE orders.status = $1)');
+      expect(sql).toBe('(users.id, users.group_id) IN (SELECT orders.user_id, orders.group_id FROM orders WHERE orders.status = ?)');
       expect(params).toEqual(['paid']);
     });
 
@@ -214,7 +214,7 @@ describe('DBSubquery with Column type', () => {
       const params: unknown[] = [];
       const sql = subquery.compile(params);
 
-      expect(sql).toBe('(users.tenant_id, users.id, users.group_id) IN (SELECT orders.tenant_id, orders.user_id, orders.group_id FROM orders WHERE orders.status = $1)');
+      expect(sql).toBe('(users.tenant_id, users.id, users.group_id) IN (SELECT orders.tenant_id, orders.user_id, orders.group_id FROM orders WHERE orders.status = ?)');
       expect(params).toEqual(['active']);
     });
   });
@@ -235,7 +235,7 @@ describe('DBSubquery with Column type', () => {
       const params: unknown[] = [];
       const sql = subquery.compile(params);
 
-      expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.user_id = users.id AND orders.status = $1)');
+      expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.user_id = users.id AND orders.status = ?)');
       expect(params).toEqual(['paid']);
     });
 
@@ -255,7 +255,7 @@ describe('DBSubquery with Column type', () => {
       const params: unknown[] = [];
       const sql = subquery.compile(params);
 
-      expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.tenant_id = users.tenant_id AND orders.user_id = users.id AND orders.status = $1)');
+      expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.tenant_id = users.tenant_id AND orders.user_id = users.id AND orders.status = ?)');
       expect(params).toEqual(['paid']);
     });
   });
@@ -289,7 +289,7 @@ describe('DBExists with Column type', () => {
     const params: unknown[] = [];
     const sql = exists.compile(params);
 
-    expect(sql).toBe('NOT EXISTS (SELECT 1 FROM banned_users WHERE banned_users.user_id = users.id AND banned_users.is_active = $1)');
+    expect(sql).toBe('NOT EXISTS (SELECT 1 FROM banned_users WHERE banned_users.user_id = users.id AND banned_users.is_active = ?)');
     expect(params).toEqual([true]);
   });
 
@@ -340,7 +340,7 @@ describe('DBConditions with subqueries using Column', () => {
     const params: unknown[] = [];
     const sql = conditions.compile(params);
 
-    expect(sql).toBe('is_active = TRUE AND users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = $1)');
+    expect(sql).toBe('is_active = TRUE AND users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = ?)');
     expect(params).toEqual(['paid']);
   });
 
@@ -378,7 +378,7 @@ describe('DBConditions with subqueries using Column', () => {
     const params: unknown[] = [];
     const sql = conditions.compile(params);
 
-    expect(sql).toBe('(users.id, users.group_id) IN (SELECT orders.user_id, orders.group_id FROM orders WHERE orders.status = $1)');
+    expect(sql).toBe('(users.id, users.group_id) IN (SELECT orders.user_id, orders.group_id FROM orders WHERE orders.status = ?)');
     expect(params).toEqual(['active']);
   });
 });
@@ -400,7 +400,7 @@ describe('DBModel.inSubquery', () => {
     const params: unknown[] = [];
     const sql = subquery.compile(params);
 
-    expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = $1)');
+    expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = ?)');
     expect(params).toEqual(['paid']);
   });
 
@@ -418,7 +418,7 @@ describe('DBModel.inSubquery', () => {
     const params: unknown[] = [];
     const sql = subquery.compile(params);
 
-    expect(sql).toBe('(users.id, users.group_id) IN (SELECT orders.user_id, orders.group_id FROM orders WHERE orders.status = $1)');
+    expect(sql).toBe('(users.id, users.group_id) IN (SELECT orders.user_id, orders.group_id FROM orders WHERE orders.status = ?)');
     expect(params).toEqual(['paid']);
   });
 
@@ -434,7 +434,7 @@ describe('DBModel.inSubquery', () => {
     const params: unknown[] = [];
     const sql = subquery.compile(params);
 
-    expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = $1 AND orders.amount = $2)');
+    expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = ? AND orders.amount = ?)');
     expect(params).toEqual(['paid', 1000]);
   });
 
@@ -462,7 +462,7 @@ describe('DBModel.inSubquery', () => {
     const params: unknown[] = [];
     const sql = subquery.compile(params);
 
-    expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.tenant_id = users.tenant_id AND orders.status = $1)');
+    expect(sql).toBe('users.id IN (SELECT orders.user_id FROM orders WHERE orders.tenant_id = users.tenant_id AND orders.status = ?)');
     expect(params).toEqual(['completed']);
   });
 });
@@ -491,7 +491,7 @@ describe('DBModel.notInSubquery', () => {
     const params: unknown[] = [];
     const sql = subquery.compile(params);
 
-    expect(sql).toBe('users.id NOT IN (SELECT banned_users.user_id FROM banned_users WHERE banned_users.is_active = $1)');
+    expect(sql).toBe('users.id NOT IN (SELECT banned_users.user_id FROM banned_users WHERE banned_users.is_active = ?)');
     expect(params).toEqual([true]);
   });
 
@@ -534,7 +534,7 @@ describe('DBModel.exists', () => {
     const params: unknown[] = [];
     const sql = exists.compile(params);
 
-    expect(sql).toBe('EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id AND orders.status = $1)');
+    expect(sql).toBe('EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id AND orders.status = ?)');
     expect(params).toEqual(['paid']);
   });
 });
@@ -586,7 +586,7 @@ describe('DBConditions integration with DBModel subquery methods', () => {
     const params: unknown[] = [];
     const sql = conditions.compile(params);
 
-    expect(sql).toBe('is_active = TRUE AND users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = $1)');
+    expect(sql).toBe('is_active = TRUE AND users.id IN (SELECT orders.user_id FROM orders WHERE orders.status = ?)');
     expect(params).toEqual(['paid']);
   });
 
@@ -620,7 +620,7 @@ describe('DBConditions integration with DBModel subquery methods', () => {
     const params: unknown[] = [];
     const sql = conditions.compile(params);
 
-    expect(sql).toBe('(users.id, users.group_id) IN (SELECT orders.user_id, orders.group_id FROM orders WHERE orders.status = $1)');
+    expect(sql).toBe('(users.id, users.group_id) IN (SELECT orders.user_id, orders.group_id FROM orders WHERE orders.status = ?)');
     expect(params).toEqual(['active']);
   });
 });
