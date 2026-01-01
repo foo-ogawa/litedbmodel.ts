@@ -5,6 +5,31 @@
 import type { Column, OrderSpec, Conds } from './Column';
 
 // ============================================
+// Model Options (for @model decorator)
+// ============================================
+
+/**
+ * Options for the @model decorator.
+ * All options use lazy evaluation (functions) to support forward references.
+ */
+export interface ModelOptions {
+  /** DEFAULT_ORDER: Returns OrderSpec for default ordering */
+  order?: () => OrderSpec;
+
+  /** FIND_FILTER: Returns Conds for automatic filtering in find() */
+  filter?: () => Conds;
+
+  /** SELECT_COLUMN: Column selection string (default: '*') */
+  select?: string;
+
+  /** UPDATE_TABLE_NAME: Table name for INSERT/UPDATE operations */
+  updateTable?: string;
+
+  /** DEFAULT_GROUP: Returns Column(s) or string for default grouping */
+  group?: () => Column | Column[] | string;
+}
+
+// ============================================
 // Database Configuration
 // ============================================
 

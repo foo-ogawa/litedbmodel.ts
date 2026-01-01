@@ -43,7 +43,7 @@ npm install better-sqlite3  # SQLite
 
 ```typescript
 import 'reflect-metadata';
-import { DBModel, model, column, ColumnsOf } from 'litedbmodel';
+import { DBModel, model, column } from 'litedbmodel';
 
 // 1. Define model
 @model('users')
@@ -53,7 +53,7 @@ class UserModel extends DBModel {
   @column() email?: string;
   @column() is_active?: boolean;
 }
-export const User = UserModel as typeof UserModel & ColumnsOf<UserModel>;
+export const User = UserModel.asModel();  // Adds type-safe column references
 
 // 2. Configure database
 DBModel.setConfig({
@@ -80,9 +80,43 @@ await User.delete([[User.is_active, false]]);
 
 ---
 
+## Model Options
+
+The `@model` decorator accepts optional configuration for default behaviors:
+
+```typescript
+@model('entries', {
+  order: () => Entry.created_at.desc(),      // DEFAULT_ORDER
+  filter: () => [[Entry.is_deleted, false]], // FIND_FILTER (auto-applied)
+  select: 'id, title, created_at',           // SELECT_COLUMN
+  updateTable: 'entries_writable',           // UPDATE_TABLE_NAME (for views)
+})
+class EntryModel extends DBModel {
+  @column() id?: number;
+  @column() title?: string;
+  @column() created_at?: Date;
+  @column.boolean() is_deleted?: boolean;
+}
+export const Entry = EntryModel.asModel();
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `order` | `() => OrderSpec` | Default ORDER BY for `find()` |
+| `filter` | `() => Conds` | Auto-applied WHERE conditions |
+| `select` | `string` | Default SELECT columns |
+| `updateTable` | `string` | Table name for INSERT/UPDATE |
+| `group` | `() => Column \| string` | Default GROUP BY |
+
+> **Note:** Options using model columns (`order`, `filter`, `group`) require lazy evaluation `() =>` because the model isn't fully defined when the decorator runs.
+
+---
+
 ## Column Decorators
 
 ### Auto-Inferred Types
+
+Types are inferred from TypeScript property types:
 
 ```typescript
 @column() id?: number;           // Number conversion
@@ -90,16 +124,37 @@ await User.delete([[User.is_active, false]]);
 @column() is_active?: boolean;   // Boolean conversion
 @column() created_at?: Date;     // DateTime conversion
 @column() large_id?: bigint;     // BigInt conversion
-@column('db_col') prop?: string; // Custom column name
 ```
+
+### Column Options
+
+```typescript
+@column('db_column_name') prop?: string;         // Custom column name (string shorthand)
+@column({ columnName: 'db_col' }) prop?: string; // Custom column name (object form)
+@column({ primaryKey: true }) id?: number;       // Mark as primary key
+@column({ primaryKey: true, columnName: 'user_id' }) id?: number; // Both options
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `columnName` | `string` | Database column name (defaults to property name) |
+| `primaryKey` | `boolean` | Mark as part of primary key (for `getPkey()`) |
 
 ### Explicit Types (for arrays/JSON)
 
+Use explicit type decorators when auto-inference isn't sufficient:
+
 ```typescript
-@column.date() birth_date?: Date;
-@column.stringArray() tags?: string[];
-@column.intArray() scores?: number[];
-@column.json<Settings>() settings?: Settings;
+@column.date() birth_date?: Date;           // Date only (no time)
+@column.datetime() updated_at?: Date;       // DateTime with timezone
+@column.boolean() is_active?: boolean;      // Explicit boolean
+@column.number() amount?: number;           // Explicit number
+@column.stringArray() tags?: string[];      // String array
+@column.intArray() scores?: number[];       // Integer array
+@column.numericArray() prices?: number[];   // Numeric/decimal array
+@column.booleanArray() flags?: boolean[];   // Boolean array
+@column.datetimeArray() dates?: Date[];     // DateTime array
+@column.json<Settings>() settings?: Settings; // JSON with type
 ```
 
 ---
@@ -265,7 +320,7 @@ await UserPref.create(
 Define relations declaratively with type-safe decorators:
 
 ```typescript
-import { DBModel, model, column, hasMany, belongsTo, hasOne, ColumnsOf } from 'litedbmodel';
+import { DBModel, model, column, hasMany, belongsTo, hasOne } from 'litedbmodel';
 
 @model('users')
 class UserModel extends DBModel {
@@ -280,7 +335,7 @@ class UserModel extends DBModel {
   @hasOne(() => [User.id, UserProfile.user_id])
   declare profile: Promise<UserProfile | null>;
 }
-export const User = UserModel as typeof UserModel & ColumnsOf<UserModel>;
+export const User = UserModel.asModel();
 
 @model('posts')
 class PostModel extends DBModel {
@@ -294,7 +349,7 @@ class PostModel extends DBModel {
   @hasMany(() => [Post.id, Comment.post_id])
   declare comments: Promise<Comment[]>;
 }
-export const Post = PostModel as typeof PostModel & ColumnsOf<PostModel>;
+export const Post = PostModel.asModel();
 
 // Usage
 const post = await Post.findOne([[Post.id, 1]]);
@@ -588,7 +643,7 @@ class UserRankingModel extends DBModel {
   @column() rank?: number;
   @column() percentile?: number;
 }
-const UserRanking = UserRankingModel as typeof UserRankingModel & ColumnsOf<UserRankingModel>;
+const UserRanking = UserRankingModel.asModel();
 
 const rankings = await UserRanking.query(`
   WITH ranked AS (
@@ -643,7 +698,7 @@ Use `find()`, `findOne()`, `count()` on JOINs, aggregations, CTEs, and analytics
 ### Basic Concept
 
 ```typescript
-import { DBModel, model, column, ColumnsOf } from 'litedbmodel';
+import { DBModel, model, column } from 'litedbmodel';
 
 @model('user_stats')  // Alias for the CTE
 class UserStatsModel extends DBModel {
@@ -668,7 +723,7 @@ class UserStatsModel extends DBModel {
     GROUP BY u.id, u.name
   `;
 }
-export const UserStats = UserStatsModel as typeof UserStatsModel & ColumnsOf<UserStatsModel>;
+export const UserStats = UserStatsModel.asModel();
 
 // Use find() with additional conditions
 const topContributors = await UserStats.find([
@@ -736,7 +791,7 @@ class SalesReportModel extends DBModel {
     });
   }
 }
-export const SalesReport = SalesReportModel as typeof SalesReportModel & ColumnsOf<SalesReportModel>;
+export const SalesReport = SalesReportModel.asModel();
 
 // Usage: Clean, encapsulated API
 const Q1Report = SalesReport.forPeriod('2024-01-01', '2024-04-01');

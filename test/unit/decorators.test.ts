@@ -538,5 +538,81 @@ describe('decorators', () => {
       expect(pkey).toEqual({ id: 123 });
     });
   });
+
+  describe('@model with options', () => {
+    it('should set DEFAULT_ORDER from options.order', () => {
+      @model('options_test')
+      class OptionsModelClass extends DBModel {
+        @column() id?: number;
+        @column() created_at?: Date;
+      }
+      const OptionsModel = OptionsModelClass as typeof OptionsModelClass & {
+        id: import('../../src/Column').Column;
+        created_at: import('../../src/Column').Column;
+      };
+
+      // Now define another model using the first one's column
+      @model('options_test2', {
+        order: () => OptionsModel.created_at.desc(),
+      })
+      class OptionsModel2Class extends DBModel {
+        @column() id?: number;
+        @column() created_at?: Date;
+      }
+
+      const order = (OptionsModel2Class as unknown as { DEFAULT_ORDER: import('../../src/Column').OrderColumn }).DEFAULT_ORDER;
+      expect(order).toBeDefined();
+      expect(order.columnName).toBe('created_at');
+      expect(order.direction).toBe('DESC');
+    });
+
+    it('should set FIND_FILTER from options.filter', () => {
+      @model('filter_base')
+      class FilterBaseClass extends DBModel {
+        @column() id?: number;
+        @column.boolean() is_deleted?: boolean;
+      }
+      const FilterBase = FilterBaseClass as typeof FilterBaseClass & {
+        id: import('../../src/Column').Column;
+        is_deleted: import('../../src/Column').Column;
+      };
+
+      @model('filter_test', {
+        filter: () => [[FilterBase.is_deleted, false]],
+      })
+      class FilterModel extends DBModel {
+        @column() id?: number;
+        @column.boolean() is_deleted?: boolean;
+      }
+
+      const filter = (FilterModel as unknown as { FIND_FILTER: import('../../src/Column').Conds }).FIND_FILTER;
+      expect(filter).toBeDefined();
+      expect(Array.isArray(filter)).toBe(true);
+    });
+
+    it('should set SELECT_COLUMN from options.select', () => {
+      @model('select_test', {
+        select: 'id, name',
+      })
+      class SelectModel extends DBModel {
+        @column() id?: number;
+        @column() name?: string;
+      }
+
+      expect((SelectModel as unknown as { SELECT_COLUMN: string }).SELECT_COLUMN).toBe('id, name');
+    });
+
+    it('should set UPDATE_TABLE_NAME from options.updateTable', () => {
+      @model('view_name', {
+        updateTable: 'real_table',
+      })
+      class ViewBacked extends DBModel {
+        @column() id?: number;
+      }
+
+      expect((ViewBacked as unknown as { UPDATE_TABLE_NAME: string }).UPDATE_TABLE_NAME).toBe('real_table');
+    });
+
+  });
 });
 

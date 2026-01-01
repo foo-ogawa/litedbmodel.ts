@@ -8,7 +8,7 @@ import { normalizeConditions, type ConditionObject } from './DBConditions';
 import { initDBHandler, getDBHandler, createHandlerWithConnection, type DBHandler, type DBConfig, type DBConnection } from './DBHandler';
 import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, TransactionOptions, LimitConfig } from './types';
 import { LimitExceededError } from './types';
-import { type Column, type OrderSpec, type CVs, type Conds, type CondsOf, type OrCondOf, createColumn, columnsToNames, pairsToRecord, condsToRecord, orderToString, createOrCond } from './Column';
+import { type Column, type OrderSpec, type CVs, type Conds, type CondsOf, type OrCondOf, type ColumnsOf, createColumn, columnsToNames, pairsToRecord, condsToRecord, orderToString, createOrCond } from './Column';
 import type { MiddlewareClass, ExecuteResult } from './Middleware';
 import { serializeRecord, getColumnMeta, type KeyPair, type CompositeKeyPairs } from './decorators';
 
@@ -55,6 +55,28 @@ export abstract class DBModel {
 
   /** Table name */
   static TABLE_NAME: string = '';
+
+  /**
+   * Returns the model class with type-safe column properties.
+   * Use this instead of manual casting with `ColumnsOf`.
+   * 
+   * @example
+   * ```typescript
+   * @model('users')
+   * class UserModel extends DBModel {
+   *   @column() id?: number;
+   *   @column() name?: string;
+   * }
+   * export const User = UserModel.asModel();
+   * export type User = UserModel;
+   * 
+   * // Now you can use User.id, User.name as Column references
+   * await User.find([[User.name, 'John']]);
+   * ```
+   */
+  static asModel<T extends typeof DBModel>(this: T): T & ColumnsOf<InstanceType<T>> {
+    return this as T & ColumnsOf<InstanceType<T>>;
+  }
 
   /** Table name for UPDATE/DELETE (if different from TABLE_NAME) */
   static UPDATE_TABLE_NAME: string | null = null;

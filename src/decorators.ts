@@ -20,6 +20,7 @@ import {
   castToDatetimeArray,
   castToJson,
 } from './TypeCast';
+import type { ModelOptions } from './types';
 
 // ============================================
 // Metadata Keys
@@ -712,17 +713,23 @@ export function model<T extends { new (...args: unknown[]): object }>(
 export function model(
   tableName: string
 ): <T extends { new (...args: unknown[]): object }>(constructor: T) => T;
+// Overload 3: @model('table_name', options)
+export function model(
+  tableName: string,
+  options: ModelOptions
+): <T extends { new (...args: unknown[]): object }>(constructor: T) => T;
 // Implementation
 export function model<T extends { new (...args: unknown[]): object }>(
-  tableNameOrConstructor: string | T
+  tableNameOrConstructor: string | T,
+  options?: ModelOptions
 ): T | (<U extends { new (...args: unknown[]): object }>(constructor: U) => U) {
-  // Called as @model('table_name')
+  // Called as @model('table_name') or @model('table_name', options)
   if (typeof tableNameOrConstructor === 'string') {
     const tableName = tableNameOrConstructor;
     return function <U extends { new (...args: unknown[]): object }>(
       constructor: U
     ): U {
-      return applyModelDecorator(constructor, tableName);
+      return applyModelDecorator(constructor, tableName, options);
     };
   }
 
@@ -771,7 +778,8 @@ function parseKeys(keys: KeyPair | CompositeKeyPairs): {
  */
 function applyModelDecorator<T extends { new (...args: unknown[]): object }>(
   constructor: T,
-  tableName?: string
+  tableName?: string,
+  options?: ModelOptions
 ): T {
   const columns: Map<string, ColumnMeta> =
     Reflect.getMetadata(COLUMNS_KEY, constructor) || new Map();
@@ -787,6 +795,50 @@ function applyModelDecorator<T extends { new (...args: unknown[]): object }>(
       enumerable: true,
       configurable: false,
     });
+  }
+
+  // 0.1 Apply model options (order, filter, select, updateTable, group)
+  if (options) {
+    if (options.order) {
+      const orderFn = options.order;
+      Object.defineProperty(constructor, 'DEFAULT_ORDER', {
+        get: () => orderFn(),
+        enumerable: true,
+        configurable: false,
+      });
+    }
+    if (options.filter) {
+      const filterFn = options.filter;
+      Object.defineProperty(constructor, 'FIND_FILTER', {
+        get: () => filterFn(),
+        enumerable: true,
+        configurable: false,
+      });
+    }
+    if (options.select !== undefined) {
+      Object.defineProperty(constructor, 'SELECT_COLUMN', {
+        value: options.select,
+        writable: false,
+        enumerable: true,
+        configurable: false,
+      });
+    }
+    if (options.updateTable !== undefined) {
+      Object.defineProperty(constructor, 'UPDATE_TABLE_NAME', {
+        value: options.updateTable,
+        writable: false,
+        enumerable: true,
+        configurable: false,
+      });
+    }
+    if (options.group) {
+      const groupFn = options.group;
+      Object.defineProperty(constructor, 'DEFAULT_GROUP', {
+        get: () => groupFn(),
+        enumerable: true,
+        configurable: false,
+      });
+    }
   }
 
   // 1. Add static Column properties (callable functions)

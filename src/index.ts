@@ -190,6 +190,7 @@ export type {
   TransactionOptions,
   Logger,
   LimitConfig,
+  ModelOptions,
 } from './types';
 export { LimitExceededError } from './types';
 
