@@ -386,7 +386,7 @@ Class-based middleware for cross-cutting concerns.
 All database operations flow through the middleware system:
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph "High-Level API"
         find["find()"]
         findOne["findOne()"]
