@@ -9,7 +9,7 @@ import { initDBHandler, getDBHandler, createHandlerWithConnection, type DBHandle
 import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, TransactionOptions } from './types';
 import { type Column, type OrderSpec, type CVs, type Conds, type CondsOf, type OrCondOf, createColumn, columnsToNames, pairsToRecord, condsToRecord, orderToString, createOrCond } from './Column';
 import type { MiddlewareClass, ExecuteResult } from './Middleware';
-import { serializeRecord, getColumnMeta } from './decorators';
+import { serializeRecord, getColumnMeta, type KeyPair, type CompositeKeyPairs } from './decorators';
 
 // Import LazyRelation module (static import for Vitest compatibility)
 import { LazyRelationContext, type RelationType, type RelationConfig } from './LazyRelation';
@@ -626,14 +626,13 @@ export abstract class DBModel {
   /**
    * IN subquery condition.
    * Creates a condition like: column IN (SELECT selectColumn FROM targetModel WHERE ...)
-   * Supports composite keys for both parent and subquery columns.
-   * Type-safe: parentColumns must belong to caller model, selectColumns/conditions must belong to target model.
+   * Supports composite keys using key pairs (same format as relation decorators).
+   * Type-safe: first column in pair must belong to caller model, second to target model.
    *
    * @typeParam T - Parent model class type (inferred from this)
    * @typeParam S - Target model class type
-   * @param parentColumns - Parent columns to match (must belong to T)
-   * @param selectColumns - Columns to SELECT in subquery (must belong to S, determines target table)
-   * @param conditions - WHERE conditions for subquery (columns must belong to S)
+   * @param keyPairs - Key pairs: [[parentCol, targetCol], ...] or single pair [parentCol, targetCol]
+   * @param conditions - WHERE conditions for subquery (columns must belong to target model S)
    * @returns Condition tuple for use in find() conditions
    *
    * @example
@@ -642,23 +641,22 @@ export abstract class DBModel {
    *
    * // Single key: id IN (SELECT user_id FROM orders WHERE status = 'paid')
    * await User.find([
-   *   User.inSubquery([User.id], [Order.user_id], [
+   *   User.inSubquery([[User.id, Order.user_id]], [
    *     [Order.status, 'paid']
    *   ])
    * ]);
    *
    * // Composite key: (id, group_id) IN (SELECT user_id, group_id FROM orders WHERE ...)
    * await User.find([
-   *   User.inSubquery(
-   *     [User.id, User.group_id],
-   *     [Order.user_id, Order.group_id],
-   *     [[Order.status, 'paid']]
-   *   )
+   *   User.inSubquery([
+   *     [User.id, Order.user_id],
+   *     [User.group_id, Order.group_id],
+   *   ], [[Order.status, 'paid']])
    * ]);
    *
    * // Correlated subquery with parentRef
    * await User.find([
-   *   User.inSubquery([User.id], [Order.user_id], [
+   *   User.inSubquery([[User.id, Order.user_id]], [
    *     [Order.tenant_id, parentRef(User.tenant_id)],
    *     [Order.status, 'paid']
    *   ])
@@ -667,10 +665,14 @@ export abstract class DBModel {
    */
   static inSubquery<T extends typeof DBModel, S>(
     this: T,
-    parentColumns: Column<any, InstanceType<T>>[],
-    selectColumns: Column<any, S>[],
+    keyPairs: KeyPair | CompositeKeyPairs,
     conditions: Array<readonly [Column<any, S>, unknown]> = []
   ): readonly [string, DBSubquery] {
+    // Parse key pairs (same logic as relation decorators)
+    const pairs = Array.isArray(keyPairs[0]) ? keyPairs as CompositeKeyPairs : [keyPairs as KeyPair];
+    const parentColumns = pairs.map(pair => pair[0]);
+    const selectColumns = pairs.map(pair => pair[1]);
+    
     // Get target table name from selectColumns (they all have same tableName)
     const targetTableName = selectColumns[0]?.tableName ?? '';
     // Column already has tableName, pass directly
@@ -684,30 +686,41 @@ export abstract class DBModel {
   /**
    * NOT IN subquery condition.
    * Creates a condition like: table.column NOT IN (SELECT table.column FROM targetModel WHERE ...)
-   * Supports composite keys. Uses table.column format for unambiguous references.
-   * Type-safe: parentColumns must belong to caller model, selectColumns/conditions must belong to target model.
+   * Supports composite keys using key pairs (same format as relation decorators).
+   * Type-safe: first column in pair must belong to caller model, second to target model.
    *
    * @typeParam T - Parent model class type (inferred from this)
    * @typeParam S - Target model class type
-   * @param parentColumns - Parent columns to match (must belong to T)
-   * @param selectColumns - Columns to SELECT in subquery (must belong to S, determines target table)
-   * @param conditions - WHERE conditions for subquery (columns must belong to S)
+   * @param keyPairs - Key pairs: [[parentCol, targetCol], ...] or single pair [parentCol, targetCol]
+   * @param conditions - WHERE conditions for subquery (columns must belong to target model S)
    * @returns Condition tuple for use in find() conditions
    *
    * @example
    * ```typescript
    * // users.id NOT IN (SELECT banned_users.user_id FROM banned_users)
    * await User.find([
-   *   User.notInSubquery([User.id], [BannedUser.user_id])
+   *   User.notInSubquery([[User.id, BannedUser.user_id]])
+   * ]);
+   *
+   * // Composite key NOT IN
+   * await User.find([
+   *   User.notInSubquery([
+   *     [User.id, BannedUser.user_id],
+   *     [User.tenant_id, BannedUser.tenant_id],
+   *   ])
    * ]);
    * ```
    */
   static notInSubquery<T extends typeof DBModel, S>(
     this: T,
-    parentColumns: Column<any, InstanceType<T>>[],
-    selectColumns: Column<any, S>[],
+    keyPairs: KeyPair | CompositeKeyPairs,
     conditions: Array<readonly [Column<any, S>, unknown]> = []
   ): readonly [string, DBSubquery] {
+    // Parse key pairs (same logic as relation decorators)
+    const pairs = Array.isArray(keyPairs[0]) ? keyPairs as CompositeKeyPairs : [keyPairs as KeyPair];
+    const parentColumns = pairs.map(pair => pair[0]);
+    const selectColumns = pairs.map(pair => pair[1]);
+    
     // Get target table name from selectColumns (they all have same tableName)
     const targetTableName = selectColumns[0]?.tableName ?? '';
     // Column already has tableName, pass directly

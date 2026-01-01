@@ -388,10 +388,9 @@ describe('DBConditions with subqueries using Column', () => {
 // ============================================
 
 describe('DBModel.inSubquery', () => {
-  it('should create IN subquery with single key', () => {
+  it('should create IN subquery with single key pair', () => {
     const [key, subquery] = User.inSubquery(
-      [User.id],
-      [Order.user_id],
+      [[User.id, Order.user_id]],
       [[Order.status, 'paid']]
     );
 
@@ -405,10 +404,12 @@ describe('DBModel.inSubquery', () => {
     expect(params).toEqual(['paid']);
   });
 
-  it('should create IN subquery with composite key', () => {
+  it('should create IN subquery with composite key pairs', () => {
     const [key, subquery] = User.inSubquery(
-      [User.id, User.group_id],
-      [Order.user_id, Order.group_id],
+      [
+        [User.id, Order.user_id],
+        [User.group_id, Order.group_id],
+      ],
       [[Order.status, 'paid']]
     );
 
@@ -423,8 +424,7 @@ describe('DBModel.inSubquery', () => {
 
   it('should create IN subquery with multiple conditions', () => {
     const [, subquery] = User.inSubquery(
-      [User.id],
-      [Order.user_id],
+      [[User.id, Order.user_id]],
       [
         [Order.status, 'paid'],
         [Order.amount, 1000]
@@ -440,8 +440,7 @@ describe('DBModel.inSubquery', () => {
 
   it('should create IN subquery without conditions', () => {
     const [, subquery] = User.inSubquery(
-      [User.id],
-      [Order.user_id]
+      [[User.id, Order.user_id]]
     );
 
     const params: unknown[] = [];
@@ -453,8 +452,7 @@ describe('DBModel.inSubquery', () => {
 
   it('should create correlated IN subquery with parentRef', () => {
     const [, subquery] = User.inSubquery(
-      [User.id],
-      [Order.user_id],
+      [[User.id, Order.user_id]],
       [
         [Order.tenant_id, parentRef(User.tenant_id)],
         [Order.status, 'completed']
@@ -472,8 +470,7 @@ describe('DBModel.inSubquery', () => {
 describe('DBModel.notInSubquery', () => {
   it('should create NOT IN subquery', () => {
     const [key, subquery] = User.notInSubquery(
-      [User.id],
-      [BannedUser.user_id]
+      [[User.id, BannedUser.user_id]]
     );
 
     expect(key).toBe('__subquery__');
@@ -487,8 +484,7 @@ describe('DBModel.notInSubquery', () => {
 
   it('should create NOT IN subquery with conditions', () => {
     const [, subquery] = User.notInSubquery(
-      [User.id],
-      [BannedUser.user_id],
+      [[User.id, BannedUser.user_id]],
       [[BannedUser.is_active, true]]
     );
 
@@ -500,10 +496,10 @@ describe('DBModel.notInSubquery', () => {
   });
 
   it('should create composite key NOT IN subquery', () => {
-    const [, subquery] = User.notInSubquery(
-      [User.id, User.group_id],
-      [BannedUser.user_id, BannedUser.group_id]
-    );
+    const [, subquery] = User.notInSubquery([
+      [User.id, BannedUser.user_id],
+      [User.group_id, BannedUser.group_id],
+    ]);
 
     const params: unknown[] = [];
     const sql = subquery.compile(params);
@@ -578,8 +574,7 @@ describe('DBModel.notExists', () => {
 describe('DBConditions integration with DBModel subquery methods', () => {
   it('should work with inSubquery in DBConditions', () => {
     const [key, subquery] = User.inSubquery(
-      [User.id],
-      [Order.user_id],
+      [[User.id, Order.user_id]],
       [[Order.status, 'paid']]
     );
 
@@ -613,11 +608,10 @@ describe('DBConditions integration with DBModel subquery methods', () => {
   });
 
   it('should work with composite key inSubquery', () => {
-    const [key, subquery] = User.inSubquery(
-      [User.id, User.group_id],
-      [Order.user_id, Order.group_id],
-      [[Order.status, 'active']]
-    );
+    const [key, subquery] = User.inSubquery([
+      [User.id, Order.user_id],
+      [User.group_id, Order.group_id],
+    ], [[Order.status, 'active']]);
 
     const conditions = new DBConditions({
       [key]: subquery

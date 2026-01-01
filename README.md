@@ -82,13 +82,13 @@ await User.delete([[User.is_active, false]]);
 
 ## Type-Safe Conditions
 
-All conditions use compile-time validated `[Column, value]` tuples:
+Conditions use `[Column, value]` tuples for compile-time validation. For operators, use `${Model.column}` in template literals—the ESLint plugin catches incorrect column references.
 
 ```typescript
-// Equality
+// Equality (compile-time type-safe)
 await User.find([[User.status, 'active']]);
 
-// Operators
+// Operators (use ${Model.column} for refactoring safety)
 await User.find([[`${User.age} > ?`, 18]]);
 await User.find([[`${User.age} BETWEEN ? AND ?`, [18, 65]]]);
 await User.find([[`${User.name} LIKE ?`, '%test%']]);
@@ -112,18 +112,24 @@ await User.find([[User.is_active, true]], {
 });
 ```
 
+> **ESLint Plugin:** Use `litedbmodel/eslint-plugin` to catch mistakes that TypeScript cannot:
+> - Wrong model columns (e.g., `User.find([[Post.id, 1]])`)
+> - Hardcoded column names instead of `${Model.column}`
+> - Missing `declare` keyword for relation properties
+
 ---
 
 ## Subquery Conditions
 
-IN/NOT IN and EXISTS/NOT EXISTS subqueries with composite key support:
+IN/NOT IN and EXISTS/NOT EXISTS subqueries with composite key support.
+Key pairs use the same format as relation decorators: `[[parentCol, targetCol], ...]`
 
 ```typescript
 import { parentRef } from 'litedbmodel';
 
-// IN subquery (type-safe: selectColumns determine target table)
+// IN subquery - key pairs: [[parentCol, targetCol]]
 await User.find([
-  User.inSubquery([User.id], [Order.user_id], [
+  User.inSubquery([[User.id, Order.user_id]], [
     [Order.status, 'paid']
   ])
 ]);
@@ -131,23 +137,22 @@ await User.find([
 
 // Composite key IN subquery
 await User.find([
-  User.inSubquery(
-    [User.id, User.group_id],           // Parent columns (must belong to User)
-    [Order.user_id, Order.group_id],    // SELECT columns (determines target table)
-    [[Order.status, 'active']]          // WHERE conditions
-  )
+  User.inSubquery([
+    [User.id, Order.user_id],
+    [User.group_id, Order.group_id],
+  ], [[Order.status, 'active']])
 ]);
 // → WHERE (users.id, users.group_id) IN (SELECT orders.user_id, orders.group_id FROM orders WHERE orders.status = 'active')
 
 // NOT IN subquery
 await User.find([
-  User.notInSubquery([User.id], [BannedUser.user_id])
+  User.notInSubquery([[User.id, BannedUser.user_id]])
 ]);
 // → WHERE users.id NOT IN (SELECT banned_users.user_id FROM banned_users)
 
 // Correlated subquery with parentRef
 await User.find([
-  User.inSubquery([User.id], [Order.user_id], [
+  User.inSubquery([[User.id, Order.user_id]], [
     [Order.tenant_id, parentRef(User.tenant_id)],
     [Order.status, 'completed']
   ])
@@ -297,7 +302,7 @@ const author = await post.author;       // Lazy loaded
 const comments = await post.comments;   // Lazy loaded
 ```
 
-> **Important:** Use `declare` (not `!`) for relation properties. TypeScript class field declarations with `!` create instance properties that shadow the prototype getter.
+> **Important:** Use `declare` (not `!`) for relation properties. TypeScript class field declarations with `!` create instance properties that shadow the prototype getter. The ESLint plugin detects this mistake.
 
 ### With Options (order, where)
 

@@ -16,12 +16,12 @@
  *   @column() author_id?: number;
  *
  *   @belongsTo(() => [Post.author_id, User.id])
- *   author!: Promise<User | null>;
+ *   declare author: Promise<User | null>;
  *
  *   @hasMany(() => [Post.id, Comment.post_id], {
  *     order: () => Comment.created_at.asc(),
  *   })
- *   comments!: Promise<Comment[]>;
+ *   declare comments: Promise<Comment[]>;
  * }
  *
  * // Access with await

@@ -533,21 +533,21 @@ function registerRelation(
  * ```typescript
  * // Single key relation
  * @hasMany(() => [User.id, Post.author_id])
- * posts!: Promise<Post[]>;
+ * declare posts: Promise<Post[]>;
  *
  * // With options
  * @hasMany(() => [User.id, Post.author_id], {
  *   order: () => Post.created_at.desc(),
  *   where: () => [[Post.is_deleted, false]],
  * })
- * activePosts!: Promise<Post[]>;
+ * declare activePosts: Promise<Post[]>;
  *
  * // Composite key relation
  * @hasMany(() => [
  *   [TenantUser.tenant_id, TenantPost.tenant_id],
  *   [TenantUser.id, TenantPost.author_id],
  * ])
- * posts!: Promise<TenantPost[]>;
+ * declare posts: Promise<TenantPost[]>;
  * ```
  */
 export function hasMany(
@@ -570,14 +570,14 @@ export function hasMany(
  * ```typescript
  * // Single key relation
  * @belongsTo(() => [Post.author_id, User.id])
- * author!: Promise<User | null>;
+ * declare author: Promise<User | null>;
  *
  * // Composite key relation
  * @belongsTo(() => [
  *   [TenantPost.tenant_id, TenantUser.tenant_id],
  *   [TenantPost.author_id, TenantUser.id],
  * ])
- * author!: Promise<TenantUser | null>;
+ * declare author: Promise<TenantUser | null>;
  * ```
  */
 export function belongsTo(
@@ -600,14 +600,14 @@ export function belongsTo(
  * ```typescript
  * // Single key relation
  * @hasOne(() => [User.id, UserProfile.user_id])
- * profile!: Promise<UserProfile | null>;
+ * declare profile: Promise<UserProfile | null>;
  *
  * // Composite key relation
  * @hasOne(() => [
  *   [TenantUser.tenant_id, TenantProfile.tenant_id],
  *   [TenantUser.id, TenantProfile.user_id],
  * ])
- * profile!: Promise<TenantProfile | null>;
+ * declare profile: Promise<TenantProfile | null>;
  * ```
  */
 export function hasOne(
@@ -658,7 +658,7 @@ export function getRelationMeta(modelClass: object): RelationMeta[] {
  *   @column.datetime() created_at?: Date;
  *
  *   @hasMany(() => [User.id, Post.author_id])
- *   posts!: Promise<Post[]>;
+ *   declare posts: Promise<Post[]>;
  * }
  *
  * // Usage - call column to get name as string for computed property key
