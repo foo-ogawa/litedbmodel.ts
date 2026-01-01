@@ -43,39 +43,39 @@
     
     <!-- Single Key (100→1000→10000) -->
     <text x="-10" y="50" text-anchor="end" dominant-baseline="middle" class="op-label">Single Key (100→1K→10K)</text>
-    <!-- litedbmodel: 1.00x (28.05ms) = 121.95px -->
+    <!-- litedbmodel: 1.00x (28.24ms) = 121.95px -->
     <rect x="0" y="10" width="121.95" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95" y="17" dominant-baseline="middle" class="value-label">1.00x (28.05ms)</text>
-    <!-- Kysely: 1.03x (28.84ms) = 125.61px -->
-    <rect x="0" y="26" width="125.61" height="12" fill="#22c55e" rx="2" />
-    <text x="130.61" y="33" dominant-baseline="middle" class="value-label">1.03x (28.84ms)</text>
-    <!-- Drizzle: 0.83x (23.23ms) = 101.22px -->
-    <rect x="0" y="42" width="101.22" height="12" fill="#f59e0b" rx="2" />
-    <text x="106.22" y="49" dominant-baseline="middle" class="value-label">0.83x (23.23ms)</text>
-    <!-- TypeORM: 1.16x (32.50ms) = 141.46px -->
+    <text x="126.95" y="17" dominant-baseline="middle" class="value-label">1.00x (28.24ms)</text>
+    <!-- Kysely: 1.04x (29.51ms) = 126.83px -->
+    <rect x="0" y="26" width="126.83" height="12" fill="#22c55e" rx="2" />
+    <text x="131.83" y="33" dominant-baseline="middle" class="value-label">1.04x (29.51ms)</text>
+    <!-- Drizzle: 0.84x (23.80ms) = 102.44px -->
+    <rect x="0" y="42" width="102.44" height="12" fill="#f59e0b" rx="2" />
+    <text x="107.44" y="49" dominant-baseline="middle" class="value-label">0.84x (23.80ms)</text>
+    <!-- TypeORM: 1.16x (32.70ms) = 141.46px -->
     <rect x="0" y="58" width="141.46" height="12" fill="#ef4444" rx="2" />
-    <text x="146.46" y="65" dominant-baseline="middle" class="value-label">1.16x (32.50ms)</text>
-    <!-- Prisma: 2.91x (81.73ms) = 354.87px -->
-    <rect x="0" y="74" width="354.87" height="12" fill="#8b5cf6" rx="2" />
-    <text x="359.87" y="81" dominant-baseline="middle" class="value-label">2.91x (81.73ms)</text>
+    <text x="146.46" y="65" dominant-baseline="middle" class="value-label">1.16x (32.70ms)</text>
+    <!-- Prisma: 2.89x (81.65ms) = 352.44px -->
+    <rect x="0" y="74" width="352.44" height="12" fill="#8b5cf6" rx="2" />
+    <text x="357.44" y="81" dominant-baseline="middle" class="value-label">2.89x (81.65ms)</text>
     
     <!-- Composite Key (100→1000→10000) -->
     <text x="-10" y="185" text-anchor="end" dominant-baseline="middle" class="op-label">Composite Key (100→1K→10K)</text>
-    <!-- litedbmodel: 1.00x (24.63ms) = 121.95px -->
+    <!-- litedbmodel: 1.00x (24.69ms) = 121.95px -->
     <rect x="0" y="145" width="121.95" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95" y="152" dominant-baseline="middle" class="value-label">1.00x (24.63ms)</text>
-    <!-- Kysely: 0.54x (13.19ms) = 65.85px -->
-    <rect x="0" y="161" width="65.85" height="12" fill="#22c55e" rx="2" />
-    <text x="70.85" y="168" dominant-baseline="middle" class="value-label">0.54x (13.19ms)</text>
-    <!-- Drizzle: 0.72x (17.84ms) = 87.80px -->
-    <rect x="0" y="177" width="87.80" height="12" fill="#f59e0b" rx="2" />
-    <text x="92.80" y="184" dominant-baseline="middle" class="value-label">0.72x (17.84ms)</text>
-    <!-- TypeORM: 1.44x (35.52ms) = 175.61px -->
+    <text x="126.95" y="152" dominant-baseline="middle" class="value-label">1.00x (24.69ms)</text>
+    <!-- Kysely: 0.52x (12.96ms) = 63.41px -->
+    <rect x="0" y="161" width="63.41" height="12" fill="#22c55e" rx="2" />
+    <text x="68.41" y="168" dominant-baseline="middle" class="value-label">0.52x (12.96ms)</text>
+    <!-- Drizzle: 0.71x (17.50ms) = 86.58px -->
+    <rect x="0" y="177" width="86.58" height="12" fill="#f59e0b" rx="2" />
+    <text x="91.58" y="184" dominant-baseline="middle" class="value-label">0.71x (17.50ms)</text>
+    <!-- TypeORM: 1.44x (35.53ms) = 175.61px -->
     <rect x="0" y="193" width="175.61" height="12" fill="#ef4444" rx="2" />
-    <text x="180.61" y="200" dominant-baseline="middle" class="value-label">1.44x (35.52ms)</text>
-    <!-- Prisma: 4.14x (101.94ms) = 504.88px -->
-    <rect x="0" y="209" width="504.88" height="12" fill="#8b5cf6" rx="2" />
-    <text x="509.88" y="216" dominant-baseline="middle" class="value-label">4.14x (101.94ms)</text>
+    <text x="180.61" y="200" dominant-baseline="middle" class="value-label">1.44x (35.53ms)</text>
+    <!-- Prisma: 4.14x (102.29ms) = 505.27px -->
+    <rect x="0" y="209" width="505.27" height="12" fill="#8b5cf6" rx="2" />
+    <text x="510.27" y="216" dominant-baseline="middle" class="value-label">4.14x (102.29ms)</text>
   </g>
   
   <!-- Legend -->

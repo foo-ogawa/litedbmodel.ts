@@ -6,7 +6,7 @@
 
 import 'reflect-metadata';
 import pg from 'pg';
-import { DBModel, model, column, ColumnsOf, closeAllPools } from 'litedbmodel';
+import { DBModel, model, column, ColumnsOf, closeAllPools, hasMany } from 'litedbmodel';
 import { PrismaClient } from '@prisma/client';
 import { Kysely, PostgresDialect } from 'kysely';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -52,9 +52,8 @@ class LiteUserModel extends DBModel {
   @column() email?: string;
   @column() name?: string;
   
-  get posts(): Promise<LitePostModel[]> {
-    return this._hasMany(LitePost, { targetKey: LitePost.author_id });
-  }
+  @hasMany(() => [LiteUser.id, LitePost.author_id])
+  declare posts: Promise<LitePostModel[]>;
 }
 const LiteUser = LiteUserModel as typeof LiteUserModel & ColumnsOf<LiteUserModel>;
 
@@ -64,9 +63,8 @@ class LitePostModel extends DBModel {
   @column() title?: string;
   @column() author_id?: number;
   
-  get comments(): Promise<LiteCommentModel[]> {
-    return this._hasMany(LiteComment, { targetKey: LiteComment.post_id });
-  }
+  @hasMany(() => [LitePost.id, LiteComment.post_id])
+  declare comments: Promise<LiteCommentModel[]>;
 }
 const LitePost = LitePostModel as typeof LitePostModel & ColumnsOf<LitePostModel>;
 
@@ -87,12 +85,11 @@ class LiteTenantUserModel extends DBModel {
   @column() user_id?: number;
   @column() name?: string;
   
-  get posts(): Promise<LiteTenantPostModel[]> {
-    return this._hasMany(LiteTenantPost, {
-      targetKeys: [LiteTenantPost.tenant_id, LiteTenantPost.user_id],
-      sourceKeys: [LiteTenantUser.tenant_id, LiteTenantUser.user_id],
-    });
-  }
+  @hasMany(() => [
+    [LiteTenantUser.tenant_id, LiteTenantPost.tenant_id],
+    [LiteTenantUser.user_id, LiteTenantPost.user_id],
+  ])
+  declare posts: Promise<LiteTenantPostModel[]>;
 }
 const LiteTenantUser = LiteTenantUserModel as typeof LiteTenantUserModel & ColumnsOf<LiteTenantUserModel>;
 
@@ -103,12 +100,11 @@ class LiteTenantPostModel extends DBModel {
   @column() user_id?: number;
   @column() title?: string;
   
-  get comments(): Promise<LiteTenantCommentModel[]> {
-    return this._hasMany(LiteTenantComment, {
-      targetKeys: [LiteTenantComment.tenant_id, LiteTenantComment.post_id],
-      sourceKeys: [LiteTenantPost.tenant_id, LiteTenantPost.post_id],
-    });
-  }
+  @hasMany(() => [
+    [LiteTenantPost.tenant_id, LiteTenantComment.tenant_id],
+    [LiteTenantPost.post_id, LiteTenantComment.post_id],
+  ])
+  declare comments: Promise<LiteTenantCommentModel[]>;
 }
 const LiteTenantPost = LiteTenantPostModel as typeof LiteTenantPostModel & ColumnsOf<LiteTenantPostModel>;
 

@@ -1062,20 +1062,20 @@ Reference: [Kysely performance comparison article](https://izanami.dev/post/1e3f
 
 | Operation | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
 |-----------|-------------|--------|---------|---------|--------|
-| Find all (limit 100) | 0.62ms | 0.62ms | **0.57ms** | 0.71ms | 1.36ms |
-| Filter, paginate & sort | **0.68ms** 🏆 | 0.76ms | 0.88ms | 0.95ms | 1.11ms |
-| Nested find all | **2.31ms** 🏆 | 2.69ms | 3.51ms | 5.00ms | 7.39ms |
-| Find first | 0.34ms | 0.31ms | **0.29ms** | 0.31ms | 0.61ms |
-| Nested find first | 0.57ms | 0.56ms | 0.59ms | **0.50ms** | 0.97ms |
-| Find unique (by email) | **0.28ms** 🏆 | **0.28ms** | 0.30ms | 0.32ms | 0.54ms |
-| Nested find unique | 0.58ms | **0.57ms** | 0.61ms | 0.98ms | 0.94ms |
-| Create | **0.40ms** 🏆 | 0.41ms | 0.42ms | 0.90ms | 0.60ms |
-| Nested create | **0.80ms** 🏆 | 0.84ms | 0.89ms | 2.09ms | 1.67ms |
-| Update | **0.44ms** 🏆 | 0.45ms | 0.47ms | 0.48ms | 0.71ms |
-| Nested update | 1.01ms | **0.91ms** | 1.04ms | 1.09ms | 2.40ms |
-| Upsert | 0.50ms | **0.46ms** | 0.49ms | 0.58ms | 2.01ms |
-| Nested upsert | 0.99ms | **0.97ms** | 1.06ms | **0.97ms** | 2.27ms |
-| Delete | **0.96ms** 🏆 | 1.00ms | 1.13ms | 1.85ms | 1.35ms |
+| Find all (limit 100) | **0.61ms** 🏆 | 0.83ms | 0.62ms | 0.86ms | 1.44ms |
+| Filter, paginate & sort | **0.70ms** 🏆 | 0.83ms | 0.89ms | 1.18ms | 1.81ms |
+| Nested find all | 4.74ms | **4.57ms** 🏆 | 5.13ms | 7.87ms | 12.52ms |
+| Find first | 0.33ms | 0.29ms | **0.27ms** 🏆 | 0.30ms | 0.57ms |
+| Nested find first | 0.56ms | 0.53ms | 0.59ms | **0.44ms** 🏆 | 0.92ms |
+| Find unique (by email) | **0.26ms** 🏆 | **0.26ms** 🏆 | 0.29ms | 0.31ms | 0.48ms |
+| Nested find unique | 0.57ms | **0.53ms** 🏆 | 0.59ms | 0.93ms | 0.87ms |
+| Create | **0.28ms** 🏆 | **0.28ms** 🏆 | 0.30ms | 0.74ms | 0.45ms |
+| Nested create | 0.55ms | **0.54ms** 🏆 | 0.57ms | 1.47ms | 1.51ms |
+| Update | 0.28ms | **0.26ms** 🏆 | 0.27ms | 0.28ms | 0.53ms |
+| Nested update | 0.58ms | **0.54ms** 🏆 | 0.56ms | 0.57ms | 1.98ms |
+| Upsert | **0.27ms** 🏆 | 0.28ms | 0.29ms | 0.31ms | 1.58ms |
+| Nested upsert | **0.52ms** 🏆 | 0.57ms | 0.61ms | 0.61ms | 1.85ms |
+| Delete | **0.53ms** 🏆 | 0.55ms | 0.58ms | 1.03ms | 0.93ms |
 
 ### Deep Nested Relations (10,000 records)
 
@@ -1086,44 +1086,43 @@ Separate benchmark for large-scale nested relation queries (100 users → 1000 p
 
 | Operation | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
 |-----------|-------------|--------|---------|---------|--------|
-| Single Key (10K) | 28.05ms | 28.84ms | **23.23ms** 🏆 | 32.50ms | 81.73ms |
-| Composite Key (10K) | 24.63ms | **13.19ms** 🏆 | 17.84ms | 35.52ms | 101.94ms |
+| Single Key (10K) | 28.24ms | 29.51ms | **23.80ms** 🏆 | 32.70ms | 81.65ms |
+| Composite Key (10K) | 24.69ms | **12.96ms** 🏆 | 17.50ms | 35.53ms | 102.29ms |
 
 > See [Nested Benchmark](./BENCHMARK-NESTED.md) for detailed SQL analysis.
 
 ### Analysis
 
-1. **litedbmodel** - **Fastest in 7 operations!** 🏆
-   - **#1 in Filter/paginate/sort, Nested find all, Find unique, Create, Nested create, Update, Delete**
-   - Excellent auto N+1 prevention (Nested find all: 3.2x faster than Prisma)
-   - Competitive in all other operations (within 15% of fastest)
-   - Best for applications with complex queries and relations
+1. **litedbmodel** - **Fastest in 6 operations** 🏆
+   - **#1 in Find all, Filter/paginate/sort, Find unique, Upsert, Nested upsert, Delete**
+   - Competitive in all operations (within 10% of fastest)
+   - Best for applications with complex queries, CRUD, and filtering
 
-2. **Kysely** - Fastest in upsert and nested update operations
-   - Best for Nested update, Upsert, Nested upsert, Nested find unique
+2. **Kysely** - **Fastest in 7 operations** 🏆
+   - **#1 in Nested find all, Find unique, Nested find unique, Create, Nested create, Update, Nested update**
    - Minimal abstraction overhead
    - Best for write-heavy apps needing raw SQL control
 
 3. **Drizzle** - Strong all-around performance
-   - Fastest in Find all, Find first
+   - Fastest in Find first
    - Consistent performance across operations
    - Good balance of features and speed
 
 4. **TypeORM** - Variable performance
    - Fastest in Nested find first (JOIN-based approach)
-   - **Slow Create** (~2.3x slower than fastest)
+   - **Slow Create** (~2.6x slower than fastest)
    - Higher overhead for nested operations
 
 5. **Prisma** - Convenience over speed
-   - **Slowest in most operations** (1.4x - 4.4x slower)
-   - Nested find all: 7.39ms vs litedbmodel's 2.31ms (3.2x slower)
+   - **Slowest in most operations** (1.6x - 5.9x slower)
+   - Nested find all: 12.52ms vs Kysely's 4.57ms (2.7x slower)
    - Trade-off: Rich DX features (Prisma Studio, migrations, etc.)
 
 ### Deep Nested Analysis
 
 For large-scale nested queries (10K+ records), see [Nested Benchmark](./BENCHMARK-NESTED.md):
 
-- **Single Key:** Drizzle wins with LATERAL JOIN (23ms), litedbmodel close (28ms), Prisma slowest (82ms)
+- **Single Key:** Drizzle wins with LATERAL JOIN (24ms), litedbmodel close (28ms), Prisma slowest (82ms)
 - **Composite Key:** Kysely wins (13ms), litedbmodel good (25ms), Prisma slowest (102ms)
 - **litedbmodel advantage:** Readable SQL with fixed parameter count (ideal for log analysis)
 
@@ -1131,13 +1130,13 @@ For large-scale nested queries (10K+ records), see [Nested Benchmark](./BENCHMAR
 ### Conclusion
 
 **litedbmodel excels at:**
-- **Nested/relation queries** (auto N+1 prevention)
 - **Complex filtering with pagination**
-- **CRUD operations** (Create, Update, Delete)
+- **CRUD operations** (Create, Upsert, Delete)
 - **Unique lookups**
+- **Consistent performance** across all operations
 
-**vs Prisma:** litedbmodel is **1.5x - 3.2x faster** across all operations  
-**vs Query Builders:** litedbmodel is competitive (within 15%), with better DX
+**vs Prisma:** litedbmodel is **1.6x - 5.9x faster** across all operations  
+**vs Query Builders:** litedbmodel is competitive (within 10%), with better DX
 
 > **litedbmodel provides best-in-class performance while offering:**
 > - Type-safe column symbols (IDE refactoring)

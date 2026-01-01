@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 850 1975" font-family="system-ui, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 850 2110" font-family="system-ui, -apple-system, sans-serif">
   <!-- White background -->
   <rect width="100%" height="100%" fill="white"/>
   <style>
@@ -21,177 +21,192 @@
   <!-- Chart area -->
   <g transform="translate(200, 60)">
     <!-- Grid lines -->
-    <line x1="60.97560975609757" y1="0" x2="60.97560975609757" y2="1835" class="grid-line" />
-    <text x="60.97560975609757" y="1850" text-anchor="middle" class="axis-label">0.5</text>
-    <line x1="121.95121951219514" y1="0" x2="121.95121951219514" y2="1835" class="grid-line" />
-    <text x="121.95121951219514" y="1850" text-anchor="middle" class="axis-label">1.0</text>
-    <line x1="182.9268292682927" y1="0" x2="182.9268292682927" y2="1835" class="grid-line" />
-    <text x="182.9268292682927" y="1850" text-anchor="middle" class="axis-label">1.5</text>
-    <line x1="243.90243902439028" y1="0" x2="243.90243902439028" y2="1835" class="grid-line" />
-    <text x="243.90243902439028" y="1850" text-anchor="middle" class="axis-label">2.0</text>
-    <line x1="304.87804878048786" y1="0" x2="304.87804878048786" y2="1835" class="grid-line" />
-    <text x="304.87804878048786" y="1850" text-anchor="middle" class="axis-label">2.5</text>
-    <line x1="365.8536585365854" y1="0" x2="365.8536585365854" y2="1835" class="grid-line" />
-    <text x="365.8536585365854" y="1850" text-anchor="middle" class="axis-label">3.0</text>
-    <line x1="426.82926829268297" y1="0" x2="426.82926829268297" y2="1835" class="grid-line" />
-    <text x="426.82926829268297" y="1850" text-anchor="middle" class="axis-label">3.5</text>
-    <line x1="487.80487804878055" y1="0" x2="487.80487804878055" y2="1835" class="grid-line" />
-    <text x="487.80487804878055" y="1850" text-anchor="middle" class="axis-label">4.0</text>
-    <line x1="121.95121951219514" y1="-5" x2="121.95121951219514" y2="1840" class="baseline" />
+    <line x1="42.3728813559322" y1="0" x2="42.3728813559322" y2="1970" class="grid-line" />
+    <text x="42.3728813559322" y="1985" text-anchor="middle" class="axis-label">0.5</text>
+    <line x1="84.7457627118644" y1="0" x2="84.7457627118644" y2="1970" class="grid-line" />
+    <text x="84.7457627118644" y="1985" text-anchor="middle" class="axis-label">1.0</text>
+    <line x1="127.11864406779661" y1="0" x2="127.11864406779661" y2="1970" class="grid-line" />
+    <text x="127.11864406779661" y="1985" text-anchor="middle" class="axis-label">1.5</text>
+    <line x1="169.4915254237288" y1="0" x2="169.4915254237288" y2="1970" class="grid-line" />
+    <text x="169.4915254237288" y="1985" text-anchor="middle" class="axis-label">2.0</text>
+    <line x1="211.864406779661" y1="0" x2="211.864406779661" y2="1970" class="grid-line" />
+    <text x="211.864406779661" y="1985" text-anchor="middle" class="axis-label">2.5</text>
+    <line x1="254.23728813559322" y1="0" x2="254.23728813559322" y2="1970" class="grid-line" />
+    <text x="254.23728813559322" y="1985" text-anchor="middle" class="axis-label">3.0</text>
+    <line x1="296.6101694915254" y1="0" x2="296.6101694915254" y2="1970" class="grid-line" />
+    <text x="296.6101694915254" y="1985" text-anchor="middle" class="axis-label">3.5</text>
+    <line x1="338.9830508474576" y1="0" x2="338.9830508474576" y2="1970" class="grid-line" />
+    <text x="338.9830508474576" y="1985" text-anchor="middle" class="axis-label">4.0</text>
+    <line x1="381.35593220338984" y1="0" x2="381.35593220338984" y2="1970" class="grid-line" />
+    <text x="381.35593220338984" y="1985" text-anchor="middle" class="axis-label">4.5</text>
+    <line x1="423.728813559322" y1="0" x2="423.728813559322" y2="1970" class="grid-line" />
+    <text x="423.728813559322" y="1985" text-anchor="middle" class="axis-label">5.0</text>
+    <line x1="84.7457627118644" y1="-5" x2="84.7457627118644" y2="1975" class="baseline" />
     <text x="-10" y="40" text-anchor="end" dominant-baseline="middle" class="op-label">Find all (limit 100)</text>
-    <rect x="0" y="0" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="7" dominant-baseline="middle" class="value-label">1.00x (0.62ms)</text>
-    <rect x="0" y="16" width="121.95121951219514" height="12" fill="#22c55e" rx="2" />
-    <text x="126.95121951219514" y="23" dominant-baseline="middle" class="value-label">1.00x (0.62ms)</text>
-    <rect x="0" y="32" width="112.11644374508262" height="12" fill="#f59e0b" rx="2" />
-    <text x="117.11644374508262" y="39" dominant-baseline="middle" class="value-label">0.92x (0.57ms)</text>
-    <rect x="0" y="48" width="139.65381589299764" height="12" fill="#ef4444" rx="2" />
-    <text x="144.65381589299764" y="55" dominant-baseline="middle" class="value-label">1.15x (0.71ms)</text>
-    <rect x="0" y="64" width="267.5059008654603" height="12" fill="#8b5cf6" rx="2" />
-    <text x="272.5059008654603" y="71" dominant-baseline="middle" class="value-label">2.19x (1.36ms)</text>
+    <rect x="0" y="0" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="7" dominant-baseline="middle" class="value-label">1.00x (0.61ms)</text>
+    <rect x="0" y="16" width="115.30980828007779" height="12" fill="#22c55e" rx="2" />
+    <text x="120.30980828007779" y="23" dominant-baseline="middle" class="value-label">1.36x (0.83ms)</text>
+    <rect x="0" y="32" width="86.13503751041955" height="12" fill="#f59e0b" rx="2" />
+    <text x="91.13503751041955" y="39" dominant-baseline="middle" class="value-label">1.02x (0.62ms)</text>
+    <rect x="0" y="48" width="119.47763267574325" height="12" fill="#ef4444" rx="2" />
+    <text x="124.47763267574325" y="55" dominant-baseline="middle" class="value-label">1.41x (0.86ms)</text>
+    <rect x="0" y="64" width="200.05557099194218" height="12" fill="#8b5cf6" rx="2" />
+    <text x="205.05557099194218" y="71" dominant-baseline="middle" class="value-label">2.36x (1.44ms)</text>
     <text x="-10" y="175" text-anchor="end" dominant-baseline="middle" class="op-label">Filter, paginate &amp; sort</text>
-    <rect x="0" y="135" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="142" dominant-baseline="middle" class="value-label">1.00x (0.68ms)</text>
-    <rect x="0" y="151" width="136.2984218077475" height="12" fill="#22c55e" rx="2" />
-    <text x="141.2984218077475" y="158" dominant-baseline="middle" class="value-label">1.12x (0.76ms)</text>
-    <rect x="0" y="167" width="157.81922525107603" height="12" fill="#f59e0b" rx="2" />
-    <text x="162.81922525107603" y="174" dominant-baseline="middle" class="value-label">1.29x (0.88ms)</text>
-    <rect x="0" y="183" width="170.37302725968436" height="12" fill="#ef4444" rx="2" />
-    <text x="175.37302725968436" y="190" dominant-baseline="middle" class="value-label">1.40x (0.95ms)</text>
-    <rect x="0" y="199" width="199.06743185078912" height="12" fill="#8b5cf6" rx="2" />
-    <text x="204.06743185078912" y="206" dominant-baseline="middle" class="value-label">1.63x (1.11ms)</text>
+    <rect x="0" y="135" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="142" dominant-baseline="middle" class="value-label">1.00x (0.70ms)</text>
+    <rect x="0" y="151" width="100.48426150121065" height="12" fill="#22c55e" rx="2" />
+    <text x="105.48426150121065" y="158" dominant-baseline="middle" class="value-label">1.19x (0.83ms)</text>
+    <rect x="0" y="167" width="107.74818401937046" height="12" fill="#f59e0b" rx="2" />
+    <text x="112.74818401937046" y="174" dominant-baseline="middle" class="value-label">1.27x (0.89ms)</text>
+    <rect x="0" y="183" width="142.85714285714286" height="12" fill="#ef4444" rx="2" />
+    <text x="147.85714285714286" y="190" dominant-baseline="middle" class="value-label">1.69x (1.18ms)</text>
+    <rect x="0" y="199" width="219.12832929782084" height="12" fill="#8b5cf6" rx="2" />
+    <text x="224.12832929782084" y="206" dominant-baseline="middle" class="value-label">2.59x (1.81ms)</text>
     <text x="-10" y="310" text-anchor="end" dominant-baseline="middle" class="op-label">Nested find all (include posts)</text>
-    <rect x="0" y="270" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="277" dominant-baseline="middle" class="value-label">1.00x (2.31ms)</text>
-    <rect x="0" y="286" width="142.0124590856298" height="12" fill="#22c55e" rx="2" />
-    <text x="147.0124590856298" y="293" dominant-baseline="middle" class="value-label">1.16x (2.69ms)</text>
-    <rect x="0" y="302" width="185.3025023756731" height="12" fill="#f59e0b" rx="2" />
-    <text x="190.3025023756731" y="309" dominant-baseline="middle" class="value-label">1.52x (3.51ms)</text>
-    <rect x="0" y="318" width="263.9636785978249" height="12" fill="#ef4444" rx="2" />
-    <text x="268.9636785978249" y="325" dominant-baseline="middle" class="value-label">2.16x (5.00ms)</text>
-    <rect x="0" y="334" width="390.1383169675853" height="12" fill="#8b5cf6" rx="2" />
-    <text x="395.1383169675853" y="341" dominant-baseline="middle" class="value-label">3.20x (7.39ms)</text>
+    <rect x="0" y="270" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="277" dominant-baseline="middle" class="value-label">1.00x (4.74ms)</text>
+    <rect x="0" y="286" width="81.70635772008868" height="12" fill="#22c55e" rx="2" />
+    <text x="86.70635772008868" y="293" dominant-baseline="middle" class="value-label">0.96x (4.57ms)</text>
+    <rect x="0" y="302" width="91.71851534005577" height="12" fill="#f59e0b" rx="2" />
+    <text x="96.71851534005577" y="309" dominant-baseline="middle" class="value-label">1.08x (5.13ms)</text>
+    <rect x="0" y="318" width="140.70657226632338" height="12" fill="#ef4444" rx="2" />
+    <text x="145.70657226632338" y="325" dominant-baseline="middle" class="value-label">1.66x (7.87ms)</text>
+    <rect x="0" y="334" width="223.8432382178359" height="12" fill="#8b5cf6" rx="2" />
+    <text x="228.8432382178359" y="341" dominant-baseline="middle" class="value-label">2.64x (12.52ms)</text>
     <text x="-10" y="445" text-anchor="end" dominant-baseline="middle" class="op-label">Find first</text>
-    <rect x="0" y="405" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="412" dominant-baseline="middle" class="value-label">1.00x (0.34ms)</text>
-    <rect x="0" y="421" width="111.19081779053086" height="12" fill="#22c55e" rx="2" />
-    <text x="116.19081779053086" y="428" dominant-baseline="middle" class="value-label">0.91x (0.31ms)</text>
-    <rect x="0" y="437" width="104.01721664275465" height="12" fill="#f59e0b" rx="2" />
-    <text x="109.01721664275465" y="444" dominant-baseline="middle" class="value-label">0.85x (0.29ms)</text>
-    <rect x="0" y="453" width="111.19081779053086" height="12" fill="#ef4444" rx="2" />
-    <text x="116.19081779053086" y="460" dominant-baseline="middle" class="value-label">0.91x (0.31ms)</text>
-    <rect x="0" y="469" width="218.7948350071736" height="12" fill="#8b5cf6" rx="2" />
-    <text x="223.7948350071736" y="476" dominant-baseline="middle" class="value-label">1.79x (0.61ms)</text>
+    <rect x="0" y="405" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="412" dominant-baseline="middle" class="value-label">1.00x (0.33ms)</text>
+    <rect x="0" y="421" width="74.47354904982022" height="12" fill="#22c55e" rx="2" />
+    <text x="79.47354904982022" y="428" dominant-baseline="middle" class="value-label">0.88x (0.29ms)</text>
+    <rect x="0" y="437" width="69.33744221879815" height="12" fill="#f59e0b" rx="2" />
+    <text x="74.33744221879815" y="444" dominant-baseline="middle" class="value-label">0.82x (0.27ms)</text>
+    <rect x="0" y="453" width="77.04160246533128" height="12" fill="#ef4444" rx="2" />
+    <text x="82.04160246533128" y="460" dominant-baseline="middle" class="value-label">0.91x (0.30ms)</text>
+    <rect x="0" y="469" width="146.3790446841294" height="12" fill="#8b5cf6" rx="2" />
+    <text x="151.3790446841294" y="476" dominant-baseline="middle" class="value-label">1.73x (0.57ms)</text>
     <text x="-10" y="580" text-anchor="end" dominant-baseline="middle" class="op-label">Nested find first (include posts)</text>
-    <rect x="0" y="540" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="547" dominant-baseline="middle" class="value-label">1.00x (0.57ms)</text>
-    <rect x="0" y="556" width="119.81172443303385" height="12" fill="#22c55e" rx="2" />
-    <text x="124.81172443303385" y="563" dominant-baseline="middle" class="value-label">0.98x (0.56ms)</text>
-    <rect x="0" y="572" width="126.2302096705178" height="12" fill="#f59e0b" rx="2" />
-    <text x="131.2302096705178" y="579" dominant-baseline="middle" class="value-label">1.04x (0.59ms)</text>
-    <rect x="0" y="588" width="106.9747539580659" height="12" fill="#ef4444" rx="2" />
-    <text x="111.9747539580659" y="595" dominant-baseline="middle" class="value-label">0.88x (0.50ms)</text>
-    <rect x="0" y="604" width="207.53102267864787" height="12" fill="#8b5cf6" rx="2" />
-    <text x="212.53102267864787" y="611" dominant-baseline="middle" class="value-label">1.70x (0.97ms)</text>
+    <rect x="0" y="540" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="547" dominant-baseline="middle" class="value-label">1.00x (0.56ms)</text>
+    <rect x="0" y="556" width="80.20581113801452" height="12" fill="#22c55e" rx="2" />
+    <text x="85.20581113801452" y="563" dominant-baseline="middle" class="value-label">0.95x (0.53ms)</text>
+    <rect x="0" y="572" width="89.28571428571426" height="12" fill="#f59e0b" rx="2" />
+    <text x="94.28571428571426" y="579" dominant-baseline="middle" class="value-label">1.05x (0.59ms)</text>
+    <rect x="0" y="588" width="66.5859564164649" height="12" fill="#ef4444" rx="2" />
+    <text x="71.5859564164649" y="595" dominant-baseline="middle" class="value-label">0.79x (0.44ms)</text>
+    <rect x="0" y="604" width="139.22518159806293" height="12" fill="#8b5cf6" rx="2" />
+    <text x="144.22518159806293" y="611" dominant-baseline="middle" class="value-label">1.64x (0.92ms)</text>
     <text x="-10" y="715" text-anchor="end" dominant-baseline="middle" class="op-label">Find unique (by email)</text>
-    <rect x="0" y="675" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="682" dominant-baseline="middle" class="value-label">1.00x (0.28ms)</text>
-    <rect x="0" y="691" width="121.95121951219514" height="12" fill="#22c55e" rx="2" />
-    <text x="126.95121951219514" y="698" dominant-baseline="middle" class="value-label">1.00x (0.28ms)</text>
-    <rect x="0" y="707" width="130.66202090592336" height="12" fill="#f59e0b" rx="2" />
-    <text x="135.66202090592336" y="714" dominant-baseline="middle" class="value-label">1.07x (0.30ms)</text>
-    <rect x="0" y="723" width="139.37282229965157" height="12" fill="#ef4444" rx="2" />
-    <text x="144.37282229965157" y="730" dominant-baseline="middle" class="value-label">1.14x (0.32ms)</text>
-    <rect x="0" y="739" width="235.19163763066203" height="12" fill="#8b5cf6" rx="2" />
-    <text x="240.19163763066203" y="746" dominant-baseline="middle" class="value-label">1.93x (0.54ms)</text>
+    <rect x="0" y="675" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="682" dominant-baseline="middle" class="value-label">1.00x (0.26ms)</text>
+    <rect x="0" y="691" width="84.7457627118644" height="12" fill="#22c55e" rx="2" />
+    <text x="89.7457627118644" y="698" dominant-baseline="middle" class="value-label">1.00x (0.26ms)</text>
+    <rect x="0" y="707" width="94.52411994784873" height="12" fill="#f59e0b" rx="2" />
+    <text x="99.52411994784873" y="714" dominant-baseline="middle" class="value-label">1.12x (0.29ms)</text>
+    <rect x="0" y="723" width="101.04302477183832" height="12" fill="#ef4444" rx="2" />
+    <text x="106.04302477183832" y="730" dominant-baseline="middle" class="value-label">1.19x (0.31ms)</text>
+    <rect x="0" y="739" width="156.45371577574966" height="12" fill="#8b5cf6" rx="2" />
+    <text x="161.45371577574966" y="746" dominant-baseline="middle" class="value-label">1.85x (0.48ms)</text>
     <text x="-10" y="850" text-anchor="end" dominant-baseline="middle" class="op-label">Nested find unique (include posts)</text>
-    <rect x="0" y="810" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="817" dominant-baseline="middle" class="value-label">1.00x (0.58ms)</text>
-    <rect x="0" y="826" width="119.84861227922624" height="12" fill="#22c55e" rx="2" />
-    <text x="124.84861227922624" y="833" dominant-baseline="middle" class="value-label">0.98x (0.57ms)</text>
-    <rect x="0" y="842" width="128.25904121110176" height="12" fill="#f59e0b" rx="2" />
-    <text x="133.25904121110176" y="849" dominant-baseline="middle" class="value-label">1.05x (0.61ms)</text>
-    <rect x="0" y="858" width="206.0555088309504" height="12" fill="#ef4444" rx="2" />
-    <text x="211.0555088309504" y="865" dominant-baseline="middle" class="value-label">1.69x (0.98ms)</text>
-    <rect x="0" y="874" width="197.6450798990749" height="12" fill="#8b5cf6" rx="2" />
-    <text x="202.6450798990749" y="881" dominant-baseline="middle" class="value-label">1.62x (0.94ms)</text>
+    <rect x="0" y="810" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="817" dominant-baseline="middle" class="value-label">1.00x (0.57ms)</text>
+    <rect x="0" y="826" width="78.79869164436515" height="12" fill="#22c55e" rx="2" />
+    <text x="83.79869164436515" y="833" dominant-baseline="middle" class="value-label">0.93x (0.53ms)</text>
+    <rect x="0" y="842" width="87.71929824561404" height="12" fill="#f59e0b" rx="2" />
+    <text x="92.71929824561404" y="849" dominant-baseline="middle" class="value-label">1.04x (0.59ms)</text>
+    <rect x="0" y="858" width="138.2694023193577" height="12" fill="#ef4444" rx="2" />
+    <text x="143.2694023193577" y="865" dominant-baseline="middle" class="value-label">1.63x (0.93ms)</text>
+    <rect x="0" y="874" width="129.34879571810885" height="12" fill="#8b5cf6" rx="2" />
+    <text x="134.34879571810885" y="881" dominant-baseline="middle" class="value-label">1.53x (0.87ms)</text>
     <text x="-10" y="985" text-anchor="end" dominant-baseline="middle" class="op-label">Create</text>
-    <rect x="0" y="945" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="952" dominant-baseline="middle" class="value-label">1.00x (0.40ms)</text>
-    <rect x="0" y="961" width="125" height="12" fill="#22c55e" rx="2" />
-    <text x="130" y="968" dominant-baseline="middle" class="value-label">1.02x (0.41ms)</text>
-    <rect x="0" y="977" width="128.0487804878049" height="12" fill="#f59e0b" rx="2" />
-    <text x="133.0487804878049" y="984" dominant-baseline="middle" class="value-label">1.05x (0.42ms)</text>
-    <rect x="0" y="993" width="274.39024390243907" height="12" fill="#ef4444" rx="2" />
-    <text x="279.39024390243907" y="1000" dominant-baseline="middle" class="value-label">2.25x (0.90ms)</text>
-    <rect x="0" y="1009" width="182.9268292682927" height="12" fill="#8b5cf6" rx="2" />
-    <text x="187.9268292682927" y="1016" dominant-baseline="middle" class="value-label">1.50x (0.60ms)</text>
+    <rect x="0" y="945" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="952" dominant-baseline="middle" class="value-label">1.00x (0.28ms)</text>
+    <rect x="0" y="961" width="84.7457627118644" height="12" fill="#22c55e" rx="2" />
+    <text x="89.7457627118644" y="968" dominant-baseline="middle" class="value-label">1.00x (0.28ms)</text>
+    <rect x="0" y="977" width="90.79903147699757" height="12" fill="#f59e0b" rx="2" />
+    <text x="95.79903147699757" y="984" dominant-baseline="middle" class="value-label">1.07x (0.30ms)</text>
+    <rect x="0" y="993" width="223.97094430992735" height="12" fill="#ef4444" rx="2" />
+    <text x="228.97094430992735" y="1000" dominant-baseline="middle" class="value-label">2.64x (0.74ms)</text>
+    <rect x="0" y="1009" width="136.19854721549635" height="12" fill="#8b5cf6" rx="2" />
+    <text x="141.19854721549635" y="1016" dominant-baseline="middle" class="value-label">1.61x (0.45ms)</text>
     <text x="-10" y="1120" text-anchor="end" dominant-baseline="middle" class="op-label">Nested create (with post)</text>
-    <rect x="0" y="1080" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="1087" dominant-baseline="middle" class="value-label">1.00x (0.80ms)</text>
-    <rect x="0" y="1096" width="128.0487804878049" height="12" fill="#22c55e" rx="2" />
-    <text x="133.0487804878049" y="1103" dominant-baseline="middle" class="value-label">1.05x (0.84ms)</text>
-    <rect x="0" y="1112" width="135.6707317073171" height="12" fill="#f59e0b" rx="2" />
-    <text x="140.6707317073171" y="1119" dominant-baseline="middle" class="value-label">1.11x (0.89ms)</text>
-    <rect x="0" y="1128" width="318.5975609756098" height="12" fill="#ef4444" rx="2" />
-    <text x="323.5975609756098" y="1135" dominant-baseline="middle" class="value-label">2.61x (2.09ms)</text>
-    <rect x="0" y="1144" width="254.5731707317073" height="12" fill="#8b5cf6" rx="2" />
-    <text x="259.5731707317073" y="1151" dominant-baseline="middle" class="value-label">2.09x (1.67ms)</text>
+    <rect x="0" y="1080" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="1087" dominant-baseline="middle" class="value-label">1.00x (0.55ms)</text>
+    <rect x="0" y="1096" width="83.20493066255777" height="12" fill="#22c55e" rx="2" />
+    <text x="88.20493066255777" y="1103" dominant-baseline="middle" class="value-label">0.98x (0.54ms)</text>
+    <rect x="0" y="1112" width="87.82742681047763" height="12" fill="#f59e0b" rx="2" />
+    <text x="92.82742681047763" y="1119" dominant-baseline="middle" class="value-label">1.04x (0.57ms)</text>
+    <rect x="0" y="1128" width="226.5023112480739" height="12" fill="#ef4444" rx="2" />
+    <text x="231.5023112480739" y="1135" dominant-baseline="middle" class="value-label">2.67x (1.47ms)</text>
+    <rect x="0" y="1144" width="232.66563944530043" height="12" fill="#8b5cf6" rx="2" />
+    <text x="237.66563944530043" y="1151" dominant-baseline="middle" class="value-label">2.75x (1.51ms)</text>
     <text x="-10" y="1255" text-anchor="end" dominant-baseline="middle" class="op-label">Update</text>
-    <rect x="0" y="1215" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="1222" dominant-baseline="middle" class="value-label">1.00x (0.44ms)</text>
-    <rect x="0" y="1231" width="124.72283813747228" height="12" fill="#22c55e" rx="2" />
-    <text x="129.72283813747228" y="1238" dominant-baseline="middle" class="value-label">1.02x (0.45ms)</text>
-    <rect x="0" y="1247" width="130.26607538802662" height="12" fill="#f59e0b" rx="2" />
-    <text x="135.26607538802662" y="1254" dominant-baseline="middle" class="value-label">1.07x (0.47ms)</text>
-    <rect x="0" y="1263" width="133.03769401330376" height="12" fill="#ef4444" rx="2" />
-    <text x="138.03769401330376" y="1270" dominant-baseline="middle" class="value-label">1.09x (0.48ms)</text>
-    <rect x="0" y="1279" width="196.7849223946785" height="12" fill="#8b5cf6" rx="2" />
-    <text x="201.7849223946785" y="1286" dominant-baseline="middle" class="value-label">1.61x (0.71ms)</text>
+    <rect x="0" y="1215" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="1222" dominant-baseline="middle" class="value-label">1.00x (0.28ms)</text>
+    <rect x="0" y="1231" width="78.69249394673122" height="12" fill="#22c55e" rx="2" />
+    <text x="83.69249394673122" y="1238" dominant-baseline="middle" class="value-label">0.93x (0.26ms)</text>
+    <rect x="0" y="1247" width="81.71912832929782" height="12" fill="#f59e0b" rx="2" />
+    <text x="86.71912832929782" y="1254" dominant-baseline="middle" class="value-label">0.96x (0.27ms)</text>
+    <rect x="0" y="1263" width="84.7457627118644" height="12" fill="#ef4444" rx="2" />
+    <text x="89.7457627118644" y="1270" dominant-baseline="middle" class="value-label">1.00x (0.28ms)</text>
+    <rect x="0" y="1279" width="160.41162227602905" height="12" fill="#8b5cf6" rx="2" />
+    <text x="165.41162227602905" y="1286" dominant-baseline="middle" class="value-label">1.89x (0.53ms)</text>
     <text x="-10" y="1390" text-anchor="end" dominant-baseline="middle" class="op-label">Nested update (update user + post)</text>
-    <rect x="0" y="1350" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="1357" dominant-baseline="middle" class="value-label">1.00x (1.01ms)</text>
-    <rect x="0" y="1366" width="109.87684134267087" height="12" fill="#22c55e" rx="2" />
-    <text x="114.87684134267087" y="1373" dominant-baseline="middle" class="value-label">0.90x (0.91ms)</text>
-    <rect x="0" y="1382" width="125.5735329630524" height="12" fill="#f59e0b" rx="2" />
-    <text x="130.5735329630524" y="1389" dominant-baseline="middle" class="value-label">1.03x (1.04ms)</text>
-    <rect x="0" y="1398" width="131.61072204781456" height="12" fill="#ef4444" rx="2" />
-    <text x="136.61072204781456" y="1405" dominant-baseline="middle" class="value-label">1.08x (1.09ms)</text>
-    <rect x="0" y="1414" width="289.7850760685825" height="12" fill="#8b5cf6" rx="2" />
-    <text x="294.7850760685825" y="1421" dominant-baseline="middle" class="value-label">2.38x (2.40ms)</text>
+    <rect x="0" y="1350" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="1357" dominant-baseline="middle" class="value-label">1.00x (0.58ms)</text>
+    <rect x="0" y="1366" width="78.90122735242548" height="12" fill="#22c55e" rx="2" />
+    <text x="83.90122735242548" y="1373" dominant-baseline="middle" class="value-label">0.93x (0.54ms)</text>
+    <rect x="0" y="1382" width="81.82349503214495" height="12" fill="#f59e0b" rx="2" />
+    <text x="86.82349503214495" y="1389" dominant-baseline="middle" class="value-label">0.97x (0.56ms)</text>
+    <rect x="0" y="1398" width="83.28462887200466" height="12" fill="#ef4444" rx="2" />
+    <text x="88.28462887200466" y="1405" dominant-baseline="middle" class="value-label">0.98x (0.57ms)</text>
+    <rect x="0" y="1414" width="289.30450029222675" height="12" fill="#8b5cf6" rx="2" />
+    <text x="294.30450029222675" y="1421" dominant-baseline="middle" class="value-label">3.41x (1.98ms)</text>
     <text x="-10" y="1525" text-anchor="end" dominant-baseline="middle" class="op-label">Upsert</text>
-    <rect x="0" y="1485" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="1492" dominant-baseline="middle" class="value-label">1.00x (0.50ms)</text>
-    <rect x="0" y="1501" width="112.19512195121953" height="12" fill="#22c55e" rx="2" />
-    <text x="117.19512195121953" y="1508" dominant-baseline="middle" class="value-label">0.92x (0.46ms)</text>
-    <rect x="0" y="1517" width="119.51219512195122" height="12" fill="#f59e0b" rx="2" />
-    <text x="124.51219512195122" y="1524" dominant-baseline="middle" class="value-label">0.98x (0.49ms)</text>
-    <rect x="0" y="1533" width="141.46341463414635" height="12" fill="#ef4444" rx="2" />
-    <text x="146.46341463414635" y="1540" dominant-baseline="middle" class="value-label">1.16x (0.58ms)</text>
-    <rect x="0" y="1549" width="490.2439024390244" height="12" fill="#8b5cf6" rx="2" />
-    <text x="495.2439024390244" y="1556" dominant-baseline="middle" class="value-label">4.02x (2.01ms)</text>
+    <rect x="0" y="1485" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="1492" dominant-baseline="middle" class="value-label">1.00x (0.27ms)</text>
+    <rect x="0" y="1501" width="87.88449466415567" height="12" fill="#22c55e" rx="2" />
+    <text x="92.88449466415567" y="1508" dominant-baseline="middle" class="value-label">1.04x (0.28ms)</text>
+    <rect x="0" y="1517" width="91.02322661644693" height="12" fill="#f59e0b" rx="2" />
+    <text x="96.02322661644693" y="1524" dominant-baseline="middle" class="value-label">1.07x (0.29ms)</text>
+    <rect x="0" y="1533" width="97.3006905210295" height="12" fill="#ef4444" rx="2" />
+    <text x="102.3006905210295" y="1540" dominant-baseline="middle" class="value-label">1.15x (0.31ms)</text>
+    <rect x="0" y="1549" width="495.91964846202137" height="12" fill="#8b5cf6" rx="2" />
+    <text x="500.91964846202137" y="1556" dominant-baseline="middle" class="value-label">5.85x (1.58ms)</text>
     <text x="-10" y="1660" text-anchor="end" dominant-baseline="middle" class="op-label">Nested upsert (user + post)</text>
-    <rect x="0" y="1620" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="1627" dominant-baseline="middle" class="value-label">1.00x (0.99ms)</text>
-    <rect x="0" y="1636" width="119.48755851194876" height="12" fill="#22c55e" rx="2" />
-    <text x="124.48755851194876" y="1643" dominant-baseline="middle" class="value-label">0.98x (0.97ms)</text>
-    <rect x="0" y="1652" width="130.57403301305743" height="12" fill="#f59e0b" rx="2" />
-    <text x="135.57403301305743" y="1659" dominant-baseline="middle" class="value-label">1.07x (1.06ms)</text>
-    <rect x="0" y="1668" width="119.48755851194876" height="12" fill="#ef4444" rx="2" />
-    <text x="124.48755851194876" y="1675" dominant-baseline="middle" class="value-label">0.98x (0.97ms)</text>
-    <rect x="0" y="1684" width="279.62552352796257" height="12" fill="#8b5cf6" rx="2" />
-    <text x="284.62552352796257" y="1691" dominant-baseline="middle" class="value-label">2.29x (2.27ms)</text>
+    <rect x="0" y="1620" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="1627" dominant-baseline="middle" class="value-label">1.00x (0.52ms)</text>
+    <rect x="0" y="1636" width="92.89439374185135" height="12" fill="#22c55e" rx="2" />
+    <text x="97.89439374185135" y="1643" dominant-baseline="middle" class="value-label">1.10x (0.57ms)</text>
+    <rect x="0" y="1652" width="99.41329856584092" height="12" fill="#f59e0b" rx="2" />
+    <text x="104.41329856584092" y="1659" dominant-baseline="middle" class="value-label">1.17x (0.61ms)</text>
+    <rect x="0" y="1668" width="99.41329856584092" height="12" fill="#ef4444" rx="2" />
+    <text x="104.41329856584092" y="1675" dominant-baseline="middle" class="value-label">1.17x (0.61ms)</text>
+    <rect x="0" y="1684" width="301.4993481095176" height="12" fill="#8b5cf6" rx="2" />
+    <text x="306.4993481095176" y="1691" dominant-baseline="middle" class="value-label">3.56x (1.85ms)</text>
     <text x="-10" y="1795" text-anchor="end" dominant-baseline="middle" class="op-label">Delete</text>
-    <rect x="0" y="1755" width="121.95121951219514" height="12" fill="#3b82f6" rx="2" />
-    <text x="126.95121951219514" y="1762" dominant-baseline="middle" class="value-label">1.00x (0.96ms)</text>
-    <rect x="0" y="1771" width="127.03252032520327" height="12" fill="#22c55e" rx="2" />
-    <text x="132.03252032520328" y="1778" dominant-baseline="middle" class="value-label">1.04x (1.00ms)</text>
-    <rect x="0" y="1787" width="143.5467479674797" height="12" fill="#f59e0b" rx="2" />
-    <text x="148.5467479674797" y="1794" dominant-baseline="middle" class="value-label">1.18x (1.13ms)</text>
-    <rect x="0" y="1803" width="235.01016260162604" height="12" fill="#ef4444" rx="2" />
-    <text x="240.01016260162604" y="1810" dominant-baseline="middle" class="value-label">1.93x (1.85ms)</text>
-    <rect x="0" y="1819" width="171.49390243902442" height="12" fill="#8b5cf6" rx="2" />
-    <text x="176.49390243902442" y="1826" dominant-baseline="middle" class="value-label">1.41x (1.35ms)</text>
+    <rect x="0" y="1755" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="1762" dominant-baseline="middle" class="value-label">1.00x (0.53ms)</text>
+    <rect x="0" y="1771" width="87.94371602174608" height="12" fill="#22c55e" rx="2" />
+    <text x="92.94371602174608" y="1778" dominant-baseline="middle" class="value-label">1.04x (0.55ms)</text>
+    <rect x="0" y="1787" width="92.74064598656858" height="12" fill="#f59e0b" rx="2" />
+    <text x="97.74064598656858" y="1794" dominant-baseline="middle" class="value-label">1.09x (0.58ms)</text>
+    <rect x="0" y="1803" width="164.6945954589063" height="12" fill="#ef4444" rx="2" />
+    <text x="169.6945954589063" y="1810" dominant-baseline="middle" class="value-label">1.94x (1.03ms)</text>
+    <rect x="0" y="1819" width="148.7048289094979" height="12" fill="#8b5cf6" rx="2" />
+    <text x="153.7048289094979" y="1826" dominant-baseline="middle" class="value-label">1.75x (0.93ms)</text>
+    <text x="-10" y="1930" text-anchor="end" dominant-baseline="middle" class="op-label">Nested relations (100→1000→10000)</text>
+    <rect x="0" y="1890" width="84.7457627118644" height="12" fill="#3b82f6" rx="2" />
+    <text x="89.7457627118644" y="1897" dominant-baseline="middle" class="value-label">1.00x (25.99ms)</text>
+    <rect x="0" y="1906" width="76.98528117072408" height="12" fill="#22c55e" rx="2" />
+    <text x="81.98528117072408" y="1913" dominant-baseline="middle" class="value-label">0.91x (23.61ms)</text>
+    <rect x="0" y="1922" width="64.65981048773648" height="12" fill="#f59e0b" rx="2" />
+    <text x="69.65981048773648" y="1929" dominant-baseline="middle" class="value-label">0.76x (19.83ms)</text>
+    <rect x="0" y="1938" width="265.2258691413256" height="12" fill="#ef4444" rx="2" />
+    <text x="270.2258691413256" y="1945" dominant-baseline="middle" class="value-label">3.13x (81.34ms)</text>
+    <rect x="0" y="1954" width="286.38785452031743" height="12" fill="#8b5cf6" rx="2" />
+    <text x="291.38785452031743" y="1961" dominant-baseline="middle" class="value-label">3.38x (87.83ms)</text>
   </g>
   
   <!-- Legend -->

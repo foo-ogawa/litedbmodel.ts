@@ -689,7 +689,7 @@ class UserActivityModel extends DBModel {
 | **IDE Refactoring** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **SKIP Pattern** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Extensibility** | Middleware | Plugins | ❌ Manual | Subscribers | Extensions |
-| **Performance** | 🏆 Fastest | Fast | Fast | Medium | Slow |
+| **Performance** | Fast | 🏆 Fastest | Fast | Medium | Slow |
 
 > See [COMPARISON.md](./docs/COMPARISON.md) for detailed analysis and [BENCHMARK-NESTED.md](./docs/BENCHMARK-NESTED.md) for benchmarks.
 

@@ -51,7 +51,7 @@ const WARMUP_ITERATIONS = 10;
 // litedbmodel Setup
 // ============================================
 
-import { DBModel, model, column, ColumnsOf, closeAllPools } from 'litedbmodel';
+import { DBModel, model, column, ColumnsOf, closeAllPools, hasMany, belongsTo } from 'litedbmodel';
 
 @model('benchmark_users')
 class LiteUserModel extends DBModel {
@@ -61,11 +61,8 @@ class LiteUserModel extends DBModel {
   @column() created_at?: Date;
   @column() updated_at?: Date;
   
-  get posts(): Promise<LitePostModel[]> {
-    return this._hasMany(LitePost, {
-      targetKey: LitePost.author_id,
-    });
-  }
+  @hasMany(() => [LiteUser.id, LitePost.author_id])
+  declare posts: Promise<LitePostModel[]>;
 }
 const LiteUser = LiteUserModel as typeof LiteUserModel & ColumnsOf<LiteUserModel>;
 
@@ -78,18 +75,11 @@ class LitePostModel extends DBModel {
   @column() author_id?: number;
   @column() created_at?: Date;
   
-  get author(): Promise<LiteUserModel | null> {
-    return this._belongsTo(LiteUser, {
-      sourceKey: LitePost.author_id,
-      targetKey: LiteUser.id,
-    });
-  }
+  @belongsTo(() => [LitePost.author_id, LiteUser.id])
+  declare author: Promise<LiteUserModel | null>;
   
-  get comments(): Promise<LiteCommentModel[]> {
-    return this._hasMany(LiteComment, {
-      targetKey: LiteComment.post_id,
-    });
-  }
+  @hasMany(() => [LitePost.id, LiteComment.post_id])
+  declare comments: Promise<LiteCommentModel[]>;
 }
 const LitePost = LitePostModel as typeof LitePostModel & ColumnsOf<LitePostModel>;
 
@@ -100,12 +90,8 @@ class LiteCommentModel extends DBModel {
   @column() post_id?: number;
   @column() created_at?: Date;
   
-  get post(): Promise<LitePostModel | null> {
-    return this._belongsTo(LitePost, {
-      sourceKey: LiteComment.post_id,
-      targetKey: LitePost.id,
-    });
-  }
+  @belongsTo(() => [LiteComment.post_id, LitePost.id])
+  declare post: Promise<LitePostModel | null>;
 }
 const LiteComment = LiteCommentModel as typeof LiteCommentModel & ColumnsOf<LiteCommentModel>;
 

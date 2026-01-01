@@ -112,6 +112,8 @@ function generateSVG(rows: BenchmarkRow[]): string {
   
   let svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" font-family="system-ui, -apple-system, sans-serif">
+  <!-- White background -->
+  <rect width="100%" height="100%" fill="white"/>
   <style>
     .title { font-size: 18px; font-weight: bold; fill: #1f2937; }
     .subtitle { font-size: 12px; fill: #6b7280; }

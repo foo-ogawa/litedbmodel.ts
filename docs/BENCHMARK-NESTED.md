@@ -19,21 +19,21 @@ This benchmark compares ORM performance for **real-world nested relation queries
 
 | ORM | Median | Ratio | Queries |
 |-----|--------|-------|---------|
-| Drizzle | 23.23ms | 1.00x | 1 |
-| **litedbmodel** | **28.05ms** | **1.21x** | **3** |
-| Kysely | 28.84ms | 1.24x | 3 |
-| TypeORM | 32.50ms | 1.40x | 2 |
-| Prisma | 81.73ms | 3.52x | 3 |
+| Drizzle | 23.80ms | 1.00x | 1 |
+| **litedbmodel** | **28.24ms** | **1.19x** | **3** |
+| Kysely | 29.51ms | 1.24x | 3 |
+| TypeORM | 32.70ms | 1.37x | 2 |
+| Prisma | 81.65ms | 3.43x | 3 |
 
 ### Composite Key Relations (100 → 1000 → 10000)
 
 | ORM | Median | Ratio | Queries |
 |-----|--------|-------|---------|
-| Kysely | 13.19ms | 1.00x | 3 |
-| Drizzle | 17.84ms | 1.35x | 1 |
-| **litedbmodel** | **24.63ms** | **1.87x** | **3** |
-| TypeORM | 35.52ms | 2.69x | 2 |
-| Prisma | 101.94ms | 7.73x | 3 |
+| Kysely | 12.96ms | 1.00x | 3 |
+| Drizzle | 17.50ms | 1.35x | 1 |
+| **litedbmodel** | **24.69ms** | **1.90x** | **3** |
+| TypeORM | 35.53ms | 2.74x | 2 |
+| Prisma | 102.29ms | 7.89x | 3 |
 
 ---
 
