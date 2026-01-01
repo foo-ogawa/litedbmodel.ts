@@ -370,12 +370,12 @@ Prevent accidental loading of too many records with configurable hardLimits:
 ```typescript
 // Global configuration
 DBModel.setConfig(config, {
-  findHardLimit: 10000,      // find() throws if > 10000 records
-  hasManyHardLimit: 1000,    // hasMany throws if > 1000 records total (batch)
+  findHardLimit: 1000,       // find() throws if > 1000 records
+  hasManyHardLimit: 10000,   // hasMany throws if > 10000 records total (batch)
 });
 
 // Or update later
-DBModel.setLimitConfig({ findHardLimit: 5000, hasManyHardLimit: 500 });
+DBModel.setLimitConfig({ findHardLimit: 500, hasManyHardLimit: 5000 });
 ```
 
 When limits are exceeded, `LimitExceededError` is thrown:

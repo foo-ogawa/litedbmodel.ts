@@ -128,8 +128,8 @@ export abstract class DBModel {
    *   password: 'pass',
    * }, {
    *   // Optional: Set global limits
-   *   findHardLimit: 10000,      // find() throws if > 10000 records
-   *   hasManyHardLimit: 1000,    // hasMany throws if > 1000 records per key
+   *   findHardLimit: 1000,       // find() throws if > 1000 records
+   *   hasManyHardLimit: 10000,   // hasMany throws if > 10000 records total (batch)
    * });
    * 
    * // Now you can use all DBModel methods
