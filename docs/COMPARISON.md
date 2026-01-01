@@ -1093,8 +1093,8 @@ Separate benchmark for large-scale nested relation queries (100 users → 1000 p
 
 ### Analysis
 
-1. **litedbmodel** - **Fastest in 6 operations** 🏆
-   - **#1 in Find all, Filter/paginate/sort, Find unique, Upsert, Nested upsert, Delete**
+1. **litedbmodel** - **Fastest in 7 operations** 🏆
+   - **#1 in Find all, Filter/paginate/sort, Find unique, Create, Upsert, Nested upsert, Delete**
    - Competitive in all operations (within 10% of fastest)
    - Best for applications with complex queries, CRUD, and filtering
 
