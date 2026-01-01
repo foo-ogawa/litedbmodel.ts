@@ -170,8 +170,8 @@ export interface LimitConfig {
   findHardLimit?: number | null;
 
   /**
-   * Hard limit for hasMany relation loading.
-   * If a hasMany relation returns more than this many records per key,
+   * Hard limit for hasMany relation loading (batch total).
+   * If a hasMany batch load returns more than this many records in total,
    * an exception is thrown.
    * Set to null to disable.
    * @default null (no limit)

@@ -371,7 +371,7 @@ Prevent accidental loading of too many records with configurable hardLimits:
 // Global configuration
 DBModel.setConfig(config, {
   findHardLimit: 10000,      // find() throws if > 10000 records
-  hasManyHardLimit: 1000,    // hasMany throws if > 1000 records per key
+  hasManyHardLimit: 1000,    // hasMany throws if > 1000 records total (batch)
 });
 
 // Or update later
