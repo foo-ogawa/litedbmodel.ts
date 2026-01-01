@@ -80,6 +80,30 @@ await User.delete([[User.is_active, false]]);
 
 ---
 
+## Column Decorators
+
+### Auto-Inferred Types
+
+```typescript
+@column() id?: number;           // Number conversion
+@column() name?: string;         // No conversion
+@column() is_active?: boolean;   // Boolean conversion
+@column() created_at?: Date;     // DateTime conversion
+@column() large_id?: bigint;     // BigInt conversion
+@column('db_col') prop?: string; // Custom column name
+```
+
+### Explicit Types (for arrays/JSON)
+
+```typescript
+@column.date() birth_date?: Date;
+@column.stringArray() tags?: string[];
+@column.intArray() scores?: number[];
+@column.json<Settings>() settings?: Settings;
+```
+
+---
+
 ## Type-Safe Conditions
 
 Conditions use `[Column, value]` tuples for compile-time validation. For operators, use `${Model.column}` in template literals—the ESLint plugin catches incorrect column references.
@@ -208,30 +232,6 @@ await User.find([
   [`${User.name} LIKE ?`, query.name ? `%${query.name}%` : SKIP],
   [User.status, query.status ?? SKIP],
 ]);
-```
-
----
-
-## Column Decorators
-
-### Auto-Inferred Types
-
-```typescript
-@column() id?: number;           // Number conversion
-@column() name?: string;         // No conversion
-@column() is_active?: boolean;   // Boolean conversion
-@column() created_at?: Date;     // DateTime conversion
-@column() large_id?: bigint;     // BigInt conversion
-@column('db_col') prop?: string; // Custom column name
-```
-
-### Explicit Types (for arrays/JSON)
-
-```typescript
-@column.date() birth_date?: Date;
-@column.stringArray() tags?: string[];
-@column.intArray() scores?: number[];
-@column.json<Settings>() settings?: Settings;
 ```
 
 ---
