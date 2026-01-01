@@ -327,6 +327,8 @@ The `limit` option applies SQL-level limiting **per parent key** during batch lo
 
 This is more efficient than fetching all records and filtering in application code.
 
+> **Important:** Always use `order` with `limit`. Without ordering, the "which N records" is non-deterministic and may vary between queries.
+
 ### Composite Key Relations
 
 ```typescript
@@ -402,7 +404,7 @@ declare posts: Promise<Post[]>;
 declare logs: Promise<Log[]>;
 ```
 
-> **Note:** `hardLimit` is a safety guard that throws after fetching if exceeded. For SQL-level limiting (pagination-like behavior), use the `limit` option described in [With Options](#with-options-order-where-limit).
+> **Note:** `hardLimit` is a safety guard implemented as `LIMIT hardLimit+1` at SQL level. If the result exceeds `hardLimit`, it throws immediately — this minimizes data transfer while detecting overflow. For explicit SQL-level limiting (e.g., "N records per parent"), use the `limit` option described in [With Options](#with-options-order-where-limit).
 
 ---
 
