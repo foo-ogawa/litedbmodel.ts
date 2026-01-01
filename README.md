@@ -740,8 +740,8 @@ class UserActivityModel extends DBModel {
 | **Complex Queries** | ✅ Real SQL | Builder DSL | Builder DSL | HQL/Builder | Prisma DSL |
 | **Query-Based Models** | ✅ | ❌ | ❌ | Views only | Views only |
 | **Model-Centric Relations** | ✅ On-demand | ❌ | ❌ Eager | ❌ Eager | ❌ Include |
-| **Transparent N+1 Prevention** | ✅ | ❌ Manual | ❌ Manual | Eager only | Include |
-| **IDE Refactoring** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Transparent N+1 Prevention** | ✅ | ❌ Manual | ⚠️ { with } | Eager only | Include |
+| **IDE Refactoring** | ✅ | ❌ | ⚠️ Partial | ❌ | ❌ |
 | **SKIP Pattern** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Extensibility** | Middleware | Plugins | ❌ Manual | Subscribers | Extensions |
 | **Performance** | 🏆 Fastest | 🏆 Fastest | Fast | Medium | Slow |
