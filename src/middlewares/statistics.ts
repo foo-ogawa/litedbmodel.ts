@@ -32,7 +32,7 @@ import type {
   ExecuteResult,
 } from '../Middleware';
 import type { Conds, Column } from '../Column';
-import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions } from '../types';
+import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, PkeyResult } from '../types';
 
 export class StatisticsMiddleware extends Middleware {
   // Instance statistics (per-request)
@@ -152,9 +152,9 @@ export class StatisticsMiddleware extends Middleware {
   async findById<T extends typeof DBModel>(
     _model: T,
     next: NextFindById<T>,
-    id: unknown,
+    id: unknown | PkeyResult,
     options?: SelectOptions
-  ): Promise<InstanceType<T> | null> {
+  ): Promise<InstanceType<T>[]> {
     this.find_one_counter++; // Count as findOne
     const startTime = Date.now();
     const result = await next(id, options);
@@ -176,10 +176,10 @@ export class StatisticsMiddleware extends Middleware {
 
   async create<T extends typeof DBModel>(
     _model: T,
-    next: NextCreate<T>,
+    next: NextCreate,
     pairs: readonly (readonly [Column<any, any>, any])[],
     options?: InsertOptions
-  ): Promise<InstanceType<T>> {
+  ): Promise<PkeyResult | null> {
     this.insert_counter++;
     const startTime = Date.now();
     const result = await next(pairs, options);
@@ -189,10 +189,10 @@ export class StatisticsMiddleware extends Middleware {
 
   async createMany<T extends typeof DBModel>(
     _model: T,
-    next: NextCreateMany<T>,
+    next: NextCreateMany,
     pairsArray: readonly (readonly (readonly [Column<any, any>, any])[])[],
     options?: InsertOptions
-  ): Promise<InstanceType<T>[]> {
+  ): Promise<PkeyResult | null> {
     this.insert_counter++; // Count as single insert
     const startTime = Date.now();
     const result = await next(pairsArray, options);
@@ -202,11 +202,11 @@ export class StatisticsMiddleware extends Middleware {
 
   async update<T extends typeof DBModel>(
     _model: T,
-    next: NextUpdate<T>,
+    next: NextUpdate,
     conditions: Conds,
     values: readonly (readonly [Column<any, any>, any])[],
     options?: UpdateOptions
-  ): Promise<InstanceType<T>[]> {
+  ): Promise<PkeyResult | null> {
     this.update_counter++;
     const startTime = Date.now();
     const result = await next(conditions, values, options);
@@ -216,10 +216,10 @@ export class StatisticsMiddleware extends Middleware {
 
   async delete<T extends typeof DBModel>(
     _model: T,
-    next: NextDelete<T>,
+    next: NextDelete,
     conditions: Conds,
     options?: DeleteOptions
-  ): Promise<InstanceType<T>[]> {
+  ): Promise<PkeyResult | null> {
     this.delete_counter++;
     const startTime = Date.now();
     const result = await next(conditions, options);

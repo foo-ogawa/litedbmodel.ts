@@ -6,7 +6,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { DBBoolValue, DBNullValue, DBNotNullValue, DBImmediateValue, DBToken, DBSubquery, DBExists, type SubqueryCondition } from './DBValues';
 import { normalizeConditions, type ConditionObject } from './DBConditions';
 import { initDBHandler, getDBHandler, createHandlerWithConnection, DBHandler, type DBConfig, type DBConnection } from './DBHandler';
-import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, TransactionOptions, LimitConfig, DBConfigOptions } from './types';
+import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, UpdateManyOptions, TransactionOptions, LimitConfig, DBConfigOptions, PkeyResult, InternalInsertOptions, InternalUpdateOptions, InternalDeleteOptions } from './types';
 import { LimitExceededError, WriteOutsideTransactionError, WriteInReadOnlyContextError } from './types';
 import { type Column, type OrderSpec, type CVs, type Conds, type CondsOf, type OrCondOf, type ColumnsOf, createColumn, columnsToNames, pairsToRecord, condsToRecord, orderToString, createOrCond } from './Column';
 import type { MiddlewareClass, ExecuteResult } from './Middleware';
@@ -369,7 +369,7 @@ export abstract class DBModel {
    * @internal
    */
   private static _applyMiddleware<Args extends unknown[], R>(
-    methodName: 'find' | 'findOne' | 'findById' | 'count' | 'create' | 'createMany' | 'update' | 'delete' | 'query',
+    methodName: 'find' | 'findOne' | 'findById' | 'count' | 'create' | 'createMany' | 'update' | 'updateMany' | 'delete' | 'query',
     core: (...args: Args) => Promise<R>,
     args: Args
   ): Promise<R> {
@@ -762,7 +762,7 @@ export abstract class DBModel {
   private static async _insert<T extends typeof DBModel>(
     this: T,
     values: Record<string, unknown> | Record<string, unknown>[],
-    options: InsertOptions<unknown> = {}
+    options: InternalInsertOptions<unknown> = {}
   ): Promise<InstanceType<T>[]> {
     // Write operations require a transaction
     this._checkWriteAllowed('INSERT');
@@ -843,7 +843,7 @@ export abstract class DBModel {
     this: T,
     conditions: ConditionObject,
     values: Record<string, unknown>,
-    options: UpdateOptions = {}
+    options: InternalUpdateOptions = {}
   ): Promise<InstanceType<T>[]> {
     // Write operations require a transaction
     this._checkWriteAllowed('UPDATE');
@@ -892,7 +892,7 @@ export abstract class DBModel {
   private static async _delete<T extends typeof DBModel>(
     this: T,
     conditions: ConditionObject,
-    options: DeleteOptions = {}
+    options: InternalDeleteOptions = {}
   ): Promise<InstanceType<T>[]> {
     // Write operations require a transaction
     this._checkWriteAllowed('DELETE');
@@ -929,6 +929,22 @@ export abstract class DBModel {
     Object.assign(instance, row);
     instance.typeCastFromDB();
     return instance;
+  }
+
+  /**
+   * Build PkeyResult from rows containing primary key values
+   * @internal
+   */
+  protected static _buildPkeyResult(
+    rows: Record<string, unknown>[],
+    pkeyColumns?: Column[]
+  ): PkeyResult {
+    const pkeyCols = pkeyColumns || this._getPkeyColumnsWithDefault();
+    const pkeyColumnNames = columnsToNames(pkeyCols);
+    const values: unknown[][] = rows.map(row => 
+      pkeyColumnNames.map(colName => row[colName])
+    );
+    return { key: pkeyCols, values };
   }
 
   // ============================================
@@ -1825,36 +1841,132 @@ export abstract class DBModel {
   }
 
   /**
-   * Find record by primary key
-   * @param id - Primary key value (or object for composite keys)
+   * Find records by primary key using PkeyResult format.
+   * Efficiently fetches multiple records by their primary keys.
+   *
+   * @param pkeyResult - Object with `values` property containing 2D array of PK values
    * @param options - Query options
-   * @returns Model instance or null
+   * @returns Array of model instances (empty array if no matches)
    *
    * @example
    * ```typescript
-   * const user = await User.findById(123);
-   * const entry = await Entry.findById({ user_id: 1, date: '2024-01-01' });
+   * // Single record
+   * const [user] = await User.findById({ values: [[1]] });
+   * 
+   * // Multiple records
+   * const users = await User.findById({ values: [[1], [2], [3]] });
+   * 
+   * // Composite PK
+   * const [entry] = await TenantUser.findById({
+   *   values: [[1, 100]]  // [tenant_id, id]
+   * });
+   * 
+   * // Use with write operation result
+   * const result = await User.update(..., { returning: true });
+   * const users = await User.findById(result);
    * ```
    */
   static async findById<T extends typeof DBModel>(
     this: T,
-    id: unknown,
+    pkeyResult: Pick<PkeyResult, 'values'>,
     options?: SelectOptions
-  ): Promise<InstanceType<T> | null> {
-    const core = async (idVal: unknown, opts?: SelectOptions): Promise<InstanceType<T> | null> => {
-      const pkeyColumnNames = columnsToNames(this._getPkeyColumnsWithDefault());
-      let idCondition: ConditionObject;
-      if (pkeyColumnNames.length === 1) {
-        idCondition = { [pkeyColumnNames[0]]: idVal } as ConditionObject;
-      } else if (typeof idVal === 'object' && idVal !== null) {
-        idCondition = idVal as ConditionObject;
-      } else {
-        throw new Error('Invalid primary key value for composite key');
+  ): Promise<InstanceType<T>[]> {
+    const core = async (
+      input: Pick<PkeyResult, 'values'>,
+      opts?: SelectOptions
+    ): Promise<InstanceType<T>[]> => {
+      const { values } = input;
+      
+      if (!values || values.length === 0) {
+        return [];
       }
-      const results = await this._select(idCondition, { ...opts, limit: 1 });
-      return results.length > 0 ? results[0] : null;
+
+      const pkeyColumns = this._getPkeyColumnsWithDefault();
+      const pkeyColumnNames = columnsToNames(pkeyColumns);
+      const driverType = this.getDriverType();
+      const tableName = this.getTableName();
+      
+      let sql: string;
+      const params: unknown[] = [];
+      const selectColumn = opts?.select || this.SELECT_COLUMN;
+
+      if (pkeyColumnNames.length === 1) {
+        // Single PK - use IN or ANY
+        const pkValues = values.map(v => v[0]);
+        
+        if (driverType === 'postgres') {
+          // PostgreSQL: WHERE id = ANY($1::type[])
+          const firstValue = pkValues.find(v => v !== null && v !== undefined);
+          const pgType = this._inferPgType(firstValue);
+          params.push(pkValues);
+          sql = `SELECT ${selectColumn} FROM ${tableName} WHERE ${pkeyColumnNames[0]} = ANY(?::${pgType}[])`;
+        } else {
+          // MySQL/SQLite: WHERE id IN (?, ?, ...)
+          const placeholders = pkValues.map(() => '?').join(', ');
+          params.push(...pkValues);
+          sql = `SELECT ${selectColumn} FROM ${tableName} WHERE ${pkeyColumnNames[0]} IN (${placeholders})`;
+        }
+      } else {
+        // Composite PK
+        if (driverType === 'postgres') {
+          // PostgreSQL: WHERE (col1, col2) IN (SELECT * FROM UNNEST(...))
+          const unnestArrays: string[] = [];
+          
+          for (let i = 0; i < pkeyColumnNames.length; i++) {
+            const colValues = values.map(v => v[i]);
+            params.push(colValues);
+            const firstValue = colValues.find(v => v !== null && v !== undefined);
+            const pgType = this._inferPgType(firstValue);
+            unnestArrays.push(`?::${pgType}[]`);
+          }
+          
+          sql = `SELECT ${selectColumn} FROM ${tableName} ` +
+                `WHERE (${pkeyColumnNames.join(', ')}) IN (SELECT * FROM UNNEST(${unnestArrays.join(', ')}))`;
+        } else if (driverType === 'mysql') {
+          // MySQL: JOIN (VALUES ROW(...), ...) AS v ON ...
+          const rowPlaceholders: string[] = [];
+          
+          for (const pkValueTuple of values) {
+            const rowVals = pkValueTuple.map(() => '?').join(', ');
+            params.push(...pkValueTuple);
+            rowPlaceholders.push(`ROW(${rowVals})`);
+          }
+          
+          const onConditions = pkeyColumnNames.map(col => `t.${col} = v.${col}`).join(' AND ');
+          sql = `SELECT ${selectColumn === '*' ? 't.*' : selectColumn} FROM ${tableName} AS t ` +
+                `JOIN (VALUES ${rowPlaceholders.join(', ')}) AS v(${pkeyColumnNames.join(', ')}) ` +
+                `ON ${onConditions}`;
+        } else {
+          // SQLite: WITH v AS (VALUES ...) ... JOIN v ON ...
+          const rowPlaceholders: string[] = [];
+          
+          for (const pkValueTuple of values) {
+            const rowVals = pkValueTuple.map(() => '?').join(', ');
+            params.push(...pkValueTuple);
+            rowPlaceholders.push(`(${rowVals})`);
+          }
+          
+          const onConditions = pkeyColumnNames.map(col => `t.${col} = v.${col}`).join(' AND ');
+          sql = `WITH v(${pkeyColumnNames.join(', ')}) AS (VALUES ${rowPlaceholders.join(', ')}) ` +
+                `SELECT ${selectColumn === '*' ? 't.*' : selectColumn} FROM ${tableName} AS t ` +
+                `JOIN v ON ${onConditions}`;
+        }
+      }
+
+      // Apply order if specified
+      if (opts?.order) {
+        const orderStr = typeof opts.order === 'string' 
+          ? opts.order 
+          : orderToString(opts.order);
+        if (orderStr) {
+          sql += ` ORDER BY ${orderStr}`;
+        }
+      }
+
+      const result = await this.execute(sql, params);
+      return (result.rows as Record<string, unknown>[]).map(row => this._createInstance<T>(row));
     };
-    return this._applyMiddleware('findById', core, [id, options]);
+    return this._applyMiddleware('findById', core, [pkeyResult, options]);
   }
 
   /**
@@ -1884,16 +1996,23 @@ export abstract class DBModel {
    * Value types are validated at compile time.
    *
    * @param pairs - Array of [Column, value] tuples
-   * @param options - Insert options
-   * @returns Created model instance
+   * @param options - Insert options (returning: true to get PkeyResult)
+   * @returns null by default, or PkeyResult if returning: true
    *
    * @example
    * ```typescript
-   * const user = await User.create([
+   * // Default: returns null
+   * await User.create([
    *   [User.name, 'John'],
    *   [User.email, 'john@test.com'],
-   *   [User.is_active, true],
    * ]);
+   * 
+   * // With returning: true → PkeyResult
+   * const result = await User.create([
+   *   [User.name, 'John'],
+   *   [User.email, 'john@test.com'],
+   * ], { returning: true });
+   * const [user] = await User.findById(result);
    * ```
    */
   static async create<
@@ -1903,15 +2022,34 @@ export abstract class DBModel {
     this: T,
     pairs: P & CVs<P>,
     options?: InsertOptions<InstanceType<T>>
-  ): Promise<InstanceType<T>> {
+  ): Promise<PkeyResult | null> {
     const core = async (
       p: readonly (readonly [Column<any, any>, any])[],
       opts?: InsertOptions<InstanceType<T>>
-    ): Promise<InstanceType<T>> => {
+    ): Promise<PkeyResult | null> => {
       const values = pairsToRecord(p);
-      const insertOpts = { returning: '*', ...opts };
-      const [instance] = await this._insert(values, insertOpts);
-      return instance;
+      
+      if (!opts?.returning) {
+        // No RETURNING - just insert
+        await this._insert(values, {});
+        return null;
+      }
+      
+      // With returning: true - get PkeyResult
+      const pkeyColumns = this._getPkeyColumnsWithDefault();
+      const pkeyColumnNames = columnsToNames(pkeyColumns);
+      const insertOpts = { returning: pkeyColumnNames.join(', ') };
+      const instances = await this._insert(values, insertOpts);
+      
+      if (instances.length === 0) {
+        return { key: pkeyColumns, values: [] };
+      }
+      
+      // Extract PK values from returned instances
+      const pkeyValues: unknown[][] = instances.map(instance => 
+        pkeyColumnNames.map(col => (instance as Record<string, unknown>)[col])
+      );
+      return { key: pkeyColumns, values: pkeyValues };
     };
     return this._applyMiddleware('create', core, [pairs, options]);
   }
@@ -1920,29 +2058,57 @@ export abstract class DBModel {
    * Create multiple records using type-safe column-value tuples.
    *
    * @param pairsArray - Array of tuple arrays
-   * @param options - Insert options
-   * @returns Created model instances
+   * @param options - Insert options (returning: true to get PkeyResult)
+   * @returns null by default, or PkeyResult if returning: true
    *
    * @example
    * ```typescript
-   * const users = await User.createMany([
+   * // Default: returns null
+   * await User.createMany([
    *   [[User.name, 'John'], [User.email, 'john@test.com']],
    *   [[User.name, 'Jane'], [User.email, 'jane@test.com']],
    * ]);
+   * 
+   * // With returning: true → PkeyResult
+   * const result = await User.createMany([
+   *   [[User.name, 'John'], [User.email, 'john@test.com']],
+   *   [[User.name, 'Jane'], [User.email, 'jane@test.com']],
+   * ], { returning: true });
+   * const users = await User.findById(result);
    * ```
    */
   static async createMany<T extends typeof DBModel>(
     this: T,
     pairsArray: readonly (readonly (readonly [Column<any, any>, any])[])[], 
     options?: InsertOptions<InstanceType<T>>
-  ): Promise<InstanceType<T>[]> {
+  ): Promise<PkeyResult | null> {
     const core = async (
       arr: readonly (readonly (readonly [Column<any, any>, any])[])[],
       opts?: InsertOptions<InstanceType<T>>
-    ): Promise<InstanceType<T>[]> => {
+    ): Promise<PkeyResult | null> => {
       const valuesArray = arr.map(pairs => pairsToRecord(pairs));
-      const insertOpts = { returning: '*', ...opts };
-      return this._insert(valuesArray, insertOpts);
+      
+      if (!opts?.returning) {
+        // No RETURNING - just insert
+        await this._insert(valuesArray, {});
+        return null;
+      }
+      
+      // With returning: true - get PkeyResult
+      const pkeyColumns = this._getPkeyColumnsWithDefault();
+      const pkeyColumnNames = columnsToNames(pkeyColumns);
+      const insertOpts = { returning: pkeyColumnNames.join(', ') };
+      const instances = await this._insert(valuesArray, insertOpts);
+      
+      if (instances.length === 0) {
+        return { key: pkeyColumns, values: [] };
+      }
+      
+      // Extract PK values from returned instances
+      const pkeyValues: unknown[][] = instances.map(instance => 
+        pkeyColumnNames.map(col => (instance as Record<string, unknown>)[col])
+      );
+      return { key: pkeyColumns, values: pkeyValues };
     };
     return this._applyMiddleware('createMany', core, [pairsArray, options]);
   }
@@ -1953,18 +2119,24 @@ export abstract class DBModel {
    *
    * @param conditions - Array of condition tuples for WHERE clause
    * @param values - Array of [Column, value] tuples for SET clause
-   * @param options - Update options
-   * @returns Updated model instances
+   * @param options - Update options (returning: true to get PkeyResult)
+   * @returns null by default, or PkeyResult if returning: true
    *
    * @example
    * ```typescript
+   * // Default: returns null
    * await User.update(
-   *   [[User.id, 1]],                // conditions
-   *   [                              // values
-   *     [User.name, 'Jane'],
-   *     [User.email, 'jane@test.com'],
-   *   ],
+   *   [[User.id, 1]],
+   *   [[User.name, 'Jane']],
    * );
+   * 
+   * // With returning: true → PkeyResult
+   * const result = await User.update(
+   *   [[User.status, 'pending']],
+   *   [[User.status, 'active']],
+   *   { returning: true }
+   * );
+   * const users = await User.findById(result);
    * ```
    */
   static async update<
@@ -1975,16 +2147,56 @@ export abstract class DBModel {
     conditions: CondsOf<T>,
     values: V & CVs<V>,
     options?: UpdateOptions
-  ): Promise<InstanceType<T>[]> {
+  ): Promise<PkeyResult | null> {
     const core = async (
       conds: Conds,
       vals: readonly (readonly [Column<any, any>, any])[],
       opts?: UpdateOptions
-    ): Promise<InstanceType<T>[]> => {
+    ): Promise<PkeyResult | null> => {
       const conditionRecord = condsToRecord(conds) as ConditionObject;
       const valueRecord = pairsToRecord(vals);
-      const updateOpts = { returning: '*', ...opts };
-      return this._update(conditionRecord, valueRecord, updateOpts);
+      
+      if (!opts?.returning) {
+        // No RETURNING - just update
+        await this._update(conditionRecord, valueRecord, {});
+        return null;
+      }
+      
+      // With returning: true - get PkeyResult
+      const pkeyColumns = this._getPkeyColumnsWithDefault();
+      const pkeyColumnNames = columnsToNames(pkeyColumns);
+      
+      const driverType = this.getDriverType();
+      if (driverType === 'mysql') {
+        // MySQL: Pre-SELECT with DISTINCT to get PKs, then execute UPDATE
+        const selectParams: unknown[] = [];
+        const normalizedCond = normalizeConditions(conditionRecord);
+        const whereClause = normalizedCond.compile(selectParams);
+        
+        if (!whereClause) {
+          throw new Error('UPDATE requires conditions');
+        }
+        
+        const tableName = this.getUpdateTableName();
+        const selectSql = `SELECT DISTINCT ${pkeyColumnNames.join(', ')} FROM ${tableName} WHERE ${whereClause}`;
+        
+        // Execute SELECT first
+        const selectResult = await this.execute(selectSql, selectParams);
+        const pkeyValues = selectResult.rows as Record<string, unknown>[];
+        
+        // Then execute UPDATE (without RETURNING)
+        await this._update(conditionRecord, valueRecord, {});
+        
+        return this._buildPkeyResult(pkeyValues, pkeyColumns);
+      } else {
+        // PostgreSQL/SQLite: Use RETURNING clause
+        const updateOpts = { returning: pkeyColumnNames.join(', ') };
+        const instances = await this._update(conditionRecord, valueRecord, updateOpts);
+        return this._buildPkeyResult(
+          instances.map(i => i as unknown as Record<string, unknown>),
+          pkeyColumns
+        );
+      }
     };
     return this._applyMiddleware('update', core, [conditions, values, options]);
   }
@@ -1992,25 +2204,276 @@ export abstract class DBModel {
   /**
    * Delete records matching conditions
    * @param conditions - Filter conditions
-   * @param options - Delete options
-   * @returns Deleted model instances
+   * @param options - Delete options (returning: true to get PkeyResult)
+   * @returns null by default, or PkeyResult if returning: true
    *
    * @example
    * ```typescript
+   * // Default: returns null
    * await User.delete([[User.is_active, false]]);
+   * 
+   * // With returning: true → PkeyResult
+   * const result = await User.delete([[User.is_active, false]], { returning: true });
+   * // result: { key: [User.id], values: [[4], [5]] }
    * ```
    */
   static async delete<T extends typeof DBModel>(
     this: T,
     conditions: CondsOf<T>,
     options?: DeleteOptions
-  ): Promise<InstanceType<T>[]> {
-    const core = async (conds: Conds, opts?: DeleteOptions): Promise<InstanceType<T>[]> => {
+  ): Promise<PkeyResult | null> {
+    const core = async (conds: Conds, opts?: DeleteOptions): Promise<PkeyResult | null> => {
       const conditionRecord = condsToRecord(conds) as ConditionObject;
-      const deleteOpts = { returning: '*', ...opts };
-      return this._delete(conditionRecord, deleteOpts);
+      
+      if (!opts?.returning) {
+        // No RETURNING - just delete
+        await this._delete(conditionRecord, {});
+        return null;
+      }
+      
+      // With returning: true - get PkeyResult
+      const pkeyColumns = this._getPkeyColumnsWithDefault();
+      const pkeyColumnNames = columnsToNames(pkeyColumns);
+      
+      const driverType = this.getDriverType();
+      if (driverType === 'mysql') {
+        // MySQL: Pre-SELECT with DISTINCT to get PKs, then execute DELETE
+        const selectParams: unknown[] = [];
+        const normalizedCond = normalizeConditions(conditionRecord);
+        const whereClause = normalizedCond.compile(selectParams);
+        
+        if (!whereClause) {
+          throw new Error('DELETE requires conditions');
+        }
+        
+        const tableName = this.getUpdateTableName();
+        const selectSql = `SELECT DISTINCT ${pkeyColumnNames.join(', ')} FROM ${tableName} WHERE ${whereClause}`;
+        
+        // Execute SELECT first
+        const selectResult = await this.execute(selectSql, selectParams);
+        const pkeyValues = selectResult.rows as Record<string, unknown>[];
+        
+        // Then execute DELETE (without RETURNING)
+        await this._delete(conditionRecord, {});
+        
+        return this._buildPkeyResult(pkeyValues, pkeyColumns);
+      } else {
+        // PostgreSQL/SQLite: Use RETURNING clause
+        const deleteOpts = { returning: pkeyColumnNames.join(', ') };
+        const instances = await this._delete(conditionRecord, deleteOpts);
+        return this._buildPkeyResult(
+          instances.map(i => i as unknown as Record<string, unknown>),
+          pkeyColumns
+        );
+      }
     };
     return this._applyMiddleware('delete', core, [conditions, options]);
+  }
+
+  /**
+   * Update multiple records with different values per row.
+   * Uses efficient bulk update strategies (UNNEST for PostgreSQL, VALUES for MySQL/SQLite).
+   *
+   * @param rows - Array of [Column, value][] tuples, each representing one row's values
+   * @param options - Options including keyColumns to identify rows
+   * @returns null by default, or PkeyResult if returning: true
+   *
+   * @example
+   * ```typescript
+   * // Default: returns null
+   * await User.updateMany([
+   *   [[User.id, 1], [User.name, 'John'], [User.email, 'john@example.com']],
+   *   [[User.id, 2], [User.name, 'Jane'], [User.email, 'jane@example.com']],
+   * ], { keyColumns: [User.id] });
+   * 
+   * // With returning: true → PkeyResult
+   * const result = await User.updateMany([
+   *   [[User.id, 1], [User.name, 'John']],
+   *   [[User.id, 2], [User.name, 'Jane']],
+   * ], { keyColumns: [User.id], returning: true });
+   * const users = await User.findById(result);
+   * ```
+   */
+  static async updateMany<T extends typeof DBModel>(
+    this: T,
+    rows: readonly (readonly (readonly [Column<any, any>, any])[])[],
+    options: UpdateManyOptions
+  ): Promise<PkeyResult | null> {
+    const core = async (
+      rowsInput: readonly (readonly (readonly [Column<any, any>, any])[])[],
+      opts: UpdateManyOptions
+    ): Promise<PkeyResult | null> => {
+      // Write operations require a transaction
+      this._checkWriteAllowed('UPDATE');
+
+      if (rowsInput.length === 0) {
+        const pkeyColumns = this._getPkeyColumnsWithDefault();
+        return opts.returning ? { key: pkeyColumns, values: [] } : null;
+      }
+
+      const keyColumnsArray = Array.isArray(opts.keyColumns) 
+        ? opts.keyColumns as Column[]
+        : [opts.keyColumns as Column];
+      const keyColumnNames = columnsToNames(keyColumnsArray);
+
+      // Convert rows to record format and separate key/value columns
+      const rowRecords = rowsInput.map(pairs => pairsToRecord(pairs));
+      
+      // Get all column names from first row (assuming all rows have same structure)
+      const allColumnNames = Object.keys(rowRecords[0]);
+      const valueColumnNames = allColumnNames.filter(col => !keyColumnNames.includes(col));
+
+      if (valueColumnNames.length === 0) {
+        throw new Error('updateMany requires at least one non-key column to update');
+      }
+
+      // Validate all rows have key columns
+      for (const record of rowRecords) {
+        for (const keyCol of keyColumnNames) {
+          if (!(keyCol in record)) {
+            throw new Error(`updateMany: row missing required key column '${keyCol}'`);
+          }
+        }
+      }
+
+      const tableName = this.getUpdateTableName();
+      const driverType = this.getDriverType();
+      const pkeyColumns = this._getPkeyColumnsWithDefault();
+      const pkeyColumnNames = columnsToNames(pkeyColumns);
+
+      let sql: string;
+      const params: unknown[] = [];
+
+      if (driverType === 'postgres') {
+        // PostgreSQL: UPDATE ... FROM UNNEST($1::type[], $2::type[], ...) AS v(...) WHERE ...
+        const unnestArrays: string[] = [];
+        const vColumns: string[] = [];
+        
+        // Build UNNEST arrays for each column
+        for (const col of allColumnNames) {
+          const colValues = rowRecords.map(r => r[col]);
+          params.push(colValues);
+          
+          // Infer PostgreSQL type from first non-null value
+          const firstValue = colValues.find(v => v !== null && v !== undefined);
+          const pgType = this._inferPgType(firstValue);
+          unnestArrays.push(`?::${pgType}[]`);
+          vColumns.push(col);
+        }
+        
+        // Build SET clause
+        const setClauses = valueColumnNames.map(col => `${col} = v.${col}`);
+        
+        // Build WHERE clause for key matching
+        const whereConditions = keyColumnNames.map(col => `t.${col} = v.${col}`);
+        
+        sql = `UPDATE ${tableName} AS t SET ${setClauses.join(', ')} ` +
+              `FROM UNNEST(${unnestArrays.join(', ')}) AS v(${vColumns.join(', ')}) ` +
+              `WHERE ${whereConditions.join(' AND ')}`;
+        
+        if (opts.returning) {
+          sql += ` RETURNING ${pkeyColumnNames.map(col => `t.${col}`).join(', ')}`;
+        }
+      } else if (driverType === 'mysql') {
+        // MySQL 8.0.19+: UPDATE ... JOIN (VALUES ROW(?, ?, ?), ...) AS v(...) ON ... SET ...
+        const rowPlaceholders: string[] = [];
+        
+        for (const record of rowRecords) {
+          const rowVals: string[] = [];
+          for (const col of allColumnNames) {
+            params.push(record[col]);
+            rowVals.push('?');
+          }
+          rowPlaceholders.push(`ROW(${rowVals.join(', ')})`);
+        }
+        
+        // Build SET clause (value columns only)
+        const setClauses = valueColumnNames.map(col => `t.${col} = v.${col}`);
+        
+        // Build ON clause for key matching
+        const onConditions = keyColumnNames.map(col => `t.${col} = v.${col}`);
+        
+        sql = `UPDATE ${tableName} AS t ` +
+              `JOIN (VALUES ${rowPlaceholders.join(', ')}) AS v(${allColumnNames.join(', ')}) ` +
+              `ON ${onConditions.join(' AND ')} ` +
+              `SET ${setClauses.join(', ')}`;
+      } else {
+        // SQLite 3.33+: WITH v(...) AS (VALUES (...), ...) UPDATE ... FROM v WHERE ...
+        const rowPlaceholders: string[] = [];
+        
+        for (const record of rowRecords) {
+          const rowVals: string[] = [];
+          for (const col of allColumnNames) {
+            params.push(record[col]);
+            rowVals.push('?');
+          }
+          rowPlaceholders.push(`(${rowVals.join(', ')})`);
+        }
+        
+        // Build SET clause (value columns only)
+        const setClauses = valueColumnNames.map(col => `${col} = v.${col}`);
+        
+        // Build WHERE clause for key matching
+        const whereConditions = keyColumnNames.map(col => `${tableName}.${col} = v.${col}`);
+        
+        sql = `WITH v(${allColumnNames.join(', ')}) AS (VALUES ${rowPlaceholders.join(', ')}) ` +
+              `UPDATE ${tableName} SET ${setClauses.join(', ')} ` +
+              `FROM v WHERE ${whereConditions.join(' AND ')}`;
+        
+        if (opts.returning) {
+          sql += ` RETURNING ${pkeyColumnNames.map(col => `${tableName}.${col}`).join(', ')}`;
+        }
+      }
+
+      // Execute the update
+      const result = await this.execute(sql, params);
+
+      if (!opts.returning) {
+        return null;
+      }
+
+      // Build PkeyResult
+      if (driverType === 'mysql') {
+        // MySQL: Execute a SELECT to get affected PKs after update
+        const selectParams: unknown[] = [];
+        const keyConditions = keyColumnNames.map((col) => {
+          const colValues = rowRecords.map(r => r[col]);
+          selectParams.push(colValues);
+          return `${col} IN (?)`;
+        });
+        
+        const selectSql = `SELECT DISTINCT ${pkeyColumnNames.join(', ')} FROM ${tableName} WHERE ${keyConditions.join(' AND ')}`;
+        const selectResult = await this.execute(selectSql, selectParams);
+        return this._buildPkeyResult(selectResult.rows as Record<string, unknown>[], pkeyColumns);
+      } else {
+        // PostgreSQL/SQLite: Use RETURNING result
+        return this._buildPkeyResult(result.rows as Record<string, unknown>[], pkeyColumns);
+      }
+    };
+    return this._applyMiddleware('updateMany', core, [rows, options]);
+  }
+
+  /**
+   * Infer PostgreSQL type from JavaScript value
+   * @internal
+   */
+  private static _inferPgType(value: unknown): string {
+    if (value === null || value === undefined) return 'text';
+    if (typeof value === 'number') {
+      return Number.isInteger(value) ? 'int' : 'numeric';
+    }
+    if (typeof value === 'boolean') return 'boolean';
+    if (typeof value === 'bigint') return 'bigint';
+    if (value instanceof Date) return 'timestamp';
+    if (Array.isArray(value)) {
+      if (value.length === 0) return 'text[]';
+      const first = value[0];
+      if (typeof first === 'number') return Number.isInteger(first) ? 'int[]' : 'numeric[]';
+      if (typeof first === 'boolean') return 'boolean[]';
+      return 'text[]';
+    }
+    if (typeof value === 'object') return 'jsonb';
+    return 'text';
   }
 
   // ============================================
@@ -2508,83 +2971,6 @@ export abstract class DBModel {
   // ============================================
   // Instance Methods - Persistence
   // ============================================
-
-  /**
-   * Save this instance (INSERT if new, UPDATE if exists)
-   * @param properties - Properties to save (uses all properties if not specified)
-   * @returns true if successful
-   *
-   * @example
-   * ```typescript
-   * const user = new User();
-   * user.name = 'John';
-   * user.email = 'john@example.com';
-   * await user.save();
-   * ```
-   */
-  async save(properties?: Record<string, unknown>): Promise<boolean> {
-    const ModelClass = this._modelClass;
-    const pkey = this.getPkey();
-
-    // Determine which properties to save
-    const propsToSave = properties ?? this.toObject();
-
-    if (pkey && Object.values(pkey).every((v) => v !== undefined && v !== null)) {
-      // UPDATE - has primary key
-      // Convert pkey to condition tuples
-      const pkeyConditions = Object.entries(pkey).map(([k, v]) => [k, v] as [string, unknown]);
-      // Convert props to value tuples (using column names directly)
-      const valueTuples = Object.entries(propsToSave).map(([k, v]) => [createColumn(k, ModelClass.TABLE_NAME, ModelClass.name), v] as const);
-      
-      const updated = await ModelClass.update(
-        pkeyConditions as Conds,
-        valueTuples as CVs<typeof valueTuples>,
-        { returning: '*' }
-      );
-      if (updated.length > 0) {
-        Object.assign(this, updated[0]);
-        return true;
-      }
-      return false;
-    } else {
-      // INSERT - no primary key
-      // Convert props to value tuples
-      const valueTuples = Object.entries(propsToSave).map(([k, v]) => [createColumn(k, ModelClass.TABLE_NAME, ModelClass.name), v] as const);
-      
-      const inserted = await ModelClass.create(
-        valueTuples as CVs<typeof valueTuples>,
-        { returning: '*' }
-      );
-      if (inserted) {
-        Object.assign(this, inserted);
-        return true;
-      }
-      return false;
-    }
-  }
-
-  /**
-   * Delete this instance from the database
-   * @returns true if successful
-   *
-   * @example
-   * ```typescript
-   * await user.destroy();
-   * ```
-   */
-  async destroy(): Promise<boolean> {
-    const ModelClass = this._modelClass;
-    const pkey = this.getPkey();
-
-    if (!pkey) {
-      throw new Error('Cannot destroy record without primary key');
-    }
-
-    // Convert pkey to condition tuples
-    const pkeyConditions = Object.entries(pkey).map(([k, v]) => [k, v] as [string, unknown]);
-    const deleted = await ModelClass.delete(pkeyConditions as Conds, { returning: '*' });
-    return deleted.length > 0;
-  }
 
   /**
    * Reload this instance from the database

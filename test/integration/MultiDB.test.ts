@@ -235,32 +235,40 @@ describe.skipIf(skipIntegrationTests)('Write Protection', () => {
   describe('Write operations in transaction', () => {
     it('should allow create() inside transaction', async () => {
       const uniqueEmail = `tx-create-${Date.now()}@test.com`;
-      const user = await DBModel.transaction(async () => {
+      const result = await DBModel.transaction(async () => {
         return await MultiUser.create([
           [MultiUser.name, 'Transaction Create'],
           [MultiUser.email, uniqueEmail],
-        ]);
+        ], { returning: true });
       });
 
-      expect(user.id).toBeDefined();
-      expect(user.name).toBe('Transaction Create');
+      expect(result).not.toBeNull();
+      const userId = result!.values[0][0] as number;
+      expect(userId).toBeDefined();
+
+      const user = await MultiUser.findOne([[MultiUser.id, userId]]);
+      expect(user?.name).toBe('Transaction Create');
 
       // Cleanup
       await DBModel.transaction(async () => {
-        await MultiUser.delete([[MultiUser.id, user.id!]]);
+        await MultiUser.delete([[MultiUser.id, userId]]);
       });
     });
 
     it('should allow update() inside transaction', async () => {
-      const updated = await DBModel.transaction(async () => {
+      const updateResult = await DBModel.transaction(async () => {
         return await MultiUser.update(
           [[MultiUser.id, 1]],
-          [[MultiUser.name, 'Updated Name']]
+          [[MultiUser.name, 'Updated Name']],
+          { returning: true }
         );
       });
 
-      expect(updated.length).toBe(1);
-      expect(updated[0].name).toBe('Updated Name');
+      expect(updateResult).not.toBeNull();
+      expect(updateResult!.values.length).toBeGreaterThanOrEqual(1);
+      
+      const updatedUser = await MultiUser.findOne([[MultiUser.id, 1]]);
+      expect(updatedUser?.name).toBe('Updated Name');
 
       // Restore
       await DBModel.transaction(async () => {
@@ -274,19 +282,21 @@ describe.skipIf(skipIntegrationTests)('Write Protection', () => {
     it('should allow delete() inside transaction', async () => {
       const uniqueEmail = `delete-me-${Date.now()}@test.com`;
       // Create a user to delete
-      const user = await DBModel.transaction(async () => {
+      const result = await DBModel.transaction(async () => {
         return await MultiUser.create([
           [MultiUser.name, 'To Delete'],
           [MultiUser.email, uniqueEmail],
-        ]);
+        ], { returning: true });
       });
+      const userId = result!.values[0][0] as number;
 
       // Delete
       const deleted = await DBModel.transaction(async () => {
-        return await MultiUser.delete([[MultiUser.id, user.id!]]);
+        return await MultiUser.delete([[MultiUser.id, userId]], { returning: true });
       });
 
-      expect(deleted.length).toBe(1);
+      expect(deleted).not.toBeNull();
+      expect(deleted!.values.length).toBe(1);
     });
   });
 });

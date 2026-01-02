@@ -5,6 +5,30 @@
 import type { Column, OrderSpec, Conds } from './Column';
 
 // ============================================
+// PkeyResult Type (Write operation return value)
+// ============================================
+
+/**
+ * Result of write operations when returning: true is specified.
+ * Contains primary key column(s) and their values for affected rows.
+ * 
+ * @example
+ * ```typescript
+ * // Single PK
+ * { key: [User.id], values: [[1], [2], [3]] }
+ * 
+ * // Composite PK
+ * { key: [TenantUser.tenant_id, TenantUser.id], values: [[1, 100], [1, 101]] }
+ * ```
+ */
+export interface PkeyResult {
+  /** Primary key column(s) */
+  key: Column[];
+  /** 2D array of primary key values (each inner array is one row's PK values) */
+  values: unknown[][];
+}
+
+// ============================================
 // Model Options (for @model decorator)
 // ============================================
 
@@ -106,7 +130,11 @@ export interface SelectOptions {
  */
 export interface InsertOptions<Model = unknown> {
   tableName?: string;
-  returning?: string;
+  /**
+   * If true, return PkeyResult with affected primary keys.
+   * If false (default), return null for better performance.
+   */
+  returning?: boolean;
   /** @deprecated Use onConflict instead */
   conflict?: string;
   /**
@@ -140,11 +168,54 @@ export interface InsertOptions<Model = unknown> {
 
 export interface UpdateOptions {
   tableName?: string;
-  returning?: string;
+  /**
+   * If true, return PkeyResult with affected primary keys.
+   * If false (default), return null for better performance.
+   */
+  returning?: boolean;
 }
 
 export interface DeleteOptions {
   tableName?: string;
+  /**
+   * If true, return PkeyResult with affected primary keys.
+   * If false (default), return null for better performance.
+   */
+  returning?: boolean;
+}
+
+/**
+ * Options for updateMany operation.
+ */
+export interface UpdateManyOptions {
+  /**
+   * Columns that identify each row (used in WHERE/JOIN clause).
+   * Must uniquely identify rows (primary key or unique constraint).
+   */
+  keyColumns: Column | Column[];
+  /**
+   * If true, return PkeyResult with affected primary keys.
+   * If false (default), return null for better performance.
+   */
+  returning?: boolean;
+}
+
+// ============================================
+// Internal Options (with raw RETURNING string)
+// ============================================
+
+/** @internal */
+export interface InternalInsertOptions<Model = unknown> extends Omit<InsertOptions<Model>, 'returning'> {
+  returning?: string;
+}
+
+/** @internal */
+export interface InternalUpdateOptions extends Omit<UpdateOptions, 'returning'> {
+  returning?: string;
+}
+
+/** @internal */
+export interface InternalDeleteOptions extends Omit<DeleteOptions, 'returning'> {
   returning?: string;
 }
 

@@ -6,7 +6,7 @@
 
 import { AsyncLocalStorage } from 'async_hooks';
 import type { DBModel } from './DBModel';
-import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions } from './types';
+import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, UpdateManyOptions, PkeyResult } from './types';
 import type { Column, Conds } from './Column';
 
 // ===========================================
@@ -34,34 +34,39 @@ export type NextFindOne<T extends typeof DBModel> = (
 ) => Promise<InstanceType<T> | null>;
 
 export type NextFindById<T extends typeof DBModel> = (
-  id: unknown,
+  id: unknown | PkeyResult,
   options?: SelectOptions
-) => Promise<InstanceType<T> | null>;
+) => Promise<InstanceType<T>[]>;
 
 export type NextCount = (
   conditions: Conds
 ) => Promise<number>;
 
-export type NextCreate<T extends typeof DBModel> = (
+export type NextCreate = (
   pairs: readonly (readonly [Column<any, any>, any])[],
   options?: InsertOptions
-) => Promise<InstanceType<T>>;
+) => Promise<PkeyResult | null>;
 
-export type NextCreateMany<T extends typeof DBModel> = (
+export type NextCreateMany = (
   pairsArray: readonly (readonly (readonly [Column<any, any>, any])[])[],
   options?: InsertOptions
-) => Promise<InstanceType<T>[]>;
+) => Promise<PkeyResult | null>;
 
-export type NextUpdate<T extends typeof DBModel> = (
+export type NextUpdate = (
   conditions: Conds,
   values: readonly (readonly [Column<any, any>, any])[],
   options?: UpdateOptions
-) => Promise<InstanceType<T>[]>;
+) => Promise<PkeyResult | null>;
 
-export type NextDelete<T extends typeof DBModel> = (
+export type NextUpdateMany = (
+  records: readonly (readonly (readonly [Column<any, any>, any])[])[],
+  options?: UpdateManyOptions
+) => Promise<PkeyResult | null>;
+
+export type NextDelete = (
   conditions: Conds,
   options?: DeleteOptions
-) => Promise<InstanceType<T>[]>;
+) => Promise<PkeyResult | null>;
 
 export type NextExecute = (
   sql: string,
@@ -189,9 +194,9 @@ export abstract class Middleware {
     this: InstanceType<typeof Middleware>,
     model: T,
     next: NextFindById<T>,
-    id: unknown,
+    id: unknown | PkeyResult,
     options?: SelectOptions
-  ): Promise<InstanceType<T> | null>;
+  ): Promise<InstanceType<T>[]>;
   
   /** Intercept count() */
   count?<T extends typeof DBModel>(
@@ -205,38 +210,47 @@ export abstract class Middleware {
   create?<T extends typeof DBModel>(
     this: InstanceType<typeof Middleware>,
     model: T,
-    next: NextCreate<T>,
+    next: NextCreate,
     pairs: readonly (readonly [Column<any, any>, any])[],
     options?: InsertOptions
-  ): Promise<InstanceType<T>>;
+  ): Promise<PkeyResult | null>;
   
   /** Intercept createMany() */
   createMany?<T extends typeof DBModel>(
     this: InstanceType<typeof Middleware>,
     model: T,
-    next: NextCreateMany<T>,
+    next: NextCreateMany,
     pairsArray: readonly (readonly (readonly [Column<any, any>, any])[])[],
     options?: InsertOptions
-  ): Promise<InstanceType<T>[]>;
+  ): Promise<PkeyResult | null>;
   
   /** Intercept update() */
   update?<T extends typeof DBModel>(
     this: InstanceType<typeof Middleware>,
     model: T,
-    next: NextUpdate<T>,
+    next: NextUpdate,
     conditions: Conds,
     values: readonly (readonly [Column<any, any>, any])[],
     options?: UpdateOptions
-  ): Promise<InstanceType<T>[]>;
+  ): Promise<PkeyResult | null>;
+  
+  /** Intercept updateMany() */
+  updateMany?<T extends typeof DBModel>(
+    this: InstanceType<typeof Middleware>,
+    model: T,
+    next: NextUpdateMany,
+    records: readonly (readonly (readonly [Column<any, any>, any])[])[],
+    options?: UpdateManyOptions
+  ): Promise<PkeyResult | null>;
   
   /** Intercept delete() */
   delete?<T extends typeof DBModel>(
     this: InstanceType<typeof Middleware>,
     model: T,
-    next: NextDelete<T>,
+    next: NextDelete,
     conditions: Conds,
     options?: DeleteOptions
-  ): Promise<InstanceType<T>[]>;
+  ): Promise<PkeyResult | null>;
   
   /** Intercept execute() */
   execute?(

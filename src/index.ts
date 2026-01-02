@@ -170,6 +170,7 @@ export {
   type NextCreate,
   type NextCreateMany,
   type NextUpdate,
+  type NextUpdateMany,
   type NextDelete,
   type NextExecute,
   type NextQuery,
@@ -187,11 +188,13 @@ export type {
   InsertOptions,
   UpdateOptions,
   DeleteOptions,
+  UpdateManyOptions,
   TransactionOptions,
   Logger,
   LimitConfig,
   ModelOptions,
   DBConfigOptions,
+  PkeyResult,
 } from './types';
 export { 
   LimitExceededError, 

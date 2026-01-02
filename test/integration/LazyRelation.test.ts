@@ -361,21 +361,23 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
 
   async function createTestUser(name: string, email: string): Promise<TestUser> {
     return await DBModel.transaction(async () => {
-      const user = await TestUser.create([
+      const result = await TestUser.create([
         [TestUser.name, name],
         [TestUser.email, email],
-      ]);
+      ], { returning: true });
+      const [user] = await TestUser.findById(result!);
       return user as TestUser;
     });
   }
 
   async function createTestPost(userId: number, title: string, content: string): Promise<TestPost> {
     return await DBModel.transaction(async () => {
-      const post = await TestPost.create([
+      const result = await TestPost.create([
         [TestPost.user_id, userId],
         [TestPost.title, title],
         [TestPost.content, content],
-      ]);
+      ], { returning: true });
+      const [post] = await TestPost.findById(result!);
       return post as TestPost;
     });
   }
@@ -387,12 +389,13 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
     published = true
   ): Promise<TestPostComment> {
     return await DBModel.transaction(async () => {
-      const comment = await TestPostComment.create([
+      const result = await TestPostComment.create([
         [TestPostComment.post_id, postId],
         [TestPostComment.user_id, userId],
         [TestPostComment.content, content],
         [TestPostComment.published, published],
-      ]);
+      ], { returning: true });
+      const [comment] = await TestPostComment.findById(result!);
       return comment as TestPostComment;
     });
   }
@@ -403,11 +406,12 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
     website: string
   ): Promise<TestUserProfile> {
     return await DBModel.transaction(async () => {
-      const profile = await TestUserProfile.create([
+      const result = await TestUserProfile.create([
         [TestUserProfile.user_id, userId],
         [TestUserProfile.bio, bio],
         [TestUserProfile.website, website],
-      ]);
+      ], { returning: true });
+      const [profile] = await TestUserProfile.findById(result!);
       return profile as TestUserProfile;
     });
   }

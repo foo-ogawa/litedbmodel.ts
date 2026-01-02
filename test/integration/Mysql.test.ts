@@ -229,53 +229,60 @@ describe('MySQL Driver', () => {
   });
 
   describe('Instance Methods', () => {
-    it('should save a new record', async () => {
+    it('should create a new record using static create()', async () => {
       if (!mysqlAvailable) return;
 
       await DBModel.transaction(async () => {
-        const user = new User();
-        user.name = 'Ivan';
-        user.email = 'ivan_save@example.com';
-        await user.save();
+        const result = await UserModel.create([
+          [UserModel.name, 'Ivan'],
+          [UserModel.email, 'ivan_save@example.com'],
+        ], { returning: true });
 
-        expect(user.id).toBeDefined();
+        expect(result).not.toBeNull();
+        expect(result!.values).toHaveLength(1);
       });
 
       const found = await UserModel.findOne([[UserModel.email, 'ivan_save@example.com']]);
       expect(found?.name).toBe('Ivan');
     });
 
-    it('should update an existing record', async () => {
+    it('should update an existing record using static update()', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await DBModel.transaction(async () => {
+      const createResult = await DBModel.transaction(async () => {
         return await UserModel.create([
           [UserModel.name, 'Jane'],
           [UserModel.email, 'jane_update@example.com'],
-        ]);
+        ], { returning: true });
       });
+
+      const userId = createResult!.values[0][0] as number;
 
       await DBModel.transaction(async () => {
-        user.name = 'Jane Updated';
-        await user.save();
+        await UserModel.update(
+          [[UserModel.id, userId]],
+          [[UserModel.name, 'Jane Updated']],
+        );
       });
 
-      const found = await UserModel.findOne([[UserModel.id, user.id]]);
+      const found = await UserModel.findOne([[UserModel.id, userId]]);
       expect(found?.name).toBe('Jane Updated');
     });
 
-    it('should destroy a record', async () => {
+    it('should delete a record using static delete()', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await DBModel.transaction(async () => {
+      const createResult = await DBModel.transaction(async () => {
         return await UserModel.create([
           [UserModel.name, 'Kevin'],
           [UserModel.email, 'kevin_destroy@example.com'],
-        ]);
+        ], { returning: true });
       });
 
+      const userId = createResult!.values[0][0] as number;
+
       await DBModel.transaction(async () => {
-        await user.destroy();
+        await UserModel.delete([[UserModel.id, userId]]);
       });
 
       const found = await UserModel.findOne([[UserModel.email, 'kevin_destroy@example.com']]);
@@ -285,12 +292,14 @@ describe('MySQL Driver', () => {
     it('should reload a record', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await DBModel.transaction(async () => {
+      const createResult = await DBModel.transaction(async () => {
         return await UserModel.create([
           [UserModel.name, 'Lisa'],
           [UserModel.email, 'lisa_reload@example.com'],
-        ]);
+        ], { returning: true });
       });
+
+      const [user] = await UserModel.findById({ values: createResult!.values });
 
       // Update in database directly
       await DBModel.transaction(async () => {
@@ -311,25 +320,26 @@ describe('MySQL Driver', () => {
     it('should handle foreign key relationships', async () => {
       if (!mysqlAvailable) return;
 
-      const { user, post } = await DBModel.transaction(async () => {
-        const u = await UserModel.create([
+      const { userId, postId } = await DBModel.transaction(async () => {
+        const userResult = await UserModel.create([
           [UserModel.name, 'Author'],
           [UserModel.email, 'author_fk@example.com'],
-        ]);
+        ], { returning: true });
+        const uId = userResult!.values[0][0] as number;
 
-        const p = await PostModel.create([
-          [PostModel.user_id, u.id!],
+        const postResult = await PostModel.create([
+          [PostModel.user_id, uId],
           [PostModel.title, 'Test Post'],
           [PostModel.content, 'Content'],
-        ]);
-        return { user: u, post: p };
+        ], { returning: true });
+        const pId = postResult!.values[0][0] as number;
+        return { userId: uId, postId: pId };
       });
 
-      expect(post.id).toBeDefined();
-      expect(post.user_id).toBe(user.id);
+      expect(postId).toBeDefined();
 
       // Find posts by user
-      const userPosts = await PostModel.find([[PostModel.user_id, user.id!]]);
+      const userPosts = await PostModel.find([[PostModel.user_id, userId]]);
       expect(userPosts.length).toBe(1);
       expect(userPosts[0].title).toBe('Test Post');
     });

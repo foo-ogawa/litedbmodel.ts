@@ -1,32 +1,84 @@
 # litedbmodel
 
-A lightweight, SQL-friendly TypeScript ORM for PostgreSQL, MySQL, and SQLite.
-
 [![npm version](https://img.shields.io/npm/v/litedbmodel.svg)](https://www.npmjs.com/package/litedbmodel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+litedbmodel is a lightweight, SQL-friendly TypeScript ORM for PostgreSQL, MySQL, and SQLite.
+It is designed for production systems where you care about **predictable SQL**, **explicit performance control**, and **operational safety** (replication lag, N+1, accidental full scans).
+
+
 ## Philosophy
 
-**SQL is not the enemy.** Most ORMs hide SQL behind complex abstractions, making debugging harder and limiting what you can do. litedbmodel takes a different approach:
+### SQL is not the enemy — opacity is.
+Most ORMs hide SQL behind abstractions that are hard to debug and hard to tune.
+litedbmodel keeps SQL visible and controllable: generated queries are intentionally simple, and complex cases use real SQL via `query()` / `execute()`.
 
-- **Predictable** — Generated queries are simple, readable, and exactly what you'd write by hand
-- **Type-Safe** — Results map to typed model instances with full IDE support
-- **Real SQL When Needed** — Complex queries and DB-specific optimizations use actual SQL via `query()`, not a proprietary DSL
-- **Model-Centric** — Same model serves list/detail views; relations load on-demand with automatic batch loading
+### Make performance the default, not a post-mortem
+- Lazy relations are supported, but **N+1 is prevented automatically** via batch loading.
+- Per-parent limiting is done at the **SQL level** (efficient “top-N per group” patterns).
+- Write operations default to **no RETURNING** for throughput; request PKs via `PkeyResult` only when needed.
+
+### Production safety over convenience magic
+- Supports **reader/writer routing** for read replicas and replication-lag-aware reads.
+- Write operations (`create/createMany, update/updateMany, delete`) require an explicit **transaction boundary**.
+- Configurable **hard limits** detect accidental over-fetching early.
+
+### Refactoring-friendly, without sacrificing SQL control
+- Column references are **symbol-based** (`Model.column`) so IDE rename/find-references work.
+- Conditions are **type-safe tuples** (`[Column, value]`), and an ESLint plugin catches mistakes TS cannot.
 
 > See [Design Philosophy](./docs/BENCHMARK-NESTED.md#litedbmodels-design-philosophy) for detailed comparison with query-centric ORMs.
 
-## Features
+## Key Features
 
-- **Symbol-Based Columns** — `Model.column` enables IDE "Find References" and "Rename Symbol"
-- **Type-Safe Conditions** — Compile-time validation with `[Column, value]` tuples
-- **Query-Based Models** — Define models backed by complex SQL (aggregations, JOINs, CTEs)
-- **Subquery Support** — IN/NOT IN/EXISTS/NOT EXISTS with correlated subqueries
-- **Declarative SKIP** — Conditional fields without if-statements
-- **Transparent N+1 Prevention** — Batch loading for lazy relations (library's job, not yours)
-- **Raw SQL Escape** — `Model.query()` and `DBModel.execute()` when you need full control (DB-specific syntax is your responsibility)
-- **Middleware** — Cross-cutting concerns (logging, auth, tenant isolation)
-- **Multi-Database** — PostgreSQL, MySQL, SQLite with config-only switching (Tuple API and relations are portable; raw SQL is dialect-dependent)
+### SQL Control & Modeling
+- Predictable generated SQL (readable, hand-written style)
+- Raw SQL escape hatch: `Model.query()` / `DBModel.execute()`
+- Query-based models for complex reads (aggregations, JOINs, CTEs)
+
+### Performance by Default
+- Transparent N+1 prevention (automatic batch loading for lazy relations)
+- SQL-level per-parent limit for relations
+- Subqueries: IN/EXISTS with correlated conditions
+
+### Operational Readiness
+- Reader/Writer separation with sticky-writer reads after transactions (replication-lag-aware)
+- Transactions with retry options (e.g., deadlock retry)
+- Safety guards: `findHardLimit` / `hasManyHardLimit`
+
+### Developer Experience
+- Symbol-based columns + tuple conditions for refactoring safety
+- Declarative `SKIP` pattern for optional fields/conditions
+- Middleware for cross-cutting concerns (logging, auth, tenant isolation)
+- Multi-database support (portable tuple API; raw SQL is dialect-dependent)
+
+## When litedbmodel is a good fit
+
+Choose litedbmodel if you:
+- Build **large or high-throughput** services where SQL tuning and explain plans matter
+- Want ORM ergonomics, but refuse to lose the ability to write/own SQL
+- Operate with **read replicas** and care about replication lag and routing rules
+- Need safe defaults against “oops, loaded 10M rows” and N+1 regressions
+- Prefer a model-centric approach (list/detail + relations) with predictable behavior
+
+## When it may NOT be a good fit
+
+litedbmodel may be a poor fit if you:
+- Want a “fully abstracted” ORM that hides SQL entirely
+- Prefer a query-builder DSL as the primary interface (rather than SQL/tuple conditions)
+- Need database-agnostic portability for complex raw SQL (dialect differences are real)
+
+## Non-goals
+
+Non-goals are deliberate trade-offs to keep SQL predictable and operations safe.
+litedbmodel is intentionally **not** trying to be a “do-everything” ORM.
+
+- **100% database-agnostic SQL**: complex queries are expected to use real SQL, and SQL dialect differences are real.
+- **Migrations as a built-in feature**: schema migrations are out of scope (use your preferred migration tool).
+- **Hiding SQL behind a large abstraction layer**: we prioritize predictable SQL over a fully abstracted API.
+- **Automatic eager-loading everywhere**: relations are lazy by default; performance characteristics should stay explicit and controllable.
+
+---
 
 ## Installation
 
@@ -66,16 +118,20 @@ DBModel.setConfig({
 });
 
 // 3. CRUD operations
-const user = await User.create([
+await User.create([
   [User.name, 'John'],
   [User.email, 'john@example.com'],
 ]);
+await User.update([[User.id, 1]], [[User.name, 'Jane']]);
+await User.delete([[User.is_active, false]]);
 
+// Read operations
 const users = await User.find([[User.is_active, true]]);
 const john = await User.findOne([[User.email, 'john@example.com']]);
 
-await User.update([[User.id, 1]], [[User.name, 'Jane']]);
-await User.delete([[User.is_active, false]]);
+// With returning: true → get PkeyResult for re-fetching
+const created = await User.create([...], { returning: true });
+const [newUser] = await User.findById(created);
 ```
 
 ---
@@ -155,6 +211,218 @@ Use explicit type decorators when auto-inference isn't sufficient:
 @column.booleanArray() flags?: boolean[];   // Boolean array
 @column.datetimeArray() dates?: Date[];     // DateTime array
 @column.json<Settings>() settings?: Settings; // JSON with type
+```
+
+---
+
+## CRUD Operations
+
+### PkeyResult Type
+
+Write operations can optionally return a `PkeyResult` object:
+
+```typescript
+interface PkeyResult {
+  key: Column[];       // Key column(s) used to identify rows
+  values: unknown[][]; // 2D array of key values
+}
+
+// Single PK example
+{ key: [User.id], values: [[1], [2], [3]] }
+
+// Composite PK example
+{ key: [TenantUser.tenant_id, TenantUser.id], values: [[1, 100], [1, 101]] }
+```
+
+**Default behavior:** `returning: false` — returns `null` for better performance.  
+**With `returning: true`:** Returns `PkeyResult` with affected primary keys.
+
+> **Note:** `PkeyResult.key` always contains primary key column(s), regardless of `keyColumns` used in `updateMany`.
+
+### create / createMany
+
+```typescript
+// Default: returns null (no RETURNING)
+await User.create([
+  [User.name, 'John'],
+  [User.email, 'john@example.com'],
+]);
+
+// With returning: true → returns PkeyResult
+const result = await User.create([
+  [User.name, 'John'],
+  [User.email, 'john@example.com'],
+], { returning: true });
+// result: { key: [User.id], values: [[1]] }
+
+// Multiple records
+const result = await User.createMany([
+  [[User.name, 'John'], [User.email, 'john@example.com']],
+  [[User.name, 'Jane'], [User.email, 'jane@example.com']],
+], { returning: true });
+// result: { key: [User.id], values: [[1], [2]] }
+
+// Fetch created records if needed
+const [user] = await User.findById(result);
+```
+
+### update / updateMany
+
+```typescript
+// Default: returns null (no RETURNING)
+await User.update(
+  [[User.status, 'pending']],        // conditions
+  [[User.status, 'active']],         // values
+);
+
+// With returning: true → returns PkeyResult
+const result = await User.update(
+  [[User.status, 'pending']],
+  [[User.status, 'active']],
+  { returning: true }
+);
+// result: { key: [User.id], values: [[1], [2], [3]] }
+
+// Bulk update with different values per row
+const result = await User.updateMany([
+  [[User.id, 1], [User.name, 'John'], [User.email, 'john@example.com']],
+  [[User.id, 2], [User.name, 'Jane'], [User.email, 'jane@example.com']],
+], { keyColumns: [User.id], returning: true });
+// result: { key: [User.id], values: [[1], [2]] }
+
+// Fetch updated records if needed
+const users = await User.findById(result);
+```
+
+**Generated SQL for updateMany:**
+
+| Database | SQL |
+|----------|-----|
+| PostgreSQL | `UPDATE ... FROM UNNEST($1::int[], $2::text[], ...) AS v(...) WHERE t.id = v.id` |
+| MySQL 8.0.19+ | `UPDATE ... JOIN (VALUES ROW(?, ?, ?), ...) AS v(...) ON ... SET ...` |
+| SQLite 3.33+ | `WITH v(...) AS (VALUES (...), ...) UPDATE ... FROM v WHERE ...` |
+
+### delete
+
+```typescript
+// Default: returns null (no RETURNING)
+await User.delete([[User.is_active, false]]);
+
+// With returning: true → returns PkeyResult
+const result = await User.delete([[User.is_active, false]], { returning: true });
+// result: { key: [User.id], values: [[4], [5]] }
+```
+
+### findById
+
+Fetch records by primary key. Accepts `PkeyResult` format for efficient batch loading:
+
+```typescript
+// Single record
+const [user] = await User.findById({ values: [[1]] });
+
+// Multiple records
+const users = await User.findById({ values: [[1], [2], [3]] });
+
+// Composite PK
+const [entry] = await TenantUser.findById({
+  values: [[1, 100]]  // [tenant_id, id]
+});
+
+// Use with update/delete result
+const result = await User.update(...);
+const users = await User.findById(result);
+```
+
+**Generated SQL:**
+
+| Database | Single PK | Composite PK |
+|----------|-----------|--------------|
+| PostgreSQL | `WHERE id = ANY($1::int[])` | `WHERE (col1, col2) IN (SELECT * FROM UNNEST(...))` |
+| MySQL | `WHERE id IN (?, ?, ?)` | `JOIN (VALUES ROW(...), ...) AS v ON ...` |
+| SQLite | `WHERE id IN (?, ?, ?)` | `WITH v AS (VALUES ...) ... JOIN v ON ...` |
+
+### Upsert (ON CONFLICT)
+
+```typescript
+// Insert or ignore
+await User.create(
+  [[User.name, 'John'], [User.email, 'john@example.com']],
+  { onConflict: User.email, onConflictIgnore: true }
+);
+
+// Insert or update
+await User.create(
+  [[User.name, 'John'], [User.email, 'john@example.com']],
+  { onConflict: User.email, onConflictUpdate: [User.name] }
+);
+
+// Composite unique key
+await UserPref.create(
+  [[UserPref.user_id, 1], [UserPref.key, 'theme'], [UserPref.value, 'dark']],
+  { onConflict: [UserPref.user_id, UserPref.key], onConflictUpdate: [UserPref.value] }
+);
+```
+
+### Behavior Notes
+
+#### PkeyResult Semantics
+
+| Aspect | Behavior |
+|--------|----------|
+| **Order** | Matches database `RETURNING` order (not guaranteed across DBs; `findById(result)` order is also unspecified) |
+| **update result** | Contains PKs of **matched rows** (rows matching WHERE condition, regardless of whether values actually changed) |
+| **delete result** | Contains PKs of **deleted rows** |
+| **Duplicates** | No duplicates (each row appears once; MySQL pre-SELECT uses `DISTINCT`) |
+| **Empty result** | `{ key: [...], values: [] }` when no rows affected (not `null`) |
+
+> **Note:** For MySQL (no `RETURNING`), when `returning: true`:
+> - `update`/`delete`: Executes pre-SELECT (with `DISTINCT`) to get PKs, then executes the operation (2 queries in same transaction)
+> - `updateMany`: Executes update, then SELECT to get PKs of affected rows (2 queries in same transaction)
+> - When `returning: false` (default): Single query, returns `null`
+
+#### Batch Limits
+
+`createMany` and `updateMany` do **not** auto-split large batches. Users are responsible for chunking:
+
+```typescript
+// Recommended: chunk large batches (DB-dependent limits)
+const BATCH_SIZE = 1000;  // Adjust based on your DB and row size
+for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+  const chunk = rows.slice(i, i + BATCH_SIZE);
+  await User.updateMany(chunk, { keyColumns: [User.id] });
+}
+```
+
+| Database | Practical Limits |
+|----------|------------------|
+| PostgreSQL | ~32,767 parameters per query |
+| MySQL | `max_allowed_packet` (default 64MB), ~65,535 placeholders |
+| SQLite | 999 variables (compile-time `SQLITE_MAX_VARIABLE_NUMBER`) |
+
+#### updateMany keyColumns Contract
+
+| Requirement | Description |
+|-------------|-------------|
+| **Must be unique** | `keyColumns` must uniquely identify rows (primary key or unique constraint) |
+| **Must exist in rows** | Every row must include all `keyColumns` |
+| **Non-key columns** | Columns not in `keyColumns` become `SET` clause values |
+
+```typescript
+// ✅ Valid: keyColumns is primary key
+await User.updateMany([
+  [[User.id, 1], [User.name, 'John']],
+], { keyColumns: [User.id] });
+
+// ✅ Valid: keyColumns is unique constraint
+await User.updateMany([
+  [[User.email, 'john@example.com'], [User.name, 'John']],
+], { keyColumns: [User.email] });  // If email has UNIQUE constraint
+
+// ❌ Invalid: keyColumns missing from row
+await User.updateMany([
+  [[User.name, 'John']],  // Missing User.id!
+], { keyColumns: [User.id] });
 ```
 
 ---
@@ -287,30 +555,6 @@ await User.find([
   [`${User.name} LIKE ?`, query.name ? `%${query.name}%` : SKIP],
   [User.status, query.status ?? SKIP],
 ]);
-```
-
----
-
-## Upsert (ON CONFLICT)
-
-```typescript
-// Insert or ignore
-await User.create(
-  [[User.name, 'John'], [User.email, 'john@example.com']],
-  { onConflict: User.email, onConflictIgnore: true }
-);
-
-// Insert or update
-await User.create(
-  [[User.name, 'John'], [User.email, 'john@example.com']],
-  { onConflict: User.email, onConflictUpdate: [User.name] }
-);
-
-// Composite unique key
-await UserPref.create(
-  [[UserPref.user_id, 1], [UserPref.key, 'theme'], [UserPref.value, 'dark']],
-  { onConflict: [UserPref.user_id, UserPref.key], onConflictUpdate: [UserPref.value] }
-);
 ```
 
 ---
@@ -514,6 +758,7 @@ flowchart TD
         create["create()"]
         createMany["createMany()"]
         update["update()"]
+        updateMany["updateMany()"]
         delete["delete()"]
     end
     
@@ -547,6 +792,7 @@ flowchart TD
     create --> execute
     createMany --> execute
     update --> execute
+    updateMany --> execute
     delete --> execute
     
     query --> execute
@@ -556,7 +802,7 @@ flowchart TD
 ```
 
 **Middleware hooks:**
-- **Method-level**: `find`, `findOne`, `findById`, `count`, `create`, `createMany`, `update`, `delete`
+- **Method-level**: `find`, `findOne`, `findById`, `count`, `create`, `createMany`, `update`, `updateMany`, `delete`
 - **Instantiation-level**: `query` — returns model instances from raw SQL
 - **SQL-level**: `execute` — intercepts ALL SQL queries (SELECT, INSERT, UPDATE, DELETE)
 
