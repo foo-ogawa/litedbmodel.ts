@@ -801,7 +801,7 @@ export abstract class DBModel {
     }
 
     const driverType = this.getDriverType();
-    
+
     // Handle conflict options with database-specific syntax
     let sql: string;
     if (options.onConflict) {
@@ -842,14 +842,14 @@ export abstract class DBModel {
       } else {
         // PostgreSQL: ON CONFLICT DO NOTHING / DO UPDATE
         sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON CONFLICT (${conflictCols.join(', ')})`;
-        if (options.onConflictIgnore) {
-          sql += ' DO NOTHING';
-        } else if (options.onConflictUpdate) {
-          const updateCols = options.onConflictUpdate === 'all'
-            ? columns
-            : options.onConflictUpdate.map(toColName);
-          const updateClauses = updateCols.map(col => `${col} = EXCLUDED.${col}`);
-          sql += ` DO UPDATE SET ${updateClauses.join(', ')}`;
+      if (options.onConflictIgnore) {
+        sql += ' DO NOTHING';
+      } else if (options.onConflictUpdate) {
+        const updateCols = options.onConflictUpdate === 'all'
+          ? columns
+          : options.onConflictUpdate.map(toColName);
+        const updateClauses = updateCols.map(col => `${col} = EXCLUDED.${col}`);
+        sql += ` DO UPDATE SET ${updateClauses.join(', ')}`;
         }
       }
     } else if (options.conflict) {
@@ -1932,7 +1932,7 @@ export abstract class DBModel {
           const pgType = this._inferPgType(firstValue);
           params.push(pkValues);
           sql = `SELECT ${selectColumn} FROM ${tableName} WHERE ${pkeyColumnNames[0]} = ANY(?::${pgType}[])`;
-        } else {
+      } else {
           // MySQL/SQLite: WHERE id IN (?, ?, ...)
           const placeholders = pkValues.map(() => '?').join(', ');
           params.push(...pkValues);
