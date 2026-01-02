@@ -800,31 +800,63 @@ export abstract class DBModel {
       valueRows.push(`(${rowValues.join(', ')})`);
     }
 
-    let sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
-
-    // Handle conflict options (new API takes precedence)
+    const driverType = this.getDriverType();
+    
+    // Handle conflict options with database-specific syntax
+    let sql: string;
     if (options.onConflict) {
       // Convert Column symbols to strings
       const toColName = (col: unknown): string => 
         typeof col === 'function' || typeof col === 'object' ? String(col) : String(col);
       
       const conflictCols = Array.isArray(options.onConflict)
-        ? options.onConflict.map(toColName).join(', ')
-        : toColName(options.onConflict);
-      sql += ` ON CONFLICT (${conflictCols})`;
+        ? options.onConflict.map(toColName)
+        : [toColName(options.onConflict)];
 
-      if (options.onConflictIgnore) {
-        sql += ' DO NOTHING';
-      } else if (options.onConflictUpdate) {
-        const updateCols = options.onConflictUpdate === 'all'
-          ? columns
-          : options.onConflictUpdate.map(toColName);
-        const updateClauses = updateCols.map(col => `${col} = EXCLUDED.${col}`);
-        sql += ` DO UPDATE SET ${updateClauses.join(', ')}`;
+      if (driverType === 'mysql') {
+        // MySQL: INSERT IGNORE or ON DUPLICATE KEY UPDATE
+        if (options.onConflictIgnore) {
+          sql = `INSERT IGNORE INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+        } else if (options.onConflictUpdate) {
+          const updateCols = options.onConflictUpdate === 'all'
+            ? columns
+            : options.onConflictUpdate.map(toColName);
+          const updateClauses = updateCols.map(col => `${col} = VALUES(${col})`);
+          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON DUPLICATE KEY UPDATE ${updateClauses.join(', ')}`;
+        } else {
+          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+        }
+      } else if (driverType === 'sqlite') {
+        // SQLite: INSERT OR IGNORE or ON CONFLICT DO UPDATE
+        if (options.onConflictIgnore) {
+          sql = `INSERT OR IGNORE INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+        } else if (options.onConflictUpdate) {
+          const updateCols = options.onConflictUpdate === 'all'
+            ? columns
+            : options.onConflictUpdate.map(toColName);
+          const updateClauses = updateCols.map(col => `${col} = excluded.${col}`);
+          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON CONFLICT (${conflictCols.join(', ')}) DO UPDATE SET ${updateClauses.join(', ')}`;
+        } else {
+          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+        }
+      } else {
+        // PostgreSQL: ON CONFLICT DO NOTHING / DO UPDATE
+        sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON CONFLICT (${conflictCols.join(', ')})`;
+        if (options.onConflictIgnore) {
+          sql += ' DO NOTHING';
+        } else if (options.onConflictUpdate) {
+          const updateCols = options.onConflictUpdate === 'all'
+            ? columns
+            : options.onConflictUpdate.map(toColName);
+          const updateClauses = updateCols.map(col => `${col} = EXCLUDED.${col}`);
+          sql += ` DO UPDATE SET ${updateClauses.join(', ')}`;
+        }
       }
     } else if (options.conflict) {
       // Legacy: raw conflict string
-      sql += ` ${options.conflict}`;
+      sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ${options.conflict}`;
+    } else {
+      sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
     }
 
     if (options.returning) {
