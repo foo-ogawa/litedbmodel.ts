@@ -231,7 +231,8 @@ export class LazyRelationContext {
       return;
     }
 
-    const driverType = DBModel.getDriverType();
+    // Use target model's driver type (important for multi-DB scenarios)
+    const driverType = TargetClass.getDriverType();
     let results: DBModel[];
     let targetKeys: string[];
 

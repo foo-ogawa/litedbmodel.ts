@@ -188,10 +188,12 @@ export class PostgresDriver implements DBDriver {
   }
 
   /**
-   * Get a connection for transaction
+   * Get a connection for transaction (uses writer pool if available)
    */
   async getConnection(): Promise<DBConnection> {
-    const client = await this.pool.connect();
+    // Transactions always use writer pool for consistency
+    const pool = this.writerPool || this.pool;
+    const client = await pool.connect();
     return new PostgresConnection(client);
   }
 

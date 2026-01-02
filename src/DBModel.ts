@@ -5,9 +5,9 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { DBBoolValue, DBNullValue, DBNotNullValue, DBImmediateValue, DBToken, DBSubquery, DBExists, type SubqueryCondition } from './DBValues';
 import { normalizeConditions, type ConditionObject } from './DBConditions';
-import { initDBHandler, getDBHandler, createHandlerWithConnection, type DBHandler, type DBConfig, type DBConnection } from './DBHandler';
-import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, TransactionOptions, LimitConfig } from './types';
-import { LimitExceededError } from './types';
+import { initDBHandler, getDBHandler, createHandlerWithConnection, DBHandler, type DBConfig, type DBConnection } from './DBHandler';
+import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, TransactionOptions, LimitConfig, DBConfigOptions } from './types';
+import { LimitExceededError, WriteOutsideTransactionError, WriteInReadOnlyContextError } from './types';
 import { type Column, type OrderSpec, type CVs, type Conds, type CondsOf, type OrCondOf, type ColumnsOf, createColumn, columnsToNames, pairsToRecord, condsToRecord, orderToString, createOrCond } from './Column';
 import type { MiddlewareClass, ExecuteResult } from './Middleware';
 import { serializeRecord, getColumnMeta, type KeyPair, type CompositeKeyPairs } from './decorators';
@@ -20,8 +20,16 @@ interface TransactionContext {
   connection: DBConnection;
 }
 
+// Writer context for withWriter() (read-only writer access)
+interface WriterContext {
+  readonly: true;  // Marker to indicate write operations should fail
+}
+
 // AsyncLocalStorage for transaction context
 const transactionContext = new AsyncLocalStorage<TransactionContext>();
+
+// AsyncLocalStorage for writer context (for withWriter())
+const writerContext = new AsyncLocalStorage<WriterContext>();
 
 /**
  * Get current transaction context (if in a transaction)
@@ -129,10 +137,19 @@ export abstract class DBModel {
   // ============================================
 
   /** Database config */
-  private static _dbConfig: DBConfig | null = null;
+  protected static _dbConfig: DBConfig | null = null;
 
   /** Limit config for safety guards */
-  private static _limitConfig: LimitConfig = {};
+  protected static _limitConfig: LimitConfig = {};
+
+  /** Configuration options for reader/writer separation */
+  protected static _configOptions: DBConfigOptions = {
+    useWriterAfterTransaction: true,
+    writerStickyDuration: 5000,
+  };
+
+  /** Last transaction completion time (for writer sticky) */
+  protected static _lastTransactionTime: number = 0;
 
   /**
    * Initialize DBModel with database config.
@@ -142,38 +159,44 @@ export abstract class DBModel {
    * ```typescript
    * import { DBModel } from 'litedbmodel';
    * 
+   * // Basic configuration
    * DBModel.setConfig({
    *   host: 'localhost',
    *   port: 5432,
    *   database: 'mydb',
    *   user: 'user',
    *   password: 'pass',
-   * }, {
-   *   // Optional: Set global limits
-   *   findHardLimit: 1000,       // find() throws if > 1000 records
-   *   hasManyHardLimit: 10000,   // hasMany throws if > 10000 records total (batch)
    * });
    * 
-   * // Now you can use all DBModel methods
-   * const users = await User.find([[User.is_active, true]]);
+   * // With reader/writer separation
+   * DBModel.setConfig(
+   *   { host: 'reader.db.example.com', database: 'mydb', ... },
+   *   {
+   *     writerConfig: { host: 'writer.db.example.com', database: 'mydb', ... },
+   *     useWriterAfterTransaction: true,  // Keep using writer after transaction
+   *     writerStickyDuration: 5000,       // Duration in ms
+   *   }
+   * );
    * ```
    */
   static setConfig(
     config: DBConfig,
-    options?: {
-      writerConfig?: DBConfig;
-      logger?: import('./types').Logger;
-      /** Hard limit for find() - throws if exceeded */
-      findHardLimit?: number | null;
-      /** Hard limit for hasMany lazy loading - throws if exceeded */
-      hasManyHardLimit?: number | null;
-    }
+    options?: DBConfigOptions
   ): void {
-    initDBHandler(config, { writerConfig: options?.writerConfig, logger: options?.logger });
+    initDBHandler(config, { 
+      writerConfig: options?.writerConfig, 
+      logger: options?.logger,
+      useWriterAfterTransaction: options?.useWriterAfterTransaction,
+      writerStickyDuration: options?.writerStickyDuration,
+    });
     this._dbConfig = config;
     this._limitConfig = {
       findHardLimit: options?.findHardLimit,
       hasManyHardLimit: options?.hasManyHardLimit,
+    };
+    this._configOptions = {
+      ...this._configOptions,
+      ...options,
     };
   }
 
@@ -211,12 +234,16 @@ export abstract class DBModel {
    * Returns 'postgres', 'mysql', or 'sqlite'.
    */
   static getDriverType(): 'postgres' | 'mysql' | 'sqlite' {
-    return getDBHandler().getDriverType();
+    return this.getHandler().getDriverType();
   }
 
   /**
-   * Get a DBHandler instance for this model
-   * If in a transaction, uses the transaction connection
+   * Get a DBHandler instance for this model.
+   * Connection priority:
+   * 1. Transaction connection (if in transaction)
+   * 2. Writer context (if in withWriter())
+   * 3. Writer sticky (if within writerStickyDuration after transaction)
+   * 4. Default reader connection
    */
   protected static getHandler(): DBHandler {
     // Check if we're in a transaction
@@ -225,7 +252,38 @@ export abstract class DBModel {
       return createHandlerWithConnection(txContext.connection);
     }
 
-    return getDBHandler();
+    const handler = getDBHandler();
+
+    // Check if we're in withWriter context
+    if (writerContext.getStore()) {
+      // Return handler that uses writer pool for reads
+      return handler;  // executeOnWriter will be called explicitly
+    }
+
+    // Check writer sticky
+    if (this._shouldUseWriterSticky()) {
+      return handler;  // executeOnWriter will be called explicitly
+    }
+
+    return handler;
+  }
+
+  /**
+   * Check if we should use writer due to sticky after transaction.
+   */
+  protected static _shouldUseWriterSticky(): boolean {
+    if (!this._configOptions.useWriterAfterTransaction) {
+      return false;
+    }
+    const stickyDuration = this._configOptions.writerStickyDuration ?? 5000;
+    return Date.now() - this._lastTransactionTime < stickyDuration;
+  }
+
+  /**
+   * Check if currently in a withWriter context.
+   */
+  static inWriterContext(): boolean {
+    return writerContext.getStore() !== undefined;
   }
 
   // ============================================
@@ -682,6 +740,22 @@ export abstract class DBModel {
   }
 
   /**
+   * Check if write operations are allowed in the current context.
+   * Throws WriteOutsideTransactionError or WriteInReadOnlyContextError if not allowed.
+   * @internal
+   */
+  protected static _checkWriteAllowed(operation: string): void {
+    // Check if in withWriter context (read-only)
+    if (writerContext.getStore()) {
+      throw new WriteInReadOnlyContextError(operation, this.name);
+    }
+    // Check if in transaction
+    if (!transactionContext.getStore()) {
+      throw new WriteOutsideTransactionError(operation, this.name);
+    }
+  }
+
+  /**
    * Build INSERT SQL and execute with query middleware
    * @internal
    */
@@ -690,6 +764,9 @@ export abstract class DBModel {
     values: Record<string, unknown> | Record<string, unknown>[],
     options: InsertOptions<unknown> = {}
   ): Promise<InstanceType<T>[]> {
+    // Write operations require a transaction
+    this._checkWriteAllowed('INSERT');
+
     const tableName = options.tableName || this.getUpdateTableName();
     const rawRecords = Array.isArray(values) ? values : [values];
 
@@ -768,6 +845,9 @@ export abstract class DBModel {
     values: Record<string, unknown>,
     options: UpdateOptions = {}
   ): Promise<InstanceType<T>[]> {
+    // Write operations require a transaction
+    this._checkWriteAllowed('UPDATE');
+
     const tableName = options.tableName || this.getUpdateTableName();
     const params: unknown[] = [];
 
@@ -814,6 +894,9 @@ export abstract class DBModel {
     conditions: ConditionObject,
     options: DeleteOptions = {}
   ): Promise<InstanceType<T>[]> {
+    // Write operations require a transaction
+    this._checkWriteAllowed('DELETE');
+
     const tableName = options.tableName || this.getUpdateTableName();
     const params: unknown[] = [];
 
@@ -1957,7 +2040,13 @@ export abstract class DBModel {
   ): Promise<ExecuteResult> {
     const core = async (s: string, p?: unknown[]): Promise<ExecuteResult> => {
       const handler = this.getHandler();
-      const result = await handler.execute(s, p || []);
+      
+      // Use writer pool if in withWriter context or writer sticky period
+      const useWriter = writerContext.getStore() !== undefined || this._shouldUseWriterSticky();
+      const result = useWriter 
+        ? await handler.executeOnWriter(s, p || [])
+        : await handler.execute(s, p || []);
+      
       return {
         rows: result.rows as Record<string, unknown>[],
         rowCount: result.rowCount,
@@ -2074,6 +2163,11 @@ export abstract class DBModel {
     const retryLimit = options.retryLimit ?? 3;
     const retryDuration = options.retryDuration ?? 200;
     const rollbackOnly = options.rollbackOnly ?? false;
+    
+    // Determine if we should enable writer sticky after this transaction
+    // Per-transaction option overrides global config
+    const useWriterAfterTransaction = options.useWriterAfterTransaction ?? 
+      this._configOptions.useWriterAfterTransaction ?? true;
 
     let attempt = 0;
 
@@ -2092,6 +2186,11 @@ export abstract class DBModel {
           await connection.query('ROLLBACK');
         } else {
           await connection.query('COMMIT');
+          
+          // Enable writer sticky if configured
+          if (useWriterAfterTransaction) {
+            this._lastTransactionTime = Date.now();
+          }
         }
         return result;
       } catch (error) {
@@ -2160,6 +2259,250 @@ export abstract class DBModel {
    */
   static getCurrentClient(): DBConnection | null {
     return this.getCurrentConnection();
+  }
+
+  /**
+   * Execute a function with explicit writer connection access.
+   * Use this when you need to read from writer to avoid replication lag.
+   * Write operations are NOT allowed in this context - use transaction() instead.
+   *
+   * @param func - Function to execute with writer connection
+   * @returns Result of the function
+   *
+   * @example
+   * ```typescript
+   * // Read from writer to avoid replication lag
+   * const user = await DBModel.withWriter(async () => {
+   *   return await User.findOne([[User.id, 1]]);
+   * });
+   *
+   * // Write operations throw an error
+   * await DBModel.withWriter(async () => {
+   *   await User.create([[User.name, 'Error']]);  // Throws WriteInReadOnlyContextError
+   * });
+   * ```
+   */
+  static async withWriter<R>(func: () => Promise<R>): Promise<R> {
+    // Check if already in a transaction (transaction takes precedence)
+    if (transactionContext.getStore()) {
+      // In transaction, writer is already being used
+      return func();
+    }
+
+    // Check if already in withWriter context
+    if (writerContext.getStore()) {
+      // Already in withWriter, just execute the function
+      return func();
+    }
+
+    const context: WriterContext = { readonly: true };
+    return writerContext.run(context, func);
+  }
+
+  // ============================================
+  // Multi-Database Support
+  // ============================================
+
+  /**
+   * Create an independent database base class.
+   * Use this to connect to multiple databases with isolated configurations.
+   *
+   * @param config - Database configuration
+   * @param options - Configuration options (writerConfig, limits, etc.)
+   * @returns A new DBModel subclass with its own connection pool
+   *
+   * @example
+   * ```typescript
+   * // Create separate base classes for different databases
+   * const BaseDB = DBModel.createDBBase({
+   *   host: 'base-db.example.com',
+   *   database: 'base_db',
+   * }, {
+   *   writerConfig: { host: 'base-db-writer.example.com', database: 'base_db' },
+   * });
+   *
+   * const CmsDB = DBModel.createDBBase({
+   *   host: 'cms-db.example.com',
+   *   database: 'cms_db',
+   * });
+   *
+   * // Define models using appropriate base class
+   * @model('users')
+   * class UserModel extends BaseDB {
+   *   @column() id?: number;
+   * }
+   *
+   * @model('articles')
+   * class ArticleModel extends CmsDB {
+   *   @column() id?: number;
+   * }
+   *
+   * // Each base class has independent transactions
+   * await BaseDB.transaction(async () => {
+   *   await User.create([[User.name, 'John']]);
+   * });
+   * ```
+   */
+  static createDBBase(
+    config: DBConfig,
+    options?: DBConfigOptions
+  ): typeof DBModel {
+    // Create dedicated AsyncLocalStorage instances for this base class
+    const baseTransactionContext = new AsyncLocalStorage<TransactionContext>();
+    const baseWriterContext = new AsyncLocalStorage<WriterContext>();
+
+    // Create dedicated handler for this base class
+    const handler = new DBHandler(config, {
+      writerConfig: options?.writerConfig,
+      logger: options?.logger,
+      useWriterAfterTransaction: options?.useWriterAfterTransaction,
+      writerStickyDuration: options?.writerStickyDuration,
+    });
+
+    // Create the base class
+    class GeneratedDBBase extends DBModel {
+      // Override config for this base class
+      protected static _dbConfig: DBConfig | null = config;
+      protected static _limitConfig: LimitConfig = {
+        findHardLimit: options?.findHardLimit,
+        hasManyHardLimit: options?.hasManyHardLimit,
+      };
+      protected static _configOptions: DBConfigOptions = {
+        useWriterAfterTransaction: options?.useWriterAfterTransaction ?? true,
+        writerStickyDuration: options?.writerStickyDuration ?? 5000,
+        ...options,
+      };
+      protected static _lastTransactionTime: number = 0;
+
+      // Override getHandler to use this base class's handler
+      protected static getHandler(): DBHandler {
+        // Check if we're in a transaction
+        const txContext = baseTransactionContext.getStore();
+        if (txContext) {
+          return handler.withConnection(txContext.connection);
+        }
+        return handler;
+      }
+
+      // Override _shouldUseWriterSticky to use this base class's state
+      protected static _shouldUseWriterSticky(): boolean {
+        if (!this._configOptions.useWriterAfterTransaction) {
+          return false;
+        }
+        const stickyDuration = this._configOptions.writerStickyDuration ?? 5000;
+        return Date.now() - this._lastTransactionTime < stickyDuration;
+      }
+
+      // Override inTransaction to use this base class's context
+      static inTransaction(): boolean {
+        return baseTransactionContext.getStore() !== undefined;
+      }
+
+      // Override inWriterContext to use this base class's context
+      static inWriterContext(): boolean {
+        return baseWriterContext.getStore() !== undefined;
+      }
+
+      // Override transaction to use this base class's context
+      static async transaction<R>(
+        func: () => Promise<R>,
+        txOptions: TransactionOptions = {}
+      ): Promise<R> {
+        // Check if already in a transaction (nested transaction)
+        if (baseTransactionContext.getStore()) {
+          return func();
+        }
+
+        const retryOnError = txOptions.retryOnError ?? true;
+        const retryLimit = txOptions.retryLimit ?? 3;
+        const retryDuration = txOptions.retryDuration ?? 200;
+        const rollbackOnly = txOptions.rollbackOnly ?? false;
+        const useWriterAfterTransaction = txOptions.useWriterAfterTransaction ?? 
+          this._configOptions.useWriterAfterTransaction ?? true;
+
+        let attempt = 0;
+
+        while (true) {
+          attempt++;
+          const connection = await handler.getConnection();
+
+          try {
+            await connection.query('BEGIN');
+
+            const context: TransactionContext = { connection };
+            const result = await baseTransactionContext.run(context, func);
+
+            if (rollbackOnly) {
+              await connection.query('ROLLBACK');
+            } else {
+              await connection.query('COMMIT');
+              if (useWriterAfterTransaction) {
+                this._lastTransactionTime = Date.now();
+              }
+            }
+            return result;
+          } catch (error) {
+            await connection.query('ROLLBACK');
+
+            if (
+              retryOnError &&
+              attempt < retryLimit &&
+              DBModel.isRetryableError(error as Error)
+            ) {
+              await DBModel.sleep(retryDuration * Math.pow(2, attempt - 1));
+              continue;
+            }
+
+            throw error;
+          } finally {
+            connection.release();
+          }
+        }
+      }
+
+      // Override withWriter to use this base class's context
+      static async withWriter<R>(func: () => Promise<R>): Promise<R> {
+        if (baseTransactionContext.getStore()) {
+          return func();
+        }
+        if (baseWriterContext.getStore()) {
+          return func();
+        }
+        const context: WriterContext = { readonly: true };
+        return baseWriterContext.run(context, func);
+      }
+
+      // Override execute to use this base class's writer context
+      static async execute(
+        sql: string,
+        params?: unknown[]
+      ): Promise<ExecuteResult> {
+        const core = async (s: string, p?: unknown[]): Promise<ExecuteResult> => {
+          const h = this.getHandler();
+          const useWriter = baseWriterContext.getStore() !== undefined || this._shouldUseWriterSticky();
+          const result = useWriter
+            ? await h.executeOnWriter(s, p || [])
+            : await h.execute(s, p || []);
+          return {
+            rows: result.rows as Record<string, unknown>[],
+            rowCount: result.rowCount,
+          };
+        };
+        return this._applyExecuteMiddleware(core, sql, params);
+      }
+
+      // Override _checkWriteAllowed to use this base class's context
+      protected static _checkWriteAllowed(operation: string): void {
+        if (baseWriterContext.getStore()) {
+          throw new WriteInReadOnlyContextError(operation, this.name);
+        }
+        if (!baseTransactionContext.getStore()) {
+          throw new WriteOutsideTransactionError(operation, this.name);
+        }
+      }
+    }
+
+    return GeneratedDBBase;
   }
 
   // ============================================

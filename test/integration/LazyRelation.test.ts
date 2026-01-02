@@ -360,20 +360,24 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
   // ============================================
 
   async function createTestUser(name: string, email: string): Promise<TestUser> {
-    const user = await TestUser.create([
-      [TestUser.name, name],
-      [TestUser.email, email],
-    ]);
-    return user as TestUser;
+    return await DBModel.transaction(async () => {
+      const user = await TestUser.create([
+        [TestUser.name, name],
+        [TestUser.email, email],
+      ]);
+      return user as TestUser;
+    });
   }
 
   async function createTestPost(userId: number, title: string, content: string): Promise<TestPost> {
-    const post = await TestPost.create([
-      [TestPost.user_id, userId],
-      [TestPost.title, title],
-      [TestPost.content, content],
-    ]);
-    return post as TestPost;
+    return await DBModel.transaction(async () => {
+      const post = await TestPost.create([
+        [TestPost.user_id, userId],
+        [TestPost.title, title],
+        [TestPost.content, content],
+      ]);
+      return post as TestPost;
+    });
   }
 
   async function createTestComment(
@@ -382,13 +386,15 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
     content: string,
     published = true
   ): Promise<TestPostComment> {
-    const comment = await TestPostComment.create([
-      [TestPostComment.post_id, postId],
-      [TestPostComment.user_id, userId],
-      [TestPostComment.content, content],
-      [TestPostComment.published, published],
-    ]);
-    return comment as TestPostComment;
+    return await DBModel.transaction(async () => {
+      const comment = await TestPostComment.create([
+        [TestPostComment.post_id, postId],
+        [TestPostComment.user_id, userId],
+        [TestPostComment.content, content],
+        [TestPostComment.published, published],
+      ]);
+      return comment as TestPostComment;
+    });
   }
 
   async function createTestProfile(
@@ -396,12 +402,14 @@ describe.skipIf(skipIntegrationTests)('LazyRelation', () => {
     bio: string,
     website: string
   ): Promise<TestUserProfile> {
-    const profile = await TestUserProfile.create([
-      [TestUserProfile.user_id, userId],
-      [TestUserProfile.bio, bio],
-      [TestUserProfile.website, website],
-    ]);
-    return profile as TestUserProfile;
+    return await DBModel.transaction(async () => {
+      const profile = await TestUserProfile.create([
+        [TestUserProfile.user_id, userId],
+        [TestUserProfile.bio, bio],
+        [TestUserProfile.website, website],
+      ]);
+      return profile as TestUserProfile;
+    });
   }
 
   // ============================================

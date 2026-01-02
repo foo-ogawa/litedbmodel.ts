@@ -123,10 +123,12 @@ describe('SQLite Driver', () => {
 
   describe('Basic CRUD Operations', () => {
     it('should create a record', async () => {
-      const user = await UserModel.create([
-        [UserModel.name, 'Alice'],
-        [UserModel.email, 'alice@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Alice'],
+          [UserModel.email, 'alice@example.com'],
+        ]);
+      });
 
       expect(user).toBeInstanceOf(User);
       expect(user.id).toBeDefined();
@@ -135,30 +137,34 @@ describe('SQLite Driver', () => {
     });
 
     it('should find records', async () => {
-      await UserModel.create([
-        [UserModel.name, 'Bob'],
-        [UserModel.email, 'bob@example.com'],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'Charlie'],
-        [UserModel.email, 'charlie@example.com'],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'Bob'],
+          [UserModel.email, 'bob@example.com'],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'Charlie'],
+          [UserModel.email, 'charlie@example.com'],
+        ]);
+      });
 
       const users = await UserModel.find([]);
       expect(users.length).toBe(2);
     });
 
     it('should find with conditions', async () => {
-      await UserModel.create([
-        [UserModel.name, 'David'],
-        [UserModel.email, 'david@example.com'],
-        [UserModel.is_active, true],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'Eve'],
-        [UserModel.email, 'eve@example.com'],
-        [UserModel.is_active, false],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'David'],
+          [UserModel.email, 'david@example.com'],
+          [UserModel.is_active, true],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'Eve'],
+          [UserModel.email, 'eve@example.com'],
+          [UserModel.is_active, false],
+        ]);
+      });
 
       // SQLite stores boolean as 1/0, so query with 1
       const activeUsers = await UserModel.find([[UserModel.is_active, 1]]);
@@ -167,10 +173,12 @@ describe('SQLite Driver', () => {
     });
 
     it('should findOne', async () => {
-      await UserModel.create([
-        [UserModel.name, 'Frank'],
-        [UserModel.email, 'frank@example.com'],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'Frank'],
+          [UserModel.email, 'frank@example.com'],
+        ]);
+      });
 
       const user = await UserModel.findOne([[UserModel.email, 'frank@example.com']]);
       expect(user).not.toBeNull();
@@ -178,27 +186,35 @@ describe('SQLite Driver', () => {
     });
 
     it('should update a record', async () => {
-      const user = await UserModel.create([
-        [UserModel.name, 'Grace'],
-        [UserModel.email, 'grace@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Grace'],
+          [UserModel.email, 'grace@example.com'],
+        ]);
+      });
 
-      await UserModel.update(
-        [[UserModel.id, user.id!]],
-        [[UserModel.name, 'Grace Updated']]
-      );
+      await DBModel.transaction(async () => {
+        await UserModel.update(
+          [[UserModel.id, user.id!]],
+          [[UserModel.name, 'Grace Updated']]
+        );
+      });
 
       const updated = await UserModel.findOne([[UserModel.id, user.id!]]);
       expect(updated?.name).toBe('Grace Updated');
     });
 
     it('should delete a record', async () => {
-      const user = await UserModel.create([
-        [UserModel.name, 'Henry'],
-        [UserModel.email, 'henry@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Henry'],
+          [UserModel.email, 'henry@example.com'],
+        ]);
+      });
 
-      await UserModel.delete([[UserModel.id, user.id!]]);
+      await DBModel.transaction(async () => {
+        await UserModel.delete([[UserModel.id, user.id!]]);
+      });
 
       const deleted = await UserModel.findOne([[UserModel.id, user.id!]]);
       expect(deleted).toBeNull();
@@ -209,10 +225,12 @@ describe('SQLite Driver', () => {
     it('should save a new record', async () => {
       // Use create() instead of save() for new records in SQLite
       // (save() generates DEFAULT which SQLite doesn't support)
-      const user = await UserModel.create([
-        [UserModel.name, 'Ivy'],
-        [UserModel.email, 'ivy@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Ivy'],
+          [UserModel.email, 'ivy@example.com'],
+        ]);
+      });
 
       expect(user.id).toBeDefined();
 
@@ -222,25 +240,33 @@ describe('SQLite Driver', () => {
     });
 
     it('should update an existing record', async () => {
-      const user = await UserModel.create([
-        [UserModel.name, 'Jack'],
-        [UserModel.email, 'jack@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Jack'],
+          [UserModel.email, 'jack@example.com'],
+        ]);
+      });
 
-      user.name = 'Jack Updated';
-      await user.save();
+      await DBModel.transaction(async () => {
+        user.name = 'Jack Updated';
+        await user.save();
+      });
 
       const updated = await UserModel.findOne([[UserModel.id, user.id!]]);
       expect(updated?.name).toBe('Jack Updated');
     });
 
     it('should destroy a record', async () => {
-      const user = await UserModel.create([
-        [UserModel.name, 'Kate'],
-        [UserModel.email, 'kate@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Kate'],
+          [UserModel.email, 'kate@example.com'],
+        ]);
+      });
 
-      await user.destroy();
+      await DBModel.transaction(async () => {
+        await user.destroy();
+      });
 
       const deleted = await UserModel.findOne([[UserModel.id, user.id!]]);
       expect(deleted).toBeNull();
@@ -249,22 +275,26 @@ describe('SQLite Driver', () => {
 
   describe('Relations', () => {
     it('should handle foreign key relationships', async () => {
-      const user = await UserModel.create([
-        [UserModel.name, 'Leo'],
-        [UserModel.email, 'leo@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        const u = await UserModel.create([
+          [UserModel.name, 'Leo'],
+          [UserModel.email, 'leo@example.com'],
+        ]);
 
-      await PostModel.create([
-        [PostModel.user_id, user.id!],
-        [PostModel.title, 'First Post'],
-        [PostModel.content, 'Hello World'],
-      ]);
+        await PostModel.create([
+          [PostModel.user_id, u.id!],
+          [PostModel.title, 'First Post'],
+          [PostModel.content, 'Hello World'],
+        ]);
 
-      await PostModel.create([
-        [PostModel.user_id, user.id!],
-        [PostModel.title, 'Second Post'],
-        [PostModel.content, 'Another post'],
-      ]);
+        await PostModel.create([
+          [PostModel.user_id, u.id!],
+          [PostModel.title, 'Second Post'],
+          [PostModel.content, 'Another post'],
+        ]);
+
+        return u;
+      });
 
       const posts = await PostModel.find([[PostModel.user_id, user.id!]]);
       expect(posts.length).toBe(2);
@@ -313,17 +343,21 @@ describe('SQLite Driver', () => {
 
   describe('Count and Aggregation', () => {
     it('should count records', async () => {
-      await UserModel.create([[UserModel.name, 'P1'], [UserModel.email, 'p1@example.com']]);
-      await UserModel.create([[UserModel.name, 'P2'], [UserModel.email, 'p2@example.com']]);
-      await UserModel.create([[UserModel.name, 'P3'], [UserModel.email, 'p3@example.com']]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([[UserModel.name, 'P1'], [UserModel.email, 'p1@example.com']]);
+        await UserModel.create([[UserModel.name, 'P2'], [UserModel.email, 'p2@example.com']]);
+        await UserModel.create([[UserModel.name, 'P3'], [UserModel.email, 'p3@example.com']]);
+      });
 
       const count = await UserModel.count([]);
       expect(count).toBe(3);
     });
 
     it('should count with conditions', async () => {
-      await UserModel.create([[UserModel.name, 'Q1'], [UserModel.email, 'q1@example.com'], [UserModel.is_active, true]]);
-      await UserModel.create([[UserModel.name, 'Q2'], [UserModel.email, 'q2@example.com'], [UserModel.is_active, false]]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([[UserModel.name, 'Q1'], [UserModel.email, 'q1@example.com'], [UserModel.is_active, true]]);
+        await UserModel.create([[UserModel.name, 'Q2'], [UserModel.email, 'q2@example.com'], [UserModel.is_active, false]]);
+      });
 
       // SQLite stores boolean as 1/0
       const activeCount = await UserModel.count([[UserModel.is_active, 1]]);
@@ -333,9 +367,11 @@ describe('SQLite Driver', () => {
 
   describe('Order and Limit', () => {
     it('should order results', async () => {
-      await UserModel.create([[UserModel.name, 'Zack'], [UserModel.email, 'zack@example.com']]);
-      await UserModel.create([[UserModel.name, 'Amy'], [UserModel.email, 'amy@example.com']]);
-      await UserModel.create([[UserModel.name, 'Mike'], [UserModel.email, 'mike2@example.com']]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([[UserModel.name, 'Zack'], [UserModel.email, 'zack@example.com']]);
+        await UserModel.create([[UserModel.name, 'Amy'], [UserModel.email, 'amy@example.com']]);
+        await UserModel.create([[UserModel.name, 'Mike'], [UserModel.email, 'mike2@example.com']]);
+      });
 
       const users = await UserModel.find([], { order: UserModel.name.asc() });
       expect(users[0].name).toBe('Amy');
@@ -343,18 +379,22 @@ describe('SQLite Driver', () => {
     });
 
     it('should limit results', async () => {
-      await UserModel.create([[UserModel.name, 'R1'], [UserModel.email, 'r1@example.com']]);
-      await UserModel.create([[UserModel.name, 'R2'], [UserModel.email, 'r2@example.com']]);
-      await UserModel.create([[UserModel.name, 'R3'], [UserModel.email, 'r3@example.com']]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([[UserModel.name, 'R1'], [UserModel.email, 'r1@example.com']]);
+        await UserModel.create([[UserModel.name, 'R2'], [UserModel.email, 'r2@example.com']]);
+        await UserModel.create([[UserModel.name, 'R3'], [UserModel.email, 'r3@example.com']]);
+      });
 
       const users = await UserModel.find([], { limit: 2 });
       expect(users.length).toBe(2);
     });
 
     it('should offset results', async () => {
-      await UserModel.create([[UserModel.name, 'S1'], [UserModel.email, 's1@example.com']]);
-      await UserModel.create([[UserModel.name, 'S2'], [UserModel.email, 's2@example.com']]);
-      await UserModel.create([[UserModel.name, 'S3'], [UserModel.email, 's3@example.com']]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([[UserModel.name, 'S1'], [UserModel.email, 's1@example.com']]);
+        await UserModel.create([[UserModel.name, 'S2'], [UserModel.email, 's2@example.com']]);
+        await UserModel.create([[UserModel.name, 'S3'], [UserModel.email, 's3@example.com']]);
+      });
 
       const users = await UserModel.find([], { order: UserModel.name.asc(), limit: 2, offset: 1 });
       expect(users.length).toBe(2);
@@ -367,7 +407,9 @@ describe('SQLite Driver', () => {
       const uniqueEmail = `conflict-ignore-${Date.now()}@example.com`;
       
       // First insert
-      await UserModel.create([[UserModel.name, 'First'], [UserModel.email, uniqueEmail]]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([[UserModel.name, 'First'], [UserModel.email, uniqueEmail]]);
+      });
 
       // Try to insert with same email using raw SQL with ON CONFLICT
       await DBModel.execute(
@@ -385,7 +427,9 @@ describe('SQLite Driver', () => {
       const uniqueEmail = `conflict-update-${Date.now()}@example.com`;
       
       // First insert
-      await UserModel.create([[UserModel.name, 'First'], [UserModel.email, uniqueEmail]]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([[UserModel.name, 'First'], [UserModel.email, uniqueEmail]]);
+      });
 
       // Upsert with same email - should update name
       await DBModel.execute(
@@ -426,14 +470,16 @@ describe('SQLite Driver', () => {
       const testDate = new Date('2024-06-15T10:30:00.000Z');
       
       // Create via high-level API
-      const created = await SqliteAllTypes.create([
-        [SqliteAllTypes.int_val, 42],
-        [SqliteAllTypes.float_val, 3.14159],
-        [SqliteAllTypes.bool_val, true],
-        [SqliteAllTypes.text_val, 'long text content'],
-        [SqliteAllTypes.varchar_val, 'short varchar'],
-        [SqliteAllTypes.timestamp_val, testDate],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([
+          [SqliteAllTypes.int_val, 42],
+          [SqliteAllTypes.float_val, 3.14159],
+          [SqliteAllTypes.bool_val, true],
+          [SqliteAllTypes.text_val, 'long text content'],
+          [SqliteAllTypes.varchar_val, 'short varchar'],
+          [SqliteAllTypes.timestamp_val, testDate],
+        ]);
+      });
       
       expect(created.id).toBeDefined();
       expect(created.int_val).toBe(42);
@@ -458,9 +504,11 @@ describe('SQLite Driver', () => {
       const jsonObj = { name: 'test', count: 42, nested: { key: 'value' } };
       
       // Create with JSON type via high-level API
-      const created = await SqliteAllTypes.create([
-        [SqliteAllTypes.json_val, jsonObj],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([
+          [SqliteAllTypes.json_val, jsonObj],
+        ]);
+      });
       
       expect(created.json_val).toEqual(jsonObj);
 
@@ -474,9 +522,11 @@ describe('SQLite Driver', () => {
       const jsonArray = [1, 'two', { three: 3 }];
       
       // Create with JSON array via high-level API
-      const created = await SqliteAllTypes.create([
-        [SqliteAllTypes.json_val, jsonArray],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([
+          [SqliteAllTypes.json_val, jsonArray],
+        ]);
+      });
       
       expect(created.json_val).toEqual(jsonArray);
 
@@ -488,14 +538,16 @@ describe('SQLite Driver', () => {
 
     it('should persist and retrieve NULL values correctly via create/find', async () => {
       // Create with NULL values via high-level API
-      const created = await SqliteAllTypes.create([
-        [SqliteAllTypes.int_val, null],
-        [SqliteAllTypes.float_val, null],
-        [SqliteAllTypes.bool_val, null],
-        [SqliteAllTypes.text_val, null],
-        [SqliteAllTypes.timestamp_val, null],
-        [SqliteAllTypes.json_val, null],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([
+          [SqliteAllTypes.int_val, null],
+          [SqliteAllTypes.float_val, null],
+          [SqliteAllTypes.bool_val, null],
+          [SqliteAllTypes.text_val, null],
+          [SqliteAllTypes.timestamp_val, null],
+          [SqliteAllTypes.json_val, null],
+        ]);
+      });
       
       // Note: Typed columns (boolean, datetime) return undefined for null values
       // due to decorator's type cast using `?? undefined`
@@ -522,29 +574,33 @@ describe('SQLite Driver', () => {
       const updatedDate = new Date('2024-12-31T23:59:59.000Z');
       
       // Create initial record via high-level API
-      const created = await SqliteAllTypes.create([
-        [SqliteAllTypes.int_val, 10],
-        [SqliteAllTypes.float_val, 1.5],
-        [SqliteAllTypes.bool_val, false],
-        [SqliteAllTypes.text_val, 'initial text'],
-        [SqliteAllTypes.varchar_val, 'initial'],
-        [SqliteAllTypes.timestamp_val, initialDate],
-        [SqliteAllTypes.json_val, { key: 'initial' }],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([
+          [SqliteAllTypes.int_val, 10],
+          [SqliteAllTypes.float_val, 1.5],
+          [SqliteAllTypes.bool_val, false],
+          [SqliteAllTypes.text_val, 'initial text'],
+          [SqliteAllTypes.varchar_val, 'initial'],
+          [SqliteAllTypes.timestamp_val, initialDate],
+          [SqliteAllTypes.json_val, { key: 'initial' }],
+        ]);
+      });
 
       // Update all values via high-level API
-      await SqliteAllTypes.update(
-        [[SqliteAllTypes.id, created.id]],
-        [
-          [SqliteAllTypes.int_val, 99],
-          [SqliteAllTypes.float_val, 9.99],
-          [SqliteAllTypes.bool_val, true],
-          [SqliteAllTypes.text_val, 'updated text'],
-          [SqliteAllTypes.varchar_val, 'updated'],
-          [SqliteAllTypes.timestamp_val, updatedDate],
-          [SqliteAllTypes.json_val, { key: 'updated' }],
-        ]
-      );
+      await DBModel.transaction(async () => {
+        await SqliteAllTypes.update(
+          [[SqliteAllTypes.id, created.id]],
+          [
+            [SqliteAllTypes.int_val, 99],
+            [SqliteAllTypes.float_val, 9.99],
+            [SqliteAllTypes.bool_val, true],
+            [SqliteAllTypes.text_val, 'updated text'],
+            [SqliteAllTypes.varchar_val, 'updated'],
+            [SqliteAllTypes.timestamp_val, updatedDate],
+            [SqliteAllTypes.json_val, { key: 'updated' }],
+          ]
+        );
+      });
 
       // Find and verify updated values
       const found = await SqliteAllTypes.findOne([[SqliteAllTypes.id, created.id]]);
@@ -560,14 +616,16 @@ describe('SQLite Driver', () => {
 
     it('should handle edge case values correctly via create/find', async () => {
       // Edge cases: zero, false, empty strings, empty JSON
-      const created = await SqliteAllTypes.create([
-        [SqliteAllTypes.int_val, 0],
-        [SqliteAllTypes.float_val, 0.0],
-        [SqliteAllTypes.bool_val, false],
-        [SqliteAllTypes.text_val, ''],
-        [SqliteAllTypes.varchar_val, ''],
-        [SqliteAllTypes.json_val, {}],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([
+          [SqliteAllTypes.int_val, 0],
+          [SqliteAllTypes.float_val, 0.0],
+          [SqliteAllTypes.bool_val, false],
+          [SqliteAllTypes.text_val, ''],
+          [SqliteAllTypes.varchar_val, ''],
+          [SqliteAllTypes.json_val, {}],
+        ]);
+      });
       
       expect(created.int_val).toBe(0);
       expect(created.float_val).toBe(0);
@@ -589,17 +647,23 @@ describe('SQLite Driver', () => {
 
     it('should handle boolean edge cases correctly', async () => {
       // Test explicit true
-      const trueRecord = await SqliteAllTypes.create([[SqliteAllTypes.bool_val, true]]);
+      const trueRecord = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([[SqliteAllTypes.bool_val, true]]);
+      });
       const foundTrue = await SqliteAllTypes.findOne([[SqliteAllTypes.id, trueRecord.id]]);
       expect(foundTrue!.bool_val).toBe(true);
 
       // Test explicit false
-      const falseRecord = await SqliteAllTypes.create([[SqliteAllTypes.bool_val, false]]);
+      const falseRecord = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([[SqliteAllTypes.bool_val, false]]);
+      });
       const foundFalse = await SqliteAllTypes.findOne([[SqliteAllTypes.id, falseRecord.id]]);
       expect(foundFalse!.bool_val).toBe(false);
 
       // Test null (typed column returns undefined for null)
-      const nullRecord = await SqliteAllTypes.create([[SqliteAllTypes.bool_val, null]]);
+      const nullRecord = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([[SqliteAllTypes.bool_val, null]]);
+      });
       const foundNull = await SqliteAllTypes.findOne([[SqliteAllTypes.id, nullRecord.id]]);
       expect(foundNull!.bool_val).toBeNull();
     });
@@ -607,18 +671,24 @@ describe('SQLite Driver', () => {
     it('should handle datetime edge cases correctly', async () => {
       // Test specific datetime
       const specificDate = new Date('2024-06-15T14:30:45.123Z');
-      const record1 = await SqliteAllTypes.create([[SqliteAllTypes.timestamp_val, specificDate]]);
+      const record1 = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([[SqliteAllTypes.timestamp_val, specificDate]]);
+      });
       const found1 = await SqliteAllTypes.findOne([[SqliteAllTypes.id, record1.id]]);
       expect(found1!.timestamp_val?.toISOString()).toBe(specificDate.toISOString());
 
       // Test null datetime (typed column preserves null)
-      const record2 = await SqliteAllTypes.create([[SqliteAllTypes.timestamp_val, null]]);
+      const record2 = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([[SqliteAllTypes.timestamp_val, null]]);
+      });
       const found2 = await SqliteAllTypes.findOne([[SqliteAllTypes.id, record2.id]]);
       expect(found2!.timestamp_val).toBeNull();
 
       // Test min date
       const minDate = new Date('1970-01-01T00:00:00.000Z');
-      const record3 = await SqliteAllTypes.create([[SqliteAllTypes.timestamp_val, minDate]]);
+      const record3 = await DBModel.transaction(async () => {
+        return await SqliteAllTypes.create([[SqliteAllTypes.timestamp_val, minDate]]);
+      });
       const found3 = await SqliteAllTypes.findOne([[SqliteAllTypes.id, record3.id]]);
       expect(found3!.timestamp_val?.toISOString()).toBe(minDate.toISOString());
     });
@@ -663,19 +733,22 @@ describe('SQLite Driver', () => {
 
     it('should limit hasMany results using ROW_NUMBER (single key)', async () => {
       // Create user
-      const user = await UserModel.create([
-        [UserModel.name, 'Test User'],
-        [UserModel.email, 'rownum@test.com'],
-      ]);
-
-      // Create 5 posts for the user
-      for (let i = 1; i <= 5; i++) {
-        await PostModel.create([
-          [PostModel.user_id, user.id!],
-          [PostModel.title, `Post ${i}`],
-          [PostModel.content, `Content ${i}`],
+      const user = await DBModel.transaction(async () => {
+        const u = await UserModel.create([
+          [UserModel.name, 'Test User'],
+          [UserModel.email, 'rownum@test.com'],
         ]);
-      }
+
+        // Create 5 posts for the user
+        for (let i = 1; i <= 5; i++) {
+          await PostModel.create([
+            [PostModel.user_id, u.id!],
+            [PostModel.title, `Post ${i}`],
+            [PostModel.content, `Content ${i}`],
+          ]);
+        }
+        return u;
+      });
 
       // Find user using model with limit
       const [foundUser] = await SqliteUserWithPosts.find([[SqliteUserWithPosts.id, user.id!]]);
@@ -692,33 +765,37 @@ describe('SQLite Driver', () => {
     });
 
     it('should batch load with limit for multiple parents (single key)', async () => {
-      // Create users
-      const user1 = await UserModel.create([
-        [UserModel.name, 'User 1'],
-        [UserModel.email, 'batch1@test.com'],
-      ]);
-      const user2 = await UserModel.create([
-        [UserModel.name, 'User 2'],
-        [UserModel.email, 'batch2@test.com'],
-      ]);
-
-      // Create posts for user1 (4 posts)
-      for (let i = 1; i <= 4; i++) {
-        await PostModel.create([
-          [PostModel.user_id, user1.id!],
-          [PostModel.title, `U1 Post ${i}`],
-          [PostModel.content, 'Content'],
+      // Create users and posts
+      const { user1, user2 } = await DBModel.transaction(async () => {
+        const u1 = await UserModel.create([
+          [UserModel.name, 'User 1'],
+          [UserModel.email, 'batch1@test.com'],
         ]);
-      }
-
-      // Create posts for user2 (3 posts)
-      for (let i = 1; i <= 3; i++) {
-        await PostModel.create([
-          [PostModel.user_id, user2.id!],
-          [PostModel.title, `U2 Post ${i}`],
-          [PostModel.content, 'Content'],
+        const u2 = await UserModel.create([
+          [UserModel.name, 'User 2'],
+          [UserModel.email, 'batch2@test.com'],
         ]);
-      }
+
+        // Create posts for user1 (4 posts)
+        for (let i = 1; i <= 4; i++) {
+          await PostModel.create([
+            [PostModel.user_id, u1.id!],
+            [PostModel.title, `U1 Post ${i}`],
+            [PostModel.content, 'Content'],
+          ]);
+        }
+
+        // Create posts for user2 (3 posts)
+        for (let i = 1; i <= 3; i++) {
+          await PostModel.create([
+            [PostModel.user_id, u2.id!],
+            [PostModel.title, `U2 Post ${i}`],
+            [PostModel.content, 'Content'],
+          ]);
+        }
+
+        return { user1: u1, user2: u2 };
+      });
 
       // Load both users
       const users = await SqliteUserWithPosts.find([], { order: 'id' });

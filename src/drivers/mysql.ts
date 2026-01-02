@@ -395,10 +395,12 @@ export class MysqlDriver implements DBDriver {
   }
 
   /**
-   * Get a connection for transaction
+   * Get a connection for transaction (uses writer pool if available)
    */
   async getConnection(): Promise<DBConnection> {
-    const connection = await this.pool.getConnection();
+    // Transactions always use writer pool for consistency
+    const pool = this.writerPool || this.pool;
+    const connection = await pool.getConnection();
     return new MysqlConnection(connection);
   }
 

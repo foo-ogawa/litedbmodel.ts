@@ -121,10 +121,12 @@ describe('MySQL Driver', () => {
     it('should create a record', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await UserModel.create([
-        [UserModel.name, 'Alice'],
-        [UserModel.email, 'alice_create@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Alice'],
+          [UserModel.email, 'alice_create@example.com'],
+        ]);
+      });
 
       expect(user).toBeInstanceOf(User);
       expect(user.id).toBeDefined();
@@ -135,14 +137,16 @@ describe('MySQL Driver', () => {
     it('should find records', async () => {
       if (!mysqlAvailable) return;
 
-      await UserModel.create([
-        [UserModel.name, 'Bob'],
-        [UserModel.email, 'bob_find@example.com'],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'Charlie'],
-        [UserModel.email, 'charlie_find@example.com'],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'Bob'],
+          [UserModel.email, 'bob_find@example.com'],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'Charlie'],
+          [UserModel.email, 'charlie_find@example.com'],
+        ]);
+      });
 
       const users = await UserModel.find([]);
       expect(users.length).toBe(2);
@@ -151,16 +155,18 @@ describe('MySQL Driver', () => {
     it('should find with conditions', async () => {
       if (!mysqlAvailable) return;
 
-      await UserModel.create([
-        [UserModel.name, 'David'],
-        [UserModel.email, 'david_cond@example.com'],
-        [UserModel.is_active, true],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'Eve'],
-        [UserModel.email, 'eve_cond@example.com'],
-        [UserModel.is_active, false],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'David'],
+          [UserModel.email, 'david_cond@example.com'],
+          [UserModel.is_active, true],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'Eve'],
+          [UserModel.email, 'eve_cond@example.com'],
+          [UserModel.is_active, false],
+        ]);
+      });
 
       const activeUsers = await UserModel.find([[UserModel.is_active, true]]);
       expect(activeUsers.length).toBe(1);
@@ -170,10 +176,12 @@ describe('MySQL Driver', () => {
     it('should find one record', async () => {
       if (!mysqlAvailable) return;
 
-      await UserModel.create([
-        [UserModel.name, 'Frank'],
-        [UserModel.email, 'frank_one@example.com'],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'Frank'],
+          [UserModel.email, 'frank_one@example.com'],
+        ]);
+      });
 
       const user = await UserModel.findOne([[UserModel.email, 'frank_one@example.com']]);
       expect(user).not.toBeNull();
@@ -183,15 +191,19 @@ describe('MySQL Driver', () => {
     it('should update a record', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await UserModel.create([
-        [UserModel.name, 'Grace'],
-        [UserModel.email, 'grace_update@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Grace'],
+          [UserModel.email, 'grace_update@example.com'],
+        ]);
+      });
 
-      await UserModel.update(
-        [[UserModel.id, user.id]],
-        [[UserModel.name, 'Grace Updated']]
-      );
+      await DBModel.transaction(async () => {
+        await UserModel.update(
+          [[UserModel.id, user.id]],
+          [[UserModel.name, 'Grace Updated']]
+        );
+      });
 
       const updated = await UserModel.findOne([[UserModel.id, user.id]]);
       expect(updated?.name).toBe('Grace Updated');
@@ -200,12 +212,16 @@ describe('MySQL Driver', () => {
     it('should delete a record', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await UserModel.create([
-        [UserModel.name, 'Henry'],
-        [UserModel.email, 'henry_delete@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Henry'],
+          [UserModel.email, 'henry_delete@example.com'],
+        ]);
+      });
 
-      await UserModel.delete([[UserModel.id, user.id]]);
+      await DBModel.transaction(async () => {
+        await UserModel.delete([[UserModel.id, user.id]]);
+      });
 
       const deleted = await UserModel.findOne([[UserModel.id, user.id]]);
       expect(deleted).toBeNull();
@@ -216,12 +232,14 @@ describe('MySQL Driver', () => {
     it('should save a new record', async () => {
       if (!mysqlAvailable) return;
 
-      const user = new User();
-      user.name = 'Ivan';
-      user.email = 'ivan_save@example.com';
-      await user.save();
+      await DBModel.transaction(async () => {
+        const user = new User();
+        user.name = 'Ivan';
+        user.email = 'ivan_save@example.com';
+        await user.save();
 
-      expect(user.id).toBeDefined();
+        expect(user.id).toBeDefined();
+      });
 
       const found = await UserModel.findOne([[UserModel.email, 'ivan_save@example.com']]);
       expect(found?.name).toBe('Ivan');
@@ -230,13 +248,17 @@ describe('MySQL Driver', () => {
     it('should update an existing record', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await UserModel.create([
-        [UserModel.name, 'Jane'],
-        [UserModel.email, 'jane_update@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Jane'],
+          [UserModel.email, 'jane_update@example.com'],
+        ]);
+      });
 
-      user.name = 'Jane Updated';
-      await user.save();
+      await DBModel.transaction(async () => {
+        user.name = 'Jane Updated';
+        await user.save();
+      });
 
       const found = await UserModel.findOne([[UserModel.id, user.id]]);
       expect(found?.name).toBe('Jane Updated');
@@ -245,12 +267,16 @@ describe('MySQL Driver', () => {
     it('should destroy a record', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await UserModel.create([
-        [UserModel.name, 'Kevin'],
-        [UserModel.email, 'kevin_destroy@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Kevin'],
+          [UserModel.email, 'kevin_destroy@example.com'],
+        ]);
+      });
 
-      await user.destroy();
+      await DBModel.transaction(async () => {
+        await user.destroy();
+      });
 
       const found = await UserModel.findOne([[UserModel.email, 'kevin_destroy@example.com']]);
       expect(found).toBeNull();
@@ -259,16 +285,20 @@ describe('MySQL Driver', () => {
     it('should reload a record', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await UserModel.create([
-        [UserModel.name, 'Lisa'],
-        [UserModel.email, 'lisa_reload@example.com'],
-      ]);
+      const user = await DBModel.transaction(async () => {
+        return await UserModel.create([
+          [UserModel.name, 'Lisa'],
+          [UserModel.email, 'lisa_reload@example.com'],
+        ]);
+      });
 
       // Update in database directly
-      await UserModel.update(
-        [[UserModel.id, user.id]],
-        [[UserModel.name, 'Lisa Reloaded']]
-      );
+      await DBModel.transaction(async () => {
+        await UserModel.update(
+          [[UserModel.id, user.id]],
+          [[UserModel.name, 'Lisa Reloaded']]
+        );
+      });
 
       // Reload
       await user.reload();
@@ -281,16 +311,19 @@ describe('MySQL Driver', () => {
     it('should handle foreign key relationships', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await UserModel.create([
-        [UserModel.name, 'Author'],
-        [UserModel.email, 'author_fk@example.com'],
-      ]);
+      const { user, post } = await DBModel.transaction(async () => {
+        const u = await UserModel.create([
+          [UserModel.name, 'Author'],
+          [UserModel.email, 'author_fk@example.com'],
+        ]);
 
-      const post = await PostModel.create([
-        [PostModel.user_id, user.id!],
-        [PostModel.title, 'Test Post'],
-        [PostModel.content, 'Content'],
-      ]);
+        const p = await PostModel.create([
+          [PostModel.user_id, u.id!],
+          [PostModel.title, 'Test Post'],
+          [PostModel.content, 'Content'],
+        ]);
+        return { user: u, post: p };
+      });
 
       expect(post.id).toBeDefined();
       expect(post.user_id).toBe(user.id);
@@ -306,18 +339,20 @@ describe('MySQL Driver', () => {
     it('should count records', async () => {
       if (!mysqlAvailable) return;
 
-      await UserModel.create([
-        [UserModel.name, 'Count1'],
-        [UserModel.email, 'count1@example.com'],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'Count2'],
-        [UserModel.email, 'count2@example.com'],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'Count3'],
-        [UserModel.email, 'count3@example.com'],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'Count1'],
+          [UserModel.email, 'count1@example.com'],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'Count2'],
+          [UserModel.email, 'count2@example.com'],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'Count3'],
+          [UserModel.email, 'count3@example.com'],
+        ]);
+      });
 
       const count = await UserModel.count([]);
       expect(count).toBe(3);
@@ -326,21 +361,23 @@ describe('MySQL Driver', () => {
     it('should count with conditions', async () => {
       if (!mysqlAvailable) return;
 
-      await UserModel.create([
-        [UserModel.name, 'Active1'],
-        [UserModel.email, 'active1@example.com'],
-        [UserModel.is_active, true],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'Active2'],
-        [UserModel.email, 'active2@example.com'],
-        [UserModel.is_active, true],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'Inactive'],
-        [UserModel.email, 'inactive@example.com'],
-        [UserModel.is_active, false],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'Active1'],
+          [UserModel.email, 'active1@example.com'],
+          [UserModel.is_active, true],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'Active2'],
+          [UserModel.email, 'active2@example.com'],
+          [UserModel.is_active, true],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'Inactive'],
+          [UserModel.email, 'inactive@example.com'],
+          [UserModel.is_active, false],
+        ]);
+      });
 
       const activeCount = await UserModel.count([[UserModel.is_active, true]]);
       expect(activeCount).toBe(2);
@@ -351,18 +388,20 @@ describe('MySQL Driver', () => {
     it('should order results', async () => {
       if (!mysqlAvailable) return;
 
-      await UserModel.create([
-        [UserModel.name, 'Zeta'],
-        [UserModel.email, 'zeta@example.com'],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'Alpha'],
-        [UserModel.email, 'alpha@example.com'],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'Beta'],
-        [UserModel.email, 'beta@example.com'],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'Zeta'],
+          [UserModel.email, 'zeta@example.com'],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'Alpha'],
+          [UserModel.email, 'alpha@example.com'],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'Beta'],
+          [UserModel.email, 'beta@example.com'],
+        ]);
+      });
 
       const users = await UserModel.find([], { order: 'name ASC' });
       expect(users[0].name).toBe('Alpha');
@@ -373,12 +412,14 @@ describe('MySQL Driver', () => {
     it('should limit results', async () => {
       if (!mysqlAvailable) return;
 
-      for (let i = 0; i < 5; i++) {
-        await UserModel.create([
-          [UserModel.name, `Limit${i}`],
-          [UserModel.email, `limit${i}@example.com`],
-        ]);
-      }
+      await DBModel.transaction(async () => {
+        for (let i = 0; i < 5; i++) {
+          await UserModel.create([
+            [UserModel.name, `Limit${i}`],
+            [UserModel.email, `limit${i}@example.com`],
+          ]);
+        }
+      });
 
       const users = await UserModel.find([], { limit: 2 });
       expect(users.length).toBe(2);
@@ -387,12 +428,14 @@ describe('MySQL Driver', () => {
     it('should handle offset', async () => {
       if (!mysqlAvailable) return;
 
-      for (let i = 0; i < 5; i++) {
-        await UserModel.create([
-          [UserModel.name, `Offset${i}`],
-          [UserModel.email, `offset${i}@example.com`],
-        ]);
-      }
+      await DBModel.transaction(async () => {
+        for (let i = 0; i < 5; i++) {
+          await UserModel.create([
+            [UserModel.name, `Offset${i}`],
+            [UserModel.email, `offset${i}@example.com`],
+          ]);
+        }
+      });
 
       const users = await UserModel.find([], { order: 'email ASC', limit: 2, offset: 2 });
       expect(users.length).toBe(2);
@@ -440,22 +483,26 @@ describe('MySQL Driver', () => {
       if (!mysqlAvailable) return;
 
       // Create initial user
-      await UserModel.create([
-        [UserModel.name, 'Upsert1'],
-        [UserModel.email, 'upsert_ignore@example.com'],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'Upsert1'],
+          [UserModel.email, 'upsert_ignore@example.com'],
+        ]);
+      });
 
       // Try to insert duplicate - should be ignored
-      await UserModel.create(
-        [
-          [UserModel.name, 'Upsert1 Updated'],
-          [UserModel.email, 'upsert_ignore@example.com'],
-        ],
-        {
-          onConflict: 'email',
-          onConflictIgnore: true,
-        }
-      );
+      await DBModel.transaction(async () => {
+        await UserModel.create(
+          [
+            [UserModel.name, 'Upsert1 Updated'],
+            [UserModel.email, 'upsert_ignore@example.com'],
+          ],
+          {
+            onConflict: 'email',
+            onConflictIgnore: true,
+          }
+        );
+      });
 
       const user = await UserModel.findOne([[UserModel.email, 'upsert_ignore@example.com']]);
       expect(user?.name).toBe('Upsert1'); // Name should not have changed
@@ -465,24 +512,28 @@ describe('MySQL Driver', () => {
       if (!mysqlAvailable) return;
 
       // Create initial user
-      await UserModel.create([
-        [UserModel.name, 'Upsert2'],
-        [UserModel.email, 'upsert_update@example.com'],
-        [UserModel.role, 'user'],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'Upsert2'],
+          [UserModel.email, 'upsert_update@example.com'],
+          [UserModel.role, 'user'],
+        ]);
+      });
 
       // Try to insert duplicate - should update
-      await UserModel.create(
-        [
-          [UserModel.name, 'Upsert2 Updated'],
-          [UserModel.email, 'upsert_update@example.com'],
-          [UserModel.role, 'admin'],
-        ],
-        {
-          onConflict: 'email',
-          onConflictUpdate: ['name', 'role'],
-        }
-      );
+      await DBModel.transaction(async () => {
+        await UserModel.create(
+          [
+            [UserModel.name, 'Upsert2 Updated'],
+            [UserModel.email, 'upsert_update@example.com'],
+            [UserModel.role, 'admin'],
+          ],
+          {
+            onConflict: 'email',
+            onConflictUpdate: ['name', 'role'],
+          }
+        );
+      });
 
       const user = await UserModel.findOne([[UserModel.email, 'upsert_update@example.com']]);
       expect(user?.name).toBe('Upsert2 Updated');
@@ -494,21 +545,23 @@ describe('MySQL Driver', () => {
     it('should handle IN conditions', async () => {
       if (!mysqlAvailable) return;
 
-      await UserModel.create([
-        [UserModel.name, 'In1'],
-        [UserModel.email, 'in1@example.com'],
-        [UserModel.role, 'admin'],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'In2'],
-        [UserModel.email, 'in2@example.com'],
-        [UserModel.role, 'user'],
-      ]);
-      await UserModel.create([
-        [UserModel.name, 'In3'],
-        [UserModel.email, 'in3@example.com'],
-        [UserModel.role, 'moderator'],
-      ]);
+      await DBModel.transaction(async () => {
+        await UserModel.create([
+          [UserModel.name, 'In1'],
+          [UserModel.email, 'in1@example.com'],
+          [UserModel.role, 'admin'],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'In2'],
+          [UserModel.email, 'in2@example.com'],
+          [UserModel.role, 'user'],
+        ]);
+        await UserModel.create([
+          [UserModel.name, 'In3'],
+          [UserModel.email, 'in3@example.com'],
+          [UserModel.role, 'moderator'],
+        ]);
+      });
 
       // Import dbIn for IN conditions
       const { dbIn } = await import('../../src');
@@ -534,14 +587,16 @@ describe('MySQL Driver', () => {
       const testDate = new Date('2024-06-15T10:30:00.000Z');
       
       // Create via high-level API
-      const created = await AllTypes.create([
-        [AllTypes.int_val, 42],
-        [AllTypes.float_val, 3.14159],
-        [AllTypes.bool_val, true],
-        [AllTypes.text_val, 'long text content'],
-        [AllTypes.varchar_val, 'short varchar'],
-        [AllTypes.timestamp_val, testDate],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.int_val, 42],
+          [AllTypes.float_val, 3.14159],
+          [AllTypes.bool_val, true],
+          [AllTypes.text_val, 'long text content'],
+          [AllTypes.varchar_val, 'short varchar'],
+          [AllTypes.timestamp_val, testDate],
+        ]);
+      });
       
       expect(created.id).toBeDefined();
       expect(created.int_val).toBe(42);
@@ -569,10 +624,12 @@ describe('MySQL Driver', () => {
       const jsonArray = [1, 'two', { three: 3 }];
       
       // Create with JSON types via high-level API
-      const created = await AllTypes.create([
-        [AllTypes.json_val, jsonObj],
-        [AllTypes.json_array_val, jsonArray],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.json_val, jsonObj],
+          [AllTypes.json_array_val, jsonArray],
+        ]);
+      });
       
       expect(created.json_val).toEqual(jsonObj);
       expect(created.json_array_val).toEqual(jsonArray);
@@ -588,14 +645,16 @@ describe('MySQL Driver', () => {
       if (!mysqlAvailable) return;
 
       // Create with NULL values via high-level API
-      const created = await AllTypes.create([
-        [AllTypes.int_val, null],
-        [AllTypes.float_val, null],
-        [AllTypes.bool_val, null],
-        [AllTypes.text_val, null],
-        [AllTypes.timestamp_val, null],
-        [AllTypes.json_val, null],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.int_val, null],
+          [AllTypes.float_val, null],
+          [AllTypes.bool_val, null],
+          [AllTypes.text_val, null],
+          [AllTypes.timestamp_val, null],
+          [AllTypes.json_val, null],
+        ]);
+      });
       
       // Note: Typed columns (boolean, datetime, json) return undefined for null values
       // due to decorator's type cast using `?? undefined`
@@ -624,29 +683,33 @@ describe('MySQL Driver', () => {
       const updatedDate = new Date('2024-12-31T23:59:59.000Z');
       
       // Create initial record via high-level API
-      const created = await AllTypes.create([
-        [AllTypes.int_val, 10],
-        [AllTypes.float_val, 1.5],
-        [AllTypes.bool_val, false],
-        [AllTypes.text_val, 'initial text'],
-        [AllTypes.varchar_val, 'initial'],
-        [AllTypes.timestamp_val, initialDate],
-        [AllTypes.json_val, { key: 'initial' }],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.int_val, 10],
+          [AllTypes.float_val, 1.5],
+          [AllTypes.bool_val, false],
+          [AllTypes.text_val, 'initial text'],
+          [AllTypes.varchar_val, 'initial'],
+          [AllTypes.timestamp_val, initialDate],
+          [AllTypes.json_val, { key: 'initial' }],
+        ]);
+      });
 
       // Update all values via high-level API
-      await AllTypes.update(
-        [[AllTypes.id, created.id]],
-        [
-          [AllTypes.int_val, 99],
-          [AllTypes.float_val, 9.99],
-          [AllTypes.bool_val, true],
-          [AllTypes.text_val, 'updated text'],
-          [AllTypes.varchar_val, 'updated'],
-          [AllTypes.timestamp_val, updatedDate],
-          [AllTypes.json_val, { key: 'updated' }],
-        ]
-      );
+      await DBModel.transaction(async () => {
+        await AllTypes.update(
+          [[AllTypes.id, created.id]],
+          [
+            [AllTypes.int_val, 99],
+            [AllTypes.float_val, 9.99],
+            [AllTypes.bool_val, true],
+            [AllTypes.text_val, 'updated text'],
+            [AllTypes.varchar_val, 'updated'],
+            [AllTypes.timestamp_val, updatedDate],
+            [AllTypes.json_val, { key: 'updated' }],
+          ]
+        );
+      });
 
       // Find and verify updated values
       const found = await AllTypes.findOne([[AllTypes.id, created.id]]);
@@ -664,14 +727,16 @@ describe('MySQL Driver', () => {
       if (!mysqlAvailable) return;
 
       // Edge cases: zero, false, empty strings, empty JSON
-      const created = await AllTypes.create([
-        [AllTypes.int_val, 0],
-        [AllTypes.float_val, 0.0],
-        [AllTypes.bool_val, false],
-        [AllTypes.text_val, ''],
-        [AllTypes.varchar_val, ''],
-        [AllTypes.json_val, {}],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.int_val, 0],
+          [AllTypes.float_val, 0.0],
+          [AllTypes.bool_val, false],
+          [AllTypes.text_val, ''],
+          [AllTypes.varchar_val, ''],
+          [AllTypes.json_val, {}],
+        ]);
+      });
       
       expect(created.int_val).toBe(0);
       expect(created.float_val).toBe(0);
@@ -695,17 +760,23 @@ describe('MySQL Driver', () => {
       if (!mysqlAvailable) return;
 
       // Test explicit true
-      const trueRecord = await AllTypes.create([[AllTypes.bool_val, true]]);
+      const trueRecord = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.bool_val, true]]);
+      });
       const foundTrue = await AllTypes.findOne([[AllTypes.id, trueRecord.id]]);
       expect(foundTrue!.bool_val).toBe(true);
 
       // Test explicit false
-      const falseRecord = await AllTypes.create([[AllTypes.bool_val, false]]);
+      const falseRecord = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.bool_val, false]]);
+      });
       const foundFalse = await AllTypes.findOne([[AllTypes.id, falseRecord.id]]);
       expect(foundFalse!.bool_val).toBe(false);
 
       // Test null (typed column preserves null)
-      const nullRecord = await AllTypes.create([[AllTypes.bool_val, null]]);
+      const nullRecord = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.bool_val, null]]);
+      });
       const foundNull = await AllTypes.findOne([[AllTypes.id, nullRecord.id]]);
       expect(foundNull!.bool_val).toBeNull();
     });
@@ -715,13 +786,17 @@ describe('MySQL Driver', () => {
 
       // Test specific datetime
       const specificDate = new Date('2024-06-15T14:30:45.000Z'); // MySQL doesn't store ms
-      const record1 = await AllTypes.create([[AllTypes.timestamp_val, specificDate]]);
+      const record1 = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.timestamp_val, specificDate]]);
+      });
       const found1 = await AllTypes.findOne([[AllTypes.id, record1.id]]);
       // Compare without milliseconds for MySQL compatibility
       expect(found1!.timestamp_val?.toISOString().slice(0, 19)).toBe(specificDate.toISOString().slice(0, 19));
 
       // Test null datetime (typed column preserves null)
-      const record2 = await AllTypes.create([[AllTypes.timestamp_val, null]]);
+      const record2 = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.timestamp_val, null]]);
+      });
       const found2 = await AllTypes.findOne([[AllTypes.id, record2.id]]);
       expect(found2!.timestamp_val).toBeNull();
     });

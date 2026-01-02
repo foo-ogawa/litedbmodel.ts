@@ -151,6 +151,10 @@ export interface DBHandlerOptions {
   logger?: Logger;
   /** Existing connection for transaction */
   connection?: DBConnection;
+  /** Keep using writer after transaction (default: true) */
+  useWriterAfterTransaction?: boolean;
+  /** Duration to keep using writer after transaction (ms, default: 5000) */
+  writerStickyDuration?: number;
 }
 
 /**
@@ -220,6 +224,23 @@ export class DBHandler {
       return this.connection.query(sql, params);
     }
     return this.driver.executeWrite(sql, params);
+  }
+
+  /**
+   * Execute a query on writer pool (for withWriter context)
+   */
+  async executeOnWriter(sql: string, params: unknown[] = []): Promise<QueryResult> {
+    if (this.connection) {
+      return this.connection.query(sql, params);
+    }
+    return this.driver.executeWrite(sql, params);
+  }
+
+  /**
+   * Check if writer pool is configured
+   */
+  hasWriterPool(): boolean {
+    return 'getWriterPool' in this.driver && (this.driver as { getWriterPool: () => unknown }).getWriterPool() !== null;
   }
 
   /**

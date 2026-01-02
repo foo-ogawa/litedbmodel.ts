@@ -191,8 +191,13 @@ export type {
   Logger,
   LimitConfig,
   ModelOptions,
+  DBConfigOptions,
 } from './types';
-export { LimitExceededError } from './types';
+export { 
+  LimitExceededError, 
+  WriteOutsideTransactionError, 
+  WriteInReadOnlyContextError,
+} from './types';
 
 // ============================================
 // Database Drivers

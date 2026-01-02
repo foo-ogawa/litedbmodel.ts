@@ -37,8 +37,8 @@ export interface DBConfig {
   name?: string;
   /** @deprecated Use driver instead */
   type?: 'pgsql';
-  /** Database driver: 'postgres' (default) or 'sqlite' */
-  driver?: 'postgres' | 'sqlite';
+  /** Database driver: 'postgres' (default), 'sqlite', or 'mysql' */
+  driver?: 'postgres' | 'sqlite' | 'mysql';
   /** Database host (for server-based DBs like PostgreSQL) */
   host?: string;
   /** Database port */
@@ -154,6 +154,43 @@ export interface TransactionOptions {
   retryDuration?: number;
   /** If true, always rollback instead of commit (useful for preview/dry-run) */
   rollbackOnly?: boolean;
+  /** 
+   * Override global useWriterAfterTransaction for this transaction.
+   * If true, subsequent reads will use writer connection for writerStickyDuration.
+   * @default Uses global setting (true by default)
+   */
+  useWriterAfterTransaction?: boolean;
+}
+
+// ============================================
+// Database Configuration Options
+// ============================================
+
+/**
+ * Options for database configuration.
+ * Used with DBModel.setConfig() and DBModel.createDBBase().
+ */
+export interface DBConfigOptions {
+  /** Writer database configuration for reader/writer separation */
+  writerConfig?: DBConfig;
+  /** Logger instance */
+  logger?: Logger;
+  /** Hard limit for find() - throws if exceeded */
+  findHardLimit?: number | null;
+  /** Hard limit for hasMany lazy loading - throws if exceeded */
+  hasManyHardLimit?: number | null;
+  /**
+   * Keep using writer connection after transaction completes.
+   * Helps avoid stale reads due to replication lag.
+   * @default true
+   */
+  useWriterAfterTransaction?: boolean;
+  /**
+   * Duration (in milliseconds) to keep using writer after transaction.
+   * Only applies when useWriterAfterTransaction is true.
+   * @default 5000
+   */
+  writerStickyDuration?: number;
 }
 
 // ============================================
@@ -231,6 +268,38 @@ export class LimitExceededError extends Error {
       `an N+1 query pattern. Set a higher limit or use pagination.`
     );
     this.name = 'LimitExceededError';
+  }
+}
+
+/**
+ * Error thrown when attempting write operations outside a transaction.
+ */
+export class WriteOutsideTransactionError extends Error {
+  constructor(
+    public readonly operation: string,
+    public readonly modelName?: string
+  ) {
+    super(
+      `Write operation "${operation}"${modelName ? ` on ${modelName}` : ''} requires a transaction. ` +
+      `Use DBModel.transaction() to wrap write operations.`
+    );
+    this.name = 'WriteOutsideTransactionError';
+  }
+}
+
+/**
+ * Error thrown when attempting write operations inside withWriter() context.
+ */
+export class WriteInReadOnlyContextError extends Error {
+  constructor(
+    public readonly operation: string,
+    public readonly modelName?: string
+  ) {
+    super(
+      `Write operation "${operation}"${modelName ? ` on ${modelName}` : ''} is not allowed in withWriter() context. ` +
+      `Use DBModel.transaction() for write operations.`
+    );
+    this.name = 'WriteInReadOnlyContextError';
   }
 }
 

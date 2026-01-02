@@ -315,32 +315,37 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
 
   describe('instance methods', () => {
     it('should save a new record', async () => {
-      const user = new User();
-      user.name = 'Save Test';
-      user.email = 'save-test@example.com';
-      user.is_active = true;
-      user.role = 'user';
-      await user.save();
+      await DBModel.transaction(async () => {
+        const user = new User();
+        user.name = 'Save Test';
+        user.email = 'save-test@example.com';
+        user.is_active = true;
+        user.role = 'user';
+        await user.save();
 
-      expect(user.id).toBeDefined();
+        expect(user.id).toBeDefined();
+      });
       
       // Cleanup
       await DBModel.execute(`DELETE FROM users WHERE email = $1`, ['save-test@example.com']);
     });
 
     it('should update an existing record', async () => {
+      const uniqueEmail = `update-instance-${Date.now()}@example.com`;
       // Create a user first
       const insertRes = await DBModel.execute(
         `INSERT INTO users (name, email, is_active, role) VALUES ($1, $2, $3, $4) RETURNING *`,
-        ['Update Instance', 'update-instance@example.com', true, 'user']
+        ['Update Instance', uniqueEmail, true, 'user']
       );
       const userId = insertRes.rows[0].id;
 
       // Find and update via instance
       const user = await User.findById(userId);
       expect(user).not.toBeNull();
-      user!.name = 'Updated Instance';
-      await user!.save();
+      await DBModel.transaction(async () => {
+        user!.name = 'Updated Instance';
+        await user!.save();
+      });
 
       // Verify update
       const updated = await User.findById(userId);
@@ -373,18 +378,21 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
     });
 
     it('should destroy a record', async () => {
+      const uniqueEmail = `destroy-test-${Date.now()}@example.com`;
       // Create a user first
       const insertRes = await DBModel.execute(
         `INSERT INTO users (name, email, is_active, role) VALUES ($1, $2, $3, $4) RETURNING *`,
-        ['Destroy Test', 'destroy-test@example.com', true, 'user']
+        ['Destroy Test', uniqueEmail, true, 'user']
       );
       const userId = insertRes.rows[0].id;
 
       const user = await User.findById(userId);
       expect(user).not.toBeNull();
 
-      const result = await user!.destroy();
-      expect(result).toBe(true);
+      await DBModel.transaction(async () => {
+        const result = await user!.destroy();
+        expect(result).toBe(true);
+      });
 
       // Verify deletion
       const deleted = await User.findById(userId);
@@ -518,14 +526,22 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       const user = new User();
       // Missing required fields like email
 
-      await expect(user.save()).rejects.toThrow();
+      await expect(
+        DBModel.transaction(async () => {
+          await user.save();
+        })
+      ).rejects.toThrow();
     });
 
     it('should throw error when destroying without primary key', async () => {
       const user = new User();
       // No id set
 
-      await expect(user.destroy()).rejects.toThrow('Cannot destroy record without primary key');
+      await expect(
+        DBModel.transaction(async () => {
+          await user.destroy();
+        })
+      ).rejects.toThrow('Cannot destroy record without primary key');
     });
 
     it('should throw error when reloading without primary key', async () => {
@@ -625,14 +641,16 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       const testDate = new Date('2024-06-15T10:30:00.000Z');
       
       // Create via high-level API
-      const created = await AllTypes.create([
-        [AllTypes.int_val, 42],
-        [AllTypes.float_val, 3.14159],
-        [AllTypes.bool_val, true],
-        [AllTypes.text_val, 'long text content'],
-        [AllTypes.varchar_val, 'short varchar'],
-        [AllTypes.timestamp_val, testDate],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.int_val, 42],
+          [AllTypes.float_val, 3.14159],
+          [AllTypes.bool_val, true],
+          [AllTypes.text_val, 'long text content'],
+          [AllTypes.varchar_val, 'short varchar'],
+          [AllTypes.timestamp_val, testDate],
+        ]);
+      });
       
       expect(created.id).toBeDefined();
       expect(created.int_val).toBe(42);
@@ -655,11 +673,13 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
 
     it('should persist and retrieve array types correctly via create/find', async () => {
       // Create with plain arrays (no helper functions - ORM should handle conversion)
-      const created = await AllTypes.create([
-        [AllTypes.int_array, [1, 2, 3, 4, 5]],
-        [AllTypes.text_array, ['apple', 'banana', 'cherry']],
-        [AllTypes.bool_array, [true, false, true]],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.int_array, [1, 2, 3, 4, 5]],
+          [AllTypes.text_array, ['apple', 'banana', 'cherry']],
+          [AllTypes.bool_array, [true, false, true]],
+        ]);
+      });
       
       expect(created.int_array).toEqual([1, 2, 3, 4, 5]);
       expect(created.text_array).toEqual(['apple', 'banana', 'cherry']);
@@ -678,10 +698,12 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       const jsonArray = [1, 'two', { three: 3 }];
       
       // Create with JSON types
-      const created = await AllTypes.create([
-        [AllTypes.json_val, jsonObj],
-        [AllTypes.json_array_val, jsonArray],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.json_val, jsonObj],
+          [AllTypes.json_array_val, jsonArray],
+        ]);
+      });
       
       expect(created.json_val).toEqual(jsonObj);
       expect(created.json_array_val).toEqual(jsonArray);
@@ -695,14 +717,16 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
 
     it('should persist and retrieve NULL values correctly via create/find', async () => {
       // Create with NULL values
-      const created = await AllTypes.create([
-        [AllTypes.int_val, null],
-        [AllTypes.float_val, null],
-        [AllTypes.bool_val, null],
-        [AllTypes.text_val, null],
-        [AllTypes.timestamp_val, null],
-        [AllTypes.json_val, null],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.int_val, null],
+          [AllTypes.float_val, null],
+          [AllTypes.bool_val, null],
+          [AllTypes.text_val, null],
+          [AllTypes.timestamp_val, null],
+          [AllTypes.json_val, null],
+        ]);
+      });
       
       // Note: Typed columns (boolean, datetime, json, arrays) return undefined for null values
       // due to decorator's type cast using `?? undefined`
@@ -729,33 +753,37 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       const updatedDate = new Date('2024-12-31T23:59:59.000Z');
       
       // Create initial record (using plain arrays)
-      const created = await AllTypes.create([
-        [AllTypes.int_val, 10],
-        [AllTypes.float_val, 1.5],
-        [AllTypes.bool_val, false],
-        [AllTypes.text_val, 'initial text'],
-        [AllTypes.varchar_val, 'initial'],
-        [AllTypes.timestamp_val, initialDate],
-        [AllTypes.int_array, [1, 2, 3]],
-        [AllTypes.text_array, ['a', 'b', 'c']],
-        [AllTypes.json_val, { key: 'initial' }],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.int_val, 10],
+          [AllTypes.float_val, 1.5],
+          [AllTypes.bool_val, false],
+          [AllTypes.text_val, 'initial text'],
+          [AllTypes.varchar_val, 'initial'],
+          [AllTypes.timestamp_val, initialDate],
+          [AllTypes.int_array, [1, 2, 3]],
+          [AllTypes.text_array, ['a', 'b', 'c']],
+          [AllTypes.json_val, { key: 'initial' }],
+        ]);
+      });
 
       // Update all values via high-level API (using plain arrays)
-      await AllTypes.update(
-        [[AllTypes.id, created.id]],
-        [
-          [AllTypes.int_val, 99],
-          [AllTypes.float_val, 9.99],
-          [AllTypes.bool_val, true],
-          [AllTypes.text_val, 'updated text'],
-          [AllTypes.varchar_val, 'updated'],
-          [AllTypes.timestamp_val, updatedDate],
-          [AllTypes.int_array, [4, 5, 6]],
-          [AllTypes.text_array, ['x', 'y', 'z']],
-          [AllTypes.json_val, { key: 'updated' }],
-        ]
-      );
+      await DBModel.transaction(async () => {
+        await AllTypes.update(
+          [[AllTypes.id, created.id]],
+          [
+            [AllTypes.int_val, 99],
+            [AllTypes.float_val, 9.99],
+            [AllTypes.bool_val, true],
+            [AllTypes.text_val, 'updated text'],
+            [AllTypes.varchar_val, 'updated'],
+            [AllTypes.timestamp_val, updatedDate],
+            [AllTypes.int_array, [4, 5, 6]],
+            [AllTypes.text_array, ['x', 'y', 'z']],
+            [AllTypes.json_val, { key: 'updated' }],
+          ]
+        );
+      });
 
       // Find and verify updated values
       const found = await AllTypes.findOne([[AllTypes.id, created.id]]);
@@ -773,16 +801,18 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
 
     it('should handle edge case values correctly via create/find', async () => {
       // Edge cases: zero, false, empty strings, empty arrays, empty JSON
-      const created = await AllTypes.create([
-        [AllTypes.int_val, 0],
-        [AllTypes.float_val, 0.0],
-        [AllTypes.bool_val, false],
-        [AllTypes.text_val, ''],
-        [AllTypes.varchar_val, ''],
-        [AllTypes.int_array, []],
-        [AllTypes.text_array, []],
-        [AllTypes.json_val, {}],
-      ]);
+      const created = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.int_val, 0],
+          [AllTypes.float_val, 0.0],
+          [AllTypes.bool_val, false],
+          [AllTypes.text_val, ''],
+          [AllTypes.varchar_val, ''],
+          [AllTypes.int_array, []],
+          [AllTypes.text_array, []],
+          [AllTypes.json_val, {}],
+        ]);
+      });
       
       expect(created.int_val).toBe(0);
       expect(created.float_val).toBe(0);
@@ -808,17 +838,23 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
 
     it('should handle boolean edge cases correctly', async () => {
       // Test explicit true
-      const trueRecord = await AllTypes.create([[AllTypes.bool_val, true]]);
+      const trueRecord = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.bool_val, true]]);
+      });
       const foundTrue = await AllTypes.findOne([[AllTypes.id, trueRecord.id]]);
       expect(foundTrue!.bool_val).toBe(true);
 
       // Test explicit false
-      const falseRecord = await AllTypes.create([[AllTypes.bool_val, false]]);
+      const falseRecord = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.bool_val, false]]);
+      });
       const foundFalse = await AllTypes.findOne([[AllTypes.id, falseRecord.id]]);
       expect(foundFalse!.bool_val).toBe(false);
 
       // Test null (typed column preserves null)
-      const nullRecord = await AllTypes.create([[AllTypes.bool_val, null]]);
+      const nullRecord = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.bool_val, null]]);
+      });
       const foundNull = await AllTypes.findOne([[AllTypes.id, nullRecord.id]]);
       expect(foundNull!.bool_val).toBeNull();
     });
@@ -826,18 +862,24 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
     it('should handle datetime edge cases correctly', async () => {
       // Test specific datetime
       const specificDate = new Date('2024-06-15T14:30:45.123Z');
-      const record1 = await AllTypes.create([[AllTypes.timestamp_val, specificDate]]);
+      const record1 = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.timestamp_val, specificDate]]);
+      });
       const found1 = await AllTypes.findOne([[AllTypes.id, record1.id]]);
       expect(found1!.timestamp_val?.toISOString()).toBe(specificDate.toISOString());
 
       // Test null datetime (typed column preserves null)
-      const record2 = await AllTypes.create([[AllTypes.timestamp_val, null]]);
+      const record2 = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.timestamp_val, null]]);
+      });
       const found2 = await AllTypes.findOne([[AllTypes.id, record2.id]]);
       expect(found2!.timestamp_val).toBeNull();
 
       // Test min date
       const minDate = new Date('1970-01-01T00:00:00.000Z');
-      const record3 = await AllTypes.create([[AllTypes.timestamp_val, minDate]]);
+      const record3 = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.timestamp_val, minDate]]);
+      });
       const found3 = await AllTypes.findOne([[AllTypes.id, record3.id]]);
       expect(found3!.timestamp_val?.toISOString()).toBe(minDate.toISOString());
     });

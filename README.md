@@ -609,6 +609,8 @@ TenantMiddleware.getCurrentContext().tenantId = req.user.tenantId;
 
 ---
 
+# Advanced Features
+
 ## Raw SQL Methods
 
 When `find()` isn't enough, use real SQL directly. No query builder translation needed.
@@ -864,6 +866,154 @@ class UserActivityModel extends DBModel {
 4. **Caching**: Consider materializing frequently-used query models as actual views
 
 ---
+
+## Reader/Writer Separation
+
+For production deployments with read replicas, litedbmodel supports automatic connection routing.
+
+### Configuration
+
+```typescript
+DBModel.setConfig(
+  { host: 'reader.db.example.com', database: 'mydb', ... },  // reader (default)
+  {
+    writerConfig: { host: 'writer.db.example.com', database: 'mydb', ... },
+    
+    // Keep using writer after transaction (default: true)
+    // Avoids stale reads due to replication lag
+    useWriterAfterTransaction: true,
+    
+    // Duration to keep using writer after transaction (ms, default: 5000)
+    writerStickyDuration: 5000,
+  }
+);
+```
+
+### Connection Routing Rules
+
+| Context | Connection | Write Allowed |
+|---------|------------|---------------|
+| Inside `transaction()` | Writer | ✅ Yes |
+| Inside `withWriter()` | Writer | ❌ No (SELECT only) |
+| After transaction (within sticky duration) | Writer | ❌ No |
+| Normal query | Reader | ❌ No |
+
+**Important:** Write operations (`create()`, `update()`, `delete()`) require a transaction. Attempting to write outside a transaction throws an error.
+
+### Transaction Options
+
+```typescript
+// Override global useWriterAfterTransaction per transaction
+await DBModel.transaction(
+  async () => {
+    await User.create([[User.name, 'John']]);
+  },
+  { 
+    useWriterAfterTransaction: false,  // Don't stick to writer after this transaction
+  }
+);
+```
+
+### Explicit Writer Access (SELECT)
+
+Use `withWriter()` when you need to read from writer to avoid replication lag:
+
+```typescript
+// Read from writer explicitly
+const user = await DBModel.withWriter(async () => {
+  return await User.findOne([[User.id, 1]]);
+});
+
+// Write inside withWriter() throws error - use transaction() instead
+await DBModel.withWriter(async () => {
+  await User.create([[User.name, 'Error']]);  // → WriteInReadOnlyContextError
+});
+```
+
+---
+
+## Multi-Database Support
+
+For applications connecting to multiple databases, use `createDBBase()` to create isolated base classes.
+
+### Setup
+
+```typescript
+import { DBModel, model, column } from 'litedbmodel';
+
+// Foundation database
+const BaseDB = DBModel.createDBBase({
+  host: 'base-reader.example.com',
+  database: 'base_db',
+  // ...
+}, {
+  writerConfig: { host: 'base-writer.example.com', database: 'base_db', ... },
+});
+
+// CMS database
+const CmsDB = DBModel.createDBBase({
+  host: 'cms-reader.example.com',
+  database: 'cms_db',
+  // ...
+}, {
+  writerConfig: { host: 'cms-writer.example.com', database: 'cms_db', ... },
+});
+```
+
+### Model Definition
+
+```typescript
+// Models inherit from their respective database base class
+@model('users')
+class UserModel extends BaseDB {
+  @column() id?: number;
+  @column() name?: string;
+}
+export const User = UserModel.asModel();
+
+@model('articles')
+class ArticleModel extends CmsDB {
+  @column() id?: number;
+  @column() title?: string;
+}
+export const Article = ArticleModel.asModel();
+```
+
+### Independent Transactions
+
+Each database has its own transaction context:
+
+```typescript
+// BaseDB transaction
+await BaseDB.transaction(async () => {
+  await User.create([[User.name, 'John']]);
+});
+
+// CmsDB transaction (independent)
+await CmsDB.transaction(async () => {
+  await Article.create([[Article.title, 'Hello World']]);
+});
+
+// Each DB also has independent withWriter()
+const article = await CmsDB.withWriter(async () => {
+  return await Article.findOne([[Article.id, 1]]);
+});
+```
+
+### Scope Isolation
+
+| Resource | Scope | Description |
+|----------|-------|-------------|
+| Connection Handler | Per DBBase | Each base class has its own connection pool |
+| Transaction Context | Per DBBase | `AsyncLocalStorage` isolated per base class |
+| Writer Context | Per DBBase | `withWriter()` isolated per base class |
+| Sticky Timer | Per DBBase | Writer sticky duration tracked separately |
+| Middlewares | **Global** | Cross-cutting concerns shared across all DBs |
+| Model Registry | **Global** | For relation resolution across databases |
+
+---
+
+# APPENDIX
 
 ## Comparison
 
