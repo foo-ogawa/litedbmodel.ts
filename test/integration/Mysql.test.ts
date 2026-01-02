@@ -121,13 +121,15 @@ describe('MySQL Driver', () => {
     it('should create a record', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await DBModel.transaction(async () => {
+      const result = await DBModel.transaction(async () => {
         return await UserModel.create([
           [UserModel.name, 'Alice'],
           [UserModel.email, 'alice_create@example.com'],
-        ]);
+        ], { returning: true });
       });
 
+      expect(result).not.toBeNull();
+      const [user] = await UserModel.findById(result!);
       expect(user).toBeInstanceOf(User);
       expect(user.id).toBeDefined();
       expect(user.name).toBe('Alice');
@@ -191,12 +193,13 @@ describe('MySQL Driver', () => {
     it('should update a record', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await DBModel.transaction(async () => {
+      const result = await DBModel.transaction(async () => {
         return await UserModel.create([
           [UserModel.name, 'Grace'],
           [UserModel.email, 'grace_update@example.com'],
-        ]);
+        ], { returning: true });
       });
+      const [user] = await UserModel.findById(result!);
 
       await DBModel.transaction(async () => {
         await UserModel.update(
@@ -212,12 +215,13 @@ describe('MySQL Driver', () => {
     it('should delete a record', async () => {
       if (!mysqlAvailable) return;
 
-      const user = await DBModel.transaction(async () => {
+      const result = await DBModel.transaction(async () => {
         return await UserModel.create([
           [UserModel.name, 'Henry'],
           [UserModel.email, 'henry_delete@example.com'],
-        ]);
+        ], { returning: true });
       });
+      const [user] = await UserModel.findById(result!);
 
       await DBModel.transaction(async () => {
         await UserModel.delete([[UserModel.id, user.id]]);
@@ -508,7 +512,7 @@ describe('MySQL Driver', () => {
             [UserModel.email, 'upsert_ignore@example.com'],
           ],
           {
-            onConflict: 'email',
+            onConflict: UserModel.email,
             onConflictIgnore: true,
           }
         );
@@ -539,8 +543,8 @@ describe('MySQL Driver', () => {
             [UserModel.role, 'admin'],
           ],
           {
-            onConflict: 'email',
-            onConflictUpdate: ['name', 'role'],
+            onConflict: UserModel.email,
+            onConflictUpdate: [UserModel.name, UserModel.role],
           }
         );
       });
@@ -597,7 +601,7 @@ describe('MySQL Driver', () => {
       const testDate = new Date('2024-06-15T10:30:00.000Z');
       
       // Create via high-level API
-      const created = await DBModel.transaction(async () => {
+      const result = await DBModel.transaction(async () => {
         return await AllTypes.create([
           [AllTypes.int_val, 42],
           [AllTypes.float_val, 3.14159],
@@ -605,9 +609,11 @@ describe('MySQL Driver', () => {
           [AllTypes.text_val, 'long text content'],
           [AllTypes.varchar_val, 'short varchar'],
           [AllTypes.timestamp_val, testDate],
-        ]);
+        ], { returning: true });
       });
       
+      expect(result).not.toBeNull();
+      const [created] = await AllTypes.findById(result!);
       expect(created.id).toBeDefined();
       expect(created.int_val).toBe(42);
       expect(created.float_val).toBeCloseTo(3.14159, 4);
@@ -634,13 +640,14 @@ describe('MySQL Driver', () => {
       const jsonArray = [1, 'two', { three: 3 }];
       
       // Create with JSON types via high-level API
-      const created = await DBModel.transaction(async () => {
+      const result = await DBModel.transaction(async () => {
         return await AllTypes.create([
           [AllTypes.json_val, jsonObj],
           [AllTypes.json_array_val, jsonArray],
-        ]);
+        ], { returning: true });
       });
       
+      const [created] = await AllTypes.findById(result!);
       expect(created.json_val).toEqual(jsonObj);
       expect(created.json_array_val).toEqual(jsonArray);
 
@@ -655,7 +662,7 @@ describe('MySQL Driver', () => {
       if (!mysqlAvailable) return;
 
       // Create with NULL values via high-level API
-      const created = await DBModel.transaction(async () => {
+      const result = await DBModel.transaction(async () => {
         return await AllTypes.create([
           [AllTypes.int_val, null],
           [AllTypes.float_val, null],
@@ -663,9 +670,10 @@ describe('MySQL Driver', () => {
           [AllTypes.text_val, null],
           [AllTypes.timestamp_val, null],
           [AllTypes.json_val, null],
-        ]);
+        ], { returning: true });
       });
       
+      const [created] = await AllTypes.findById(result!);
       // Note: Typed columns (boolean, datetime, json) return undefined for null values
       // due to decorator's type cast using `?? undefined`
       expect(created.int_val).toBeNull();
@@ -693,7 +701,7 @@ describe('MySQL Driver', () => {
       const updatedDate = new Date('2024-12-31T23:59:59.000Z');
       
       // Create initial record via high-level API
-      const created = await DBModel.transaction(async () => {
+      const result = await DBModel.transaction(async () => {
         return await AllTypes.create([
           [AllTypes.int_val, 10],
           [AllTypes.float_val, 1.5],
@@ -702,8 +710,9 @@ describe('MySQL Driver', () => {
           [AllTypes.varchar_val, 'initial'],
           [AllTypes.timestamp_val, initialDate],
           [AllTypes.json_val, { key: 'initial' }],
-        ]);
+        ], { returning: true });
       });
+      const [created] = await AllTypes.findById(result!);
 
       // Update all values via high-level API
       await DBModel.transaction(async () => {
@@ -737,7 +746,7 @@ describe('MySQL Driver', () => {
       if (!mysqlAvailable) return;
 
       // Edge cases: zero, false, empty strings, empty JSON
-      const created = await DBModel.transaction(async () => {
+      const result = await DBModel.transaction(async () => {
         return await AllTypes.create([
           [AllTypes.int_val, 0],
           [AllTypes.float_val, 0.0],
@@ -745,9 +754,10 @@ describe('MySQL Driver', () => {
           [AllTypes.text_val, ''],
           [AllTypes.varchar_val, ''],
           [AllTypes.json_val, {}],
-        ]);
+        ], { returning: true });
       });
       
+      const [created] = await AllTypes.findById(result!);
       expect(created.int_val).toBe(0);
       expect(created.float_val).toBe(0);
       expect(created.bool_val).toBe(false);
@@ -770,24 +780,27 @@ describe('MySQL Driver', () => {
       if (!mysqlAvailable) return;
 
       // Test explicit true
-      const trueRecord = await DBModel.transaction(async () => {
-        return await AllTypes.create([[AllTypes.bool_val, true]]);
+      const trueResult = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.bool_val, true]], { returning: true });
       });
-      const foundTrue = await AllTypes.findOne([[AllTypes.id, trueRecord.id]]);
+      const trueId = trueResult!.values[0][0] as number;
+      const foundTrue = await AllTypes.findOne([[AllTypes.id, trueId]]);
       expect(foundTrue!.bool_val).toBe(true);
 
       // Test explicit false
-      const falseRecord = await DBModel.transaction(async () => {
-        return await AllTypes.create([[AllTypes.bool_val, false]]);
+      const falseResult = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.bool_val, false]], { returning: true });
       });
-      const foundFalse = await AllTypes.findOne([[AllTypes.id, falseRecord.id]]);
+      const falseId = falseResult!.values[0][0] as number;
+      const foundFalse = await AllTypes.findOne([[AllTypes.id, falseId]]);
       expect(foundFalse!.bool_val).toBe(false);
 
       // Test null (typed column preserves null)
-      const nullRecord = await DBModel.transaction(async () => {
-        return await AllTypes.create([[AllTypes.bool_val, null]]);
+      const nullResult = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.bool_val, null]], { returning: true });
       });
-      const foundNull = await AllTypes.findOne([[AllTypes.id, nullRecord.id]]);
+      const nullId = nullResult!.values[0][0] as number;
+      const foundNull = await AllTypes.findOne([[AllTypes.id, nullId]]);
       expect(foundNull!.bool_val).toBeNull();
     });
 
@@ -796,18 +809,20 @@ describe('MySQL Driver', () => {
 
       // Test specific datetime
       const specificDate = new Date('2024-06-15T14:30:45.000Z'); // MySQL doesn't store ms
-      const record1 = await DBModel.transaction(async () => {
-        return await AllTypes.create([[AllTypes.timestamp_val, specificDate]]);
+      const result1 = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.timestamp_val, specificDate]], { returning: true });
       });
-      const found1 = await AllTypes.findOne([[AllTypes.id, record1.id]]);
+      const id1 = result1!.values[0][0] as number;
+      const found1 = await AllTypes.findOne([[AllTypes.id, id1]]);
       // Compare without milliseconds for MySQL compatibility
       expect(found1!.timestamp_val?.toISOString().slice(0, 19)).toBe(specificDate.toISOString().slice(0, 19));
 
       // Test null datetime (typed column preserves null)
-      const record2 = await DBModel.transaction(async () => {
-        return await AllTypes.create([[AllTypes.timestamp_val, null]]);
+      const result2 = await DBModel.transaction(async () => {
+        return await AllTypes.create([[AllTypes.timestamp_val, null]], { returning: true });
       });
-      const found2 = await AllTypes.findOne([[AllTypes.id, record2.id]]);
+      const id2 = result2!.values[0][0] as number;
+      const found2 = await AllTypes.findOne([[AllTypes.id, id2]]);
       expect(found2!.timestamp_val).toBeNull();
     });
   });
