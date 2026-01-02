@@ -2061,16 +2061,24 @@ export abstract class DBModel {
     ): Promise<PkeyResult | null> => {
       const values = pairsToRecord(p);
       
+      // Build insert options (onConflict, etc.)
+      const insertOpts: InternalInsertOptions = {
+        onConflict: opts?.onConflict,
+        onConflictIgnore: opts?.onConflictIgnore,
+        onConflictUpdate: opts?.onConflictUpdate,
+        conflict: opts?.conflict,
+      };
+      
       if (!opts?.returning) {
         // No RETURNING - just insert
-        await this._insert(values, {});
+        await this._insert(values, insertOpts);
         return null;
       }
       
       // With returning: true - get PkeyResult
       const pkeyColumns = this._getPkeyColumnsWithDefault();
       const pkeyColumnNames = columnsToNames(pkeyColumns);
-      const insertOpts = { returning: pkeyColumnNames.join(', ') };
+      insertOpts.returning = pkeyColumnNames.join(', ');
       const instances = await this._insert(values, insertOpts);
       
       if (instances.length === 0) {
@@ -2120,16 +2128,24 @@ export abstract class DBModel {
     ): Promise<PkeyResult | null> => {
       const valuesArray = arr.map(pairs => pairsToRecord(pairs));
       
+      // Build insert options (onConflict, etc.)
+      const insertOpts: InternalInsertOptions = {
+        onConflict: opts?.onConflict,
+        onConflictIgnore: opts?.onConflictIgnore,
+        onConflictUpdate: opts?.onConflictUpdate,
+        conflict: opts?.conflict,
+      };
+      
       if (!opts?.returning) {
         // No RETURNING - just insert
-        await this._insert(valuesArray, {});
+        await this._insert(valuesArray, insertOpts);
         return null;
       }
       
       // With returning: true - get PkeyResult
       const pkeyColumns = this._getPkeyColumnsWithDefault();
       const pkeyColumnNames = columnsToNames(pkeyColumns);
-      const insertOpts = { returning: pkeyColumnNames.join(', ') };
+      insertOpts.returning = pkeyColumnNames.join(', ');
       const instances = await this._insert(valuesArray, insertOpts);
       
       if (instances.length === 0) {
