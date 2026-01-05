@@ -432,19 +432,19 @@ await User.updateMany([
 Conditions use `[Column, value]` tuples for compile-time validation. For operators, use `${Model.column}` in template literals—the ESLint plugin catches incorrect column references.
 
 ```typescript
-// Equality (compile-time type-safe)
+// Equality: compile-time type-safe via Column symbols
 await User.find([[User.status, 'active']]);
 
-// Operators (use ${Model.column} for refactoring safety)
+// Operators: ESLint plugin validates ${Model.column} references
 await User.find([[`${User.age} > ?`, 18]]);
 await User.find([[`${User.age} BETWEEN ? AND ?`, [18, 65]]]);
 await User.find([[`${User.name} LIKE ?`, '%test%']]);
 await User.find([[`${User.status} IN (?)`, ['a', 'b']]]);
 
-// NULL checks
+// NULL checks: ESLint plugin validates column reference
 await User.find([[`${User.deleted_at} IS NULL`]]);
 
-// OR conditions (type-safe)
+// OR conditions: inner tuples are compile-time type-safe
 await User.find([
   [User.is_active, true],
   User.or(

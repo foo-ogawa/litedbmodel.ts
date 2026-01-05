@@ -12,7 +12,7 @@ A detailed comparison of litedbmodel with popular TypeScript/JavaScript ORMs.
 |  | Migrations | Manual | Manual | Kit (optional) | Built-in | Built-in | Built-in | Built-in | Knex |
 | **Query API** | Primary query style | Tuple array | Fluent QB | Fluent QB | QB / Find | Fluent client | QB / EM | Fluent | Fluent |
 |  | Raw SQL escape hatch† | ✅ `query()` | ⚠️ `sql` | ⚠️ `sql` | ⚠️ `query()` | ⚠️ `$queryRaw` | ⚠️ `execute()` | ⚠️ `query()` | ⚠️ `raw()` |
-| **Type Safety** | Compile-time type safety | ✅ | ✅ | ✅ | ⚠️ partial | ✅ | ⚠️ partial | ❌ runtime-heavy | ⚠️ partial |
+| **Type Safety**†† | Compile-time type safety | ⚠️ partial | ✅ | ✅ | ⚠️ partial | ✅ | ⚠️ partial | ❌ runtime-heavy | ⚠️ partial |
 | **Column Refs**‡ | How columns are referenced | **Symbols** | String literals | Column objects | Strings/decorators | Object keys | Strings | Strings | Strings |
 | **IDE Support**§ | Refactoring safety (IDE) | ✅ Full | ❌ | ⚠️ Partial | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Updates** | Declarative partial update | ✅ **SKIP** | ❌ manual | ❌ manual | ❌ manual | ⚠️ `undefined` | ❌ manual | ❌ manual | ❌ manual |
@@ -49,6 +49,10 @@ Built-in patterns that keep SQL text/param shapes stable (e.g., `ANY($1::int[])`
 
 **# Standard API: 1-query nested:**  
 Whether the *tool's standard relation API* fetches nested relations in a single DB round-trip. Raw SQL can achieve this in any tool; this row evaluates the default/idiomatic approach only.
+
+**†† Type safety (litedbmodel):**  
+- `[Column, value]` tuples: **Compile-time** type checking via Column symbols  
+- Operator expressions (`` [`${Model.col} > ?`, val] ``): **ESLint plugin** checks column references (not compile-time)
 
 **\*\* DB portability:**  
 - **Multi-DB** = databases the tool can talk to  
@@ -355,8 +359,8 @@ await User.create([
 
 // Conditions also type-checked
 await User.find([
-  [User.id, 1],              // ✅ number
-  [`${User.age} > ?`, 18],   // ✅ operator with value
+  [User.id, 1],              // ✅ Compile-time (Column symbol)
+  [`${User.age} > ?`, 18],   // ✅ ESLint checks column reference
 ]);
 ```
 
@@ -447,9 +451,13 @@ const users = await db
 | Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
 |---------|-------------|--------|---------|---------|--------|
 | **Type Source** | Decorators → Symbols | .prisma → Generated | Decorators | TS Schema | TS Interface |
-| **Condition Check** | ✅ Full | ✅ Full | ⚠️ Partial | ✅ Full | ✅ Full |
+| **Condition Check** | ✅ Full† | ✅ Full | ⚠️ Partial | ✅ Full | ✅ Full |
 | **Result Types** | ✅ Model types | ✅ Generated | ✅ Entity types | ✅ Inferred | ✅ Inferred |
-| **Compile-Time** | ✅ | ✅ | ⚠️ | ✅ | ✅ |
+| **Compile-Time** | ⚠️ Partial† | ✅ | ⚠️ | ✅ | ✅ |
+
+*† litedbmodel's type safety is split between compile-time and ESLint:*
+- *`[Column, value]` tuples: Compile-time type checking via Column symbols*
+- *Operator expressions (`` [`${Model.col} > ?`, val] ``): ESLint plugin checks column references (not compile-time)*
 
 ---
 
@@ -587,22 +595,17 @@ await userRepository.save(user);
 @model('posts')
 class PostModel extends DBModel {
   @column() id?: number;
-  @column() user_id?: number;
+  @column() author_id?: number;
 
-  get author(): Promise<User | null> {
-    return this._belongsTo(User, {
-      targetKey: User.id,
-      sourceKey: Post.user_id,
-    });
-  }
+  @belongsTo(() => [Post.author_id, User.id])
+  declare author: Promise<User | null>;
 
-  get comments(): Promise<Comment[]> {
-    return this._hasMany(Comment, {
-      targetKey: Comment.post_id,
-      order: Comment.created_at.desc(),
-    });
-  }
+  @hasMany(() => [Post.id, Comment.post_id], {
+    order: () => Comment.created_at.desc(),
+  })
+  declare comments: Promise<Comment[]>;
 }
+export const Post = PostModel.asModel();
 
 // Auto batch loading - prevents N+1 automatically
 const posts = await Post.find([]);    // Returns multiple posts
@@ -612,12 +615,11 @@ for (const post of posts) {
 // Total: 2 queries (posts + authors) instead of N+1!
 
 // Composite key relations also supported
-get author(): Promise<User | null> {
-  return this._belongsTo(User, {
-    targetKeys: [User.tenant_id, User.id],
-    sourceKeys: [Post.tenant_id, Post.user_id],
-  });
-}
+@belongsTo(() => [
+  [Post.tenant_id, User.tenant_id],
+  [Post.author_id, User.id],
+])
+declare author: Promise<User | null>;
 ```
 
 ### Prisma - Include/Select
