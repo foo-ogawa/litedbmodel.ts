@@ -1,0 +1,49 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["./src/index.ts"],
+  "out": "./docs/api",
+  "plugin": ["typedoc-plugin-markdown"],
+  "readme": "./docs/api-guide.md",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "excludeExternals": true,
+  "includeVersion": true,
+  "categorizeByGroup": true,
+  "categoryOrder": [
+    "Core",
+    "Decorators",
+    "Column",
+    "Values",
+    "Subquery",
+    "Middleware",
+    "Relations",
+    "Types",
+    "Errors",
+    "*"
+  ],
+  "sort": ["source-order", "alphabetical"],
+  "kindSortOrder": [
+    "Class",
+    "Function",
+    "Interface",
+    "TypeAlias",
+    "Variable"
+  ],
+  "outputFileStrategy": "members",
+  "membersWithOwnFile": [
+    "Class",
+    "Interface",
+    "Function"
+  ],
+  "hidePageHeader": false,
+  "hideBreadcrumbs": false,
+  "hidePageTitle": false,
+  "useCodeBlocks": true,
+  "expandObjects": true,
+  "expandParameters": true,
+  "parametersFormat": "table",
+  "propertiesFormat": "table",
+  "enumMembersFormat": "table",
+  "typeDeclarationFormat": "table"
+}
+

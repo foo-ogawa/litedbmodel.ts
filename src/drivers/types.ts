@@ -7,6 +7,7 @@
 
 /**
  * Database configuration
+ * @internal
  */
 export interface DBConfig {
   /** Database host (for server-based DBs like PostgreSQL) */
@@ -29,6 +30,7 @@ export interface DBConfig {
 
 /**
  * Logger interface
+ * @internal
  */
 export interface Logger {
   debug: (message: string, ...args: unknown[]) => void;
@@ -39,6 +41,7 @@ export interface Logger {
 
 /**
  * Query result interface
+ * @internal
  */
 export interface QueryResult {
   rows: Record<string, unknown>[];
@@ -48,6 +51,7 @@ export interface QueryResult {
 /**
  * Database connection interface
  * Represents a single connection (used in transactions)
+ * @internal
  */
 export interface DBConnection {
   /** Execute a query on this connection */
@@ -59,6 +63,7 @@ export interface DBConnection {
 /**
  * Database driver interface
  * Implement this to support a new database engine
+ * @internal
  */
 export interface DBDriver {
   /** Driver name (e.g., 'postgres', 'sqlite') */
@@ -96,6 +101,7 @@ export interface DBDriver {
 
 /**
  * Database driver constructor options
+ * @internal
  */
 export interface DBDriverOptions {
   /** Configuration for read operations */
@@ -108,6 +114,7 @@ export interface DBDriverOptions {
 
 /**
  * Default no-op logger
+ * @internal
  */
 export const defaultLogger: Logger = {
   debug: () => {},

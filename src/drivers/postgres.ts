@@ -124,6 +124,7 @@ class PostgresConnection implements DBConnection {
 
 /**
  * PostgreSQL database driver
+ * @internal
  */
 export class PostgresDriver implements DBDriver {
   readonly name = 'postgres';

@@ -67,6 +67,7 @@ function inferPgArrayType(values: unknown[]): string {
 
 export type RelationType = 'belongsTo' | 'hasMany' | 'hasOne';
 
+/** @internal */
 export interface RelationConfig {
   targetClass: typeof DBModel;
   conditions?: ConditionObject;
@@ -98,6 +99,7 @@ export interface RelationConfig {
 /**
  * Context for managing lazy-loaded relations across a set of records.
  * All records in the same context share the relation cache for batch loading.
+ * @internal
  */
 export class LazyRelationContext {
   private sourceClass: typeof DBModel;
@@ -782,6 +784,8 @@ export class LazyRelationContext {
  *   const posts = await user.posts; // First access loads for all users
  * }
  * ```
+ * 
+ * @internal
  */
 export function createRelationContext<T extends DBModel>(
   modelClass: typeof DBModel,
@@ -806,6 +810,8 @@ export function createRelationContext<T extends DBModel>(
  *   const posts = await user.posts; // Returns cached value
  * }
  * ```
+ * 
+ * @internal
  */
 export async function preloadRelations<T extends DBModel, R>(
   records: T[],

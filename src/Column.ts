@@ -24,14 +24,21 @@ import { DBNotNullValue, dbTupleIn } from './DBValues';
 // OrderColumn Class (Type-safe ORDER BY)
 // ============================================
 
-/** Sort direction for ORDER BY */
+/** 
+ * Sort direction for ORDER BY 
+ * @internal
+ */
 export type SortDirection = 'ASC' | 'DESC';
 
-/** NULLS position for ORDER BY */
+/** 
+ * NULLS position for ORDER BY
+ * @internal
+ */
 export type NullsPosition = 'FIRST' | 'LAST' | null;
 
 /**
  * Type-safe ORDER BY column reference.
+ * Returned by `Column.desc()`, `Column.asc()` methods.
  *
  * @typeParam ModelType - The model class this column belongs to
  *
@@ -46,6 +53,8 @@ export type NullsPosition = 'FIRST' | 'LAST' | null;
  * // With NULLS position
  * User.updated_at.descNullsLast()
  * ```
+ * 
+ * @internal
  */
 export class OrderColumn<ModelType = unknown> {
   /** Brand for type discrimination */
@@ -79,6 +88,7 @@ export class OrderColumn<ModelType = unknown> {
 
 /**
  * Type guard to check if a value is an OrderColumn instance.
+ * @internal
  */
 export function isOrderColumn(value: unknown): value is OrderColumn {
   return value instanceof OrderColumn || (
@@ -92,17 +102,20 @@ export function isOrderColumn(value: unknown): value is OrderColumn {
 /**
  * OrderColumn type for a specific model.
  * Used for type-safe ORDER BY constraints.
+ * @internal
  */
 export type OrderColumnOf<Model> = OrderColumn<Model>;
 
 /**
  * Type-safe ORDER BY specification (no raw strings allowed).
  * Use for DEFAULT_ORDER and relation order parameters.
+ * @internal
  */
 export type OrderSpec = OrderColumn | OrderColumn[];
 
 /**
  * Convert OrderColumn or OrderColumn array to SQL string.
+ * @internal
  */
 export function orderToString(order: OrderSpec | string | null | undefined): string | undefined {
   if (!order) return undefined;
@@ -313,6 +326,8 @@ export interface Column<ValueType = unknown, ModelType = unknown> {
  * // With condition builder
  * const conditions = { ...id.eq(1) };
  * ```
+ * 
+ * @internal
  */
 export function createColumn<ValueType, ModelType = unknown>(
   columnName: string,
@@ -403,6 +418,8 @@ export function createColumn<ValueType, ModelType = unknown>(
  *   console.log(value.columnName);
  * }
  * ```
+ * 
+ * @internal
  */
 export function isColumn(value: unknown): value is Column {
   return (
@@ -419,28 +436,29 @@ export function isColumn(value: unknown): value is Column {
 /**
  * Auto-generate Column types from model instance properties.
  * Excludes functions and private properties (starting with _).
- * All generated Column types are non-optional (Column<T, Model>, not Column<T, Model> | undefined).
- *
+ * 
+ * **Note:** Use `Model.asModel()` instead of manually using this type.
+ * 
  * @typeParam T - The model instance type
  *
  * @example
  * ```typescript
  * @model('users')
- * class UserModel extends DBModel {
+ * class User extends DBModel {
  *   @column() id?: number;
  *   @column() name?: string;
- *   @column.boolean() is_active?: boolean;
+ *   @column() is_active?: boolean;
  * }
  *
- * // Auto-generate static Column properties with model type
- * export const User = UserModel as typeof UserModel & ColumnsOf<UserModel>;
- * export type User = UserModel;
+ * // Use asModel() to get type-safe Column references
+ * const UserModel = User.asModel();
  *
- * // Now User.id(), User.name(), User.is_active() return column names
- * // And User.id.eq(1), User.name.like('%test%') work too
- * // Relations can use type-safe columns:
- * // this._belongsTo(Account, {}, null, Account.code, Account.parent_code)
+ * // Now UserModel.id, UserModel.name work as Column references
+ * await UserModel.find([[UserModel.name, 'John']]);
+ * await UserModel.find([[UserModel.id, 1]]);
  * ```
+ * 
+ * @internal
  */
 export type ColumnsOf<T> = {
   -readonly [K in keyof T as T[K] extends Function
@@ -458,6 +476,8 @@ export type ColumnsOf<T> = {
  * ```typescript
  * type UserModel = ModelOfColumn<typeof User.id>; // UserModel
  * ```
+ * 
+ * @internal
  */
 export type ModelOfColumn<C> = C extends Column<unknown, infer M> ? M : never;
 
@@ -470,12 +490,15 @@ export type ModelOfColumn<C> = C extends Column<unknown, infer M> ? M : never;
  * // Only accepts columns from User model
  * function process(col: ColumnOf<User>) { ... }
  * ```
+ * 
+ * @internal
  */
 export type ColumnOf<Model> = Column<unknown, Model>;
 
 /**
  * Helper to convert Column array to column names string array.
  * Useful for getPkeyColumns and similar methods.
+ * @internal
  */
 export function columnsToNames(columns: Column[]): string[] {
   return columns.map(c => c.columnName);
@@ -510,6 +533,8 @@ export function columnsToNames(columns: Column[]): string[] {
  * if (body.name) values.add(User.name, body.name);
  * await User.create(values.build());
  * ```
+ * 
+ * @category Column
  */
 export class Values<Model> {
   private pairs: [Column<any, any>, unknown][] = [];
@@ -570,6 +595,8 @@ export class Values<Model> {
  * ]);
  * if (query.active) where.add(User.is_active, true);
  * ```
+ * 
+ * @category Column
  */
 export class Conditions<Model> {
   private conds: CondElement[] = [];
@@ -646,6 +673,7 @@ export class Conditions<Model> {
 /**
  * A single Column-Value tuple with type checking.
  * The value must match the Column's generic type V.
+ * @internal
  */
 export type CV<C extends Column<any, any>> =
   C extends Column<infer V, any> ? readonly [C, V | null | undefined | SkipType] : never;
@@ -666,6 +694,8 @@ export type CV<C extends Column<any, any>> =
  *   // [User.name, 123],           // ❌ Compile error (type mismatch)
  * ]);
  * ```
+ * 
+ * @internal
  */
 export type CVs<T extends readonly (readonly [Column<any, any>, any])[]> = {
   [K in keyof T]: T[K] extends readonly [infer C, any]
@@ -704,6 +734,7 @@ export type SkipType = typeof SKIP;
  * Convert tuple pairs to a record object.
  * Filters out pairs where value is SKIP.
  * Used internally by create/update methods.
+ * @internal
  */
 export function pairsToRecord(
   pairs: readonly (readonly [Column<any, any>, unknown])[]
@@ -724,6 +755,7 @@ export function pairsToRecord(
 /**
  * Single condition tuple (legacy, accepts any Column).
  * @deprecated Use CondOf<M> for type-safe conditions
+ * @internal
  */
 export type Cond = 
   | readonly [Column<any, any>, unknown]
@@ -753,6 +785,8 @@ type ModelInstance<M> = M extends new (...args: any[]) => infer I ? I : M;
  * [`${User.age} > ?`, 18]           // age > 18
  * [`${User.deleted_at} IS NULL`]    // deleted_at IS NULL (no value)
  * ```
+ * 
+ * @internal
  */
 export type CondOf<M> = 
   | readonly [Column<any, ModelInstance<M>>, unknown]
@@ -763,6 +797,7 @@ export type CondOf<M> =
 /**
  * OR condition marker (legacy)
  * @deprecated Use OrCondOf<M> for type-safe OR conditions
+ * @internal
  */
 export interface OrCond {
   readonly _type: 'or';
@@ -772,6 +807,7 @@ export interface OrCond {
 /**
  * Type-safe OR condition marker for a specific model.
  * @typeParam M - The model class type
+ * @internal
  */
 export interface OrCondOf<M> {
   readonly _type: 'or';
@@ -781,18 +817,21 @@ export interface OrCondOf<M> {
 /**
  * Condition element (single condition, OR group, or SKIP) - legacy
  * @deprecated Use CondElementOf<M> for type-safe conditions
+ * @internal
  */
 export type CondElement = Cond | OrCond | SkipType;
 
 /**
  * Type-safe condition element for a specific model.
  * @typeParam M - The model class type
+ * @internal
  */
 export type CondElementOf<M> = CondOf<M> | OrCondOf<M> | SkipType;
 
 /**
  * Array of condition elements (legacy).
  * @deprecated Use CondsOf<M> for type-safe conditions
+ * @internal
  */
 export type Conds = readonly CondElement[];
 
@@ -810,12 +849,14 @@ export type Conds = readonly CondElement[];
  *   query.role ? User.or([[User.role, 'admin']], [[User.role, 'mod']]) : SKIP,
  * ]);
  * ```
+ * 
+ * @internal
  */
 export type CondsOf<M> = readonly CondElementOf<M>[];
 
 /**
  * Create a type-safe OR condition.
- * Use Model.or() instead of calling this directly.
+ * Use `Model.or()` instead of calling this directly.
  * @internal
  */
 export function createOrCond<M>(condGroups: readonly CondsOf<M>[]): OrCondOf<M> {
@@ -824,6 +865,7 @@ export function createOrCond<M>(condGroups: readonly CondsOf<M>[]): OrCondOf<M> 
 
 /**
  * Check if a condition element is an OR condition
+ * @internal
  */
 export function isOrCond(cond: CondElement | CondElementOf<any>): cond is OrCond | OrCondOf<any> {
   return typeof cond === 'object' && cond !== null && '_type' in cond && cond._type === 'or';
@@ -862,6 +904,7 @@ function condToKeyValue(cond: Cond): [string, unknown] | null {
 /**
  * Convert condition tuples to a ConditionObject.
  * Handles regular conditions, OR conditions, and SKIP.
+ * @internal
  */
 export function condsToRecord(
   conditions: Conds

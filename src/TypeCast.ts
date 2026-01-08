@@ -12,6 +12,7 @@
 /**
  * Interface for type casting functions.
  * Different database drivers may have different implementations.
+ * @internal
  */
 export interface TypeCastFunctions {
   castToDatetime(val: unknown): Date | null;
@@ -255,6 +256,7 @@ export function resetTypeCastImpl(): void {
 
 /**
  * Get the current type cast implementation.
+ * @internal
  */
 export function getTypeCast(): TypeCastFunctions {
   return currentTypeCast;
@@ -264,34 +266,42 @@ export function getTypeCast(): TypeCastFunctions {
 // Exported Functions (Use Current Implementation)
 // ============================================
 
+/** @internal */
 export function castToDatetime(val: unknown): Date | null {
   return currentTypeCast.castToDatetime(val);
 }
 
+/** @internal */
 export function castToBoolean(val: unknown): boolean | null {
   return currentTypeCast.castToBoolean(val);
 }
 
+/** @internal */
 export function castToIntegerArray(val: unknown): number[] {
   return currentTypeCast.castToIntegerArray(val);
 }
 
+/** @internal */
 export function castToNumericArray(val: unknown): (number | null)[] {
   return currentTypeCast.castToNumericArray(val);
 }
 
+/** @internal */
 export function castToStringArray(val: unknown): string[] {
   return currentTypeCast.castToStringArray(val);
 }
 
+/** @internal */
 export function castToBooleanArray(val: unknown): (boolean | null)[] {
   return currentTypeCast.castToBooleanArray(val);
 }
 
+/** @internal */
 export function castToDatetimeArray(val: unknown): (Date | null)[] {
   return currentTypeCast.castToDatetimeArray(val);
 }
 
+/** @internal */
 export function castToJson(val: unknown): Record<string, unknown> | unknown[] | null {
   return currentTypeCast.castToJson(val);
 }

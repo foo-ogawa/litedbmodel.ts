@@ -96,6 +96,7 @@ class SqliteConnection implements DBConnection {
  *
  * Requires better-sqlite3 to be installed:
  * npm install better-sqlite3
+ * @internal
  */
 export class SqliteDriver implements DBDriver {
   readonly name = 'sqlite';

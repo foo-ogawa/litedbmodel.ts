@@ -20,6 +20,8 @@ import type { Column, OrderSpec, Conds } from './Column';
  * // Composite PK
  * { key: [TenantUser.tenant_id, TenantUser.id], values: [[1, 100], [1, 101]] }
  * ```
+ * 
+ * @category Types
  */
 export interface PkeyResult {
   /** Primary key column(s) */
@@ -35,6 +37,8 @@ export interface PkeyResult {
 /**
  * Options for the @model decorator.
  * All options use lazy evaluation (functions) to support forward references.
+ * 
+ * @category Types
  */
 export interface ModelOptions {
   /** DEFAULT_ORDER: Returns OrderSpec for default ordering */
@@ -57,6 +61,22 @@ export interface ModelOptions {
 // Database Configuration
 // ============================================
 
+/**
+ * Database connection configuration.
+ * Used in `DBConfigOptions.config` and `DBConfigOptions.writerConfig`.
+ * 
+ * @example
+ * ```typescript
+ * const config: DBConfig = {
+ *   driver: 'postgres',
+ *   host: 'localhost',
+ *   port: 5432,
+ *   database: 'mydb',
+ *   user: 'user',
+ *   password: 'pass',
+ * };
+ * ```
+ */
 export interface DBConfig {
   name?: string;
   /** @deprecated Use driver instead */
@@ -240,6 +260,8 @@ export interface TransactionOptions {
 /**
  * Options for database configuration.
  * Used with DBModel.setConfig() and DBModel.createDBBase().
+ * 
+ * @category Types
  */
 export interface DBConfigOptions {
   /** Writer database configuration for reader/writer separation */
@@ -278,6 +300,7 @@ export interface QueryExecuteResult {
 // Logger Interface
 // ============================================
 
+/** @internal */
 export interface Logger {
   debug(message: string, ...args: unknown[]): void;
   info(message: string, ...args: unknown[]): void;
@@ -292,6 +315,8 @@ export interface Logger {
 /**
  * Configuration for query result limits.
  * Used to prevent accidentally loading too many records.
+ * 
+ * @category Types
  */
 export interface LimitConfig {
   /**
@@ -314,6 +339,8 @@ export interface LimitConfig {
 
 /**
  * Error thrown when a query exceeds the configured limit.
+ * 
+ * @category Errors
  */
 export class LimitExceededError extends Error {
   constructor(
@@ -344,6 +371,8 @@ export class LimitExceededError extends Error {
 
 /**
  * Error thrown when attempting write operations outside a transaction.
+ * 
+ * @category Errors
  */
 export class WriteOutsideTransactionError extends Error {
   constructor(
@@ -360,6 +389,8 @@ export class WriteOutsideTransactionError extends Error {
 
 /**
  * Error thrown when attempting write operations inside withWriter() context.
+ * 
+ * @category Errors
  */
 export class WriteInReadOnlyContextError extends Error {
   constructor(

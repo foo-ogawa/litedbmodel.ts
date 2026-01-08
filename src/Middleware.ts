@@ -13,7 +13,10 @@ import type { Column, Conds } from './Column';
 // Execute Result Type
 // ===========================================
 
-/** Result from SQL execution */
+/** 
+ * Result from SQL execution 
+ * @internal
+ */
 export interface ExecuteResult {
   rows: Record<string, unknown>[];
   rowCount: number | null;
@@ -23,56 +26,67 @@ export interface ExecuteResult {
 // Next Function Types
 // ===========================================
 
+/** @internal */
 export type NextFind<T extends typeof DBModel> = (
   conditions: Conds,
   options?: SelectOptions
 ) => Promise<InstanceType<T>[]>;
 
+/** @internal */
 export type NextFindOne<T extends typeof DBModel> = (
   conditions: Conds,
   options?: SelectOptions
 ) => Promise<InstanceType<T> | null>;
 
+/** @internal */
 export type NextFindById<T extends typeof DBModel> = (
   id: unknown | PkeyResult,
   options?: SelectOptions
 ) => Promise<InstanceType<T>[]>;
 
+/** @internal */
 export type NextCount = (
   conditions: Conds
 ) => Promise<number>;
 
+/** @internal */
 export type NextCreate = (
   pairs: readonly (readonly [Column<any, any>, any])[],
   options?: InsertOptions
 ) => Promise<PkeyResult | null>;
 
+/** @internal */
 export type NextCreateMany = (
   pairsArray: readonly (readonly (readonly [Column<any, any>, any])[])[],
   options?: InsertOptions
 ) => Promise<PkeyResult | null>;
 
+/** @internal */
 export type NextUpdate = (
   conditions: Conds,
   values: readonly (readonly [Column<any, any>, any])[],
   options?: UpdateOptions
 ) => Promise<PkeyResult | null>;
 
+/** @internal */
 export type NextUpdateMany = (
   records: readonly (readonly (readonly [Column<any, any>, any])[])[],
   options?: UpdateManyOptions
 ) => Promise<PkeyResult | null>;
 
+/** @internal */
 export type NextDelete = (
   conditions: Conds,
   options?: DeleteOptions
 ) => Promise<PkeyResult | null>;
 
+/** @internal */
 export type NextExecute = (
   sql: string,
   params?: unknown[]
 ) => Promise<ExecuteResult>;
 
+/** @internal */
 export type NextQuery<T extends typeof DBModel> = (
   sql: string,
   params?: unknown[]
@@ -87,6 +101,11 @@ export type NextQuery<T extends typeof DBModel> = (
  * 
  * Middlewares use AsyncLocalStorage to maintain per-request instances.
  * On first access within a request, a new instance is created automatically.
+ * 
+ * Middleware hooks are called in the following flow:
+ * - Method-level: `find`, `findOne`, `findById`, `count`, `create`, `createMany`, `update`, `updateMany`, `delete`
+ * - Instantiation-level: `query` — returns model instances from raw SQL
+ * - SQL-level: `execute` — intercepts ALL SQL queries
  * 
  * @example
  * ```typescript
@@ -109,6 +128,8 @@ export type NextQuery<T extends typeof DBModel> = (
  * // After request
  * console.log(LoggerMiddleware.getCurrentContext().getLogs());
  * ```
+ * 
+ * @category Middleware
  */
 export abstract class Middleware {
   /** AsyncLocalStorage for per-request instances */

@@ -8,6 +8,7 @@ import { DBToken, DBSubquery, DBExists } from './DBValues';
 // Types
 // ============================================
 
+/** @internal */
 export type ConditionValue =
   | string
   | number
@@ -18,12 +19,14 @@ export type ConditionValue =
   | DBToken
   | DBConditions;
 
+/** @internal */
 export type ConditionObject = Record<string, ConditionValue>;
 
 // ============================================
 // DBConditions - Condition Builder Class
 // ============================================
 
+/** @internal */
 export class DBConditions {
   protected conditions: ConditionObject;
   protected operator: 'AND' | 'OR';
@@ -239,6 +242,7 @@ export class DBConditions {
 // DBOrConditions - OR condition builder
 // ============================================
 
+/** @internal */
 export class DBOrConditions extends DBConditions {
   constructor(conditions: ConditionObject = {}) {
     super(conditions, 'OR');
@@ -251,6 +255,7 @@ export class DBOrConditions extends DBConditions {
 
 /**
  * Create AND conditions
+ * @internal
  */
 export function and(conditions: ConditionObject): DBConditions {
   return new DBConditions(conditions, 'AND');
@@ -258,6 +263,7 @@ export function and(conditions: ConditionObject): DBConditions {
 
 /**
  * Create OR conditions
+ * @internal
  */
 export function or(conditions: ConditionObject): DBOrConditions {
   return new DBOrConditions(conditions);
@@ -265,6 +271,7 @@ export function or(conditions: ConditionObject): DBOrConditions {
 
 /**
  * Normalize conditions - convert plain object to DBConditions if needed
+ * @internal
  */
 export function normalizeConditions(
   conditions: DBConditions | ConditionObject

@@ -47,6 +47,7 @@ export function getTransactionConnection(): DBConnection | undefined {
 
 /**
  * @deprecated Use getTransactionConnection() instead
+ * @internal
  */
 export function getTransactionClient(): DBConnection | undefined {
   return getTransactionConnection();
@@ -56,6 +57,55 @@ export function getTransactionClient(): DBConnection | undefined {
 // DBModel - Base Model Class
 // ============================================
 
+/**
+ * Base class for all database models in litedbmodel.
+ * Provides CRUD operations, relations, transactions, and middleware support.
+ * 
+ * DBModel is designed for explicit SQL control with type-safe operations:
+ * - Condition tuples `[Column, value]` for compile-time validation
+ * - Symbol-based columns for IDE refactoring support
+ * - Transparent N+1 prevention via automatic batch loading
+ * - Reader/writer separation for production deployments
+ * 
+ * @example
+ * ```typescript
+ * import { DBModel, model, column } from 'litedbmodel';
+ * 
+ * // 1. Define model
+ * @model('users')
+ * class UserModel extends DBModel {
+ *   @column() id?: number;
+ *   @column() name?: string;
+ *   @column() email?: string;
+ *   @column() is_active?: boolean;
+ * }
+ * export const User = UserModel.asModel();
+ * 
+ * // 2. Configure database
+ * DBModel.setConfig({
+ *   host: 'localhost',
+ *   database: 'mydb',
+ *   user: 'user',
+ *   password: 'pass',
+ * });
+ * 
+ * // 3. CRUD operations (writes require transaction)
+ * await DBModel.transaction(async () => {
+ *   await User.create([
+ *     [User.name, 'John'],
+ *     [User.email, 'john@example.com'],
+ *   ]);
+ *   await User.update([[User.id, 1]], [[User.name, 'Jane']]);
+ *   await User.delete([[User.is_active, false]]);
+ * });
+ * 
+ * // 4. Read operations
+ * const users = await User.find([[User.is_active, true]]);
+ * const john = await User.findOne([[User.email, 'john@example.com']]);
+ * ```
+ * 
+ * @category Core
+ */
 export abstract class DBModel {
   // ============================================
   // Static Table Configuration (Override in derived classes)

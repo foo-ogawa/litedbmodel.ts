@@ -39,7 +39,10 @@ type TypeCastFn = (value: unknown) => unknown;
 /** Serialize function signature (converts JS value to DB value) */
 type SerializeFn = (value: unknown) => unknown;
 
-/** Column metadata stored by decorators */
+/** 
+ * Column metadata stored by decorators 
+ * @internal
+ */
 export interface ColumnMeta {
   columnName: string;
   typeCast?: TypeCastFn;
@@ -51,19 +54,34 @@ export interface ColumnMeta {
 // Relation Types
 // ============================================
 
-/** Relation type */
+/** 
+ * Relation type 
+ * @internal
+ */
 export type RelationType = 'hasMany' | 'belongsTo' | 'hasOne';
 
-/** Key pair: [sourceKey, targetKey] */
+/** 
+ * Key pair: [sourceKey, targetKey] 
+ * @internal
+ */
 export type KeyPair = readonly [Column<unknown, unknown>, Column<unknown, unknown>];
 
-/** Composite key pairs: [[sourceKey1, targetKey1], [sourceKey2, targetKey2], ...] */
+/** 
+ * Composite key pairs: [[sourceKey1, targetKey1], [sourceKey2, targetKey2], ...] 
+ * @internal
+ */
 export type CompositeKeyPairs = readonly KeyPair[];
 
-/** Factory function that returns key pair(s) */
+/** 
+ * Factory function that returns key pair(s) 
+ * @internal
+ */
 export type KeysFactory = () => KeyPair | CompositeKeyPairs;
 
-/** Relation options (order, where, limit) */
+/** 
+ * Relation options (order, where, limit) 
+ * @internal
+ */
 export interface RelationDecoratorOptions {
   /** Order by specification */
   order?: () => OrderSpec;
@@ -103,7 +121,10 @@ export interface RelationDecoratorOptions {
   hardLimit?: number | null;
 }
 
-/** Relation metadata stored by decorators */
+/** 
+ * Relation metadata stored by decorators 
+ * @internal
+ */
 export interface RelationMeta {
   propertyKey: string;
   type: RelationType;
@@ -321,6 +342,8 @@ function serializeJson(val: unknown): unknown {
  *
  * Note: The explicit variants (`@column.boolean()`, `@column.datetime()`, etc.)
  * still work and can be used when you want to be explicit about the conversion.
+ * 
+ * @category Decorators
  */
 export const column = Object.assign(
   // Basic @column() - no type conversion
@@ -582,6 +605,8 @@ function registerRelation(
  * ])
  * declare posts: Promise<TenantPost[]>;
  * ```
+ * 
+ * @category Decorators
  */
 export function hasMany(
   keys: KeysFactory,
@@ -612,6 +637,8 @@ export function hasMany(
  * ])
  * declare author: Promise<TenantUser | null>;
  * ```
+ * 
+ * @category Decorators
  */
 export function belongsTo(
   keys: KeysFactory,
@@ -642,6 +669,8 @@ export function belongsTo(
  * ])
  * declare profile: Promise<TenantProfile | null>;
  * ```
+ * 
+ * @category Decorators
  */
 export function hasOne(
   keys: KeysFactory,
@@ -704,6 +733,8 @@ export function getRelationMeta(modelClass: object): RelationMeta[] {
  * const user = await User.findOne([[User.id, 1]]);
  * const posts = await user.posts;  // Batch loads with other users in context
  * ```
+ * 
+ * @category Decorators
  */
 // Overload 1: @model (without arguments)
 export function model<T extends { new (...args: unknown[]): object }>(
@@ -949,6 +980,7 @@ function applyModelDecorator<T extends { new (...args: unknown[]): object }>(
  * Get column metadata from a model class
  * Useful for building tools and plugins
  * Uses cached _columnMeta property (faster than Reflect.getMetadata)
+ * @internal
  */
 export function getColumnMeta(
   modelClass: object
@@ -964,6 +996,7 @@ export function getColumnMeta(
 
 /**
  * Get all column names from a model class
+ * @internal
  */
 export function getModelColumnNames(modelClass: object): string[] {
   const meta = getColumnMeta(modelClass);
@@ -973,6 +1006,7 @@ export function getModelColumnNames(modelClass: object): string[] {
 
 /**
  * Get all property names with @column decorator from a model class
+ * @internal
  */
 export function getModelPropertyNames(modelClass: object): string[] {
   const meta = getColumnMeta(modelClass);

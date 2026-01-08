@@ -1,11 +1,22 @@
 /**
  * litedbmodel - Value Wrapper Classes
+ * 
+ * Provides special value types for SQL generation.
+ * These classes allow fine-grained control over how values are rendered in SQL.
+ * 
+ * @packageDocumentation
  */
 
 // ============================================
 // DBToken - Base class for value wrappers
 // ============================================
 
+/**
+ * Base class for all value wrapper types.
+ * Value wrappers control how values are compiled into SQL fragments.
+ * 
+ * @internal
+ */
 export class DBToken {
   value: unknown;
   operator: string;
@@ -34,6 +45,20 @@ export class DBToken {
 // DBImmediateValue - Literal value (no parameter binding)
 // ============================================
 
+/**
+ * Represents a literal SQL value that is NOT parameter-bound.
+ * Use with caution - values are inserted directly into SQL.
+ * 
+ * @example
+ * ```typescript
+ * // Insert NOW() function call
+ * await User.create([
+ *   [User.created_at, dbImmediate('NOW()')],
+ * ]);
+ * ```
+ * 
+ * @internal
+ */
 export class DBImmediateValue extends DBToken {
   constructor(value: string) {
     super(value, '=');
@@ -51,6 +76,18 @@ export class DBImmediateValue extends DBToken {
 // DBNullValue - NULL value
 // ============================================
 
+/**
+ * Represents SQL NULL for IS NULL conditions.
+ * 
+ * @example
+ * ```typescript
+ * // Find users with no email
+ * await User.find([[User.email, dbNull()]]);
+ * // → WHERE email IS NULL
+ * ```
+ * 
+ * @internal
+ */
 export class DBNullValue extends DBImmediateValue {
   constructor() {
     super('NULL');
@@ -69,6 +106,18 @@ export class DBNullValue extends DBImmediateValue {
 // DBNotNullValue - NOT NULL value
 // ============================================
 
+/**
+ * Represents SQL NOT NULL for IS NOT NULL conditions.
+ * 
+ * @example
+ * ```typescript
+ * // Find users with email set
+ * await User.find([[User.email, dbNotNull()]]);
+ * // → WHERE email IS NOT NULL
+ * ```
+ * 
+ * @internal
+ */
 export class DBNotNullValue extends DBImmediateValue {
   constructor() {
     super('NOT NULL');
@@ -87,6 +136,17 @@ export class DBNotNullValue extends DBImmediateValue {
 // DBBoolValue - Boolean value
 // ============================================
 
+/**
+ * Represents SQL TRUE or FALSE literal.
+ * 
+ * @example
+ * ```typescript
+ * await User.find([[User.is_active, dbTrue()]]);
+ * // → WHERE is_active = TRUE
+ * ```
+ * 
+ * @internal
+ */
 export class DBBoolValue extends DBImmediateValue {
   constructor(value: boolean) {
     super(value ? 'TRUE' : 'FALSE');
@@ -97,6 +157,17 @@ export class DBBoolValue extends DBImmediateValue {
 // DBArrayValue - Array value (for IN clause)
 // ============================================
 
+/**
+ * Represents an array of values for IN clause.
+ * 
+ * @example
+ * ```typescript
+ * await User.find([[User.status, dbIn(['active', 'pending'])]]);
+ * // → WHERE status IN ('active', 'pending')
+ * ```
+ * 
+ * @internal
+ */
 export class DBArrayValue extends DBToken {
   constructor(values: unknown[]) {
     super(values, 'IN');
@@ -125,6 +196,20 @@ export class DBArrayValue extends DBToken {
 // DBDynamicValue - Dynamic value (function calls etc.)
 // ============================================
 
+/**
+ * Represents a dynamic SQL expression with parameters.
+ * Useful for database functions with runtime parameters.
+ * 
+ * @example
+ * ```typescript
+ * await User.update(
+ *   [[User.id, 1]],
+ *   [[User.search_vector, dbDynamic("to_tsvector('english', ?)", [text])]],
+ * );
+ * ```
+ * 
+ * @internal
+ */
 export class DBDynamicValue extends DBToken {
   func: string;
   values: unknown[];
@@ -152,6 +237,21 @@ export class DBDynamicValue extends DBToken {
 // DBRawValue - Raw SQL expression
 // ============================================
 
+/**
+ * Represents a raw SQL expression for SET clauses.
+ * Use for expressions like incrementing counters.
+ * 
+ * @example
+ * ```typescript
+ * await User.update(
+ *   [[User.id, 1]],
+ *   [[User.login_count, dbRaw('login_count + 1')]],
+ * );
+ * // → SET login_count = login_count + 1
+ * ```
+ * 
+ * @internal
+ */
 export class DBRawValue extends DBImmediateValue {
   constructor(sql: string) {
     super(sql);
@@ -177,6 +277,8 @@ export class DBRawValue extends DBImmediateValue {
  * const tupleIn = new DBTupleIn(['tenant_id', 'id'], [[1, 10], [1, 20], [2, 30]]);
  * // → (tenant_id, id) IN ((1, 10), (1, 20), (2, 30))
  * ```
+ * 
+ * @internal
  */
 export class DBTupleIn extends DBToken {
   columns: string[];
@@ -291,6 +393,8 @@ export function dbImmediate(value: string): DBImmediateValue {
  *   [[1, 10], [1, 20]]
  * );
  * ```
+ * 
+ * @internal
  */
 export function dbTupleIn(columns: string[], tuples: unknown[][]): DBTupleIn {
   return new DBTupleIn(columns, tuples);
@@ -300,7 +404,10 @@ export function dbTupleIn(columns: string[], tuples: unknown[][]): DBTupleIn {
 // DBParentRef - Parent table column reference (for correlated subqueries)
 // ============================================
 
-/** Column reference interface (compatible with Column type) */
+/** 
+ * Column reference interface (compatible with Column type)
+ * @internal
+ */
 export interface ColumnRef {
   columnName: string;
   tableName: string;
@@ -324,6 +431,8 @@ export interface ColumnRef {
  *   ])
  * ]);
  * ```
+ * 
+ * @internal
  */
 export class DBParentRef extends DBToken {
   /** The parent column name */
@@ -369,7 +478,10 @@ export function parentRef(column: ColumnRef): DBParentRef {
 // DBSubquery - Subquery for IN/NOT IN conditions
 // ============================================
 
-/** Subquery condition info for building SQL */
+/** 
+ * Subquery condition info for building SQL
+ * @internal
+ */
 export interface SubqueryCondition {
   column: ColumnRef;
   value: unknown;
@@ -391,6 +503,8 @@ export interface SubqueryCondition {
  *   'IN'
  * );
  * ```
+ * 
+ * @internal
  */
 export class DBSubquery extends DBToken {
   constructor(
@@ -475,6 +589,8 @@ export class DBSubquery extends DBToken {
  * // EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)
  * new DBExists('orders', [{ column: Order.user_id, value: parentRef(User.id) }], false);
  * ```
+ * 
+ * @internal
  */
 export class DBExists extends DBToken {
   constructor(

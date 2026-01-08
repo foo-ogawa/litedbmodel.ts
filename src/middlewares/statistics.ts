@@ -34,6 +34,7 @@ import type {
 import type { Conds, Column } from '../Column';
 import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, PkeyResult } from '../types';
 
+/** @internal */
 export class StatisticsMiddleware extends Middleware {
   // Instance statistics (per-request)
   find_all_counter = 0;

@@ -325,6 +325,7 @@ export function getDBConfig(): DBConfig | null {
 
 /**
  * Create handler with transaction connection
+ * @internal
  */
 export function createHandlerWithConnection(connection: DBConnection): DBHandler {
   if (!globalHandler) {
