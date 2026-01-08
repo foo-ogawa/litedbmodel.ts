@@ -3,6 +3,8 @@
 [![npm version](https://img.shields.io/npm/v/litedbmodel.svg)](https://www.npmjs.com/package/litedbmodel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+**[📖 API Documentation](https://github.com/foo-ogawa/litedbmodel.ts/blob/main/docs/api/README.md)**
+
 litedbmodel is a lightweight, SQL-friendly TypeScript ORM for PostgreSQL, MySQL, and SQLite.
 It is designed for production systems where you care about **predictable SQL**, **explicit performance control**, and **operational safety** (replication lag, N+1, accidental full scans).
 
