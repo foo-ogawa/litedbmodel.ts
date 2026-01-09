@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -10,7 +10,7 @@
 function dbNow(): DBImmediateValue;
 ```
 
-Defined in: DBValues.ts:346
+Defined in: DBValues.ts:366
 
 Create a NOW() value
 

@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -10,7 +10,7 @@
 function dbFalse(): DBBoolValue;
 ```
 
-Defined in: DBValues.ts:339
+Defined in: DBValues.ts:359
 
 Create a boolean FALSE value
 

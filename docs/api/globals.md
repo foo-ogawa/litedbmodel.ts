@@ -1,8 +1,8 @@
-[**litedbmodel v0.19.5**](README.md)
+[**litedbmodel v0.19.6**](README.md)
 
 ***
 
-# litedbmodel v0.19.5
+# litedbmodel v0.19.6
 
 litedbmodel - A lightweight TypeScript data access layer
 
@@ -62,7 +62,7 @@ Supports PostgreSQL and SQLite databases.
 type SkipType = typeof SKIP;
 ```
 
-Defined in: Column.ts:731
+Defined in: Column.ts:757
 
 ***
 
@@ -95,11 +95,12 @@ const column: (columnNameOrOptions?: string | ColumnOptions) => PropertyDecorato
   booleanArray: (columnName?: string) => PropertyDecorator;
   datetimeArray: (columnName?: string) => PropertyDecorator;
   json: <T>(columnName?: string) => PropertyDecorator;
+  uuid: (columnName?: string) => PropertyDecorator;
   custom: <T>(castFn: (value: unknown) => T, serializeFn?: SerializeFn, columnName?: string) => PropertyDecorator;
 };
 ```
 
-Defined in: decorators.ts:348
+Defined in: decorators.ts:356
 
 Column decorator for defining model properties.
 
@@ -132,18 +133,19 @@ still work and can be used when you want to be explicit about the conversion.
 
 | Name | Type | Description | Defined in |
 | ------ | ------ | ------ | ------ |
-| `boolean()` | (`columnName?`: `string`) => `PropertyDecorator` | Boolean type conversion Converts 't'/'f', 'true'/'false', 1/0 to boolean Preserves null for nullable columns, undefined stays undefined **Example** `@column.boolean() is_active?: boolean;` | decorators.ts:362 |
-| `number()` | (`columnName?`: `string`) => `PropertyDecorator` | Number type conversion (from string) Preserves null for nullable columns, undefined stays undefined **Example** `@column.number() amount?: number;` | decorators.ts:373 |
-| `bigint()` | (`columnName?`: `string`) => `PropertyDecorator` | BigInt type conversion Preserves null for nullable columns, undefined stays undefined **Example** `@column.bigint() large_id?: bigint;` | decorators.ts:386 |
-| `datetime()` | (`columnName?`: `string`) => `PropertyDecorator` | DateTime type conversion (timestamp, timestamptz) Preserves null for nullable columns, undefined stays undefined **Example** `@column.datetime() created_at?: Date;` | decorators.ts:406 |
-| `date()` | (`columnName?`: `string`) => `PropertyDecorator` | Date type conversion (date only, time set to 00:00:00) Preserves null for nullable columns, undefined stays undefined **Example** `@column.date() birth_date?: Date;` | decorators.ts:417 |
-| `stringArray()` | (`columnName?`: `string`) => `PropertyDecorator` | String array type conversion (text[]) Preserves null for nullable columns, undefined stays undefined **Example** `@column.stringArray() tags?: string[];` | decorators.ts:437 |
-| `intArray()` | (`columnName?`: `string`) => `PropertyDecorator` | Integer array type conversion (integer[]) Preserves null for nullable columns, undefined stays undefined **Example** `@column.intArray() scores?: number[];` | decorators.ts:452 |
-| `numericArray()` | (`columnName?`: `string`) => `PropertyDecorator` | Numeric array type conversion (numeric[], allows null elements) Preserves null for nullable columns, undefined stays undefined **Example** `@column.numericArray() values?: (number | null)[];` | decorators.ts:467 |
-| `booleanArray()` | (`columnName?`: `string`) => `PropertyDecorator` | Boolean array type conversion (boolean[]) Preserves null for nullable columns, undefined stays undefined **Example** `@column.booleanArray() flags?: (boolean | null)[];` | decorators.ts:482 |
-| `datetimeArray()` | (`columnName?`: `string`) => `PropertyDecorator` | DateTime array type conversion (timestamp[]) Preserves null for nullable columns, undefined stays undefined **Example** `@column.datetimeArray() event_dates?: (Date | null)[];` | decorators.ts:497 |
-| `json()` | \<`T`\>(`columnName?`: `string`) => `PropertyDecorator` | JSON/JSONB type conversion Preserves null for nullable columns, undefined stays undefined **Examples** `@column.json() metadata?: Record<string, unknown>;` `@column.json<UserSettings>() settings?: UserSettings;` | decorators.ts:523 |
-| `custom()` | \<`T`\>(`castFn`: (`value`: `unknown`) => `T`, `serializeFn?`: `SerializeFn`, `columnName?`: `string`) => `PropertyDecorator` | Custom type conversion with user-provided function **Examples** `@column.custom((v) => String(v).toUpperCase()) status?: string;` `@column.custom((v) => v, (v) => JSON.stringify(v)) data?: MyType; // with serializer` | decorators.ts:542 |
+| `boolean()` | (`columnName?`: `string`) => `PropertyDecorator` | Boolean type conversion Converts 't'/'f', 'true'/'false', 1/0 to boolean Preserves null for nullable columns, undefined stays undefined **Example** `@column.boolean() is_active?: boolean;` | decorators.ts:370 |
+| `number()` | (`columnName?`: `string`) => `PropertyDecorator` | Number type conversion (from string) Preserves null for nullable columns, undefined stays undefined **Example** `@column.number() amount?: number;` | decorators.ts:381 |
+| `bigint()` | (`columnName?`: `string`) => `PropertyDecorator` | BigInt type conversion Preserves null for nullable columns, undefined stays undefined **Example** `@column.bigint() large_id?: bigint;` | decorators.ts:394 |
+| `datetime()` | (`columnName?`: `string`) => `PropertyDecorator` | DateTime type conversion (timestamp, timestamptz) Preserves null for nullable columns, undefined stays undefined **Example** `@column.datetime() created_at?: Date;` | decorators.ts:414 |
+| `date()` | (`columnName?`: `string`) => `PropertyDecorator` | Date type conversion (date only, time set to 00:00:00) Preserves null for nullable columns, undefined stays undefined **Example** `@column.date() birth_date?: Date;` | decorators.ts:425 |
+| `stringArray()` | (`columnName?`: `string`) => `PropertyDecorator` | String array type conversion (text[]) Preserves null for nullable columns, undefined stays undefined **Example** `@column.stringArray() tags?: string[];` | decorators.ts:445 |
+| `intArray()` | (`columnName?`: `string`) => `PropertyDecorator` | Integer array type conversion (integer[]) Preserves null for nullable columns, undefined stays undefined **Example** `@column.intArray() scores?: number[];` | decorators.ts:460 |
+| `numericArray()` | (`columnName?`: `string`) => `PropertyDecorator` | Numeric array type conversion (numeric[], allows null elements) Preserves null for nullable columns, undefined stays undefined **Example** `@column.numericArray() values?: (number | null)[];` | decorators.ts:475 |
+| `booleanArray()` | (`columnName?`: `string`) => `PropertyDecorator` | Boolean array type conversion (boolean[]) Preserves null for nullable columns, undefined stays undefined **Example** `@column.booleanArray() flags?: (boolean | null)[];` | decorators.ts:490 |
+| `datetimeArray()` | (`columnName?`: `string`) => `PropertyDecorator` | DateTime array type conversion (timestamp[]) Preserves null for nullable columns, undefined stays undefined **Example** `@column.datetimeArray() event_dates?: (Date | null)[];` | decorators.ts:505 |
+| `json()` | \<`T`\>(`columnName?`: `string`) => `PropertyDecorator` | JSON/JSONB type conversion Preserves null for nullable columns, undefined stays undefined **Examples** `@column.json() metadata?: Record<string, unknown>;` `@column.json<UserSettings>() settings?: UserSettings;` | decorators.ts:531 |
+| `uuid()` | (`columnName?`: `string`) => `PropertyDecorator` | UUID type with automatic casting for PostgreSQL. Automatically adds ::uuid cast to conditions and INSERT/UPDATE values. Preserves null for nullable columns, undefined stays undefined. **Example** `@column.uuid() id?: string; @column.uuid({ primaryKey: true }) id?: string; // Conditions automatically cast to UUID: await User.find([[User.id, 'uuid-string']]); // → WHERE id = ?::uuid // IN clauses also cast: await User.find([[User.id, ['uuid1', 'uuid2']]]); // → WHERE id IN (?::uuid, ?::uuid)` | decorators.ts:564 |
+| `custom()` | \<`T`\>(`castFn`: (`value`: `unknown`) => `T`, `serializeFn?`: `SerializeFn`, `columnName?`: `string`) => `PropertyDecorator` | Custom type conversion with user-provided function **Examples** `@column.custom((v) => String(v).toUpperCase()) status?: string;` `@column.custom((v) => v, (v) => JSON.stringify(v)) data?: MyType; // with serializer` | decorators.ts:586 |
 
 ### Other
 
@@ -153,7 +155,7 @@ still work and can be used when you want to be explicit about the conversion.
 const SKIP: typeof SKIP;
 ```
 
-Defined in: Column.ts:730
+Defined in: Column.ts:756
 
 Sentinel value to skip a field in create/update operations.
 Use with conditional expressions to keep code as expressions instead of statements.
@@ -199,6 +201,10 @@ await User.update(conds, [
 - [dbDynamic](functions/dbDynamic.md)
 - [dbRaw](functions/dbRaw.md)
 - [dbImmediate](functions/dbImmediate.md)
+- [dbCast](functions/dbCast.md)
+- [dbUuid](functions/dbUuid.md)
+- [dbCastIn](functions/dbCastIn.md)
+- [dbUuidIn](functions/dbUuidIn.md)
 - [parentRef](functions/parentRef.md)
 - [createPostgresDriver](functions/createPostgresDriver.md)
 - [createSqliteDriver](functions/createSqliteDriver.md)

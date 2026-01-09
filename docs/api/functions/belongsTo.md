@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -10,7 +10,7 @@
 function belongsTo(keys: KeysFactory, options?: RelationDecoratorOptions): PropertyDecorator;
 ```
 
-Defined in: decorators.ts:643
+Defined in: decorators.ts:687
 
 BelongsTo relation decorator (N:1).
 Defines a many-to-one relationship where this model belongs to a parent record.

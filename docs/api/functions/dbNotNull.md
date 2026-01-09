@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -10,7 +10,7 @@
 function dbNotNull(): DBNotNullValue;
 ```
 
-Defined in: DBValues.ts:325
+Defined in: DBValues.ts:345
 
 Create a NOT NULL value
 

@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -10,7 +10,7 @@
 function parentRef(column: ColumnRef): DBParentRef;
 ```
 
-Defined in: DBValues.ts:473
+Defined in: DBValues.ts:643
 
 Create a parent table column reference for correlated subqueries.
 

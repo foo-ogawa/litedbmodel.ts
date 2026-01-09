@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -6,7 +6,7 @@
 
 # Class: Conditions\<Model\>
 
-Defined in: Column.ts:601
+Defined in: Column.ts:627
 
 Type-safe builder for query conditions.
 Use array literals for static conditions, builder for dynamic construction.
@@ -47,7 +47,7 @@ if (query.active) where.add(User.is_active, true);
 new Conditions<Model>(initial?: Conds): Conditions<Model>;
 ```
 
-Defined in: Column.ts:607
+Defined in: Column.ts:633
 
 Create a Conditions builder, optionally with initial conditions.
 
@@ -71,7 +71,7 @@ Create a Conditions builder, optionally with initial conditions.
 get length(): number;
 ```
 
-Defined in: Column.ts:651
+Defined in: Column.ts:677
 
 Get the number of conditions.
 
@@ -87,7 +87,7 @@ Get the number of conditions.
 add<V>(column: Column<V, Model>, value: V | null | undefined): this;
 ```
 
-Defined in: Column.ts:616
+Defined in: Column.ts:642
 
 Add a type-safe column equality condition.
 
@@ -116,7 +116,7 @@ Add a type-safe column equality condition.
 addRaw(condition: string, value?: unknown): this;
 ```
 
-Defined in: Column.ts:624
+Defined in: Column.ts:650
 
 Add a raw condition with template literal (e.g., `${User.age} > ?`).
 
@@ -139,7 +139,7 @@ Add a raw condition with template literal (e.g., `${User.age} > ?`).
 or(...condGroups: readonly Conds[]): this;
 ```
 
-Defined in: Column.ts:636
+Defined in: Column.ts:662
 
 Add an OR condition group.
 
@@ -161,7 +161,7 @@ Add an OR condition group.
 build(): Conds;
 ```
 
-Defined in: Column.ts:644
+Defined in: Column.ts:670
 
 Build the final array for use with find/count/delete.
 

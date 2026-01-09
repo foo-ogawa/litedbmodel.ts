@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -6,7 +6,7 @@
 
 # Abstract Class: DBModel
 
-Defined in: DBModel.ts:109
+Defined in: DBModel.ts:110
 
 Base class for all database models in litedbmodel.
 Provides CRUD operations, relations, transactions, and middleware support.
@@ -63,7 +63,7 @@ const john = await User.findOne([[User.email, 'john@example.com']]);
 new DBModel(): DBModel;
 ```
 
-Defined in: DBModel.ts:1428
+Defined in: DBModel.ts:1470
 
 #### Returns
 
@@ -73,27 +73,27 @@ Defined in: DBModel.ts:1428
 
 | Property | Modifier | Type | Default value | Description | Defined in |
 | ------ | ------ | ------ | ------ | ------ | ------ |
-| <a id="table_name"></a> `TABLE_NAME` | `static` | `string` | `''` | Table name | DBModel.ts:115 |
-| <a id="update_table_name"></a> `UPDATE_TABLE_NAME` | `static` | `string` \| `null` | `null` | Table name for UPDATE/DELETE (if different from TABLE_NAME) | DBModel.ts:140 |
-| <a id="select_column"></a> `SELECT_COLUMN` | `static` | `string` | `'*'` | Default SELECT columns | DBModel.ts:143 |
-| <a id="default_order"></a> `DEFAULT_ORDER` | `static` | `OrderSpec` \| `null` | `null` | Default ORDER BY clause (type-safe OrderColumn or OrderColumn[]) | DBModel.ts:146 |
-| <a id="default_group"></a> `DEFAULT_GROUP` | `static` | \| `string` \| [`Column`](../interfaces/Column.md)\<`unknown`, `unknown`\> \| [`Column`](../interfaces/Column.md)\<`unknown`, `unknown`\>[] \| `null` | `null` | Default GROUP BY clause (Column, Column[], or raw string) | DBModel.ts:149 |
-| <a id="find_filter"></a> `FIND_FILTER` | `static` | `Conds` \| `null` | `null` | Default filter conditions applied to all queries (use tuple format like find()) | DBModel.ts:152 |
-| <a id="query"></a> `QUERY` | `static` | `string` \| `null` | `null` | SQL query for query-based models (view models, aggregations, etc.) When defined, the model uses this query as a CTE instead of TABLE_NAME. **Example** `// Static query static QUERY = ` SELECT users.id, COUNT(posts.id) as post_count FROM users LEFT JOIN posts ON users.id = posts.user_id GROUP BY users.id `;` | DBModel.ts:168 |
-| <a id="pkey_columns"></a> `PKEY_COLUMNS` | `static` | [`Column`](../interfaces/Column.md)\<`unknown`, `unknown`\>[] \| `null` | `null` | Primary key columns (use getter to reference Model.column) | DBModel.ts:177 |
-| <a id="seq_name"></a> `SEQ_NAME` | `static` | `string` \| `null` | `null` | Sequence name for auto-increment (use getter if needed) | DBModel.ts:180 |
-| <a id="id_type"></a> `ID_TYPE` | `static` | `"serial"` \| `"uuid"` \| `null` | `null` | ID type: 'serial' for auto-increment, 'uuid' for UUID generation | DBModel.ts:183 |
-| <a id="_dbconfig"></a> `_dbConfig` | `static` | [`DBConfig`](../interfaces/DBConfig.md) \| `null` | `null` | Database config | DBModel.ts:190 |
-| <a id="_limitconfig"></a> `_limitConfig` | `static` | [`LimitConfig`](../interfaces/LimitConfig.md) | `{}` | Limit config for safety guards | DBModel.ts:193 |
-| <a id="_configoptions"></a> `_configOptions` | `static` | [`DBConfigOptions`](../interfaces/DBConfigOptions.md) | `undefined` | Configuration options for reader/writer separation | DBModel.ts:196 |
-| <a id="_lasttransactiontime"></a> `_lastTransactionTime` | `static` | `number` | `0` | Last transaction completion time (for writer sticky) | DBModel.ts:202 |
-| <a id="true"></a> `true` | `readonly` | `DBBoolValue` | `undefined` | Boolean TRUE value | DBModel.ts:1037 |
-| <a id="false"></a> `false` | `readonly` | `DBBoolValue` | `undefined` | Boolean FALSE value | DBModel.ts:1040 |
-| <a id="null"></a> `null` | `readonly` | `DBNullValue` | `undefined` | NULL value | DBModel.ts:1043 |
-| <a id="notnull"></a> `notNull` | `readonly` | `DBNotNullValue` | `undefined` | NOT NULL value | DBModel.ts:1046 |
-| <a id="now"></a> `now` | `readonly` | `DBImmediateValue` | `undefined` | NOW() value | DBModel.ts:1049 |
-| <a id="_modelclass"></a> `_modelClass` | `protected` | *typeof* `DBModel` | `undefined` | Instance reference to the static class | DBModel.ts:1420 |
-| <a id="_relationcache"></a> `_relationCache` | `protected` | `Map`\<`string`, `unknown`\> | `undefined` | Per-instance cache for loaded relations | DBModel.ts:1423 |
+| <a id="table_name"></a> `TABLE_NAME` | `static` | `string` | `''` | Table name | DBModel.ts:116 |
+| <a id="update_table_name"></a> `UPDATE_TABLE_NAME` | `static` | `string` \| `null` | `null` | Table name for UPDATE/DELETE (if different from TABLE_NAME) | DBModel.ts:141 |
+| <a id="select_column"></a> `SELECT_COLUMN` | `static` | `string` | `'*'` | Default SELECT columns | DBModel.ts:144 |
+| <a id="default_order"></a> `DEFAULT_ORDER` | `static` | `OrderSpec` \| `null` | `null` | Default ORDER BY clause (type-safe OrderColumn or OrderColumn[]) | DBModel.ts:147 |
+| <a id="default_group"></a> `DEFAULT_GROUP` | `static` | \| `string` \| [`Column`](../interfaces/Column.md)\<`unknown`, `unknown`\> \| [`Column`](../interfaces/Column.md)\<`unknown`, `unknown`\>[] \| `null` | `null` | Default GROUP BY clause (Column, Column[], or raw string) | DBModel.ts:150 |
+| <a id="find_filter"></a> `FIND_FILTER` | `static` | `Conds` \| `null` | `null` | Default filter conditions applied to all queries (use tuple format like find()) | DBModel.ts:153 |
+| <a id="query"></a> `QUERY` | `static` | `string` \| `null` | `null` | SQL query for query-based models (view models, aggregations, etc.) When defined, the model uses this query as a CTE instead of TABLE_NAME. **Example** `// Static query static QUERY = ` SELECT users.id, COUNT(posts.id) as post_count FROM users LEFT JOIN posts ON users.id = posts.user_id GROUP BY users.id `;` | DBModel.ts:169 |
+| <a id="pkey_columns"></a> `PKEY_COLUMNS` | `static` | [`Column`](../interfaces/Column.md)\<`unknown`, `unknown`\>[] \| `null` | `null` | Primary key columns (use getter to reference Model.column) | DBModel.ts:178 |
+| <a id="seq_name"></a> `SEQ_NAME` | `static` | `string` \| `null` | `null` | Sequence name for auto-increment (use getter if needed) | DBModel.ts:181 |
+| <a id="id_type"></a> `ID_TYPE` | `static` | `"uuid"` \| `"serial"` \| `null` | `null` | ID type: 'serial' for auto-increment, 'uuid' for UUID generation | DBModel.ts:184 |
+| <a id="_dbconfig"></a> `_dbConfig` | `static` | [`DBConfig`](../interfaces/DBConfig.md) \| `null` | `null` | Database config | DBModel.ts:191 |
+| <a id="_limitconfig"></a> `_limitConfig` | `static` | [`LimitConfig`](../interfaces/LimitConfig.md) | `{}` | Limit config for safety guards | DBModel.ts:194 |
+| <a id="_configoptions"></a> `_configOptions` | `static` | [`DBConfigOptions`](../interfaces/DBConfigOptions.md) | `undefined` | Configuration options for reader/writer separation | DBModel.ts:197 |
+| <a id="_lasttransactiontime"></a> `_lastTransactionTime` | `static` | `number` | `0` | Last transaction completion time (for writer sticky) | DBModel.ts:203 |
+| <a id="true"></a> `true` | `readonly` | `DBBoolValue` | `undefined` | Boolean TRUE value | DBModel.ts:1079 |
+| <a id="false"></a> `false` | `readonly` | `DBBoolValue` | `undefined` | Boolean FALSE value | DBModel.ts:1082 |
+| <a id="null"></a> `null` | `readonly` | `DBNullValue` | `undefined` | NULL value | DBModel.ts:1085 |
+| <a id="notnull"></a> `notNull` | `readonly` | `DBNotNullValue` | `undefined` | NOT NULL value | DBModel.ts:1088 |
+| <a id="now"></a> `now` | `readonly` | `DBImmediateValue` | `undefined` | NOW() value | DBModel.ts:1091 |
+| <a id="_modelclass"></a> `_modelClass` | `protected` | *typeof* `DBModel` | `undefined` | Instance reference to the static class | DBModel.ts:1462 |
+| <a id="_relationcache"></a> `_relationCache` | `protected` | `Map`\<`string`, `unknown`\> | `undefined` | Per-instance cache for loaded relations | DBModel.ts:1465 |
 
 ## Methods
 
@@ -103,7 +103,7 @@ Defined in: DBModel.ts:1428
 static asModel<T>(this: T): T & ColumnsOf<InstanceType<T>>;
 ```
 
-Defined in: DBModel.ts:135
+Defined in: DBModel.ts:136
 
 Returns the model class with type-safe column properties.
 Use this instead of manual casting with `ColumnsOf`.
@@ -147,7 +147,7 @@ await User.find([[User.name, 'John']]);
 static setConfig(config: DBConfig, options?: DBConfigOptions): void;
 ```
 
-Defined in: DBModel.ts:232
+Defined in: DBModel.ts:233
 
 Initialize DBModel with database config.
 Call this once at application startup.
@@ -196,7 +196,7 @@ DBModel.setConfig(
 static getLimitConfig(): LimitConfig;
 ```
 
-Defined in: DBModel.ts:256
+Defined in: DBModel.ts:257
 
 Get current limit configuration.
 
@@ -212,7 +212,7 @@ Get current limit configuration.
 static setLimitConfig(config: LimitConfig): void;
 ```
 
-Defined in: DBModel.ts:271
+Defined in: DBModel.ts:272
 
 Update limit configuration.
 
@@ -244,7 +244,7 @@ DBModel.setLimitConfig({ findHardLimit: null, hasManyHardLimit: null });
 static getDBConfig(): DBConfig | null;
 ```
 
-Defined in: DBModel.ts:278
+Defined in: DBModel.ts:279
 
 Get database config
 
@@ -260,7 +260,7 @@ Get database config
 static getDriverType(): "postgres" | "sqlite" | "mysql";
 ```
 
-Defined in: DBModel.ts:286
+Defined in: DBModel.ts:287
 
 Get the database driver type.
 Returns 'postgres', 'mysql', or 'sqlite'.
@@ -277,7 +277,7 @@ Returns 'postgres', 'mysql', or 'sqlite'.
 protected static getHandler(): DBHandler;
 ```
 
-Defined in: DBModel.ts:298
+Defined in: DBModel.ts:313
 
 Get a DBHandler instance for this model.
 Connection priority:
@@ -298,7 +298,7 @@ Connection priority:
 protected static _shouldUseWriterSticky(): boolean;
 ```
 
-Defined in: DBModel.ts:324
+Defined in: DBModel.ts:339
 
 Check if we should use writer due to sticky after transaction.
 
@@ -314,7 +314,7 @@ Check if we should use writer due to sticky after transaction.
 static inWriterContext(): boolean;
 ```
 
-Defined in: DBModel.ts:335
+Defined in: DBModel.ts:350
 
 Check if currently in a withWriter context.
 
@@ -330,7 +330,7 @@ Check if currently in a withWriter context.
 static use(MiddlewareClass: MiddlewareClass): () => void;
 ```
 
-Defined in: DBModel.ts:378
+Defined in: DBModel.ts:393
 
 Register a middleware class to intercept DBModel methods.
 
@@ -387,7 +387,7 @@ console.log(LoggerMiddleware.getCurrentContext().getLogs());
 static removeMiddleware(MiddlewareClass: MiddlewareClass): boolean;
 ```
 
-Defined in: DBModel.ts:394
+Defined in: DBModel.ts:409
 
 Remove a middleware class
 
@@ -411,7 +411,7 @@ true if middleware was found and removed
 static clearMiddlewares(): void;
 ```
 
-Defined in: DBModel.ts:406
+Defined in: DBModel.ts:421
 
 Clear all middlewares (useful for testing)
 
@@ -427,7 +427,7 @@ Clear all middlewares (useful for testing)
 static getMiddlewares(): readonly MiddlewareClass[];
 ```
 
-Defined in: DBModel.ts:413
+Defined in: DBModel.ts:428
 
 Get registered middleware classes
 
@@ -450,7 +450,7 @@ static buildSelectSQL<T>(
 };
 ```
 
-Defined in: DBModel.ts:598
+Defined in: DBModel.ts:615
 
 Build SELECT SQL without executing.
 Useful for constructing CTE/subquery SQL fragments.
@@ -484,8 +484,8 @@ Object with sql and params
 
 | Name | Type | Defined in |
 | ------ | ------ | ------ |
-| `sql` | `string` | DBModel.ts:603 |
-| `params` | `unknown`[] | DBModel.ts:603 |
+| `sql` | `string` | DBModel.ts:620 |
+| `params` | `unknown`[] | DBModel.ts:620 |
 
 #### Example
 
@@ -510,7 +510,7 @@ static inSubquery<T, S>(
    conditions: readonly [Column<any, S>, unknown][]): readonly [string, DBSubquery];
 ```
 
-Defined in: DBModel.ts:1095
+Defined in: DBModel.ts:1137
 
 IN subquery condition.
 Creates a condition like: column IN (SELECT selectColumn FROM targetModel WHERE ...)
@@ -578,7 +578,7 @@ static notInSubquery<T, S>(
    conditions: readonly [Column<any, S>, unknown][]): readonly [string, DBSubquery];
 ```
 
-Defined in: DBModel.ts:1143
+Defined in: DBModel.ts:1185
 
 NOT IN subquery condition.
 Creates a condition like: table.column NOT IN (SELECT table.column FROM targetModel WHERE ...)
@@ -631,7 +631,7 @@ await User.find([
 static exists<S>(conditions: readonly [Column<any, S>, unknown][]): readonly [string, DBExists];
 ```
 
-Defined in: DBModel.ts:1186
+Defined in: DBModel.ts:1228
 
 EXISTS subquery condition.
 Creates a condition like: EXISTS (SELECT 1 FROM targetModel WHERE table.column = ...)
@@ -678,7 +678,7 @@ await User.find([
 static notExists<S>(conditions: readonly [Column<any, S>, unknown][]): readonly [string, DBExists];
 ```
 
-Defined in: DBModel.ts:1221
+Defined in: DBModel.ts:1263
 
 NOT EXISTS subquery condition.
 Creates a condition like: NOT EXISTS (SELECT 1 FROM targetModel WHERE table.column = ...)
@@ -724,7 +724,7 @@ await User.find([
 static getTableName(): string;
 ```
 
-Defined in: DBModel.ts:1310
+Defined in: DBModel.ts:1352
 
 Get table name for SELECT queries.
 For query-based models, returns the CTE alias (TABLE_NAME).
@@ -741,7 +741,7 @@ For query-based models, returns the CTE alias (TABLE_NAME).
 static isQueryBased(): boolean;
 ```
 
-Defined in: DBModel.ts:1333
+Defined in: DBModel.ts:1375
 
 Check if this model is query-based (uses QUERY instead of TABLE_NAME)
 
@@ -760,7 +760,7 @@ static withQuery<T>(this: T, queryConfig: {
 }): T;
 ```
 
-Defined in: DBModel.ts:1361
+Defined in: DBModel.ts:1403
 
 Create a new model class bound to specific query parameters.
 Used for parameterized query-based models.
@@ -812,7 +812,7 @@ const results = await Q1Report.find([...]);
 static getUpdateTableName(): string;
 ```
 
-Defined in: DBModel.ts:1408
+Defined in: DBModel.ts:1450
 
 Get table name for UPDATE/DELETE queries.
 Query-based models cannot be updated/deleted directly.
@@ -829,7 +829,7 @@ Query-based models cannot be updated/deleted directly.
 clearRelationCache(): void;
 ```
 
-Defined in: DBModel.ts:1461
+Defined in: DBModel.ts:1503
 
 Clear the relation cache for this instance.
 Also clears the context cache to force reload from DB.
@@ -846,7 +846,7 @@ Also clears the context cache to force reload from DB.
 typeCastFromDB(): void;
 ```
 
-Defined in: DBModel.ts:1598
+Defined in: DBModel.ts:1640
 
 Called after loading from DB to convert types
 Override in derived class to implement type conversions
@@ -872,7 +872,7 @@ typeCastFromDB(): void {
 getPkey(): Record<string, unknown> | null;
 ```
 
-Defined in: DBModel.ts:1610
+Defined in: DBModel.ts:1652
 
 Get primary key as object
 
@@ -890,7 +890,7 @@ Object with primary key column names and values, or null if not set
 setPkey(key: unknown): void;
 ```
 
-Defined in: DBModel.ts:1631
+Defined in: DBModel.ts:1673
 
 Set primary key value
 
@@ -912,7 +912,7 @@ Set primary key value
 getPkeyString(): string;
 ```
 
-Defined in: DBModel.ts:1649
+Defined in: DBModel.ts:1691
 
 Get primary key as string (for logging, caching, etc.)
 
@@ -928,7 +928,7 @@ Get primary key as string (for logging, caching, etc.)
 getSingleColId(): unknown;
 ```
 
-Defined in: DBModel.ts:1661
+Defined in: DBModel.ts:1703
 
 Get single-column ID value
 
@@ -946,7 +946,7 @@ ID value or undefined
 clone<T>(this: T): T;
 ```
 
-Defined in: DBModel.ts:1676
+Defined in: DBModel.ts:1718
 
 Create a shallow copy of the model instance
 
@@ -974,7 +974,7 @@ Create a shallow copy of the model instance
 assign(source: Partial<this>): this;
 ```
 
-Defined in: DBModel.ts:1684
+Defined in: DBModel.ts:1726
 
 Copy properties from another object
 
@@ -996,7 +996,7 @@ Copy properties from another object
 toObject(): Record<string, unknown>;
 ```
 
-Defined in: DBModel.ts:1695
+Defined in: DBModel.ts:1737
 
 Convert to plain object
 
@@ -1012,7 +1012,7 @@ Convert to plain object
 toJSON(): Record<string, unknown>;
 ```
 
-Defined in: DBModel.ts:1708
+Defined in: DBModel.ts:1750
 
 Convert to JSON-serializable object
 
@@ -1028,7 +1028,7 @@ Convert to JSON-serializable object
 static fromObject<T>(this: () => T, obj: Record<string, unknown>): T;
 ```
 
-Defined in: DBModel.ts:1719
+Defined in: DBModel.ts:1761
 
 Create an instance from a plain object
 
@@ -1057,7 +1057,7 @@ Create an instance from a plain object
 static fromObjects<T>(this: () => T, objs: Record<string, unknown>[]): T[];
 ```
 
-Defined in: DBModel.ts:1732
+Defined in: DBModel.ts:1774
 
 Create multiple instances from an array of plain objects
 
@@ -1086,7 +1086,7 @@ Create multiple instances from an array of plain objects
 static columnList<T>(records: T[], columnName: string): unknown[];
 ```
 
-Defined in: DBModel.ts:1742
+Defined in: DBModel.ts:1784
 
 Get column values from an array of model instances
 
@@ -1115,7 +1115,7 @@ Get column values from an array of model instances
 static hashByProperty<T>(records: T[], propertyKey: string): Record<string, T>;
 ```
 
-Defined in: DBModel.ts:1752
+Defined in: DBModel.ts:1794
 
 Create a hash map by property value
 
@@ -1144,7 +1144,7 @@ Create a hash map by property value
 static groupByProperty<T>(records: T[], propertyKey: string): Record<string, T[]>;
 ```
 
-Defined in: DBModel.ts:1767
+Defined in: DBModel.ts:1809
 
 Group records by property value
 
@@ -1173,7 +1173,7 @@ Group records by property value
 static idList<T>(records: T[], column?: string): unknown[];
 ```
 
-Defined in: DBModel.ts:1785
+Defined in: DBModel.ts:1827
 
 Get ID list from records
 
@@ -1205,7 +1205,7 @@ static makeLikeString(
    back: boolean): string;
 ```
 
-Defined in: DBModel.ts:1793
+Defined in: DBModel.ts:1835
 
 Generate LIKE pattern string
 
@@ -1229,7 +1229,7 @@ Generate LIKE pattern string
 static or<T>(this: T, ...condGroups: readonly CondsOf<T>[]): OrCondOf<T>;
 ```
 
-Defined in: DBModel.ts:1830
+Defined in: DBModel.ts:1872
 
 Create a type-safe OR condition for this model.
 All columns in the conditions must belong to this model.
@@ -1280,7 +1280,7 @@ static find<T>(
 options?: SelectOptions): Promise<InstanceType<T>[]>;
 ```
 
-Defined in: DBModel.ts:1866
+Defined in: DBModel.ts:1908
 
 Find all records using type-safe condition tuples.
 All columns in conditions must belong to this model.
@@ -1334,7 +1334,7 @@ static findOne<T>(
 options?: SelectOptions): Promise<InstanceType<T> | null>;
 ```
 
-Defined in: DBModel.ts:1912
+Defined in: DBModel.ts:1954
 
 Find first record using type-safe condition tuples.
 
@@ -1377,7 +1377,7 @@ static findById<T>(
 options?: SelectOptions): Promise<InstanceType<T>[]>;
 ```
 
-Defined in: DBModel.ts:1951
+Defined in: DBModel.ts:1993
 
 Find records by primary key using PkeyResult format.
 Efficiently fetches multiple records by their primary keys.
@@ -1429,7 +1429,7 @@ const users = await User.findById(result);
 static count<T>(this: T, conditions: CondsOf<T>): Promise<number>;
 ```
 
-Defined in: DBModel.ts:2065
+Defined in: DBModel.ts:2107
 
 Count records using type-safe condition tuples.
 
@@ -1469,7 +1469,7 @@ static create<T, P>(
 options?: InsertOptions<InstanceType<T>>): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2100
+Defined in: DBModel.ts:2142
 
 Create a new record using type-safe column-value tuples.
 Value types are validated at compile time.
@@ -1523,7 +1523,7 @@ static createMany<T>(
 options?: InsertOptions<InstanceType<T>>): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2170
+Defined in: DBModel.ts:2212
 
 Create multiple records using type-safe column-value tuples.
 
@@ -1576,7 +1576,7 @@ static update<T, V>(
 options?: UpdateOptions): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2240
+Defined in: DBModel.ts:2282
 
 Update records using type-safe column-value tuples.
 Value types are validated at compile time.
@@ -1632,7 +1632,7 @@ static delete<T>(
 options?: DeleteOptions): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2318
+Defined in: DBModel.ts:2360
 
 Delete records matching conditions
 
@@ -1678,7 +1678,7 @@ static updateMany<T>(
 options: UpdateManyOptions): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2395
+Defined in: DBModel.ts:2437
 
 Update multiple records with different values per row.
 Uses efficient bulk update strategies (UNNEST for PostgreSQL, VALUES for MySQL/SQLite).
@@ -1728,7 +1728,7 @@ const users = await User.findById(result);
 static execute(sql: string, params?: unknown[]): Promise<ExecuteResult>;
 ```
 
-Defined in: DBModel.ts:2598
+Defined in: DBModel.ts:2640
 
 Execute raw SQL query.
 
@@ -1767,7 +1767,7 @@ static query<T>(
 params?: unknown[]): Promise<InstanceType<T>[]>;
 ```
 
-Defined in: DBModel.ts:2642
+Defined in: DBModel.ts:2684
 
 Execute raw SQL and return model instances.
 The SQL should return columns matching the model's properties.
@@ -1816,7 +1816,7 @@ const posts = await Post.query(`
 static inTransaction(): boolean;
 ```
 
-Defined in: DBModel.ts:2672
+Defined in: DBModel.ts:2714
 
 Check if currently in a transaction
 
@@ -1832,7 +1832,7 @@ Check if currently in a transaction
 static transaction<R>(func: () => Promise<R>, options: TransactionOptions): Promise<R>;
 ```
 
-Defined in: DBModel.ts:2710
+Defined in: DBModel.ts:2752
 
 Execute a function within a transaction
 All model operations inside the callback will use the same database connection.
@@ -1891,7 +1891,7 @@ await DBModel.transaction(
 static getCurrentConnection(): DBConnection | null;
 ```
 
-Defined in: DBModel.ts:2813
+Defined in: DBModel.ts:2855
 
 Get current transaction connection
 Use this to execute raw SQL queries within a transaction
@@ -1921,7 +1921,7 @@ await DBModel.transaction(async () => {
 static getCurrentClient(): DBConnection | null;
 ```
 
-Defined in: DBModel.ts:2821
+Defined in: DBModel.ts:2863
 
 #### Returns
 
@@ -1939,7 +1939,7 @@ Use getCurrentConnection() instead
 static withWriter<R>(func: () => Promise<R>): Promise<R>;
 ```
 
-Defined in: DBModel.ts:2846
+Defined in: DBModel.ts:2888
 
 Execute a function with explicit writer connection access.
 Use this when you need to read from writer to avoid replication lag.
@@ -1985,7 +1985,7 @@ await DBModel.withWriter(async () => {
 static createDBBase(config: DBConfig, options?: DBConfigOptions): typeof DBModel;
 ```
 
-Defined in: DBModel.ts:2907
+Defined in: DBModel.ts:2949
 
 Create an independent database base class.
 Use this to connect to multiple databases with isolated configurations.
@@ -2044,7 +2044,7 @@ await BaseDB.transaction(async () => {
 reload(forUpdate: boolean): Promise<DBModel | null>;
 ```
 
-Defined in: DBModel.ts:3083
+Defined in: DBModel.ts:3125
 
 Reload this instance from the database
 

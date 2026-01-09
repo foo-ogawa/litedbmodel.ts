@@ -1,4 +1,4 @@
-**litedbmodel v0.19.5**
+**litedbmodel v0.19.6**
 
 ***
 

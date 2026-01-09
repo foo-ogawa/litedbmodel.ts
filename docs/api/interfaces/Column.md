@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -38,17 +38,18 @@ Call to get column name as string (for computed property keys)
 | <a id="tablename"></a> `tableName` | `readonly` | `string` | The database table name | Column.ts:154 |
 | <a id="modelname"></a> `modelName` | `readonly` | `string` | The model class name (for debugging and static analysis) | Column.ts:157 |
 | <a id="_brand"></a> `_brand` | `readonly` | `"Column"` | Brand for type discrimination - enables static analysis to distinguish from regular variables | Column.ts:160 |
-| <a id="__model"></a> `__model?` | `readonly` | `ModelType` | Phantom type for model association (compile-time only, not used at runtime) | Column.ts:163 |
+| <a id="sqlcast"></a> `sqlCast?` | `readonly` | `string` | SQL type for automatic casting in conditions (e.g., 'uuid') | Column.ts:163 |
+| <a id="__model"></a> `__model?` | `readonly` | `ModelType` | Phantom type for model association (compile-time only, not used at runtime) | Column.ts:166 |
 
 ## Methods
 
 ### eq()
 
 ```ts
-eq(value: ValueType): Record<string, ValueType>;
+eq(value: ValueType): Record<string, ValueType | DBCast>;
 ```
 
-Defined in: Column.ts:173
+Defined in: Column.ts:176
 
 Equal condition (column = value)
 
@@ -60,7 +61,7 @@ Equal condition (column = value)
 
 #### Returns
 
-`Record`\<`string`, `ValueType`\>
+`Record`\<`string`, `ValueType` \| `DBCast`\>
 
 #### Example
 
@@ -73,10 +74,10 @@ User.id.eq(1) → { id: 1 }
 ### ne()
 
 ```ts
-ne(value: ValueType): Record<string, ValueType>;
+ne(value: ValueType): Record<string, ValueType | DBCast>;
 ```
 
-Defined in: Column.ts:179
+Defined in: Column.ts:182
 
 Not equal condition (column != value)
 
@@ -88,7 +89,7 @@ Not equal condition (column != value)
 
 #### Returns
 
-`Record`\<`string`, `ValueType`\>
+`Record`\<`string`, `ValueType` \| `DBCast`\>
 
 #### Example
 
@@ -101,10 +102,10 @@ User.status.ne('deleted') → { 'status != ?': 'deleted' }
 ### gt()
 
 ```ts
-gt(value: ValueType): Record<string, ValueType>;
+gt(value: ValueType): Record<string, ValueType | DBCast>;
 ```
 
-Defined in: Column.ts:185
+Defined in: Column.ts:188
 
 Greater than condition (column > value)
 
@@ -116,7 +117,7 @@ Greater than condition (column > value)
 
 #### Returns
 
-`Record`\<`string`, `ValueType`\>
+`Record`\<`string`, `ValueType` \| `DBCast`\>
 
 #### Example
 
@@ -129,10 +130,10 @@ User.age.gt(18) → { 'age > ?': 18 }
 ### gte()
 
 ```ts
-gte(value: ValueType): Record<string, ValueType>;
+gte(value: ValueType): Record<string, ValueType | DBCast>;
 ```
 
-Defined in: Column.ts:191
+Defined in: Column.ts:194
 
 Greater than or equal condition (column >= value)
 
@@ -144,7 +145,7 @@ Greater than or equal condition (column >= value)
 
 #### Returns
 
-`Record`\<`string`, `ValueType`\>
+`Record`\<`string`, `ValueType` \| `DBCast`\>
 
 #### Example
 
@@ -157,10 +158,10 @@ User.age.gte(18) → { 'age >= ?': 18 }
 ### lt()
 
 ```ts
-lt(value: ValueType): Record<string, ValueType>;
+lt(value: ValueType): Record<string, ValueType | DBCast>;
 ```
 
-Defined in: Column.ts:197
+Defined in: Column.ts:200
 
 Less than condition (column < value)
 
@@ -172,7 +173,7 @@ Less than condition (column < value)
 
 #### Returns
 
-`Record`\<`string`, `ValueType`\>
+`Record`\<`string`, `ValueType` \| `DBCast`\>
 
 #### Example
 
@@ -185,10 +186,10 @@ User.age.lt(65) → { 'age < ?': 65 }
 ### lte()
 
 ```ts
-lte(value: ValueType): Record<string, ValueType>;
+lte(value: ValueType): Record<string, ValueType | DBCast>;
 ```
 
-Defined in: Column.ts:203
+Defined in: Column.ts:206
 
 Less than or equal condition (column <= value)
 
@@ -200,7 +201,7 @@ Less than or equal condition (column <= value)
 
 #### Returns
 
-`Record`\<`string`, `ValueType`\>
+`Record`\<`string`, `ValueType` \| `DBCast`\>
 
 #### Example
 
@@ -216,7 +217,7 @@ User.age.lte(65) → { 'age <= ?': 65 }
 like(pattern: string): Record<string, string>;
 ```
 
-Defined in: Column.ts:209
+Defined in: Column.ts:212
 
 LIKE condition (column LIKE pattern)
 
@@ -244,7 +245,7 @@ User.name.like('%test%') → { 'name LIKE ?': '%test%' }
 notLike(pattern: string): Record<string, string>;
 ```
 
-Defined in: Column.ts:215
+Defined in: Column.ts:218
 
 NOT LIKE condition (column NOT LIKE pattern)
 
@@ -272,7 +273,7 @@ User.name.notLike('%test%') → { 'name NOT LIKE ?': '%test%' }
 ilike(pattern: string): Record<string, string>;
 ```
 
-Defined in: Column.ts:221
+Defined in: Column.ts:224
 
 ILIKE condition (case-insensitive LIKE, PostgreSQL specific)
 
@@ -300,7 +301,7 @@ User.name.ilike('%TEST%') → { 'name ILIKE ?': '%TEST%' }
 between(from: ValueType, to: ValueType): Record<string, [ValueType, ValueType]>;
 ```
 
-Defined in: Column.ts:227
+Defined in: Column.ts:230
 
 BETWEEN condition (column BETWEEN from AND to)
 
@@ -326,10 +327,10 @@ User.age.between(18, 65) → { 'age BETWEEN ? AND ?': [18, 65] }
 ### in()
 
 ```ts
-in(values: ValueType[]): Record<string, ValueType[]>;
+in(values: ValueType[]): Record<string, ValueType[] | DBCastArray>;
 ```
 
-Defined in: Column.ts:234
+Defined in: Column.ts:237
 
 IN condition (column IN (values))
 Note: Arrays are automatically converted to IN clause by litedbmodel
@@ -342,7 +343,7 @@ Note: Arrays are automatically converted to IN clause by litedbmodel
 
 #### Returns
 
-`Record`\<`string`, `ValueType`[]\>
+`Record`\<`string`, `ValueType`[] \| `DBCastArray`\>
 
 #### Example
 
@@ -355,10 +356,10 @@ User.status.in(['active', 'pending']) → { status: ['active', 'pending'] }
 ### notIn()
 
 ```ts
-notIn(values: ValueType[]): Record<string, ValueType[]>;
+notIn(values: ValueType[]): Record<string, ValueType[] | DBCastArray>;
 ```
 
-Defined in: Column.ts:240
+Defined in: Column.ts:243
 
 NOT IN condition (column NOT IN (values))
 
@@ -370,7 +371,7 @@ NOT IN condition (column NOT IN (values))
 
 #### Returns
 
-`Record`\<`string`, `ValueType`[]\>
+`Record`\<`string`, `ValueType`[] \| `DBCastArray`\>
 
 #### Example
 
@@ -386,7 +387,7 @@ User.status.notIn(['deleted', 'banned'])
 isNull(): Record<string, null>;
 ```
 
-Defined in: Column.ts:246
+Defined in: Column.ts:249
 
 IS NULL condition
 
@@ -408,7 +409,7 @@ User.deleted_at.isNull() → { deleted_at: null }
 isNotNull(): Record<string, DBNotNullValue>;
 ```
 
-Defined in: Column.ts:252
+Defined in: Column.ts:255
 
 IS NOT NULL condition
 
@@ -430,7 +431,7 @@ User.email.isNotNull() → { email: DBNotNullValue }
 asc(): OrderColumn<ModelType>;
 ```
 
-Defined in: Column.ts:262
+Defined in: Column.ts:265
 
 Ascending order
 
@@ -452,7 +453,7 @@ User.created_at.asc() → OrderColumn('created_at', 'ASC')
 desc(): OrderColumn<ModelType>;
 ```
 
-Defined in: Column.ts:268
+Defined in: Column.ts:271
 
 Descending order
 
@@ -474,7 +475,7 @@ User.created_at.desc() → OrderColumn('created_at', 'DESC')
 ascNullsFirst(): OrderColumn<ModelType>;
 ```
 
-Defined in: Column.ts:274
+Defined in: Column.ts:277
 
 Ascending order with NULLS FIRST
 
@@ -496,7 +497,7 @@ User.updated_at.ascNullsFirst() → OrderColumn with NULLS FIRST
 ascNullsLast(): OrderColumn<ModelType>;
 ```
 
-Defined in: Column.ts:280
+Defined in: Column.ts:283
 
 Ascending order with NULLS LAST
 
@@ -518,7 +519,7 @@ User.updated_at.ascNullsLast() → OrderColumn with NULLS LAST
 descNullsFirst(): OrderColumn<ModelType>;
 ```
 
-Defined in: Column.ts:286
+Defined in: Column.ts:289
 
 Descending order with NULLS FIRST
 
@@ -540,7 +541,7 @@ User.updated_at.descNullsFirst() → OrderColumn with NULLS FIRST
 descNullsLast(): OrderColumn<ModelType>;
 ```
 
-Defined in: Column.ts:292
+Defined in: Column.ts:295
 
 Descending order with NULLS LAST
 
@@ -562,7 +563,7 @@ User.updated_at.descNullsLast() → OrderColumn with NULLS LAST
 toString(): string;
 ```
 
-Defined in: Column.ts:302
+Defined in: Column.ts:305
 
 Returns column name (for template literals)
 

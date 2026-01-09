@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -6,7 +6,7 @@
 
 # Interface: ColumnOptions
 
-Defined in: decorators.ts:226
+Defined in: decorators.ts:231
 
 Options that can be passed to
 
@@ -18,5 +18,5 @@ decorator
 
 | Property | Type | Description | Defined in |
 | ------ | ------ | ------ | ------ |
-| <a id="columnname"></a> `columnName?` | `string` | Custom column name (defaults to property name) | decorators.ts:228 |
-| <a id="primarykey"></a> `primaryKey?` | `boolean` | Mark this column as part of the primary key | decorators.ts:230 |
+| <a id="columnname"></a> `columnName?` | `string` | Custom column name (defaults to property name) | decorators.ts:233 |
+| <a id="primarykey"></a> `primaryKey?` | `boolean` | Mark this column as part of the primary key | decorators.ts:235 |

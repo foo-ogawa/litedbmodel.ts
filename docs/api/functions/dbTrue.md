@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -10,7 +10,7 @@
 function dbTrue(): DBBoolValue;
 ```
 
-Defined in: DBValues.ts:332
+Defined in: DBValues.ts:352
 
 Create a boolean TRUE value
 

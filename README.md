@@ -216,33 +216,6 @@ Use explicit type decorators when auto-inference isn't sufficient:
 @column.json<Settings>() settings?: Settings; // JSON with type
 ```
 
-### UUID Columns
-
-The `@column.uuid()` decorator handles database-specific SQL casting automatically:
-
-```typescript
-@model('users')
-class UserModel extends DBModel {
-  @column.uuid({ primaryKey: true }) id?: string;  // UUID primary key
-  @column() name?: string;
-}
-export const User = UserModel.asModel();
-
-// Queries use correct casting per driver
-await User.find([[User.id, '123e4567-e89b-12d3-a456-426614174000']]);
-```
-
-| Database | Generated SQL | Notes |
-|----------|---------------|-------|
-| PostgreSQL | `WHERE id = ?::uuid` | Cast prevents "operator does not exist: uuid = text" |
-| SQLite | `WHERE id = ?` | UUID stored as TEXT, no cast needed |
-| MySQL | `WHERE id = ?` | UUID stored as CHAR(36), no cast needed |
-
-The casting is applied automatically for:
-- Conditions (`find()`, `findOne()`, `update()`, `delete()`)
-- Column methods (`User.id.eq()`, `User.id.in()`, etc.)
-- INSERT/UPDATE values
-
 ---
 
 ## CRUD Operations

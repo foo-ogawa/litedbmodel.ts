@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -10,7 +10,7 @@
 function dbNull(): DBNullValue;
 ```
 
-Defined in: DBValues.ts:318
+Defined in: DBValues.ts:338
 
 Create a NULL value
 

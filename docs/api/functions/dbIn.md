@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.5**](../README.md)
+[**litedbmodel v0.19.6**](../README.md)
 
 ***
 
@@ -10,7 +10,7 @@
 function dbIn(values: unknown[]): DBArrayValue;
 ```
 
-Defined in: DBValues.ts:353
+Defined in: DBValues.ts:373
 
 Create an array value for IN clause
 
