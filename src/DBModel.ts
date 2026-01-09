@@ -3,14 +3,15 @@
  */
 
 import { AsyncLocalStorage } from 'async_hooks';
-import { DBBoolValue, DBNullValue, DBNotNullValue, DBImmediateValue, DBToken, DBSubquery, DBExists, type SubqueryCondition } from './DBValues';
+import { DBBoolValue, DBNullValue, DBNotNullValue, DBImmediateValue, DBToken, DBSubquery, DBExists, type SubqueryCondition, type SqlCastFormatter } from './DBValues';
+import { getSqlCastFormatter } from './drivers';
 import { normalizeConditions, type ConditionObject } from './DBConditions';
 import { initDBHandler, getDBHandler, createHandlerWithConnection, DBHandler, type DBConfig, type DBConnection } from './DBHandler';
 import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, UpdateManyOptions, TransactionOptions, LimitConfig, DBConfigOptions, PkeyResult, InternalInsertOptions, InternalUpdateOptions, InternalDeleteOptions } from './types';
 import { LimitExceededError, WriteOutsideTransactionError, WriteInReadOnlyContextError } from './types';
 import { type Column, type OrderSpec, type CVs, type Conds, type CondsOf, type OrCondOf, type ColumnsOf, createColumn, columnsToNames, pairsToRecord, condsToRecord, orderToString, createOrCond } from './Column';
 import type { MiddlewareClass, ExecuteResult } from './Middleware';
-import { serializeRecord, getColumnMeta, type KeyPair, type CompositeKeyPairs } from './decorators';
+import { serializeRecord, getColumnMeta, getSqlCastMap, type KeyPair, type CompositeKeyPairs } from './decorators';
 
 // Import LazyRelation module (static import for Vitest compatibility)
 import { LazyRelationContext, type RelationType, type RelationConfig } from './LazyRelation';
@@ -288,6 +289,20 @@ export abstract class DBModel {
   }
 
   /**
+   * Get SQL cast formatter for the current driver.
+   * Returns undefined if DBHandler is not initialized (safe for tests).
+   * @internal
+   */
+  protected static _getSqlCastFormatter(): SqlCastFormatter | undefined {
+    try {
+      return getSqlCastFormatter(this.getDriverType());
+    } catch {
+      // DBHandler not initialized - return undefined (no casting)
+      return undefined;
+    }
+  }
+
+  /**
    * Get a DBHandler instance for this model.
    * Connection priority:
    * 1. Transaction connection (if in transaction)
@@ -514,7 +529,9 @@ export abstract class DBModel {
       normalizedCond.add(filterCondition);
     }
 
-    const whereClause = normalizedCond.compile(params);
+    // Get formatter for driver-specific SQL type casting (safe for tests)
+    const formatter = this._getSqlCastFormatter();
+    const whereClause = normalizedCond.compile(params, formatter);
 
     // Build CTE prefix
     let sql = '';
@@ -616,7 +633,9 @@ export abstract class DBModel {
     }
 
     const normalizedCond = normalizeConditions(conditions);
-    const whereClause = normalizedCond.compile(params);
+    // Get formatter for driver-specific SQL type casting (safe for tests)
+    const formatter = this._getSqlCastFormatter();
+    const whereClause = normalizedCond.compile(params, formatter);
 
     // Build SQL
     let sql = '';
@@ -772,7 +791,9 @@ export abstract class DBModel {
       normalizedCond.add(filterCondition);
     }
 
-    const whereClause = normalizedCond.compile(params);
+    // Get formatter for driver-specific SQL type casting (safe for tests)
+    const formatter = this._getSqlCastFormatter();
+    const whereClause = normalizedCond.compile(params, formatter);
 
     // Build CTE prefix if query-based
     let sql = '';
@@ -834,25 +855,34 @@ export abstract class DBModel {
     const params: unknown[] = [];
     const valueRows: string[] = [];
 
+    // Get sqlCast map and formatter for type casting in INSERT
+    const sqlCastMap = getSqlCastMap(this);
+    const formatter = this._getSqlCastFormatter();
+
     for (const record of records) {
       const rowValues: string[] = [];
       for (const col of columns) {
         const val = record[col];
         if (val instanceof DBToken) {
-          rowValues.push(val.compile(params));
+          rowValues.push(val.compile(params, undefined, formatter));
         } else if (val === undefined) {
           rowValues.push('DEFAULT');
         } else {
           params.push(val);
-          rowValues.push('?');
+          // Apply SQL type cast if defined
+          const sqlCast = sqlCastMap.get(col);
+          if (sqlCast && formatter) {
+            rowValues.push(formatter('?', sqlCast));
+          } else {
+            rowValues.push('?');
+          }
         }
       }
       valueRows.push(`(${rowValues.join(', ')})`);
     }
 
-    const driverType = this.getDriverType();
-
     // Handle conflict options with database-specific syntax
+    const driverType = this.getDriverType();
     let sql: string;
     if (options.onConflict) {
       // Convert Column symbols to strings
@@ -936,13 +966,23 @@ export abstract class DBModel {
     // Apply serialization based on column metadata
     const serializedValues = serializeRecord(this, values);
 
+    // Get sqlCast map and formatter for type casting in UPDATE
+    const sqlCastMap = getSqlCastMap(this);
+    const formatter = this._getSqlCastFormatter();
+
     const setClauses: string[] = [];
     for (const [col, val] of Object.entries(serializedValues)) {
       if (val instanceof DBToken) {
-        setClauses.push(`${col} = ${val.compile(params)}`);
+        setClauses.push(`${col} = ${val.compile(params, undefined, formatter)}`);
       } else {
         params.push(val);
-        setClauses.push(`${col} = ?`);
+        // Apply SQL type cast if defined
+        const sqlCast = sqlCastMap.get(col);
+        if (sqlCast && formatter) {
+          setClauses.push(`${col} = ${formatter('?', sqlCast)}`);
+        } else {
+          setClauses.push(`${col} = ?`);
+        }
       }
     }
 
@@ -951,7 +991,7 @@ export abstract class DBModel {
     }
 
     const normalizedCond = normalizeConditions(conditions);
-    const whereClause = normalizedCond.compile(params);
+    const whereClause = normalizedCond.compile(params, formatter);
 
     if (!whereClause) {
       throw new Error('UPDATE requires conditions');
@@ -983,7 +1023,9 @@ export abstract class DBModel {
     const params: unknown[] = [];
 
     const normalizedCond = normalizeConditions(conditions);
-    const whereClause = normalizedCond.compile(params);
+    // Get formatter for driver-specific SQL type casting (safe for tests)
+    const formatter = this._getSqlCastFormatter();
+    const whereClause = normalizedCond.compile(params, formatter);
 
     if (!whereClause) {
       throw new Error('DELETE requires conditions');

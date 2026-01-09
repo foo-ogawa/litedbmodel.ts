@@ -8,6 +8,25 @@
  */
 
 // ============================================
+// Type Definitions
+// ============================================
+
+/**
+ * Function type for formatting SQL placeholders with type casts.
+ * Used to inject driver-specific casting logic.
+ * 
+ * @example
+ * ```typescript
+ * // PostgreSQL formatter
+ * const pgFormatter: SqlCastFormatter = (placeholder, sqlType) => `${placeholder}::${sqlType}`;
+ * 
+ * // SQLite/MySQL formatter (no casting needed)
+ * const noCastFormatter: SqlCastFormatter = (placeholder, _sqlType) => placeholder;
+ * ```
+ */
+export type SqlCastFormatter = (placeholder: string, sqlType: string) => string;
+
+// ============================================
 // DBToken - Base class for value wrappers
 // ============================================
 
@@ -30,9 +49,10 @@ export class DBToken {
    * Compile the token to SQL fragment
    * @param params - Parameter array to append values
    * @param key - Column name (optional)
+   * @param _formatter - Optional formatter (used by DBCast subclasses)
    * @returns SQL fragment
    */
-  compile(params: unknown[], key?: string): string {
+  compile(params: unknown[], key?: string, _formatter?: SqlCastFormatter): string {
     params.push(this.value);
     if (key) {
       return `${key} ${this.operator} ?`;
@@ -373,6 +393,156 @@ export function dbRaw(sql: string): DBRawValue {
  */
 export function dbImmediate(value: string): DBImmediateValue {
   return new DBImmediateValue(value);
+}
+
+// ============================================
+// DBCast - Type cast value for SQL
+// ============================================
+
+/**
+ * Default formatter - applies PostgreSQL-style cast.
+ * @internal
+ */
+const defaultFormatter: SqlCastFormatter = (placeholder, sqlType) => `${placeholder}::${sqlType}`;
+
+/**
+ * Represents a value that should be cast to a specific SQL type.
+ * The actual cast format depends on the formatter passed at compile time.
+ * 
+ * @example
+ * ```typescript
+ * // Cast string to UUID
+ * new DBCast('123e4567-e89b-12d3-a456-426614174000', 'uuid');
+ * // → ?::uuid (with default/PostgreSQL formatter)
+ * // → ? (with SQLite/MySQL formatter that returns placeholder unchanged)
+ * ```
+ * 
+ * @internal
+ */
+export class DBCast extends DBToken {
+  /** The SQL type to cast to (e.g., 'uuid', 'jsonb', 'text[]') */
+  readonly sqlType: string;
+
+  constructor(value: unknown, sqlType: string, operator: string = '=') {
+    super(value, operator);
+    this.sqlType = sqlType;
+  }
+
+  /**
+   * Compile to SQL fragment with type cast
+   * @param params - Parameter array to append values
+   * @param key - Column name (optional)
+   * @param formatter - Optional function to format placeholder with cast (driver-specific)
+   */
+  compile(params: unknown[], key?: string, formatter?: SqlCastFormatter): string {
+    params.push(this.value);
+    const format = formatter ?? defaultFormatter;
+    const placeholder = format('?', this.sqlType);
+    if (key) {
+      return `${key} ${this.operator} ${placeholder}`;
+    }
+    return placeholder;
+  }
+}
+
+/**
+ * Represents an array of values for IN clause with type cast.
+ * 
+ * @example
+ * ```typescript
+ * new DBCastArray(['uuid1', 'uuid2'], 'uuid');
+ * // → id IN (?::uuid, ?::uuid) (PostgreSQL)
+ * // → id IN (?, ?) (SQLite/MySQL)
+ * ```
+ * 
+ * @internal
+ */
+export class DBCastArray extends DBToken {
+  /** The SQL type to cast to */
+  readonly sqlType: string;
+
+  constructor(values: unknown[], sqlType: string) {
+    super(values, 'IN');
+    this.sqlType = sqlType;
+  }
+
+  /**
+   * Compile to SQL fragment
+   * @param params - Parameter array to append values
+   * @param key - Column name (optional)
+   * @param formatter - Optional function to format placeholder with cast (driver-specific)
+   */
+  compile(params: unknown[], key?: string, formatter?: SqlCastFormatter): string {
+    const arr = this.value as unknown[];
+    if (arr.length === 0) {
+      // Empty array - always false condition
+      return '1 = 0';
+    }
+
+    const format = formatter ?? defaultFormatter;
+    const placeholder = format('?', this.sqlType);
+    const placeholders = arr.map((v) => {
+      params.push(v);
+      return placeholder;
+    });
+
+    if (key) {
+      return `${key} IN (${placeholders.join(', ')})`;
+    }
+    return `(${placeholders.join(', ')})`;
+  }
+}
+
+/**
+ * Create a type-cast value
+ * 
+ * @param value - The value to cast
+ * @param sqlType - The SQL type to cast to (e.g., 'uuid', 'jsonb')
+ * @param operator - The comparison operator (default: '=')
+ */
+export function dbCast(value: unknown, sqlType: string, operator: string = '='): DBCast {
+  return new DBCast(value, sqlType, operator);
+}
+
+/**
+ * Create a type-cast UUID value
+ * 
+ * @param value - The UUID string value
+ * @param operator - The comparison operator (default: '=')
+ * 
+ * @example
+ * ```typescript
+ * await User.find([[User.id, dbUuid('123e4567-e89b-12d3-a456-426614174000')]]);
+ * // → WHERE id = ?::uuid
+ * ```
+ */
+export function dbUuid(value: string, operator: string = '='): DBCast {
+  return new DBCast(value, 'uuid', operator);
+}
+
+/**
+ * Create a type-cast array for IN clause
+ * 
+ * @param values - Array of values
+ * @param sqlType - The SQL type to cast each value to
+ */
+export function dbCastIn(values: unknown[], sqlType: string): DBCastArray {
+  return new DBCastArray(values, sqlType);
+}
+
+/**
+ * Create a type-cast UUID array for IN clause
+ * 
+ * @param values - Array of UUID strings
+ * 
+ * @example
+ * ```typescript
+ * await User.find([[User.id, dbUuidIn(['uuid1', 'uuid2'])]]);
+ * // → WHERE id IN (?::uuid, ?::uuid)
+ * ```
+ */
+export function dbUuidIn(values: string[]): DBCastArray {
+  return new DBCastArray(values, 'uuid');
 }
 
 /**

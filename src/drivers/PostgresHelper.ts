@@ -436,3 +436,28 @@ export function pgTypeToTsType(pgType: string): string {
   return PG_TYPE_TO_TS[pgType.toLowerCase()] || 'unknown';
 }
 
+// ============================================
+// SQL Type Casting for Parameters
+// ============================================
+
+/**
+ * Format a placeholder with SQL type cast for PostgreSQL.
+ * PostgreSQL requires explicit casting for UUID comparisons.
+ * 
+ * @param placeholder - The placeholder string (e.g., '?')
+ * @param sqlCast - The SQL type to cast to (e.g., 'uuid')
+ * @returns The formatted placeholder (e.g., '?::uuid')
+ */
+export function formatSqlCast(placeholder: string, sqlCast: string): string {
+  return `${placeholder}::${sqlCast}`;
+}
+
+/**
+ * Check if a SQL type needs explicit casting in conditions.
+ * PostgreSQL needs casting for UUID type.
+ */
+export function needsSqlCast(sqlCast: string): boolean {
+  // UUID type needs explicit casting in PostgreSQL
+  return sqlCast === 'uuid';
+}
+

@@ -295,3 +295,28 @@ export function mysqlTypeToTsType(mysqlType: string): string {
   return MYSQL_TYPE_TO_TS[normalized] || 'unknown';
 }
 
+// ============================================
+// SQL Type Casting for Parameters
+// ============================================
+
+/**
+ * Format a placeholder with SQL type cast for MySQL.
+ * MySQL doesn't require explicit casting for UUID (stored as CHAR(36) or BINARY).
+ * 
+ * @param placeholder - The placeholder string (e.g., '?')
+ * @param _sqlCast - The SQL type (ignored for MySQL)
+ * @returns The placeholder unchanged
+ */
+export function formatSqlCast(placeholder: string, _sqlCast: string): string {
+  // MySQL doesn't need type casting - UUID is stored as CHAR(36)
+  return placeholder;
+}
+
+/**
+ * Check if a SQL type needs explicit casting in conditions.
+ * MySQL never needs explicit casting for UUID.
+ */
+export function needsSqlCast(_sqlCast: string): boolean {
+  return false;
+}
+

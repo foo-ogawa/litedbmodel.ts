@@ -2,7 +2,7 @@
  * litedbmodel - Condition Builder
  */
 
-import { DBToken, DBSubquery, DBExists } from './DBValues';
+import { DBToken, DBSubquery, DBExists, type SqlCastFormatter } from './DBValues';
 
 // ============================================
 // Types
@@ -57,14 +57,15 @@ export class DBConditions {
   /**
    * Compile conditions to SQL WHERE clause
    * @param params - Parameter array to append values
+   * @param formatter - Optional SQL cast formatter (for driver-specific casting)
    * @returns SQL WHERE clause (without 'WHERE' keyword)
    */
-  compile(params: unknown[]): string {
+  compile(params: unknown[], formatter?: SqlCastFormatter): string {
     const parts: string[] = [];
 
     // Compile main conditions
     for (const [key, value] of Object.entries(this.conditions)) {
-      const sql = this.compileCondition(key, value, params);
+      const sql = this.compileCondition(key, value, params, formatter);
       if (sql) {
         parts.push(sql);
       }
@@ -72,7 +73,7 @@ export class DBConditions {
 
     // Compile nested conditions
     for (const nested of this.nested) {
-      const nestedSql = nested.conditions.compile(params);
+      const nestedSql = nested.conditions.compile(params, formatter);
       if (nestedSql) {
         // Don't add operator here - it will be added by the join
         parts.push(`(${nestedSql})`);
@@ -93,14 +94,15 @@ export class DBConditions {
   protected compileCondition(
     key: string,
     value: ConditionValue,
-    params: unknown[]
+    params: unknown[],
+    formatter?: SqlCastFormatter
   ): string {
     // Handle __or__ special key for OR conditions
     if (key === '__or__' && Array.isArray(value)) {
       const orParts: string[] = [];
       for (const group of value as ConditionObject[]) {
         const groupCond = new DBConditions(group, 'AND');
-        const groupSql = groupCond.compile(params);
+        const groupSql = groupCond.compile(params, formatter);
         if (groupSql) {
           orParts.push(`(${groupSql})`);
         }
@@ -144,20 +146,20 @@ export class DBConditions {
 
     // Handle DBToken instances (must be before __ key skip to handle __tuple__)
     if (value instanceof DBToken) {
-      return value.compile(params, key);
+      return value.compile(params, key, formatter);
     }
 
     // Skip other nested conditions (keys starting with __)
     if (key.startsWith('__')) {
       if (value instanceof DBConditions) {
-        return `(${value.compile(params)})`;
+        return `(${value.compile(params, formatter)})`;
       }
       return '';
     }
 
     // Handle nested DBConditions
     if (value instanceof DBConditions) {
-      return `(${value.compile(params)})`;
+      return `(${value.compile(params, formatter)})`;
     }
 
     // Handle null

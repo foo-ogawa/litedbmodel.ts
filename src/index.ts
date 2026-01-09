@@ -43,6 +43,9 @@ export {
   DBDynamicValue,
   DBRawValue,
   DBTupleIn,
+  // Type casting classes
+  DBCast,
+  DBCastArray,
   // Subquery classes
   DBSubquery,
   DBExists,
@@ -60,6 +63,11 @@ export {
   dbImmediate,
   dbTupleIn,
   parentRef,
+  // Type cast factory functions
+  dbCast,
+  dbUuid,
+  dbCastIn,
+  dbUuidIn,
 } from './DBValues';
 
 // ============================================

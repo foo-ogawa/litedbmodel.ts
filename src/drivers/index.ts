@@ -85,3 +85,94 @@ export {
   MYSQL_TYPE_TO_TS,
 } from './MysqlHelper';
 
+// Import driver-specific cast helpers
+import {
+  formatSqlCast as pgFormatSqlCast,
+  needsSqlCast as pgNeedsSqlCast,
+} from './PostgresHelper';
+import {
+  formatSqlCast as sqliteFormatSqlCast,
+  needsSqlCast as sqliteNeedsSqlCast,
+} from './SqliteHelper';
+import {
+  formatSqlCast as mysqlFormatSqlCast,
+  needsSqlCast as mysqlNeedsSqlCast,
+} from './MysqlHelper';
+
+import type { SqlCastFormatter } from '../DBValues';
+
+// ============================================
+// Driver Type
+// ============================================
+
+export type DriverType = 'postgres' | 'sqlite' | 'mysql';
+
+// ============================================
+// Driver-agnostic SQL Casting Utilities
+// ============================================
+
+/**
+ * Format a placeholder with SQL type cast based on driver type.
+ * Only PostgreSQL actually needs casting for UUID type.
+ * 
+ * @param placeholder - The placeholder string (e.g., '?')
+ * @param sqlCast - The SQL type to cast to (e.g., 'uuid')
+ * @param driverType - The database driver type
+ * @returns The formatted placeholder
+ */
+export function formatSqlCast(
+  placeholder: string,
+  sqlCast: string,
+  driverType: DriverType
+): string {
+  switch (driverType) {
+    case 'postgres':
+      return pgFormatSqlCast(placeholder, sqlCast);
+    case 'sqlite':
+      return sqliteFormatSqlCast(placeholder, sqlCast);
+    case 'mysql':
+      return mysqlFormatSqlCast(placeholder, sqlCast);
+    default:
+      return placeholder;
+  }
+}
+
+/**
+ * Check if a SQL type needs explicit casting based on driver type.
+ * 
+ * @param sqlCast - The SQL type (e.g., 'uuid')
+ * @param driverType - The database driver type
+ * @returns true if casting is needed
+ */
+export function needsSqlCast(sqlCast: string, driverType: DriverType): boolean {
+  switch (driverType) {
+    case 'postgres':
+      return pgNeedsSqlCast(sqlCast);
+    case 'sqlite':
+      return sqliteNeedsSqlCast(sqlCast);
+    case 'mysql':
+      return mysqlNeedsSqlCast(sqlCast);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Get SQL cast formatter function for a specific driver.
+ * 
+ * @param driverType - The database driver type
+ * @returns A SqlCastFormatter function
+ */
+export function getSqlCastFormatter(driverType: DriverType): SqlCastFormatter {
+  switch (driverType) {
+    case 'postgres':
+      return (placeholder, sqlType) => pgFormatSqlCast(placeholder, sqlType);
+    case 'sqlite':
+      return (placeholder, sqlType) => sqliteFormatSqlCast(placeholder, sqlType);
+    case 'mysql':
+      return (placeholder, sqlType) => mysqlFormatSqlCast(placeholder, sqlType);
+    default:
+      return (placeholder) => placeholder;
+  }
+}
+

@@ -18,7 +18,7 @@
  * ```
  */
 
-import { DBNotNullValue, dbTupleIn } from './DBValues';
+import { DBNotNullValue, dbTupleIn, DBCast, DBCastArray } from './DBValues';
 
 // ============================================
 // OrderColumn Class (Type-safe ORDER BY)
@@ -159,6 +159,9 @@ export interface Column<ValueType = unknown, ModelType = unknown> {
   /** Brand for type discrimination - enables static analysis to distinguish from regular variables */
   readonly _brand: 'Column';
 
+  /** SQL type for automatic casting in conditions (e.g., 'uuid') */
+  readonly sqlCast?: string;
+
   /** Phantom type for model association (compile-time only, not used at runtime) */
   readonly __model?: ModelType;
 
@@ -170,37 +173,37 @@ export interface Column<ValueType = unknown, ModelType = unknown> {
    * Equal condition (column = value)
    * @example User.id.eq(1) → { id: 1 }
    */
-  eq(value: ValueType): Record<string, ValueType>;
+  eq(value: ValueType): Record<string, ValueType | DBCast>;
 
   /**
    * Not equal condition (column != value)
    * @example User.status.ne('deleted') → { 'status != ?': 'deleted' }
    */
-  ne(value: ValueType): Record<string, ValueType>;
+  ne(value: ValueType): Record<string, ValueType | DBCast>;
 
   /**
    * Greater than condition (column > value)
    * @example User.age.gt(18) → { 'age > ?': 18 }
    */
-  gt(value: ValueType): Record<string, ValueType>;
+  gt(value: ValueType): Record<string, ValueType | DBCast>;
 
   /**
    * Greater than or equal condition (column >= value)
    * @example User.age.gte(18) → { 'age >= ?': 18 }
    */
-  gte(value: ValueType): Record<string, ValueType>;
+  gte(value: ValueType): Record<string, ValueType | DBCast>;
 
   /**
    * Less than condition (column < value)
    * @example User.age.lt(65) → { 'age < ?': 65 }
    */
-  lt(value: ValueType): Record<string, ValueType>;
+  lt(value: ValueType): Record<string, ValueType | DBCast>;
 
   /**
    * Less than or equal condition (column <= value)
    * @example User.age.lte(65) → { 'age <= ?': 65 }
    */
-  lte(value: ValueType): Record<string, ValueType>;
+  lte(value: ValueType): Record<string, ValueType | DBCast>;
 
   /**
    * LIKE condition (column LIKE pattern)
@@ -231,13 +234,13 @@ export interface Column<ValueType = unknown, ModelType = unknown> {
    * Note: Arrays are automatically converted to IN clause by litedbmodel
    * @example User.status.in(['active', 'pending']) → { status: ['active', 'pending'] }
    */
-  in(values: ValueType[]): Record<string, ValueType[]>;
+  in(values: ValueType[]): Record<string, ValueType[] | DBCastArray>;
 
   /**
    * NOT IN condition (column NOT IN (values))
    * @example User.status.notIn(['deleted', 'banned'])
    */
-  notIn(values: ValueType[]): Record<string, ValueType[]>;
+  notIn(values: ValueType[]): Record<string, ValueType[] | DBCastArray>;
 
   /**
    * IS NULL condition
@@ -314,6 +317,8 @@ export interface Column<ValueType = unknown, ModelType = unknown> {
  * @param columnName - The database column name
  * @param tableName - The database table name
  * @param modelName - The model class name (for debugging)
+ * @param propertyName - The property name on the model (defaults to columnName)
+ * @param sqlCast - SQL type for automatic casting in conditions (e.g., 'uuid')
  * @returns A callable Column function with condition builder methods
  *
  * @example
@@ -333,7 +338,8 @@ export function createColumn<ValueType, ModelType = unknown>(
   columnName: string,
   tableName: string,
   modelName: string,
-  propertyName?: string
+  propertyName?: string,
+  sqlCast?: string
 ): Column<ValueType, ModelType> {
   // The callable function itself - returns column name as string
   const fn = function (): string {
@@ -369,15 +375,37 @@ export function createColumn<ValueType, ModelType = unknown>(
     writable: false,
     enumerable: true,
   });
+  Object.defineProperty(fn, 'sqlCast', {
+    value: sqlCast,
+    writable: false,
+    enumerable: true,
+  });
   // __model is a phantom type - not set at runtime, only used for TypeScript type checking
 
-  // Condition builder methods
-  fn.eq = (value: ValueType) => ({ [columnName]: value });
-  fn.ne = (value: ValueType) => ({ [`${columnName} != ?`]: value });
-  fn.gt = (value: ValueType) => ({ [`${columnName} > ?`]: value });
-  fn.gte = (value: ValueType) => ({ [`${columnName} >= ?`]: value });
-  fn.lt = (value: ValueType) => ({ [`${columnName} < ?`]: value });
-  fn.lte = (value: ValueType) => ({ [`${columnName} <= ?`]: value });
+  // Condition builder methods - wrap with DBCast if sqlCast is specified
+  if (sqlCast) {
+    // With type casting (e.g., UUID columns)
+    fn.eq = (value: ValueType) => ({ [columnName]: new DBCast(value, sqlCast, '=') });
+    fn.ne = (value: ValueType) => ({ [columnName]: new DBCast(value, sqlCast, '!=') });
+    fn.gt = (value: ValueType) => ({ [columnName]: new DBCast(value, sqlCast, '>') });
+    fn.gte = (value: ValueType) => ({ [columnName]: new DBCast(value, sqlCast, '>=') });
+    fn.lt = (value: ValueType) => ({ [columnName]: new DBCast(value, sqlCast, '<') });
+    fn.lte = (value: ValueType) => ({ [columnName]: new DBCast(value, sqlCast, '<=') });
+    fn.in = (values: ValueType[]) => ({ [columnName]: new DBCastArray(values, sqlCast) });
+    fn.notIn = (values: ValueType[]) => ({ [`${columnName} NOT`]: new DBCastArray(values, sqlCast) });
+  } else {
+    // Without type casting (default behavior)
+    fn.eq = (value: ValueType) => ({ [columnName]: value });
+    fn.ne = (value: ValueType) => ({ [`${columnName} != ?`]: value });
+    fn.gt = (value: ValueType) => ({ [`${columnName} > ?`]: value });
+    fn.gte = (value: ValueType) => ({ [`${columnName} >= ?`]: value });
+    fn.lt = (value: ValueType) => ({ [`${columnName} < ?`]: value });
+    fn.lte = (value: ValueType) => ({ [`${columnName} <= ?`]: value });
+    fn.in = (values: ValueType[]) => ({ [columnName]: values });
+    fn.notIn = (values: ValueType[]) => ({ [`${columnName} NOT IN (?)`]: values });
+  }
+  
+  // String operations - no sqlCast needed (always string comparison)
   fn.like = (pattern: string) => ({ [`${columnName} LIKE ?`]: pattern });
   fn.notLike = (pattern: string) => ({
     [`${columnName} NOT LIKE ?`]: pattern,
@@ -386,8 +414,6 @@ export function createColumn<ValueType, ModelType = unknown>(
   fn.between = (from: ValueType, to: ValueType) => ({
     [`${columnName} BETWEEN ? AND ?`]: [from, to] as [ValueType, ValueType],
   });
-  fn.in = (values: ValueType[]) => ({ [columnName]: values });
-  fn.notIn = (values: ValueType[]) => ({ [`${columnName} NOT IN (?)`]: values });
   fn.isNull = () => ({ [columnName]: null });
   fn.isNotNull = () => ({ [columnName]: new DBNotNullValue() });
 

@@ -267,3 +267,29 @@ export function sqliteTypeToTsType(sqliteType: string): string {
   return SQLITE_TYPE_TO_TS[normalized] || 'unknown';
 }
 
+// ============================================
+// SQL Type Casting for Parameters
+// ============================================
+
+/**
+ * Format a placeholder with SQL type cast for SQLite.
+ * SQLite doesn't support type casting in the PostgreSQL sense.
+ * UUID is stored as TEXT and doesn't need casting.
+ * 
+ * @param placeholder - The placeholder string (e.g., '?')
+ * @param _sqlCast - The SQL type (ignored for SQLite)
+ * @returns The placeholder unchanged
+ */
+export function formatSqlCast(placeholder: string, _sqlCast: string): string {
+  // SQLite doesn't need type casting - UUID is stored as TEXT
+  return placeholder;
+}
+
+/**
+ * Check if a SQL type needs explicit casting in conditions.
+ * SQLite never needs explicit casting.
+ */
+export function needsSqlCast(_sqlCast: string): boolean {
+  return false;
+}
+

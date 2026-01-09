@@ -48,6 +48,8 @@ export interface ColumnMeta {
   typeCast?: TypeCastFn;
   serialize?: SerializeFn;
   primaryKey?: boolean;
+  /** SQL type for automatic casting in conditions (e.g., 'uuid') */
+  sqlCast?: string;
 }
 
 // ============================================
@@ -190,6 +192,8 @@ interface RegisterColumnOptions {
   serialize?: SerializeFn;
   skipAutoInfer?: boolean;
   primaryKey?: boolean;
+  /** SQL type for automatic casting in conditions (e.g., 'uuid') */
+  sqlCast?: string;
 }
 
 /**
@@ -217,6 +221,7 @@ function registerColumn(
     typeCast: finalTypeCast,
     serialize: options.serialize,
     primaryKey: options.primaryKey,
+    sqlCast: options.sqlCast,
   });
 
   Reflect.defineMetadata(COLUMNS_KEY, columns, constructor);
@@ -235,11 +240,13 @@ export interface ColumnOptions {
  * @param typeCast - Function to convert DB value to JS value (read)
  * @param serialize - Function to convert JS value to DB value (write)
  * @param skipAutoInfer - If true, skip auto-inference even if typeCast is undefined
+ * @param sqlCast - SQL type for automatic casting in conditions (e.g., 'uuid')
  */
 function createColumnDecorator(
   typeCast?: TypeCastFn,
   serialize?: SerializeFn,
-  skipAutoInfer = false
+  skipAutoInfer = false,
+  sqlCast?: string
 ) {
   return function (columnNameOrOptions?: string | ColumnOptions): PropertyDecorator {
     return function (target: object, propertyKey: string | symbol) {
@@ -266,6 +273,7 @@ function createColumnDecorator(
         serialize,
         skipAutoInfer: shouldSkipAutoInfer,
         primaryKey,
+        sqlCast,
       });
     };
   };
@@ -528,6 +536,42 @@ export const column = Object.assign(
           return castToJson(v) as T;
         },
         serializeJson
+      )(columnName),
+
+    // ============================================
+    // UUID Type (PostgreSQL)
+    // ============================================
+
+    /**
+     * UUID type with automatic casting for PostgreSQL.
+     * Automatically adds ::uuid cast to conditions and INSERT/UPDATE values.
+     * Preserves null for nullable columns, undefined stays undefined.
+     * 
+     * @example 
+     * ```typescript
+     * @column.uuid() id?: string;
+     * @column.uuid({ primaryKey: true }) id?: string;
+     * 
+     * // Conditions automatically cast to UUID:
+     * await User.find([[User.id, 'uuid-string']]);
+     * // → WHERE id = ?::uuid
+     * 
+     * // IN clauses also cast:
+     * await User.find([[User.id, ['uuid1', 'uuid2']]]);
+     * // → WHERE id IN (?::uuid, ?::uuid)
+     * ```
+     */
+    uuid: (columnName?: string) =>
+      createColumnDecorator(
+        (v) => {
+          if (v === undefined) return undefined;
+          if (v === null) return null;
+          // UUID values from DB are typically already strings
+          return String(v);
+        },
+        undefined,  // No serialization needed - handled by sqlCast
+        true,       // Skip auto-inference
+        'uuid'      // SQL type for casting
       )(columnName),
 
     // ============================================
@@ -877,7 +921,7 @@ function applyModelDecorator<T extends { new (...args: unknown[]): object }>(
   const effectiveTableName = tableName ?? modelName.toLowerCase();
   for (const [propKey, meta] of columns) {
     Object.defineProperty(constructor, propKey, {
-      value: createColumn(meta.columnName, effectiveTableName, modelName, propKey),
+      value: createColumn(meta.columnName, effectiveTableName, modelName, propKey, meta.sqlCast),
       writable: false,
       enumerable: true,
       configurable: false,
@@ -1043,6 +1087,39 @@ function getSerializeMap(modelClass: object): Map<string, SerializeFn> {
       }
     }
     serializeMapCache.set(modelClass, map);
+  }
+  return map;
+}
+
+// ============================================
+// SQL Cast Cache (Performance Optimization)
+// ============================================
+
+/** Cache for sqlCast lookup maps (key: propName or columnName -> sqlCast string) */
+const sqlCastMapCache = new WeakMap<object, Map<string, string>>();
+
+/**
+ * Get or build sqlCast lookup map for a model class.
+ * Returns a map of column/property names to their SQL cast types.
+ * Cached for O(1) lookup per key.
+ * @internal
+ */
+export function getSqlCastMap(modelClass: object): Map<string, string> {
+  let map = sqlCastMapCache.get(modelClass);
+  if (!map) {
+    map = new Map();
+    const meta = (modelClass as { _columnMeta?: Map<string, ColumnMeta> })._columnMeta;
+    if (meta) {
+      for (const [propKey, m] of meta) {
+        if (m.sqlCast) {
+          map.set(propKey, m.sqlCast);
+          if (m.columnName !== propKey) {
+            map.set(m.columnName, m.sqlCast);
+          }
+        }
+      }
+    }
+    sqlCastMapCache.set(modelClass, map);
   }
   return map;
 }
