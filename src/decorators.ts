@@ -561,7 +561,7 @@ export const column = Object.assign(
      * // → WHERE id IN (?::uuid, ?::uuid)
      * ```
      */
-    uuid: (columnName?: string) =>
+    uuid: (columnNameOrOptions?: string | ColumnOptions) =>
       createColumnDecorator(
         (v) => {
           if (v === undefined) return undefined;
@@ -572,7 +572,7 @@ export const column = Object.assign(
         undefined,  // No serialization needed - handled by sqlCast
         true,       // Skip auto-inference
         'uuid'      // SQL type for casting
-      )(columnName),
+      )(columnNameOrOptions),
 
     // ============================================
     // Custom Type Conversion

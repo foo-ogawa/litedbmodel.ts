@@ -36,15 +36,19 @@ import { DBModel } from './DBModel';
 import { type ConditionObject } from './DBConditions';
 import { type Conds, createColumn, orderToString, condsToRecord } from './Column';
 import type { SelectOptions } from './types';
+import { getSqlCastMap } from './decorators';
 
 // ============================================
 // Type Inference Helpers
 // ============================================
 
 /**
- * Infer PostgreSQL array type from sample values
+ * Infer PostgreSQL array type from sample values or use sqlCast if provided
  */
-function inferPgArrayType(values: unknown[]): string {
+function inferPgArrayType(values: unknown[], sqlCast?: string): string {
+  // If sqlCast is provided, use it with [] suffix
+  if (sqlCast) return `${sqlCast}[]`;
+  
   if (values.length === 0) return 'text[]';
   
   const sample = values[0];
@@ -327,7 +331,10 @@ export class LazyRelationContext {
     config: RelationConfig
   ): Promise<DBModel[]> {
     const tableName = TargetClass.TABLE_NAME;
-    const pgType = inferPgArrayType(values);
+    // Get sqlCast from target model's column metadata
+    const sqlCastMap = getSqlCastMap(TargetClass);
+    const sqlCast = sqlCastMap.get(targetKey);
+    const pgType = inferPgArrayType(values, sqlCast);
     
     // Build conditions
     const conditions: ConditionObject = {
@@ -356,14 +363,18 @@ export class LazyRelationContext {
   ): Promise<DBModel[]> {
     const tableName = TargetClass.TABLE_NAME;
     
+    // Get sqlCast map from target model
+    const sqlCastMap = getSqlCastMap(TargetClass);
+    
     // Transpose tuples to column arrays: [[1,a], [2,b]] -> [[1,2], [a,b]]
     const columnArrays: unknown[][] = targetKeys.map((_, colIndex) => 
       tuples.map(tuple => tuple[colIndex])
     );
     
-    // Build unnest parameters with type inference
-    const unnestParams = columnArrays.map((arr) => {
-      const pgType = inferPgArrayType(arr);
+    // Build unnest parameters with type inference (use sqlCast if available)
+    const unnestParams = columnArrays.map((arr, index) => {
+      const sqlCast = sqlCastMap.get(targetKeys[index]);
+      const pgType = inferPgArrayType(arr, sqlCast);
       return `?::${pgType}`;
     }).join(', ');
     
@@ -470,7 +481,10 @@ export class LazyRelationContext {
     config: RelationConfig
   ): Promise<DBModel[]> {
     const tableName = TargetClass.TABLE_NAME;
-    const pgType = inferPgArrayType(values);
+    // Get sqlCast from target model's column metadata
+    const sqlCastMap = getSqlCastMap(TargetClass);
+    const sqlCast = sqlCastMap.get(targetKey);
+    const pgType = inferPgArrayType(values, sqlCast);
     const limit = config.limit!;
     
     // Build LATERAL inner SQL using buildSelectSQL
@@ -509,14 +523,18 @@ export class LazyRelationContext {
     const tableName = TargetClass.TABLE_NAME;
     const limit = config.limit!;
     
+    // Get sqlCast map from target model
+    const sqlCastMap = getSqlCastMap(TargetClass);
+    
     // Transpose tuples to column arrays
     const columnArrays: unknown[][] = targetKeys.map((_, colIndex) => 
       tuples.map(tuple => tuple[colIndex])
     );
     
-    // Build unnest parameters
-    const unnestParams = columnArrays.map((arr) => {
-      const pgType = inferPgArrayType(arr);
+    // Build unnest parameters (use sqlCast if available)
+    const unnestParams = columnArrays.map((arr, index) => {
+      const sqlCast = sqlCastMap.get(targetKeys[index]);
+      const pgType = inferPgArrayType(arr, sqlCast);
       return `?::${pgType}`;
     }).join(', ');
     

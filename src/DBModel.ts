@@ -2014,14 +2014,18 @@ export abstract class DBModel {
       const params: unknown[] = [];
       const selectColumn = opts?.select || this.SELECT_COLUMN;
 
+      // Get sqlCast map for type casting
+      const sqlCastMap = getSqlCastMap(this);
+      
       if (pkeyColumnNames.length === 1) {
         // Single PK - use IN or ANY
         const pkValues = values.map(v => v[0]);
         
         if (driverType === 'postgres') {
           // PostgreSQL: WHERE id = ANY($1::type[])
-          const firstValue = pkValues.find(v => v !== null && v !== undefined);
-          const pgType = this._inferPgType(firstValue);
+          // Use sqlCast if defined, otherwise infer from value
+          const sqlCast = sqlCastMap.get(pkeyColumnNames[0]);
+          const pgType = sqlCast || this._inferPgType(pkValues.find(v => v !== null && v !== undefined));
           params.push(pkValues);
           sql = `SELECT ${selectColumn} FROM ${tableName} WHERE ${pkeyColumnNames[0]} = ANY(?::${pgType}[])`;
       } else {
@@ -2039,8 +2043,9 @@ export abstract class DBModel {
           for (let i = 0; i < pkeyColumnNames.length; i++) {
             const colValues = values.map(v => v[i]);
             params.push(colValues);
-            const firstValue = colValues.find(v => v !== null && v !== undefined);
-            const pgType = this._inferPgType(firstValue);
+            // Use sqlCast if defined, otherwise infer from value
+            const sqlCast = sqlCastMap.get(pkeyColumnNames[i]);
+            const pgType = sqlCast || this._inferPgType(colValues.find(v => v !== null && v !== undefined));
             unnestArrays.push(`?::${pgType}[]`);
           }
           
@@ -2489,14 +2494,17 @@ export abstract class DBModel {
         const unnestArrays: string[] = [];
         const vColumns: string[] = [];
         
+        // Get sqlCast map for type casting
+        const sqlCastMap = getSqlCastMap(this);
+        
         // Build UNNEST arrays for each column
         for (const col of allColumnNames) {
           const colValues = rowRecords.map(r => r[col]);
           params.push(colValues);
           
-          // Infer PostgreSQL type from first non-null value
-          const firstValue = colValues.find(v => v !== null && v !== undefined);
-          const pgType = this._inferPgType(firstValue);
+          // Use sqlCast if defined, otherwise infer from value
+          const sqlCast = sqlCastMap.get(col);
+          const pgType = sqlCast || this._inferPgType(colValues.find(v => v !== null && v !== undefined));
           unnestArrays.push(`?::${pgType}[]`);
           vColumns.push(col);
         }
