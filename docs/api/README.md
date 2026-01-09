@@ -1,4 +1,4 @@
-**litedbmodel v0.19.7**
+**litedbmodel v0.20.0**
 
 ***
 
@@ -57,6 +57,9 @@ import { DBModel, model, column, hasMany, belongsTo, hasOne } from 'litedbmodel'
 class UserModel extends DBModel {
   // Primary key (auto-increment)
   @column({ primaryKey: true }) id?: number;
+  
+  // UUID primary key (PostgreSQL: auto-casts to ::uuid)
+  // @column.uuid({ primaryKey: true }) id?: string;
 
   // Basic columns (types auto-inferred)
   @column() name?: string;
@@ -175,6 +178,26 @@ const pkeys = await User.createMany([
     [User.email, 'bob@example.com'],
   ],
 ]);
+
+// UPSERT: Insert or update on conflict
+await User.create(
+  [[User.name, 'John'], [User.email, 'john@example.com']],
+  { onConflict: User.email, onConflictUpdate: [User.name] }
+);
+
+// Insert or ignore on conflict
+await User.create(
+  [[User.name, 'John'], [User.email, 'john@example.com']],
+  { onConflict: User.email, onConflictIgnore: true }
+);
+
+// Composite unique constraint
+await UserPref.createMany([
+  [[UserPref.user_id, 1], [UserPref.key, 'theme'], [UserPref.value, 'dark']],
+], {
+  onConflict: [UserPref.user_id, UserPref.key],
+  onConflictUpdate: [UserPref.value],
+});
 ```
 
 See: [DBModel.create](classes/DBModel.md#create), [DBModel.createMany](classes/DBModel.md#createmany), [PkeyResult](interfaces/PkeyResult.md), [InsertOptions](interfaces/InsertOptions.md)

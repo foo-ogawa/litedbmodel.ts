@@ -1,4 +1,4 @@
-[**litedbmodel v0.19.7**](../README.md)
+[**litedbmodel v0.20.0**](../README.md)
 
 ***
 
@@ -1429,7 +1429,7 @@ const users = await User.findById(result);
 static count<T>(this: T, conditions: CondsOf<T>): Promise<number>;
 ```
 
-Defined in: DBModel.ts:2107
+Defined in: DBModel.ts:2112
 
 Count records using type-safe condition tuples.
 
@@ -1469,7 +1469,7 @@ static create<T, P>(
 options?: InsertOptions<InstanceType<T>>): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2142
+Defined in: DBModel.ts:2147
 
 Create a new record using type-safe column-value tuples.
 Value types are validated at compile time.
@@ -1523,7 +1523,7 @@ static createMany<T>(
 options?: InsertOptions<InstanceType<T>>): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2212
+Defined in: DBModel.ts:2217
 
 Create multiple records using type-safe column-value tuples.
 
@@ -1576,7 +1576,7 @@ static update<T, V>(
 options?: UpdateOptions): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2282
+Defined in: DBModel.ts:2287
 
 Update records using type-safe column-value tuples.
 Value types are validated at compile time.
@@ -1632,7 +1632,7 @@ static delete<T>(
 options?: DeleteOptions): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2360
+Defined in: DBModel.ts:2365
 
 Delete records matching conditions
 
@@ -1678,7 +1678,7 @@ static updateMany<T>(
 options: UpdateManyOptions): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2437
+Defined in: DBModel.ts:2442
 
 Update multiple records with different values per row.
 Uses efficient bulk update strategies (UNNEST for PostgreSQL, VALUES for MySQL/SQLite).
@@ -1728,7 +1728,7 @@ const users = await User.findById(result);
 static execute(sql: string, params?: unknown[]): Promise<ExecuteResult>;
 ```
 
-Defined in: DBModel.ts:2640
+Defined in: DBModel.ts:2648
 
 Execute raw SQL query.
 
@@ -1767,7 +1767,7 @@ static query<T>(
 params?: unknown[]): Promise<InstanceType<T>[]>;
 ```
 
-Defined in: DBModel.ts:2684
+Defined in: DBModel.ts:2692
 
 Execute raw SQL and return model instances.
 The SQL should return columns matching the model's properties.
@@ -1816,7 +1816,7 @@ const posts = await Post.query(`
 static inTransaction(): boolean;
 ```
 
-Defined in: DBModel.ts:2714
+Defined in: DBModel.ts:2722
 
 Check if currently in a transaction
 
@@ -1832,7 +1832,7 @@ Check if currently in a transaction
 static transaction<R>(func: () => Promise<R>, options: TransactionOptions): Promise<R>;
 ```
 
-Defined in: DBModel.ts:2752
+Defined in: DBModel.ts:2760
 
 Execute a function within a transaction
 All model operations inside the callback will use the same database connection.
@@ -1891,7 +1891,7 @@ await DBModel.transaction(
 static getCurrentConnection(): DBConnection | null;
 ```
 
-Defined in: DBModel.ts:2855
+Defined in: DBModel.ts:2863
 
 Get current transaction connection
 Use this to execute raw SQL queries within a transaction
@@ -1921,7 +1921,7 @@ await DBModel.transaction(async () => {
 static getCurrentClient(): DBConnection | null;
 ```
 
-Defined in: DBModel.ts:2863
+Defined in: DBModel.ts:2871
 
 #### Returns
 
@@ -1939,7 +1939,7 @@ Use getCurrentConnection() instead
 static withWriter<R>(func: () => Promise<R>): Promise<R>;
 ```
 
-Defined in: DBModel.ts:2888
+Defined in: DBModel.ts:2896
 
 Execute a function with explicit writer connection access.
 Use this when you need to read from writer to avoid replication lag.
@@ -1985,7 +1985,7 @@ await DBModel.withWriter(async () => {
 static createDBBase(config: DBConfig, options?: DBConfigOptions): typeof DBModel;
 ```
 
-Defined in: DBModel.ts:2949
+Defined in: DBModel.ts:2957
 
 Create an independent database base class.
 Use this to connect to multiple databases with isolated configurations.
@@ -2044,7 +2044,7 @@ await BaseDB.transaction(async () => {
 reload(forUpdate: boolean): Promise<DBModel | null>;
 ```
 
-Defined in: DBModel.ts:3125
+Defined in: DBModel.ts:3133
 
 Reload this instance from the database
 

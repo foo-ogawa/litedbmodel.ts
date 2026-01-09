@@ -1,8 +1,8 @@
-[**litedbmodel v0.19.7**](README.md)
+[**litedbmodel v0.20.0**](README.md)
 
 ***
 
-# litedbmodel v0.19.7
+# litedbmodel v0.20.0
 
 litedbmodel - A lightweight TypeScript data access layer
 
@@ -95,7 +95,7 @@ const column: (columnNameOrOptions?: string | ColumnOptions) => PropertyDecorato
   booleanArray: (columnName?: string) => PropertyDecorator;
   datetimeArray: (columnName?: string) => PropertyDecorator;
   json: <T>(columnName?: string) => PropertyDecorator;
-  uuid: (columnName?: string) => PropertyDecorator;
+  uuid: (columnNameOrOptions?: string | ColumnOptions) => PropertyDecorator;
   custom: <T>(castFn: (value: unknown) => T, serializeFn?: SerializeFn, columnName?: string) => PropertyDecorator;
 };
 ```
@@ -144,7 +144,7 @@ still work and can be used when you want to be explicit about the conversion.
 | `booleanArray()` | (`columnName?`: `string`) => `PropertyDecorator` | Boolean array type conversion (boolean[]) Preserves null for nullable columns, undefined stays undefined **Example** `@column.booleanArray() flags?: (boolean | null)[];` | decorators.ts:490 |
 | `datetimeArray()` | (`columnName?`: `string`) => `PropertyDecorator` | DateTime array type conversion (timestamp[]) Preserves null for nullable columns, undefined stays undefined **Example** `@column.datetimeArray() event_dates?: (Date | null)[];` | decorators.ts:505 |
 | `json()` | \<`T`\>(`columnName?`: `string`) => `PropertyDecorator` | JSON/JSONB type conversion Preserves null for nullable columns, undefined stays undefined **Examples** `@column.json() metadata?: Record<string, unknown>;` `@column.json<UserSettings>() settings?: UserSettings;` | decorators.ts:531 |
-| `uuid()` | (`columnName?`: `string`) => `PropertyDecorator` | UUID type with automatic casting for PostgreSQL. Automatically adds ::uuid cast to conditions and INSERT/UPDATE values. Preserves null for nullable columns, undefined stays undefined. **Example** `@column.uuid() id?: string; @column.uuid({ primaryKey: true }) id?: string; // Conditions automatically cast to UUID: await User.find([[User.id, 'uuid-string']]); // → WHERE id = ?::uuid // IN clauses also cast: await User.find([[User.id, ['uuid1', 'uuid2']]]); // → WHERE id IN (?::uuid, ?::uuid)` | decorators.ts:564 |
+| `uuid()` | (`columnNameOrOptions?`: `string` \| [`ColumnOptions`](interfaces/ColumnOptions.md)) => `PropertyDecorator` | UUID type with automatic casting for PostgreSQL. Automatically adds ::uuid cast to conditions and INSERT/UPDATE values. Preserves null for nullable columns, undefined stays undefined. **Example** `@column.uuid() id?: string; @column.uuid({ primaryKey: true }) id?: string; // Conditions automatically cast to UUID: await User.find([[User.id, 'uuid-string']]); // → WHERE id = ?::uuid // IN clauses also cast: await User.find([[User.id, ['uuid1', 'uuid2']]]); // → WHERE id IN (?::uuid, ?::uuid)` | decorators.ts:564 |
 | `custom()` | \<`T`\>(`castFn`: (`value`: `unknown`) => `T`, `serializeFn?`: `SerializeFn`, `columnName?`: `string`) => `PropertyDecorator` | Custom type conversion with user-provided function **Examples** `@column.custom((v) => String(v).toUpperCase()) status?: string;` `@column.custom((v) => v, (v) => JSON.stringify(v)) data?: MyType; // with serializer` | decorators.ts:586 |
 
 ### Other

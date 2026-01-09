@@ -18,7 +18,7 @@
  * ```
  */
 
-import { DBNotNullValue, dbTupleIn, DBCast, DBCastArray } from './DBValues';
+import { DBNotNullValue, dbTupleIn, DBCast, DBCastArray, DBToken } from './DBValues';
 
 // ============================================
 // OrderColumn Class (Type-safe ORDER BY)
@@ -924,7 +924,25 @@ function condToKeyValue(cond: Cond): [string, unknown] | null {
   if (typeof keyOrCol === 'string') {
     return [keyOrCol, value];
   }
-  return [keyOrCol.columnName, value];
+  
+  // Column object - check if it has sqlCast
+  const col = keyOrCol;
+  const sqlCast = col.sqlCast;
+  
+  // Don't wrap if value is already a DBToken (e.g., dbIn, dbNull, DBCast, etc.)
+  if (value instanceof DBToken) {
+    return [col.columnName, value];
+  }
+  
+  if (sqlCast) {
+    // Wrap value with DBCast/DBCastArray for type casting
+    if (Array.isArray(value)) {
+      return [col.columnName, new DBCastArray(value, sqlCast)];
+    }
+    return [col.columnName, new DBCast(value, sqlCast, '=')];
+  }
+  
+  return [col.columnName, value];
 }
 
 /**
