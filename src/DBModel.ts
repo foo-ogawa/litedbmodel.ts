@@ -2483,234 +2483,45 @@ export abstract class DBModel {
       const pkeyColumns = this._getPkeyColumnsWithDefault();
       const pkeyColumnNames = columnsToNames(pkeyColumns);
       const sqlCastMap = getSqlCastMap(this);
+      const sqlBuilder = getSqlBuilder(driverType);
 
-      let sql: string;
-      const params: unknown[] = [];
-
-      // Check if any SKIP exists (columns differ between rows)
-      const hasSkip = rowRecords.some(record => 
-        valueColumnNames.some(col => !(col in record))
-      );
-
-      if (driverType === 'postgres') {
-        // PostgreSQL: Always use UNNEST for batch operations
-        // For complex types (arrays, JSON), serialize to JSON text and convert back in SET clause
-        const unnestArrays: string[] = [];
-        const vColumns: string[] = [];
-        const valueColActualTypes: Map<string, string> = new Map();
-        
-        // Helper to check if type needs text serialization for UNNEST
-        const isComplexType = (t: string) => t.endsWith('[]') || t === 'jsonb' || t === 'json';
-        
-        // Helper to get element type from array type (e.g., 'int[]' -> 'int')
-        const getArrayElementType = (arrayType: string): string => {
-          if (!arrayType.endsWith('[]')) return arrayType;
-          return arrayType.slice(0, -2);
-        };
-        
-        // Helper to build SQL expression to convert JSON text to target type
-        // Handles NULL and empty array values gracefully
-        const buildJsonToTypeExpr = (colRef: string, pgType: string): string => {
-          if (pgType === 'jsonb' || pgType === 'json') {
-            return `${colRef}::${pgType}`;
-          }
-          if (pgType.endsWith('[]')) {
-            // Convert JSON array to PostgreSQL array via jsonb_array_elements_text
-            // Use CASE to handle NULL values (jsonb_array_elements_text fails on NULL)
-            // Use COALESCE to handle empty arrays (array_agg returns NULL for empty input)
-            const elemType = getArrayElementType(pgType);
-            return `CASE WHEN ${colRef} IS NULL THEN NULL ELSE COALESCE((SELECT array_agg(elem::${elemType}) FROM jsonb_array_elements_text(${colRef}::jsonb) AS elem), ARRAY[]::${pgType}) END`;
-          }
-          return colRef;
-        };
-        
-        // Add key columns
-        for (const col of keyColumnNames) {
-          const colValues = rowRecords.map(r => r[col]);
-          params.push(colValues);
-          const sqlCast = sqlCastMap.get(col);
-          const pgType = sqlCast || this._inferPgType(colValues.find(v => v !== null && v !== undefined));
-          unnestArrays.push(`?::${pgType}[]`);
-          vColumns.push(col);
-        }
-        
-        // Add value columns (serialize complex types to JSON text)
+      // Build skipMap for SqlBuilder
+      const skipMap = new Map<number, Set<string>>();
+      for (let i = 0; i < rowRecords.length; i++) {
+        const skippedCols = new Set<string>();
         for (const col of valueColumnNames) {
-          const sqlCast = sqlCastMap.get(col);
-          // Find first non-null value to infer type
-          let pgType = sqlCast;
-          if (!pgType) {
-            for (const r of rowRecords) {
-              if (col in r && r[col] !== null && r[col] !== undefined) {
-                pgType = this._inferPgType(r[col]);
-                break;
-              }
-            }
-            pgType = pgType || 'text';
-          }
-          valueColActualTypes.set(col, pgType);
-          
-          const isComplex = isComplexType(pgType);
-          const colValues = rowRecords.map(r => {
-            if (!(col in r)) return null;  // SKIP
-            const val = r[col];
-            // Serialize arrays and JSON to JSON string
-            if (isComplex && val !== null && val !== undefined) {
-              return JSON.stringify(val);
-            }
-            return val;
-          });
-          
-          params.push(colValues);
-          // Pass complex types as text[], others as their actual type
-          unnestArrays.push(isComplex ? `?::text[]` : `?::${pgType}[]`);
-          vColumns.push(col);
-          
-          if (hasSkip) {
-            // Add skip flag for this column
-            const skipFlags = rowRecords.map(r => !(col in r));
-            params.push(skipFlags);
-            unnestArrays.push(`?::boolean[]`);
-            vColumns.push(`_skip_${col}`);
+          if (!(col in rowRecords[i])) {
+            skippedCols.add(col);
           }
         }
-        
-        // Build SET clause (convert JSON text back to actual types)
-        const setClauses = valueColumnNames.map(col => {
-          const actualType = valueColActualTypes.get(col)!;
-          const isComplex = isComplexType(actualType);
-          
-          if (hasSkip) {
-            if (isComplex) {
-              const convertExpr = buildJsonToTypeExpr(`v.${col}`, actualType);
-              return `${col} = CASE WHEN v._skip_${col} THEN t.${col} ELSE ${convertExpr} END`;
-            }
-            return `${col} = CASE WHEN v._skip_${col} THEN t.${col} ELSE v.${col} END`;
-          }
-          if (isComplex) {
-            return `${col} = ${buildJsonToTypeExpr(`v.${col}`, actualType)}`;
-          }
-          return `${col} = v.${col}`;
-        });
-        
-        // Build WHERE clause
-        const whereConditions = keyColumnNames.map(col => `t.${col} = v.${col}`);
-        
-        sql = `UPDATE ${tableName} AS t SET ${setClauses.join(', ')} ` +
-              `FROM UNNEST(${unnestArrays.join(', ')}) AS v(${vColumns.join(', ')}) ` +
-              `WHERE ${whereConditions.join(' AND ')}`;
-        
-        if (opts.returning) {
-          sql += ` RETURNING ${pkeyColumnNames.map(col => `t.${col}`).join(', ')}`;
-        }
-      } else if (driverType === 'mysql') {
-        // MySQL: UPDATE ... JOIN (VALUES ROW(...)) with IF for SKIP
-        const rowPlaceholders: string[] = [];
-        const allColumns: string[] = [...keyColumnNames];
-        
-        // Build column list: key columns + value columns + skip flags
-        for (const col of valueColumnNames) {
-          allColumns.push(col);
-          if (hasSkip) {
-            allColumns.push(`_skip_${col}`);
-          }
-        }
-        
-        for (const record of rowRecords) {
-          const rowVals: string[] = [];
-          // Add key columns
-          for (const col of keyColumnNames) {
-            params.push(record[col]);
-            rowVals.push('?');
-          }
-          // Add value columns and skip flags
-          for (const col of valueColumnNames) {
-            params.push(col in record ? record[col] : null);
-            rowVals.push('?');
-            if (hasSkip) {
-              params.push(col in record ? 0 : 1);  // MySQL uses 0/1 for boolean
-              rowVals.push('?');
-            }
-          }
-          rowPlaceholders.push(`ROW(${rowVals.join(', ')})`);
-        }
-        
-        // Build SET clause with IF for SKIP
-        const setClauses = valueColumnNames.map(col => {
-          if (hasSkip) {
-            return `t.${col} = IF(v._skip_${col}, t.${col}, v.${col})`;
-          }
-          return `t.${col} = v.${col}`;
-        });
-        
-        const onConditions = keyColumnNames.map(col => `t.${col} = v.${col}`);
-        
-        sql = `UPDATE ${tableName} AS t ` +
-              `JOIN (VALUES ${rowPlaceholders.join(', ')}) AS v(${allColumns.join(', ')}) ` +
-              `ON ${onConditions.join(' AND ')} ` +
-              `SET ${setClauses.join(', ')}`;
-      } else {
-        // SQLite: CASE WHEN key = value THEN ... format (no CTE needed)
-        // This approach works reliably across SQLite versions
-        
-        // Build SET clauses using CASE WHEN for each value column
-        const setClauses = valueColumnNames.map(col => {
-          const whenClauses: string[] = [];
-          
-          for (const record of rowRecords) {
-            // Build key condition for this row
-            const keyConditions = keyColumnNames.map(keyCol => `${keyCol} = ?`).join(' AND ');
-            
-            // Add key values to params
-            for (const keyCol of keyColumnNames) {
-              params.push(record[keyCol]);
-            }
-            
-            // Determine value: SKIP uses existing column value, otherwise use new value
-            if (hasSkip && !(col in record)) {
-              // SKIP: use existing value (reference the column itself)
-              whenClauses.push(`WHEN ${keyConditions} THEN ${tableName}.${col}`);
-            } else {
-              // Use provided value
-              params.push(col in record ? record[col] : null);
-              whenClauses.push(`WHEN ${keyConditions} THEN ?`);
-            }
-          }
-          
-          return `${col} = CASE ${whenClauses.join(' ')} ELSE ${tableName}.${col} END`;
-        });
-        
-        // Build WHERE clause for all keys
-        const whereKeyValues: string[] = [];
-        for (const record of rowRecords) {
-          if (keyColumnNames.length === 1) {
-            params.push(record[keyColumnNames[0]]);
-            whereKeyValues.push('?');
-          } else {
-            const rowKeys = keyColumnNames.map(() => '?').join(', ');
-            for (const keyCol of keyColumnNames) {
-              params.push(record[keyCol]);
-            }
-            whereKeyValues.push(`(${rowKeys})`);
-          }
-        }
-        
-        let whereClause: string;
-        if (keyColumnNames.length === 1) {
-          whereClause = `${keyColumnNames[0]} IN (${whereKeyValues.join(', ')})`;
-        } else {
-          whereClause = `(${keyColumnNames.join(', ')}) IN (VALUES ${whereKeyValues.join(', ')})`;
-        }
-        
-        sql = `UPDATE ${tableName} SET ${setClauses.join(', ')} WHERE ${whereClause}`;
-        
-        if (opts.returning) {
-          sql += ` RETURNING ${pkeyColumnNames.map(col => `${tableName}.${col}`).join(', ')}`;
+        if (skippedCols.size > 0) {
+          skipMap.set(i, skippedCols);
         }
       }
 
+      // Build RETURNING clause
+      const returning = opts.returning 
+        ? (driverType === 'postgres' 
+            ? pkeyColumnNames.map(col => `t.${col}`).join(', ')
+            : (driverType === 'sqlite'
+                ? pkeyColumnNames.map(col => `${tableName}.${col}`).join(', ')
+                : undefined))
+        : undefined;
+
+      // Use SqlBuilder to generate SQL
+      const buildResult = sqlBuilder.buildUpdateMany({
+        tableName,
+        keyColumns: keyColumnNames,
+        updateColumns: valueColumnNames,
+        records: rowRecords,
+        rawRecords: rowRecords,
+        sqlCastMap,
+        skipMap,
+        returning,
+      });
+
       // Execute the update
-      const result = await this.execute(sql, params);
+      const result = await this.execute(buildResult.sql, buildResult.params);
 
       if (!opts.returning) {
         return null;
