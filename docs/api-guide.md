@@ -491,8 +491,33 @@ await User.updateMany([
 **Notes:**
 - PostgreSQL array types: In createMany/updateMany, `JSON.stringify()` -> `text[]` -> `jsonb_array_elements_text()` to deserialize
 - PostgreSQL JSON types: In createMany/updateMany, `JSON.stringify()` -> `text[]` -> `::jsonb` cast
-- MySQL/SQLite have no native array types, so array tests are PostgreSQL-only
+- MySQL/SQLite: Use `@column.json<T[]>()` for array-like data (stored as JSON text)
 - `(jsonb->arr)` = `COALESCE((SELECT array_agg(elem::int) FROM jsonb_array_elements_text(v.col::jsonb) AS elem), ARRAY[]::int[])`
+
+### Architecture: Driver-Specific SQL Building
+
+litedbmodel uses a `SqlBuilder` architecture to generate optimized SQL for each database:
+
+| Driver | Interface | INSERT Strategy | UPDATE Strategy |
+|--------|-----------|-----------------|-----------------|
+| PostgreSQL | `PostgresSqlBuilder` | UNNEST for batch (2+ records) | UNNEST with skip flags |
+| MySQL | `MysqlSqlBuilder` | VALUES ROW | JOIN VALUES + IF |
+| SQLite | `SqliteSqlBuilder` | VALUES clause | CASE WHEN |
+
+Each driver also provides `DriverTypeCast` for serialization/deserialization:
+
+```typescript
+interface DriverTypeCast {
+  serializeArray<T>(val: T[]): unknown;      // JS array -> DB format
+  deserializeArray<T>(val: unknown): T[];    // DB value -> JS array
+  serializeJson(val: unknown): unknown;      // JS object -> DB format
+  deserializeJson<T>(val: unknown): T;       // DB value -> JS object
+}
+```
+
+- **PostgreSQL**: Native array format `{1,2,3}`, native JSONB
+- **MySQL**: JSON column type with automatic serialization
+- **SQLite**: TEXT columns with JSON.stringify/JSON.parse
 
 See: [Conditions](classes/Conditions.md), [Values](classes/Values.md), [SKIP](variables/SKIP.md)
 
