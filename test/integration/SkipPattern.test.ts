@@ -837,6 +837,220 @@ describe.skipIf(skipIntegrationTests)('SKIP Pattern - SQLite', () => {
   });
 });
 
+// ============================================
+// MySQL Array (JSON) Tests
+// ============================================
+
+@model('mysql_array_test')
+class MysqlArrayTestModel extends DBModel {
+  @column({ primaryKey: true }) id?: number;
+  @column() name?: string;
+  @column.json<number[]>() int_arr?: number[];
+  @column.json<string[]>() str_arr?: string[];
+  @column.json<Record<string, unknown>>() json_data?: Record<string, unknown>;
+}
+let MysqlArrayTest: ReturnType<typeof MysqlArrayTestModel.asModel>;
+
+describe.skipIf(skipIntegrationTests)('Array (JSON) Pattern - MySQL', () => {
+  let MysqlBase: ReturnType<typeof DBModel.createDBBase>;
+
+  beforeAll(async () => {
+    MysqlBase = await getMysqlBase();
+    if (!MysqlBase) return;
+
+    MysqlArrayTest = bindModelToBase(MysqlArrayTestModel.asModel(), MysqlBase);
+
+    await MysqlBase.execute('DROP TABLE IF EXISTS mysql_array_test');
+    await MysqlBase.execute(`CREATE TABLE mysql_array_test (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL, int_arr JSON DEFAULT NULL, str_arr JSON DEFAULT NULL, json_data JSON DEFAULT NULL)`);
+  });
+
+  afterAll(async () => {
+    if (MysqlBase) {
+      await MysqlBase.execute('DROP TABLE IF EXISTS mysql_array_test');
+    }
+  });
+
+  beforeEach(async () => {
+    if (MysqlBase) {
+      await MysqlBase.execute('TRUNCATE TABLE mysql_array_test');
+    }
+  });
+
+  it('should create and retrieve array data stored as JSON', async () => {
+    if (!MysqlBase) return;
+
+    await MysqlArrayTest.transaction(async () => {
+      await MysqlArrayTest.create([
+        [MysqlArrayTest.name, 'User1'],
+        [MysqlArrayTest.int_arr, [1, 2, 3]],
+        [MysqlArrayTest.str_arr, ['a', 'b', 'c']],
+        [MysqlArrayTest.json_data, { key: 'value', num: 42 }],
+      ]);
+    });
+
+    const users = await MysqlArrayTest.find([]);
+    expect(users).toHaveLength(1);
+    expect(users[0].name).toBe('User1');
+    expect(users[0].int_arr).toEqual([1, 2, 3]);
+    expect(users[0].str_arr).toEqual(['a', 'b', 'c']);
+    expect(users[0].json_data).toEqual({ key: 'value', num: 42 });
+  });
+
+  it('should createMany with array data', async () => {
+    if (!MysqlBase) return;
+
+    await MysqlArrayTest.transaction(async () => {
+      await MysqlArrayTest.createMany([
+        [[MysqlArrayTest.name, 'User1'], [MysqlArrayTest.int_arr, [10, 20]]],
+        [[MysqlArrayTest.name, 'User2'], [MysqlArrayTest.int_arr, [30, 40, 50]]],
+      ]);
+    });
+
+    const users = await MysqlArrayTest.find([]);
+    expect(users).toHaveLength(2);
+
+    const u1 = users.find(u => u.name === 'User1');
+    const u2 = users.find(u => u.name === 'User2');
+    expect(u1?.int_arr).toEqual([10, 20]);
+    expect(u2?.int_arr).toEqual([30, 40, 50]);
+  });
+
+  it('should handle null arrays', async () => {
+    if (!MysqlBase) return;
+
+    await MysqlArrayTest.transaction(async () => {
+      await MysqlArrayTest.create([
+        [MysqlArrayTest.name, 'NullArray'],
+        [MysqlArrayTest.int_arr, null],
+      ]);
+    });
+
+    const users = await MysqlArrayTest.find([]);
+    expect(users[0].int_arr).toBeNull();
+  });
+
+  it('should handle empty arrays', async () => {
+    if (!MysqlBase) return;
+
+    await MysqlArrayTest.transaction(async () => {
+      await MysqlArrayTest.create([
+        [MysqlArrayTest.name, 'EmptyArray'],
+        [MysqlArrayTest.int_arr, []],
+      ]);
+    });
+
+    const users = await MysqlArrayTest.find([]);
+    expect(users[0].int_arr).toEqual([]);
+  });
+});
+
+// ============================================
+// SQLite Array (JSON) Tests
+// ============================================
+
+@model('lite_array_test')
+class SqliteArrayTestModel extends DBModel {
+  @column({ primaryKey: true }) id?: number;
+  @column() name?: string;
+  @column.json<number[]>() int_arr?: number[];
+  @column.json<string[]>() str_arr?: string[];
+  @column.json<Record<string, unknown>>() json_data?: Record<string, unknown>;
+}
+let SqliteArrayTest: ReturnType<typeof SqliteArrayTestModel.asModel>;
+
+describe.skipIf(skipIntegrationTests)('Array (JSON) Pattern - SQLite', () => {
+  let SqliteBase: ReturnType<typeof DBModel.createDBBase>;
+
+  beforeAll(async () => {
+    SqliteBase = await getSqliteBase();
+    if (!SqliteBase) return;
+
+    SqliteArrayTest = bindModelToBase(SqliteArrayTestModel.asModel(), SqliteBase);
+
+    await SqliteBase.execute('DROP TABLE IF EXISTS lite_array_test');
+    await SqliteBase.execute(`CREATE TABLE lite_array_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, int_arr TEXT DEFAULT NULL, str_arr TEXT DEFAULT NULL, json_data TEXT DEFAULT NULL)`);
+  });
+
+  afterAll(async () => {
+    if (SqliteBase) {
+      await SqliteBase.execute('DROP TABLE IF EXISTS lite_array_test');
+    }
+  });
+
+  beforeEach(async () => {
+    if (SqliteBase) {
+      await SqliteBase.execute('DELETE FROM lite_array_test');
+    }
+  });
+
+  it('should create and retrieve array data stored as JSON', async () => {
+    if (!SqliteBase) return;
+
+    await SqliteArrayTest.transaction(async () => {
+      await SqliteArrayTest.create([
+        [SqliteArrayTest.name, 'User1'],
+        [SqliteArrayTest.int_arr, [1, 2, 3]],
+        [SqliteArrayTest.str_arr, ['a', 'b', 'c']],
+        [SqliteArrayTest.json_data, { key: 'value', num: 42 }],
+      ]);
+    });
+
+    const users = await SqliteArrayTest.find([]);
+    expect(users).toHaveLength(1);
+    expect(users[0].name).toBe('User1');
+    expect(users[0].int_arr).toEqual([1, 2, 3]);
+    expect(users[0].str_arr).toEqual(['a', 'b', 'c']);
+    expect(users[0].json_data).toEqual({ key: 'value', num: 42 });
+  });
+
+  it('should createMany with array data', async () => {
+    if (!SqliteBase) return;
+
+    await SqliteArrayTest.transaction(async () => {
+      await SqliteArrayTest.createMany([
+        [[SqliteArrayTest.name, 'User1'], [SqliteArrayTest.int_arr, [10, 20]]],
+        [[SqliteArrayTest.name, 'User2'], [SqliteArrayTest.int_arr, [30, 40, 50]]],
+      ]);
+    });
+
+    const users = await SqliteArrayTest.find([]);
+    expect(users).toHaveLength(2);
+
+    const u1 = users.find(u => u.name === 'User1');
+    const u2 = users.find(u => u.name === 'User2');
+    expect(u1?.int_arr).toEqual([10, 20]);
+    expect(u2?.int_arr).toEqual([30, 40, 50]);
+  });
+
+  it('should handle null arrays', async () => {
+    if (!SqliteBase) return;
+
+    await SqliteArrayTest.transaction(async () => {
+      await SqliteArrayTest.create([
+        [SqliteArrayTest.name, 'NullArray'],
+        [SqliteArrayTest.int_arr, null],
+      ]);
+    });
+
+    const users = await SqliteArrayTest.find([]);
+    expect(users[0].int_arr).toBeNull();
+  });
+
+  it('should handle empty arrays', async () => {
+    if (!SqliteBase) return;
+
+    await SqliteArrayTest.transaction(async () => {
+      await SqliteArrayTest.create([
+        [SqliteArrayTest.name, 'EmptyArray'],
+        [SqliteArrayTest.int_arr, []],
+      ]);
+    });
+
+    const users = await SqliteArrayTest.find([]);
+    expect(users[0].int_arr).toEqual([]);
+  });
+});
+
 // Final cleanup
 afterAll(async () => {
   await closeAllPools();
