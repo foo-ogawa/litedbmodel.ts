@@ -29,7 +29,7 @@ litedbmodel keeps SQL visible and controllable: generated queries are intentiona
 - Column references are **symbol-based** (`Model.column`) so IDE rename/find-references work.
 - Conditions are **type-safe tuples** (`[Column, value]`), and an ESLint plugin catches mistakes TS cannot.
 
-> See [Design Philosophy](./docs/BENCHMARK-NESTED.md#litedbmodels-design-philosophy) for detailed comparison with query-centric ORMs.
+> See [Design Philosophy](./docs/BENCHMARK.md#litedbmodels-design-philosophy) for detailed comparison with query-centric ORMs.
 
 ## Key Features
 
@@ -1311,7 +1311,7 @@ const article = await CmsDB.withWriter(async () => {
 | **Extensibility** | Middleware | Plugins | ❌ Manual | Subscribers | Extensions |
 | **Performance** | 🏆 Fastest | 🏆 Fastest | Fast | Medium | Slow |
 
-> See [COMPARISON.md](./docs/COMPARISON.md) for detailed analysis and [BENCHMARK-NESTED.md](./docs/BENCHMARK-NESTED.md) for benchmarks.
+> See [COMPARISON.md](./docs/COMPARISON.md) for detailed analysis and [BENCHMARK.md](./docs/BENCHMARK.md) for benchmarks.
 
 ---
 
