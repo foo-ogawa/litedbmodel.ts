@@ -12,8 +12,47 @@ export type {
   DBConnection,
   DBDriver,
   DBDriverOptions,
+  DriverTypeCast,
+  SqlBuilder,
+  InsertBuildOptions,
+  UpdateBuildOptions,
+  UpdateManyBuildOptions,
+  SqlBuildResult,
 } from './types';
 export { defaultLogger } from './types';
+
+// SQL Builders
+export { postgresSqlBuilder, postgresTypeCast } from './PostgresSqlBuilder';
+export { mysqlSqlBuilder, mysqlTypeCast } from './MysqlSqlBuilder';
+export { sqliteSqlBuilder, sqliteTypeCast } from './SqliteSqlBuilder';
+
+import { postgresSqlBuilder } from './PostgresSqlBuilder';
+import { mysqlSqlBuilder } from './MysqlSqlBuilder';
+import { sqliteSqlBuilder } from './SqliteSqlBuilder';
+import type { SqlBuilder, DriverTypeCast } from './types';
+
+/**
+ * Get SQL builder for a specific driver type
+ */
+export function getSqlBuilder(driverType: DriverType): SqlBuilder {
+  switch (driverType) {
+    case 'postgres':
+      return postgresSqlBuilder;
+    case 'mysql':
+      return mysqlSqlBuilder;
+    case 'sqlite':
+      return sqliteSqlBuilder;
+    default:
+      throw new Error(`Unknown driver type: ${driverType}`);
+  }
+}
+
+/**
+ * Get type cast helper for a specific driver type
+ */
+export function getTypeCast(driverType: DriverType): DriverTypeCast {
+  return getSqlBuilder(driverType).typeCast;
+}
 
 // PostgreSQL Driver
 export { PostgresDriver, createPostgresDriver, closeAllPools } from './postgres';

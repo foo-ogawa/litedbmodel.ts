@@ -10,6 +10,7 @@
 
 import 'reflect-metadata';
 import { type Column, type OrderSpec, createColumn, orderToString, type Conds, condsToRecord } from './Column';
+import type { DriverTypeCast } from './drivers/types';
 import {
   castToBoolean,
   castToDatetime,
@@ -37,7 +38,7 @@ const RELATIONS_KEY = Symbol('litedbmodel:relations');
 type TypeCastFn = (value: unknown) => unknown;
 
 /** Serialize function signature (converts JS value to DB value) */
-type SerializeFn = (value: unknown) => unknown;
+type SerializeFn = (value: unknown, typeCast?: DriverTypeCast) => unknown;
 
 /** 
  * Column metadata stored by decorators 
@@ -283,11 +284,26 @@ function createColumnDecorator(
 // Serialize Functions (JS -> DB)
 // ============================================
 
-/** Serialize array to PostgreSQL array format {a,b,c} */
-function serializeArray(val: unknown): unknown {
+/**
+ * Serialize function type that optionally accepts driver type cast helper.
+ * @internal
+ */
+export type SerializeFunction = (val: unknown, typeCast?: DriverTypeCast) => unknown;
+
+/**
+ * Serialize array using driver's type cast if available.
+ * Falls back to PostgreSQL format for backward compatibility.
+ */
+function serializeArray(val: unknown, typeCast?: DriverTypeCast): unknown {
   if (val === null || val === undefined) return null;
   if (!Array.isArray(val)) return val;
-  // PostgreSQL array format: {val1,val2,val3}
+  
+  // Use driver's serialize if available
+  if (typeCast?.serializeArray) {
+    return typeCast.serializeArray(val);
+  }
+  
+  // Fallback: PostgreSQL array format {val1,val2,val3}
   const escaped = val.map(v => {
     if (v === null) return 'NULL';
     if (typeof v === 'string') {
@@ -304,17 +320,36 @@ function serializeArray(val: unknown): unknown {
   return `{${escaped.join(',')}}`;
 }
 
-/** Serialize boolean array to PostgreSQL format */
-function serializeBooleanArray(val: unknown): unknown {
+/**
+ * Serialize boolean array using driver's type cast if available.
+ * Falls back to PostgreSQL format for backward compatibility.
+ */
+function serializeBooleanArray(val: unknown, typeCast?: DriverTypeCast): unknown {
   if (val === null || val === undefined) return null;
   if (!Array.isArray(val)) return val;
+  
+  // Use driver's serialize if available
+  if (typeCast?.serializeBooleanArray) {
+    return typeCast.serializeBooleanArray(val as (boolean | null)[]);
+  }
+  
+  // Fallback: PostgreSQL format
   const mapped = val.map(v => v === null ? 'NULL' : (v ? 't' : 'f'));
   return `{${mapped.join(',')}}`;
 }
 
-/** Serialize JSON to string */
-function serializeJson(val: unknown): unknown {
+/**
+ * Serialize JSON using driver's type cast if available.
+ */
+function serializeJson(val: unknown, typeCast?: DriverTypeCast): unknown {
   if (val === null || val === undefined) return null;
+  
+  // Use driver's serialize if available
+  if (typeCast?.serializeJson) {
+    return typeCast.serializeJson(val);
+  }
+  
+  // Fallback: JSON.stringify
   if (typeof val === 'string') return val; // Already serialized
   return JSON.stringify(val);
 }
@@ -1140,11 +1175,13 @@ export function getSqlCastMap(modelClass: object): Map<string, string> {
  * Uses cached lookup map for O(1) per-key performance.
  * @param modelClass - The model class with column metadata
  * @param record - The record to serialize
+ * @param typeCast - Optional driver type cast helper for driver-specific serialization
  * @returns Serialized record
  */
 export function serializeRecord(
   modelClass: object,
-  record: Record<string, unknown>
+  record: Record<string, unknown>,
+  typeCast?: DriverTypeCast
 ): Record<string, unknown> {
   const serializeMap = getSerializeMap(modelClass);
   
@@ -1158,7 +1195,7 @@ export function serializeRecord(
   for (const [key, value] of Object.entries(record)) {
     const serialize = serializeMap.get(key);
     if (serialize) {
-      result[key] = serialize(value);
+      result[key] = serialize(value, typeCast);
     } else {
       result[key] = value;
     }

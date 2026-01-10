@@ -123,3 +123,151 @@ export const defaultLogger: Logger = {
   error: console.error,
 };
 
+// ============================================
+// Type Cast Interface for Drivers
+// ============================================
+
+/**
+ * Interface for driver-specific type casting.
+ * Drivers implement this to handle serialization/deserialization of complex types.
+ * @internal
+ */
+export interface DriverTypeCast {
+  /**
+   * Serialize array to DB format
+   * PostgreSQL: '{1,2,3}' native format
+   * MySQL/SQLite: '[1,2,3]' JSON format
+   */
+  serializeArray<T>(val: T[]): unknown;
+
+  /**
+   * Deserialize DB value to array
+   * PostgreSQL: native array (already converted by driver)
+   * MySQL/SQLite: JSON string -> array
+   */
+  deserializeArray<T>(val: unknown): T[] | null;
+
+  /**
+   * Serialize JSON to DB format
+   */
+  serializeJson(val: unknown): unknown;
+
+  /**
+   * Deserialize DB value to JSON
+   */
+  deserializeJson<T>(val: unknown): T | null;
+
+  /**
+   * Serialize boolean array to DB format
+   */
+  serializeBooleanArray(val: (boolean | null)[]): unknown;
+
+  /**
+   * Deserialize DB value to boolean array
+   */
+  deserializeBooleanArray(val: unknown): (boolean | null)[] | null;
+}
+
+// ============================================
+// SQL Builder Interface
+// ============================================
+
+/**
+ * Options for building INSERT SQL
+ * @internal
+ */
+export interface InsertBuildOptions {
+  tableName: string;
+  columns: string[];
+  records: Record<string, unknown>[];
+  /** Raw records before serialization (for PostgreSQL UNNEST with arrays) */
+  rawRecords?: Record<string, unknown>[];
+  /** Map of column name to SQL cast type */
+  sqlCastMap?: Map<string, string>;
+  /** ON CONFLICT columns */
+  onConflict?: string[];
+  /** ON CONFLICT DO NOTHING */
+  onConflictIgnore?: boolean;
+  /** ON CONFLICT DO UPDATE columns ('all' or specific columns) */
+  onConflictUpdate?: 'all' | string[];
+  /** RETURNING clause */
+  returning?: string;
+}
+
+/**
+ * Options for building UPDATE SQL (single record)
+ * @internal
+ */
+export interface UpdateBuildOptions {
+  tableName: string;
+  setClauses: { column: string; value: unknown }[];
+  whereClause: string;
+  whereParams: unknown[];
+  /** Map of column name to SQL cast type */
+  sqlCastMap?: Map<string, string>;
+  /** RETURNING clause */
+  returning?: string;
+}
+
+/**
+ * Options for building batch UPDATE SQL
+ * @internal
+ */
+export interface UpdateManyBuildOptions {
+  tableName: string;
+  keyColumns: string[];
+  updateColumns: string[];
+  records: Record<string, unknown>[];
+  /** Raw records before serialization */
+  rawRecords?: Record<string, unknown>[];
+  /** Map of column name to SQL cast type */
+  sqlCastMap?: Map<string, string>;
+  /** Map of record index to set of SKIP column names */
+  skipMap?: Map<number, Set<string>>;
+  /** RETURNING clause */
+  returning?: string;
+}
+
+/**
+ * Result of SQL building
+ * @internal
+ */
+export interface SqlBuildResult {
+  sql: string;
+  params: unknown[];
+}
+
+/**
+ * Interface for driver-specific SQL building.
+ * Each driver implements this to generate optimized SQL.
+ * @internal
+ */
+export interface SqlBuilder {
+  /** Driver type identifier */
+  readonly driverType: 'postgres' | 'sqlite' | 'mysql';
+
+  /** Type cast helper for this driver */
+  readonly typeCast: DriverTypeCast;
+
+  /**
+   * Build INSERT SQL for single or multiple records
+   */
+  buildInsert(options: InsertBuildOptions): SqlBuildResult;
+
+  /**
+   * Build UPDATE SQL for a single record
+   */
+  buildUpdate(options: UpdateBuildOptions): SqlBuildResult;
+
+  /**
+   * Build batch UPDATE SQL for multiple records
+   */
+  buildUpdateMany(options: UpdateManyBuildOptions): SqlBuildResult;
+
+  /**
+   * Infer PostgreSQL type from JavaScript value
+   * Returns null for non-PostgreSQL drivers
+   */
+  inferPgType?(val: unknown): string;
+}
+

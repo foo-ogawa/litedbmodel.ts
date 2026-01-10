@@ -12,6 +12,7 @@ import { LimitExceededError, WriteOutsideTransactionError, WriteInReadOnlyContex
 import { type Column, type OrderSpec, type CVs, type Conds, type CondsOf, type OrCondOf, type ColumnsOf, createColumn, columnsToNames, pairsToRecord, condsToRecord, orderToString, createOrCond } from './Column';
 import type { MiddlewareClass, ExecuteResult } from './Middleware';
 import { serializeRecord, getColumnMeta, getSqlCastMap, type KeyPair, type CompositeKeyPairs } from './decorators';
+import { getTypeCast, getSqlBuilder } from './drivers';
 
 // Import LazyRelation module (static import for Vitest compatibility)
 import { LazyRelationContext, type RelationType, type RelationConfig } from './LazyRelation';
@@ -845,22 +846,25 @@ export abstract class DBModel {
       return [];
     }
 
-    // Get sqlCast map and formatter for type casting in INSERT
-    const sqlCastMap = getSqlCastMap(this);
-    const formatter = this._getSqlCastFormatter();
+    // Get driver info and SQL builder
     const driverType = this.getDriverType();
+    const sqlBuilder = getSqlBuilder(driverType);
+    const typeCast = sqlBuilder.typeCast;
+    const sqlCastMap = getSqlCastMap(this);
 
     // Apply serialization based on column metadata
-    const records = rawRecords.map(r => serializeRecord(this, r));
-    
-    // For PostgreSQL UNNEST path: keep raw records for array columns (need JSON format, not {1,2,3})
-    const rawRecordsForArrays = driverType === 'postgres' ? rawRecords : null;
+    const records = rawRecords.map(r => serializeRecord(this, r, typeCast));
 
     // Group records by their column pattern (SKIP pattern grouping)
     // Each group has the same set of columns, enabling batch INSERT without DEFAULT keyword
-    const groupedByPattern = new Map<string, { columns: string[]; records: Record<string, unknown>[] }>();
+    const groupedByPattern = new Map<string, { 
+      columns: string[]; 
+      records: Record<string, unknown>[];
+      rawRecords: Record<string, unknown>[];
+    }>();
     
-    for (const record of records) {
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
       // Get columns present in this record (excluding undefined/SKIP values)
       const recordColumns: string[] = [];
       for (const key of Object.keys(record)) {
@@ -874,233 +878,54 @@ export abstract class DBModel {
       const patternKey = recordColumns.join(',');
       
       if (!groupedByPattern.has(patternKey)) {
-        groupedByPattern.set(patternKey, { columns: recordColumns, records: [] });
+        groupedByPattern.set(patternKey, { columns: recordColumns, records: [], rawRecords: [] });
       }
-      groupedByPattern.get(patternKey)!.records.push(record);
+      const group = groupedByPattern.get(patternKey)!;
+      group.records.push(record);
+      group.rawRecords.push(rawRecords[i]);
     }
 
     // Helper to convert Column symbols to strings
     const toColName = (col: unknown): string => 
       typeof col === 'function' || typeof col === 'object' ? String(col) : String(col);
 
-    // Helper to check if type needs JSON serialization
-    const isComplexType = (t: string) => t.endsWith('[]') || t === 'jsonb' || t === 'json';
-    
-    // Helper to get element type from array type (e.g., 'int[]' -> 'int')
-    const getArrayElementType = (arrayType: string): string => {
-      if (!arrayType.endsWith('[]')) return arrayType;
-      return arrayType.slice(0, -2);
-    };
-    
-    // Helper to build SQL expression to convert JSON text to target type
-    // Handles NULL and empty array values gracefully
-    const buildJsonToTypeExpr = (colRef: string, pgType: string): string => {
-      if (pgType === 'jsonb' || pgType === 'json') {
-        return `${colRef}::${pgType}`;
-      }
-      if (pgType.endsWith('[]')) {
-        const elemType = getArrayElementType(pgType);
-        // Use CASE to handle NULL values (jsonb_array_elements_text fails on NULL)
-        // Use COALESCE to handle empty arrays (array_agg returns NULL for empty input)
-        return `CASE WHEN ${colRef} IS NULL THEN NULL ELSE COALESCE((SELECT array_agg(elem::${elemType}) FROM jsonb_array_elements_text(${colRef}::jsonb) AS elem), ARRAY[]::${pgType}) END`;
-      }
-      return colRef;
-    };
-    
+    // Prepare onConflict columns
+    const onConflictCols = options.onConflict
+      ? (Array.isArray(options.onConflict) ? options.onConflict.map(toColName) : [toColName(options.onConflict)])
+      : undefined;
+    const onConflictUpdateCols = options.onConflictUpdate === 'all'
+      ? 'all' as const
+      : options.onConflictUpdate?.map(toColName);
 
     // Execute INSERT for each group
     const allResults: InstanceType<T>[] = [];
     
-    for (const { columns, records: groupRecords } of groupedByPattern.values()) {
-      const params: unknown[] = [];
-      let sql: string;
+    for (const { columns, records: groupRecords, rawRecords: groupRawRecords } of groupedByPattern.values()) {
+      // Use SqlBuilder to build the INSERT SQL
+      const buildResult = sqlBuilder.buildInsert({
+        tableName,
+        columns,
+        records: groupRecords,
+        rawRecords: groupRawRecords,
+        sqlCastMap,
+        onConflict: onConflictCols,
+        onConflictIgnore: options.onConflictIgnore,
+        onConflictUpdate: onConflictUpdateCols,
+        returning: options.returning,
+      });
 
-      // Check if we should use UNNEST (PostgreSQL with multiple records)
-      const useUnnest = driverType === 'postgres' && groupRecords.length > 1;
-      
-      if (useUnnest) {
-        // PostgreSQL batch INSERT: Use UNNEST
-        // Array types are serialized to JSON text and converted in SELECT
-        const unnestArrays: string[] = [];
-        const selectExprs: string[] = [];
-        let hasDBToken = false;
-        
-        for (let i = 0; i < columns.length; i++) {
-          const col = columns[i];
-          const sqlCast = sqlCastMap.get(col);
-          // Find first non-null value to infer type (use raw records for accurate inference)
-          let pgType = sqlCast;
-          if (!pgType && rawRecordsForArrays) {
-            for (const r of rawRecordsForArrays) {
-              const val = r[col];
-              if (val !== null && val !== undefined && !(val instanceof DBToken)) {
-                pgType = this._inferPgType(val);
-                break;
-              }
-            }
-          }
-          pgType = pgType || 'text';
-          
-          const isArrayType = pgType.endsWith('[]') && pgType !== 'jsonb' && pgType !== 'json';
-          const isJsonType = pgType === 'jsonb' || pgType === 'json';
-          
-          // Collect values for this column
-          const colValues = groupRecords.map((r, idx) => {
-            const serializedVal = r[col];
-            if (serializedVal instanceof DBToken) {
-              hasDBToken = true;
-              return serializedVal;
-            }
-            
-            if (isArrayType) {
-              // Array types: use raw value and JSON.stringify (serializeRecord converts to {1,2,3} format)
-              const rawVal = rawRecordsForArrays![idx][col];
-              if (rawVal === null || rawVal === undefined) return null;
-              return JSON.stringify(rawVal);
-            }
-            
-            // JSON and scalar types: use serialized value as-is
-            return serializedVal;
-          });
-          
-          if (hasDBToken) break;
-          
-          params.push(colValues);
-          
-          // Array types: pass as text[] and convert via jsonb_array_elements_text
-          // JSON types: pass as text[] and cast to jsonb
-          // Scalar types: pass as their actual type
-          if (isArrayType) {
-            unnestArrays.push(`?::text[]`);
-            selectExprs.push(buildJsonToTypeExpr(`v.${col}`, pgType));
-          } else if (isJsonType) {
-            unnestArrays.push(`?::text[]`);
-            selectExprs.push(`v.${col}::${pgType}`);
-          } else {
-            unnestArrays.push(`?::${pgType}[]`);
-            selectExprs.push(`v.${col}`);
-          }
+      // Handle legacy conflict option (raw SQL string)
+      let sql = buildResult.sql;
+      if (!options.onConflict && options.conflict) {
+        // Legacy: append raw conflict string
+        sql = sql.replace(/ RETURNING.*$/, '');  // Remove RETURNING if present
+        sql += ` ${options.conflict}`;
+        if (options.returning) {
+          sql += ` RETURNING ${options.returning}`;
         }
-        
-        // If no DBToken, use UNNEST
-        if (!hasDBToken) {
-          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) ` +
-                `SELECT ${selectExprs.join(', ')} ` +
-                `FROM UNNEST(${unnestArrays.join(', ')}) AS v(${columns.join(', ')})`;
-          
-          // Handle ON CONFLICT
-          if (options.onConflict) {
-            const conflictCols = Array.isArray(options.onConflict)
-              ? options.onConflict.map(toColName)
-              : [toColName(options.onConflict)];
-            sql += ` ON CONFLICT (${conflictCols.join(', ')})`;
-            if (options.onConflictIgnore) {
-              sql += ' DO NOTHING';
-            } else if (options.onConflictUpdate) {
-              const updateCols = options.onConflictUpdate === 'all'
-                ? columns
-                : options.onConflictUpdate.map(toColName);
-              const updateClauses = updateCols.map(col => `${col} = EXCLUDED.${col}`);
-              sql += ` DO UPDATE SET ${updateClauses.join(', ')}`;
-            }
-          } else if (options.conflict) {
-            sql += ` ${options.conflict}`;
-          }
-          
-          if (options.returning) {
-            sql += ` RETURNING ${options.returning}`;
-          }
-          
-          const result = await this.execute(sql, params);
-          const instances = (result.rows as Record<string, unknown>[]).map((row) => this._createInstance<T>(row));
-          allResults.push(...instances);
-          continue; // Next group
-        }
-        
-        // Fall through to VALUES clause (DBToken detected)
-        params.length = 0;
-      }
-      
-      // Single record, MySQL, SQLite, or PostgreSQL with DBToken: Use VALUES clause
-      const valueRows: string[] = [];
-
-      for (const record of groupRecords) {
-        const rowValues: string[] = [];
-        for (const col of columns) {
-          const val = record[col];
-          if (val instanceof DBToken) {
-            rowValues.push(val.compile(params, undefined, formatter));
-          } else {
-            params.push(val);
-            // Apply SQL type cast if defined
-            const sqlCast = sqlCastMap.get(col);
-            if (sqlCast && formatter) {
-              rowValues.push(formatter('?', sqlCast));
-            } else {
-              rowValues.push('?');
-            }
-          }
-        }
-        valueRows.push(`(${rowValues.join(', ')})`);
       }
 
-      // Build SQL based on driver and options
-      if (options.onConflict) {
-        const conflictCols = Array.isArray(options.onConflict)
-          ? options.onConflict.map(toColName)
-          : [toColName(options.onConflict)];
-
-        if (driverType === 'mysql') {
-          // MySQL: INSERT IGNORE or ON DUPLICATE KEY UPDATE
-          if (options.onConflictIgnore) {
-            sql = `INSERT IGNORE INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
-          } else if (options.onConflictUpdate) {
-            const updateCols = options.onConflictUpdate === 'all'
-              ? columns
-              : options.onConflictUpdate.map(toColName);
-            const updateClauses = updateCols.map(col => `${col} = VALUES(${col})`);
-            sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON DUPLICATE KEY UPDATE ${updateClauses.join(', ')}`;
-          } else {
-            sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
-          }
-        } else if (driverType === 'sqlite') {
-          // SQLite: INSERT OR IGNORE or ON CONFLICT DO UPDATE
-          if (options.onConflictIgnore) {
-            sql = `INSERT OR IGNORE INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
-          } else if (options.onConflictUpdate) {
-            const updateCols = options.onConflictUpdate === 'all'
-              ? columns
-              : options.onConflictUpdate.map(toColName);
-            const updateClauses = updateCols.map(col => `${col} = excluded.${col}`);
-            sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON CONFLICT (${conflictCols.join(', ')}) DO UPDATE SET ${updateClauses.join(', ')}`;
-          } else {
-            sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
-          }
-        } else {
-          // PostgreSQL (fallback with DBToken): ON CONFLICT DO NOTHING / DO UPDATE
-          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON CONFLICT (${conflictCols.join(', ')})`;
-          if (options.onConflictIgnore) {
-            sql += ' DO NOTHING';
-          } else if (options.onConflictUpdate) {
-            const updateCols = options.onConflictUpdate === 'all'
-              ? columns
-              : options.onConflictUpdate.map(toColName);
-            const updateClauses = updateCols.map(col => `${col} = EXCLUDED.${col}`);
-            sql += ` DO UPDATE SET ${updateClauses.join(', ')}`;
-          }
-        }
-      } else if (options.conflict) {
-        // Legacy: raw conflict string
-        sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ${options.conflict}`;
-      } else {
-        sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
-      }
-
-      if (options.returning) {
-        sql += ` RETURNING ${options.returning}`;
-      }
-
-      const result = await this.execute(sql, params);
+      const result = await this.execute(sql, buildResult.params);
       const instances = (result.rows as Record<string, unknown>[]).map((row) => this._createInstance<T>(row));
       allResults.push(...instances);
     }
@@ -1123,9 +948,11 @@ export abstract class DBModel {
 
     const tableName = options.tableName || this.getUpdateTableName();
     const params: unknown[] = [];
+    const driverType = this.getDriverType();
+    const typeCast = getTypeCast(driverType);
 
     // Apply serialization based on column metadata
-    const serializedValues = serializeRecord(this, values);
+    const serializedValues = serializeRecord(this, values, typeCast);
 
     // Get sqlCast map and formatter for type casting in UPDATE
     const sqlCastMap = getSqlCastMap(this);
