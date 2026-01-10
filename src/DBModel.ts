@@ -313,7 +313,7 @@ export abstract class DBModel {
    */
   protected static getHandler(): DBHandler {
     // Check if we're in a transaction
-    const txContext = transactionContext.getStore();
+    const txContext = this._getTransactionContext().getStore();
     if (txContext) {
       return createHandlerWithConnection(txContext.connection);
     }
@@ -321,7 +321,7 @@ export abstract class DBModel {
     const handler = getDBHandler();
 
     // Check if we're in withWriter context
-    if (writerContext.getStore()) {
+    if (this._getWriterContext().getStore()) {
       // Return handler that uses writer pool for reads
       return handler;  // executeOnWriter will be called explicitly
     }
@@ -346,10 +346,26 @@ export abstract class DBModel {
   }
 
   /**
+   * Get transaction context storage.
+   * Override in subclass to use independent transaction context.
+   */
+  protected static _getTransactionContext(): AsyncLocalStorage<TransactionContext> {
+    return transactionContext;
+  }
+
+  /**
+   * Get writer context storage.
+   * Override in subclass to use independent writer context.
+   */
+  protected static _getWriterContext(): AsyncLocalStorage<WriterContext> {
+    return writerContext;
+  }
+
+  /**
    * Check if currently in a withWriter context.
    */
   static inWriterContext(): boolean {
-    return writerContext.getStore() !== undefined;
+    return this._getWriterContext().getStore() !== undefined;
   }
 
   // ============================================
@@ -818,11 +834,11 @@ export abstract class DBModel {
    */
   protected static _checkWriteAllowed(operation: string): void {
     // Check if in withWriter context (read-only)
-    if (writerContext.getStore()) {
+    if (this._getWriterContext().getStore()) {
       throw new WriteInReadOnlyContextError(operation, this.name);
     }
     // Check if in transaction
-    if (!transactionContext.getStore()) {
+    if (!this._getTransactionContext().getStore()) {
       throw new WriteOutsideTransactionError(operation, this.name);
     }
   }
@@ -1995,80 +2011,26 @@ export abstract class DBModel {
 
       const pkeyColumns = this._getPkeyColumnsWithDefault();
       const pkeyColumnNames = columnsToNames(pkeyColumns);
-      const driverType = this.getDriverType();
       const tableName = this.getTableName();
       
-      let sql: string;
-      const params: unknown[] = [];
       const selectColumn = opts?.select || this.SELECT_COLUMN;
 
       // Get sqlCast map for type casting
       const sqlCastMap = getSqlCastMap(this);
+      const driverType = this.getDriverType();
       
-      if (pkeyColumnNames.length === 1) {
-        // Single PK - use IN or ANY
-        const pkValues = values.map(v => v[0]);
-        
-        if (driverType === 'postgres') {
-          // PostgreSQL: WHERE id = ANY($1::type[])
-          // Use sqlCast if defined, otherwise infer from value
-          const sqlCast = sqlCastMap.get(pkeyColumnNames[0]);
-          const pgType = sqlCast || this._inferPgType(pkValues.find(v => v !== null && v !== undefined));
-          params.push(pkValues);
-          sql = `SELECT ${selectColumn} FROM ${tableName} WHERE ${pkeyColumnNames[0]} = ANY(?::${pgType}[])`;
-      } else {
-          // MySQL/SQLite: WHERE id IN (?, ?, ...)
-          const placeholders = pkValues.map(() => '?').join(', ');
-          params.push(...pkValues);
-          sql = `SELECT ${selectColumn} FROM ${tableName} WHERE ${pkeyColumnNames[0]} IN (${placeholders})`;
-        }
-      } else {
-        // Composite PK
-        if (driverType === 'postgres') {
-          // PostgreSQL: WHERE (col1, col2) IN (SELECT * FROM UNNEST(...))
-          const unnestArrays: string[] = [];
-          
-          for (let i = 0; i < pkeyColumnNames.length; i++) {
-            const colValues = values.map(v => v[i]);
-            params.push(colValues);
-            // Use sqlCast if defined, otherwise infer from value
-            const sqlCast = sqlCastMap.get(pkeyColumnNames[i]);
-            const pgType = sqlCast || this._inferPgType(colValues.find(v => v !== null && v !== undefined));
-            unnestArrays.push(`?::${pgType}[]`);
-          }
-          
-          sql = `SELECT ${selectColumn} FROM ${tableName} ` +
-                `WHERE (${pkeyColumnNames.join(', ')}) IN (SELECT * FROM UNNEST(${unnestArrays.join(', ')}))`;
-        } else if (driverType === 'mysql') {
-          // MySQL: JOIN (VALUES ROW(...), ...) AS v ON ...
-          const rowPlaceholders: string[] = [];
-          
-          for (const pkValueTuple of values) {
-            const rowVals = pkValueTuple.map(() => '?').join(', ');
-            params.push(...pkValueTuple);
-            rowPlaceholders.push(`ROW(${rowVals})`);
-          }
-          
-          const onConditions = pkeyColumnNames.map(col => `t.${col} = v.${col}`).join(' AND ');
-          sql = `SELECT ${selectColumn === '*' ? 't.*' : selectColumn} FROM ${tableName} AS t ` +
-                `JOIN (VALUES ${rowPlaceholders.join(', ')}) AS v(${pkeyColumnNames.join(', ')}) ` +
-                `ON ${onConditions}`;
-        } else {
-          // SQLite: WITH v AS (VALUES ...) ... JOIN v ON ...
-          const rowPlaceholders: string[] = [];
-          
-          for (const pkValueTuple of values) {
-            const rowVals = pkValueTuple.map(() => '?').join(', ');
-            params.push(...pkValueTuple);
-            rowPlaceholders.push(`(${rowVals})`);
-          }
-          
-          const onConditions = pkeyColumnNames.map(col => `t.${col} = v.${col}`).join(' AND ');
-          sql = `WITH v(${pkeyColumnNames.join(', ')}) AS (VALUES ${rowPlaceholders.join(', ')}) ` +
-                `SELECT ${selectColumn === '*' ? 't.*' : selectColumn} FROM ${tableName} AS t ` +
-                `JOIN v ON ${onConditions}`;
-        }
-      }
+      // Use SqlBuilder to generate query
+      const sqlBuilder = getSqlBuilder(driverType);
+      const buildResult = sqlBuilder.buildFindByPkeys({
+        tableName,
+        pkeyColumns: pkeyColumnNames,
+        pkeyValues: values,
+        selectColumn,
+        sqlCastMap,
+      });
+      
+      let sql = buildResult.sql;
+      const params = buildResult.params;
 
       // Apply order if specified
       if (opts?.order) {
@@ -2298,10 +2260,11 @@ export abstract class DBModel {
       // With returning: true - get PkeyResult
       const pkeyColumns = this._getPkeyColumnsWithDefault();
       const pkeyColumnNames = columnsToNames(pkeyColumns);
-      
       const driverType = this.getDriverType();
-      if (driverType === 'mysql') {
-        // MySQL: Pre-SELECT with DISTINCT to get PKs, then execute UPDATE
+      const sqlBuilder = getSqlBuilder(driverType);
+      
+      if (!sqlBuilder.supportsReturning) {
+        // Driver without native RETURNING: Pre-SELECT to get PKs
         const selectParams: unknown[] = [];
         const normalizedCond = normalizeConditions(conditionRecord);
         const whereClause = normalizedCond.compile(selectParams);
@@ -2367,10 +2330,11 @@ export abstract class DBModel {
       // With returning: true - get PkeyResult
       const pkeyColumns = this._getPkeyColumnsWithDefault();
       const pkeyColumnNames = columnsToNames(pkeyColumns);
-      
       const driverType = this.getDriverType();
-      if (driverType === 'mysql') {
-        // MySQL: Pre-SELECT with DISTINCT to get PKs, then execute DELETE
+      const sqlBuilder = getSqlBuilder(driverType);
+      
+      if (!sqlBuilder.supportsReturning) {
+        // Driver without native RETURNING: Pre-SELECT to get PKs
         const selectParams: unknown[] = [];
         const normalizedCond = normalizeConditions(conditionRecord);
         const whereClause = normalizedCond.compile(selectParams);
@@ -2499,13 +2463,9 @@ export abstract class DBModel {
         }
       }
 
-      // Build RETURNING clause
+      // Build RETURNING clause using SqlBuilder
       const returning = opts.returning 
-        ? (driverType === 'postgres' 
-            ? pkeyColumnNames.map(col => `t.${col}`).join(', ')
-            : (driverType === 'sqlite'
-                ? pkeyColumnNames.map(col => `${tableName}.${col}`).join(', ')
-                : undefined))
+        ? sqlBuilder.buildReturning(tableName, pkeyColumnNames, 't')
         : undefined;
 
       // Use SqlBuilder to generate SQL
@@ -2528,17 +2488,16 @@ export abstract class DBModel {
       }
 
       // Build PkeyResult
-      if (driverType === 'mysql') {
-        // MySQL: Execute a SELECT to get affected PKs after update
-        const selectParams: unknown[] = [];
-        const keyConditions = keyColumnNames.map((col) => {
-          const colValues = rowRecords.map(r => r[col]);
-          selectParams.push(colValues);
-          return `${col} IN (?)`;
+      if (!sqlBuilder.supportsReturning && sqlBuilder.buildSelectPkeys) {
+        // Driver doesn't support RETURNING - use SELECT to get affected PKs
+        const keyValues = rowRecords.map(r => keyColumnNames.map(col => r[col]));
+        const selectBuild = sqlBuilder.buildSelectPkeys({
+          tableName,
+          pkeyColumns: pkeyColumnNames,
+          keyColumns: keyColumnNames,
+          keyValues,
         });
-        
-        const selectSql = `SELECT DISTINCT ${pkeyColumnNames.join(', ')} FROM ${tableName} WHERE ${keyConditions.join(' AND ')}`;
-        const selectResult = await this.execute(selectSql, selectParams);
+        const selectResult = await this.execute(selectBuild.sql, selectBuild.params);
         return this._buildPkeyResult(selectResult.rows as Record<string, unknown>[], pkeyColumns);
       } else {
         // PostgreSQL/SQLite: Use RETURNING result
@@ -2546,29 +2505,6 @@ export abstract class DBModel {
       }
     };
     return this._applyMiddleware('updateMany', core, [rows, options]);
-  }
-
-  /**
-   * Infer PostgreSQL type from JavaScript value
-   * @internal
-   */
-  private static _inferPgType(value: unknown): string {
-    if (value === null || value === undefined) return 'text';
-    if (typeof value === 'number') {
-      return Number.isInteger(value) ? 'int' : 'numeric';
-    }
-    if (typeof value === 'boolean') return 'boolean';
-    if (typeof value === 'bigint') return 'bigint';
-    if (value instanceof Date) return 'timestamp';
-    if (Array.isArray(value)) {
-      if (value.length === 0) return 'text[]';
-      const first = value[0];
-      if (typeof first === 'number') return Number.isInteger(first) ? 'int[]' : 'numeric[]';
-      if (typeof first === 'boolean') return 'boolean[]';
-      return 'text[]';
-    }
-    if (typeof value === 'object') return 'jsonb';
-    return 'text';
   }
 
   // ============================================
@@ -2600,7 +2536,7 @@ export abstract class DBModel {
       const handler = this.getHandler();
       
       // Use writer pool if in withWriter context or writer sticky period
-      const useWriter = writerContext.getStore() !== undefined || this._shouldUseWriterSticky();
+      const useWriter = this._getWriterContext().getStore() !== undefined || this._shouldUseWriterSticky();
       const result = useWriter 
         ? await handler.executeOnWriter(s, p || [])
         : await handler.execute(s, p || []);
@@ -2667,7 +2603,7 @@ export abstract class DBModel {
    * Check if currently in a transaction
    */
   static inTransaction(): boolean {
-    return transactionContext.getStore() !== undefined;
+    return this._getTransactionContext().getStore() !== undefined;
   }
 
   /**
@@ -2708,8 +2644,10 @@ export abstract class DBModel {
     func: () => Promise<R>,
     options: TransactionOptions = {}
   ): Promise<R> {
+    const txContext = this._getTransactionContext();
+    
     // Check if already in a transaction (nested transaction)
-    if (transactionContext.getStore()) {
+    if (txContext.getStore()) {
       // Already in a transaction, just execute the function
       return func();
     }
@@ -2737,7 +2675,7 @@ export abstract class DBModel {
         await connection.query('BEGIN');
 
         const context: TransactionContext = { connection };
-        const result = await transactionContext.run(context, func);
+        const result = await txContext.run(context, func);
 
         if (rollbackOnly) {
           // Rollback instead of commit (for preview/dry-run scenarios)
@@ -2808,7 +2746,7 @@ export abstract class DBModel {
    * ```
    */
   static getCurrentConnection(): DBConnection | null {
-    const context = transactionContext.getStore();
+    const context = this._getTransactionContext().getStore();
     return context?.connection ?? null;
   }
 
@@ -2842,19 +2780,20 @@ export abstract class DBModel {
    */
   static async withWriter<R>(func: () => Promise<R>): Promise<R> {
     // Check if already in a transaction (transaction takes precedence)
-    if (transactionContext.getStore()) {
+    if (this._getTransactionContext().getStore()) {
       // In transaction, writer is already being used
       return func();
     }
 
+    const wCtx = this._getWriterContext();
     // Check if already in withWriter context
-    if (writerContext.getStore()) {
+    if (wCtx.getStore()) {
       // Already in withWriter, just execute the function
       return func();
     }
 
     const context: WriterContext = { readonly: true };
-    return writerContext.run(context, func);
+    return wCtx.run(context, func);
   }
 
   // ============================================
@@ -2917,7 +2856,9 @@ export abstract class DBModel {
       writerStickyDuration: options?.writerStickyDuration,
     });
 
-    // Create the base class
+    // Create the base class with minimal overrides
+    // Most methods in DBModel use _getTransactionContext() and _getWriterContext()
+    // so we only need to override those plus getHandler (which uses its own handler instance)
     class GeneratedDBBase extends DBModel {
       // Override config for this base class
       protected static _dbConfig: DBConfig | null = config;
@@ -2932,131 +2873,23 @@ export abstract class DBModel {
       };
       protected static _lastTransactionTime: number = 0;
 
+      // Override to use this base class's transaction context
+      protected static _getTransactionContext(): AsyncLocalStorage<TransactionContext> {
+        return baseTransactionContext;
+      }
+
+      // Override to use this base class's writer context
+      protected static _getWriterContext(): AsyncLocalStorage<WriterContext> {
+        return baseWriterContext;
+      }
+
       // Override getHandler to use this base class's handler
       protected static getHandler(): DBHandler {
-        // Check if we're in a transaction
         const txContext = baseTransactionContext.getStore();
         if (txContext) {
           return handler.withConnection(txContext.connection);
         }
         return handler;
-      }
-
-      // Override _shouldUseWriterSticky to use this base class's state
-      protected static _shouldUseWriterSticky(): boolean {
-        if (!this._configOptions.useWriterAfterTransaction) {
-          return false;
-        }
-        const stickyDuration = this._configOptions.writerStickyDuration ?? 5000;
-        return Date.now() - this._lastTransactionTime < stickyDuration;
-      }
-
-      // Override inTransaction to use this base class's context
-      static inTransaction(): boolean {
-        return baseTransactionContext.getStore() !== undefined;
-      }
-
-      // Override inWriterContext to use this base class's context
-      static inWriterContext(): boolean {
-        return baseWriterContext.getStore() !== undefined;
-      }
-
-      // Override transaction to use this base class's context
-      static async transaction<R>(
-        func: () => Promise<R>,
-        txOptions: TransactionOptions = {}
-      ): Promise<R> {
-        // Check if already in a transaction (nested transaction)
-        if (baseTransactionContext.getStore()) {
-          return func();
-        }
-
-        const retryOnError = txOptions.retryOnError ?? true;
-        const retryLimit = txOptions.retryLimit ?? 3;
-        const retryDuration = txOptions.retryDuration ?? 200;
-        const rollbackOnly = txOptions.rollbackOnly ?? false;
-        const useWriterAfterTransaction = txOptions.useWriterAfterTransaction ?? 
-          this._configOptions.useWriterAfterTransaction ?? true;
-
-        let attempt = 0;
-
-        while (true) {
-          attempt++;
-          const connection = await handler.getConnection();
-
-          try {
-            await connection.query('BEGIN');
-
-            const context: TransactionContext = { connection };
-            const result = await baseTransactionContext.run(context, func);
-
-            if (rollbackOnly) {
-              await connection.query('ROLLBACK');
-            } else {
-              await connection.query('COMMIT');
-              if (useWriterAfterTransaction) {
-                this._lastTransactionTime = Date.now();
-              }
-            }
-            return result;
-          } catch (error) {
-            await connection.query('ROLLBACK');
-
-            if (
-              retryOnError &&
-              attempt < retryLimit &&
-              DBModel.isRetryableError(error as Error)
-            ) {
-              await DBModel.sleep(retryDuration * Math.pow(2, attempt - 1));
-              continue;
-            }
-
-            throw error;
-          } finally {
-            connection.release();
-          }
-        }
-      }
-
-      // Override withWriter to use this base class's context
-      static async withWriter<R>(func: () => Promise<R>): Promise<R> {
-        if (baseTransactionContext.getStore()) {
-          return func();
-        }
-        if (baseWriterContext.getStore()) {
-          return func();
-        }
-        const context: WriterContext = { readonly: true };
-        return baseWriterContext.run(context, func);
-      }
-
-      // Override execute to use this base class's writer context
-      static async execute(
-        sql: string,
-        params?: unknown[]
-      ): Promise<ExecuteResult> {
-        const core = async (s: string, p?: unknown[]): Promise<ExecuteResult> => {
-          const h = this.getHandler();
-          const useWriter = baseWriterContext.getStore() !== undefined || this._shouldUseWriterSticky();
-          const result = useWriter
-            ? await h.executeOnWriter(s, p || [])
-            : await h.execute(s, p || []);
-          return {
-            rows: result.rows as Record<string, unknown>[],
-            rowCount: result.rowCount,
-          };
-        };
-        return this._applyExecuteMiddleware(core, sql, params);
-      }
-
-      // Override _checkWriteAllowed to use this base class's context
-      protected static _checkWriteAllowed(operation: string): void {
-        if (baseWriterContext.getStore()) {
-          throw new WriteInReadOnlyContextError(operation, this.name);
-        }
-        if (!baseTransactionContext.getStore()) {
-          throw new WriteOutsideTransactionError(operation, this.name);
-        }
       }
     }
 

@@ -8,8 +8,8 @@ import type {
   DriverTypeCast,
   SqlBuilder,
   InsertBuildOptions,
-  UpdateBuildOptions,
   UpdateManyBuildOptions,
+  FindByPkeysOptions,
   SqlBuildResult,
 } from './types';
 import { DBToken } from '../DBValues';
@@ -90,6 +90,7 @@ export const sqliteTypeCast: DriverTypeCast = {
 export const sqliteSqlBuilder: SqlBuilder = {
   driverType: 'sqlite',
   typeCast: sqliteTypeCast,
+  supportsReturning: true,
 
   buildInsert(options: InsertBuildOptions): SqlBuildResult {
     const {
@@ -134,37 +135,6 @@ export const sqliteSqlBuilder: SqlBuilder = {
     } else {
       sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
     }
-
-    if (returning) {
-      sql += ` RETURNING ${returning}`;
-    }
-
-    return { sql, params };
-  },
-
-  buildUpdate(options: UpdateBuildOptions): SqlBuildResult {
-    const {
-      tableName,
-      setClauses,
-      whereClause,
-      whereParams,
-      returning,
-    } = options;
-
-    const params: unknown[] = [];
-    const setExpressions: string[] = [];
-
-    for (const { column, value } of setClauses) {
-      if (value instanceof DBToken) {
-        setExpressions.push(`${column} = ${value.compile(params)}`);
-      } else {
-        params.push(value);
-        setExpressions.push(`${column} = ?`);
-      }
-    }
-
-    let sql = `UPDATE ${tableName} SET ${setExpressions.join(', ')} WHERE ${whereClause}`;
-    params.push(...whereParams);
 
     if (returning) {
       sql += ` RETURNING ${returning}`;
@@ -251,6 +221,38 @@ export const sqliteSqlBuilder: SqlBuilder = {
     }
 
     return { sql, params };
+  },
+
+  buildFindByPkeys(options: FindByPkeysOptions): SqlBuildResult {
+    const { tableName, pkeyColumns, pkeyValues, selectColumn } = options;
+    const params: unknown[] = [];
+
+    if (pkeyColumns.length === 1) {
+      // Single PK: WHERE id IN (?, ?, ...)
+      const placeholders = pkeyValues.map(() => '?').join(', ');
+      params.push(...pkeyValues.map(v => v[0]));
+      const sql = `SELECT ${selectColumn} FROM ${tableName} WHERE ${pkeyColumns[0]} IN (${placeholders})`;
+      return { sql, params };
+    }
+
+    // Composite PK: WITH v AS (VALUES ...) ... JOIN v ON ...
+    const rowPlaceholders: string[] = [];
+    for (const pkValueTuple of pkeyValues) {
+      const rowVals = pkValueTuple.map(() => '?').join(', ');
+      params.push(...pkValueTuple);
+      rowPlaceholders.push(`(${rowVals})`);
+    }
+    const onConditions = pkeyColumns.map(col => `t.${col} = v.${col}`).join(' AND ');
+    const selectCol = selectColumn === '*' ? 't.*' : selectColumn;
+    const sql = `WITH v(${pkeyColumns.join(', ')}) AS (VALUES ${rowPlaceholders.join(', ')}) ` +
+          `SELECT ${selectCol} FROM ${tableName} AS t ` +
+          `JOIN v ON ${onConditions}`;
+    return { sql, params };
+  },
+
+  buildReturning(tableName: string, columns: string[]): string | undefined {
+    // SQLite: Use tableName.col format (no alias support in UPDATE)
+    return columns.map(col => `${tableName}.${col}`).join(', ');
   },
 };
 

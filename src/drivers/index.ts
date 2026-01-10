@@ -15,8 +15,9 @@ export type {
   DriverTypeCast,
   SqlBuilder,
   InsertBuildOptions,
-  UpdateBuildOptions,
   UpdateManyBuildOptions,
+  SelectPkeysOptions,
+  FindByPkeysOptions,
   SqlBuildResult,
 } from './types';
 export { defaultLogger } from './types';

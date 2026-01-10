@@ -8,8 +8,9 @@ import type {
   DriverTypeCast,
   SqlBuilder,
   InsertBuildOptions,
-  UpdateBuildOptions,
   UpdateManyBuildOptions,
+  SelectPkeysOptions,
+  FindByPkeysOptions,
   SqlBuildResult,
 } from './types';
 import { DBToken } from '../DBValues';
@@ -90,6 +91,7 @@ export const mysqlTypeCast: DriverTypeCast = {
 export const mysqlSqlBuilder: SqlBuilder = {
   driverType: 'mysql',
   typeCast: mysqlTypeCast,
+  supportsReturning: false,
 
   buildInsert(options: InsertBuildOptions): SqlBuildResult {
     const {
@@ -139,32 +141,6 @@ export const mysqlSqlBuilder: SqlBuilder = {
     if (returning) {
       sql += ` RETURNING ${returning}`;
     }
-
-    return { sql, params };
-  },
-
-  buildUpdate(options: UpdateBuildOptions): SqlBuildResult {
-    const {
-      tableName,
-      setClauses,
-      whereClause,
-      whereParams,
-    } = options;
-
-    const params: unknown[] = [];
-    const setExpressions: string[] = [];
-
-    for (const { column, value } of setClauses) {
-      if (value instanceof DBToken) {
-        setExpressions.push(`${column} = ${value.compile(params)}`);
-      } else {
-        params.push(value);
-        setExpressions.push(`${column} = ?`);
-      }
-    }
-
-    const sql = `UPDATE ${tableName} SET ${setExpressions.join(', ')} WHERE ${whereClause}`;
-    params.push(...whereParams);
 
     return { sql, params };
   },
@@ -240,6 +216,52 @@ export const mysqlSqlBuilder: SqlBuilder = {
           `SET ${setClauses.join(', ')}`;
 
     return { sql, params };
+  },
+
+  buildSelectPkeys(options: SelectPkeysOptions): SqlBuildResult {
+    const { tableName, pkeyColumns, keyColumns, keyValues } = options;
+    const params: unknown[] = [];
+    
+    // Build WHERE clause: col1 IN (?) AND col2 IN (?)
+    const whereConditions = keyColumns.map((col, i) => {
+      params.push(keyValues.map(kv => kv[i]));
+      return `${col} IN (?)`;
+    });
+    
+    const sql = `SELECT DISTINCT ${pkeyColumns.join(', ')} FROM ${tableName} WHERE ${whereConditions.join(' AND ')}`;
+    return { sql, params };
+  },
+
+  buildFindByPkeys(options: FindByPkeysOptions): SqlBuildResult {
+    const { tableName, pkeyColumns, pkeyValues, selectColumn } = options;
+    const params: unknown[] = [];
+
+    if (pkeyColumns.length === 1) {
+      // Single PK: WHERE id IN (?, ?, ...)
+      const placeholders = pkeyValues.map(() => '?').join(', ');
+      params.push(...pkeyValues.map(v => v[0]));
+      const sql = `SELECT ${selectColumn} FROM ${tableName} WHERE ${pkeyColumns[0]} IN (${placeholders})`;
+      return { sql, params };
+    }
+
+    // Composite PK: JOIN (VALUES ROW(...)) AS v ON ...
+    const rowPlaceholders: string[] = [];
+    for (const pkValueTuple of pkeyValues) {
+      const rowVals = pkValueTuple.map(() => '?').join(', ');
+      params.push(...pkValueTuple);
+      rowPlaceholders.push(`ROW(${rowVals})`);
+    }
+    const onConditions = pkeyColumns.map(col => `t.${col} = v.${col}`).join(' AND ');
+    const selectCol = selectColumn === '*' ? 't.*' : selectColumn;
+    const sql = `SELECT ${selectCol} FROM ${tableName} AS t ` +
+          `JOIN (VALUES ${rowPlaceholders.join(', ')}) AS v(${pkeyColumns.join(', ')}) ` +
+          `ON ${onConditions}`;
+    return { sql, params };
+  },
+
+  buildReturning(): string | undefined {
+    // MySQL does not support RETURNING clause
+    return undefined;
   },
 };
 

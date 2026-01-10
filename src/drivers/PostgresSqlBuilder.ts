@@ -8,8 +8,8 @@ import type {
   DriverTypeCast,
   SqlBuilder,
   InsertBuildOptions,
-  UpdateBuildOptions,
   UpdateManyBuildOptions,
+  FindByPkeysOptions,
   SqlBuildResult,
 } from './types';
 import { DBToken } from '../DBValues';
@@ -148,6 +148,7 @@ function inferPgType(val: unknown): string {
 export const postgresSqlBuilder: SqlBuilder = {
   driverType: 'postgres',
   typeCast: postgresTypeCast,
+  supportsReturning: true,
 
   buildInsert(options: InsertBuildOptions): SqlBuildResult {
     const {
@@ -296,43 +297,6 @@ export const postgresSqlBuilder: SqlBuilder = {
     return { sql, params };
   },
 
-  buildUpdate(options: UpdateBuildOptions): SqlBuildResult {
-    const {
-      tableName,
-      setClauses,
-      whereClause,
-      whereParams,
-      sqlCastMap = new Map(),
-      returning,
-    } = options;
-
-    const params: unknown[] = [];
-    const setExpressions: string[] = [];
-
-    for (const { column, value } of setClauses) {
-      if (value instanceof DBToken) {
-        setExpressions.push(`${column} = ${value.compile(params)}`);
-      } else {
-        params.push(value);
-        const sqlCast = sqlCastMap.get(column);
-        if (sqlCast) {
-          setExpressions.push(`${column} = ?::${sqlCast}`);
-        } else {
-          setExpressions.push(`${column} = ?`);
-        }
-      }
-    }
-
-    let sql = `UPDATE ${tableName} SET ${setExpressions.join(', ')} WHERE ${whereClause}`;
-    params.push(...whereParams);
-
-    if (returning) {
-      sql += ` RETURNING ${returning}`;
-    }
-
-    return { sql, params };
-  },
-
   buildUpdateMany(options: UpdateManyBuildOptions): SqlBuildResult {
     const {
       tableName,
@@ -449,6 +413,40 @@ export const postgresSqlBuilder: SqlBuilder = {
     }
 
     return { sql, params };
+  },
+
+  buildFindByPkeys(options: FindByPkeysOptions): SqlBuildResult {
+    const { tableName, pkeyColumns, pkeyValues, selectColumn, sqlCastMap } = options;
+    const params: unknown[] = [];
+
+    if (pkeyColumns.length === 1) {
+      // Single PK: WHERE id = ANY($1::type[])
+      const colValues = pkeyValues.map(v => v[0]);
+      params.push(colValues);
+      const sqlCast = sqlCastMap?.get(pkeyColumns[0]);
+      const pgType = sqlCast || inferPgType(colValues.find(v => v !== null && v !== undefined));
+      const sql = `SELECT ${selectColumn} FROM ${tableName} WHERE ${pkeyColumns[0]} = ANY(?::${pgType}[])`;
+      return { sql, params };
+    }
+
+    // Composite PK: WHERE (col1, col2) IN (SELECT * FROM UNNEST(...))
+    const unnestArrays: string[] = [];
+    for (let i = 0; i < pkeyColumns.length; i++) {
+      const colValues = pkeyValues.map(v => v[i]);
+      params.push(colValues);
+      const sqlCast = sqlCastMap?.get(pkeyColumns[i]);
+      const pgType = sqlCast || inferPgType(colValues.find(v => v !== null && v !== undefined));
+      unnestArrays.push(`?::${pgType}[]`);
+    }
+    const sql = `SELECT ${selectColumn} FROM ${tableName} ` +
+          `WHERE (${pkeyColumns.join(', ')}) IN (SELECT * FROM UNNEST(${unnestArrays.join(', ')}))`;
+    return { sql, params };
+  },
+
+  buildReturning(_tableName: string, columns: string[], alias?: string): string | undefined {
+    // PostgreSQL: Use alias if provided (e.g., t.col for UPDATE ... AS t)
+    const prefix = alias ? `${alias}.` : '';
+    return columns.map(col => `${prefix}${col}`).join(', ');
   },
 
   inferPgType,

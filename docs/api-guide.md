@@ -500,7 +500,7 @@ litedbmodel uses a `SqlBuilder` architecture to generate optimized SQL for each 
 
 | Driver | Interface | INSERT Strategy | UPDATE Strategy |
 |--------|-----------|-----------------|-----------------|
-| PostgreSQL | `PostgresSqlBuilder` | UNNEST for batch (2+ records) | UNNEST with skip flags |
+| PostgreSQL | `PostgresSqlBuilder` | VALUES for single, UNNEST for batch (2+) | UNNEST with skip flags |
 | MySQL | `MysqlSqlBuilder` | VALUES ROW | JOIN VALUES + IF |
 | SQLite | `SqliteSqlBuilder` | VALUES clause | CASE WHEN |
 

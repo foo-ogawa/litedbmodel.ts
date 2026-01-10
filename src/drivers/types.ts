@@ -195,21 +195,6 @@ export interface InsertBuildOptions {
 }
 
 /**
- * Options for building UPDATE SQL (single record)
- * @internal
- */
-export interface UpdateBuildOptions {
-  tableName: string;
-  setClauses: { column: string; value: unknown }[];
-  whereClause: string;
-  whereParams: unknown[];
-  /** Map of column name to SQL cast type */
-  sqlCastMap?: Map<string, string>;
-  /** RETURNING clause */
-  returning?: string;
-}
-
-/**
  * Options for building batch UPDATE SQL
  * @internal
  */
@@ -238,6 +223,29 @@ export interface SqlBuildResult {
 }
 
 /**
+ * Options for building SELECT to get affected PKs (for drivers without RETURNING)
+ * @internal
+ */
+export interface SelectPkeysOptions {
+  tableName: string;
+  pkeyColumns: string[];
+  keyColumns: string[];
+  keyValues: unknown[][];
+}
+
+/**
+ * Options for building findByPkeys query
+ * @internal
+ */
+export interface FindByPkeysOptions {
+  tableName: string;
+  pkeyColumns: string[];
+  pkeyValues: unknown[][];
+  selectColumn: string;
+  sqlCastMap?: Map<string, string>;
+}
+
+/**
  * Interface for driver-specific SQL building.
  * Each driver implements this to generate optimized SQL.
  * @internal
@@ -249,20 +257,38 @@ export interface SqlBuilder {
   /** Type cast helper for this driver */
   readonly typeCast: DriverTypeCast;
 
+  /** Whether this driver supports RETURNING clause natively */
+  readonly supportsReturning: boolean;
+
   /**
    * Build INSERT SQL for single or multiple records
    */
   buildInsert(options: InsertBuildOptions): SqlBuildResult;
 
   /**
-   * Build UPDATE SQL for a single record
-   */
-  buildUpdate(options: UpdateBuildOptions): SqlBuildResult;
-
-  /**
    * Build batch UPDATE SQL for multiple records
    */
   buildUpdateMany(options: UpdateManyBuildOptions): SqlBuildResult;
+
+  /**
+   * Build SELECT to get affected PKs (for drivers without native RETURNING)
+   * Only called if supportsReturning is false
+   */
+  buildSelectPkeys?(options: SelectPkeysOptions): SqlBuildResult;
+
+  /**
+   * Build SELECT for findById with multiple primary keys
+   */
+  buildFindByPkeys(options: FindByPkeysOptions): SqlBuildResult;
+
+  /**
+   * Build RETURNING clause for UPDATE/DELETE
+   * @param tableName - Table name
+   * @param columns - Column names to return
+   * @param alias - Table alias (e.g., 't' for UPDATE ... AS t)
+   * @returns Formatted RETURNING clause or undefined if not supported
+   */
+  buildReturning(tableName: string, columns: string[], alias?: string): string | undefined;
 
   /**
    * Infer PostgreSQL type from JavaScript value

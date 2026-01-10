@@ -281,6 +281,30 @@ await db.updateTable('users').set(updates).where('id', '=', id).execute();
 | **Prisma undefined** | ✅ Clean | ✅ Yes | ❌ None | ✅ |
 | **Manual if/spread** | ❌ Imperative | ❌ Scattered | ✅ Mutable | ⚠️ |
 
+### SKIP in Batch Operations
+
+SKIP also works in `createMany` and `updateMany`:
+
+| Operation | SKIP Behavior |
+|-----------|---------------|
+| `create` / `update` | Column excluded from INSERT/UPDATE |
+| `createMany` | Column excluded → DB DEFAULT applied |
+| `updateMany` | Column excluded → existing value retained |
+
+```typescript
+// createMany - records grouped by SKIP pattern for efficient batch INSERT
+await User.createMany([
+  [[User.name, 'John'], [User.email, 'john@test.com']],
+  [[User.name, 'Jane'], [User.email, SKIP]],  // email = DEFAULT
+]);
+
+// updateMany - SKIPped columns retain existing values
+await User.updateMany([
+  [[User.id, 1], [User.status, 'active'], [User.email, SKIP]],  // email unchanged
+  [[User.id, 2], [User.status, SKIP], [User.email, 'new@test.com']],  // status unchanged
+], { keyColumns: User.id });
+```
+
 ---
 
 ## 4. SQL-Friendly Design
@@ -1382,5 +1406,5 @@ await db.transaction().execute(async (trx) => {
 
 ---
 
-*Last updated: December 2025*  
+*Last updated: January 2026*  
 *Benchmark methodology: Based on [Prisma orm-benchmarks](https://github.com/prisma/orm-benchmarks)*
