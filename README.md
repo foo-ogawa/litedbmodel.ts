@@ -560,6 +560,24 @@ await User.find([
 ]);
 ```
 
+**Batch Operations**:
+- `createMany`: SKIPped columns use DB DEFAULT value
+- `updateMany`: SKIPped columns retain existing values (each record can have different SKIPped columns)
+
+```typescript
+// createMany - SKIPped columns get DEFAULT value
+await User.createMany([
+  [[User.name, 'John'], [User.email, 'john@test.com']],
+  [[User.name, 'Jane'], [User.email, SKIP]],  // email = DEFAULT
+]);
+
+// updateMany - SKIPped columns unchanged
+await User.updateMany([
+  [[User.id, 1], [User.email, 'new@test.com'], [User.status, SKIP]],  // status unchanged
+  [[User.id, 2], [User.email, SKIP], [User.status, 'active']],       // email unchanged
+], { keyColumns: User.id });
+```
+
 ---
 
 ## Relation Decorators

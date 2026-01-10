@@ -63,7 +63,7 @@ const john = await User.findOne([[User.email, 'john@example.com']]);
 new DBModel(): DBModel;
 ```
 
-Defined in: DBModel.ts:1470
+Defined in: DBModel.ts:1478
 
 #### Returns
 
@@ -87,13 +87,13 @@ Defined in: DBModel.ts:1470
 | <a id="_limitconfig"></a> `_limitConfig` | `static` | [`LimitConfig`](../interfaces/LimitConfig.md) | `{}` | Limit config for safety guards | DBModel.ts:194 |
 | <a id="_configoptions"></a> `_configOptions` | `static` | [`DBConfigOptions`](../interfaces/DBConfigOptions.md) | `undefined` | Configuration options for reader/writer separation | DBModel.ts:197 |
 | <a id="_lasttransactiontime"></a> `_lastTransactionTime` | `static` | `number` | `0` | Last transaction completion time (for writer sticky) | DBModel.ts:203 |
-| <a id="true"></a> `true` | `readonly` | `DBBoolValue` | `undefined` | Boolean TRUE value | DBModel.ts:1079 |
-| <a id="false"></a> `false` | `readonly` | `DBBoolValue` | `undefined` | Boolean FALSE value | DBModel.ts:1082 |
-| <a id="null"></a> `null` | `readonly` | `DBNullValue` | `undefined` | NULL value | DBModel.ts:1085 |
-| <a id="notnull"></a> `notNull` | `readonly` | `DBNotNullValue` | `undefined` | NOT NULL value | DBModel.ts:1088 |
-| <a id="now"></a> `now` | `readonly` | `DBImmediateValue` | `undefined` | NOW() value | DBModel.ts:1091 |
-| <a id="_modelclass"></a> `_modelClass` | `protected` | *typeof* `DBModel` | `undefined` | Instance reference to the static class | DBModel.ts:1462 |
-| <a id="_relationcache"></a> `_relationCache` | `protected` | `Map`\<`string`, `unknown`\> | `undefined` | Per-instance cache for loaded relations | DBModel.ts:1465 |
+| <a id="true"></a> `true` | `readonly` | `DBBoolValue` | `undefined` | Boolean TRUE value | DBModel.ts:1087 |
+| <a id="false"></a> `false` | `readonly` | `DBBoolValue` | `undefined` | Boolean FALSE value | DBModel.ts:1090 |
+| <a id="null"></a> `null` | `readonly` | `DBNullValue` | `undefined` | NULL value | DBModel.ts:1093 |
+| <a id="notnull"></a> `notNull` | `readonly` | `DBNotNullValue` | `undefined` | NOT NULL value | DBModel.ts:1096 |
+| <a id="now"></a> `now` | `readonly` | `DBImmediateValue` | `undefined` | NOW() value | DBModel.ts:1099 |
+| <a id="_modelclass"></a> `_modelClass` | `protected` | *typeof* `DBModel` | `undefined` | Instance reference to the static class | DBModel.ts:1470 |
+| <a id="_relationcache"></a> `_relationCache` | `protected` | `Map`\<`string`, `unknown`\> | `undefined` | Per-instance cache for loaded relations | DBModel.ts:1473 |
 
 ## Methods
 
@@ -510,7 +510,7 @@ static inSubquery<T, S>(
    conditions: readonly [Column<any, S>, unknown][]): readonly [string, DBSubquery];
 ```
 
-Defined in: DBModel.ts:1137
+Defined in: DBModel.ts:1145
 
 IN subquery condition.
 Creates a condition like: column IN (SELECT selectColumn FROM targetModel WHERE ...)
@@ -578,7 +578,7 @@ static notInSubquery<T, S>(
    conditions: readonly [Column<any, S>, unknown][]): readonly [string, DBSubquery];
 ```
 
-Defined in: DBModel.ts:1185
+Defined in: DBModel.ts:1193
 
 NOT IN subquery condition.
 Creates a condition like: table.column NOT IN (SELECT table.column FROM targetModel WHERE ...)
@@ -631,7 +631,7 @@ await User.find([
 static exists<S>(conditions: readonly [Column<any, S>, unknown][]): readonly [string, DBExists];
 ```
 
-Defined in: DBModel.ts:1228
+Defined in: DBModel.ts:1236
 
 EXISTS subquery condition.
 Creates a condition like: EXISTS (SELECT 1 FROM targetModel WHERE table.column = ...)
@@ -678,7 +678,7 @@ await User.find([
 static notExists<S>(conditions: readonly [Column<any, S>, unknown][]): readonly [string, DBExists];
 ```
 
-Defined in: DBModel.ts:1263
+Defined in: DBModel.ts:1271
 
 NOT EXISTS subquery condition.
 Creates a condition like: NOT EXISTS (SELECT 1 FROM targetModel WHERE table.column = ...)
@@ -724,7 +724,7 @@ await User.find([
 static getTableName(): string;
 ```
 
-Defined in: DBModel.ts:1352
+Defined in: DBModel.ts:1360
 
 Get table name for SELECT queries.
 For query-based models, returns the CTE alias (TABLE_NAME).
@@ -741,7 +741,7 @@ For query-based models, returns the CTE alias (TABLE_NAME).
 static isQueryBased(): boolean;
 ```
 
-Defined in: DBModel.ts:1375
+Defined in: DBModel.ts:1383
 
 Check if this model is query-based (uses QUERY instead of TABLE_NAME)
 
@@ -760,7 +760,7 @@ static withQuery<T>(this: T, queryConfig: {
 }): T;
 ```
 
-Defined in: DBModel.ts:1403
+Defined in: DBModel.ts:1411
 
 Create a new model class bound to specific query parameters.
 Used for parameterized query-based models.
@@ -812,7 +812,7 @@ const results = await Q1Report.find([...]);
 static getUpdateTableName(): string;
 ```
 
-Defined in: DBModel.ts:1450
+Defined in: DBModel.ts:1458
 
 Get table name for UPDATE/DELETE queries.
 Query-based models cannot be updated/deleted directly.
@@ -829,7 +829,7 @@ Query-based models cannot be updated/deleted directly.
 clearRelationCache(): void;
 ```
 
-Defined in: DBModel.ts:1503
+Defined in: DBModel.ts:1511
 
 Clear the relation cache for this instance.
 Also clears the context cache to force reload from DB.
@@ -846,7 +846,7 @@ Also clears the context cache to force reload from DB.
 typeCastFromDB(): void;
 ```
 
-Defined in: DBModel.ts:1640
+Defined in: DBModel.ts:1648
 
 Called after loading from DB to convert types
 Override in derived class to implement type conversions
@@ -872,7 +872,7 @@ typeCastFromDB(): void {
 getPkey(): Record<string, unknown> | null;
 ```
 
-Defined in: DBModel.ts:1652
+Defined in: DBModel.ts:1660
 
 Get primary key as object
 
@@ -890,7 +890,7 @@ Object with primary key column names and values, or null if not set
 setPkey(key: unknown): void;
 ```
 
-Defined in: DBModel.ts:1673
+Defined in: DBModel.ts:1681
 
 Set primary key value
 
@@ -912,7 +912,7 @@ Set primary key value
 getPkeyString(): string;
 ```
 
-Defined in: DBModel.ts:1691
+Defined in: DBModel.ts:1699
 
 Get primary key as string (for logging, caching, etc.)
 
@@ -928,7 +928,7 @@ Get primary key as string (for logging, caching, etc.)
 getSingleColId(): unknown;
 ```
 
-Defined in: DBModel.ts:1703
+Defined in: DBModel.ts:1711
 
 Get single-column ID value
 
@@ -946,7 +946,7 @@ ID value or undefined
 clone<T>(this: T): T;
 ```
 
-Defined in: DBModel.ts:1718
+Defined in: DBModel.ts:1726
 
 Create a shallow copy of the model instance
 
@@ -974,7 +974,7 @@ Create a shallow copy of the model instance
 assign(source: Partial<this>): this;
 ```
 
-Defined in: DBModel.ts:1726
+Defined in: DBModel.ts:1734
 
 Copy properties from another object
 
@@ -996,7 +996,7 @@ Copy properties from another object
 toObject(): Record<string, unknown>;
 ```
 
-Defined in: DBModel.ts:1737
+Defined in: DBModel.ts:1745
 
 Convert to plain object
 
@@ -1012,7 +1012,7 @@ Convert to plain object
 toJSON(): Record<string, unknown>;
 ```
 
-Defined in: DBModel.ts:1750
+Defined in: DBModel.ts:1758
 
 Convert to JSON-serializable object
 
@@ -1028,7 +1028,7 @@ Convert to JSON-serializable object
 static fromObject<T>(this: () => T, obj: Record<string, unknown>): T;
 ```
 
-Defined in: DBModel.ts:1761
+Defined in: DBModel.ts:1769
 
 Create an instance from a plain object
 
@@ -1057,7 +1057,7 @@ Create an instance from a plain object
 static fromObjects<T>(this: () => T, objs: Record<string, unknown>[]): T[];
 ```
 
-Defined in: DBModel.ts:1774
+Defined in: DBModel.ts:1782
 
 Create multiple instances from an array of plain objects
 
@@ -1086,7 +1086,7 @@ Create multiple instances from an array of plain objects
 static columnList<T>(records: T[], columnName: string): unknown[];
 ```
 
-Defined in: DBModel.ts:1784
+Defined in: DBModel.ts:1792
 
 Get column values from an array of model instances
 
@@ -1115,7 +1115,7 @@ Get column values from an array of model instances
 static hashByProperty<T>(records: T[], propertyKey: string): Record<string, T>;
 ```
 
-Defined in: DBModel.ts:1794
+Defined in: DBModel.ts:1802
 
 Create a hash map by property value
 
@@ -1144,7 +1144,7 @@ Create a hash map by property value
 static groupByProperty<T>(records: T[], propertyKey: string): Record<string, T[]>;
 ```
 
-Defined in: DBModel.ts:1809
+Defined in: DBModel.ts:1817
 
 Group records by property value
 
@@ -1173,7 +1173,7 @@ Group records by property value
 static idList<T>(records: T[], column?: string): unknown[];
 ```
 
-Defined in: DBModel.ts:1827
+Defined in: DBModel.ts:1835
 
 Get ID list from records
 
@@ -1205,7 +1205,7 @@ static makeLikeString(
    back: boolean): string;
 ```
 
-Defined in: DBModel.ts:1835
+Defined in: DBModel.ts:1843
 
 Generate LIKE pattern string
 
@@ -1229,7 +1229,7 @@ Generate LIKE pattern string
 static or<T>(this: T, ...condGroups: readonly CondsOf<T>[]): OrCondOf<T>;
 ```
 
-Defined in: DBModel.ts:1872
+Defined in: DBModel.ts:1880
 
 Create a type-safe OR condition for this model.
 All columns in the conditions must belong to this model.
@@ -1280,7 +1280,7 @@ static find<T>(
 options?: SelectOptions): Promise<InstanceType<T>[]>;
 ```
 
-Defined in: DBModel.ts:1908
+Defined in: DBModel.ts:1916
 
 Find all records using type-safe condition tuples.
 All columns in conditions must belong to this model.
@@ -1334,7 +1334,7 @@ static findOne<T>(
 options?: SelectOptions): Promise<InstanceType<T> | null>;
 ```
 
-Defined in: DBModel.ts:1954
+Defined in: DBModel.ts:1962
 
 Find first record using type-safe condition tuples.
 
@@ -1377,7 +1377,7 @@ static findById<T>(
 options?: SelectOptions): Promise<InstanceType<T>[]>;
 ```
 
-Defined in: DBModel.ts:1993
+Defined in: DBModel.ts:2001
 
 Find records by primary key using PkeyResult format.
 Efficiently fetches multiple records by their primary keys.
@@ -1429,7 +1429,7 @@ const users = await User.findById(result);
 static count<T>(this: T, conditions: CondsOf<T>): Promise<number>;
 ```
 
-Defined in: DBModel.ts:2112
+Defined in: DBModel.ts:2120
 
 Count records using type-safe condition tuples.
 
@@ -1469,7 +1469,7 @@ static create<T, P>(
 options?: InsertOptions<InstanceType<T>>): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2147
+Defined in: DBModel.ts:2155
 
 Create a new record using type-safe column-value tuples.
 Value types are validated at compile time.
@@ -1523,7 +1523,7 @@ static createMany<T>(
 options?: InsertOptions<InstanceType<T>>): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2217
+Defined in: DBModel.ts:2225
 
 Create multiple records using type-safe column-value tuples.
 
@@ -1576,7 +1576,7 @@ static update<T, V>(
 options?: UpdateOptions): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2287
+Defined in: DBModel.ts:2295
 
 Update records using type-safe column-value tuples.
 Value types are validated at compile time.
@@ -1632,7 +1632,7 @@ static delete<T>(
 options?: DeleteOptions): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2365
+Defined in: DBModel.ts:2373
 
 Delete records matching conditions
 
@@ -1678,7 +1678,7 @@ static updateMany<T>(
 options: UpdateManyOptions): Promise<PkeyResult | null>;
 ```
 
-Defined in: DBModel.ts:2442
+Defined in: DBModel.ts:2450
 
 Update multiple records with different values per row.
 Uses efficient bulk update strategies (UNNEST for PostgreSQL, VALUES for MySQL/SQLite).
@@ -1728,7 +1728,7 @@ const users = await User.findById(result);
 static execute(sql: string, params?: unknown[]): Promise<ExecuteResult>;
 ```
 
-Defined in: DBModel.ts:2648
+Defined in: DBModel.ts:2715
 
 Execute raw SQL query.
 
@@ -1767,7 +1767,7 @@ static query<T>(
 params?: unknown[]): Promise<InstanceType<T>[]>;
 ```
 
-Defined in: DBModel.ts:2692
+Defined in: DBModel.ts:2759
 
 Execute raw SQL and return model instances.
 The SQL should return columns matching the model's properties.
@@ -1816,7 +1816,7 @@ const posts = await Post.query(`
 static inTransaction(): boolean;
 ```
 
-Defined in: DBModel.ts:2722
+Defined in: DBModel.ts:2789
 
 Check if currently in a transaction
 
@@ -1832,7 +1832,7 @@ Check if currently in a transaction
 static transaction<R>(func: () => Promise<R>, options: TransactionOptions): Promise<R>;
 ```
 
-Defined in: DBModel.ts:2760
+Defined in: DBModel.ts:2827
 
 Execute a function within a transaction
 All model operations inside the callback will use the same database connection.
@@ -1891,7 +1891,7 @@ await DBModel.transaction(
 static getCurrentConnection(): DBConnection | null;
 ```
 
-Defined in: DBModel.ts:2863
+Defined in: DBModel.ts:2930
 
 Get current transaction connection
 Use this to execute raw SQL queries within a transaction
@@ -1921,7 +1921,7 @@ await DBModel.transaction(async () => {
 static getCurrentClient(): DBConnection | null;
 ```
 
-Defined in: DBModel.ts:2871
+Defined in: DBModel.ts:2938
 
 #### Returns
 
@@ -1939,7 +1939,7 @@ Use getCurrentConnection() instead
 static withWriter<R>(func: () => Promise<R>): Promise<R>;
 ```
 
-Defined in: DBModel.ts:2896
+Defined in: DBModel.ts:2963
 
 Execute a function with explicit writer connection access.
 Use this when you need to read from writer to avoid replication lag.
@@ -1985,7 +1985,7 @@ await DBModel.withWriter(async () => {
 static createDBBase(config: DBConfig, options?: DBConfigOptions): typeof DBModel;
 ```
 
-Defined in: DBModel.ts:2957
+Defined in: DBModel.ts:3024
 
 Create an independent database base class.
 Use this to connect to multiple databases with isolated configurations.
@@ -2044,7 +2044,7 @@ await BaseDB.transaction(async () => {
 reload(forUpdate: boolean): Promise<DBModel | null>;
 ```
 
-Defined in: DBModel.ts:3133
+Defined in: DBModel.ts:3200
 
 Reload this instance from the database
 

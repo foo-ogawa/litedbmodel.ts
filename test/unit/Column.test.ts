@@ -476,3 +476,52 @@ describe('createOrCond', () => {
   });
 });
 
+
+describe('SKIP in createMany/updateMany scenarios', () => {
+  const idCol = createColumn<number, unknown>('id', 'users', 'User');
+  const nameCol = createColumn<string, unknown>('name', 'users', 'User');
+  const emailCol = createColumn<string, unknown>('email', 'users', 'User');
+
+  it('pairsToRecord with SKIP in different records should produce different column sets', () => {
+    // First record has email, second doesn't (SKIP)
+    const pairs1: [typeof idCol | typeof nameCol | typeof emailCol, unknown][] = [
+      [idCol, 1],
+      [nameCol, 'John'],
+      [emailCol, 'john@test.com'],
+    ];
+    const pairs2: [typeof idCol | typeof nameCol | typeof emailCol, unknown][] = [
+      [idCol, 2],
+      [nameCol, 'Jane'],
+      [emailCol, SKIP],  // SKIP email
+    ];
+    
+    const record1 = pairsToRecord(pairs1);
+    const record2 = pairsToRecord(pairs2);
+    
+    expect(record1).toEqual({ id: 1, name: 'John', email: 'john@test.com' });
+    expect(record2).toEqual({ id: 2, name: 'Jane' });  // No email key
+    expect('email' in record1).toBe(true);
+    expect('email' in record2).toBe(false);
+  });
+
+  it('pairsToRecord with SKIP in first record only', () => {
+    const pairs1: [typeof idCol | typeof nameCol | typeof emailCol, unknown][] = [
+      [idCol, 1],
+      [nameCol, 'John'],
+      [emailCol, SKIP],  // SKIP in first
+    ];
+    const pairs2: [typeof idCol | typeof nameCol | typeof emailCol, unknown][] = [
+      [idCol, 2],
+      [nameCol, 'Jane'],
+      [emailCol, 'jane@test.com'],
+    ];
+    
+    const record1 = pairsToRecord(pairs1);
+    const record2 = pairsToRecord(pairs2);
+    
+    expect(record1).toEqual({ id: 1, name: 'John' });  // No email
+    expect(record2).toEqual({ id: 2, name: 'Jane', email: 'jane@test.com' });
+    expect('email' in record1).toBe(false);
+    expect('email' in record2).toBe(true);
+  });
+});

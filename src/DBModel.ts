@@ -848,9 +848,17 @@ export abstract class DBModel {
     // Apply serialization based on column metadata
     const records = rawRecords.map(r => serializeRecord(this, r));
 
-    const columns = Object.keys(records[0]).filter(
-      (k) => !(records[0][k] instanceof DBImmediateValue && records[0][k].value === 'DEFAULT')
-    );
+    // Get union of all columns from all records (for SKIP support in createMany)
+    const columnSet = new Set<string>();
+    for (const record of records) {
+      for (const key of Object.keys(record)) {
+        // Skip DBImmediateValue with 'DEFAULT'
+        if (!(record[key] instanceof DBImmediateValue && record[key].value === 'DEFAULT')) {
+          columnSet.add(key);
+        }
+      }
+    }
+    const columns = Array.from(columnSet);
 
     const params: unknown[] = [];
     const valueRows: string[] = [];
@@ -2464,12 +2472,71 @@ export abstract class DBModel {
       // Convert rows to record format and separate key/value columns
       const rowRecords = rowsInput.map(pairs => pairsToRecord(pairs));
       
-      // Get all column names from first row (assuming all rows have same structure)
+      // Check if all rows have the same column set (for SKIP support)
+      const firstRowCols = new Set(Object.keys(rowRecords[0]));
+      let hasMismatchedColumns = false;
+      for (let i = 1; i < rowRecords.length; i++) {
+        const rowCols = new Set(Object.keys(rowRecords[i]));
+        if (rowCols.size !== firstRowCols.size || 
+            !Array.from(rowCols).every(col => firstRowCols.has(col))) {
+          hasMismatchedColumns = true;
+          break;
+        }
+      }
+      
+      // If columns differ between rows (due to SKIP), fall back to individual updates
+      // This ensures SKIPped columns retain their existing values
+      if (hasMismatchedColumns) {
+        const pkeyColumns = this._getPkeyColumnsWithDefault();
+        const allPkeyValues: unknown[][] = [];
+        
+        for (const record of rowRecords) {
+          // Build conditions from key columns
+          const conditions: Record<string, unknown> = {};
+          for (const keyCol of keyColumnNames) {
+            if (!(keyCol in record)) {
+              throw new Error(`updateMany: row missing required key column '${keyCol}'`);
+            }
+            conditions[keyCol] = record[keyCol];
+          }
+          
+          // Build values from non-key columns (only those present in this record)
+          const values: Record<string, unknown> = {};
+          for (const col of Object.keys(record)) {
+            if (!keyColumnNames.includes(col)) {
+              values[col] = record[col];
+            }
+          }
+          
+          if (Object.keys(values).length === 0) continue;
+          
+          // Execute individual update
+          const result = await this._update(conditions as ConditionObject, values, {
+            returning: opts.returning ? columnsToNames(pkeyColumns).join(', ') : undefined,
+          });
+          
+          if (opts.returning && result.length > 0) {
+            const pkeyColumnNames = columnsToNames(pkeyColumns);
+            for (const instance of result) {
+              allPkeyValues.push(
+                pkeyColumnNames.map(col => (instance as Record<string, unknown>)[col])
+              );
+            }
+          }
+        }
+        
+        return opts.returning ? { key: pkeyColumns, values: allPkeyValues } : null;
+      }
+      
+      // Get all column names from first row (all rows have same structure at this point)
       const allColumnNames = Object.keys(rowRecords[0]);
       const valueColumnNames = allColumnNames.filter(col => !keyColumnNames.includes(col));
 
       if (valueColumnNames.length === 0) {
-        throw new Error('updateMany requires at least one non-key column to update');
+        // All columns are SKIPped - nothing to update
+        // Return empty result (no-op) instead of throwing error
+        const pkeyColumns = this._getPkeyColumnsWithDefault();
+        return opts.returning ? { key: pkeyColumns, values: [] } : null;
       }
 
       // Validate all rows have key columns
