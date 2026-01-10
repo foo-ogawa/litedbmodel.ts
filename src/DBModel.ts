@@ -703,7 +703,7 @@ export abstract class DBModel {
    * Build SELECT SQL and execute via query()
    * @internal
    */
-  private static async _select<T extends typeof DBModel>(
+  private static _select<T extends typeof DBModel>(
     this: T,
     conditions: ConditionObject,
     options: SelectOptions = {}
@@ -1909,7 +1909,7 @@ export abstract class DBModel {
    * ]);
    * ```
    */
-  static async find<T extends typeof DBModel>(
+  static find<T extends typeof DBModel>(
     this: T,
     conditions: CondsOf<T>,
     options?: SelectOptions
@@ -1955,7 +1955,7 @@ export abstract class DBModel {
    * ]);
    * ```
    */
-  static async findOne<T extends typeof DBModel>(
+  static findOne<T extends typeof DBModel>(
     this: T,
     conditions: CondsOf<T>,
     options?: SelectOptions
@@ -1994,7 +1994,7 @@ export abstract class DBModel {
    * const users = await User.findById(result);
    * ```
    */
-  static async findById<T extends typeof DBModel>(
+  static findById<T extends typeof DBModel>(
     this: T,
     pkeyResult: Pick<PkeyResult, 'values'>,
     options?: SelectOptions
@@ -2059,7 +2059,7 @@ export abstract class DBModel {
    * const count = await User.count([[User.is_active, true]]);
    * ```
    */
-  static async count<T extends typeof DBModel>(
+  static count<T extends typeof DBModel>(
     this: T,
     conditions: CondsOf<T>
   ): Promise<number> {
@@ -2094,7 +2094,7 @@ export abstract class DBModel {
    * const [user] = await User.findById(result);
    * ```
    */
-  static async create<
+  static create<
     T extends typeof DBModel,
     P extends readonly (readonly [Column<any, any>, any])[]
   >(
@@ -2164,7 +2164,7 @@ export abstract class DBModel {
    * const users = await User.findById(result);
    * ```
    */
-  static async createMany<T extends typeof DBModel>(
+  static createMany<T extends typeof DBModel>(
     this: T,
     pairsArray: readonly (readonly (readonly [Column<any, any>, any])[])[], 
     options?: InsertOptions<InstanceType<T>>
@@ -2234,7 +2234,7 @@ export abstract class DBModel {
    * const users = await User.findById(result);
    * ```
    */
-  static async update<
+  static update<
     T extends typeof DBModel,
     V extends readonly (readonly [Column<any, any>, any])[]
   >(
@@ -2313,7 +2313,7 @@ export abstract class DBModel {
    * // result: { key: [User.id], values: [[4], [5]] }
    * ```
    */
-  static async delete<T extends typeof DBModel>(
+  static delete<T extends typeof DBModel>(
     this: T,
     conditions: CondsOf<T>,
     options?: DeleteOptions
@@ -2391,7 +2391,7 @@ export abstract class DBModel {
    * const users = await User.findById(result);
    * ```
    */
-  static async updateMany<T extends typeof DBModel>(
+  static updateMany<T extends typeof DBModel>(
     this: T,
     rows: readonly (readonly (readonly [Column<any, any>, any])[])[],
     options: UpdateManyOptions
@@ -2528,7 +2528,7 @@ export abstract class DBModel {
    * console.log(result.rowCount);
    * ```
    */
-  static async execute(
+  static execute(
     sql: string,
     params?: unknown[]
   ): Promise<ExecuteResult> {
@@ -2572,7 +2572,7 @@ export abstract class DBModel {
    * `, ['admin@example.com']);
    * ```
    */
-  static async query<T extends typeof DBModel>(
+  static query<T extends typeof DBModel>(
     this: T,
     sql: string,
     params?: unknown[]

@@ -36,6 +36,9 @@ const ORM_COLORS: Record<string, string> = {
   'Prisma': '#8b5cf6',       // Purple
 };
 
+// Maximum relative value to show (bars exceeding this are truncated)
+const MAX_DISPLAY_RATIO = 5.0;
+
 async function parseCSV(csvPath: string): Promise<BenchmarkRow[]> {
   const content = await fs.readFile(csvPath, 'utf-8');
   const lines = content.trim().split('\n');
@@ -87,28 +90,19 @@ function generateSVG(rows: BenchmarkRow[]): string {
   }
   
   // Chart dimensions
-  const margin = { top: 60, right: 150, bottom: 80, left: 200 };
+  const margin = { top: 60, right: 150, bottom: 80, left: 220 };
   const barHeight = 12;
   const barGap = 4;
-  const groupGap = 55;  // Space between operation groups
+  const groupGap = 25;  // Space between operation groups (reduced)
   const ormCount = ORM_ORDER.length;
   const groupHeight = (barHeight + barGap) * ormCount;
   const chartHeight = operations.length * (groupHeight + groupGap) - groupGap;
-  const chartWidth = 500;
+  const chartWidth = 400;  // Fixed chart width
   const width = margin.left + chartWidth + margin.right;
   const height = margin.top + chartHeight + margin.bottom;
   
-  // Find max relative value for scale
-  let maxRelative = 0;
-  for (const row of rows) {
-    const baseline = baselineByOperation.get(row.operation) || 1;
-    const relative = row.median / baseline;
-    if (relative > maxRelative) maxRelative = relative;
-  }
-  maxRelative = Math.ceil(maxRelative * 10) / 10; // Round up to 0.1
-  
-  // Scale function
-  const scale = (value: number) => (value / maxRelative) * chartWidth;
+  // Scale function (capped at MAX_DISPLAY_RATIO)
+  const scale = (value: number) => (Math.min(value, MAX_DISPLAY_RATIO) / MAX_DISPLAY_RATIO) * chartWidth;
   
   let svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" font-family="system-ui, -apple-system, sans-serif">
@@ -120,10 +114,13 @@ function generateSVG(rows: BenchmarkRow[]): string {
     .op-label { font-size: 11px; fill: #374151; }
     .orm-label { font-size: 9px; fill: #6b7280; }
     .value-label { font-size: 8px; fill: #374151; }
+    .value-overflow { font-size: 8px; fill: #dc2626; font-weight: bold; }
     .axis-label { font-size: 10px; fill: #9ca3af; }
     .grid-line { stroke: #e5e7eb; stroke-width: 1; }
     .baseline { stroke: #22c55e; stroke-width: 2; stroke-dasharray: 6,3; }
+    .overflow-line { stroke: #dc2626; stroke-width: 1; }
     .legend-text { font-size: 10px; fill: #374151; }
+    .na-text { font-size: 8px; fill: #9ca3af; font-style: italic; }
   </style>
   
   <!-- Title -->
@@ -138,12 +135,15 @@ function generateSVG(rows: BenchmarkRow[]): string {
   // Vertical grid lines
   const gridSteps = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0];
   for (const step of gridSteps) {
-    if (step <= maxRelative) {
+    if (step <= MAX_DISPLAY_RATIO) {
       const x = scale(step);
       svg += `    <line x1="${x}" y1="0" x2="${x}" y2="${chartHeight}" class="grid-line" />\n`;
       svg += `    <text x="${x}" y="${chartHeight + 15}" text-anchor="middle" class="axis-label">${step.toFixed(1)}</text>\n`;
     }
   }
+  
+  // Overflow indicator at right edge
+  svg += `    <text x="${chartWidth + 5}" y="${chartHeight + 15}" text-anchor="start" class="axis-label" fill="#dc2626">5+</text>\n`;
   
   // Baseline line (1.0)
   const baselineX = scale(1.0);
@@ -161,20 +161,36 @@ function generateSVG(rows: BenchmarkRow[]): string {
     // Bars for each ORM
     for (let ormIdx = 0; ormIdx < ORM_ORDER.length; ormIdx++) {
       const orm = ORM_ORDER[ormIdx];
-      const row = rows.find(r => r.operation === op && r.orm === orm);
-      if (!row) continue;
-      
-      const relative = row.median / baseline;
-      const barWidth = scale(relative);
       const y = groupY + ormIdx * (barHeight + barGap);
       const color = ORM_COLORS[orm];
+      
+      // Get data from CSV
+      const row = rows.find(r => r.operation === op && r.orm === orm);
+      const median = row?.median ?? null;
+      
+      if (median === null) {
+        svg += `    <text x="5" y="${y + barHeight / 2 + 1}" dominant-baseline="middle" class="na-text">N/A</text>\n`;
+        continue;
+      }
+      
+      const relative = median / baseline;
+      const isOverflow = relative > MAX_DISPLAY_RATIO;
+      const barWidth = scale(relative);
       
       // Bar
       svg += `    <rect x="0" y="${y}" width="${barWidth}" height="${barHeight}" fill="${color}" rx="2" />\n`;
       
+      // Overflow indicator (diagonal stripes at end of bar)
+      if (isOverflow) {
+        svg += `    <line x1="${barWidth - 3}" y1="${y}" x2="${barWidth}" y2="${y + barHeight}" class="overflow-line" />\n`;
+        svg += `    <line x1="${barWidth - 6}" y1="${y}" x2="${barWidth - 3}" y2="${y + barHeight}" class="overflow-line" />\n`;
+      }
+      
       // Value label
       const labelX = barWidth + 5;
-      svg += `    <text x="${labelX}" y="${y + barHeight / 2 + 1}" dominant-baseline="middle" class="value-label">${relative.toFixed(2)}x (${row.median.toFixed(2)}ms)</text>\n`;
+      const labelClass = isOverflow ? 'value-overflow' : 'value-label';
+      const overflowMarker = isOverflow ? '⚠️ ' : '';
+      svg += `    <text x="${labelX}" y="${y + barHeight / 2 + 1}" dominant-baseline="middle" class="${labelClass}">${overflowMarker}${relative.toFixed(2)}x (${median.toFixed(2)}ms)</text>\n`;
     }
   }
   
@@ -191,11 +207,16 @@ function generateSVG(rows: BenchmarkRow[]): string {
     svg += `    <text x="20" y="${y + 11}" class="legend-text">${orm}</text>\n`;
   }
   
+  // Overflow legend
+  svg += `    <line x1="0" y1="${ORM_ORDER.length * 20 + 10}" x2="14" y2="${ORM_ORDER.length * 20 + 10}" class="overflow-line" />\n`;
+  svg += `    <text x="20" y="${ORM_ORDER.length * 20 + 14}" class="legend-text" fill="#dc2626">&gt;5x (truncated)</text>\n`;
+  
   svg += `  </g>
 </svg>`;
   
   return svg;
 }
+
 
 async function main() {
   const csvPath = path.join(__dirname, 'results', 'benchmark-results.csv');

@@ -6,7 +6,6 @@
     "setup": "tsx setup.ts",
     "bench": "tsx benchmark.ts",
     "bench:all": "npm run setup && npm run bench",
-    "bench:nested": "tsx bench-nested.ts",
     "chart": "tsx generate-chart.ts",
     "prisma:generate": "prisma generate"
   },

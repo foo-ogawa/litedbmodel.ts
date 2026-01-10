@@ -164,22 +164,18 @@ export class LazyRelationContext {
   }
 
   /**
-   * Get cache key for a relation configuration
+   * Get cache key for a relation configuration.
+   * Since relationName (property key) is unique within a class and all config
+   * values are fixed per property, we use just relationType + relationName.
    */
   getCacheKey(relationType: RelationType, config: RelationConfig): string {
-    const parts = [
-      relationType,
-      config.targetClass.name,
-      JSON.stringify(config.conditions || {}),
-      config.order || '',
-      config.targetKey || '',
-      config.sourceKey || '',
-      JSON.stringify(config.targetKeys || []),
-      JSON.stringify(config.sourceKeys || []),
-      config.limit != null ? String(config.limit) : '',
-      config.relationName || '',
-    ];
-    return parts.join('|');
+    // Fast path: use relationName if available (from @hasMany/@belongsTo/@hasOne decorators)
+    if (config.relationName) {
+      return `${relationType}:${config.relationName}`;
+    }
+    // Fallback for programmatic usage without relationName
+    const targetKey = config.targetKey || (config.targetKeys ? config.targetKeys.join(',') : '');
+    return `${relationType}:${config.targetClass.name}:${targetKey}`;
   }
 
   /**

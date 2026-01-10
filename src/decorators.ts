@@ -1015,9 +1015,17 @@ function applyModelDecorator<T extends { new (...args: unknown[]): object }>(
   // 5. Create relation getters from @hasMany, @belongsTo, @hasOne decorators
   for (const relation of relations) {
     const { propertyKey, type, keysFactory, options } = relation;
+    // Pre-compute cache key for fast lookup (relationType:propertyKey)
+    const cacheKey = `${type}:${propertyKey}`;
 
     Object.defineProperty(constructor.prototype, propertyKey, {
       get: function () {
+        // Fast path: return cached value directly (no Promise overhead)
+        if (this._relationCache?.has(cacheKey)) {
+          return this._relationCache.get(cacheKey);
+        }
+
+        // Slow path: load relation and cache result
         // Call the factory to get keys (lazy resolution for circular references)
         const keys = keysFactory();
         const { sourceKeys, targetKeys, targetModelName } = parseKeys(keys);

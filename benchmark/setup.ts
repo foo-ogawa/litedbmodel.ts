@@ -202,14 +202,15 @@ async function setup() {
   }
   await pool.query(`INSERT INTO benchmark_tenant_users (tenant_id, user_id, name) VALUES ${tenantUserValues.join(', ')}`);
   
-  // Insert tenant posts
+  // Insert tenant posts - post_id REPEATS per tenant (1-1000 for each tenant)
+  // This ensures composite FK (tenant_id, post_id) is required for correct joins
   const tenantPostValues: string[] = [];
-  let tPostId = 1;
   for (let t = 1; t <= NUM_TENANTS; t++) {
+    let localPostId = 1;  // Reset for each tenant!
     for (let u = 1; u <= USERS_PER_TENANT; u++) {
       for (let p = 1; p <= POSTS_PER_TENANT_USER; p++) {
-        tenantPostValues.push(`(${t}, ${tPostId}, ${u}, 'TenantPost ${tPostId}')`);
-        tPostId++;
+        tenantPostValues.push(`(${t}, ${localPostId}, ${u}, 'T${t}Post ${localPostId}')`);
+        localPostId++;
       }
     }
   }
@@ -220,19 +221,28 @@ async function setup() {
     await pool.query(`INSERT INTO benchmark_tenant_posts (tenant_id, post_id, user_id, title) VALUES ${batch.join(', ')}`);
   }
   
-  // Insert tenant comments (10 comments per post for tenant 1's first 1000 posts)
-  // This creates: tenant 1 → 100 users → 1000 posts → 10000 comments
-  console.log('Inserting tenant comments...');
+  // Insert tenant comments for MULTIPLE tenants (tenants 1-5)
+  // post_id REPEATS per tenant (1-1000), so composite FK is required
+  // - Each tenant: 100 users × 10 posts = 1000 posts (post_id 1-1000)
+  // - Comments per post: 10
+  // - Total: 5 tenants × 1000 posts × 10 comments = 50000 comments
+  //
+  // Example: tenant 1 has post_id 1-1000, tenant 2 ALSO has post_id 1-1000
+  // A query using only post_id IN (1,2,3) would match posts from ALL tenants!
+  console.log('Inserting tenant comments (multi-tenant, post_id repeats per tenant)...');
   const COMMENTS_PER_TENANT_POST = 10;
-  const TENANT_FOR_NESTED = 1;
-  const POSTS_FOR_COMMENTS = USERS_PER_TENANT * POSTS_PER_TENANT_USER; // 1000 posts
+  const TENANTS_FOR_COMMENTS = 5;  // Use tenants 1-5
+  const POSTS_PER_TENANT = USERS_PER_TENANT * POSTS_PER_TENANT_USER; // 1000 posts per tenant
   
   const tenantCommentValues: string[] = [];
-  let tCommentId = 1;
-  for (let postId = 1; postId <= POSTS_FOR_COMMENTS; postId++) {
-    for (let c = 1; c <= COMMENTS_PER_TENANT_POST; c++) {
-      tenantCommentValues.push(`(${TENANT_FOR_NESTED}, ${tCommentId}, ${postId}, 'TenantComment ${tCommentId}')`);
-      tCommentId++;
+  for (let t = 1; t <= TENANTS_FOR_COMMENTS; t++) {
+    let localCommentId = 1;  // Reset for each tenant!
+    for (let localPostId = 1; localPostId <= POSTS_PER_TENANT; localPostId++) {
+      for (let c = 1; c <= COMMENTS_PER_TENANT_POST; c++) {
+        // Both post_id and comment_id repeat per tenant
+        tenantCommentValues.push(`(${t}, ${localCommentId}, ${localPostId}, 'T${t}Comment ${localCommentId}')`);
+        localCommentId++;
+      }
     }
   }
   
@@ -242,7 +252,7 @@ async function setup() {
     await pool.query(`INSERT INTO benchmark_tenant_comments (tenant_id, comment_id, post_id, body) VALUES ${batch.join(', ')}`);
   }
   
-  console.log(`Composite key data: ${NUM_TENANTS} tenants, ${NUM_TENANTS * USERS_PER_TENANT} tenant_users, ${tenantPostValues.length} tenant_posts, ${tenantCommentValues.length} tenant_comments`);
+  console.log(`Composite key data: ${NUM_TENANTS} tenants, ${NUM_TENANTS * USERS_PER_TENANT} tenant_users, ${tenantPostValues.length} tenant_posts, ${tenantCommentValues.length} tenant_comments (across ${TENANTS_FOR_COMMENTS} tenants)`);
   
   // Verify data
   const userCount = await pool.query('SELECT COUNT(*) FROM benchmark_users');

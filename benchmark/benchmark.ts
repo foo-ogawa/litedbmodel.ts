@@ -43,9 +43,9 @@ const config = {
   password: process.env.DB_PASSWORD || 'testpass',
 };
 
-const ROUNDS = 10;             // Number of rounds (each round runs all ORMs)
-const ITERATIONS = 100;        // Each test runs 100 times per round
-const WARMUP_ITERATIONS = 10;
+const ROUNDS = 5;              // Number of rounds (each round runs all ORMs)
+const ITERATIONS = 50;         // Each test runs 50 times per round
+const WARMUP_ITERATIONS = 5;
 
 // ============================================
 // litedbmodel Setup
@@ -95,6 +95,45 @@ class LiteCommentModel extends DBModel {
 }
 const LiteComment = LiteCommentModel as typeof LiteCommentModel & ColumnsOf<LiteCommentModel>;
 
+// Composite key models (multi-tenant)
+@model('benchmark_tenant_users')
+class LiteTenantUserModel extends DBModel {
+  @column({ primaryKey: true }) tenant_id?: number;
+  @column({ primaryKey: true }) user_id?: number;
+  @column() name?: string;
+  
+  @hasMany(() => [[LiteTenantUser.tenant_id, LiteTenantPost.tenant_id], [LiteTenantUser.user_id, LiteTenantPost.user_id]])
+  declare posts: Promise<LiteTenantPostModel[]>;
+}
+const LiteTenantUser = LiteTenantUserModel as typeof LiteTenantUserModel & ColumnsOf<LiteTenantUserModel>;
+
+@model('benchmark_tenant_posts')
+class LiteTenantPostModel extends DBModel {
+  @column({ primaryKey: true }) tenant_id?: number;
+  @column({ primaryKey: true }) post_id?: number;
+  @column() user_id?: number;
+  @column() title?: string;
+  
+  @belongsTo(() => [[LiteTenantPost.tenant_id, LiteTenantUser.tenant_id], [LiteTenantPost.user_id, LiteTenantUser.user_id]])
+  declare user: Promise<LiteTenantUserModel | null>;
+  
+  @hasMany(() => [[LiteTenantPost.tenant_id, LiteTenantComment.tenant_id], [LiteTenantPost.post_id, LiteTenantComment.post_id]])
+  declare comments: Promise<LiteTenantCommentModel[]>;
+}
+const LiteTenantPost = LiteTenantPostModel as typeof LiteTenantPostModel & ColumnsOf<LiteTenantPostModel>;
+
+@model('benchmark_tenant_comments')
+class LiteTenantCommentModel extends DBModel {
+  @column({ primaryKey: true }) tenant_id?: number;
+  @column({ primaryKey: true }) comment_id?: number;
+  @column() post_id?: number;
+  @column() body?: string;
+  
+  @belongsTo(() => [[LiteTenantComment.tenant_id, LiteTenantPost.tenant_id], [LiteTenantComment.post_id, LiteTenantPost.post_id]])
+  declare post: Promise<LiteTenantPostModel | null>;
+}
+const LiteTenantComment = LiteTenantCommentModel as typeof LiteTenantCommentModel & ColumnsOf<LiteTenantCommentModel>;
+
 // ============================================
 // Prisma Setup
 // ============================================
@@ -113,22 +152,22 @@ interface KyselyDB {
     id: Generated<number>;
     email: string;
     name: string | null;
-    created_at: Date;
-    updated_at: Date;
+    created_at: Generated<Date>;
+    updated_at: Generated<Date>;
   };
   benchmark_posts: {
     id: Generated<number>;
     title: string;
     content: string | null;
-    published: boolean;
+    published: Generated<boolean>;
     author_id: number;
-    created_at: Date;
+    created_at: Generated<Date>;
   };
   benchmark_comments: {
     id: Generated<number>;
     body: string;
     post_id: number;
-    created_at: Date;
+    created_at: Generated<Date>;
   };
 }
 
@@ -137,8 +176,8 @@ interface KyselyDB {
 // ============================================
 
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { pgTable, serial, varchar, integer, boolean, timestamp, text } from 'drizzle-orm/pg-core';
-import { eq, desc, and, asc, sql as drizzleSql } from 'drizzle-orm';
+import { pgTable, serial, varchar, integer, boolean, timestamp, text, primaryKey } from 'drizzle-orm/pg-core';
+import { eq, desc, and, asc, sql as drizzleSql, relations, inArray } from 'drizzle-orm';
 
 const drizzleUsers = pgTable('benchmark_users', {
   id: serial('id').primaryKey(),
@@ -164,11 +203,82 @@ const drizzleComments = pgTable('benchmark_comments', {
   created_at: timestamp('created_at').defaultNow(),
 });
 
+// Composite key tables
+const drizzleTenantUsers = pgTable('benchmark_tenant_users', {
+  tenant_id: integer('tenant_id').notNull(),
+  user_id: integer('user_id').notNull(),
+  name: varchar('name', { length: 255 }),
+});
+
+const drizzleTenantPosts = pgTable('benchmark_tenant_posts', {
+  tenant_id: integer('tenant_id').notNull(),
+  post_id: integer('post_id').notNull(),
+  user_id: integer('user_id').notNull(),
+  title: varchar('title', { length: 255 }).notNull(),
+});
+
+const drizzleTenantComments = pgTable('benchmark_tenant_comments', {
+  tenant_id: integer('tenant_id').notNull(),
+  comment_id: integer('comment_id').notNull(),
+  post_id: integer('post_id').notNull(),
+  body: text('body'),
+}, (table) => [primaryKey({ columns: [table.tenant_id, table.comment_id] })]);
+
+// Drizzle Relations - Single Key
+const usersRelations = relations(drizzleUsers, ({ many }) => ({
+  posts: many(drizzlePosts),
+}));
+
+const postsRelations = relations(drizzlePosts, ({ one, many }) => ({
+  author: one(drizzleUsers, { fields: [drizzlePosts.author_id], references: [drizzleUsers.id] }),
+  comments: many(drizzleComments),
+}));
+
+const commentsRelations = relations(drizzleComments, ({ one }) => ({
+  post: one(drizzlePosts, { fields: [drizzleComments.post_id], references: [drizzlePosts.id] }),
+}));
+
+// Drizzle Relations - Composite Key
+const tenantUsersRelations = relations(drizzleTenantUsers, ({ many }) => ({
+  posts: many(drizzleTenantPosts),
+}));
+
+const tenantPostsRelations = relations(drizzleTenantPosts, ({ one, many }) => ({
+  user: one(drizzleTenantUsers, {
+    fields: [drizzleTenantPosts.tenant_id, drizzleTenantPosts.user_id],
+    references: [drizzleTenantUsers.tenant_id, drizzleTenantUsers.user_id],
+  }),
+  comments: many(drizzleTenantComments),
+}));
+
+const tenantCommentsRelations = relations(drizzleTenantComments, ({ one }) => ({
+  post: one(drizzleTenantPosts, {
+    fields: [drizzleTenantComments.tenant_id, drizzleTenantComments.post_id],
+    references: [drizzleTenantPosts.tenant_id, drizzleTenantPosts.post_id],
+  }),
+}));
+
+// Drizzle Schema (needed for query API with relations)
+const drizzleSchema = {
+  users: drizzleUsers,
+  posts: drizzlePosts,
+  comments: drizzleComments,
+  tenantUsers: drizzleTenantUsers,
+  tenantPosts: drizzleTenantPosts,
+  tenantComments: drizzleTenantComments,
+  usersRelations,
+  postsRelations,
+  commentsRelations,
+  tenantUsersRelations,
+  tenantPostsRelations,
+  tenantCommentsRelations,
+};
+
 // ============================================
 // TypeORM Setup
 // ============================================
 
-import { DataSource, Entity, PrimaryGeneratedColumn, Column as TypeORMColumn, Repository, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
+import { DataSource, Entity, PrimaryGeneratedColumn, PrimaryColumn, Column as TypeORMColumn, Repository, ManyToOne, OneToMany, JoinColumn, In } from 'typeorm';
 
 @Entity('benchmark_users')
 class TypeORMUser {
@@ -236,6 +346,63 @@ class TypeORMComment {
   @ManyToOne(() => TypeORMPost, post => post.comments)
   @JoinColumn({ name: 'post_id' })
   post!: TypeORMPost;
+}
+
+// Composite key entities
+@Entity('benchmark_tenant_users')
+class TypeORMTenantUser {
+  @PrimaryColumn({ type: 'int' })
+  tenant_id!: number;
+  
+  @PrimaryColumn({ type: 'int' })
+  user_id!: number;
+  
+  @TypeORMColumn({ type: 'varchar', length: 255, nullable: true })
+  name!: string | null;
+  
+  @OneToMany(() => TypeORMTenantPost, post => post.user)
+  posts!: TypeORMTenantPost[];
+}
+
+@Entity('benchmark_tenant_posts')
+class TypeORMTenantPost {
+  @PrimaryColumn({ type: 'int' })
+  tenant_id!: number;
+  
+  @PrimaryColumn({ type: 'int' })
+  post_id!: number;
+  
+  @TypeORMColumn({ type: 'int' })
+  user_id!: number;
+  
+  @TypeORMColumn({ type: 'varchar', length: 255 })
+  title!: string;
+  
+  @ManyToOne(() => TypeORMTenantUser, user => user.posts)
+  @JoinColumn([{ name: 'tenant_id', referencedColumnName: 'tenant_id' }, { name: 'user_id', referencedColumnName: 'user_id' }])
+  user!: TypeORMTenantUser;
+  
+  @OneToMany(() => TypeORMTenantComment, comment => comment.post)
+  comments!: TypeORMTenantComment[];
+}
+
+@Entity('benchmark_tenant_comments')
+class TypeORMTenantComment {
+  @PrimaryColumn({ type: 'int' })
+  tenant_id!: number;
+  
+  @PrimaryColumn({ type: 'int' })
+  comment_id!: number;
+  
+  @TypeORMColumn({ type: 'int' })
+  post_id!: number;
+  
+  @TypeORMColumn({ type: 'text', nullable: true })
+  body!: string | null;
+  
+  @ManyToOne(() => TypeORMTenantPost, post => post.comments)
+  @JoinColumn([{ name: 'tenant_id', referencedColumnName: 'tenant_id' }, { name: 'post_id', referencedColumnName: 'post_id' }])
+  post!: TypeORMTenantPost;
 }
 
 // ============================================
@@ -380,9 +547,9 @@ async function main() {
     dialect: new PostgresDialect({ pool: kyselyPool }),
   });
   
-  // Drizzle
+  // Drizzle (with schema for query API / relation loading)
   const drizzlePool = new pg.Pool(config);
-  const drizzleDb = drizzle(drizzlePool);
+  const drizzleDb = drizzle(drizzlePool, { schema: drizzleSchema });
   
   // TypeORM
   const typeormDS = new DataSource({
@@ -392,7 +559,7 @@ async function main() {
     database: config.database,
     username: config.user,
     password: config.password,
-    entities: [TypeORMUser, TypeORMPost, TypeORMComment],
+    entities: [TypeORMUser, TypeORMPost, TypeORMComment, TypeORMTenantUser, TypeORMTenantPost, TypeORMTenantComment],
     synchronize: false,
     logging: false,
   });
@@ -756,83 +923,87 @@ async function main() {
     },
     
     // ============================================
-    // Create
+    // Create (all ORMs use transaction for fair comparison)
     // ============================================
     {
       name: 'Create',
       tests: [
         { 
           orm: 'litedbmodel', 
-          fn: () => LiteUser.create([
+          fn: () => LiteUser.transaction(async () => LiteUser.create([
             [LiteUser.email, `bench${createCounter++}@example.com`],
             [LiteUser.name, `Benchmark User`],
-          ]) 
+          ])) 
         },
         { 
           orm: 'Prisma', 
-          fn: () => prisma.user.create({
+          fn: () => prisma.$transaction(async (tx) => tx.user.create({
             data: {
               email: `bench${createCounter++}@example.com`,
               name: 'Benchmark User',
             },
-          }) 
+          }))
         },
         { 
           orm: 'Kysely', 
-          fn: () => kysely.insertInto('benchmark_users')
-            .values({
-              email: `bench${createCounter++}@example.com`,
-              name: 'Benchmark User',
-            })
-            .returningAll()
-            .executeTakeFirst() 
+          fn: () => kysely.transaction().execute(async (trx) => 
+            trx.insertInto('benchmark_users')
+              .values({
+                email: `bench${createCounter++}@example.com`,
+                name: 'Benchmark User',
+              })
+              .returningAll()
+              .executeTakeFirst()
+          )
         },
         { 
           orm: 'Drizzle', 
-          fn: () => drizzleDb.insert(drizzleUsers)
-            .values({
-              email: `bench${createCounter++}@example.com`,
-              name: 'Benchmark User',
-            })
-            .returning() 
+          fn: () => drizzleDb.transaction(async (tx) =>
+            tx.insert(drizzleUsers)
+              .values({
+                email: `bench${createCounter++}@example.com`,
+                name: 'Benchmark User',
+              })
+              .returning()
+          )
         },
         { 
           orm: 'TypeORM', 
-          fn: async () => {
-            const user = typeormUserRepo.create({
+          fn: () => typeormDS.transaction(async (em) => {
+            const user = em.create(TypeORMUser, {
               email: `bench${createCounter++}@example.com`,
               name: 'Benchmark User',
             });
-            return typeormUserRepo.save(user);
-          }
+            return em.save(user);
+          })
         },
       ],
     },
     
     // ============================================
-    // Nested create
+    // Nested create (all ORMs use transaction)
     // ============================================
     {
       name: 'Nested create (with post)',
       tests: [
         { 
           orm: 'litedbmodel', 
-          fn: async () => {
-            const user = await LiteUser.create([
+          fn: () => LiteUser.transaction(async () => {
+            const result = await LiteUser.create([
               [LiteUser.email, `nested${createCounter++}@example.com`],
               [LiteUser.name, `Nested User`],
-            ]);
+            ], { returning: true });
             await LitePost.create([
               [LitePost.title, 'Nested Post'],
               [LitePost.content, 'Content'],
-              [LitePost.author_id, user.id!],
+              [LitePost.author_id, result!.values[0][0] as number],
             ]);
-            return user;
-          }
+            return result;
+          })
         },
         { 
           orm: 'Prisma', 
-          fn: () => prisma.user.create({
+          fn: () => prisma.$transaction(async (tx) => tx.user.create({
             data: {
               email: `nested${createCounter++}@example.com`,
               name: 'Nested User',
@@ -840,19 +1011,19 @@ async function main() {
                 create: { title: 'Nested Post', content: 'Content' },
               },
             },
-          }) 
+          }))
         },
         { 
           orm: 'Kysely', 
-          fn: async () => {
-            const user = await kysely.insertInto('benchmark_users')
+          fn: () => kysely.transaction().execute(async (trx) => {
+            const user = await trx.insertInto('benchmark_users')
               .values({
                 email: `nested${createCounter++}@example.com`,
                 name: 'Nested User',
               })
               .returningAll()
               .executeTakeFirstOrThrow();
-            await kysely.insertInto('benchmark_posts')
+            await trx.insertInto('benchmark_posts')
               .values({
                 title: 'Nested Post',
                 content: 'Content',
@@ -860,99 +1031,105 @@ async function main() {
               })
               .execute();
             return user;
-          }
+          })
         },
         { 
           orm: 'Drizzle', 
-          fn: async () => {
-            const [user] = await drizzleDb.insert(drizzleUsers)
+          fn: () => drizzleDb.transaction(async (tx) => {
+            const [user] = await tx.insert(drizzleUsers)
               .values({
                 email: `nested${createCounter++}@example.com`,
                 name: 'Nested User',
               })
               .returning();
-            await drizzleDb.insert(drizzlePosts)
+            await tx.insert(drizzlePosts)
               .values({
                 title: 'Nested Post',
                 content: 'Content',
                 author_id: user.id,
               });
             return user;
-          }
+          })
         },
         { 
           orm: 'TypeORM', 
-          fn: async () => {
-            const user = typeormUserRepo.create({
+          fn: () => typeormDS.transaction(async (em) => {
+            const user = em.create(TypeORMUser, {
               email: `nested${createCounter++}@example.com`,
               name: 'Nested User',
             });
-            const savedUser = await typeormUserRepo.save(user);
-            const post = typeormPostRepo.create({
+            const savedUser = await em.save(user);
+            const post = em.create(TypeORMPost, {
               title: 'Nested Post',
               content: 'Content',
               author_id: savedUser.id,
             });
-            await typeormPostRepo.save(post);
+            await em.save(post);
             return savedUser;
-          }
+          })
         },
       ],
     },
     
     // ============================================
-    // Update
+    // Update (all ORMs use transaction)
     // ============================================
     {
       name: 'Update',
       tests: [
         { 
           orm: 'litedbmodel', 
-          fn: () => LiteUser.update([[LiteUser.id, 100]], [[LiteUser.name, 'Updated User']]) 
+          fn: () => LiteUser.transaction(async () => LiteUser.update([[LiteUser.id, 100]], [[LiteUser.name, 'Updated User']])) 
         },
         { 
           orm: 'Prisma', 
-          fn: () => prisma.user.update({
+          fn: () => prisma.$transaction(async (tx) => tx.user.update({
             where: { id: 100 },
             data: { name: 'Updated User' },
-          }) 
+          }))
         },
         { 
           orm: 'Kysely', 
-          fn: () => kysely.updateTable('benchmark_users')
-            .set({ name: 'Updated User' })
-            .where('id', '=', 100)
-            .execute() 
+          fn: () => kysely.transaction().execute(async (trx) =>
+            trx.updateTable('benchmark_users')
+              .set({ name: 'Updated User' })
+              .where('id', '=', 100)
+              .execute()
+          )
         },
         { 
           orm: 'Drizzle', 
-          fn: () => drizzleDb.update(drizzleUsers)
-            .set({ name: 'Updated User' })
-            .where(eq(drizzleUsers.id, 100)) 
+          fn: () => drizzleDb.transaction(async (tx) =>
+            tx.update(drizzleUsers)
+              .set({ name: 'Updated User' })
+              .where(eq(drizzleUsers.id, 100))
+          )
         },
         { 
           orm: 'TypeORM', 
-          fn: () => typeormUserRepo.update({ id: 100 }, { name: 'Updated User' }) 
+          fn: () => typeormDS.transaction(async (em) =>
+            em.update(TypeORMUser, { id: 100 }, { name: 'Updated User' })
+          )
         },
       ],
     },
     
     // ============================================
-    // Nested update
+    // Nested update (all ORMs use transaction)
     // ============================================
     {
       name: 'Nested update (update user + post)',
       tests: [
         { 
           orm: 'litedbmodel', 
-          fn: async () => {
+          fn: () => LiteUser.transaction(async () => {
             await LiteUser.update([[LiteUser.id, 100]], [[LiteUser.name, 'Nested Updated']]);
             await LitePost.update([[LitePost.author_id, 100]], [[LitePost.title, 'Updated Post']]);
-          }
+          })
         },
         { 
           orm: 'Prisma', 
-          fn: () => prisma.user.update({
+          fn: () => prisma.$transaction(async (tx) => tx.user.update({
             where: { id: 100 },
             data: {
               name: 'Nested Updated',
@@ -963,108 +1140,114 @@ async function main() {
                 },
               },
             },
-          }) 
+          }))
         },
         { 
           orm: 'Kysely', 
-          fn: async () => {
-            await kysely.updateTable('benchmark_users')
+          fn: () => kysely.transaction().execute(async (trx) => {
+            await trx.updateTable('benchmark_users')
               .set({ name: 'Nested Updated' })
               .where('id', '=', 100)
               .execute();
-            await kysely.updateTable('benchmark_posts')
+            await trx.updateTable('benchmark_posts')
               .set({ title: 'Updated Post' })
               .where('author_id', '=', 100)
               .execute();
-          }
+          })
         },
         { 
           orm: 'Drizzle', 
-          fn: async () => {
-            await drizzleDb.update(drizzleUsers)
+          fn: () => drizzleDb.transaction(async (tx) => {
+            await tx.update(drizzleUsers)
               .set({ name: 'Nested Updated' })
               .where(eq(drizzleUsers.id, 100));
-            await drizzleDb.update(drizzlePosts)
+            await tx.update(drizzlePosts)
               .set({ title: 'Updated Post' })
               .where(eq(drizzlePosts.author_id, 100));
-          }
+          })
         },
         { 
           orm: 'TypeORM', 
-          fn: async () => {
-            await typeormUserRepo.update({ id: 100 }, { name: 'Nested Updated' });
-            await typeormPostRepo.update({ author_id: 100 }, { title: 'Updated Post' });
-          }
+          fn: () => typeormDS.transaction(async (em) => {
+            await em.update(TypeORMUser, { id: 100 }, { name: 'Nested Updated' });
+            await em.update(TypeORMPost, { author_id: 100 }, { title: 'Updated Post' });
+          })
         },
       ],
     },
     
     // ============================================
-    // Upsert
+    // Upsert (all ORMs use transaction)
     // ============================================
     {
       name: 'Upsert',
       tests: [
         { 
           orm: 'litedbmodel', 
-          fn: () => LiteUser.create(
+          fn: () => LiteUser.transaction(async () => LiteUser.create(
             [
               [LiteUser.email, `upsert${upsertCounter++}@example.com`],
               [LiteUser.name, 'Upsert User'],
             ],
             { onConflict: LiteUser.email, onConflictUpdate: [LiteUser.name], returning: true }
-          ) 
+          )) 
         },
         { 
           orm: 'Prisma', 
-          fn: () => prisma.user.upsert({
+          fn: () => prisma.$transaction(async (tx) => tx.user.upsert({
             where: { email: `upsert${upsertCounter++}@example.com` },
             update: { name: 'Upsert User' },
             create: { email: `upsert${upsertCounter}@example.com`, name: 'Upsert User' },
-          }) 
+          }))
         },
         { 
           orm: 'Kysely', 
-          fn: () => kysely.insertInto('benchmark_users')
-            .values({
-              email: `upsert${upsertCounter++}@example.com`,
-              name: 'Upsert User',
-            })
-            .onConflict(oc => oc.column('email').doUpdateSet({ name: 'Upsert User' }))
-            .execute() 
+          fn: () => kysely.transaction().execute(async (trx) =>
+            trx.insertInto('benchmark_users')
+              .values({
+                email: `upsert${upsertCounter++}@example.com`,
+                name: 'Upsert User',
+              })
+              .onConflict(oc => oc.column('email').doUpdateSet({ name: 'Upsert User' }))
+              .execute()
+          )
         },
         { 
           orm: 'Drizzle', 
-          fn: () => drizzleDb.insert(drizzleUsers)
-            .values({
-              email: `upsert${upsertCounter++}@example.com`,
-              name: 'Upsert User',
-            })
-            .onConflictDoUpdate({
-              target: drizzleUsers.email,
-              set: { name: 'Upsert User' },
-            }) 
+          fn: () => drizzleDb.transaction(async (tx) =>
+            tx.insert(drizzleUsers)
+              .values({
+                email: `upsert${upsertCounter++}@example.com`,
+                name: 'Upsert User',
+              })
+              .onConflictDoUpdate({
+                target: drizzleUsers.email,
+                set: { name: 'Upsert User' },
+              })
+          )
         },
         { 
           orm: 'TypeORM', 
-          fn: () => typeormUserRepo.upsert(
-            { email: `upsert${upsertCounter++}@example.com`, name: 'Upsert User' },
-            ['email']
-          ) 
+          fn: () => typeormDS.transaction(async (em) =>
+            em.upsert(TypeORMUser,
+              { email: `upsert${upsertCounter++}@example.com`, name: 'Upsert User' },
+              ['email']
+            )
+          )
         },
       ],
     },
     
     // ============================================
-    // Nested upsert
+    // Nested upsert (all ORMs use transaction)
     // ============================================
     {
       name: 'Nested upsert (user + post)',
       tests: [
         { 
           orm: 'litedbmodel', 
-          fn: async () => {
-            const user = await LiteUser.create(
+          fn: () => LiteUser.transaction(async () => {
+            const result = await LiteUser.create(
               [
                 [LiteUser.email, `nupsert${upsertCounter++}@example.com`],
                 [LiteUser.name, 'Nested Upsert'],
@@ -1073,15 +1256,15 @@ async function main() {
             );
             await LitePost.create([
               [LitePost.title, 'Upsert Post'],
-              [LitePost.author_id, user.id!],
+              [LitePost.author_id, result!.values[0][0] as number],
             ]);
-            return user;
-          }
+            return result;
+          })
         },
         { 
           orm: 'Prisma', 
-          fn: async () => {
-            const user = await prisma.user.upsert({
+          fn: () => prisma.$transaction(async (tx) => {
+            const user = await tx.user.upsert({
               where: { email: `nupsert${upsertCounter++}@example.com` },
               update: { name: 'Nested Upsert' },
               create: {
@@ -1091,12 +1274,12 @@ async function main() {
               },
             });
             return user;
-          }
+          })
         },
         { 
           orm: 'Kysely', 
-          fn: async () => {
-            const user = await kysely.insertInto('benchmark_users')
+          fn: () => kysely.transaction().execute(async (trx) => {
+            const user = await trx.insertInto('benchmark_users')
               .values({
                 email: `nupsert${upsertCounter++}@example.com`,
                 name: 'Nested Upsert',
@@ -1104,16 +1287,16 @@ async function main() {
               .onConflict(oc => oc.column('email').doUpdateSet({ name: 'Nested Upsert' }))
               .returningAll()
               .executeTakeFirstOrThrow();
-            await kysely.insertInto('benchmark_posts')
+            await trx.insertInto('benchmark_posts')
               .values({ title: 'Upsert Post', author_id: user.id })
               .execute();
             return user;
-          }
+          })
         },
         { 
           orm: 'Drizzle', 
-          fn: async () => {
-            const [user] = await drizzleDb.insert(drizzleUsers)
+          fn: () => drizzleDb.transaction(async (tx) => {
+            const [user] = await tx.insert(drizzleUsers)
               .values({
                 email: `nupsert${upsertCounter++}@example.com`,
                 name: 'Nested Upsert',
@@ -1123,81 +1306,282 @@ async function main() {
                 set: { name: 'Nested Upsert' },
               })
               .returning();
-            await drizzleDb.insert(drizzlePosts)
+            await tx.insert(drizzlePosts)
               .values({ title: 'Upsert Post', author_id: user.id });
             return user;
-          }
+          })
         },
         { 
           orm: 'TypeORM', 
-          fn: async () => {
-            const result = await typeormUserRepo.upsert(
+          fn: () => typeormDS.transaction(async (em) => {
+            const result = await em.upsert(TypeORMUser,
               { email: `nupsert${upsertCounter++}@example.com`, name: 'Nested Upsert' },
               ['email']
             );
-            const user = await typeormUserRepo.findOneBy({ email: `nupsert${upsertCounter}@example.com` });
+            const user = await em.findOneBy(TypeORMUser, { email: `nupsert${upsertCounter}@example.com` });
             if (user) {
-              const post = typeormPostRepo.create({ title: 'Upsert Post', author_id: user.id });
-              await typeormPostRepo.save(post);
+              const post = em.create(TypeORMPost, { title: 'Upsert Post', author_id: user.id });
+              await em.save(post);
             }
             return result;
-          }
+          })
         },
       ],
     },
     
     // ============================================
-    // Delete
+    // Delete (all ORMs use transaction)
     // ============================================
     {
       name: 'Delete',
       tests: [
         { 
           orm: 'litedbmodel', 
-          fn: async () => {
+          fn: () => LiteUser.transaction(async () => {
             // First create then delete
-            const user = await LiteUser.create([
+            const result = await LiteUser.create([
               [LiteUser.email, `del${createCounter++}@example.com`],
               [LiteUser.name, 'Delete User'],
-            ]);
-            return LiteUser.delete([[LiteUser.id, user.id!]]);
-          }
+            ], { returning: true });
+            return LiteUser.delete([[LiteUser.id, result!.values[0][0] as number]]);
+          })
         },
         { 
           orm: 'Prisma', 
-          fn: async () => {
-            const user = await prisma.user.create({
+          fn: () => prisma.$transaction(async (tx) => {
+            const user = await tx.user.create({
               data: { email: `del${createCounter++}@example.com`, name: 'Delete User' },
             });
-            return prisma.user.delete({ where: { id: user.id } });
-          }
+            return tx.user.delete({ where: { id: user.id } });
+          })
         },
         { 
           orm: 'Kysely', 
-          fn: async () => {
-            const user = await kysely.insertInto('benchmark_users')
+          fn: () => kysely.transaction().execute(async (trx) => {
+            const user = await trx.insertInto('benchmark_users')
               .values({ email: `del${createCounter++}@example.com`, name: 'Delete User' })
               .returningAll()
               .executeTakeFirstOrThrow();
-            return kysely.deleteFrom('benchmark_users').where('id', '=', user.id).execute();
-          }
+            return trx.deleteFrom('benchmark_users').where('id', '=', user.id).execute();
+          })
         },
         { 
           orm: 'Drizzle', 
-          fn: async () => {
-            const [user] = await drizzleDb.insert(drizzleUsers)
+          fn: () => drizzleDb.transaction(async (tx) => {
+            const [user] = await tx.insert(drizzleUsers)
               .values({ email: `del${createCounter++}@example.com`, name: 'Delete User' })
               .returning();
-            return drizzleDb.delete(drizzleUsers).where(eq(drizzleUsers.id, user.id));
-          }
+            return tx.delete(drizzleUsers).where(eq(drizzleUsers.id, user.id));
+          })
         },
         { 
           orm: 'TypeORM', 
-          fn: async () => {
-            const user = typeormUserRepo.create({ email: `del${createCounter++}@example.com`, name: 'Delete User' });
-            const saved = await typeormUserRepo.save(user);
-            return typeormUserRepo.delete({ id: saved.id });
-          }
+          fn: () => typeormDS.transaction(async (em) => {
+            const user = em.create(TypeORMUser, { email: `del${createCounter++}@example.com`, name: 'Delete User' });
+            const saved = await em.save(user);
+            return em.delete(TypeORMUser, { id: saved.id });
+          })
+        },
+      ],
+    },
+    
+    // ============================================
+    // Create Many (bulk insert)
+    // ============================================
+    {
+      name: 'Create Many (10 records)',
+      tests: [
+        { 
+          orm: 'litedbmodel', 
+          fn: () => LiteUser.transaction(async () => {
+            const records = Array.from({ length: 10 }, (_, i) => [
+              [LiteUser.email, `bulk${createCounter++}@example.com`],
+              [LiteUser.name, `Bulk User ${i}`],
+            ] as [[typeof LiteUser.email, string], [typeof LiteUser.name, string]]);
+            return LiteUser.createMany(records);
+          })
+        },
+        { 
+          orm: 'Prisma', 
+          fn: () => prisma.$transaction(async (tx) => {
+            return tx.user.createMany({
+              data: Array.from({ length: 10 }, (_, i) => ({
+                email: `bulk${createCounter++}@example.com`,
+                name: `Bulk User ${i}`,
+              })),
+            });
+          })
+        },
+        { 
+          orm: 'Kysely', 
+          fn: () => kysely.transaction().execute(async (trx) => {
+            return trx.insertInto('benchmark_users')
+              .values(Array.from({ length: 10 }, (_, i) => ({
+                email: `bulk${createCounter++}@example.com`,
+                name: `Bulk User ${i}`,
+              })))
+              .execute();
+          })
+        },
+        { 
+          orm: 'Drizzle', 
+          fn: () => drizzleDb.transaction(async (tx) => {
+            return tx.insert(drizzleUsers)
+              .values(Array.from({ length: 10 }, (_, i) => ({
+                email: `bulk${createCounter++}@example.com`,
+                name: `Bulk User ${i}`,
+              })));
+          })
+        },
+        { 
+          orm: 'TypeORM', 
+          fn: () => typeormDS.transaction(async (em) => {
+            return em.insert(TypeORMUser, Array.from({ length: 10 }, (_, i) => ({
+              email: `bulk${createCounter++}@example.com`,
+              name: `Bulk User ${i}`,
+            })));
+          })
+        },
+      ],
+    },
+    
+    // ============================================
+    // Upsert Many (bulk upsert)
+    // ============================================
+    {
+      name: 'Upsert Many (10 records)',
+      tests: [
+        { 
+          orm: 'litedbmodel', 
+          fn: () => LiteUser.transaction(async () => {
+            const records = Array.from({ length: 10 }, (_, i) => [
+              [LiteUser.email, `upsertbulk${upsertCounter++}@example.com`],
+              [LiteUser.name, `Upsert Bulk ${i}`],
+            ] as [[typeof LiteUser.email, string], [typeof LiteUser.name, string]]);
+            return LiteUser.createMany(records, { 
+              onConflict: LiteUser.email, 
+              onConflictUpdate: [LiteUser.name] 
+            });
+          })
+        },
+        { 
+          orm: 'Prisma', 
+          fn: () => prisma.$transaction(async (tx) => {
+            // Prisma createMany doesn't support onConflict update
+            // Must use individual upserts
+            return Promise.all(Array.from({ length: 10 }, (_, i) => 
+              tx.user.upsert({
+                where: { email: `upsertbulk${upsertCounter++}@example.com` },
+                update: { name: `Upsert Bulk ${i}` },
+                create: { email: `upsertbulk${upsertCounter}@example.com`, name: `Upsert Bulk ${i}` },
+              })
+            ));
+          })
+        },
+        { 
+          orm: 'Kysely', 
+          fn: () => kysely.transaction().execute(async (trx) => {
+            return trx.insertInto('benchmark_users')
+              .values(Array.from({ length: 10 }, (_, i) => ({
+                email: `upsertbulk${upsertCounter++}@example.com`,
+                name: `Upsert Bulk ${i}`,
+              })))
+              .onConflict(oc => oc.column('email').doUpdateSet({ name: 'Upsert Bulk' }))
+              .execute();
+          })
+        },
+        { 
+          orm: 'Drizzle', 
+          fn: () => drizzleDb.transaction(async (tx) => {
+            return tx.insert(drizzleUsers)
+              .values(Array.from({ length: 10 }, (_, i) => ({
+                email: `upsertbulk${upsertCounter++}@example.com`,
+                name: `Upsert Bulk ${i}`,
+              })))
+              .onConflictDoUpdate({
+                target: drizzleUsers.email,
+                set: { name: drizzleSql`excluded.name` },
+              });
+          })
+        },
+        { 
+          orm: 'TypeORM', 
+          fn: () => typeormDS.transaction(async (em) => {
+            return em.upsert(TypeORMUser, 
+              Array.from({ length: 10 }, (_, i) => ({
+                email: `upsertbulk${upsertCounter++}@example.com`,
+                name: `Upsert Bulk ${i}`,
+              })),
+              ['email']
+            );
+          })
+        },
+      ],
+    },
+    
+    // ============================================
+    // Update Many (different values per row)
+    // Only litedbmodel supports this natively
+    // ============================================
+    {
+      name: 'Update Many (10 different values)',
+      tests: [
+        { 
+          orm: 'litedbmodel', 
+          fn: () => LiteUser.transaction(async () => {
+            // Update 10 users with different names in a single query
+            return LiteUser.updateMany(
+              Array.from({ length: 10 }, (_, i) => [
+                [LiteUser.id, 100 + i],
+                [LiteUser.name, `Updated Different ${i}`],
+              ] as const),
+              { keyColumns: [LiteUser.id] }
+            );
+          })
+        },
+        { 
+          orm: 'Prisma', 
+          fn: () => prisma.$transaction(async (tx) => {
+            // Prisma requires individual updates - N queries
+            return Promise.all(Array.from({ length: 10 }, (_, i) => 
+              tx.user.update({
+                where: { id: 100 + i },
+                data: { name: `Updated Different ${i}` },
+              })
+            ));
+          })
+        },
+        { 
+          orm: 'Kysely', 
+          fn: () => kysely.transaction().execute(async (trx) => {
+            // Kysely requires individual updates - N queries
+            return Promise.all(Array.from({ length: 10 }, (_, i) => 
+              trx.updateTable('benchmark_users')
+                .set({ name: `Updated Different ${i}` })
+                .where('id', '=', 100 + i)
+                .execute()
+            ));
+          })
+        },
+        { 
+          orm: 'Drizzle', 
+          fn: () => drizzleDb.transaction(async (tx) => {
+            // Drizzle requires individual updates - N queries
+            return Promise.all(Array.from({ length: 10 }, (_, i) => 
+              tx.update(drizzleUsers)
+                .set({ name: `Updated Different ${i}` })
+                .where(eq(drizzleUsers.id, 100 + i))
+            ));
+          })
+        },
+        { 
+          orm: 'TypeORM', 
+          fn: () => typeormDS.transaction(async (em) => {
+            // TypeORM requires individual updates - N queries
+            return Promise.all(Array.from({ length: 10 }, (_, i) => 
+              em.update(TypeORMUser, { id: 100 + i }, { name: `Updated Different ${i}` })
+            ));
+          })
         },
       ],
     },
@@ -1313,40 +1697,16 @@ async function main() {
         { 
           orm: 'Drizzle', 
           fn: async () => {
-            // Load users
-            const users = await drizzleDb.select().from(drizzleUsers).orderBy(asc(drizzleUsers.id)).limit(100);
-            const userIds = users.map(u => u.id);
-            
-            // Load posts for these users
-            const posts = await drizzleDb.select().from(drizzlePosts)
-              .where(drizzleSql`${drizzlePosts.author_id} IN ${userIds}`);
-            const postIds = posts.map(p => p.id);
-            
-            // Load comments for these posts
-            const comments = await drizzleDb.select().from(drizzleComments)
-              .where(drizzleSql`${drizzleComments.post_id} IN ${postIds}`);
-            
-            // Group posts by user
-            const postsByUser = new Map<number, typeof posts>();
-            for (const post of posts) {
-              if (!postsByUser.has(post.author_id)) postsByUser.set(post.author_id, []);
-              postsByUser.get(post.author_id)!.push(post);
-            }
-            
-            // Group comments by post
-            const commentsByPost = new Map<number, typeof comments>();
-            for (const comment of comments) {
-              if (!commentsByPost.has(comment.post_id)) commentsByPost.set(comment.post_id, []);
-              commentsByPost.get(comment.post_id)!.push(comment);
-            }
-            
-            // Iterate through all
+            // Use Drizzle's query API with relations (LATERAL JOIN internally)
+            const users = await drizzleDb.query.users.findMany({
+              limit: 100,
+              orderBy: asc(drizzleUsers.id),
+              with: { posts: { with: { comments: true } } }
+            });
             let commentCount = 0;
             for (const user of users) {
-              const userPosts = postsByUser.get(user.id) || [];
-              for (const post of userPosts) {
-                const postComments = commentsByPost.get(post.id) || [];
-                for (const _comment of postComments) {
+              for (const post of user.posts) {
+                for (const _comment of post.comments) {
                   commentCount++;
                 }
               }
@@ -1375,6 +1735,108 @@ async function main() {
             }
             if (commentCount !== 10000) {
               console.warn(`TypeORM: Expected 10000 comments, got ${commentCount}`);
+            }
+            return users;
+          }
+        },
+      ],
+    },
+    
+    // ============================================
+    // Nested Relations - Composite Key (5 tenants)
+    // 100 users across 5 tenants → 1000 posts → 5000 comments
+    // Tests proper multi-tenant batch loading with composite foreign keys
+    // ============================================
+    {
+      name: 'Nested relations (composite key, 5 tenants)',
+      tests: [
+        { 
+          orm: 'litedbmodel', 
+          fn: async () => {
+            // Fetch users from 5 tenants (20 users per tenant = 100 users total)
+            const users = await LiteTenantUser.find(
+              [[LiteTenantUser.tenant_id, [1, 2, 3, 4, 5]]],
+              { limit: 100 }
+            );
+            let commentCount = 0;
+            for (const user of users) {
+              const posts = await user.posts;
+              for (const post of posts) {
+                const comments = await post.comments;
+                for (const _comment of comments) {
+                  commentCount++;
+                }
+              }
+            }
+            // 100 users × 10 posts × 10 comments = 10000, but only 5 tenants have comments
+            // 100 users × 10 posts = 1000 posts, each post has 10 comments = 10000 comments
+            // But comments exist only for tenants 1-5, so: 5 tenants × 100 users/tenant × 10 posts × 10 comments
+            // Actually: 5 tenants × 20 users × 10 posts × 10 comments = 10000
+            if (commentCount < 5000) {
+              console.warn(`litedbmodel (composite): Expected >= 5000 comments, got ${commentCount}`);
+            }
+            return users;
+          }
+        },
+        { 
+          orm: 'Prisma', 
+          fn: async () => {
+            const users = await prisma.tenantUser.findMany({
+              where: { tenant_id: { in: [1, 2, 3, 4, 5] } },
+              take: 100,
+              include: { 
+                posts: {
+                  include: { comments: true }
+                }
+              },
+            });
+            let commentCount = 0;
+            for (const user of users) {
+              for (const post of user.posts) {
+                for (const _comment of post.comments) {
+                  commentCount++;
+                }
+              }
+            }
+            return users;
+          }
+        },
+        // Kysely: N/A - Cannot properly batch load composite FK (would need manual tuple matching)
+        { 
+          orm: 'Drizzle', 
+          fn: async () => {
+            // Use Drizzle's query API with relations (LATERAL JOIN internally)
+            const users = await drizzleDb.query.tenantUsers.findMany({
+              where: inArray(drizzleTenantUsers.tenant_id, [1, 2, 3, 4, 5]),
+              limit: 100,
+              with: { posts: { with: { comments: true } } }
+            });
+            let commentCount = 0;
+            for (const user of users) {
+              for (const post of user.posts) {
+                for (const _comment of post.comments) {
+                  commentCount++;
+                }
+              }
+            }
+            return users;
+          }
+        },
+        { 
+          orm: 'TypeORM', 
+          fn: async () => {
+            const users = await typeormDS.getRepository(TypeORMTenantUser).find({
+              where: { tenant_id: In([1, 2, 3, 4, 5]) },
+              take: 100,
+              relations: ['posts', 'posts.comments'],
+            });
+            let commentCount = 0;
+            for (const user of users as any[]) {
+              for (const post of user.posts) {
+                for (const _comment of post.comments) {
+                  commentCount++;
+                }
+              }
             }
             return users;
           }

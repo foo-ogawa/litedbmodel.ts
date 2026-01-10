@@ -1,0 +1,15 @@
+version: "1.0"
+
+targets:
+  - pattern: "./docs/**/*.md"
+    comment_style: html
+    exclude:
+      - "**/node_modules/**"
+
+datasources:
+  benchmark_results:
+    type: csv
+    path: "./benchmark/results/benchmark-results.csv"
+
+embeds_dir: "./embeds"
+
