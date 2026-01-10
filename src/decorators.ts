@@ -449,7 +449,9 @@ export const column = Object.assign(
           if (v === null) return null;
           return castToStringArray(v);
         },
-        serializeArray
+        serializeArray,
+        false,
+        'text[]'
       )(columnName),
 
     /**
@@ -464,7 +466,9 @@ export const column = Object.assign(
           if (v === null) return null;
           return castToIntegerArray(v);
         },
-        serializeArray
+        serializeArray,
+        false,
+        'int[]'
       )(columnName),
 
     /**
@@ -479,7 +483,9 @@ export const column = Object.assign(
           if (v === null) return null;
           return castToNumericArray(v);
         },
-        serializeArray
+        serializeArray,
+        false,
+        'numeric[]'
       )(columnName),
 
     /**
@@ -494,7 +500,9 @@ export const column = Object.assign(
           if (v === null) return null;
           return castToBooleanArray(v);
         },
-        serializeBooleanArray
+        serializeBooleanArray,
+        false,
+        'boolean[]'
       )(columnName),
 
     /**
@@ -535,7 +543,9 @@ export const column = Object.assign(
           if (v === null) return null;
           return castToJson(v) as T;
         },
-        serializeJson
+        serializeJson,
+        false,
+        'jsonb'
       )(columnName),
 
     // ============================================

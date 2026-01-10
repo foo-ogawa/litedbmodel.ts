@@ -435,6 +435,65 @@ await User.update([[User.id, id]], [
 ]);
 ```
 
+### SKIP Behavior by Operation
+
+| Operation | SKIP Behavior |
+|-----------|---------------|
+| `find` / `findOne` / `count` | Condition excluded from WHERE |
+| `create` / `update` | Column excluded from INSERT/UPDATE |
+| `createMany` | Column excluded → DB DEFAULT applied |
+| `updateMany` | Column excluded → existing value retained |
+
+```typescript
+// createMany - records grouped by SKIP pattern, each group inserted separately
+await User.createMany([
+  [[User.name, 'John'], [User.email, 'john@test.com']],           // Pattern A
+  [[User.name, 'Jane'], [User.email, SKIP]],                       // Pattern B (email = DEFAULT)
+  [[User.name, 'Bob'], [User.email, SKIP]],                        // Pattern B (batched with Jane)
+]);
+
+// updateMany - SKIPped columns retain existing values
+await User.updateMany([
+  [[User.id, 1], [User.email, 'new@test.com'], [User.status, SKIP]],  // status unchanged
+  [[User.id, 2], [User.email, SKIP], [User.status, 'active']],        // email unchanged
+], { keyColumns: User.id });
+```
+
+### SQL Generation Strategy (Complete Matrix)
+
+| DB | Operation | SKIP | SQL Strategy | SQL Example | Test |
+|----|-----------|------|--------------|-------------|------|
+| PostgreSQL | create | No | VALUES | `INSERT INTO t (name, arr, json) VALUES ($1, '{1,2}', '{"a":1}')` | ✅ |
+| PostgreSQL | create | Yes | VALUES (column excluded) | `INSERT INTO t (name, json) VALUES ($1, '{"a":1}')` - arr excluded | ✅ |
+| PostgreSQL | createMany | No | UNNEST | `INSERT INTO t SELECT v.name, (jsonb->arr), v.json::jsonb FROM UNNEST($1::text[], $2::text[], $3::text[]) AS v` | ✅ |
+| PostgreSQL | createMany | Yes | Group by SKIP pattern -> UNNEST per group | Same as above, SKIP columns excluded from INSERT -> DB DEFAULT | ✅ |
+| PostgreSQL | update | No | SET | `UPDATE t SET name=$1, arr='{1,2}', json='{"a":1}' WHERE id=$2` | ✅ |
+| PostgreSQL | update | Yes | SET (column excluded) | `UPDATE t SET name=$1, json='{"a":1}' WHERE id=$2` - arr excluded | ✅ |
+| PostgreSQL | updateMany | No | UNNEST | `UPDATE t SET arr=(jsonb->arr), json=v.json::jsonb FROM UNNEST(...) AS v WHERE t.id=v.id` | ✅ |
+| PostgreSQL | updateMany | Yes | UNNEST + skip_flag column | `SET arr=CASE WHEN v._skip_arr THEN t.arr ELSE (jsonb->arr) END` | ✅ |
+| MySQL | create | No | VALUES | `INSERT INTO t (name, status) VALUES (?, ?)` | ✅ |
+| MySQL | create | Yes | VALUES (column excluded) | `INSERT INTO t (name) VALUES (?)` - status excluded -> DB DEFAULT | ✅ |
+| MySQL | createMany | No | VALUES ROW | `INSERT INTO t (name, status) VALUES ROW(?,?), ROW(?,?)` | ✅ |
+| MySQL | createMany | Yes | Group by SKIP pattern -> VALUES per group | Same as above, SKIP columns excluded from INSERT -> DB DEFAULT | ✅ |
+| MySQL | update | No | SET | `UPDATE t SET name=?, status=? WHERE id=?` | ✅ |
+| MySQL | update | Yes | SET (column excluded) | `UPDATE t SET name=? WHERE id=?` - status excluded | ✅ |
+| MySQL | updateMany | No | JOIN VALUES ROW | `UPDATE t JOIN (VALUES ROW(?,?)) AS v ON t.id=v.id SET t.col=v.col` | ✅ |
+| MySQL | updateMany | Yes | JOIN VALUES + IF(skip_flag) | `SET t.status=IF(v._skip_status, t.status, v.status)` | ✅ |
+| SQLite | create | No | VALUES | `INSERT INTO t (name, status) VALUES (?, ?)` | ✅ |
+| SQLite | create | Yes | VALUES (column excluded) | `INSERT INTO t (name) VALUES (?)` - status excluded -> DB DEFAULT | ✅ |
+| SQLite | createMany | No | VALUES | `INSERT INTO t (name, status) VALUES (?,?), (?,?)` | ✅ |
+| SQLite | createMany | Yes | Group by SKIP pattern -> VALUES per group | Same as above, SKIP columns excluded from INSERT -> DB DEFAULT | ✅ |
+| SQLite | update | No | SET | `UPDATE t SET name=?, status=? WHERE id=?` | ✅ |
+| SQLite | update | Yes | SET (column excluded) | `UPDATE t SET name=? WHERE id=?` - status excluded | ✅ |
+| SQLite | updateMany | No | CASE WHEN | `UPDATE t SET status=CASE WHEN id=? THEN ? WHEN id=? THEN ? END WHERE id IN (?,?)` | ✅ |
+| SQLite | updateMany | Yes | CASE WHEN + column ref | `SET status=CASE WHEN id=1 THEN ? WHEN id=2 THEN t.status END` - SKIP uses column ref | ✅ |
+
+**Notes:**
+- PostgreSQL array types: In createMany/updateMany, `JSON.stringify()` -> `text[]` -> `jsonb_array_elements_text()` to deserialize
+- PostgreSQL JSON types: In createMany/updateMany, `JSON.stringify()` -> `text[]` -> `::jsonb` cast
+- MySQL/SQLite have no native array types, so array tests are PostgreSQL-only
+- `(jsonb->arr)` = `COALESCE((SELECT array_agg(elem::int) FROM jsonb_array_elements_text(v.col::jsonb) AS elem), ARRAY[]::int[])`
+
 See: [Conditions](classes/Conditions.md), [Values](classes/Values.md), [SKIP](variables/SKIP.md)
 
 ---

@@ -845,114 +845,267 @@ export abstract class DBModel {
       return [];
     }
 
-    // Apply serialization based on column metadata
-    const records = rawRecords.map(r => serializeRecord(this, r));
-
-    // Get union of all columns from all records (for SKIP support in createMany)
-    const columnSet = new Set<string>();
-    for (const record of records) {
-      for (const key of Object.keys(record)) {
-        // Skip DBImmediateValue with 'DEFAULT'
-        if (!(record[key] instanceof DBImmediateValue && record[key].value === 'DEFAULT')) {
-          columnSet.add(key);
-        }
-      }
-    }
-    const columns = Array.from(columnSet);
-
-    const params: unknown[] = [];
-    const valueRows: string[] = [];
-
     // Get sqlCast map and formatter for type casting in INSERT
     const sqlCastMap = getSqlCastMap(this);
     const formatter = this._getSqlCastFormatter();
+    const driverType = this.getDriverType();
 
+    // Apply serialization based on column metadata
+    const records = rawRecords.map(r => serializeRecord(this, r));
+    
+    // For PostgreSQL UNNEST path: keep raw records for array columns (need JSON format, not {1,2,3})
+    const rawRecordsForArrays = driverType === 'postgres' ? rawRecords : null;
+
+    // Group records by their column pattern (SKIP pattern grouping)
+    // Each group has the same set of columns, enabling batch INSERT without DEFAULT keyword
+    const groupedByPattern = new Map<string, { columns: string[]; records: Record<string, unknown>[] }>();
+    
     for (const record of records) {
-      const rowValues: string[] = [];
-      for (const col of columns) {
-        const val = record[col];
-        if (val instanceof DBToken) {
-          rowValues.push(val.compile(params, undefined, formatter));
-        } else if (val === undefined) {
-          rowValues.push('DEFAULT');
-        } else {
-          params.push(val);
-          // Apply SQL type cast if defined
+      // Get columns present in this record (excluding undefined/SKIP values)
+      const recordColumns: string[] = [];
+      for (const key of Object.keys(record)) {
+        const val = record[key];
+        // Skip DBImmediateValue with 'DEFAULT' and undefined values
+        if (val !== undefined && !(val instanceof DBImmediateValue && val.value === 'DEFAULT')) {
+          recordColumns.push(key);
+        }
+      }
+      recordColumns.sort(); // Sort for consistent pattern key
+      const patternKey = recordColumns.join(',');
+      
+      if (!groupedByPattern.has(patternKey)) {
+        groupedByPattern.set(patternKey, { columns: recordColumns, records: [] });
+      }
+      groupedByPattern.get(patternKey)!.records.push(record);
+    }
+
+    // Helper to convert Column symbols to strings
+    const toColName = (col: unknown): string => 
+      typeof col === 'function' || typeof col === 'object' ? String(col) : String(col);
+
+    // Helper to check if type needs JSON serialization
+    const isComplexType = (t: string) => t.endsWith('[]') || t === 'jsonb' || t === 'json';
+    
+    // Helper to get element type from array type (e.g., 'int[]' -> 'int')
+    const getArrayElementType = (arrayType: string): string => {
+      if (!arrayType.endsWith('[]')) return arrayType;
+      return arrayType.slice(0, -2);
+    };
+    
+    // Helper to build SQL expression to convert JSON text to target type
+    // Handles NULL and empty array values gracefully
+    const buildJsonToTypeExpr = (colRef: string, pgType: string): string => {
+      if (pgType === 'jsonb' || pgType === 'json') {
+        return `${colRef}::${pgType}`;
+      }
+      if (pgType.endsWith('[]')) {
+        const elemType = getArrayElementType(pgType);
+        // Use CASE to handle NULL values (jsonb_array_elements_text fails on NULL)
+        // Use COALESCE to handle empty arrays (array_agg returns NULL for empty input)
+        return `CASE WHEN ${colRef} IS NULL THEN NULL ELSE COALESCE((SELECT array_agg(elem::${elemType}) FROM jsonb_array_elements_text(${colRef}::jsonb) AS elem), ARRAY[]::${pgType}) END`;
+      }
+      return colRef;
+    };
+    
+
+    // Execute INSERT for each group
+    const allResults: InstanceType<T>[] = [];
+    
+    for (const { columns, records: groupRecords } of groupedByPattern.values()) {
+      const params: unknown[] = [];
+      let sql: string;
+
+      // Check if we should use UNNEST (PostgreSQL with multiple records)
+      const useUnnest = driverType === 'postgres' && groupRecords.length > 1;
+      
+      if (useUnnest) {
+        // PostgreSQL batch INSERT: Use UNNEST
+        // Array types are serialized to JSON text and converted in SELECT
+        const unnestArrays: string[] = [];
+        const selectExprs: string[] = [];
+        let hasDBToken = false;
+        
+        for (let i = 0; i < columns.length; i++) {
+          const col = columns[i];
           const sqlCast = sqlCastMap.get(col);
-          if (sqlCast && formatter) {
-            rowValues.push(formatter('?', sqlCast));
+          // Find first non-null value to infer type (use raw records for accurate inference)
+          let pgType = sqlCast;
+          if (!pgType && rawRecordsForArrays) {
+            for (const r of rawRecordsForArrays) {
+              const val = r[col];
+              if (val !== null && val !== undefined && !(val instanceof DBToken)) {
+                pgType = this._inferPgType(val);
+                break;
+              }
+            }
+          }
+          pgType = pgType || 'text';
+          
+          const isArrayType = pgType.endsWith('[]') && pgType !== 'jsonb' && pgType !== 'json';
+          const isJsonType = pgType === 'jsonb' || pgType === 'json';
+          
+          // Collect values for this column
+          const colValues = groupRecords.map((r, idx) => {
+            const serializedVal = r[col];
+            if (serializedVal instanceof DBToken) {
+              hasDBToken = true;
+              return serializedVal;
+            }
+            
+            if (isArrayType) {
+              // Array types: use raw value and JSON.stringify (serializeRecord converts to {1,2,3} format)
+              const rawVal = rawRecordsForArrays![idx][col];
+              if (rawVal === null || rawVal === undefined) return null;
+              return JSON.stringify(rawVal);
+            }
+            
+            // JSON and scalar types: use serialized value as-is
+            return serializedVal;
+          });
+          
+          if (hasDBToken) break;
+          
+          params.push(colValues);
+          
+          // Array types: pass as text[] and convert via jsonb_array_elements_text
+          // JSON types: pass as text[] and cast to jsonb
+          // Scalar types: pass as their actual type
+          if (isArrayType) {
+            unnestArrays.push(`?::text[]`);
+            selectExprs.push(buildJsonToTypeExpr(`v.${col}`, pgType));
+          } else if (isJsonType) {
+            unnestArrays.push(`?::text[]`);
+            selectExprs.push(`v.${col}::${pgType}`);
           } else {
-            rowValues.push('?');
+            unnestArrays.push(`?::${pgType}[]`);
+            selectExprs.push(`v.${col}`);
           }
         }
+        
+        // If no DBToken, use UNNEST
+        if (!hasDBToken) {
+          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) ` +
+                `SELECT ${selectExprs.join(', ')} ` +
+                `FROM UNNEST(${unnestArrays.join(', ')}) AS v(${columns.join(', ')})`;
+          
+          // Handle ON CONFLICT
+          if (options.onConflict) {
+            const conflictCols = Array.isArray(options.onConflict)
+              ? options.onConflict.map(toColName)
+              : [toColName(options.onConflict)];
+            sql += ` ON CONFLICT (${conflictCols.join(', ')})`;
+            if (options.onConflictIgnore) {
+              sql += ' DO NOTHING';
+            } else if (options.onConflictUpdate) {
+              const updateCols = options.onConflictUpdate === 'all'
+                ? columns
+                : options.onConflictUpdate.map(toColName);
+              const updateClauses = updateCols.map(col => `${col} = EXCLUDED.${col}`);
+              sql += ` DO UPDATE SET ${updateClauses.join(', ')}`;
+            }
+          } else if (options.conflict) {
+            sql += ` ${options.conflict}`;
+          }
+          
+          if (options.returning) {
+            sql += ` RETURNING ${options.returning}`;
+          }
+          
+          const result = await this.execute(sql, params);
+          const instances = (result.rows as Record<string, unknown>[]).map((row) => this._createInstance<T>(row));
+          allResults.push(...instances);
+          continue; // Next group
+        }
+        
+        // Fall through to VALUES clause (DBToken detected)
+        params.length = 0;
       }
-      valueRows.push(`(${rowValues.join(', ')})`);
-    }
-
-    // Handle conflict options with database-specific syntax
-    const driverType = this.getDriverType();
-    let sql: string;
-    if (options.onConflict) {
-      // Convert Column symbols to strings
-      const toColName = (col: unknown): string => 
-        typeof col === 'function' || typeof col === 'object' ? String(col) : String(col);
       
-      const conflictCols = Array.isArray(options.onConflict)
-        ? options.onConflict.map(toColName)
-        : [toColName(options.onConflict)];
+      // Single record, MySQL, SQLite, or PostgreSQL with DBToken: Use VALUES clause
+      const valueRows: string[] = [];
 
-      if (driverType === 'mysql') {
-        // MySQL: INSERT IGNORE or ON DUPLICATE KEY UPDATE
-        if (options.onConflictIgnore) {
-          sql = `INSERT IGNORE INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
-        } else if (options.onConflictUpdate) {
-          const updateCols = options.onConflictUpdate === 'all'
-            ? columns
-            : options.onConflictUpdate.map(toColName);
-          const updateClauses = updateCols.map(col => `${col} = VALUES(${col})`);
-          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON DUPLICATE KEY UPDATE ${updateClauses.join(', ')}`;
-        } else {
-          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+      for (const record of groupRecords) {
+        const rowValues: string[] = [];
+        for (const col of columns) {
+          const val = record[col];
+          if (val instanceof DBToken) {
+            rowValues.push(val.compile(params, undefined, formatter));
+          } else {
+            params.push(val);
+            // Apply SQL type cast if defined
+            const sqlCast = sqlCastMap.get(col);
+            if (sqlCast && formatter) {
+              rowValues.push(formatter('?', sqlCast));
+            } else {
+              rowValues.push('?');
+            }
+          }
         }
-      } else if (driverType === 'sqlite') {
-        // SQLite: INSERT OR IGNORE or ON CONFLICT DO UPDATE
-        if (options.onConflictIgnore) {
-          sql = `INSERT OR IGNORE INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
-        } else if (options.onConflictUpdate) {
-          const updateCols = options.onConflictUpdate === 'all'
-            ? columns
-            : options.onConflictUpdate.map(toColName);
-          const updateClauses = updateCols.map(col => `${col} = excluded.${col}`);
-          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON CONFLICT (${conflictCols.join(', ')}) DO UPDATE SET ${updateClauses.join(', ')}`;
-        } else {
-          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
-        }
-      } else {
-        // PostgreSQL: ON CONFLICT DO NOTHING / DO UPDATE
-        sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON CONFLICT (${conflictCols.join(', ')})`;
-      if (options.onConflictIgnore) {
-        sql += ' DO NOTHING';
-      } else if (options.onConflictUpdate) {
-        const updateCols = options.onConflictUpdate === 'all'
-          ? columns
-          : options.onConflictUpdate.map(toColName);
-        const updateClauses = updateCols.map(col => `${col} = EXCLUDED.${col}`);
-        sql += ` DO UPDATE SET ${updateClauses.join(', ')}`;
-        }
+        valueRows.push(`(${rowValues.join(', ')})`);
       }
-    } else if (options.conflict) {
-      // Legacy: raw conflict string
-      sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ${options.conflict}`;
-    } else {
-      sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+
+      // Build SQL based on driver and options
+      if (options.onConflict) {
+        const conflictCols = Array.isArray(options.onConflict)
+          ? options.onConflict.map(toColName)
+          : [toColName(options.onConflict)];
+
+        if (driverType === 'mysql') {
+          // MySQL: INSERT IGNORE or ON DUPLICATE KEY UPDATE
+          if (options.onConflictIgnore) {
+            sql = `INSERT IGNORE INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+          } else if (options.onConflictUpdate) {
+            const updateCols = options.onConflictUpdate === 'all'
+              ? columns
+              : options.onConflictUpdate.map(toColName);
+            const updateClauses = updateCols.map(col => `${col} = VALUES(${col})`);
+            sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON DUPLICATE KEY UPDATE ${updateClauses.join(', ')}`;
+          } else {
+            sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+          }
+        } else if (driverType === 'sqlite') {
+          // SQLite: INSERT OR IGNORE or ON CONFLICT DO UPDATE
+          if (options.onConflictIgnore) {
+            sql = `INSERT OR IGNORE INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+          } else if (options.onConflictUpdate) {
+            const updateCols = options.onConflictUpdate === 'all'
+              ? columns
+              : options.onConflictUpdate.map(toColName);
+            const updateClauses = updateCols.map(col => `${col} = excluded.${col}`);
+            sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON CONFLICT (${conflictCols.join(', ')}) DO UPDATE SET ${updateClauses.join(', ')}`;
+          } else {
+            sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+          }
+        } else {
+          // PostgreSQL (fallback with DBToken): ON CONFLICT DO NOTHING / DO UPDATE
+          sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ON CONFLICT (${conflictCols.join(', ')})`;
+          if (options.onConflictIgnore) {
+            sql += ' DO NOTHING';
+          } else if (options.onConflictUpdate) {
+            const updateCols = options.onConflictUpdate === 'all'
+              ? columns
+              : options.onConflictUpdate.map(toColName);
+            const updateClauses = updateCols.map(col => `${col} = EXCLUDED.${col}`);
+            sql += ` DO UPDATE SET ${updateClauses.join(', ')}`;
+          }
+        }
+      } else if (options.conflict) {
+        // Legacy: raw conflict string
+        sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')} ${options.conflict}`;
+      } else {
+        sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+      }
+
+      if (options.returning) {
+        sql += ` RETURNING ${options.returning}`;
+      }
+
+      const result = await this.execute(sql, params);
+      const instances = (result.rows as Record<string, unknown>[]).map((row) => this._createInstance<T>(row));
+      allResults.push(...instances);
     }
 
-    if (options.returning) {
-      sql += ` RETURNING ${options.returning}`;
-    }
-
-    const result = await this.execute(sql, params);
-    return (result.rows as Record<string, unknown>[]).map((row) => this._createInstance<T>(row));
+    return allResults;
   }
 
   /**
@@ -2469,72 +2622,22 @@ export abstract class DBModel {
         : [opts.keyColumns as Column];
       const keyColumnNames = columnsToNames(keyColumnsArray);
 
-      // Convert rows to record format and separate key/value columns
+      // Convert rows to record format
       const rowRecords = rowsInput.map(pairs => pairsToRecord(pairs));
-      
-      // Check if all rows have the same column set (for SKIP support)
-      const firstRowCols = new Set(Object.keys(rowRecords[0]));
-      let hasMismatchedColumns = false;
-      for (let i = 1; i < rowRecords.length; i++) {
-        const rowCols = new Set(Object.keys(rowRecords[i]));
-        if (rowCols.size !== firstRowCols.size || 
-            !Array.from(rowCols).every(col => firstRowCols.has(col))) {
-          hasMismatchedColumns = true;
-          break;
-        }
-      }
-      
-      // If columns differ between rows (due to SKIP), fall back to individual updates
-      // This ensures SKIPped columns retain their existing values
-      if (hasMismatchedColumns) {
-        const pkeyColumns = this._getPkeyColumnsWithDefault();
-        const allPkeyValues: unknown[][] = [];
-        
-        for (const record of rowRecords) {
-          // Build conditions from key columns
-          const conditions: Record<string, unknown> = {};
-          for (const keyCol of keyColumnNames) {
-            if (!(keyCol in record)) {
-              throw new Error(`updateMany: row missing required key column '${keyCol}'`);
-            }
-            conditions[keyCol] = record[keyCol];
-          }
-          
-          // Build values from non-key columns (only those present in this record)
-          const values: Record<string, unknown> = {};
-          for (const col of Object.keys(record)) {
-            if (!keyColumnNames.includes(col)) {
-              values[col] = record[col];
-            }
-          }
-          
-          if (Object.keys(values).length === 0) continue;
-          
-          // Execute individual update
-          const result = await this._update(conditions as ConditionObject, values, {
-            returning: opts.returning ? columnsToNames(pkeyColumns).join(', ') : undefined,
-          });
-          
-          if (opts.returning && result.length > 0) {
-            const pkeyColumnNames = columnsToNames(pkeyColumns);
-            for (const instance of result) {
-              allPkeyValues.push(
-                pkeyColumnNames.map(col => (instance as Record<string, unknown>)[col])
-              );
-            }
+
+      // Get union of all value columns across all records (for SKIP support)
+      const valueColumnSet = new Set<string>();
+      for (const record of rowRecords) {
+        for (const col of Object.keys(record)) {
+          if (!keyColumnNames.includes(col)) {
+            valueColumnSet.add(col);
           }
         }
-        
-        return opts.returning ? { key: pkeyColumns, values: allPkeyValues } : null;
       }
-      
-      // Get all column names from first row (all rows have same structure at this point)
-      const allColumnNames = Object.keys(rowRecords[0]);
-      const valueColumnNames = allColumnNames.filter(col => !keyColumnNames.includes(col));
+      const valueColumnNames = Array.from(valueColumnSet).sort();
 
       if (valueColumnNames.length === 0) {
         // All columns are SKIPped - nothing to update
-        // Return empty result (no-op) instead of throwing error
         const pkeyColumns = this._getPkeyColumnsWithDefault();
         return opts.returning ? { key: pkeyColumns, values: [] } : null;
       }
@@ -2552,34 +2655,118 @@ export abstract class DBModel {
       const driverType = this.getDriverType();
       const pkeyColumns = this._getPkeyColumnsWithDefault();
       const pkeyColumnNames = columnsToNames(pkeyColumns);
+      const sqlCastMap = getSqlCastMap(this);
 
       let sql: string;
       const params: unknown[] = [];
 
+      // Check if any SKIP exists (columns differ between rows)
+      const hasSkip = rowRecords.some(record => 
+        valueColumnNames.some(col => !(col in record))
+      );
+
       if (driverType === 'postgres') {
-        // PostgreSQL: UPDATE ... FROM UNNEST($1::type[], $2::type[], ...) AS v(...) WHERE ...
+        // PostgreSQL: Always use UNNEST for batch operations
+        // For complex types (arrays, JSON), serialize to JSON text and convert back in SET clause
         const unnestArrays: string[] = [];
         const vColumns: string[] = [];
+        const valueColActualTypes: Map<string, string> = new Map();
         
-        // Get sqlCast map for type casting
-        const sqlCastMap = getSqlCastMap(this);
+        // Helper to check if type needs text serialization for UNNEST
+        const isComplexType = (t: string) => t.endsWith('[]') || t === 'jsonb' || t === 'json';
         
-        // Build UNNEST arrays for each column
-        for (const col of allColumnNames) {
+        // Helper to get element type from array type (e.g., 'int[]' -> 'int')
+        const getArrayElementType = (arrayType: string): string => {
+          if (!arrayType.endsWith('[]')) return arrayType;
+          return arrayType.slice(0, -2);
+        };
+        
+        // Helper to build SQL expression to convert JSON text to target type
+        // Handles NULL and empty array values gracefully
+        const buildJsonToTypeExpr = (colRef: string, pgType: string): string => {
+          if (pgType === 'jsonb' || pgType === 'json') {
+            return `${colRef}::${pgType}`;
+          }
+          if (pgType.endsWith('[]')) {
+            // Convert JSON array to PostgreSQL array via jsonb_array_elements_text
+            // Use CASE to handle NULL values (jsonb_array_elements_text fails on NULL)
+            // Use COALESCE to handle empty arrays (array_agg returns NULL for empty input)
+            const elemType = getArrayElementType(pgType);
+            return `CASE WHEN ${colRef} IS NULL THEN NULL ELSE COALESCE((SELECT array_agg(elem::${elemType}) FROM jsonb_array_elements_text(${colRef}::jsonb) AS elem), ARRAY[]::${pgType}) END`;
+          }
+          return colRef;
+        };
+        
+        // Add key columns
+        for (const col of keyColumnNames) {
           const colValues = rowRecords.map(r => r[col]);
           params.push(colValues);
-          
-          // Use sqlCast if defined, otherwise infer from value
           const sqlCast = sqlCastMap.get(col);
           const pgType = sqlCast || this._inferPgType(colValues.find(v => v !== null && v !== undefined));
           unnestArrays.push(`?::${pgType}[]`);
           vColumns.push(col);
         }
         
-        // Build SET clause
-        const setClauses = valueColumnNames.map(col => `${col} = v.${col}`);
+        // Add value columns (serialize complex types to JSON text)
+        for (const col of valueColumnNames) {
+          const sqlCast = sqlCastMap.get(col);
+          // Find first non-null value to infer type
+          let pgType = sqlCast;
+          if (!pgType) {
+            for (const r of rowRecords) {
+              if (col in r && r[col] !== null && r[col] !== undefined) {
+                pgType = this._inferPgType(r[col]);
+                break;
+              }
+            }
+            pgType = pgType || 'text';
+          }
+          valueColActualTypes.set(col, pgType);
+          
+          const isComplex = isComplexType(pgType);
+          const colValues = rowRecords.map(r => {
+            if (!(col in r)) return null;  // SKIP
+            const val = r[col];
+            // Serialize arrays and JSON to JSON string
+            if (isComplex && val !== null && val !== undefined) {
+              return JSON.stringify(val);
+            }
+            return val;
+          });
+          
+          params.push(colValues);
+          // Pass complex types as text[], others as their actual type
+          unnestArrays.push(isComplex ? `?::text[]` : `?::${pgType}[]`);
+          vColumns.push(col);
+          
+          if (hasSkip) {
+            // Add skip flag for this column
+            const skipFlags = rowRecords.map(r => !(col in r));
+            params.push(skipFlags);
+            unnestArrays.push(`?::boolean[]`);
+            vColumns.push(`_skip_${col}`);
+          }
+        }
         
-        // Build WHERE clause for key matching
+        // Build SET clause (convert JSON text back to actual types)
+        const setClauses = valueColumnNames.map(col => {
+          const actualType = valueColActualTypes.get(col)!;
+          const isComplex = isComplexType(actualType);
+          
+          if (hasSkip) {
+            if (isComplex) {
+              const convertExpr = buildJsonToTypeExpr(`v.${col}`, actualType);
+              return `${col} = CASE WHEN v._skip_${col} THEN t.${col} ELSE ${convertExpr} END`;
+            }
+            return `${col} = CASE WHEN v._skip_${col} THEN t.${col} ELSE v.${col} END`;
+          }
+          if (isComplex) {
+            return `${col} = ${buildJsonToTypeExpr(`v.${col}`, actualType)}`;
+          }
+          return `${col} = v.${col}`;
+        });
+        
+        // Build WHERE clause
         const whereConditions = keyColumnNames.map(col => `t.${col} = v.${col}`);
         
         sql = `UPDATE ${tableName} AS t SET ${setClauses.join(', ')} ` +
@@ -2590,50 +2777,105 @@ export abstract class DBModel {
           sql += ` RETURNING ${pkeyColumnNames.map(col => `t.${col}`).join(', ')}`;
         }
       } else if (driverType === 'mysql') {
-        // MySQL 8.0.19+: UPDATE ... JOIN (VALUES ROW(?, ?, ?), ...) AS v(...) ON ... SET ...
+        // MySQL: UPDATE ... JOIN (VALUES ROW(...)) with IF for SKIP
         const rowPlaceholders: string[] = [];
+        const allColumns: string[] = [...keyColumnNames];
+        
+        // Build column list: key columns + value columns + skip flags
+        for (const col of valueColumnNames) {
+          allColumns.push(col);
+          if (hasSkip) {
+            allColumns.push(`_skip_${col}`);
+          }
+        }
         
         for (const record of rowRecords) {
           const rowVals: string[] = [];
-          for (const col of allColumnNames) {
+          // Add key columns
+          for (const col of keyColumnNames) {
             params.push(record[col]);
             rowVals.push('?');
+          }
+          // Add value columns and skip flags
+          for (const col of valueColumnNames) {
+            params.push(col in record ? record[col] : null);
+            rowVals.push('?');
+            if (hasSkip) {
+              params.push(col in record ? 0 : 1);  // MySQL uses 0/1 for boolean
+              rowVals.push('?');
+            }
           }
           rowPlaceholders.push(`ROW(${rowVals.join(', ')})`);
         }
         
-        // Build SET clause (value columns only)
-        const setClauses = valueColumnNames.map(col => `t.${col} = v.${col}`);
+        // Build SET clause with IF for SKIP
+        const setClauses = valueColumnNames.map(col => {
+          if (hasSkip) {
+            return `t.${col} = IF(v._skip_${col}, t.${col}, v.${col})`;
+          }
+          return `t.${col} = v.${col}`;
+        });
         
-        // Build ON clause for key matching
         const onConditions = keyColumnNames.map(col => `t.${col} = v.${col}`);
         
         sql = `UPDATE ${tableName} AS t ` +
-              `JOIN (VALUES ${rowPlaceholders.join(', ')}) AS v(${allColumnNames.join(', ')}) ` +
+              `JOIN (VALUES ${rowPlaceholders.join(', ')}) AS v(${allColumns.join(', ')}) ` +
               `ON ${onConditions.join(' AND ')} ` +
               `SET ${setClauses.join(', ')}`;
       } else {
-        // SQLite 3.33+: WITH v(...) AS (VALUES (...), ...) UPDATE ... FROM v WHERE ...
-        const rowPlaceholders: string[] = [];
+        // SQLite: CASE WHEN key = value THEN ... format (no CTE needed)
+        // This approach works reliably across SQLite versions
         
-        for (const record of rowRecords) {
-          const rowVals: string[] = [];
-          for (const col of allColumnNames) {
-            params.push(record[col]);
-            rowVals.push('?');
+        // Build SET clauses using CASE WHEN for each value column
+        const setClauses = valueColumnNames.map(col => {
+          const whenClauses: string[] = [];
+          
+          for (const record of rowRecords) {
+            // Build key condition for this row
+            const keyConditions = keyColumnNames.map(keyCol => `${keyCol} = ?`).join(' AND ');
+            
+            // Add key values to params
+            for (const keyCol of keyColumnNames) {
+              params.push(record[keyCol]);
+            }
+            
+            // Determine value: SKIP uses existing column value, otherwise use new value
+            if (hasSkip && !(col in record)) {
+              // SKIP: use existing value (reference the column itself)
+              whenClauses.push(`WHEN ${keyConditions} THEN ${tableName}.${col}`);
+            } else {
+              // Use provided value
+              params.push(col in record ? record[col] : null);
+              whenClauses.push(`WHEN ${keyConditions} THEN ?`);
+            }
           }
-          rowPlaceholders.push(`(${rowVals.join(', ')})`);
+          
+          return `${col} = CASE ${whenClauses.join(' ')} ELSE ${tableName}.${col} END`;
+        });
+        
+        // Build WHERE clause for all keys
+        const whereKeyValues: string[] = [];
+        for (const record of rowRecords) {
+          if (keyColumnNames.length === 1) {
+            params.push(record[keyColumnNames[0]]);
+            whereKeyValues.push('?');
+          } else {
+            const rowKeys = keyColumnNames.map(() => '?').join(', ');
+            for (const keyCol of keyColumnNames) {
+              params.push(record[keyCol]);
+            }
+            whereKeyValues.push(`(${rowKeys})`);
+          }
         }
         
-        // Build SET clause (value columns only)
-        const setClauses = valueColumnNames.map(col => `${col} = v.${col}`);
+        let whereClause: string;
+        if (keyColumnNames.length === 1) {
+          whereClause = `${keyColumnNames[0]} IN (${whereKeyValues.join(', ')})`;
+        } else {
+          whereClause = `(${keyColumnNames.join(', ')}) IN (VALUES ${whereKeyValues.join(', ')})`;
+        }
         
-        // Build WHERE clause for key matching
-        const whereConditions = keyColumnNames.map(col => `${tableName}.${col} = v.${col}`);
-        
-        sql = `WITH v(${allColumnNames.join(', ')}) AS (VALUES ${rowPlaceholders.join(', ')}) ` +
-              `UPDATE ${tableName} SET ${setClauses.join(', ')} ` +
-              `FROM v WHERE ${whereConditions.join(' AND ')}`;
+        sql = `UPDATE ${tableName} SET ${setClauses.join(', ')} WHERE ${whereClause}`;
         
         if (opts.returning) {
           sql += ` RETURNING ${pkeyColumnNames.map(col => `${tableName}.${col}`).join(', ')}`;

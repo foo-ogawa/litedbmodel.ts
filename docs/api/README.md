@@ -1,4 +1,4 @@
-**litedbmodel v0.20.0**
+**litedbmodel v0.20.1**
 
 ***
 
@@ -438,6 +438,38 @@ await User.update([[User.id, id]], [
   [User.email, body.email ?? SKIP],
 ]);
 ```
+
+### SKIP Behavior by Operation
+
+| Operation | SKIP Behavior |
+|-----------|---------------|
+| `find` / `findOne` / `count` | Condition excluded from WHERE |
+| `create` / `update` | Column excluded from INSERT/UPDATE |
+| `createMany` | Column excluded → DB DEFAULT applied |
+| `updateMany` | Column excluded → existing value retained |
+
+```typescript
+// createMany - records grouped by SKIP pattern, each group inserted separately
+await User.createMany([
+  [[User.name, 'John'], [User.email, 'john@test.com']],           // Pattern A
+  [[User.name, 'Jane'], [User.email, SKIP]],                       // Pattern B (email = DEFAULT)
+  [[User.name, 'Bob'], [User.email, SKIP]],                        // Pattern B (batched with Jane)
+]);
+
+// updateMany - SKIPped columns retain existing values
+await User.updateMany([
+  [[User.id, 1], [User.email, 'new@test.com'], [User.status, SKIP]],  // status unchanged
+  [[User.id, 2], [User.email, SKIP], [User.status, 'active']],        // email unchanged
+], { keyColumns: User.id });
+```
+
+### Batch SQL Strategy by Database
+
+| Database | createMany | updateMany |
+|----------|------------|------------|
+| PostgreSQL | Grouped `UNNEST` INSERT | `UNNEST` + `CASE WHEN skip_flag` |
+| MySQL | Grouped `VALUES ROW` INSERT | `JOIN VALUES ROW` + `IF(skip_flag)` |
+| SQLite | Grouped `VALUES` INSERT | `CASE WHEN key=? THEN col ELSE ?` |
 
 See: [Conditions](classes/Conditions.md), [Values](classes/Values.md), [SKIP](variables/SKIP.md)
 

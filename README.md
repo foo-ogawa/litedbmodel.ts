@@ -560,9 +560,14 @@ await User.find([
 ]);
 ```
 
-**Batch Operations**:
-- `createMany`: SKIPped columns use DB DEFAULT value
-- `updateMany`: SKIPped columns retain existing values (each record can have different SKIPped columns)
+**SKIP Behavior by Operation**:
+
+| Operation | SKIP Behavior |
+|-----------|---------------|
+| `find` / `findOne` / `count` | Condition excluded from WHERE |
+| `create` / `update` | Column excluded from INSERT/UPDATE |
+| `createMany` | Column excluded → DB DEFAULT applied |
+| `updateMany` | Column excluded → existing value retained |
 
 ```typescript
 // createMany - SKIPped columns get DEFAULT value
@@ -577,6 +582,16 @@ await User.updateMany([
   [[User.id, 2], [User.email, SKIP], [User.status, 'active']],       // email unchanged
 ], { keyColumns: User.id });
 ```
+
+**Batch SQL Strategy by Database**:
+
+| Database | createMany | updateMany |
+|----------|------------|------------|
+| PostgreSQL | Grouped `UNNEST` INSERT per SKIP pattern | `UNNEST` + `CASE WHEN skip_flag` |
+| MySQL | Grouped `VALUES ROW` INSERT per SKIP pattern | `JOIN VALUES ROW` + `IF(skip_flag)` |
+| SQLite | Grouped `VALUES` INSERT per SKIP pattern | `CASE WHEN key=? THEN col ELSE ?` |
+
+Records with the same SKIP pattern are batched together for efficient INSERT. Each database uses native batch syntax while ensuring SKIPped columns receive DEFAULT values (createMany) or retain existing values (updateMany).
 
 ---
 

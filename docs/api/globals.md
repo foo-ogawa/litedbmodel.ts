@@ -1,8 +1,8 @@
-[**litedbmodel v0.20.0**](README.md)
+[**litedbmodel v0.20.1**](README.md)
 
 ***
 
-# litedbmodel v0.20.0
+# litedbmodel v0.20.1
 
 litedbmodel - A lightweight TypeScript data access layer
 

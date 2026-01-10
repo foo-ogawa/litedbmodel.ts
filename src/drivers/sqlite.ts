@@ -67,12 +67,15 @@ class SqliteConnection implements DBConnection {
     const normalizedSql = sql.trim().toUpperCase();
     const convertedParams = convertParams(params || []);
 
-    // Determine if this is a SELECT-like query
-    if (
-      normalizedSql.startsWith('SELECT') ||
-      normalizedSql.startsWith('WITH') ||
-      normalizedSql.includes('RETURNING')
-    ) {
+    // Determine if this is a SELECT-like query that returns data
+    // Note: WITH can be followed by UPDATE/DELETE without RETURNING, which doesn't return data
+    const isSelectLike = normalizedSql.startsWith('SELECT') ||
+      normalizedSql.includes('RETURNING');
+    
+    // WITH ... SELECT returns data, but WITH ... UPDATE/DELETE without RETURNING doesn't
+    const isWithSelect = normalizedSql.startsWith('WITH') && !normalizedSql.includes('UPDATE') && !normalizedSql.includes('DELETE');
+    
+    if (isSelectLike || isWithSelect) {
       const rows = stmt.all(...convertedParams) as Record<string, unknown>[];
       return { rows, rowCount: rows.length };
     } else {
