@@ -818,7 +818,7 @@ flowchart TD
     
     find --> query
     findOne --> query
-    findById --> query
+    findById --> execute
     
     belongsTo --> query
     hasMany --> query
@@ -847,47 +847,41 @@ flowchart TD
 ### Example
 
 ```typescript
-import { Middleware, NextExecute, ExecuteResult } from 'litedbmodel';
-
-class LoggerMiddleware extends Middleware {
-  queries: string[] = [];
-
-  async execute(next: NextExecute, sql: string, params?: unknown[]): Promise<ExecuteResult> {
-    this.queries.push(sql);
-    const start = Date.now();
-    const result = await next(sql, params);
-    console.log(`${sql} (${Date.now() - start}ms)`);
-    return result;
+// Simple logger (no state needed)
+const LoggerMiddleware = DBModel.createMiddleware({
+  execute: async function(next, sql, params) {
+    console.log('SQL:', sql);
+    return next(sql, params);
   }
-}
+});
 
-DBModel.use(LoggerMiddleware);
-
-// Per-request access
-const ctx = LoggerMiddleware.getCurrentContext();
-console.log(ctx.queries);
-```
-
-### Tenant Isolation Example
-
-```typescript
-import { Column } from 'litedbmodel';
-
-class TenantMiddleware extends Middleware {
-  tenantId: number = 0;
-
-  async find<T extends typeof DBModel>(model: T, next: NextFind<T>, conditions: Conds) {
+// With per-request state (fully type-safe)
+const TenantMiddleware = DBModel.createMiddleware({
+  // Initial state for each request (deep-cloned per request)
+  state: { tenantId: 0, queryCount: 0 },
+  
+  // Hook signature: (model, next, ...args) for method-level hooks
+  find: async function(model, next, conditions, options) {
+    // `this` is typed as { tenantId: number; queryCount: number }
+    this.queryCount++;
     const tenantCol = (model as { tenant_id?: Column }).tenant_id;
     if (tenantCol) {
       conditions = [[tenantCol, this.tenantId], ...conditions];
     }
-    return next(conditions);
+    return next(conditions, options);
   }
-}
+});
 
-// In request handler
+// Register
+DBModel.use(LoggerMiddleware);
+DBModel.use(TenantMiddleware);
+
+// Per-request usage (type-safe)
 TenantMiddleware.getCurrentContext().tenantId = req.user.tenantId;
+console.log(TenantMiddleware.getCurrentContext().queryCount);
 ```
+
+**State lifecycle:** Each HTTP request gets its own copy of the `state` object via `AsyncLocalStorage`. States are isolated between concurrent requests and automatically cleaned up when the request ends.
 
 ---
 

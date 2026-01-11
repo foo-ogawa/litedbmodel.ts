@@ -403,8 +403,8 @@ class LoggingMiddleware extends Middleware {
   }
 }
 
-// Register middleware
-User.use(LoggingMiddleware);
+// Register middleware (applies to ALL models)
+DBModel.use(LoggingMiddleware);
 ```
 
 See: [Middleware](classes/Middleware.md)

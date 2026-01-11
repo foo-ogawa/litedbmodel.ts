@@ -169,7 +169,10 @@ export { DBModel as LazyLoadingDBModel } from './DBModel';
 
 export {
   Middleware,
+  createMiddleware,
   type MiddlewareClass,
+  type MiddlewareConfig,
+  type CreatedMiddlewareClass,
   type ExecuteResult,
   type NextFind,
   type NextFindOne,

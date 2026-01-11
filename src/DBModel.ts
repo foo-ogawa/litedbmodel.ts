@@ -10,7 +10,7 @@ import { initDBHandler, getDBHandler, createHandlerWithConnection, DBHandler, ty
 import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, UpdateManyOptions, TransactionOptions, LimitConfig, DBConfigOptions, PkeyResult, InternalInsertOptions, InternalUpdateOptions, InternalDeleteOptions } from './types';
 import { LimitExceededError, WriteOutsideTransactionError, WriteInReadOnlyContextError } from './types';
 import { type Column, type OrderSpec, type CVs, type Conds, type CondsOf, type OrCondOf, type ColumnsOf, createColumn, columnsToNames, pairsToRecord, condsToRecord, orderToString, createOrCond } from './Column';
-import type { MiddlewareClass, ExecuteResult } from './Middleware';
+import { createMiddleware as createMiddlewareFn, type MiddlewareClass, type MiddlewareConfig, type CreatedMiddlewareClass, type ExecuteResult } from './Middleware';
 import { serializeRecord, getColumnMeta, getSqlCastMap, type KeyPair, type CompositeKeyPairs } from './decorators';
 import { getTypeCast, getSqlBuilder } from './drivers';
 
@@ -416,6 +416,53 @@ export abstract class DBModel {
         this._middlewares.splice(index, 1);
       }
     };
+  }
+
+  /**
+   * Create a middleware class from a configuration object.
+   * 
+   * This is a simpler alternative to extending the Middleware class directly.
+   * Each request gets its own copy of the state object via AsyncLocalStorage.
+   * 
+   * @param config - Middleware configuration with state and hook functions
+   * @returns A middleware class that can be passed to DBModel.use()
+   * 
+   * @example
+   * ```typescript
+   * // Simple logger (no state)
+   * const LoggerMiddleware = DBModel.createMiddleware({
+   *   execute: async function(next, sql, params) {
+   *     console.log('SQL:', sql);
+   *     return next(sql, params);
+   *   }
+   * });
+   * 
+   * // With per-request state
+   * const TenantMiddleware = DBModel.createMiddleware({
+   *   state: { tenantId: 0, logs: [] as string[] },
+   *   
+   *   // Note: hook signature is (model, next, ...args) for method-level hooks
+   *   find: async function(model, next, conditions, options) {
+   *     // `this` is typed as { tenantId: number; logs: string[] }
+   *     this.logs.push(`find on ${model.TABLE_NAME}`);
+   *     if (model.tenant_id) {
+   *       conditions = [[model.tenant_id, this.tenantId], ...conditions];
+   *     }
+   *     return next(conditions, options);
+   *   }
+   * });
+   * 
+   * // Register
+   * DBModel.use(TenantMiddleware);
+   * 
+   * // Set tenant for current request (type-safe)
+   * TenantMiddleware.getCurrentContext().tenantId = 123;
+   * ```
+   */
+  static createMiddleware<S extends object = Record<string, never>>(
+    config: MiddlewareConfig<S>
+  ): CreatedMiddlewareClass<S> {
+    return createMiddlewareFn(config);
   }
 
   /**

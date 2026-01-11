@@ -293,3 +293,235 @@ export abstract class Middleware {
 
 /** Type for middleware class (not instance) */
 export type MiddlewareClass = typeof Middleware & (new () => Middleware);
+
+// ===========================================
+// createMiddleware Factory Function
+// ===========================================
+
+/**
+ * Configuration object for createMiddleware.
+ * All hook functions receive `this` bound to the state object.
+ * 
+ * Hook signature matches the Middleware class:
+ * - Method-level hooks: `(model, next, ...args)`
+ * - execute hook: `(next, sql, params)`
+ * 
+ * @typeParam S - Type of the state object (defaults to empty object)
+ */
+export interface MiddlewareConfig<S extends object = Record<string, never>> {
+  /** 
+   * Initial state for each request context.
+   * A fresh copy is created for each request via structuredClone.
+   * Access via `this` in hook functions or `getCurrentContext()`.
+   */
+  state?: S;
+  
+  /** Called when a new context is created */
+  init?: (this: S) => void;
+  
+  /** Intercept find() */
+  find?: <T extends typeof DBModel>(
+    this: S,
+    model: T,
+    next: NextFind<T>,
+    conditions: Conds,
+    options?: SelectOptions
+  ) => Promise<InstanceType<T>[]>;
+  
+  /** Intercept findOne() */
+  findOne?: <T extends typeof DBModel>(
+    this: S,
+    model: T,
+    next: NextFindOne<T>,
+    conditions: Conds,
+    options?: SelectOptions
+  ) => Promise<InstanceType<T> | null>;
+  
+  /** Intercept findById() */
+  findById?: <T extends typeof DBModel>(
+    this: S,
+    model: T,
+    next: NextFindById<T>,
+    id: unknown | PkeyResult,
+    options?: SelectOptions
+  ) => Promise<InstanceType<T>[]>;
+  
+  /** Intercept count() */
+  count?: <T extends typeof DBModel>(
+    this: S,
+    model: T,
+    next: NextCount,
+    conditions: Conds
+  ) => Promise<number>;
+  
+  /** Intercept create() */
+  create?: <T extends typeof DBModel>(
+    this: S,
+    model: T,
+    next: NextCreate,
+    pairs: readonly (readonly [Column<any, any>, any])[],
+    options?: InsertOptions
+  ) => Promise<PkeyResult | null>;
+  
+  /** Intercept createMany() */
+  createMany?: <T extends typeof DBModel>(
+    this: S,
+    model: T,
+    next: NextCreateMany,
+    pairsArray: readonly (readonly (readonly [Column<any, any>, any])[])[],
+    options?: InsertOptions
+  ) => Promise<PkeyResult | null>;
+  
+  /** Intercept update() */
+  update?: <T extends typeof DBModel>(
+    this: S,
+    model: T,
+    next: NextUpdate,
+    conditions: Conds,
+    values: readonly (readonly [Column<any, any>, any])[],
+    options?: UpdateOptions
+  ) => Promise<PkeyResult | null>;
+  
+  /** Intercept updateMany() */
+  updateMany?: <T extends typeof DBModel>(
+    this: S,
+    model: T,
+    next: NextUpdateMany,
+    records: readonly (readonly (readonly [Column<any, any>, any])[])[],
+    options?: UpdateManyOptions
+  ) => Promise<PkeyResult | null>;
+  
+  /** Intercept delete() */
+  delete?: <T extends typeof DBModel>(
+    this: S,
+    model: T,
+    next: NextDelete,
+    conditions: Conds,
+    options?: DeleteOptions
+  ) => Promise<PkeyResult | null>;
+  
+  /** Intercept execute() - lowest level, catches ALL SQL queries */
+  execute?: (
+    this: S,
+    next: NextExecute,
+    sql: string,
+    params?: unknown[]
+  ) => Promise<ExecuteResult>;
+  
+  /** Intercept query() - catches raw SQL that returns model instances */
+  query?: <T extends typeof DBModel>(
+    this: S,
+    model: T,
+    next: NextQuery<T>,
+    sql: string,
+    params?: unknown[]
+  ) => Promise<InstanceType<T>[]>;
+}
+
+/**
+ * Type for the middleware class created by createMiddleware.
+ * Provides typed access to state via getCurrentContext().
+ * 
+ * @typeParam S - The state object type
+ */
+export interface CreatedMiddlewareClass<S extends object> {
+  /** Get the current request's state (creates new instance if none exists) */
+  getCurrentContext(): S;
+  /** Run a function with a fresh middleware context */
+  run<R>(fn: () => R): R;
+  /** Check if a context exists for the current request */
+  hasContext(): boolean;
+  /** Clear the current context (useful for testing) */
+  clearContext(): void;
+  /** Constructor */
+  new(): Middleware & S;
+}
+
+/**
+ * Create a middleware class from a configuration object.
+ * 
+ * This is a simpler alternative to extending the Middleware class directly.
+ * Each request gets its own copy of the state object via AsyncLocalStorage.
+ * 
+ * @param config - Middleware configuration with state and hook functions
+ * @returns A middleware class that can be passed to DBModel.use()
+ * 
+ * @example
+ * ```typescript
+ * // Simple logger (no state)
+ * const LoggerMiddleware = createMiddleware({
+ *   execute: async function(next, sql, params) {
+ *     console.log('SQL:', sql);
+ *     return next(sql, params);
+ *   }
+ * });
+ * 
+ * // With per-request state
+ * const TenantMiddleware = createMiddleware({
+ *   state: { tenantId: 0 },
+ *   
+ *   // Hook signature: (model, next, ...args) for method-level hooks
+ *   find: async function(model, next, conditions, options) {
+ *     // `this` is typed as { tenantId: number }
+ *     if (model.tenant_id) {
+ *       conditions = [[model.tenant_id, this.tenantId], ...conditions];
+ *     }
+ *     return next(conditions, options);
+ *   }
+ * });
+ * 
+ * // Register and use
+ * DBModel.use(TenantMiddleware);
+ * 
+ * // Set tenant for current request
+ * TenantMiddleware.getCurrentContext().tenantId = 123;
+ * ```
+ * 
+ * @category Middleware
+ */
+export function createMiddleware<S extends object = Record<string, never>>(
+  config: MiddlewareConfig<S>
+): CreatedMiddlewareClass<S> {
+  // Create a dynamic class extending Middleware
+  class DynamicMiddleware extends Middleware {
+    constructor() {
+      super();
+      // Copy initial state to this instance
+      if (config.state) {
+        // Use structuredClone for deep copy (handles nested objects/arrays)
+        Object.assign(this, structuredClone(config.state));
+      }
+    }
+    
+    // Override init if provided
+    init(): void {
+      if (config.init) {
+        config.init.call(this as unknown as S);
+      }
+    }
+  }
+  
+  // Dynamically add hook methods from config
+  const hookNames = [
+    'find', 'findOne', 'findById', 'count',
+    'create', 'createMany', 'update', 'updateMany', 'delete',
+    'execute', 'query'
+  ] as const;
+  
+  for (const hookName of hookNames) {
+    const hookFn = config[hookName];
+    if (hookFn) {
+      // Wrap the hook to bind `this` correctly
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (DynamicMiddleware.prototype as any)[hookName] = function(
+        this: Middleware,
+        ...args: unknown[]
+      ) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (hookFn as any).apply(this, args);
+      };
+    }
+  }
+  
+  return DynamicMiddleware as unknown as CreatedMiddlewareClass<S>;
+}
