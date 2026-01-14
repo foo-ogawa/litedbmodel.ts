@@ -216,6 +216,31 @@ Use explicit type decorators when auto-inference isn't sufficient:
 @column.json<Settings>() settings?: Settings; // JSON with type
 ```
 
+### Date vs DateTime: Important Distinction
+
+TypeScript has only one `Date` type, but databases distinguish between:
+
+| DB Column Type | Decorator | Example |
+|----------------|-----------|---------|
+| `TIMESTAMP` / `DATETIME` | `@column()` or `@column.datetime()` | `created_at`, `updated_at` |
+| `DATE` | `@column.date()` | `birth_date`, `settlement_date` |
+
+**⚠️ Important**: `@column()` with `Date` type is treated as `TIMESTAMP/DATETIME`. For date-only columns (no time component), you **must** use `@column.date()` explicitly.
+
+```typescript
+// ✅ Correct usage
+@column() created_at?: Date;              // TIMESTAMP column (datetime)
+@column.datetime() updated_at?: Date;     // TIMESTAMP column (explicit)
+@column.date() settlement_date?: Date;    // DATE column (date only)
+
+// ❌ Wrong: will cause type mismatch errors
+@column() settlement_date?: Date;         // Treated as TIMESTAMP, not DATE!
+```
+
+**Serialization behavior** (PostgreSQL):
+- `@column()` / `@column.datetime()` → ISO 8601 UTC: `2024-06-15T10:30:00.000Z`
+- `@column.date()` → UTC date only: `2024-06-15`
+
 ---
 
 ## CRUD Operations
