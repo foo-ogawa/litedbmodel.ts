@@ -10,6 +10,7 @@ import {
   getColumnMeta,
   getModelColumnNames,
   getModelPropertyNames,
+  getSqlCastMap,
 } from '../../src/decorators';
 import { DBModel } from '../../src/DBModel';
 import { isColumn } from '../../src/Column';
@@ -613,6 +614,68 @@ describe('decorators', () => {
       expect((ViewBacked as unknown as { UPDATE_TABLE_NAME: string }).UPDATE_TABLE_NAME).toBe('real_table');
     });
 
+  });
+
+  describe('sqlCast for typed columns', () => {
+    it('@column.date() should have sqlCast: date', () => {
+      @model('test_date_sqlcast')
+      class TestModel extends DBModel {
+        @column() id?: number;
+        @column.date() birth_date?: Date;
+      }
+
+      const sqlCastMap = getSqlCastMap(TestModel);
+      expect(sqlCastMap.get('birth_date')).toBe('date');
+      expect(sqlCastMap.get('id')).toBeUndefined();
+    });
+
+    it('@column.datetime() should have sqlCast: timestamp', () => {
+      @model('test_datetime_sqlcast')
+      class TestModel extends DBModel {
+        @column() id?: number;
+        @column.datetime() created_at?: Date;
+      }
+
+      const sqlCastMap = getSqlCastMap(TestModel);
+      expect(sqlCastMap.get('created_at')).toBe('timestamp');
+      expect(sqlCastMap.get('id')).toBeUndefined();
+    });
+
+    it('@column.boolean() should have sqlCast: boolean', () => {
+      @model('test_boolean_sqlcast')
+      class TestModel extends DBModel {
+        @column() id?: number;
+        @column.boolean() is_active?: boolean;
+      }
+
+      const sqlCastMap = getSqlCastMap(TestModel);
+      expect(sqlCastMap.get('is_active')).toBe('boolean');
+      expect(sqlCastMap.get('id')).toBeUndefined();
+    });
+
+    it('auto-inferred Date should NOT have sqlCast (backwards compatibility)', () => {
+      @model('test_auto_date')
+      class TestModel extends DBModel {
+        @column() id?: number;
+        @column() some_date?: Date;  // auto-inferred, no explicit @column.date()
+      }
+
+      const sqlCastMap = getSqlCastMap(TestModel);
+      // Auto-inferred Date columns don't get sqlCast for backwards compatibility
+      expect(sqlCastMap.get('some_date')).toBeUndefined();
+    });
+
+    it('auto-inferred boolean should NOT have sqlCast (backwards compatibility)', () => {
+      @model('test_auto_boolean')
+      class TestModel extends DBModel {
+        @column() id?: number;
+        @column() is_active?: boolean;  // auto-inferred, no explicit @column.boolean()
+      }
+
+      const sqlCastMap = getSqlCastMap(TestModel);
+      // Auto-inferred boolean columns don't get sqlCast for backwards compatibility
+      expect(sqlCastMap.get('is_active')).toBeUndefined();
+    });
   });
 });
 

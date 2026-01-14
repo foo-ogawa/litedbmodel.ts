@@ -22,7 +22,7 @@ class AllTypesModel extends DBModel {
   @column() text_val?: string | null;
   @column() varchar_val?: string | null;
   @column.datetime() timestamp_val?: Date | null;
-  @column() date_val?: string | null;
+  @column.date() date_val?: Date | null;  // Changed to use @column.date() for proper type casting
   @column.intArray() int_array?: number[];
   @column.stringArray() text_array?: string[];
   @column.booleanArray() bool_array?: (boolean | null)[];
@@ -844,6 +844,255 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       const id3 = result3!.values[0][0] as number;
       const found3 = await AllTypes.findOne([[AllTypes.id, id3]]);
       expect(found3!.timestamp_val?.toISOString()).toBe(minDate.toISOString());
+    });
+  });
+
+  describe('NULL value handling for all write operations', () => {
+    // Test null values in create (already tested above, but include date type)
+    it('should set null via create for date/datetime columns', async () => {
+      const result = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.timestamp_val, null],
+          [AllTypes.date_val, null],
+        ], { returning: true });
+      });
+      const id = result!.values[0][0] as number;
+      const found = await AllTypes.findOne([[AllTypes.id, id]]);
+      expect(found!.timestamp_val).toBeNull();
+      expect(found!.date_val).toBeNull();
+    });
+
+    // Test null values in createMany
+    it('should set null via createMany for all typed columns', async () => {
+      const result = await DBModel.transaction(async () => {
+        return await AllTypes.createMany([
+          // Row 1: all nulls
+          [
+            [AllTypes.int_val, null],
+            [AllTypes.float_val, null],
+            [AllTypes.bool_val, null],
+            [AllTypes.text_val, null],
+            [AllTypes.timestamp_val, null],
+            [AllTypes.date_val, null],
+            [AllTypes.json_val, null],
+          ],
+          // Row 2: mix of values and nulls
+          [
+            [AllTypes.int_val, 42],
+            [AllTypes.float_val, null],
+            [AllTypes.bool_val, true],
+            [AllTypes.text_val, null],
+            [AllTypes.timestamp_val, new Date('2024-01-01T00:00:00.000Z')],
+            [AllTypes.date_val, null],
+            [AllTypes.json_val, { key: 'value' }],
+          ],
+          // Row 3: nulls for date/datetime specifically
+          [
+            [AllTypes.int_val, 100],
+            [AllTypes.float_val, 3.14],
+            [AllTypes.bool_val, null],
+            [AllTypes.text_val, 'test'],
+            [AllTypes.timestamp_val, null],
+            [AllTypes.date_val, null],
+            [AllTypes.json_val, null],
+          ],
+        ], { returning: true });
+      });
+
+      const ids = result!.values.map(v => v[0] as number);
+      const records = await AllTypes.find([[AllTypes.id, ids]]);
+      
+      // Verify row 1 (all nulls)
+      const row1 = records.find(r => r.id === ids[0])!;
+      expect(row1.int_val).toBeNull();
+      expect(row1.float_val).toBeNull();
+      expect(row1.bool_val).toBeNull();
+      expect(row1.text_val).toBeNull();
+      expect(row1.timestamp_val).toBeNull();
+      expect(row1.date_val).toBeNull();
+      expect(row1.json_val).toBeNull();
+
+      // Verify row 2 (mix)
+      const row2 = records.find(r => r.id === ids[1])!;
+      expect(row2.int_val).toBe(42);
+      expect(row2.float_val).toBeNull();
+      expect(row2.bool_val).toBe(true);
+      expect(row2.text_val).toBeNull();
+      expect(row2.timestamp_val).toBeInstanceOf(Date);
+      expect(row2.date_val).toBeNull();
+      expect(row2.json_val).toEqual({ key: 'value' });
+
+      // Verify row 3 (date/datetime nulls)
+      const row3 = records.find(r => r.id === ids[2])!;
+      expect(row3.int_val).toBe(100);
+      expect(row3.timestamp_val).toBeNull();
+      expect(row3.date_val).toBeNull();
+    });
+
+    // Test setting null via update (changing existing value to null)
+    it('should set null via update for all typed columns', async () => {
+      // First create a record with non-null values
+      const result = await DBModel.transaction(async () => {
+        return await AllTypes.create([
+          [AllTypes.int_val, 10],
+          [AllTypes.float_val, 1.5],
+          [AllTypes.bool_val, true],
+          [AllTypes.text_val, 'initial'],
+          [AllTypes.timestamp_val, new Date('2024-01-01T00:00:00.000Z')],
+          [AllTypes.date_val, new Date('2024-06-15')],
+          [AllTypes.json_val, { key: 'initial' }],
+        ], { returning: true });
+      });
+      const id = result!.values[0][0] as number;
+
+      // Verify initial values
+      const initial = await AllTypes.findOne([[AllTypes.id, id]]);
+      expect(initial!.int_val).toBe(10);
+      expect(initial!.timestamp_val).toBeInstanceOf(Date);
+      expect(initial!.date_val).toBeInstanceOf(Date);
+
+      // Update all to null
+      await DBModel.transaction(async () => {
+        await AllTypes.update(
+          [[AllTypes.id, id]],
+          [
+            [AllTypes.int_val, null],
+            [AllTypes.float_val, null],
+            [AllTypes.bool_val, null],
+            [AllTypes.text_val, null],
+            [AllTypes.timestamp_val, null],
+            [AllTypes.date_val, null],
+            [AllTypes.json_val, null],
+          ]
+        );
+      });
+
+      // Verify all are now null
+      const updated = await AllTypes.findOne([[AllTypes.id, id]]);
+      expect(updated!.int_val).toBeNull();
+      expect(updated!.float_val).toBeNull();
+      expect(updated!.bool_val).toBeNull();
+      expect(updated!.text_val).toBeNull();
+      expect(updated!.timestamp_val).toBeNull();
+      expect(updated!.date_val).toBeNull();
+      expect(updated!.json_val).toBeNull();
+    });
+
+    // Test setting null via updateMany for typed columns (same columns in all rows)
+    it('should set null via updateMany for typed columns', async () => {
+      // Create multiple records with non-null values
+      const result = await DBModel.transaction(async () => {
+        return await AllTypes.createMany([
+          [
+            [AllTypes.bool_val, true],
+            [AllTypes.timestamp_val, new Date('2024-01-01T00:00:00.000Z')],
+            [AllTypes.date_val, new Date('2024-01-01')],
+            [AllTypes.json_val, { row: 1 }],
+          ],
+          [
+            [AllTypes.bool_val, false],
+            [AllTypes.timestamp_val, new Date('2024-02-01T00:00:00.000Z')],
+            [AllTypes.date_val, new Date('2024-02-01')],
+            [AllTypes.json_val, { row: 2 }],
+          ],
+          [
+            [AllTypes.bool_val, true],
+            [AllTypes.timestamp_val, new Date('2024-03-01T00:00:00.000Z')],
+            [AllTypes.date_val, new Date('2024-03-01')],
+            [AllTypes.json_val, { row: 3 }],
+          ],
+        ], { returning: true });
+      });
+      const ids = result!.values.map(v => v[0] as number);
+
+      // Verify initial values
+      const initialRecords = await AllTypes.find([[AllTypes.id, ids]]);
+      for (const rec of initialRecords) {
+        expect(rec.timestamp_val).toBeInstanceOf(Date);
+        expect(rec.date_val).toBeInstanceOf(Date);
+        expect(rec.bool_val).not.toBeNull();
+      }
+
+      // updateMany: set all typed columns to null (same columns in all rows)
+      await DBModel.transaction(async () => {
+        await AllTypes.updateMany([
+          [
+            [AllTypes.id, ids[0]],
+            [AllTypes.bool_val, null],
+            [AllTypes.timestamp_val, null],
+            [AllTypes.date_val, null],
+            [AllTypes.json_val, null],
+          ],
+          [
+            [AllTypes.id, ids[1]],
+            [AllTypes.bool_val, null],
+            [AllTypes.timestamp_val, null],
+            [AllTypes.date_val, null],
+            [AllTypes.json_val, null],
+          ],
+          [
+            [AllTypes.id, ids[2]],
+            [AllTypes.bool_val, null],
+            [AllTypes.timestamp_val, null],
+            [AllTypes.date_val, null],
+            [AllTypes.json_val, null],
+          ],
+        ], { keyColumns: AllTypes.id });
+      });
+
+      // Verify all are now null
+      const updatedRecords = await AllTypes.find([[AllTypes.id, ids]]);
+      for (const rec of updatedRecords) {
+        expect(rec.bool_val).toBeNull();
+        expect(rec.timestamp_val).toBeNull();
+        expect(rec.date_val).toBeNull();
+        expect(rec.json_val).toBeNull();
+      }
+    });
+
+    // Test updateMany with ALL records setting date/datetime to null (edge case)
+    it('should handle updateMany when all records set date/datetime to null', async () => {
+      // Create records
+      const result = await DBModel.transaction(async () => {
+        return await AllTypes.createMany([
+          [
+            [AllTypes.int_val, 10],
+            [AllTypes.timestamp_val, new Date('2024-01-01T00:00:00.000Z')],
+            [AllTypes.date_val, new Date('2024-01-01')],
+          ],
+          [
+            [AllTypes.int_val, 20],
+            [AllTypes.timestamp_val, new Date('2024-02-01T00:00:00.000Z')],
+            [AllTypes.date_val, new Date('2024-02-01')],
+          ],
+        ], { returning: true });
+      });
+      const ids = result!.values.map(v => v[0] as number);
+
+      // updateMany: ALL rows set timestamp and date to null
+      // This is the exact scenario that was reported as a bug
+      await DBModel.transaction(async () => {
+        await AllTypes.updateMany([
+          [
+            [AllTypes.id, ids[0]],
+            [AllTypes.timestamp_val, null],
+            [AllTypes.date_val, null],
+          ],
+          [
+            [AllTypes.id, ids[1]],
+            [AllTypes.timestamp_val, null],
+            [AllTypes.date_val, null],
+          ],
+        ], { keyColumns: AllTypes.id });
+      });
+
+      // Verify all are null
+      const records = await AllTypes.find([[AllTypes.id, ids]]);
+      for (const rec of records) {
+        expect(rec.timestamp_val).toBeNull();
+        expect(rec.date_val).toBeNull();
+        expect(rec.int_val).not.toBeNull();  // unchanged
+      }
     });
   });
 });

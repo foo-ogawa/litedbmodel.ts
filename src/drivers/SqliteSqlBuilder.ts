@@ -23,6 +23,8 @@ import { DBToken } from '../DBValues';
  * Uses JSON format for arrays since SQLite doesn't have native array types.
  */
 export const sqliteTypeCast: DriverTypeCast = {
+  driverName: 'sqlite',
+
   serializeArray<T>(val: T[]): string | null {
     if (val === null || val === undefined) return null;
     return JSON.stringify(val);
@@ -77,6 +79,21 @@ export const sqliteTypeCast: DriverTypeCast = {
       }
     }
     return null;
+  },
+
+  /**
+   * SQLite: return Date object as-is, let better-sqlite3 driver handle conversion
+   * Note: SQLite stores as TEXT - values stored/retrieved in server timezone
+   */
+  serializeDatetime(val: Date): Date {
+    return val;
+  },
+
+  /**
+   * SQLite: return Date object as-is, let better-sqlite3 driver handle conversion
+   */
+  serializeDate(val: Date): Date {
+    return val;
   },
 };
 

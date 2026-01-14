@@ -1028,8 +1028,9 @@ export abstract class DBModel {
       } else {
         params.push(val);
         // Apply SQL type cast if defined
+        // Skip explicit cast for timestamp/date types - pg driver handles Date objects correctly
         const sqlCast = sqlCastMap.get(col);
-        if (sqlCast && formatter) {
+        if (sqlCast && formatter && sqlCast !== 'timestamp' && sqlCast !== 'date') {
           setClauses.push(`${col} = ${formatter('?', sqlCast)}`);
         } else {
           setClauses.push(`${col} = ?`);

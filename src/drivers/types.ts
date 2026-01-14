@@ -134,6 +134,12 @@ export const defaultLogger: Logger = {
  */
 export interface DriverTypeCast {
   /**
+   * Driver name for identification
+   * Used by serialize functions to apply driver-specific formatting
+   */
+  readonly driverName: 'postgres' | 'mysql' | 'sqlite';
+
+  /**
    * Serialize array to DB format
    * PostgreSQL: '{1,2,3}' native format
    * MySQL/SQLite: '[1,2,3]' JSON format
@@ -166,6 +172,20 @@ export interface DriverTypeCast {
    * Deserialize DB value to boolean array
    */
   deserializeBooleanArray(val: unknown): (boolean | null)[] | null;
+
+  /**
+   * Serialize Date to DB format for datetime/timestamp columns
+   * PostgreSQL: ISO 8601 UTC string for explicit timezone
+   * MySQL/SQLite: Date object (driver handles conversion)
+   */
+  serializeDatetime(val: Date): unknown;
+
+  /**
+   * Serialize Date to DB format for date-only columns
+   * PostgreSQL: UTC date string (YYYY-MM-DD)
+   * MySQL/SQLite: Date object (driver handles conversion)
+   */
+  serializeDate(val: Date): unknown;
 }
 
 // ============================================

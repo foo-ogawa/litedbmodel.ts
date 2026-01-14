@@ -403,10 +403,15 @@ export const column = Object.assign(
      * @example @column.boolean() is_active?: boolean;
      */
     boolean: (columnName?: string) =>
-      createColumnDecorator((v) => {
-        if (v === undefined) return undefined;
-        return castToBoolean(v);
-      })(columnName),
+      createColumnDecorator(
+        (v) => {
+          if (v === undefined) return undefined;
+          return castToBoolean(v);
+        },
+        undefined,  // no custom serialize
+        false,      // allow auto-inference
+        'boolean'   // sqlCast for updateMany type inference
+      )(columnName),
 
     /**
      * Number type conversion (from string)
@@ -444,29 +449,63 @@ export const column = Object.assign(
     /**
      * DateTime type conversion (timestamp, timestamptz)
      * Preserves null for nullable columns, undefined stays undefined
+     * 
+     * Timezone handling:
+     * - PostgreSQL: Serializes to ISO 8601 UTC string with 'Z' suffix for explicit timezone
+     * - MySQL/SQLite: Passes Date object to driver (driver-dependent timezone handling)
+     * 
      * @example @column.datetime() created_at?: Date;
      */
     datetime: (columnName?: string) =>
-      createColumnDecorator((v) => {
-        if (v === undefined) return undefined;
-        return castToDatetime(v);
-      })(columnName),
+      createColumnDecorator(
+        (v) => {
+          if (v === undefined) return undefined;
+          return castToDatetime(v);
+        },
+        // Delegate to driver-specific serializeDatetime
+        (val, typeCast) => {
+          if (val === null || val === undefined) return null;
+          if (val instanceof Date) {
+            return typeCast?.serializeDatetime(val) ?? val;
+          }
+          return val;
+        },
+        false,      // allow auto-inference
+        'timestamp' // sqlCast for updateMany type inference
+      )(columnName),
 
     /**
      * Date type conversion (date only, time set to 00:00:00)
      * Preserves null for nullable columns, undefined stays undefined
+     * 
+     * Timezone handling:
+     * - PostgreSQL: Serializes to UTC date string (YYYY-MM-DD) for consistency
+     * - MySQL/SQLite: Passes Date object to driver
+     * 
      * @example @column.date() birth_date?: Date;
      */
     date: (columnName?: string) =>
-      createColumnDecorator((v) => {
-        if (v === undefined) return undefined;
-        if (v === null) return null;
-        const dt = castToDatetime(v);
-        if (dt) {
-          dt.setHours(0, 0, 0, 0);
-        }
-        return dt;
-      })(columnName),
+      createColumnDecorator(
+        (v) => {
+          if (v === undefined) return undefined;
+          if (v === null) return null;
+          const dt = castToDatetime(v);
+          if (dt) {
+            dt.setHours(0, 0, 0, 0);
+          }
+          return dt;
+        },
+        // Delegate to driver-specific serializeDate
+        (val, typeCast) => {
+          if (val === null || val === undefined) return null;
+          if (val instanceof Date) {
+            return typeCast?.serializeDate(val) ?? val;
+          }
+          return val;
+        },
+        false,      // allow auto-inference
+        'date'      // sqlCast for updateMany type inference
+      )(columnName),
 
     // ============================================
     // Array Types

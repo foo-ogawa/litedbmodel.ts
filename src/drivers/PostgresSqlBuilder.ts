@@ -22,6 +22,8 @@ import { DBToken } from '../DBValues';
  * PostgreSQL type cast implementation
  */
 export const postgresTypeCast: DriverTypeCast = {
+  driverName: 'postgres',
+
   serializeArray<T>(val: T[]): string {
     if (val === null || val === undefined) return null as unknown as string;
     // PostgreSQL array format: {val1,val2,val3}
@@ -79,6 +81,25 @@ export const postgresTypeCast: DriverTypeCast = {
     if (val === null || val === undefined) return null;
     if (Array.isArray(val)) return val as (boolean | null)[];
     return null;
+  },
+
+  /**
+   * PostgreSQL: serialize to ISO 8601 UTC string for explicit timezone handling
+   * This ensures TIMESTAMP WITH TIME ZONE stores the correct UTC moment
+   */
+  serializeDatetime(val: Date): string {
+    return val.toISOString();
+  },
+
+  /**
+   * PostgreSQL: serialize to UTC date string (YYYY-MM-DD)
+   * Uses UTC components to avoid timezone-related date shifts
+   */
+  serializeDate(val: Date): string {
+    const y = val.getUTCFullYear();
+    const m = String(val.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(val.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
   },
 };
 
@@ -267,7 +288,9 @@ export const postgresSqlBuilder: SqlBuilder = {
         } else {
           params.push(val);
           const sqlCast = sqlCastMap.get(col);
-          if (sqlCast) {
+          // Skip explicit cast for timestamp/date types - pg driver handles Date objects correctly
+          // Explicit cast interferes with pg's Date serialization
+          if (sqlCast && sqlCast !== 'timestamp' && sqlCast !== 'date') {
             rowValues.push(`?::${sqlCast}`);
           } else {
             rowValues.push('?');

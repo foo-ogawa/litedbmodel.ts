@@ -24,6 +24,8 @@ import { DBToken } from '../DBValues';
  * Uses JSON format for arrays since MySQL doesn't have native array types.
  */
 export const mysqlTypeCast: DriverTypeCast = {
+  driverName: 'mysql',
+
   serializeArray<T>(val: T[]): string | null {
     if (val === null || val === undefined) return null;
     return JSON.stringify(val);
@@ -78,6 +80,21 @@ export const mysqlTypeCast: DriverTypeCast = {
       }
     }
     return null;
+  },
+
+  /**
+   * MySQL: return Date object as-is, let mysql2 driver handle conversion
+   * Note: MySQL DATETIME has no timezone - values stored/retrieved in server timezone
+   */
+  serializeDatetime(val: Date): Date {
+    return val;
+  },
+
+  /**
+   * MySQL: return Date object as-is, let mysql2 driver handle conversion
+   */
+  serializeDate(val: Date): Date {
+    return val;
   },
 };
 
