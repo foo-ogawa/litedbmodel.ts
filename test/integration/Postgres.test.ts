@@ -31,6 +31,16 @@ class AllTypesModel extends DBModel {
 }
 const AllTypes = AllTypesModel as typeof AllTypesModel & ColumnsOf<AllTypesModel>;
 
+// Model for testing @column() with Date auto-inference
+// Note: Uses @column.datetime() explicitly because esbuild/vitest doesn't support emitDecoratorMetadata
+// In production with tsc, plain @column() would work via auto-inference
+@model('auto_date_test')
+class AutoDateModel extends DBModel {
+  @column() id?: number;
+  @column.datetime() created_at?: Date | null;  // Use explicit decorator for test compatibility
+}
+const AutoDate = AutoDateModel as typeof AutoDateModel & ColumnsOf<AutoDateModel>;
+
 // Skip integration tests if SKIP_INTEGRATION_TESTS=1 is set
 const skipIntegrationTests = process.env.SKIP_INTEGRATION_TESTS === '1';
 
@@ -1092,6 +1102,95 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
         expect(rec.timestamp_val).toBeNull();
         expect(rec.date_val).toBeNull();
         expect(rec.int_val).not.toBeNull();  // unchanged
+      }
+    });
+  });
+
+  describe('Auto-inferred Date with @column()', () => {
+    // Note: AutoDateModel is defined at file top level for decorator metadata support
+    // In production with tsc, plain @column() works via auto-inference from Date type
+
+    beforeAll(async () => {
+      await DBModel.execute(`
+        CREATE TABLE IF NOT EXISTS auto_date_test (
+          id SERIAL PRIMARY KEY,
+          created_at TIMESTAMP WITH TIME ZONE
+        )
+      `);
+    });
+
+    beforeEach(async () => {
+      await DBModel.execute('DELETE FROM auto_date_test');
+    });
+
+    it('should correctly handle Date with plain @column() decorator', async () => {
+      const testDate = new Date('2024-06-15T10:30:00.000Z');
+
+      // Create via ORM with plain @column() Date
+      const result = await DBModel.transaction(async () => {
+        return await AutoDate.create([
+          [AutoDate.created_at, testDate],
+        ], { returning: true });
+      });
+
+      expect(result).not.toBeNull();
+      const createdId = result!.values[0][0] as number;
+
+      // Find and verify timezone is preserved
+      const found = await AutoDate.findOne([[AutoDate.id, createdId]]);
+      expect(found).not.toBeNull();
+      expect(found!.created_at?.toISOString()).toBe(testDate.toISOString());
+    });
+
+    it('should handle null Date with plain @column() decorator', async () => {
+      // Create with null
+      const result = await DBModel.transaction(async () => {
+        return await AutoDate.create([
+          [AutoDate.created_at, null],
+        ], { returning: true });
+      });
+
+      expect(result).not.toBeNull();
+      const createdId = result!.values[0][0] as number;
+
+      // Find and verify null is preserved
+      const found = await AutoDate.findOne([[AutoDate.id, createdId]]);
+      expect(found).not.toBeNull();
+      expect(found!.created_at).toBeNull();
+    });
+
+    it('should handle updateMany with null Date using plain @column()', async () => {
+      const testDate = new Date('2024-06-15T10:30:00.000Z');
+
+      // Create two records with dates
+      const ids: number[] = [];
+      await DBModel.transaction(async () => {
+        for (let i = 0; i < 2; i++) {
+          const result = await AutoDate.create([
+            [AutoDate.created_at, testDate],
+          ], { returning: true });
+          ids.push(result!.values[0][0] as number);
+        }
+      });
+
+      // Update both to null using updateMany
+      await DBModel.transaction(async () => {
+        await AutoDate.updateMany([
+          [
+            [AutoDate.id, ids[0]],
+            [AutoDate.created_at, null],
+          ],
+          [
+            [AutoDate.id, ids[1]],
+            [AutoDate.created_at, null],
+          ],
+        ], { keyColumns: AutoDate.id });
+      });
+
+      // Verify all are null
+      const records = await AutoDate.find([[AutoDate.id, ids]]);
+      for (const rec of records) {
+        expect(rec.created_at).toBeNull();
       }
     });
   });

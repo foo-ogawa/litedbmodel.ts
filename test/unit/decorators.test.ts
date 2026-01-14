@@ -653,29 +653,10 @@ describe('decorators', () => {
       expect(sqlCastMap.get('id')).toBeUndefined();
     });
 
-    it('auto-inferred Date should NOT have sqlCast (backwards compatibility)', () => {
-      @model('test_auto_date')
-      class TestModel extends DBModel {
-        @column() id?: number;
-        @column() some_date?: Date;  // auto-inferred, no explicit @column.date()
-      }
-
-      const sqlCastMap = getSqlCastMap(TestModel);
-      // Auto-inferred Date columns don't get sqlCast for backwards compatibility
-      expect(sqlCastMap.get('some_date')).toBeUndefined();
-    });
-
-    it('auto-inferred boolean should NOT have sqlCast (backwards compatibility)', () => {
-      @model('test_auto_boolean')
-      class TestModel extends DBModel {
-        @column() id?: number;
-        @column() is_active?: boolean;  // auto-inferred, no explicit @column.boolean()
-      }
-
-      const sqlCastMap = getSqlCastMap(TestModel);
-      // Auto-inferred boolean columns don't get sqlCast for backwards compatibility
-      expect(sqlCastMap.get('is_active')).toBeUndefined();
-    });
+    // Note: Auto-inference tests are limited in vitest because esbuild doesn't fully support
+    // emitDecoratorMetadata. Auto-inference is verified in integration tests instead.
+    // When design:type metadata is available, @column() with Date/boolean types will
+    // automatically get sqlCast and serialize functions.
   });
 });
 

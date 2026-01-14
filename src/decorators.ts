@@ -139,6 +139,13 @@ export interface RelationMeta {
 // Internal Helper
 // ============================================
 
+/** Result of type inference from design:type metadata */
+interface InferredTypeInfo {
+  typeCast: TypeCastFn;
+  serialize?: SerializeFn;
+  sqlCast?: string;
+}
+
 /**
  * Infer type cast function from design:type metadata
  * Returns undefined if type cannot be inferred (Array, Object, etc.)
@@ -147,38 +154,57 @@ export interface RelationMeta {
 function inferTypeCastFromDesignType(
   target: object,
   propertyKey: string
-): TypeCastFn | undefined {
+): InferredTypeInfo | undefined {
   const designType = Reflect.getMetadata('design:type', target, propertyKey);
   
   if (!designType) return undefined;
   
   switch (designType) {
     case Boolean:
-      return (v) => {
-        if (v === undefined) return undefined;
-        return castToBoolean(v);
+      return {
+        typeCast: (v) => {
+          if (v === undefined) return undefined;
+          return castToBoolean(v);
+        },
+        sqlCast: 'boolean',
       };
     case Date:
-      return (v) => {
-        if (v === undefined) return undefined;
-        return castToDatetime(v);
+      // Auto-inferred Date: same behavior as @column.datetime()
+      return {
+        typeCast: (v) => {
+          if (v === undefined) return undefined;
+          return castToDatetime(v);
+        },
+        // Delegate to driver-specific serializeDatetime
+        serialize: (val, typeCast) => {
+          if (val === null || val === undefined) return null;
+          if (val instanceof Date) {
+            return typeCast?.serializeDatetime(val) ?? val;
+          }
+          return val;
+        },
+        sqlCast: 'timestamp',
       };
     case Number:
-      return (v) => {
-        if (v === undefined) return undefined;
-        if (v === null) return null;
-        const n = Number(v);
-        return isNaN(n) ? null : n;
+      return {
+        typeCast: (v) => {
+          if (v === undefined) return undefined;
+          if (v === null) return null;
+          const n = Number(v);
+          return isNaN(n) ? null : n;
+        },
       };
     case BigInt:
-      return (v) => {
-        if (v === undefined) return undefined;
-        if (v === null) return null;
-        try {
-          return BigInt(v as string | number);
-        } catch {
-          return null;
-        }
+      return {
+        typeCast: (v) => {
+          if (v === undefined) return undefined;
+          if (v === null) return null;
+          try {
+            return BigInt(v as string | number);
+          } catch {
+            return null;
+          }
+        },
       };
     // Array, Object, String, and other types require explicit specification
     default:
@@ -211,18 +237,27 @@ function registerColumn(
   const columns: Map<string, ColumnMeta> =
     Reflect.getMetadata(COLUMNS_KEY, constructor) || new Map();
 
-  // Auto-infer type cast if not explicitly provided
+  // Auto-infer type info if not explicitly provided
   let finalTypeCast = options.typeCast;
-  if (!finalTypeCast && !options.skipAutoInfer) {
-    finalTypeCast = inferTypeCastFromDesignType(target, propertyKey);
+  let finalSerialize = options.serialize;
+  let finalSqlCast = options.sqlCast;
+  
+  if (!options.skipAutoInfer) {
+    const inferred = inferTypeCastFromDesignType(target, propertyKey);
+    if (inferred) {
+      // Use inferred values only if not explicitly provided
+      if (!finalTypeCast) finalTypeCast = inferred.typeCast;
+      if (!finalSerialize) finalSerialize = inferred.serialize;
+      if (!finalSqlCast) finalSqlCast = inferred.sqlCast;
+    }
   }
 
   columns.set(propertyKey, {
     columnName: options.columnName,
     typeCast: finalTypeCast,
-    serialize: options.serialize,
+    serialize: finalSerialize,
     primaryKey: options.primaryKey,
-    sqlCast: options.sqlCast,
+    sqlCast: finalSqlCast,
   });
 
   Reflect.defineMetadata(COLUMNS_KEY, columns, constructor);

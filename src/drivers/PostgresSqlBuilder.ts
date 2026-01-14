@@ -387,7 +387,9 @@ export const postgresSqlBuilder: SqlBuilder = {
       if (isArrayType || isJsonType) {
         unnestArrays.push(`?::text[]`);
       } else {
-        unnestArrays.push(`?::${pgType}[]`);
+        // Use timestamptz for timestamp type to handle ISO 8601 strings correctly
+        const castType = pgType === 'timestamp' ? 'timestamptz' : pgType;
+        unnestArrays.push(`?::${castType}[]`);
       }
     }
 
