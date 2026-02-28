@@ -140,6 +140,7 @@ function inferPgType(val: unknown): string {
   if (typeof val === 'number') {
     return Number.isInteger(val) ? 'int' : 'numeric';
   }
+  if (typeof val === 'bigint') return 'bigint';
   if (typeof val === 'boolean') return 'boolean';
   if (typeof val === 'string') return 'text';
   if (val instanceof Date) return 'timestamp';

@@ -205,6 +205,7 @@ function inferTypeCastFromDesignType(
             return null;
           }
         },
+        sqlCast: 'bigint',
       };
     // Array, Object, String, and other types require explicit specification
     default:
@@ -467,15 +468,20 @@ export const column = Object.assign(
      * @example @column.bigint() large_id?: bigint;
      */
     bigint: (columnName?: string) =>
-      createColumnDecorator((v) => {
-        if (v === undefined) return undefined;
-        if (v === null) return null;
-        try {
-          return BigInt(v as string | number);
-        } catch {
-          return null;
-        }
-      })(columnName),
+      createColumnDecorator(
+        (v) => {
+          if (v === undefined) return undefined;
+          if (v === null) return null;
+          try {
+            return BigInt(v as string | number);
+          } catch {
+            return null;
+          }
+        },
+        undefined,  // no custom serialize
+        false,      // allow auto-inference
+        'bigint'    // sqlCast for WHERE/INSERT type casting
+      )(columnName),
 
     // ============================================
     // Date/Time Types

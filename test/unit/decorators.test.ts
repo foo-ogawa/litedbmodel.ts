@@ -653,9 +653,21 @@ describe('decorators', () => {
       expect(sqlCastMap.get('id')).toBeUndefined();
     });
 
+    it('@column.bigint() should have sqlCast: bigint', () => {
+      @model('test_bigint_sqlcast')
+      class TestModel extends DBModel {
+        @column() id?: number;
+        @column.bigint() large_id?: bigint;
+      }
+
+      const sqlCastMap = getSqlCastMap(TestModel);
+      expect(sqlCastMap.get('large_id')).toBe('bigint');
+      expect(sqlCastMap.get('id')).toBeUndefined();
+    });
+
     // Note: Auto-inference tests are limited in vitest because esbuild doesn't fully support
     // emitDecoratorMetadata. Auto-inference is verified in integration tests instead.
-    // When design:type metadata is available, @column() with Date/boolean types will
+    // When design:type metadata is available, @column() with Date/boolean/bigint types will
     // automatically get sqlCast and serialize functions.
   });
 });

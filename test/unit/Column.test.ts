@@ -18,7 +18,7 @@ import {
   isOrCond,
   createOrCond,
 } from '../../src/Column';
-import { DBNotNullValue } from '../../src/DBValues';
+import { DBNotNullValue, DBCast, DBCastArray } from '../../src/DBValues';
 
 describe('Column', () => {
   describe('createColumn', () => {
@@ -523,5 +523,67 @@ describe('SKIP in createMany/updateMany scenarios', () => {
     expect(record2).toEqual({ id: 2, name: 'Jane', email: 'jane@test.com' });
     expect('email' in record1).toBe(false);
     expect('email' in record2).toBe(true);
+  });
+});
+
+describe('BigInt sqlCast behavior', () => {
+  const bigintCol = createColumn<bigint, unknown>('id', 'sessions', 'Session', 'id', 'bigint');
+  const plainCol = createColumn<number, unknown>('count', 'sessions', 'Session');
+
+  describe('createColumn with sqlCast: bigint', () => {
+    it('should store sqlCast property', () => {
+      expect(bigintCol.sqlCast).toBe('bigint');
+    });
+
+    it('should not have sqlCast for plain columns', () => {
+      expect(plainCol.sqlCast).toBeUndefined();
+    });
+  });
+
+  describe('condition builders with sqlCast: bigint', () => {
+    it('eq() should return DBCast', () => {
+      const cond = bigintCol.eq(1546n);
+      expect(cond['id']).toBeInstanceOf(DBCast);
+      expect((cond['id'] as DBCast).sqlType).toBe('bigint');
+      expect((cond['id'] as DBCast).value).toBe(1546n);
+    });
+
+    it('ne() should return DBCast with != operator', () => {
+      const cond = bigintCol.ne(1546n);
+      expect(cond['id']).toBeInstanceOf(DBCast);
+      expect((cond['id'] as DBCast).operator).toBe('!=');
+    });
+
+    it('gt() should return DBCast with > operator', () => {
+      const cond = bigintCol.gt(1000n);
+      expect(cond['id']).toBeInstanceOf(DBCast);
+      expect((cond['id'] as DBCast).operator).toBe('>');
+    });
+
+    it('in() should return DBCastArray', () => {
+      const cond = bigintCol.in([1n, 2n, 3n]);
+      expect(cond['id']).toBeInstanceOf(DBCastArray);
+      expect((cond['id'] as DBCastArray).sqlType).toBe('bigint');
+    });
+  });
+
+  describe('condsToRecord with bigint Column', () => {
+    it('should wrap value with DBCast when Column has sqlCast', () => {
+      const result = condsToRecord([[bigintCol, 1546n]]);
+      expect(result['id']).toBeInstanceOf(DBCast);
+      expect((result['id'] as DBCast).sqlType).toBe('bigint');
+      expect((result['id'] as DBCast).value).toBe(1546n);
+    });
+
+    it('should wrap array value with DBCastArray when Column has sqlCast', () => {
+      const result = condsToRecord([[bigintCol, [1n, 2n, 3n]]]);
+      expect(result['id']).toBeInstanceOf(DBCastArray);
+      expect((result['id'] as DBCastArray).sqlType).toBe('bigint');
+    });
+
+    it('should not wrap when Column has no sqlCast', () => {
+      const result = condsToRecord([[plainCol, 42]]);
+      expect(result['count']).toBe(42);
+    });
   });
 });
