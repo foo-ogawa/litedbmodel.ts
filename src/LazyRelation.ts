@@ -274,8 +274,13 @@ export class LazyRelationContext {
       const targetKey = config.targetKey || this.inferTargetKey(relationType);
       targetKeys = [targetKey];
       
-      // Remove duplicates
-      const uniqueValues = [...new Set(sourceKeyValues.map(v => JSON.stringify(v)))].map(v => JSON.parse(v));
+      // Remove duplicates (primitives use Set directly; objects fall back to JSON)
+      let uniqueValues: unknown[];
+      if (sourceKeyValues.length > 0 && typeof sourceKeyValues[0] !== 'object') {
+        uniqueValues = [...new Set(sourceKeyValues)];
+      } else {
+        uniqueValues = [...new Set(sourceKeyValues.map(v => JSON.stringify(v)))].map(v => JSON.parse(v));
+      }
       
       if (needsLimitedLoading) {
         // Limited loading for single key
@@ -721,7 +726,7 @@ export class LazyRelationContext {
     
     for (const keyValues of compositeKeyValues) {
       const tuple = sourceKeys.map(k => keyValues[k]);
-      const key = JSON.stringify(tuple);
+      const key = tuple.join('\x00');
       if (!seen.has(key)) {
         seen.add(key);
         result.push(tuple);

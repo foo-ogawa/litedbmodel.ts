@@ -61,6 +61,7 @@ export function castToIntegerArray(val: unknown): number[] {
   }
   if (Array.isArray(val)) {
     return val.map((v) => {
+      if (typeof v === 'number') return v;
       const n = parseInt(String(v), 10);
       return isNaN(n) ? 0 : n;
     });
@@ -84,6 +85,7 @@ export function castToNumericArray(val: unknown): (number | null)[] {
   if (Array.isArray(val)) {
     return val.map((v) => {
       if (v === null || v === undefined) return null;
+      if (typeof v === 'number') return v;
       const n = parseFloat(String(v));
       return isNaN(n) ? null : n;
     });

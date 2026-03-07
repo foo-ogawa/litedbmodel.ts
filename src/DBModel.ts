@@ -21,6 +21,7 @@ import { LazyRelationContext, type RelationType, type RelationConfig } from './L
 // Transaction context stored in AsyncLocalStorage
 interface TransactionContext {
   connection: DBConnection;
+  handler?: DBHandler;
 }
 
 // Writer context for withWriter() (read-only writer access)
@@ -316,7 +317,10 @@ export abstract class DBModel {
     // Check if we're in a transaction
     const txContext = this._getTransactionContext().getStore();
     if (txContext) {
-      return createHandlerWithConnection(txContext.connection);
+      if (!txContext.handler) {
+        txContext.handler = createHandlerWithConnection(txContext.connection);
+      }
+      return txContext.handler;
     }
 
     const handler = getDBHandler();
@@ -922,32 +926,45 @@ export abstract class DBModel {
 
     // Group records by their column pattern (SKIP pattern grouping)
     // Each group has the same set of columns, enabling batch INSERT without DEFAULT keyword
-    const groupedByPattern = new Map<string, { 
-      columns: string[]; 
+
+    // Fast path: single record — skip Map/sort/join overhead
+    let groupedByPattern: Map<string, {
+      columns: string[];
       records: Record<string, unknown>[];
       rawRecords: Record<string, unknown>[];
-    }>();
-    
-    for (let i = 0; i < records.length; i++) {
-      const record = records[i];
-      // Get columns present in this record (excluding undefined/SKIP values)
+    }>;
+
+    if (records.length === 1) {
+      const record = records[0];
       const recordColumns: string[] = [];
       for (const key of Object.keys(record)) {
         const val = record[key];
-        // Skip DBImmediateValue with 'DEFAULT' and undefined values
         if (val !== undefined && !(val instanceof DBImmediateValue && val.value === 'DEFAULT')) {
           recordColumns.push(key);
         }
       }
-      recordColumns.sort(); // Sort for consistent pattern key
-      const patternKey = recordColumns.join(',');
-      
-      if (!groupedByPattern.has(patternKey)) {
-        groupedByPattern.set(patternKey, { columns: recordColumns, records: [], rawRecords: [] });
+      groupedByPattern = new Map([['_', { columns: recordColumns, records: [record], rawRecords: [rawRecords[0]] }]]);
+    } else {
+      groupedByPattern = new Map();
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i];
+        const recordColumns: string[] = [];
+        for (const key of Object.keys(record)) {
+          const val = record[key];
+          if (val !== undefined && !(val instanceof DBImmediateValue && val.value === 'DEFAULT')) {
+            recordColumns.push(key);
+          }
+        }
+        recordColumns.sort();
+        const patternKey = recordColumns.join(',');
+
+        if (!groupedByPattern.has(patternKey)) {
+          groupedByPattern.set(patternKey, { columns: recordColumns, records: [], rawRecords: [] });
+        }
+        const group = groupedByPattern.get(patternKey)!;
+        group.records.push(record);
+        group.rawRecords.push(rawRecords[i]);
       }
-      const group = groupedByPattern.get(patternKey)!;
-      group.records.push(record);
-      group.rawRecords.push(rawRecords[i]);
     }
 
     // Helper to convert Column symbols to strings
@@ -1554,11 +1571,14 @@ export abstract class DBModel {
   /** Instance reference to the static class */
   protected _modelClass: typeof DBModel;
 
-  /** Per-instance cache for loaded relations */
-  protected _relationCache: Map<string, unknown> = new Map();
+  /** Per-instance cache for loaded relations (lazy-initialized) */
+  protected _relationCache: Map<string, unknown> | null = null;
 
   /** Reference to the relation context (for batch loading) */
   private _relationContext: LazyRelationContext | null = null;
+
+  /** Deferred context info: [sourceClass, records] set by _select, resolved on first relation access */
+  _deferredContext: [typeof DBModel, DBModel[]] | null = null;
 
   constructor() {
     this._modelClass = this.constructor as typeof DBModel;
@@ -1575,6 +1595,7 @@ export abstract class DBModel {
    */
   _setRelationContext(context: LazyRelationContext): void {
     this._relationContext = context;
+    this._deferredContext = null;
   }
 
   /**
@@ -1583,8 +1604,15 @@ export abstract class DBModel {
    */
   protected _getRelationContext(): LazyRelationContext {
     if (!this._relationContext) {
-      const ModelClass = this.constructor as typeof DBModel;
-      this._relationContext = new LazyRelationContext(ModelClass, [this]);
+      if (this._deferredContext) {
+        const [sourceClass, records] = this._deferredContext;
+        // Materialize context for all records in the batch
+        new LazyRelationContext(sourceClass, records);
+        // Constructor calls _setRelationContext on each record, clearing _deferredContext
+      } else {
+        const ModelClass = this.constructor as typeof DBModel;
+        this._relationContext = new LazyRelationContext(ModelClass, [this]);
+      }
     }
     return this._relationContext!;
   }
@@ -1594,7 +1622,9 @@ export abstract class DBModel {
    * Also clears the context cache to force reload from DB.
    */
   clearRelationCache(): void {
-    this._relationCache.clear();
+    if (this._relationCache) {
+      this._relationCache.clear();
+    }
     if (this._relationContext) {
       this._relationContext.clearCache();
     }
@@ -1652,7 +1682,7 @@ export abstract class DBModel {
     const cacheKey = context.getCacheKey(relationType, relationConfig);
 
     // Return cached value if available
-    if (this._relationCache.has(cacheKey)) {
+    if (this._relationCache?.has(cacheKey)) {
       const cached = this._relationCache.get(cacheKey);
       if (relationType === 'hasMany') {
         return cached as DBModel[];
@@ -1682,6 +1712,7 @@ export abstract class DBModel {
       }
     }
     
+    if (!this._relationCache) this._relationCache = new Map();
     this._relationCache.set(cacheKey, result);
 
     if (relationType === 'hasMany') {
@@ -2688,10 +2719,12 @@ export abstract class DBModel {
       // Create model instances from raw rows
       const instances = result.rows.map((row) => this._createInstance<T>(row));
       
-      // Auto-setup relation context for batch loading when multiple records
+      // Defer relation context setup — only materialized on first relation access
       if (instances.length > 1) {
-        // Context constructor sets itself on each record automatically
-        new LazyRelationContext(this, instances as DBModel[]);
+        const deferredRef: [typeof DBModel, DBModel[]] = [this, instances as DBModel[]];
+        for (const inst of instances) {
+          (inst as DBModel)._deferredContext = deferredRef;
+        }
       }
       
       return instances;

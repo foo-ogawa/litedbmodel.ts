@@ -87,6 +87,7 @@ export async function closeAllPools(): Promise<void> {
     await pool.end();
   }
   pools.clear();
+  clearQueryCache();
 }
 
 /**
@@ -98,6 +99,54 @@ function convertPlaceholders(sql: string): string {
 }
 
 // ============================================
+// Unified Query Cache
+// ============================================
+
+interface CachedQuery {
+  convertedSql: string;
+  isMulti: boolean;
+  name: string;
+}
+
+let preparedStmtCounter = 0;
+const queryCache: Map<string, CachedQuery> = new Map();
+
+/**
+ * Resolve a ?-placeholder SQL into its cached converted form, multi-statement flag,
+ * and prepared statement name. On cache hit (the common ORM path), this is a single
+ * Map lookup — no regex, no string allocation.
+ */
+function resolveQuery(sql: string): CachedQuery {
+  let cached = queryCache.get(sql);
+  if (!cached) {
+    const convertedSql = convertPlaceholders(sql);
+    // Multi-statement detection without intermediate allocations
+    let isMulti = false;
+    let end = convertedSql.length - 1;
+    while (end >= 0 && (convertedSql[end] === ' ' || convertedSql[end] === '\n' || convertedSql[end] === '\t' || convertedSql[end] === '\r')) end--;
+    if (end >= 0 && convertedSql[end] === ';') end--;
+    for (let i = 0; i <= end; i++) {
+      if (convertedSql[i] === ';') { isMulti = true; break; }
+    }
+    cached = {
+      convertedSql,
+      isMulti,
+      name: `ldb_${++preparedStmtCounter}`,
+    };
+    queryCache.set(sql, cached);
+  }
+  return cached;
+}
+
+/**
+ * Clear query cache (called when pools are closed)
+ */
+function clearQueryCache(): void {
+  queryCache.clear();
+  preparedStmtCounter = 0;
+}
+
+// ============================================
 // PostgreSQL Connection Wrapper
 // ============================================
 
@@ -105,8 +154,10 @@ class PostgresConnection implements DBConnection {
   constructor(private client: PoolClient) {}
 
   async query(sql: string, params?: unknown[]): Promise<QueryResult> {
-    const convertedSql = convertPlaceholders(sql);
-    const result = await this.client.query(convertedSql, params);
+    const q = resolveQuery(sql);
+    const result = q.isMulti
+      ? await this.client.query(q.convertedSql, params)
+      : await this.client.query({ name: q.name, text: q.convertedSql, values: params });
     return {
       rows: result.rows as Record<string, unknown>[],
       rowCount: result.rowCount ?? 0,
@@ -147,12 +198,14 @@ export class PostgresDriver implements DBDriver {
    * Execute a read query
    */
   async execute(sql: string, params: unknown[] = []): Promise<QueryResult> {
-    const convertedSql = convertPlaceholders(sql);
-    this.logger.debug(`SQL: ${convertedSql}`, params);
+    const q = resolveQuery(sql);
+    this.logger.debug(`SQL: ${q.convertedSql}`, params);
 
     const startTime = Date.now();
     try {
-      const result = await this.pool.query(convertedSql, params);
+      const result = q.isMulti
+        ? await this.pool.query(q.convertedSql, params)
+        : await this.pool.query({ name: q.name, text: q.convertedSql, values: params });
       const duration = Date.now() - startTime;
       this.logger.debug(`Query completed in ${duration}ms, rows: ${result.rowCount}`);
       return {
@@ -160,7 +213,7 @@ export class PostgresDriver implements DBDriver {
         rowCount: result.rowCount ?? 0,
       };
     } catch (error) {
-      this.logger.error(`Query failed: ${convertedSql}`, error);
+      this.logger.error(`Query failed: ${q.convertedSql}`, error);
       throw error;
     }
   }
@@ -170,12 +223,14 @@ export class PostgresDriver implements DBDriver {
    */
   async executeWrite(sql: string, params: unknown[] = []): Promise<QueryResult> {
     const conn = this.writerPool || this.pool;
-    const convertedSql = convertPlaceholders(sql);
-    this.logger.debug(`SQL: ${convertedSql}`, params);
+    const q = resolveQuery(sql);
+    this.logger.debug(`SQL: ${q.convertedSql}`, params);
 
     const startTime = Date.now();
     try {
-      const result = await conn.query(convertedSql, params);
+      const result = q.isMulti
+        ? await conn.query(q.convertedSql, params)
+        : await conn.query({ name: q.name, text: q.convertedSql, values: params });
       const duration = Date.now() - startTime;
       this.logger.debug(`Write completed in ${duration}ms, rows: ${result.rowCount}`);
       return {
@@ -183,7 +238,7 @@ export class PostgresDriver implements DBDriver {
         rowCount: result.rowCount ?? 0,
       };
     } catch (error) {
-      this.logger.error(`Write failed: ${convertedSql}`, error);
+      this.logger.error(`Write failed: ${q.convertedSql}`, error);
       throw error;
     }
   }

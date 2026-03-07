@@ -1101,7 +1101,7 @@ function applyModelDecorator<T extends { new (...args: unknown[]): object }>(
     Object.defineProperty(constructor.prototype, propertyKey, {
       get: function () {
         // Fast path: return cached value directly (no Promise overhead)
-        if (this._relationCache?.has(cacheKey)) {
+        if (this._relationCache && this._relationCache.has(cacheKey)) {
           return this._relationCache.get(cacheKey);
         }
 
@@ -1278,16 +1278,14 @@ export function serializeRecord(
     return record;
   }
 
-  const result: Record<string, unknown> = {};
-  
-  for (const [key, value] of Object.entries(record)) {
+  // Mutate in-place: callers (create/createMany/update) build a fresh record object
+  // from user input before calling serializeRecord, so the original user data is not affected.
+  for (const key of Object.keys(record)) {
     const serialize = serializeMap.get(key);
     if (serialize) {
-      result[key] = serialize(value, typeCast);
-    } else {
-      result[key] = value;
+      record[key] = serialize(record[key], typeCast);
     }
   }
 
-  return result;
+  return record;
 }

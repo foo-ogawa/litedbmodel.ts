@@ -1077,13 +1077,13 @@ For detailed benchmark results comparing litedbmodel with Prisma, Kysely, Drizzl
 
 | Operation Type | litedbmodel Performance |
 |----------------|------------------------|
-| Standard CRUD | **Fastest in 7/14 operations** (Find all, Filter/sort, Create, Upsert, Delete) |
-| Nested relations | Competitive (within 10% of fastest) |
-| Deep nested (10K) | 2.9x faster than Prisma |
+| Standard CRUD | **Fastest in 9/19 operations** (Filter/sort, Nested find all, Find unique, Nested find unique, Nested create, Delete, Upsert Many, Update Many, etc.) |
+| Nested relations | Competitive (within 6% of fastest) |
+| Deep nested (10K) | 3.3x faster than Prisma |
 | SQL quality | ⭐⭐⭐⭐⭐ (readable, fixed params on PG) |
 
-**vs Prisma:** litedbmodel is **1.6x - 5.9x faster** across all operations  
-**vs Query Builders:** litedbmodel is competitive (within 10%), with better DX
+**vs Prisma:** litedbmodel is **1.5x - 13.5x faster** across all operations  
+**vs Query Builders:** litedbmodel matches or beats Kysely/Drizzle in most operations
 
 ---
 
