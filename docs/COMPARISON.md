@@ -12,7 +12,7 @@ A detailed comparison of litedbmodel with popular TypeScript/JavaScript ORMs.
 |  | Migrations | Manual | Manual | Kit (optional) | Built-in | Built-in | Built-in | Built-in | Knex |
 | **Query API** | Primary query style | Tuple array | Fluent QB | Fluent QB | QB / Find | Fluent client | QB / EM | Fluent | Fluent |
 |  | Raw SQL escape hatch† | ✅ `query()` | ⚠️ `sql` | ⚠️ `sql` | ⚠️ `query()` | ⚠️ `$queryRaw` | ⚠️ `execute()` | ⚠️ `query()` | ⚠️ `raw()` |
-| **Type Safety**†† | Compile-time type safety | ⚠️ partial | ✅ | ✅ | ⚠️ partial | ✅ | ⚠️ partial | ❌ runtime-heavy | ⚠️ partial |
+| **Type Safety**†† | Compile-time type safety | ✅ | ✅ | ✅ | ⚠️ partial | ✅ | ⚠️ partial | ❌ runtime-heavy | ⚠️ partial |
 | **Column Refs**‡ | How columns are referenced | **Symbols** | String literals | Column objects | Strings/decorators | Object keys | Strings | Strings | Strings |
 | **IDE Support**§ | Refactoring safety (IDE) | ✅ Full | ❌ | ⚠️ Partial | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Updates** | Declarative partial update | ✅ **SKIP** | ❌ manual | ❌ manual | ❌ manual | ⚠️ `undefined` | ❌ manual | ❌ manual | ❌ manual |
@@ -52,7 +52,8 @@ Whether the *tool's standard relation API* fetches nested relations in a single 
 
 **†† Type safety (litedbmodel):**  
 - `[Column, value]` tuples: **Compile-time** type checking via Column symbols  
-- Operator expressions (`` [`${Model.col} > ?`, val] ``): **ESLint plugin** checks column references (not compile-time)
+- ``sql`` tagged template conditions (``[sql`${Col} > ?`, val]``): **Compile-time** type checking — the ``sql`` tag preserves the Column's value type  
+- ESLint plugin provides additional SQL syntax and cross-model validation
 
 **\*\* DB portability:**  
 - **Multi-DB** = databases the tool can talk to  
@@ -106,6 +107,7 @@ class UserModel extends DBModel {
 }
 
 // Migrations: Manual SQL files
+// Code generation: litedbmodel-gen generates @column() from schema.sql (optional)
 ```
 
 ### Prisma
@@ -156,7 +158,7 @@ drizzle-kit generate:pg
 |---------|-------------|--------|---------|---------|--------|
 | **Schema Format** | TS Decorators | Prisma DSL | TS Decorators | TS Schema | TS Interface |
 | **Migration Tool** | Manual | Built-in | Built-in | drizzle-kit | Manual |
-| **Auto-Generate** | ❌ | ✅ | ✅ | ✅ | ❌ |
+| **Auto-Generate** | ⚠️ [litedbmodel-gen](https://www.npmjs.com/package/litedbmodel-gen) | ✅ | ✅ | ✅ | ❌ |
 | **Reversible** | Manual | ✅ | ✅ | ⚠️ | Manual |
 
 ---
@@ -175,7 +177,7 @@ const users = await User.find([
   [User.is_active, true],
   User.or(
     [[User.role, 'admin']],
-    [[User.role, 'moderator'], [`${User.level} >= ?`, 5]],
+    [[User.role, 'moderator'], [sql`${User.level} >= ?`, 5]],
   ),
 ]);
 
@@ -352,7 +354,7 @@ const users = await User.query(`
 | Scenario | litedbmodel | Query Builder ORMs |
 |----------|-------------|-------------------|
 | **Simple CRUD** | Tuple API: `[[User.name, 'John']]` | Object: `{ name: 'John' }` |
-| **Complex WHERE** | SQL operators: `` [`${User.age} > ?`, 18] `` | DSL methods: `.where('age', '>', 18)` |
+| **Complex WHERE** | `sql` tag: `` [sql`${User.age} > ?`, 18] `` | DSL methods: `.where('age', '>', 18)` |
 | **JOINs, CTEs** | Real SQL via `query()` or Query-Based Models | Limited DSL or raw escape |
 | **Debugging** | See actual SQL | Translate DSL → SQL mentally |
 | **Learning** | Know SQL = Ready | Learn DSL + SQL |
@@ -369,9 +371,9 @@ const users = await User.query(`
 
 ## 5. Type Safety
 
-### litedbmodel - Compile-time (Column Symbols)
+### litedbmodel - Compile-time (Column Symbols + `sql` Tag)
 
-Type derived from decorators, checked via Column symbol references.
+Type derived from decorators, checked via Column symbol references and `sql` tagged template.
 
 ```typescript
 // Compile-time validation via Column symbols
@@ -383,8 +385,9 @@ await User.create([
 
 // Conditions also type-checked
 await User.find([
-  [User.id, 1],              // ✅ Compile-time (Column symbol)
-  [`${User.age} > ?`, 18],   // ✅ ESLint checks column reference
+  [User.id, 1],                    // ✅ Compile-time (Column symbol)
+  [sql`${User.age} > ?`, 18],     // ✅ Compile-time (sql tag preserves Column value type)
+  // [sql`${User.age} > ?`, 'x'], // ❌ Compile error (string not assignable to number)
 ]);
 ```
 
@@ -475,13 +478,14 @@ const users = await db
 | Feature | litedbmodel | Prisma | TypeORM | Drizzle | Kysely |
 |---------|-------------|--------|---------|---------|--------|
 | **Type Source** | Decorators → Symbols | .prisma → Generated | Decorators | TS Schema | TS Interface |
-| **Condition Check** | ✅ Full† | ✅ Full | ⚠️ Partial | ✅ Full | ✅ Full |
+| **Condition Check** | ✅ Full | ✅ Full | ⚠️ Partial | ✅ Full | ✅ Full |
 | **Result Types** | ✅ Model types | ✅ Generated | ✅ Entity types | ✅ Inferred | ✅ Inferred |
-| **Compile-Time** | ⚠️ Partial† | ✅ | ⚠️ | ✅ | ✅ |
+| **Compile-Time** | ✅ Full† | ✅ | ⚠️ | ✅ | ✅ |
 
-*† litedbmodel's type safety is split between compile-time and ESLint:*
+*† litedbmodel's compile-time type safety covers both patterns:*
 - *`[Column, value]` tuples: Compile-time type checking via Column symbols*
-- *Operator expressions (`` [`${Model.col} > ?`, val] ``): ESLint plugin checks column references (not compile-time)*
+- *`[sql\`${Col} > ?\`, val]` tuples: Compile-time type checking — the `sql` tag preserves the Column's value type*
+- *ESLint plugin provides additional SQL syntax validation and cross-model column checking*
 
 ---
 
@@ -1152,13 +1156,14 @@ For detailed benchmark results comparing litedbmodel with Prisma, Kysely, Drizzl
 ### litedbmodel's Characteristics
 
 1. **Symbol-Based Columns**: IDE "Find References" and "Rename Symbol" work
-2. **SKIP Sentinel**: Declarative conditional fields without if-statements
-3. **Minimal Footprint**: 60KB minified, no binary dependencies
-4. **Middleware**: Cross-cutting concern support (logging, auth, metrics)
-5. **Auto N+1 Prevention**: Batch loading enabled automatically for multiple records
-6. **Composite Key Support**: Full support for composite keys in relations
-7. **Fixed SQL Parameters**: `ANY()` and `unnest()` keep parameter count constant
-8. **Readable SQL**: Simple, debuggable queries (no hash aliases or deep nesting)
+2. **`sql` Tagged Template**: Type-safe operator conditions and parameterized queries
+3. **SKIP Sentinel**: Declarative conditional fields without if-statements
+4. **Minimal Footprint**: 60KB minified, no binary dependencies
+5. **Middleware**: Cross-cutting concern support (logging, auth, metrics)
+6. **Auto N+1 Prevention**: Batch loading enabled automatically for multiple records
+7. **Composite Key Support**: Full support for composite keys in relations
+8. **Fixed SQL Parameters**: `ANY()` and `unnest()` keep parameter count constant
+9. **Readable SQL**: Simple, debuggable queries (no hash aliases or deep nesting)
 
 ### Trade-offs
 

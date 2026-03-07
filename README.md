@@ -27,7 +27,7 @@ litedbmodel keeps SQL visible and controllable: generated queries are intentiona
 
 ### Refactoring-friendly, without sacrificing SQL control
 - Column references are **symbol-based** (`Model.column`) so IDE rename/find-references work.
-- Conditions are **type-safe tuples** (`[Column, value]`), and an ESLint plugin catches mistakes TS cannot.
+- Conditions are **type-safe tuples** (`[Column, value]`), with a `sql` tagged template for operators (`[sql\`${Col} > ?\`, value]`). An ESLint plugin catches mistakes TS cannot.
 
 > See [Design Philosophy](./docs/BENCHMARK.md#litedbmodels-design-philosophy) for detailed comparison with query-centric ORMs.
 
@@ -91,6 +91,17 @@ npm install litedbmodel reflect-metadata
 npm install pg            # PostgreSQL
 npm install mysql2        # MySQL
 npm install better-sqlite3  # SQLite
+```
+
+### Code Generation (optional)
+
+[**litedbmodel-gen**](https://www.npmjs.com/package/litedbmodel-gen) generates model column definitions from SQL DDL (`schema.sql`). Column definitions inside markers are auto-updated when the schema changes; hand-written code (relations, methods, exports) is preserved.
+
+```bash
+npm install -D litedbmodel-gen embedoc
+npx embedoc init && npx litedbmodel-gen init
+npx embedoc generate --datasource schema   # scaffold model files
+npx embedoc build                          # sync column definitions
 ```
 
 ## Quick Start
@@ -457,34 +468,55 @@ await User.updateMany([
 
 ## Type-Safe Conditions
 
-Conditions use `[Column, value]` tuples for compile-time validation. For operators, use `${Model.column}` in template literals—the ESLint plugin catches incorrect column references.
+### Column Tuples (recommended for equality/simple conditions)
+
+The simplest and most type-safe form. The value type is validated at compile time:
 
 ```typescript
-// Equality: compile-time type-safe via Column symbols
-await User.find([[User.status, 'active']]);
+await User.find([
+  [User.status, 'active'],           // status = 'active'
+  [User.is_active, true],            // is_active = TRUE
+]);
+await User.find([[User.email, 'john@example.com']]);
+```
 
-// Operators: ESLint plugin validates ${Model.column} references
-await User.find([[`${User.age} > ?`, 18]]);
-await User.find([[`${User.age} BETWEEN ? AND ?`, [18, 65]]]);
-await User.find([[`${User.name} LIKE ?`, '%test%']]);
-await User.find([[`${User.status} IN (?)`, ['a', 'b']]]);
+### `sql` Tagged Template (for operators, LIKE, BETWEEN, IS NULL, etc.)
 
-// NULL checks: ESLint plugin validates column reference
-await User.find([[`${User.deleted_at} IS NULL`]]);
+Use the `sql` tagged template for conditions that need operators. The `sql` tag extracts the Column reference, producing a type-safe fragment.
+See [sql Tagged Template Literal](./docs/sql-tagged-template.md) for full reference.
 
-// OR conditions: inner tuples are compile-time type-safe
+```typescript
+import { sql } from 'litedbmodel';
+
+await User.find([
+  [sql`${User.age} > ?`, 18],                          // age > 18
+  [sql`${User.age} BETWEEN ? AND ?`, [18, 65]],        // age BETWEEN 18 AND 65
+  [sql`${User.name} LIKE ?`, '%test%'],                 // name LIKE '%test%'
+  [sql`${User.status} IN (?)`, ['active', 'pending']],  // status IN ('active', 'pending')
+  sql`${User.deleted_at} IS NULL`,                       // deleted_at IS NULL (no value needed)
+]);
+```
+
+Values can also be embedded directly in the template. The `sql` tag automatically extracts them as parameterized values:
+
+```typescript
+await User.find([
+  sql`${User.age} > ${18}`,
+  sql`${User.name} LIKE ${'%test%'}`,
+  sql`${User.deleted_at} IS NULL`,
+]);
+```
+
+### OR Conditions and ORDER BY
+
+```typescript
 await User.find([
   [User.is_active, true],
   User.or(
     [[User.role, 'admin']],
     [[User.role, 'moderator']],
   ),
-]);
-
-// ORDER BY
-await User.find([[User.is_active, true]], { 
-  order: User.created_at.desc() 
-});
+], { order: User.created_at.desc() });
 ```
 
 > **ESLint Plugin:** Use `litedbmodel/eslint-plugin` to catch mistakes that TypeScript cannot:
@@ -580,7 +612,7 @@ Works for conditions too:
 ```typescript
 await User.find([
   [User.deleted, false],
-  [`${User.name} LIKE ?`, query.name ? `%${query.name}%` : SKIP],
+  query.name ? [sql`${User.name} LIKE ?`, `%${query.name}%`] : SKIP,
   [User.status, query.status ?? SKIP],
 ]);
 ```
@@ -965,20 +997,19 @@ const rankings = await UserRanking.query(`
 
 ### DBModel.execute() - Non-Model Operations
 
-Use `execute()` for DDL, maintenance, and operations that don't return model instances:
+Use `execute()` for DDL, maintenance, and operations that don't return model instances.
+Accepts either raw SQL strings or `sql` tagged templates:
 
 ```typescript
-// Materialized view refresh
+import { sql } from 'litedbmodel';
+
+// With sql tag — parameters are co-located
+await DBModel.execute(sql`SELECT process_daily_aggregates(${targetDate})`);
+await DBModel.execute(sql`SELECT pg_notify(${'events'}, ${JSON.stringify(payload)})`);
+
+// Raw SQL strings for DDL and maintenance
 await DBModel.execute('REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_sales_summary');
-
-// Database maintenance
 await DBModel.execute('VACUUM ANALYZE orders');
-
-// Stored procedure / function calls
-await DBModel.execute('SELECT process_daily_aggregates($1)', [targetDate]);
-await DBModel.execute('SELECT pg_notify($1, $2)', ['events', JSON.stringify(payload)]);
-
-// DDL operations
 await DBModel.execute('CREATE INDEX CONCURRENTLY idx_orders_date ON orders(created_at)');
 ```
 
@@ -1030,8 +1061,8 @@ export const UserStats = UserStatsModel.asModel();
 
 // Use find() with additional conditions
 const topContributors = await UserStats.find([
-  [`${UserStats.post_count} >= ?`, 10],
-  [`${UserStats.last_activity} > ?`, lastWeek],
+  [sql`${UserStats.post_count} >= ?`, 10],
+  [sql`${UserStats.last_activity} > ?`, lastWeek],
 ], { order: UserStats.post_count.desc(), limit: 100 });
 ```
 
@@ -1059,11 +1090,13 @@ ORDER BY post_count DESC
 LIMIT 100
 ```
 
-### Parameterized Queries
+### Parameterized Queries with `sql` Tag
 
-For queries that need runtime parameters, define a factory method that encapsulates the query:
+For queries that need runtime parameters, use the `sql` tagged template with `withQuery()`. Parameters are co-located with SQL — no manual `$1`/`$2` numbering or DB dialect differences:
 
 ```typescript
+import { sql } from 'litedbmodel';
+
 @model('sales_report')
 class SalesReportModel extends DBModel {
   @column() product_id?: number;
@@ -1072,72 +1105,49 @@ class SalesReportModel extends DBModel {
   @column() total_revenue?: number;
   @column() order_count?: number;
 
-  // Factory method - encapsulates query construction
   static forPeriod(startDate: string, endDate: string) {
-    return this.withQuery({
-      sql: `
-        SELECT 
-          p.id AS product_id,
-          p.name AS product_name,
-          SUM(oi.quantity) AS total_quantity,
-          SUM(oi.quantity * oi.unit_price) AS total_revenue,
-          COUNT(DISTINCT o.id) AS order_count
-        FROM products p
-        INNER JOIN order_items oi ON p.id = oi.product_id
-        INNER JOIN orders o ON oi.order_id = o.id
-        WHERE o.status = 'completed'
-          AND o.created_at >= $1 
-          AND o.created_at < $2
-        GROUP BY p.id, p.name
-      `,
-      params: [startDate, endDate],
-    });
+    return this.withQuery(sql`
+      SELECT 
+        p.id AS product_id,
+        p.name AS product_name,
+        SUM(oi.quantity) AS total_quantity,
+        SUM(oi.quantity * oi.unit_price) AS total_revenue,
+        COUNT(DISTINCT o.id) AS order_count
+      FROM products p
+      INNER JOIN order_items oi ON p.id = oi.product_id
+      INNER JOIN orders o ON oi.order_id = o.id
+      WHERE o.status = 'completed'
+        AND o.created_at >= ${startDate} 
+        AND o.created_at < ${endDate}
+      GROUP BY p.id, p.name
+    `);
   }
 }
 export const SalesReport = SalesReportModel.asModel();
 
-// Usage: Clean, encapsulated API
+// Usage
 const Q1Report = SalesReport.forPeriod('2024-01-01', '2024-04-01');
 const topProducts = await Q1Report.find([
-  [`${SalesReport.total_revenue} > ?`, 10000],
+  [sql`${SalesReport.total_revenue} > ?`, 10000],
 ], { order: SalesReport.total_revenue.desc() });
 ```
 
-### Generated SQL
+The `sql` tag automatically converts interpolated values to `?` placeholders and extracts them as parameters. The internal dialect conversion (`?` → `$1`/`$2` for PostgreSQL) is handled transparently.
 
-```sql
-WITH sales_report AS (
-  SELECT 
-    p.id AS product_id,
-    p.name AS product_name,
-    SUM(oi.quantity) AS total_quantity,
-    SUM(oi.quantity * oi.unit_price) AS total_revenue,
-    COUNT(DISTINCT o.id) AS order_count
-  FROM products p
-  INNER JOIN order_items oi ON p.id = oi.product_id
-  INNER JOIN orders o ON oi.order_id = o.id
-  WHERE o.status = 'completed'
-    AND o.created_at >= $1 
-    AND o.created_at < $2
-  GROUP BY p.id, p.name
-)
-SELECT * FROM sales_report
-WHERE total_revenue > $3
-ORDER BY total_revenue DESC
-```
+### Type-Safe Column References in QUERY
 
-### Type-Safe Column References
-
-Use Column symbols in your QUERY for refactoring safety:
+Use the `sql` tag with Column and `TABLE_NAME` references for refactoring safety. Columns and table names are embedded directly in SQL; they are not parameterized:
 
 ```typescript
+import { sql } from 'litedbmodel';
+
 @model('user_activity')
 class UserActivityModel extends DBModel {
   @column() user_id?: number;
   @column() user_name?: string;
   @column() total_posts?: number;
 
-  static QUERY = `
+  static QUERY = sql`
     SELECT 
       ${User.id} AS user_id,
       ${User.name} AS user_name,

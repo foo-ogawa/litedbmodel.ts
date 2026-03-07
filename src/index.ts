@@ -108,6 +108,26 @@ export {
   isOrCond,
   condsToRecord,
 } from './Column';
+// ============================================
+// SQL Tagged Template Literal
+// ============================================
+
+export {
+  sql,
+  type SqlFragment,
+  type SqlTypedFragment,
+  type SqlCondition,
+  type SqlInterpolation,
+  SqlRaw,
+  SqlRef,
+  isSqlFragment,
+  isSqlTypedFragment,
+  isSqlCondition,
+  isAnySqlFragment,
+  isSqlRaw,
+  isSqlRef,
+} from './SqlFragment';
+
 export {
   model,
   column,

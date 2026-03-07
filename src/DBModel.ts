@@ -10,6 +10,7 @@ import { initDBHandler, getDBHandler, createHandlerWithConnection, DBHandler, ty
 import type { SelectOptions, InsertOptions, UpdateOptions, DeleteOptions, UpdateManyOptions, TransactionOptions, LimitConfig, DBConfigOptions, PkeyResult, InternalInsertOptions, InternalUpdateOptions, InternalDeleteOptions } from './types';
 import { LimitExceededError, WriteOutsideTransactionError, WriteInReadOnlyContextError } from './types';
 import { type Column, type OrderSpec, type CVs, type Conds, type CondsOf, type OrCondOf, type ColumnsOf, createColumn, columnsToNames, pairsToRecord, condsToRecord, orderToString, createOrCond } from './Column';
+import { type SqlFragment, type SqlCondition, type SqlTypedFragment, isAnySqlFragment } from './SqlFragment';
 import { createMiddleware as createMiddlewareFn, type MiddlewareClass, type MiddlewareConfig, type CreatedMiddlewareClass, type ExecuteResult } from './Middleware';
 import { serializeRecord, getColumnMeta, getSqlCastMap, type KeyPair, type CompositeKeyPairs } from './decorators';
 import { getTypeCast, getSqlBuilder } from './drivers';
@@ -167,7 +168,7 @@ export abstract class DBModel {
    * `;
    * ```
    */
-  static QUERY: string | null = null;
+  static QUERY: string | SqlFragment | SqlCondition | SqlTypedFragment | null = null;
 
   /**
    * Query parameters for QUERY (set via withQuery())
@@ -606,12 +607,12 @@ export abstract class DBModel {
     }
     
     // Query-based CTE (append with comma if custom CTE exists)
-    if (isQueryBased && this.QUERY) {
+    const querySQL = this._getQuerySQL();
+    if (isQueryBased && querySQL) {
       if (sql) {
-        // Remove trailing space and add comma
-        sql = sql.slice(0, -1) + `, ${cteAlias} AS (${this.QUERY}) `;
+        sql = sql.slice(0, -1) + `, ${cteAlias} AS (${querySQL}) `;
       } else {
-        sql = `WITH ${cteAlias} AS (${this.QUERY}) `;
+        sql = `WITH ${cteAlias} AS (${querySQL}) `;
       }
     }
 
@@ -861,8 +862,9 @@ export abstract class DBModel {
 
     // Build CTE prefix if query-based
     let sql = '';
-    if (isQueryBased && this.QUERY) {
-      sql = `WITH ${cteAlias} AS (${this.QUERY}) `;
+    const countQuerySQL = this._getQuerySQL();
+    if (isQueryBased && countQuerySQL) {
+      sql = `WITH ${cteAlias} AS (${countQuerySQL}) `;
     }
 
     sql += `SELECT COUNT(*) as count FROM ${tableName}`;
@@ -1414,10 +1416,45 @@ export abstract class DBModel {
   }
 
   /**
+   * Resolve QUERY to a SQL string and params.
+   * Handles both string and SqlFragment QUERY types.
+   * @internal
+   */
+  protected static _resolveQuery(): { sql: string; params: unknown[] } | null {
+    if (this.QUERY === null) return null;
+    if (typeof this.QUERY === 'string') {
+      return { sql: this.QUERY, params: this._queryParams ? [...this._queryParams] : [] };
+    }
+    // SqlFragment: params come from the fragment, plus any _queryParams
+    const fragmentParams = [...this.QUERY.params];
+    if (this._queryParams) {
+      fragmentParams.push(...this._queryParams);
+    }
+    return { sql: this.QUERY.sql, params: fragmentParams };
+  }
+
+  /**
+   * Get the QUERY SQL string (resolves SqlFragment if needed).
+   * @internal
+   */
+  protected static _getQuerySQL(): string | null {
+    if (this.QUERY === null) return null;
+    if (typeof this.QUERY === 'string') return this.QUERY;
+    return this.QUERY.sql;
+  }
+
+  /**
    * Get query parameters (set via withQuery()).
    * @internal
    */
   static getQueryParams(): unknown[] {
+    if (this.QUERY !== null && typeof this.QUERY !== 'string' && isAnySqlFragment(this.QUERY)) {
+      const fragmentParams = [...this.QUERY.params];
+      if (this._queryParams) {
+        fragmentParams.push(...this._queryParams);
+      }
+      return fragmentParams;
+    }
     return this._queryParams ? [...this._queryParams] : [];
   }
 
@@ -1431,37 +1468,41 @@ export abstract class DBModel {
   /**
    * Create a new model class bound to specific query parameters.
    * Used for parameterized query-based models.
+   * Accepts either `{ sql, params }` object or a `SqlFragment` from `sql` tagged template.
    * 
-   * @param queryConfig - Query configuration with sql and params
+   * @param queryConfig - Query configuration with sql and params, or SqlFragment
    * @returns A new model class with bound parameters
    * 
    * @example
    * ```typescript
+   * import { sql } from 'litedbmodel';
+   * 
    * class SalesReportModel extends DBModel {
-   *   static QUERY = '...'; // Base query template
-   *   
    *   static forPeriod(startDate: string, endDate: string) {
-   *     return this.withQuery({
-   *       sql: `SELECT ... WHERE date >= $1 AND date < $2 ...`,
-   *       params: [startDate, endDate],
-   *     });
+   *     return this.withQuery(sql`
+   *       SELECT p.id, SUM(oi.quantity) AS total
+   *       FROM products p
+   *       JOIN order_items oi ON p.id = oi.product_id
+   *       WHERE oi.created_at >= ${startDate} AND oi.created_at < ${endDate}
+   *       GROUP BY p.id
+   *     `);
    *   }
    * }
-   * 
-   * const Q1Report = SalesReport.forPeriod('2024-01-01', '2024-04-01');
-   * const results = await Q1Report.find([...]);
    * ```
    */
   static withQuery<T extends typeof DBModel>(
     this: T,
-    queryConfig: { sql: string; params?: unknown[] }
+    queryConfig: { sql: string; params?: unknown[] } | SqlFragment | SqlCondition | SqlTypedFragment
   ): T {
-    // Create a new class that extends this one
+    const resolved = isAnySqlFragment(queryConfig)
+      ? { sql: queryConfig.sql, params: [...queryConfig.params] }
+      : queryConfig;
+
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const ParentClass = this;
     const BoundModel = class extends (ParentClass as typeof DBModel) {
-      static QUERY = queryConfig.sql;
-      static _queryParams = queryConfig.params || null;
+      static QUERY = resolved.sql;
+      static _queryParams = resolved.params || null;
     };
     
     // Copy static properties (TABLE_NAME, etc.)
@@ -2561,25 +2602,40 @@ export abstract class DBModel {
 
   /**
    * Execute raw SQL query.
+   * Accepts either a SQL string with params, or a `SqlFragment` from `sql` tagged template.
    * 
-   * @param sql - SQL query
-   * @param params - Query parameters
+   * @param sql - SQL query string or SqlFragment
+   * @param params - Query parameters (ignored when SqlFragment is passed)
    * @returns QueryResult with rows, rowCount
    * 
    * @example
    * ```typescript
+   * // Traditional
    * const result = await DBModel.execute(
    *   'SELECT * FROM users WHERE id = $1',
    *   [1]
    * );
-   * console.log(result.rows);
-   * console.log(result.rowCount);
+   * 
+   * // With sql tag
+   * import { sql } from 'litedbmodel';
+   * const result = await DBModel.execute(
+   *   sql`SELECT process_daily_aggregates(${targetDate})`
+   * );
    * ```
    */
+  static execute(sql: string, params?: unknown[]): Promise<ExecuteResult>;
+  static execute(fragment: SqlFragment | SqlCondition | SqlTypedFragment): Promise<ExecuteResult>;
   static execute(
-    sql: string,
+    sqlOrFragment: string | SqlFragment | SqlCondition | SqlTypedFragment,
     params?: unknown[]
   ): Promise<ExecuteResult> {
+    let sql: string;
+    if (typeof sqlOrFragment !== 'string' && isAnySqlFragment(sqlOrFragment)) {
+      sql = sqlOrFragment.sql;
+      params = [...sqlOrFragment.params];
+    } else {
+      sql = sqlOrFragment as string;
+    }
     const core = async (s: string, p?: unknown[]): Promise<ExecuteResult> => {
       const handler = this.getHandler();
       
@@ -2971,9 +3027,8 @@ export abstract class DBModel {
       options.forUpdate = true;
     }
 
-    // Convert pkey to condition tuples
-    const pkeyConditions = Object.entries(pkey).map(([k, v]) => [k, v] as [string, unknown]);
-    const results = await ModelClass.find(pkeyConditions as Conds, options);
+    const pkeyConditions = Object.entries(pkey).map(([k, v]) => [k, v] as readonly [string, unknown]);
+    const results = await ModelClass.find(pkeyConditions as CondsOf<typeof DBModel>, options);
     if (results.length > 0) {
       Object.assign(this, results[0]);
       return this;
