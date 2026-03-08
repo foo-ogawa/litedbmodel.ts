@@ -290,8 +290,8 @@ SKIP also works in `createMany` and `updateMany`:
 | Operation | SKIP Behavior |
 |-----------|---------------|
 | `create` / `update` | Column excluded from INSERT/UPDATE |
-| `createMany` | Column excluded → DB DEFAULT applied |
-| `updateMany` | Column excluded → existing value retained |
+| `createMany` | Column excluded → DB DEFAULT applied (see note below) |
+| `updateMany` | Column excluded → existing value retained (single query) |
 
 ```typescript
 // createMany - records grouped by SKIP pattern for efficient batch INSERT
@@ -306,6 +306,8 @@ await User.updateMany([
   [[User.id, 2], [User.status, SKIP], [User.email, 'new@test.com']],  // status unchanged
 ], { keyColumns: User.id });
 ```
+
+> **Note on `createMany` with SKIP:** `createMany` groups records by their SKIP pattern and issues a separate INSERT per group, because SQL does not allow mixing `DEFAULT` with array-based bulk insert (`UNNEST`). `updateMany` does not have this limitation — it handles SKIP in a single query using boolean flags. For best performance with `createMany`, prefer providing explicit values for all columns instead of using SKIP.
 
 ---
 

@@ -650,6 +650,8 @@ await User.updateMany([
 
 Records with the same SKIP pattern are batched together for efficient INSERT. Each database uses native batch syntax while ensuring SKIPped columns receive DEFAULT values (createMany) or retain existing values (updateMany).
 
+> **Note on `createMany` with SKIP:** `createMany` groups records by their SKIP pattern and issues a separate INSERT per group, because SQL does not allow mixing `DEFAULT` with array-based bulk insert (`UNNEST`). `updateMany` does not have this limitation — it handles SKIP in a single query using boolean flags. For best performance with `createMany`, prefer providing explicit values for all columns instead of using SKIP.
+
 ---
 
 ## Relation Decorators
