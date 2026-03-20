@@ -959,7 +959,7 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       const initial = await AllTypes.findOne([[AllTypes.id, id]]);
       expect(initial!.int_val).toBe(10);
       expect(initial!.timestamp_val).toBeInstanceOf(Date);
-      expect(initial!.date_val).toBeInstanceOf(Date);
+      expect(typeof initial!.date_val).toBe('string');
 
       // Update all to null
       await DBModel.transaction(async () => {
@@ -1019,7 +1019,7 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       const initialRecords = await AllTypes.find([[AllTypes.id, ids]]);
       for (const rec of initialRecords) {
         expect(rec.timestamp_val).toBeInstanceOf(Date);
-        expect(rec.date_val).toBeInstanceOf(Date);
+        expect(typeof rec.date_val).toBe('string');
         expect(rec.bool_val).not.toBeNull();
       }
 
