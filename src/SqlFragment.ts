@@ -165,7 +165,7 @@ export function isSqlRef(value: unknown): value is SqlRef {
 
 function hasTableName(value: unknown): value is { TABLE_NAME: string } {
   return (
-    typeof value === 'object' &&
+    (typeof value === 'object' || typeof value === 'function') &&
     value !== null &&
     'TABLE_NAME' in value &&
     typeof (value as { TABLE_NAME: unknown }).TABLE_NAME === 'string' &&

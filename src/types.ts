@@ -430,15 +430,6 @@ export type ColumnDefs<T> = {
 
 export interface DBModelStatic<T extends DBModelInstance = DBModelInstance> {
   new (): T;
-  TABLE_NAME: string;
-  UPDATE_TABLE_NAME: string | null;
-  SELECT_COLUMN: string;
-  DEFAULT_ORDER: OrderSpec | null;
-  DEFAULT_GROUP: Column | Column[] | string | null;
-  FIND_FILTER: Conds | null;
-  PKEY_COLUMNS: Column[] | null;
-  SEQ_NAME: string | null;
-  ID_TYPE: 'serial' | 'uuid' | null;
   getTableName(): string;
   getUpdateTableName(): string;
   getGroupByClause(): string | null;

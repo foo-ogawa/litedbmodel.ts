@@ -331,7 +331,7 @@ export class LazyRelationContext {
     values: unknown[],
     config: RelationConfig
   ): Promise<DBModel[]> {
-    const tableName = TargetClass.TABLE_NAME;
+    const tableName = TargetClass.getTableName();
     // Get sqlCast from target model's column metadata
     const sqlCastMap = getSqlCastMap(TargetClass);
     const sqlCast = sqlCastMap.get(targetKey);
@@ -362,7 +362,7 @@ export class LazyRelationContext {
     tuples: unknown[][],
     config: RelationConfig
   ): Promise<DBModel[]> {
-    const tableName = TargetClass.TABLE_NAME;
+    const tableName = TargetClass.getTableName();
     
     // Get sqlCast map from target model
     const sqlCastMap = getSqlCastMap(TargetClass);
@@ -437,7 +437,7 @@ export class LazyRelationContext {
   ): Promise<DBModel[]> {
     const baseConds = Object.entries(config.conditions || {}).map(([k, v]) => [k, v] as [string, unknown]);
     // Convert string keys to Column objects for the IN clause
-    const targetColumns = targetKeys.map(k => createColumn(k, TargetClass.TABLE_NAME, TargetClass.name));
+    const targetColumns = targetKeys.map(k => createColumn(k, TargetClass.getTableName(), TargetClass.name));
     const condTuples: Conds = [
       ...baseConds,
       [targetColumns, tuples],  // Composite key IN condition with Column[]
@@ -481,7 +481,7 @@ export class LazyRelationContext {
     values: unknown[],
     config: RelationConfig
   ): Promise<DBModel[]> {
-    const tableName = TargetClass.TABLE_NAME;
+    const tableName = TargetClass.getTableName();
     // Get sqlCast from target model's column metadata
     const sqlCastMap = getSqlCastMap(TargetClass);
     const sqlCast = sqlCastMap.get(targetKey);
@@ -521,7 +521,7 @@ export class LazyRelationContext {
     tuples: unknown[][],
     config: RelationConfig
   ): Promise<DBModel[]> {
-    const tableName = TargetClass.TABLE_NAME;
+    const tableName = TargetClass.getTableName();
     const limit = config.limit!;
     
     // Get sqlCast map from target model
@@ -591,7 +591,7 @@ export class LazyRelationContext {
     values: unknown[],
     config: RelationConfig
   ): Promise<DBModel[]> {
-    const tableName = TargetClass.TABLE_NAME;
+    const tableName = TargetClass.getTableName();
     const limit = config.limit!;
     const orderBy = config.order || targetKey;
     
@@ -634,7 +634,7 @@ export class LazyRelationContext {
     tuples: unknown[][],
     config: RelationConfig
   ): Promise<DBModel[]> {
-    const tableName = TargetClass.TABLE_NAME;
+    const tableName = TargetClass.getTableName();
     const limit = config.limit!;
     const orderBy = config.order || targetKeys.join(', ');
     const partitionBy = targetKeys.join(', ');

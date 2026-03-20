@@ -1,4 +1,4 @@
-[**litedbmodel v0.20.1**](../README.md)
+[**litedbmodel v1.0.1**](../README.md)
 
 ***
 
@@ -22,4 +22,4 @@ Database configuration
 | <a id="max"></a> `max?` | `number` | Maximum pool size | DBHandler.ts:52 |
 | <a id="timeout"></a> `timeout?` | `number` | Connection timeout in seconds | DBHandler.ts:54 |
 | <a id="querytimeout"></a> `queryTimeout?` | `number` | Query timeout in seconds | DBHandler.ts:56 |
-| <a id="driver"></a> `driver?` | `"postgres"` \| `"sqlite"` \| `"mysql"` | Driver type: 'postgres' (default), 'sqlite', or 'mysql' | DBHandler.ts:58 |
+| <a id="driver"></a> `driver?` | `"postgres"` \| `"mysql"` \| `"sqlite"` | Driver type: 'postgres' (default), 'sqlite', or 'mysql' | DBHandler.ts:58 |

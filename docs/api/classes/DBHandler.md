@@ -1,4 +1,4 @@
-[**litedbmodel v0.20.1**](../README.md)
+[**litedbmodel v1.0.1**](../README.md)
 
 ***
 
@@ -48,7 +48,7 @@ Defined in: DBHandler.ts:180
 ### getDriverType()
 
 ```ts
-getDriverType(): "postgres" | "sqlite" | "mysql";
+getDriverType(): "postgres" | "mysql" | "sqlite";
 ```
 
 Defined in: DBHandler.ts:198
@@ -57,7 +57,7 @@ Get the driver type
 
 #### Returns
 
-`"postgres"` \| `"sqlite"` \| `"mysql"`
+`"postgres"` \| `"mysql"` \| `"sqlite"`
 
 ***
 

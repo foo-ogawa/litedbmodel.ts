@@ -1,4 +1,4 @@
-[**litedbmodel v0.20.1**](../README.md)
+[**litedbmodel v1.0.1**](../README.md)
 
 ***
 
@@ -12,7 +12,7 @@
 function model<T>(constructor: T): T;
 ```
 
-Defined in: decorators.ts:784
+Defined in: decorators.ts:927
 
 Model class decorator.
 
@@ -85,7 +85,7 @@ const posts = await user.posts;  // Batch loads with other users in context
 function model(tableName: string): <T>(constructor: T) => T;
 ```
 
-Defined in: decorators.ts:788
+Defined in: decorators.ts:931
 
 Model class decorator.
 
@@ -170,7 +170,7 @@ const posts = await user.posts;  // Batch loads with other users in context
 function model(tableName: string, options: ModelOptions): <T>(constructor: T) => T;
 ```
 
-Defined in: decorators.ts:792
+Defined in: decorators.ts:935
 
 Model class decorator.
 

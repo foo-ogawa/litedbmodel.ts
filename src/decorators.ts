@@ -416,7 +416,7 @@ function serializeJson(val: unknown, typeCast?: DriverTypeCast): unknown {
  * @column.stringArray() tags?: string[];           // Array element type unknown
  * @column.intArray() scores?: number[];            // Array element type unknown
  * @column.json<MyType>() data?: MyType;            // Generic type unknown
- * @column.date() birth_date?: Date;                // date vs datetime distinction
+ * @column.date() birth_date?: string;              // date vs datetime distinction
  * ```
  *
  * Note: The explicit variants (`@column.boolean()`, `@column.datetime()`, etc.)
@@ -516,31 +516,49 @@ export const column = Object.assign(
       )(columnName),
 
     /**
-     * Date type conversion (date only, time set to 00:00:00)
-     * Preserves null for nullable columns, undefined stays undefined
+     * Date type conversion — returns YYYY-MM-DD string.
+     * Preserves null for nullable columns, undefined stays undefined.
      * 
-     * Timezone handling:
-     * - PostgreSQL: Serializes to UTC date string (YYYY-MM-DD) for consistency
-     * - MySQL/SQLite: Passes Date object to driver
+     * DB values (Date object or string) are normalized to 'YYYY-MM-DD' string.
+     * On write, string values are passed through; Date objects are formatted as 'YYYY-MM-DD'.
      * 
-     * @example @column.date() birth_date?: Date;
+     * @example @column.date() birth_date?: string;
      */
     date: (columnName?: string) =>
       createColumnDecorator(
         (v) => {
           if (v === undefined) return undefined;
           if (v === null) return null;
-          const dt = castToDatetime(v);
-          if (dt) {
-            dt.setHours(0, 0, 0, 0);
+          if (typeof v === 'string') {
+            const match = v.match(/^(\d{4}-\d{2}-\d{2})/);
+            return match ? match[1] : null;
           }
-          return dt;
+          if (v instanceof Date) {
+            if (isNaN(v.getTime())) return null;
+            const y = v.getFullYear();
+            const m = String(v.getMonth() + 1).padStart(2, '0');
+            const d = String(v.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+          }
+          if (typeof v === 'number') {
+            const dt = new Date(v);
+            if (isNaN(dt.getTime())) return null;
+            const y = dt.getFullYear();
+            const m = String(dt.getMonth() + 1).padStart(2, '0');
+            const d = String(dt.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+          }
+          return null;
         },
-        // Delegate to driver-specific serializeDate
-        (val, typeCast) => {
+        (val) => {
           if (val === null || val === undefined) return null;
+          if (typeof val === 'string') return val;
           if (val instanceof Date) {
-            return typeCast?.serializeDate(val) ?? val;
+            if (isNaN(val.getTime())) return null;
+            const y = val.getFullYear();
+            const m = String(val.getMonth() + 1).padStart(2, '0');
+            const d = String(val.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
           }
           return val;
         },

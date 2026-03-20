@@ -214,7 +214,7 @@ Types are inferred from TypeScript property types:
 Use explicit type decorators when auto-inference isn't sufficient:
 
 ```typescript
-@column.date() birth_date?: Date;           // Date only (no time)
+@column.date() birth_date?: string;         // Date only (YYYY-MM-DD string)
 @column.datetime() updated_at?: Date;       // DateTime with timezone
 @column.boolean() is_active?: boolean;      // Explicit boolean
 @column.number() amount?: number;           // Explicit number
@@ -229,20 +229,20 @@ Use explicit type decorators when auto-inference isn't sufficient:
 
 ### Date vs DateTime: Important Distinction
 
-TypeScript has only one `Date` type, but databases distinguish between:
+Databases distinguish between date-only and datetime columns. `@column.date()` returns a **`string`** (`YYYY-MM-DD`), not a `Date` object, because a calendar date has no timezone concept:
 
-| DB Column Type | Decorator | Example |
-|----------------|-----------|---------|
-| `TIMESTAMP` / `DATETIME` | `@column()` or `@column.datetime()` | `created_at`, `updated_at` |
-| `DATE` | `@column.date()` | `birth_date`, `settlement_date` |
+| DB Column Type | Decorator | TypeScript Type | Example |
+|----------------|-----------|-----------------|---------|
+| `TIMESTAMP` / `DATETIME` | `@column()` or `@column.datetime()` | `Date` | `created_at`, `updated_at` |
+| `DATE` | `@column.date()` | `string` | `birth_date`, `settlement_date` |
 
 **⚠️ Important**: `@column()` with `Date` type is treated as `TIMESTAMP/DATETIME`. For date-only columns (no time component), you **must** use `@column.date()` explicitly.
 
 ```typescript
 // ✅ Correct usage
-@column() created_at?: Date;              // TIMESTAMP column (datetime)
-@column.datetime() updated_at?: Date;     // TIMESTAMP column (explicit)
-@column.date() settlement_date?: Date;    // DATE column (date only)
+@column() created_at?: Date;              // TIMESTAMP column (datetime → Date)
+@column.datetime() updated_at?: Date;     // TIMESTAMP column (datetime → Date)
+@column.date() settlement_date?: string;  // DATE column (date only → 'YYYY-MM-DD')
 
 // ❌ Wrong: will cause type mismatch errors
 @column() settlement_date?: Date;         // Treated as TIMESTAMP, not DATE!
@@ -250,7 +250,7 @@ TypeScript has only one `Date` type, but databases distinguish between:
 
 **Serialization behavior** (PostgreSQL):
 - `@column()` / `@column.datetime()` → ISO 8601 UTC: `2024-06-15T10:30:00.000Z`
-- `@column.date()` → UTC date only: `2024-06-15`
+- `@column.date()` → date string: `2024-06-15`
 
 ---
 
@@ -1138,7 +1138,7 @@ The `sql` tag automatically converts interpolated values to `?` placeholders and
 
 ### Type-Safe Column References in QUERY
 
-Use the `sql` tag with Column and `TABLE_NAME` references for refactoring safety. Columns and table names are embedded directly in SQL; they are not parameterized:
+Use the `sql` tag with Column references and **Model classes** for refactoring safety. Columns and table names are embedded directly in SQL; they are not parameterized:
 
 ```typescript
 import { sql } from 'litedbmodel';
@@ -1154,12 +1154,14 @@ class UserActivityModel extends DBModel {
       ${User.id} AS user_id,
       ${User.name} AS user_name,
       COUNT(${Post.id}) AS total_posts
-    FROM ${User.TABLE_NAME}
-    LEFT JOIN ${Post.TABLE_NAME} ON ${User.id} = ${Post.user_id}
+    FROM ${User}
+    LEFT JOIN ${Post} ON ${User.id} = ${Post.user_id}
     GROUP BY ${User.id}, ${User.name}
   `;
 }
 ```
+
+Passing a Model class (`${User}`) in the `sql` tag expands to its `TABLE_NAME`. This is consistent with column references (`${User.id}` → column name).
 
 ### Use Cases
 

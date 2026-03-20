@@ -1,4 +1,4 @@
-[**litedbmodel v0.20.1**](../README.md)
+[**litedbmodel v1.0.1**](../README.md)
 
 ***
 
@@ -6,7 +6,7 @@
 
 # Class: Values\<Model\>
 
-Defined in: Column.ts:565
+Defined in: Column.ts:566
 
 Type-safe builder for update/create value pairs.
 Use array literals for static values, builder for dynamic construction.
@@ -48,7 +48,7 @@ await User.create(values.build());
 new Values<Model>(initial?: readonly readonly [Column<any, Model>, unknown][]): Values<Model>;
 ```
 
-Defined in: Column.ts:571
+Defined in: Column.ts:572
 
 Create a Values builder, optionally with initial pairs.
 
@@ -72,7 +72,7 @@ Create a Values builder, optionally with initial pairs.
 get length(): number;
 ```
 
-Defined in: Column.ts:595
+Defined in: Column.ts:596
 
 Get the number of pairs.
 
@@ -88,7 +88,7 @@ Get the number of pairs.
 add<V>(column: Column<V, Model>, value: V | null | undefined): this;
 ```
 
-Defined in: Column.ts:580
+Defined in: Column.ts:581
 
 Add a type-safe column-value pair.
 
@@ -117,7 +117,7 @@ Add a type-safe column-value pair.
 build(): readonly readonly [Column<any, any>, unknown][];
 ```
 
-Defined in: Column.ts:588
+Defined in: Column.ts:589
 
 Build the final array for use with update/create.
 

@@ -139,14 +139,14 @@ class UserActivityModel extends DBModel {
       ${User.id} AS user_id,
       ${User.name} AS user_name,
       COUNT(${Post.id}) AS total_posts
-    FROM ${User.TABLE_NAME}
-    LEFT JOIN ${Post.TABLE_NAME} ON ${User.id} = ${Post.user_id}
+    FROM ${User}
+    LEFT JOIN ${Post} ON ${User.id} = ${Post.user_id}
     GROUP BY ${User.id}, ${User.name}
   `;
 }
 ```
 
-When only Column references and `TABLE_NAME` objects are interpolated (no runtime values), the `sql` tag embeds them directly in the SQL string with no parameters.
+When only Column references and Model classes are interpolated (no runtime values), the `sql` tag embeds them directly in the SQL string with no parameters.
 
 String `QUERY` is still supported for backward compatibility.
 
@@ -175,7 +175,7 @@ The `sql` tag processes interpolated values according to their type:
 | Interpolated Value | Processing | Example Output |
 |---|---|---|
 | `Column` | Embedded as column name | `age`, `name` |
-| `{ TABLE_NAME }` | Embedded as table name | `users`, `posts` |
+| Model class (`{ TABLE_NAME }`) | Embedded as table name | `users`, `posts` |
 | `sql.raw(str)` | Embedded as raw SQL (no parameterization) | `ASC`, `DISTINCT` |
 | `sql.ref(col)` | Embedded as `table.column` | `users.id` |
 | `parentRef(col)` | Embedded as `table.column` | `users.id` |
@@ -235,7 +235,7 @@ The `sql` tag returns different types based on the interpolated values, enabling
 |---|---|---|
 | Single `Column` only | `SqlTypedFragment<V, M>` | Condition tuple first element, or value-free condition (IS NULL) |
 | Single `Column` + value(s) | `SqlCondition<M>` | Direct condition element (Pattern B) |
-| Multiple Columns / TABLE_NAMEs | `SqlFragment` | `QUERY`, `withQuery`, `execute` |
+| Multiple Columns / Model classes | `SqlFragment` | `QUERY`, `withQuery`, `execute` |
 | Mixed (Columns + values) | `SqlFragment` | `withQuery`, `execute` |
 
 - `SqlTypedFragment<V, M>` carries the Column's value type `V` and model type `M`, enabling type checking on the tuple's second element.

@@ -91,18 +91,46 @@ describe('decorators', () => {
       expect(instance.created_at?.getFullYear()).toBe(2024);
     });
 
-    it('@column.date should convert to Date with time zeroed', () => {
+    it('@column.date should convert to YYYY-MM-DD string', () => {
       @model('test')
       class TestModel extends DBModel {
-        @column.date() birth_date?: Date;
+        @column.date() birth_date?: string;
       }
 
       const instance = new TestModel();
       (instance as any).birth_date = '2024-01-15T15:30:00Z';
       instance.typeCastFromDB();
-      expect(instance.birth_date).toBeInstanceOf(Date);
-      expect(instance.birth_date?.getHours()).toBe(0);
-      expect(instance.birth_date?.getMinutes()).toBe(0);
+      expect(typeof instance.birth_date).toBe('string');
+      expect(instance.birth_date).toBe('2024-01-15');
+    });
+
+    it('@column.date should extract date from Date object', () => {
+      @model('test')
+      class TestModel extends DBModel {
+        @column.date() birth_date?: string;
+      }
+
+      const instance = new TestModel();
+      (instance as any).birth_date = new Date(2024, 0, 15, 15, 30, 0);
+      instance.typeCastFromDB();
+      expect(typeof instance.birth_date).toBe('string');
+      expect(instance.birth_date).toBe('2024-01-15');
+    });
+
+    it('@column.date should return null for null/invalid', () => {
+      @model('test')
+      class TestModel extends DBModel {
+        @column.date() birth_date?: string | null;
+      }
+
+      const instance = new TestModel();
+      (instance as any).birth_date = null;
+      instance.typeCastFromDB();
+      expect(instance.birth_date).toBeNull();
+
+      (instance as any).birth_date = 'not-a-date';
+      instance.typeCastFromDB();
+      expect(instance.birth_date).toBeNull();
     });
 
     it('@column.stringArray should convert to string array', () => {
@@ -286,7 +314,7 @@ describe('decorators', () => {
         @column() id?: number;
       }
 
-      expect(User.TABLE_NAME).toBe('users');
+      expect(User.getTableName()).toBe('users');
     });
 
     it('should work without table name argument', () => {
@@ -295,9 +323,7 @@ describe('decorators', () => {
         @column() id?: number;
       }
 
-      // TABLE_NAME should not be set by the decorator
-      // Note: DBModel base class may have TABLE_NAME = '' as default
-      const tableName = TestModelWithoutName.TABLE_NAME;
+      const tableName = TestModelWithoutName.getTableName();
       expect(tableName === undefined || tableName === '').toBe(true);
     });
 

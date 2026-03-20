@@ -1,4 +1,4 @@
-[**litedbmodel v0.20.1**](../README.md)
+[**litedbmodel v1.0.1**](../README.md)
 
 ***
 
@@ -6,7 +6,7 @@
 
 # Class: Conditions\<Model\>
 
-Defined in: Column.ts:627
+Defined in: Column.ts:628
 
 Type-safe builder for query conditions.
 Use array literals for static conditions, builder for dynamic construction.
@@ -47,7 +47,7 @@ if (query.active) where.add(User.is_active, true);
 new Conditions<Model>(initial?: Conds): Conditions<Model>;
 ```
 
-Defined in: Column.ts:633
+Defined in: Column.ts:634
 
 Create a Conditions builder, optionally with initial conditions.
 
@@ -71,7 +71,7 @@ Create a Conditions builder, optionally with initial conditions.
 get length(): number;
 ```
 
-Defined in: Column.ts:677
+Defined in: Column.ts:700
 
 Get the number of conditions.
 
@@ -87,7 +87,7 @@ Get the number of conditions.
 add<V>(column: Column<V, Model>, value: V | null | undefined): this;
 ```
 
-Defined in: Column.ts:642
+Defined in: Column.ts:643
 
 Add a type-safe column equality condition.
 
@@ -116,7 +116,7 @@ Add a type-safe column equality condition.
 addRaw(condition: string, value?: unknown): this;
 ```
 
-Defined in: Column.ts:650
+Defined in: Column.ts:651
 
 Add a raw condition with template literal (e.g., `${User.age} > ?`).
 
@@ -133,13 +133,80 @@ Add a raw condition with template literal (e.g., `${User.age} > ?`).
 
 ***
 
+### addSql()
+
+#### Call Signature
+
+```ts
+addSql<V>(fragment: SqlTypedFragment<V, Model>, value: V): this;
+```
+
+Defined in: Column.ts:670
+
+Add a type-safe sql-tagged condition.
+
+##### Type Parameters
+
+| Type Parameter |
+| ------ |
+| `V` |
+
+##### Parameters
+
+| Parameter | Type |
+| ------ | ------ |
+| `fragment` | [`SqlTypedFragment`](../interfaces/SqlTypedFragment.md)\<`V`, `Model`\> |
+| `value` | `V` |
+
+##### Returns
+
+`this`
+
+##### Example
+
+```typescript
+const where = new Conditions<User>();
+where.addSql(sql`${User.age} > ?`, 18);
+where.addSql(sql`${User.deleted_at} IS NULL`);
+```
+
+#### Call Signature
+
+```ts
+addSql(fragment: SqlTypedFragment<any, Model>): this;
+```
+
+Defined in: Column.ts:671
+
+Add a type-safe sql-tagged condition.
+
+##### Parameters
+
+| Parameter | Type |
+| ------ | ------ |
+| `fragment` | [`SqlTypedFragment`](../interfaces/SqlTypedFragment.md)\<`any`, `Model`\> |
+
+##### Returns
+
+`this`
+
+##### Example
+
+```typescript
+const where = new Conditions<User>();
+where.addSql(sql`${User.age} > ?`, 18);
+where.addSql(sql`${User.deleted_at} IS NULL`);
+```
+
+***
+
 ### or()
 
 ```ts
 or(...condGroups: readonly Conds[]): this;
 ```
 
-Defined in: Column.ts:662
+Defined in: Column.ts:685
 
 Add an OR condition group.
 
@@ -161,7 +228,7 @@ Add an OR condition group.
 build(): Conds;
 ```
 
-Defined in: Column.ts:670
+Defined in: Column.ts:693
 
 Build the final array for use with find/count/delete.
 

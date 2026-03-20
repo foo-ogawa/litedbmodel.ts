@@ -28,7 +28,7 @@ describe('Query-Based Models', () => {
       }
 
       expect(UserStats.isQueryBased()).toBe(true);
-      expect(UserStats.TABLE_NAME).toBe('user_stats');
+      expect(UserStats.getTableName()).toBe('user_stats');
     });
 
     it('should not be query-based without QUERY', () => {
@@ -149,7 +149,7 @@ describe('Query-Based Models', () => {
 
       const BoundModel = MyModel.forDate('2024-01-01');
 
-      expect(BoundModel.TABLE_NAME).toBe('my_model');
+      expect(BoundModel.getTableName()).toBe('my_model');
       expect(BoundModel.getCTEAlias()).toBe('my_model');
     });
 

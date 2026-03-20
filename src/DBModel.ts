@@ -115,8 +115,8 @@ export abstract class DBModel {
   // Static Table Configuration (Override in derived classes)
   // ============================================
 
-  /** Table name */
-  static TABLE_NAME: string = '';
+  /** @internal Table name — use getTableName() for external access */
+  protected static TABLE_NAME: string = '';
 
   /**
    * Returns the model class with type-safe column properties.
@@ -140,20 +140,20 @@ export abstract class DBModel {
     return this as T & ColumnsOf<InstanceType<T>>;
   }
 
-  /** Table name for UPDATE/DELETE (if different from TABLE_NAME) */
-  static UPDATE_TABLE_NAME: string | null = null;
+  /** @internal Table name for UPDATE/DELETE — use getUpdateTableName() for external access */
+  protected static UPDATE_TABLE_NAME: string | null = null;
 
-  /** Default SELECT columns */
-  static SELECT_COLUMN: string = '*';
+  /** @internal Default SELECT columns — set via @model decorator */
+  protected static SELECT_COLUMN: string = '*';
 
-  /** Default ORDER BY clause (type-safe OrderColumn or OrderColumn[]) */
-  static DEFAULT_ORDER: OrderSpec | null = null;
+  /** @internal Default ORDER BY — set via @model decorator */
+  protected static DEFAULT_ORDER: OrderSpec | null = null;
 
-  /** Default GROUP BY clause (Column, Column[], or raw string) */
-  static DEFAULT_GROUP: Column | Column[] | string | null = null;
+  /** @internal Default GROUP BY — set via @model decorator */
+  protected static DEFAULT_GROUP: Column | Column[] | string | null = null;
 
-  /** Default filter conditions applied to all queries (use tuple format like find()) */
-  static FIND_FILTER: Conds | null = null;
+  /** @internal Default filter conditions — set via @model decorator */
+  protected static FIND_FILTER: Conds | null = null;
 
   /**
    * SQL query for query-based models (view models, aggregations, etc.)
@@ -177,14 +177,14 @@ export abstract class DBModel {
    */
   protected static _queryParams: unknown[] | null = null;
 
-  /** Primary key columns (use getter to reference Model.column) */
-  static PKEY_COLUMNS: Column[] | null = null;
+  /** @internal Primary key columns — set via @model decorator */
+  protected static PKEY_COLUMNS: Column[] | null = null;
 
-  /** Sequence name for auto-increment (use getter if needed) */
-  static SEQ_NAME: string | null = null;
+  /** @internal Sequence name — set via @model decorator */
+  protected static SEQ_NAME: string | null = null;
 
-  /** ID type: 'serial' for auto-increment, 'uuid' for UUID generation */
-  static ID_TYPE: 'serial' | 'uuid' | null = null;
+  /** @internal ID type — set via @model decorator */
+  protected static ID_TYPE: 'serial' | 'uuid' | null = null;
 
   // ============================================
   // Database Configuration

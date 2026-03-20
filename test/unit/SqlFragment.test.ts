@@ -677,7 +677,7 @@ describe('DBModel integration: withQuery with SqlFragment', () => {
 
     expect(Bound.isQueryBased()).toBe(true);
     expect(Bound.getQueryParams()).toEqual(['2024-01-01', '2024-04-01']);
-    expect(Bound.TABLE_NAME).toBe('wq_test');
+    expect(Bound.getTableName()).toBe('wq_test');
   });
 
   it('should create independent bound models with SqlFragment', () => {
@@ -748,5 +748,50 @@ describe('DBModel integration: execute with SqlFragment', () => {
     expect(frag.sql).toBe('SELECT process_daily(?)');
     expect(frag.params).toHaveLength(1);
     expect(frag.params[0]).toEqual(new Date('2024-01-01'));
+  });
+});
+
+describe('Model class (function type) as table name in sql tag', () => {
+  it('should expand Model class to TABLE_NAME in FROM clause', () => {
+    @model('meals')
+    class Meal extends DBModel {
+      @column() id?: number;
+      @column() name?: string;
+    }
+
+    const frag = sql`SELECT * FROM ${Meal}`;
+    expect(isSqlFragment(frag)).toBe(true);
+    expect(frag.sql).toBe('SELECT * FROM meals');
+    expect(frag.params).toEqual([]);
+  });
+
+  it('should expand Model class in JOIN clause', () => {
+    @model('users')
+    class User extends DBModel {
+      @column() id?: number;
+    }
+
+    @model('posts')
+    class Post extends DBModel {
+      @column() id?: number;
+      @column() user_id?: number;
+    }
+
+    const frag = sql`SELECT * FROM ${User} JOIN ${Post} ON ${User}.id = ${Post}.user_id`;
+    expect(isSqlFragment(frag)).toBe(true);
+    expect(frag.sql).toBe('SELECT * FROM users JOIN posts ON users.id = posts.user_id');
+    expect(frag.params).toEqual([]);
+  });
+
+  it('should expand Model class with value params', () => {
+    @model('meals')
+    class Meal extends DBModel {
+      @column() id?: number;
+    }
+
+    const frag = sql`SELECT * FROM ${Meal} WHERE id = ${42}`;
+    expect(isSqlFragment(frag)).toBe(true);
+    expect(frag.sql).toBe('SELECT * FROM meals WHERE id = ?');
+    expect(frag.params).toEqual([42]);
   });
 });

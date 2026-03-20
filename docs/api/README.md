@@ -1,4 +1,4 @@
-**litedbmodel v0.20.1**
+**litedbmodel v1.0.1**
 
 ***
 
@@ -407,8 +407,8 @@ class LoggingMiddleware extends Middleware {
   }
 }
 
-// Register middleware
-User.use(LoggingMiddleware);
+// Register middleware (applies to ALL models)
+DBModel.use(LoggingMiddleware);
 ```
 
 See: [Middleware](classes/Middleware.md)
@@ -463,13 +463,65 @@ await User.updateMany([
 ], { keyColumns: User.id });
 ```
 
-### Batch SQL Strategy by Database
+### SQL Generation Strategy (Complete Matrix)
 
-| Database | createMany | updateMany |
-|----------|------------|------------|
-| PostgreSQL | Grouped `UNNEST` INSERT | `UNNEST` + `CASE WHEN skip_flag` |
-| MySQL | Grouped `VALUES ROW` INSERT | `JOIN VALUES ROW` + `IF(skip_flag)` |
-| SQLite | Grouped `VALUES` INSERT | `CASE WHEN key=? THEN col ELSE ?` |
+| DB | Operation | SKIP | SQL Strategy | SQL Example | Test |
+|----|-----------|------|--------------|-------------|------|
+| PostgreSQL | create | No | VALUES | `INSERT INTO t (name, arr, json) VALUES ($1, '{1,2}', '{"a":1}')` | ✅ |
+| PostgreSQL | create | Yes | VALUES (column excluded) | `INSERT INTO t (name, json) VALUES ($1, '{"a":1}')` - arr excluded | ✅ |
+| PostgreSQL | createMany | No | UNNEST | `INSERT INTO t SELECT v.name, (jsonb->arr), v.json::jsonb FROM UNNEST($1::text[], $2::text[], $3::text[]) AS v` | ✅ |
+| PostgreSQL | createMany | Yes | Group by SKIP pattern -> UNNEST per group | Same as above, SKIP columns excluded from INSERT -> DB DEFAULT | ✅ |
+| PostgreSQL | update | No | SET | `UPDATE t SET name=$1, arr='{1,2}', json='{"a":1}' WHERE id=$2` | ✅ |
+| PostgreSQL | update | Yes | SET (column excluded) | `UPDATE t SET name=$1, json='{"a":1}' WHERE id=$2` - arr excluded | ✅ |
+| PostgreSQL | updateMany | No | UNNEST | `UPDATE t SET arr=(jsonb->arr), json=v.json::jsonb FROM UNNEST(...) AS v WHERE t.id=v.id` | ✅ |
+| PostgreSQL | updateMany | Yes | UNNEST + skip_flag column | `SET arr=CASE WHEN v._skip_arr THEN t.arr ELSE (jsonb->arr) END` | ✅ |
+| MySQL | create | No | VALUES | `INSERT INTO t (name, status) VALUES (?, ?)` | ✅ |
+| MySQL | create | Yes | VALUES (column excluded) | `INSERT INTO t (name) VALUES (?)` - status excluded -> DB DEFAULT | ✅ |
+| MySQL | createMany | No | VALUES ROW | `INSERT INTO t (name, status) VALUES ROW(?,?), ROW(?,?)` | ✅ |
+| MySQL | createMany | Yes | Group by SKIP pattern -> VALUES per group | Same as above, SKIP columns excluded from INSERT -> DB DEFAULT | ✅ |
+| MySQL | update | No | SET | `UPDATE t SET name=?, status=? WHERE id=?` | ✅ |
+| MySQL | update | Yes | SET (column excluded) | `UPDATE t SET name=? WHERE id=?` - status excluded | ✅ |
+| MySQL | updateMany | No | JOIN VALUES ROW | `UPDATE t JOIN (VALUES ROW(?,?)) AS v ON t.id=v.id SET t.col=v.col` | ✅ |
+| MySQL | updateMany | Yes | JOIN VALUES + IF(skip_flag) | `SET t.status=IF(v._skip_status, t.status, v.status)` | ✅ |
+| SQLite | create | No | VALUES | `INSERT INTO t (name, status) VALUES (?, ?)` | ✅ |
+| SQLite | create | Yes | VALUES (column excluded) | `INSERT INTO t (name) VALUES (?)` - status excluded -> DB DEFAULT | ✅ |
+| SQLite | createMany | No | VALUES | `INSERT INTO t (name, status) VALUES (?,?), (?,?)` | ✅ |
+| SQLite | createMany | Yes | Group by SKIP pattern -> VALUES per group | Same as above, SKIP columns excluded from INSERT -> DB DEFAULT | ✅ |
+| SQLite | update | No | SET | `UPDATE t SET name=?, status=? WHERE id=?` | ✅ |
+| SQLite | update | Yes | SET (column excluded) | `UPDATE t SET name=? WHERE id=?` - status excluded | ✅ |
+| SQLite | updateMany | No | CASE WHEN | `UPDATE t SET status=CASE WHEN id=? THEN ? WHEN id=? THEN ? END WHERE id IN (?,?)` | ✅ |
+| SQLite | updateMany | Yes | CASE WHEN + column ref | `SET status=CASE WHEN id=1 THEN ? WHEN id=2 THEN t.status END` - SKIP uses column ref | ✅ |
+
+**Notes:**
+- PostgreSQL array types: In createMany/updateMany, `JSON.stringify()` -> `text[]` -> `jsonb_array_elements_text()` to deserialize
+- PostgreSQL JSON types: In createMany/updateMany, `JSON.stringify()` -> `text[]` -> `::jsonb` cast
+- MySQL/SQLite: Use `@column.json<T[]>()` for array-like data (stored as JSON text)
+- `(jsonb->arr)` = `COALESCE((SELECT array_agg(elem::int) FROM jsonb_array_elements_text(v.col::jsonb) AS elem), ARRAY[]::int[])`
+
+### Architecture: Driver-Specific SQL Building
+
+litedbmodel uses a `SqlBuilder` architecture to generate optimized SQL for each database:
+
+| Driver | Interface | INSERT Strategy | UPDATE Strategy |
+|--------|-----------|-----------------|-----------------|
+| PostgreSQL | `PostgresSqlBuilder` | VALUES for single, UNNEST for batch (2+) | UNNEST with skip flags |
+| MySQL | `MysqlSqlBuilder` | VALUES ROW | JOIN VALUES + IF |
+| SQLite | `SqliteSqlBuilder` | VALUES clause | CASE WHEN |
+
+Each driver also provides `DriverTypeCast` for serialization/deserialization:
+
+```typescript
+interface DriverTypeCast {
+  serializeArray<T>(val: T[]): unknown;      // JS array -> DB format
+  deserializeArray<T>(val: unknown): T[];    // DB value -> JS array
+  serializeJson(val: unknown): unknown;      // JS object -> DB format
+  deserializeJson<T>(val: unknown): T;       // DB value -> JS object
+}
+```
+
+- **PostgreSQL**: Native array format `{1,2,3}`, native JSONB
+- **MySQL**: JSON column type with automatic serialization
+- **SQLite**: TEXT columns with JSON.stringify/JSON.parse
 
 See: [Conditions](classes/Conditions.md), [Values](classes/Values.md), [SKIP](variables/SKIP.md)
 
