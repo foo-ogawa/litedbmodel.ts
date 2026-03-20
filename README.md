@@ -252,6 +252,24 @@ Databases distinguish between date-only and datetime columns. `@column.date()` r
 - `@column()` / `@column.datetime()` → ISO 8601 UTC: `2024-06-15T10:30:00.000Z`
 - `@column.date()` → date string: `2024-06-15`
 
+### Date Utility Functions
+
+`formatLocalDate` and `formatUTCDate` convert a `Date` object to a `YYYY-MM-DD` string. Use these when constructing date values for queries or conditions:
+
+```typescript
+import { formatLocalDate, formatUTCDate } from 'litedbmodel';
+
+// Format using local timezone (matches @column.date() behavior)
+formatLocalDate(new Date());  // '2024-06-15' (in local timezone)
+
+// Format using UTC
+formatUTCDate(new Date());    // '2024-06-15' (in UTC)
+
+// Typical use: query with today's local date
+const today = formatLocalDate(new Date());
+const meals = await Meal.find([Meal.date, today]);
+```
+
 ---
 
 ## CRUD Operations

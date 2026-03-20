@@ -246,3 +246,9 @@ export {
   type DBDriverOptions,
   type QueryResult,
 } from './drivers';
+
+// ============================================
+// Date Utilities
+// ============================================
+
+export { formatLocalDate, formatUTCDate } from './TypeCast';
