@@ -13,6 +13,7 @@ import type {
   SqlBuildResult,
 } from './types';
 import { DBToken } from '../DBValues';
+import { formatUTCDate } from '../TypeCast';
 
 // ============================================
 // PostgreSQL Type Cast Implementation
@@ -96,10 +97,7 @@ export const postgresTypeCast: DriverTypeCast = {
    * Uses UTC components to avoid timezone-related date shifts
    */
   serializeDate(val: Date): string {
-    const y = val.getUTCFullYear();
-    const m = String(val.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(val.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+    return formatUTCDate(val);
   },
 };
 

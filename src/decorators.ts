@@ -20,6 +20,7 @@ import {
   castToBooleanArray,
   castToDatetimeArray,
   castToJson,
+  formatLocalDate,
 } from './TypeCast';
 import type { ModelOptions } from './types';
 
@@ -534,19 +535,11 @@ export const column = Object.assign(
             return match ? match[1] : null;
           }
           if (v instanceof Date) {
-            if (isNaN(v.getTime())) return null;
-            const y = v.getFullYear();
-            const m = String(v.getMonth() + 1).padStart(2, '0');
-            const d = String(v.getDate()).padStart(2, '0');
-            return `${y}-${m}-${d}`;
+            return isNaN(v.getTime()) ? null : formatLocalDate(v);
           }
           if (typeof v === 'number') {
             const dt = new Date(v);
-            if (isNaN(dt.getTime())) return null;
-            const y = dt.getFullYear();
-            const m = String(dt.getMonth() + 1).padStart(2, '0');
-            const d = String(dt.getDate()).padStart(2, '0');
-            return `${y}-${m}-${d}`;
+            return isNaN(dt.getTime()) ? null : formatLocalDate(dt);
           }
           return null;
         },
@@ -554,11 +547,7 @@ export const column = Object.assign(
           if (val === null || val === undefined) return null;
           if (typeof val === 'string') return val;
           if (val instanceof Date) {
-            if (isNaN(val.getTime())) return null;
-            const y = val.getFullYear();
-            const m = String(val.getMonth() + 1).padStart(2, '0');
-            const d = String(val.getDate()).padStart(2, '0');
-            return `${y}-${m}-${d}`;
+            return isNaN(val.getTime()) ? null : formatLocalDate(val);
           }
           return val;
         },
