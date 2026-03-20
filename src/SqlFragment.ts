@@ -109,7 +109,8 @@ export type SqlInterpolation =
   | readonly string[]
   | readonly boolean[]
   | readonly Date[]
-  | { TABLE_NAME: string };
+  | { TABLE_NAME: string }
+  | { getTableName(): string };
 
 // ============================================
 // Type Guards
