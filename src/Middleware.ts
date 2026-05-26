@@ -512,12 +512,12 @@ export function createMiddleware<S extends object = Record<string, never>>(
     const hookFn = config[hookName];
     if (hookFn) {
       // Wrap the hook to bind `this` correctly
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       (DynamicMiddleware.prototype as any)[hookName] = function(
         this: Middleware,
         ...args: unknown[]
       ) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         return (hookFn as any).apply(this, args);
       };
     }

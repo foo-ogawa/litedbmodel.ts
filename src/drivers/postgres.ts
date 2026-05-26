@@ -26,7 +26,7 @@ function getPgModule(): typeof import('pg') {
   if (!pgModule) {
     try {
       pgModule = require('pg');
-    } catch (err) {
+    } catch (_err) {
       throw new Error(
         'PostgreSQL driver requires pg package. Install it with: npm install pg'
       );
