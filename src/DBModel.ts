@@ -1372,7 +1372,7 @@ export abstract class DBModel {
     const meta = getColumnMeta(this);
     if (meta) {
       const pkeyColumns: Column[] = [];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       const thisClass = this as any;
       for (const [propKey, colMeta] of meta) {
         if (colMeta.primaryKey) {
@@ -1529,7 +1529,7 @@ export abstract class DBModel {
     });
     
     // Copy column properties
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const columnMeta = (ParentClass as any)._columnMeta;
     if (columnMeta) {
       Object.defineProperty(BoundModel, '_columnMeta', {
@@ -1538,7 +1538,7 @@ export abstract class DBModel {
       });
       // Copy static Column properties
       for (const [propKey] of columnMeta) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const col = (ParentClass as any)[propKey];
         if (col) {
           Object.defineProperty(BoundModel, propKey, {

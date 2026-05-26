@@ -48,7 +48,7 @@ function getMysql2Module(): Mysql2Module {
     try {
       // Use mysql2/promise for async/await support
       mysql2Module = require('mysql2/promise') as Mysql2Module;
-    } catch (err) {
+    } catch (_err) {
       throw new Error(
         'MySQL driver requires mysql2 package. Install it with: npm install mysql2'
       );

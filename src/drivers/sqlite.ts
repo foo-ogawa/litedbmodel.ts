@@ -120,7 +120,6 @@ export class SqliteDriver implements DBDriver {
     if (!this.db) {
       try {
         // Dynamic import to make better-sqlite3 optional
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
         const Database = require('better-sqlite3');
         this.db = new Database(this.config.database) as BetterSqlite3Database;
 

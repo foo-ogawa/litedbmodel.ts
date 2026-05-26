@@ -14,17 +14,8 @@ export default defineConfig({
     },
     testTimeout: 10000,
     hookTimeout: 10000,
-    // Use forks pool for native module compatibility
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        singleFork: true,
-      },
-    },
-    deps: {
-      // Ensure native modules and dynamic imports work correctly
-      interopDefault: true,
-    },
+    fileParallelism: false,
   },
   resolve: {
     conditions: ['node'],
