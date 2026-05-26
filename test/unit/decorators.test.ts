@@ -13,6 +13,7 @@ import {
   getSqlCastMap,
 } from '../../src/decorators';
 import { DBModel } from '../../src/DBModel';
+import { DBCast } from '../../src/DBValues';
 import { isColumn } from '../../src/Column';
 
 describe('decorators', () => {
@@ -361,7 +362,7 @@ describe('decorators', () => {
       }
 
       expect((TestModel as any).id.eq(1)).toEqual({ id: 1 });
-      expect((TestModel as any).is_active.eq(true)).toEqual({ is_active: true });
+      expect((TestModel as any).is_active.eq(true)).toEqual({ is_active: new DBCast(true, 'boolean', '=') });
       expect((TestModel as any).id.gt(10)).toEqual({ 'id > ?': 10 });
     });
 
