@@ -1,16 +1,51 @@
-# Docker Compose for integration tests
-version: '3.8'
-
 services:
+  test-unit:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+      args:
+        NODE_VERSION: ${NODE_VERSION:-22}
+    volumes:
+      - ./src:/app/src:ro
+      - ./test:/app/test:ro
+    network_mode: none
+    command: ["npm", "run", "test:unit"]
+
+  test-integration:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+      args:
+        NODE_VERSION: ${NODE_VERSION:-22}
+    volumes:
+      - ./src:/app/src:ro
+      - ./test:/app/test:ro
+    environment:
+      TEST_DB_HOST: postgres
+      TEST_DB_PORT: "5432"
+      TEST_DB_USER: testuser
+      TEST_DB_PASSWORD: testpass
+      TEST_DB_NAME: testdb
+      TEST_MYSQL_HOST: mysql
+      TEST_MYSQL_PORT: "3306"
+      TEST_MYSQL_USER: testuser
+      TEST_MYSQL_PASSWORD: testpass
+      TEST_MYSQL_NAME: testdb
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - test-internal
+    command: ["npm", "run", "test:integration"]
+
   postgres:
     image: postgres:16-alpine
-    container_name: litedbmodel-test-postgres
     environment:
       POSTGRES_USER: testuser
       POSTGRES_PASSWORD: testpass
       POSTGRES_DB: testdb
-    ports:
-      - "5433:5432"
     volumes:
       - ./test/fixtures/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     tmpfs:
@@ -20,17 +55,16 @@ services:
       interval: 2s
       timeout: 5s
       retries: 10
+    networks:
+      - test-internal
 
   mysql:
     image: mysql:8.0
-    container_name: litedbmodel-test-mysql
     environment:
       MYSQL_ROOT_PASSWORD: rootpass
       MYSQL_USER: testuser
       MYSQL_PASSWORD: testpass
       MYSQL_DATABASE: testdb
-    ports:
-      - "3307:3306"
     volumes:
       - ./test/fixtures/init-mysql.sql:/docker-entrypoint-initdb.d/init.sql:ro
     tmpfs:
@@ -41,4 +75,9 @@ services:
       timeout: 5s
       retries: 10
     command: --default-authentication-plugin=mysql_native_password
+    networks:
+      - test-internal
 
+networks:
+  test-internal:
+    internal: true
