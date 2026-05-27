@@ -9,6 +9,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { DBModel, model, column, ColumnsOf, closeAllPools, hasMany, createRelationContext } from '../../src';
 import type { DBConfig } from '../../src';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 // Define a model for all types testing (outside describe block for decorator support)
@@ -30,7 +31,7 @@ const SqliteAllTypes = SqliteAllTypesModel as typeof SqliteAllTypesModel & Colum
 // Test Configuration
 // ============================================
 
-const testDbPath = path.join(__dirname, '../fixtures/test.sqlite');
+const testDbPath = path.join(os.tmpdir(), 'litedbmodel-test.sqlite');
 
 const testConfig: DBConfig = {
   database: testDbPath,

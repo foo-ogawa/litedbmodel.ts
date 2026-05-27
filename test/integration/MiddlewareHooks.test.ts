@@ -36,6 +36,7 @@ import {
   type DBConfig,
 } from '../../src';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 // ============================================
@@ -107,7 +108,7 @@ const HookTracker = DBModel.createMiddleware({
 // Test Configuration
 // ============================================
 
-const testDbPath = path.join(__dirname, '../fixtures/middleware_hooks_test.sqlite');
+const testDbPath = path.join(os.tmpdir(), 'litedbmodel-middleware-hooks-test.sqlite');
 
 const testConfig: DBConfig = {
   database: testDbPath,
