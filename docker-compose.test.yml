@@ -30,7 +30,7 @@ services:
       TEST_MYSQL_PORT: "3306"
       TEST_MYSQL_USER: testuser
       TEST_MYSQL_PASSWORD: testpass
-      TEST_MYSQL_NAME: testdb
+      TEST_MYSQL_DB: testdb
     depends_on:
       postgres:
         condition: service_healthy
