@@ -30,7 +30,7 @@ services:
       TEST_MYSQL_PORT: "3306"
       TEST_MYSQL_USER: testuser
       TEST_MYSQL_PASSWORD: testpass
-      TEST_MYSQL_NAME: testdb
+      TEST_MYSQL_DB: testdb
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,7 +38,7 @@ services:
         condition: service_healthy
     networks:
       - test-internal
-    command: ["npm", "run", "test:integration"]
+    command: ["npx", "vitest", "run", "test/integration"]
 
   postgres:
     image: postgres:16-alpine

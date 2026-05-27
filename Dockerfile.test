@@ -1,5 +1,6 @@
 ARG NODE_VERSION=22
 FROM node:${NODE_VERSION}-alpine
+RUN apk add --no-cache python3 make gcc g++ musl-dev
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
