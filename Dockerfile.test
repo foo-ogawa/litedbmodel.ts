@@ -2,8 +2,9 @@ ARG NODE_VERSION=22
 FROM node:${NODE_VERSION}-alpine
 RUN apk add --no-cache python3 make gcc g++ musl-dev
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci
+RUN npm rebuild better-sqlite3
 COPY . .
 RUN npm run build
 CMD ["npm", "run", "test:unit"]
