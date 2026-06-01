@@ -85,7 +85,7 @@ class SqliteConnection implements DBConnection {
     }
   }
 
-  release(): void {
+  release(_error?: Error | boolean): void {
     // SQLite doesn't have connection pooling, so this is a no-op
   }
 }

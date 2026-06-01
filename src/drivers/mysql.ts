@@ -18,6 +18,7 @@ interface Mysql2Pool {
 interface Mysql2PoolConnection {
   query(sql: string, values?: unknown[]): Promise<[unknown[], unknown]>;
   release(): void;
+  destroy(): void;
 }
 
 interface Mysql2Module {
@@ -239,8 +240,12 @@ class MysqlConnection implements DBConnection {
     };
   }
 
-  release(): void {
-    this.connection.release();
+  release(error?: Error | boolean): void {
+    if (error) {
+      this.connection.destroy();
+    } else {
+      this.connection.release();
+    }
   }
 }
 
