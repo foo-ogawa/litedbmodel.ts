@@ -17,6 +17,7 @@ import {
 } from '../../src/SqlFragment';
 import { createColumn, condsToRecord, Conditions, SKIP } from '../../src/Column';
 import { DBParentRef, parentRef } from '../../src/DBValues';
+import { DBConditions } from '../../src/DBConditions';
 import { DBModel, model, column, type ColumnsOf } from '../../src';
 
 // Test columns
@@ -198,6 +199,24 @@ describe('sql tagged template', () => {
       const distinct = sql.raw('DISTINCT');
       const frag = sql`SELECT ${distinct} ${UserId} FROM ${UserTable}`;
       expect(frag.sql).toBe('SELECT DISTINCT id FROM users');
+    });
+
+    it('should produce valid SQL when used in find() condition with Column (issue #10)', () => {
+      const UserUpdatedAt = createColumn<Date, { _brand: 'User' }>('updated_at', 'users', 'User');
+      const interval = sql.raw('180 days');
+      const frag = sql`${UserUpdatedAt} >= NOW() - INTERVAL '${interval}'`;
+
+      expect(frag.sql).toBe("updated_at >= NOW() - INTERVAL '180 days'");
+      expect(frag.params).toEqual([]);
+
+      const record = condsToRecord([frag] as any);
+      expect(record).toEqual({ "updated_at >= NOW() - INTERVAL '180 days'": true });
+
+      const cond = new DBConditions(record);
+      const params: unknown[] = [];
+      const compiled = cond.compile(params);
+      expect(compiled).toBe("updated_at >= NOW() - INTERVAL '180 days'");
+      expect(params).toEqual([]);
     });
   });
 

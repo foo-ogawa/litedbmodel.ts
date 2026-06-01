@@ -44,6 +44,26 @@ describe('DBConditions', () => {
       expect(params).toEqual([]);
     });
 
+    it('should handle value-free SQL expression with boolean true', () => {
+      const cond = new DBConditions({ 'deleted_at IS NULL': true });
+      const params: unknown[] = [];
+      const sql = cond.compile(params);
+
+      expect(sql).toBe('deleted_at IS NULL');
+      expect(params).toEqual([]);
+    });
+
+    it('should handle SQL expression with comparison operators and boolean true', () => {
+      const cond = new DBConditions({
+        "updated_at >= NOW() - INTERVAL '180 days'": true,
+      });
+      const params: unknown[] = [];
+      const sql = cond.compile(params);
+
+      expect(sql).toBe("updated_at >= NOW() - INTERVAL '180 days'");
+      expect(params).toEqual([]);
+    });
+
     it('should handle array values (IN clause)', () => {
       const cond = new DBConditions({ id: [1, 2, 3] });
       const params: unknown[] = [];

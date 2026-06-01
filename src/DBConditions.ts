@@ -169,6 +169,10 @@ export class DBConditions {
 
     // Handle boolean
     if (typeof value === 'boolean') {
+      if (value && key.includes(' ')) {
+        // Key is a SQL expression (e.g., "deleted_at IS NULL", "col >= NOW() - INTERVAL '1 day'")
+        return key;
+      }
       return `${key} = ${value ? 'TRUE' : 'FALSE'}`;
     }
 
