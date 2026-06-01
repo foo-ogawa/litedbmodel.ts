@@ -2807,6 +2807,7 @@ export abstract class DBModel {
     while (true) {
       attempt++;
       const connection = await handler.getConnection();
+      let destroyConnection = false;
 
       try {
         await connection.query('BEGIN');
@@ -2827,7 +2828,13 @@ export abstract class DBModel {
         }
         return result;
       } catch (error) {
-        await connection.query('ROLLBACK');
+        destroyConnection = true;
+        try {
+          await connection.query('ROLLBACK');
+        } catch {
+          // ROLLBACK failed — connection is in an unknown state.
+          // destroyConnection is already true; original error is preserved.
+        }
 
         if (
           retryOnError &&
@@ -2840,7 +2847,7 @@ export abstract class DBModel {
 
         throw error;
       } finally {
-        connection.release();
+        connection.release(destroyConnection || undefined);
       }
     }
   }

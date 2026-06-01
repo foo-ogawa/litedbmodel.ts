@@ -164,8 +164,8 @@ class PostgresConnection implements DBConnection {
     };
   }
 
-  release(): void {
-    this.client.release();
+  release(error?: Error | boolean): void {
+    this.client.release(error ?? undefined);
   }
 }
 

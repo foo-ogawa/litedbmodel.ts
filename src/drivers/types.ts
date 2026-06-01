@@ -56,8 +56,12 @@ export interface QueryResult {
 export interface DBConnection {
   /** Execute a query on this connection */
   query(sql: string, params?: unknown[]): Promise<QueryResult>;
-  /** Release this connection back to the pool */
-  release(): void;
+  /**
+   * Release this connection back to the pool.
+   * When an error is passed, the connection is destroyed instead of
+   * being returned to the pool (prevents dirty-state reuse).
+   */
+  release(error?: Error | boolean): void;
 }
 
 /**
