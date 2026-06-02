@@ -252,3 +252,9 @@ export {
 // ============================================
 
 export { formatLocalDate, formatUTCDate } from './TypeCast';
+
+// ============================================
+// Connection Error Utilities
+// ============================================
+
+export { isConnectionError } from './connection-errors';

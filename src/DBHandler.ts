@@ -54,6 +54,10 @@ export interface DBConfig {
   timeout?: number;
   /** Query timeout in seconds */
   queryTimeout?: number;
+  /** Enable TCP keepalive on connections (recommended for serverless/Lambda) */
+  keepAlive?: boolean;
+  /** Delay in milliseconds before first keepalive probe (default: 10000) */
+  keepAliveInitialDelayMillis?: number;
   /** Driver type: 'postgres' (default), 'sqlite', or 'mysql' */
   driver?: 'postgres' | 'sqlite' | 'mysql';
 }

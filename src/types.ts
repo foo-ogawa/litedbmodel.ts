@@ -99,6 +99,10 @@ export interface DBConfig {
   searchPath?: string;
   /** Pool max connections */
   max?: number;
+  /** Enable TCP keepalive on connections (recommended for serverless/Lambda) */
+  keepAlive?: boolean;
+  /** Delay in milliseconds before first keepalive probe (default: 10000) */
+  keepAliveInitialDelayMillis?: number;
 }
 
 // ============================================
