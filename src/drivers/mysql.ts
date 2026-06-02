@@ -7,6 +7,7 @@
 
 import type { DBConfig, DBDriver, DBDriverOptions, DBConnection, QueryResult, Logger } from './types';
 import { defaultLogger } from './types';
+import { isConnectionError } from '../connection-errors';
 
 // mysql2 types (loaded dynamically)
 interface Mysql2Pool {
@@ -335,6 +336,55 @@ export class MysqlDriver implements DBDriver {
         rowCount,
       };
     } catch (error) {
+      if (isConnectionError(error as Error)) {
+        this.logger.warn(`Connection error, retrying query: ${sqlWithoutReturning}`);
+        try {
+          const [result] = await this.pool.query(sqlWithoutReturning, convertedParams);
+          const duration = Date.now() - startTime;
+
+          if (Array.isArray(result) && result.length > 0 && typeof result[0] === 'object' && result[0] !== null && !('affectedRows' in result[0])) {
+            const rowArray = result as unknown as Record<string, unknown>[];
+            this.logger.debug(`Retry succeeded in ${duration}ms, rows: ${rowArray.length}`);
+            return {
+              rows: rowArray,
+              rowCount: rowArray.length,
+            };
+          }
+
+          if (hasReturning) {
+            const resultObj = result as unknown as Record<string, unknown>;
+            const tableName = extractTableName(sql);
+
+            if (tableName && sql.trim().toUpperCase().startsWith('INSERT')) {
+              const insertId = resultObj.insertId as number;
+              const affectedRows = (resultObj.affectedRows as number) ?? 1;
+
+              if (affectedRows > 0 && insertId > 0) {
+                const cols = returningCols === '*' ? '*' : returningCols;
+                const selectSql = `SELECT ${cols} FROM ${tableName} WHERE id >= ? AND id < ?`;
+                const [selectResult] = await this.pool.query(selectSql, [insertId, insertId + affectedRows]);
+                const rows = selectResult as unknown as Record<string, unknown>[];
+                this.logger.debug(`Retry succeeded in ${duration}ms, rows: ${rows.length}`);
+                return {
+                  rows,
+                  rowCount: rows.length,
+                };
+              }
+            }
+          }
+
+          const resultObj = result as unknown as Record<string, unknown>;
+          const rowCount = (resultObj.affectedRows as number) ?? 0;
+          this.logger.debug(`Retry succeeded in ${duration}ms, affected: ${rowCount}`);
+          return {
+            rows: [],
+            rowCount,
+          };
+        } catch (retryError) {
+          this.logger.error(`Retry also failed: ${sqlWithoutReturning}`, retryError);
+          throw retryError;
+        }
+      }
       this.logger.error(`Query failed: ${sqlWithoutReturning}`, error);
       throw error;
     }
@@ -394,6 +444,48 @@ export class MysqlDriver implements DBDriver {
         rowCount,
       };
     } catch (error) {
+      if (isConnectionError(error as Error)) {
+        this.logger.warn(`Connection error, retrying write: ${sqlWithoutReturning}`);
+        try {
+          const [result] = await conn.query(sqlWithoutReturning, convertedParams);
+          const duration = Date.now() - startTime;
+
+          if (hasReturning) {
+            const resultObj = result as unknown as Record<string, unknown>;
+            const tableName = extractTableName(sql);
+
+            if (tableName && sql.trim().toUpperCase().startsWith('INSERT')) {
+              const insertId = resultObj.insertId as number;
+              const affectedRows = (resultObj.affectedRows as number) ?? 1;
+
+              if (affectedRows > 0 && insertId > 0) {
+                const cols = returningCols === '*' ? '*' : returningCols;
+                const selectSql = `SELECT ${cols} FROM ${tableName} WHERE id >= ? AND id < ?`;
+                const [selectResult] = await conn.query(selectSql, [insertId, insertId + affectedRows]);
+                const rows = selectResult as unknown as Record<string, unknown>[];
+                this.logger.debug(`Retry succeeded in ${duration}ms, rows: ${rows.length}`);
+                return {
+                  rows,
+                  rowCount: rows.length,
+                };
+              }
+            }
+          }
+
+          const resultObj = result as unknown as Record<string, unknown>;
+          const rowCount = (resultObj.affectedRows as number) ?? 0;
+          const rows = Array.isArray(result) ? (result as unknown as Record<string, unknown>[]) : [];
+
+          this.logger.debug(`Retry succeeded in ${duration}ms, affected: ${rowCount}`);
+          return {
+            rows,
+            rowCount,
+          };
+        } catch (retryError) {
+          this.logger.error(`Retry also failed: ${sqlWithoutReturning}`, retryError);
+          throw retryError;
+        }
+      }
       this.logger.error(`Write failed: ${sqlWithoutReturning}`, error);
       throw error;
     }

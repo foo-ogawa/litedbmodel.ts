@@ -14,6 +14,7 @@ import { type SqlFragment, type SqlCondition, type SqlTypedFragment, isAnySqlFra
 import { createMiddleware as createMiddlewareFn, type MiddlewareClass, type MiddlewareConfig, type CreatedMiddlewareClass, type ExecuteResult } from './Middleware';
 import { serializeRecord, getColumnMeta, getSqlCastMap, type KeyPair, type CompositeKeyPairs } from './decorators';
 import { getTypeCast, getSqlBuilder } from './drivers';
+import { isConnectionError } from './connection-errors';
 
 // Import LazyRelation module (static import for Vitest compatibility)
 import { LazyRelationContext, type RelationType, type RelationConfig } from './LazyRelation';
@@ -2856,6 +2857,10 @@ export abstract class DBModel {
    * Check if error is retryable (deadlock, serialization failure, etc.)
    */
   private static isRetryableError(error: Error): boolean {
+    if (isConnectionError(error)) {
+      return true;
+    }
+
     const message = error.message || '';
     return (
       message.includes('The transaction might succeed if retried') ||

@@ -7,6 +7,7 @@
 
 import type { DBConfig, DBDriver, DBDriverOptions, DBConnection, QueryResult, Logger } from './types';
 import { defaultLogger } from './types';
+import { isConnectionError } from '../connection-errors';
 
 // pg types (loaded dynamically)
 type Pool = import('pg').Pool;
@@ -60,6 +61,12 @@ function getPool(config: DBConfig): Pool {
       max: config.max || 10,
       connectionTimeoutMillis: (config.timeout || 30) * 1000,
       query_timeout: (config.queryTimeout || 30) * 1000,
+      keepAlive: config.keepAlive,
+      keepAliveInitialDelayMillis: config.keepAliveInitialDelayMillis,
+    });
+    pool.on('error', (err) => {
+      // Prevent unhandled error crash from idle client disconnections
+      defaultLogger.warn('Pool idle client error', err);
     });
     pools.set(key, pool);
   }
@@ -213,6 +220,23 @@ export class PostgresDriver implements DBDriver {
         rowCount: result.rowCount ?? 0,
       };
     } catch (error) {
+      if (isConnectionError(error as Error)) {
+        this.logger.warn(`Connection error, retrying query: ${q.convertedSql}`);
+        try {
+          const result = q.isMulti
+            ? await this.pool.query(q.convertedSql, params)
+            : await this.pool.query({ name: q.name, text: q.convertedSql, values: params });
+          const duration = Date.now() - startTime;
+          this.logger.debug(`Retry succeeded in ${duration}ms, rows: ${result.rowCount}`);
+          return {
+            rows: result.rows as Record<string, unknown>[],
+            rowCount: result.rowCount ?? 0,
+          };
+        } catch (retryError) {
+          this.logger.error(`Retry also failed: ${q.convertedSql}`, retryError);
+          throw retryError;
+        }
+      }
       this.logger.error(`Query failed: ${q.convertedSql}`, error);
       throw error;
     }
@@ -238,6 +262,23 @@ export class PostgresDriver implements DBDriver {
         rowCount: result.rowCount ?? 0,
       };
     } catch (error) {
+      if (isConnectionError(error as Error)) {
+        this.logger.warn(`Connection error, retrying write: ${q.convertedSql}`);
+        try {
+          const result = q.isMulti
+            ? await conn.query(q.convertedSql, params)
+            : await conn.query({ name: q.name, text: q.convertedSql, values: params });
+          const duration = Date.now() - startTime;
+          this.logger.debug(`Retry succeeded in ${duration}ms, rows: ${result.rowCount}`);
+          return {
+            rows: result.rows as Record<string, unknown>[],
+            rowCount: result.rowCount ?? 0,
+          };
+        } catch (retryError) {
+          this.logger.error(`Retry also failed: ${q.convertedSql}`, retryError);
+          throw retryError;
+        }
+      }
       this.logger.error(`Write failed: ${q.convertedSql}`, error);
       throw error;
     }
