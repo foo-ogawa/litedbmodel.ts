@@ -1,6 +1,6 @@
 {
   "name": "litedbmodel",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "description": "A lightweight TypeScript ORM for PostgreSQL, MySQL, and SQLite with Active Record pattern",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -358,10 +358,18 @@ export function sql(
  * Create a raw SQL string that is embedded directly (not parameterized).
  * Use for dynamic SQL keywords like ORDER direction, DISTINCT, etc.
  *
+ * **SECURITY WARNING: Never pass user input to sql.raw().
+ * Values from request parameters, headers, query strings, body fields,
+ * or unvalidated LLM output must use parameterized queries instead.**
+ *
  * @example
  * ```typescript
+ * // ✅ Safe: hardcoded trusted values
  * const direction = sql.raw(isAsc ? 'ASC' : 'DESC');
  * sql`SELECT * FROM users ORDER BY name ${direction}`
+ *
+ * // ❌ UNSAFE: user input
+ * sql.raw(req.query.sort) // SQL INJECTION RISK
  * ```
  */
 sql.raw = function (value: string): SqlRaw {
