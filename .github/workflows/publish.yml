@@ -3,9 +3,16 @@ name: Publish Package to npm
 on:
   release:
     types: [published]
+  workflow_run:
+    workflows: ["GitHub Release"]
+    types: [completed]
+    branches: [main]
 
 jobs:
   publish:
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -19,20 +26,40 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: 'npm'
 
+      - name: Decide whether publish is needed
+        id: need
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "litedbmodel@${VERSION}" version >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Version ${VERSION} is already on npm"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install dependencies
+        if: steps.need.outputs.publish == 'true'
         run: npm ci --legacy-peer-deps
 
       - name: Rebuild native modules
+        if: steps.need.outputs.publish == 'true'
         run: npm_config_ignore_scripts=false npm rebuild better-sqlite3
 
       - name: Build
+        if: steps.need.outputs.publish == 'true'
         run: npm run build
 
       - name: Run tests
+        if: steps.need.outputs.publish == 'true'
         run: npm run test:ci
 
       - name: Publish to npm
+        if: steps.need.outputs.publish == 'true'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
