@@ -5,8 +5,9 @@
 
 **[📖 API Documentation](https://github.com/foo-ogawa/litedbmodel.ts/blob/main/docs/api/README.md)**
 
-litedbmodel is a lightweight, SQL-friendly TypeScript ORM for PostgreSQL, MySQL, and SQLite.
-It is designed for production systems where you care about **predictable SQL**, **explicit performance control**, and **operational safety** (replication lag, N+1, accidental full scans).
+**Production-safe SQL-first Database Access Layer for AI-assisted development.**
+
+litedbmodel keeps SQL predictable, behavior reviewable, and operations safe — priorities that matter most when AI agents and humans co-develop production systems. Supports PostgreSQL, MySQL, and SQLite.
 
 
 ## Philosophy
@@ -30,6 +31,38 @@ litedbmodel keeps SQL visible and controllable: generated queries are intentiona
 - Conditions are **type-safe tuples** (`[Column, value]`), with a `sql` tagged template for operators (`[sql\`${Col} > ?\`, value]`). An ESLint plugin catches mistakes TS cannot.
 
 > See [Design Philosophy](./docs/BENCHMARK.md#litedbmodels-design-philosophy) for detailed comparison with query-centric ORMs.
+
+### DX redefined for AI-assisted development
+
+litedbmodel is not optimized for traditional ORM convenience.
+It is optimized for AI-assisted development where predictable SQL, reviewable behavior, transaction safety, and operational stability matter more than hiding SQL behind abstractions.
+
+---
+
+## Why AI-friendly?
+
+AI agents generate and modify database code at scale. When that code reaches production, you need guarantees — not hope.
+
+- **SQL is predictable** — generated queries are simple and reviewable; no hidden query plan changes from abstraction layers
+- **No hidden queries** — what you write is what runs; there are no implicit loads or lazy surprises
+- **Transaction boundaries are explicit** — no implicit writes; every mutation requires a declared transaction
+- **Hard limits prevent accidental over-fetching** — configurable guards catch runaway queries before they hit production
+- **Reader/writer separation enforces safe defaults** — reads go to replicas, writes require transactions on the writer
+- **Every DB access is reviewable and auditable** — the SQL you see in code is the SQL that executes
+
+---
+
+## Production Safety Features
+
+| Feature | What it does |
+|---------|-------------|
+| **Transaction-required writes** | `create`, `update`, `delete` throw outside a transaction — no accidental writes |
+| **Hard query limits** | `findHardLimit` / `hasManyHardLimit` cap result sets and throw `LimitExceededError` |
+| **N+1 prevention** | Automatic batch loading for lazy relations — no manual eager-loading needed |
+| **Reader/writer separation** | Reads route to replicas; sticky-writer after transactions handles replication lag |
+| **SQL visibility** | Generated SQL is intentionally simple; complex queries use real SQL via `query()` / `execute()` |
+
+---
 
 ## Key Features
 
@@ -1350,6 +1383,14 @@ const article = await CmsDB.withWriter(async () => {
 
 ## Comparison
 
+| Approach | Philosophy |
+|----------|------------|
+| Prisma | Abstraction-first |
+| Drizzle / Kysely | SQL-first |
+| litedbmodel | SQL-first + production safety |
+
+### Feature Comparison
+
 | Feature | litedbmodel | Kysely | Drizzle | TypeORM | Prisma |
 |---------|-------------|--------|---------|---------|--------|
 | **Relation Loading** | On-demand | Manual | Eager/upfront | Eager/upfront | Include |
@@ -1363,6 +1404,31 @@ const article = await CmsDB.withWriter(async () => {
 | **Performance** | 🏆 Fastest (9/19 wins) | Fast | Fast | Medium | Slow |
 
 > See [COMPARISON.md](./docs/COMPARISON.md) for detailed analysis and [BENCHMARK.md](./docs/BENCHMARK.md) for benchmarks.
+
+---
+
+## Security
+
+litedbmodel parameterizes values by default via the `sql` tagged template. However, several escape hatches bypass parameterization and embed raw strings directly into SQL:
+
+| API | Risk |
+|-----|------|
+| `sql.raw()` | Embeds string directly — **never pass user input** |
+| `dbRaw()` | Raw SQL expression — trusted code only |
+| `dbImmediate()` | Inline value without parameterization — trusted code only |
+| `dbDynamic()` | Dynamic SQL fragment — trusted code only |
+
+**Safe pattern:** Use the `sql` tagged template for all dynamic values. Values interpolated via `${}` are automatically parameterized.
+
+```typescript
+// Safe — parameterized
+sql`SELECT * FROM users WHERE id = ${userId}`
+
+// UNSAFE — raw string injection
+sql.raw(userInput) // NEVER do this
+```
+
+For vulnerability reporting, see [SECURITY.md](./SECURITY.md).
 
 ---
 
