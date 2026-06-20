@@ -1,0 +1,68 @@
+name: GitHub Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Read package version
+        id: pkg
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Check whether release tag exists
+        id: tag
+        continue-on-error: true
+        run: git rev-parse "${{ steps.pkg.outputs.tag }}"
+      - name: Stop if release already exists
+        if: steps.tag.outcome == 'success'
+        run: echo "Release already exists for ${{ steps.pkg.outputs.tag }}"
+      - name: Install
+        if: steps.tag.outcome == 'failure'
+        run: npm ci --ignore-scripts
+      - name: Audit
+        if: steps.tag.outcome == 'failure'
+        run: npm audit --audit-level=moderate
+      - name: Verify npm signatures
+        if: steps.tag.outcome == 'failure'
+        run: npm audit signatures
+      - name: Lint
+        if: steps.tag.outcome == 'failure'
+        run: npm run lint --if-present
+      - name: Build
+        if: steps.tag.outcome == 'failure'
+        run: npm run build
+      - name: Test
+        if: steps.tag.outcome == 'failure'
+        run: npm run test:ci
+      - name: Verify package contents
+        if: steps.tag.outcome == 'failure'
+        run: npm pack --dry-run
+      - name: Create GitHub Release
+        if: steps.tag.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.pkg.outputs.tag }}" \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.pkg.outputs.tag }}" \
+            --generate-notes
