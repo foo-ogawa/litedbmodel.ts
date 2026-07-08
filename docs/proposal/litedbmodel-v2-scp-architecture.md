@@ -12,7 +12,7 @@
 - litedbmodel v2 は **新しい DSL を作らない**。**behavior-contracts の汎用 SCP レイヤ（Behavior/Component/Port/Wire + Expression IR + runtime-core）を consume する "SQL バックエンド consumer"** になる。graphddb（DynamoDB backend）と同型で、**差分は Catalog（SQL 操作群）と Backend Compile（IR→dialect SQL）と Handler（SQL 実行）だけ**（behavior-contracts の原則 **C2: difference is catalog only**）。
 - **コンパイル経路は1本、実行モードが3つ**（単一意味論、feasibility §2 / §9）。公開 API も SCP 宣言も**同一の Authoring Parse → 内部 IR** を通り、内部 IR 以降は全モード共通:
   1. **TS 直接利用（eager）** — 公開 API 呼び出しを**同一コンパイラで動的に内部 IR 化**（キャッシュ）→ 共通 Runtime で実行（別解釈系は持たない）。
-  2. **SCP 宣言ブロック** — **effect 非依存の `@behavior` マーカーで Behavior を宣言**（Query/Command は SCP の責務外。component graph から CQRS 層が導出）→ **ビルド時に事前コンパイル**して IR（dialect SQL + 動的 condition の fragment）/ 各言語コードへ変換。
+  2. **SCP 宣言ブロック** — **`SemanticBehavior` クラスで Behavior を宣言**（effect 非依存。Query/Command は SCP の責務外で component graph から CQRS 層が導出）→ **ビルド時に事前コンパイル**して IR（dialect SQL + 動的 condition の fragment）/ 各言語コードへ変換。
   3. **多言語利用** — publish された IR を各言語 runtime から呼ぶ（同一 IR）。
 - **Relation は Read 系だけでなく Write 系（write-time relations）**を持つ（graphddb 同型）。書込時に関連エンティティの整合・cascade・edge・counter・outbox を**1つの SQL トランザクションに導出**する。
 - **多言語 CQRS 対応**: 公開境界は CQRS（Query/Command）契約のみ。TS/Python/Rust/Go/(PHP) の薄い runtime が**同一 IR から同一 SQL・同一結果**を出す（conformance）。
@@ -41,7 +41,7 @@ behavior-contracts（汎用 SCP レイヤ・DSL 非依存）
 | 拡張点 | litedbmodel v2 での中身 |
 |---|---|
 | **Catalog 定義** | `Select` / `Insert` / `Update` / `Delete` / `Fragment`（動的 WHERE/SET 断片木）/ `Tx`（多文トランザクション）。各に Port schema（table・where(ExprIR)・set・limit・order 等） |
-| **Authoring Parse** | 公開 API（`User.find(...)`）と SCP 宣言（`@behavior` で指定した Behavior）を **Component-graph IR** へ落とす |
+| **Authoring Parse** | 公開 API（`User.find(...)`）と SCP 宣言（`SemanticBehavior` クラスのメソッド）を **Component-graph IR** へ落とす |
 | **Backend Compile** | IR → **dialect SQL テキスト + `?` パラメータ + fragment 木**（動的部）。`?`→`$N`（PG のみ・最終1パス） |
 | **Handler 実装** | 各 Catalog 名 → 実行関数（driver で SQL 実行 + 行→論理モデル assembly） |
 | **Error Mapping** | driver エラー（UNIQUE 制約違反・FK 違反・deadlock 等）→ SCP Failure（`constraint_violation` / `retryable` 等） |
@@ -262,7 +262,7 @@ COMMIT;
 
 ## 7. SCP 宣言ブロック → IR コンパイル
 
-`@behavior`（または `behaviors=[...]` レジストリ）で指定した Behavior（§2.4）の本体は **SCP の Composite Component** として扱われ、bc のコンパイルパイプラインで Component-graph IR へ落ちる。Behavior 名（ルート）、`$` の型引数=Input Port、返り値=Output Port、内部 DAG は配線から導出。effect（Query/Command）は SCP でなく CQRS 層が graph から導出（§2.4）:
+`SemanticBehavior` クラス（または `@behavior`）の各 public メソッド（§2.4）の本体は **SCP の Composite Component** として扱われ、bc のコンパイルパイプラインで Component-graph IR へ落ちる。メソッド名=Behavior 名（ルート）、`$` の型引数=Input Port、返り値=Output Port、内部 DAG は配線から導出。effect（Query/Command）は SCP でなく CQRS 層が graph から導出（§2.4）:
 
 ```
 TS 宣言（AST）
@@ -327,7 +327,7 @@ bundle 直列化は bc の envelope（`irVersion`/`exprVersion` + fail-closed）
 
 **litedbmodel v2 が実装（§1 表の具体化）:**
 1. **Catalog**: `Select/Insert/Update/Delete/Fragment/Tx` の Port schema。
-2. **Authoring Parse**: 公開 API・SCP 宣言（`@behavior` で指定した Behavior）→ Component-graph IR。
+2. **Authoring Parse**: 公開 API・SCP 宣言（`SemanticBehavior` クラスのメソッド）→ Component-graph IR。
 3. **Backend Compile**: IR → dialect SQL + fragment 木 + `?`→`$N`（既存 SqlBuilder を IR 消費型へ移植）。
 4. **Handlers**: Catalog 名 → driver 実行 + assembly。
 5. **Error Mapping**: driver エラー → SCP Failure（Policy Kind: fail/retry/continue）。
