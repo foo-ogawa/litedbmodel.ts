@@ -41,7 +41,7 @@ behavior-contracts（汎用 SCP レイヤ・DSL 非依存）
 | 拡張点 | litedbmodel v2 での中身 |
 |---|---|
 | **Catalog 定義** | `Select` / `Insert` / `Update` / `Delete` / `Fragment`（動的 WHERE/SET 断片木）/ `Tx`（多文トランザクション）。各に Port schema（table・where(ExprIR)・set・limit・order 等） |
-| **Authoring Parse** | 公開 API（`User.find(...)`）と SCP 宣言（`query()`/`command()` でマークした関数）を **Component-graph IR** へ落とす |
+| **Authoring Parse** | 公開 API（`User.find(...)`）と SCP 宣言（`@behavior` で指定した Behavior）を **Component-graph IR** へ落とす |
 | **Backend Compile** | IR → **dialect SQL テキスト + `?` パラメータ + fragment 木**（動的部）。`?`→`$N`（PG のみ・最終1パス） |
 | **Handler 実装** | 各 Catalog 名 → 実行関数（driver で SQL 実行 + 行→論理モデル assembly） |
 | **Error Mapping** | driver エラー（UNIQUE 制約違反・FK 違反・deadlock 等）→ SCP Failure（`constraint_violation` / `retryable` 等） |
@@ -119,63 +119,65 @@ await Post.create({ author_id: 7, title: 'Hello', request_id: 'r-123' });
 
 ### 2.4 SCP 宣言ブロック（SCP 語彙で宣言 → ビルド時事前コンパイル → IR/TS コード）
 
-**litedbmodel 独自の宣言語彙（`defineQuery` 等）は導入しない。** SCP の宣言語彙
-（**Behavior = Component 合成に名前を与えたもの**）で書く。litedbmodel が供給するのは
-**Catalog（leaf Component: `Select`/`Insert`/… §11）だけ**で、合成・配線・命名は SCP 共通の authoring surface に従う（C2: 差分は Catalog のみ）。
-Query / Command は**別の語彙ではなく Behavior の Effect 分類**（read-only か 書込 effect か。CQRS 標準語で litedbmodel 固有ではない）。
+**litedbmodel 独自の宣言語彙（`defineQuery` 等）も、`query()`/`command()` のようなラッパも導入しない。**
+SCP の宣言が表すのは**「Component を合成して名前を与える＝Behavior」だけ**。litedbmodel が供給するのは
+**Catalog（leaf Component: `Select`/`Insert`/… §11）だけ**（C2: 差分は Catalog のみ）。
+**Query / Command（read-only か write か）は SCP の責務ではない。** これは Behavior の component graph
+（write-Catalog を含むか）から**導出される CQRS 層の分類**であり、**SCP 宣言・authoring には一切書かない**。
 
 > **ルート指定（「全 export を publish するのか？」への回答）:**
-> **しない。** publish される root Behavior は**明示マーカーを付けた関数／メソッドだけ**。マーカー無しの export は**ただのヘルパ**で component 化されない。
-> `@behavior export const X = ($)=>{}` の**デコレータをトップレベル const/関数に付ける形は現行 TS で不可**（デコレータはクラス／クラスメンバ専用）。
-> よってマーカーは下記2形のいずれか（どちらも有効な TS・**同一 IR** に落ちる）。config オブジェクト builder（`behavior('name',{...})`）は採らない。
+> **しない。** publish される root Behavior は**明示マーカー付きのものだけ**（マーカー無しはただのヘルパ）。
+> マーカーは SCP-native な**単一アノテーション `@behavior`**（effect 非依存。query/command を含まない）。
+> ただし **TS のデコレータはクラスメンバ専用**という言語制約があり、`@behavior export const X = …`（トップレベル const/関数へのデコレータ）は**構文上不可**（設計の好みでなく TS の制約）。よって `@behavior` は**クラスメソッド**に付ける。builder（`behavior('name',{...})`）もラッパ（`query(...)`）も採らない。
 
-**(既定) HOF マーカー — トップレベル const のまま:**
+**(既定) `@behavior` メソッドデコレータ — SCP-native・effect 非依存:**
 ```ts
 // behaviors/posts.ts
-import { query, command } from 'litedbmodel/scp';
+class PostBehaviors {
+  @behavior                                // ← このメソッドは Behavior（ルート）。effect は書かない
+  PostSearch($: In<{ authorId: number; status?: string; since: string; limit?: number }>) {
+    const posts = Select(Post, {           // Catalog leaf component（litedbmodel 供給）
+      where: [
+        Post.author_id.eq($.in.authorId),
+        $.in.status ? Post.status.eq($.in.status) : SKIP,  // SKIP → fragment の存在規則（§8）
+        Post.created_at.gte($.in.since),
+      ],
+      order: Post.created_at.desc(),
+      limit: $.in.limit ?? 20,
+    });
+    const authors = posts.map((p) =>       // 構造化制御は SCP 共通（.map / ?: / &&）
+      Select(User, { where: [User.id.eq(p.author_id)], select: ['id', 'name'] }));
+    return { posts, authors };             // ← Output Port（ルートの出力）
+  }
 
-// ↓ query(...) / command(...) で包んだ export だけが publish される Behavior（＝ルート）。
-export const PostSearch = query(($: In<{ authorId: number; status?: string; since: string; limit?: number }>) => {
-  const posts = Select(Post, {                         // Catalog leaf component（litedbmodel 供給）
-    where: [
-      Post.author_id.eq($.in.authorId),
-      $.in.status ? Post.status.eq($.in.status) : SKIP, // SKIP → fragment の存在規則（§8）
-      Post.created_at.gte($.in.since),
-    ],
-    order: Post.created_at.desc(),
-    limit: $.in.limit ?? 20,
-  });
-  const authors = posts.map((p) =>                     // 構造化制御は SCP 共通（.map / ?: / &&）
-    Select(User, { where: [User.id.eq(p.author_id)], select: ['id', 'name'] }));
-  return { posts, authors };                           // ← Output Port（ルートの出力）
-});
+  @behavior
+  CreatePost($: In<{ authorId: number; title: string; requestId: string }>) {
+    return Insert(Post, { values: { author_id: $.in.authorId, title: $.in.title },
+                          onWrite: Post.writes.create, returning: ['id', 'title'] });
+  }
 
-export const CreatePost = command(($: In<{ authorId: number; title: string; requestId: string }>) => {
-  return Insert(Post, { values: { author_id: $.in.authorId, title: $.in.title },
-                        onWrite: Post.writes.create, returning: ['id', 'title'] }); // → 1 tx へ導出（§6）
-});
-
-// ↓ マーカー無し = publish されない。ただのヘルパ。
-function activeOnly(rows: Post[]) { return rows.filter((r) => !r.deleted); }
-```
-
-**(代替) クラス + メソッドデコレータ — アノテーション形（litedbmodel の `@model`/`@column` と一貫・graphddb 寄り）:**
-```ts
-class PostContracts {
-  @query   PostSearch($: In<{ /* … */ }>) { /* … */ return { posts }; }
-  @command CreatePost($: In<{ /* … */ }>) { /* … */ }
-  private  helper() { /* … */ }        // デコレータ無し → publish されない
+  private helper(rows: Post[]) { return rows.filter((r) => !r.deleted); } // @behavior 無し → publish されない
 }
 ```
 
+**(代替) クラスを避ける場合 — plain 関数 + 明示レジストリ（マーカー/ラッパ無し）:**
+```ts
+function PostSearch($: In<{ /* … */ }>) { const posts = Select(Post, { /* … */ }); return { posts }; }
+function CreatePost($: In<{ /* … */ }>) { return Insert(Post, { /* … */ }); }
+function helper() { /* … */ }                          // レジストリに載せない → publish されない
+
+export const behaviors = [PostSearch, CreatePost];     // ← ここに載せたものだけが Behavior（ルート）
+```
+
 **ルートの指定（直接回答）:**
-- **ルート = 明示マーカー（`query()`/`command()` ラッパ、または `@query`/`@command` デコレータ）を付けた関数／メソッドだけ**。マーカー無しの export／メソッドは publish されない。→「大量の export を全部 component 化」はしない。
-- **Behavior 名** = その const／メソッド名（ビルド時 AST）。**Effect** = `query`/`command`（型で強制。`query` 文脈からは write-Catalog に到達不可＝read-only を型保証）。**Input Port** = `$` の型 `In<...>`（ビルド時型抽出）。**Output Port** = 返り値。内部 DAG は `$` 参照・`.map`・`?:` の**配線から Compiler が導出**（`await`/実行順は書かない）。
-- leaf（Specialty Component）は Catalog（`Select`/`Insert`…）のみ。**litedbmodel 独自の宣言語彙は無い**。graphddb の `$`-rooted 束縛（`from("$.field")`）が同モデルの具体形。
+- **ルート = `@behavior` を付けたメソッド（既定）／`export const behaviors=[...]` に載せた関数（代替）だけ**。それ以外は publish されない（大量の export を全部 component 化しない）。
+- **Behavior 名** = メソッド／関数名。**Input Port** = `$` の型 `In<...>`。**Output Port** = 返り値。内部 DAG は `$` 参照・`.map`・`?:` の**配線から Compiler が導出**（`await`/実行順は書かない）。
+- **Effect（Query/Command）は authoring に書かない。** component graph に write-Catalog（`Insert`/`Update`/`Delete`/`Tx`）が含まれるかで litedbmodel の **CQRS 層が導出**（含まなければ Query=read-only、含めば Command）。read-only 保証が要る箇所は Catalog 側の型で担保。
+- leaf（Specialty Component）は Catalog（`Select`/`Insert`…）のみ。**SCP 宣言に litedbmodel 独自語彙は無い**。graphddb の `$`-rooted 束縛（`from("$.field")`）が同モデルの具体形。
 
-**注（エコシステム・§11/§15）:** この authoring surface（マーカー付き関数→Behavior・`$` 配線・structured control）は**本来 behavior-contracts で共有すべき**もの。consumer は Catalog（`Select`/`Insert`…）だけ供給する（C2）。現状 bc 未実装・graphddb は独自 `publishQuery` のため、共有 authoring を別 issue 化する。
+**注（エコシステム・§11/§15）:** この authoring surface（`@behavior`／レジストリで root 指定・`$` 配線・structured control）は **effect 非依存で本来 behavior-contracts が持つべき SCP 層**。consumer は Catalog だけ供給し、Query/Command 分類は各 consumer の CQRS 層が graph から導出する（C2）。現状 bc 未実装・graphddb は独自 `publishQuery` のため、**共有 authoring（effect 非依存の Behavior マーカー）を別 issue 化する**。
 
-- **公開されるのは Behavior 名**（`PostSearch` / `CreatePost`）と Effect 分類のみ。SQL 種別（SELECT/INSERT）は runtime 不可視。
+- **公開されるのは Behavior 名**（`PostSearch` / `CreatePost`）のみ。SQL 種別（SELECT/INSERT）や effect 分類は runtime 不可視（分類は導出物）。
 - 入力の arity（単数/配列）・cardinality（one/many）は Catalog/Key から**導出され型で強制**（N+1 型安全）。
 - ビルド時に IR bundle（§8）へ落ち、`ir/` として publish される。
 
@@ -336,7 +338,7 @@ bundle 直列化は bc の envelope（`irVersion`/`exprVersion` + fail-closed）
 
 **litedbmodel v2 が実装（§1 表の具体化）:**
 1. **Catalog**: `Select/Insert/Update/Delete/Fragment/Tx` の Port schema。
-2. **Authoring Parse**: 公開 API・SCP 宣言（`query()`/`command()` でマークした関数）→ Component-graph IR。
+2. **Authoring Parse**: 公開 API・SCP 宣言（`@behavior` で指定した Behavior）→ Component-graph IR。
 3. **Backend Compile**: IR → dialect SQL + fragment 木 + `?`→`$N`（既存 SqlBuilder を IR 消費型へ移植）。
 4. **Handlers**: Catalog 名 → driver 実行 + assembly。
 5. **Error Mapping**: driver エラー → SCP Failure（Policy Kind: fail/retry/continue）。
