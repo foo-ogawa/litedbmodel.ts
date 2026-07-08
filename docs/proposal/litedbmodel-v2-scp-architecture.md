@@ -12,7 +12,7 @@
 - litedbmodel v2 は **新しい DSL を作らない**。**behavior-contracts の汎用 SCP レイヤ（Behavior/Component/Port/Wire + Expression IR + runtime-core）を consume する "SQL バックエンド consumer"** になる。graphddb（DynamoDB backend）と同型で、**差分は Catalog（SQL 操作群）と Backend Compile（IR→dialect SQL）と Handler（SQL 実行）だけ**（behavior-contracts の原則 **C2: difference is catalog only**）。
 - **コンパイル経路は1本、実行モードが3つ**（単一意味論、feasibility §2 / §9）。公開 API も SCP 宣言も**同一の Authoring Parse → 内部 IR** を通り、内部 IR 以降は全モード共通:
   1. **TS 直接利用（eager）** — 公開 API 呼び出しを**同一コンパイラで動的に内部 IR 化**（キャッシュ）→ 共通 Runtime で実行（別解釈系は持たない）。
-  2. **SCP 宣言ブロック** — **SCP 語彙で Behavior を宣言**（Query/Command は litedbmodel 語彙でなく Behavior の Effect 分類）→ **ビルド時に事前コンパイル**して IR（dialect SQL + 動的 condition の fragment）/ 各言語コードへ変換。
+  2. **SCP 宣言ブロック** — **effect 非依存の `@behavior` マーカーで Behavior を宣言**（Query/Command は SCP の責務外。component graph から CQRS 層が導出）→ **ビルド時に事前コンパイル**して IR（dialect SQL + 動的 condition の fragment）/ 各言語コードへ変換。
   3. **多言語利用** — publish された IR を各言語 runtime から呼ぶ（同一 IR）。
 - **Relation は Read 系だけでなく Write 系（write-time relations）**を持つ（graphddb 同型）。書込時に関連エンティティの整合・cascade・edge・counter・outbox を**1つの SQL トランザクションに導出**する。
 - **多言語 CQRS 対応**: 公開境界は CQRS（Query/Command）契約のみ。TS/Python/Rust/Go/(PHP) の薄い runtime が**同一 IR から同一 SQL・同一結果**を出す（conformance）。
@@ -273,7 +273,7 @@ COMMIT;
 
 ## 7. SCP 宣言ブロック → IR コンパイル
 
-`query()`/`command()`（または `@query`/`@command`）でマークした関数（§2.4）の本体は **SCP の Behavior（Composite Component）**として扱われ、bc のコンパイルパイプラインで Component-graph IR へ落ちる。マーカー付き関数名=Behavior 名（ルート）、`$` の型引数=Input Port、返り値=Output Port、内部 DAG は配線から導出（§2.4）:
+`@behavior`（または `behaviors=[...]` レジストリ）で指定した Behavior（§2.4）の本体は **SCP の Composite Component** として扱われ、bc のコンパイルパイプラインで Component-graph IR へ落ちる。Behavior 名（ルート）、`$` の型引数=Input Port、返り値=Output Port、内部 DAG は配線から導出。effect（Query/Command）は SCP でなく CQRS 層が graph から導出（§2.4）:
 
 ```
 TS 宣言（AST）
