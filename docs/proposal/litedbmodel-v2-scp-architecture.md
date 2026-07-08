@@ -41,7 +41,7 @@ behavior-contracts（汎用 SCP レイヤ・DSL 非依存）
 | 拡張点 | litedbmodel v2 での中身 |
 |---|---|
 | **Catalog 定義** | `Select` / `Insert` / `Update` / `Delete` / `Fragment`（動的 WHERE/SET 断片木）/ `Tx`（多文トランザクション）。各に Port schema（table・where(ExprIR)・set・limit・order 等） |
-| **Authoring Parse** | 公開 API（`User.find(...)`）と SCP 宣言（`behavior(...)`）を **Component-graph IR** へ落とす |
+| **Authoring Parse** | 公開 API（`User.find(...)`）と SCP 宣言（`behaviors/` の export 関数）を **Component-graph IR** へ落とす |
 | **Backend Compile** | IR → **dialect SQL テキスト + `?` パラメータ + fragment 木**（動的部）。`?`→`$N`（PG のみ・最終1パス） |
 | **Handler 実装** | 各 Catalog 名 → 実行関数（driver で SQL 実行 + 行→論理モデル assembly） |
 | **Error Mapping** | driver エラー（UNIQUE 制約違反・FK 違反・deadlock 等）→ SCP Failure（`constraint_violation` / `retryable` 等） |
@@ -124,46 +124,49 @@ await Post.create({ author_id: 7, title: 'Hello', request_id: 'r-123' });
 **Catalog（leaf Component: `Select`/`Insert`/… §11）だけ**で、合成・配線・命名は SCP 共通の authoring surface に従う（C2: 差分は Catalog のみ）。
 Query / Command は**別の語彙ではなく Behavior の Effect 分類**（read-only か 書込 effect か。CQRS 標準語で litedbmodel 固有ではない）。
 
-```ts
-// SCP-native な Behavior 宣言。名前を付けること＝component化（=このルート Composite Component）。
-export const PostSearch = behavior('PostSearch', {
-  effect: 'query',                                  // ← Effect 分類（query=read-only / command=write）
-  input: { authorId: p.number(), status: p.string().optional(), since: p.string(), limit: p.number().optional() },
-  body: ($) => {                                    // $ = 入力 + 上流 Component 結果への ref スコープ
-    const posts = Select(Post, {                    // Catalog leaf component（litedbmodel 供給）
-      where: [
-        Post.author_id.eq($.in.authorId),
-        $.in.status ? Post.status.eq($.in.status) : SKIP,   // SKIP → fragment の存在規則（§8）
-        Post.created_at.gte($.in.since),
-      ],
-      order: Post.created_at.desc(),
-      limit: $.in.limit ?? 20,
-    });
-    const authors = posts.map((p) =>                // 構造化制御は SCP 共通（.map / ?: / &&）
-      Select(User, { where: [User.id.eq(p.author_id)], select: ['id', 'name'] }));
-    return { posts, authors };                      // ← ルートの出力（Behavior の Output Port）
-  },
-});
+> **authoring surface（`@behavior` を巡る指摘への回答）:** `@behavior export const X = ($)=>{}` の
+> **デコレータ形は現行 TS では不可**（デコレータはクラス／クラスメンバ専用。トップレベルの `const`/関数には付かない。TC39 stage-3 も同様）。
+> config オブジェクトを渡す builder（`behavior('name',{...})`）も**採らない**。
+> litedbmodel は**ビルド時コンパイル**（AST/型を読める）なので、**デコレータも builder も wrapper 呼び出しも不要な「素の export 関数」**を既定とする。
 
-// Command（Effect=write）: write-time relations（§6）を導出。
-export const CreatePost = behavior('CreatePost', {
-  effect: 'command',
-  input: { authorId: p.number(), title: p.string(), requestId: p.string() },
-  body: ($) => Insert(Post, {                       // Post.writes.create の write-time relations を展開 → 1 tx
+```ts
+// behaviors/posts.ts — このディレクトリの export 関数を、ビルド時に Behavior として発見する。
+// 関数名 = Behavior 名（＝component化）。引数 $ の型 Query<In> / Command<In> が Effect と Input Port を与える。
+export function PostSearch($: Query<{ authorId: number; status?: string; since: string; limit?: number }>) {
+  const posts = Select(Post, {                         // Catalog leaf component（litedbmodel 供給）
+    where: [
+      Post.author_id.eq($.in.authorId),
+      $.in.status ? Post.status.eq($.in.status) : SKIP, // SKIP → fragment の存在規則（§8）
+      Post.created_at.gte($.in.since),
+    ],
+    order: Post.created_at.desc(),
+    limit: $.in.limit ?? 20,
+  });
+  const authors = posts.map((p) =>                     // 構造化制御は SCP 共通（.map / ?: / &&）
+    Select(User, { where: [User.id.eq(p.author_id)], select: ['id', 'name'] }));
+  return { posts, authors };                           // ← Output Port（ルートの出力）
+}
+
+// Command（Effect=write）: $ が Command<In> なので write-Catalog に到達可。write-time relations（§6）を導出。
+export function CreatePost($: Command<{ authorId: number; title: string; requestId: string }>) {
+  return Insert(Post, {
     values: { author_id: $.in.authorId, title: $.in.title },
-    onWrite: Post.writes.create,
+    onWrite: Post.writes.create,                       // → 順序付き1トランザクションへ導出（§6）
     returning: ['id', 'title'],
-  }),
-});
+  });
+}
 ```
 
-**component化 / ルートノードの指定（利用者の疑問への回答）:**
-- SCP では**ルートノードを個別にマークしない**。**合成に名前を与えた Behavior そのものが Composite Component（＝ルート）**。
-- その **Input Port = 宣言した `input`**、**Output Port = `body` の返り値**、内部 DAG は `$` 参照・`.map`・`?:` の**配線から Compiler が導出**（`await`/実行順は書かない）。
-- leaf（Specialty Component）は Catalog プリミティブ（`Select`/`Insert`/…）のみ。ドメイン動詞（`GetPost` 等）を leaf にはしない（bc 規約）。
-- graphddb の `query(Other.method, { childKey: from("$.field") })` の `$`-rooted 宣言的束縛が同じモデルの具体形。
+**component化 / ルートノードの指定（疑問への直接回答）:**
+- **ルートノードを個別にマークしない。export された関数そのものが Composite Component（＝ルート）**。「Component 群の合成全体に名前を与えた Behavior が新しい意味を持つ」（SCP）を、**関数名 = Behavior 名**で表す。
+- **Input Port = `$: Query<In>` / `Command<In>` の型引数 `In`**（ビルド時に型抽出）。**Effect = Query か Command か**（型で強制。`Query<>` 文脈からは write-Catalog に到達不可＝read-only を型保証）。
+- **Output Port = 返り値**。内部 DAG は `$` 参照・`.map`・`?:` の**配線から Compiler が導出**（`await`/`Promise.all`/実行順は書かない）。
+- leaf（Specialty Component）は Catalog プリミティブ（`Select`/`Insert`/…）のみ。**litedbmodel 独自の宣言語彙は無い**。
+- **前提**: コンパイラが `behaviors/`（設定可）配下の export 関数を走査し発見。名前・入力型の取得はビルド時 AST/型情報に依存（v2 の事前コンパイル方針と整合）。graphddb の `$`-rooted 束縛（`from("$.field")`）が同モデルの具体形。
 
-**注（エコシステム上の整理・§11/§15）:** 現状 behavior-contracts に**共有の `behavior()` authoring API は未実装**で、graphddb も独自 `publishQuery` を使っている。本仕様の `behavior(...)`/`Select(...)` は**「本来 SCP 共通であるべき authoring surface」を SCP 語彙で示したもの**であり、litedbmodel 固有語彙の新設ではない。これは behavior-contracts 側で共有化すべき（consumer は Catalog のみ供給）。
+**代替表記（好みに応じ、いずれも同一 IR に落ちる）:** ① HOF マーカー `export const PostSearch = query($ => {...})`（config オブジェクトではなく効果ラッパ1個）② クラス + メソッドデコレータ `@query PostSearch($){...}`（**有効な TS デコレータ**・graphddb 寄り）。既定は上記「素の export 関数」。
+
+**注（エコシステム・§11/§15）:** この authoring surface（関数→Behavior の発見規則・`$` 配線・structured control）は**本来 behavior-contracts で共有すべき**もの。consumer は Catalog（`Select`/`Insert`…）だけ供給する（C2）。現状 bc 未実装・graphddb は独自 `publishQuery` のため、共有 authoring を別 issue 化する。
 
 - **公開されるのは Behavior 名**（`PostSearch` / `CreatePost`）と Effect 分類のみ。SQL 種別（SELECT/INSERT）は runtime 不可視。
 - 入力の arity（単数/配列）・cardinality（one/many）は Catalog/Key から**導出され型で強制**（N+1 型安全）。
@@ -188,7 +191,7 @@ posts, _ := postQueries.Search(ctx, db, SearchInput{AuthorID: 7, Since: "2026-01
 ```
 公開境界        = CQRS Contract（Query / Command）※ 多言語で共有
   ├─ TS 直接利用（eager）……… Authoring Parse → Component-graph IR → Handler（Native Interpret）
-  └─ SCP 宣言ブロック（behavior(...)）……… Component-graph IR（AOT）
+  └─ SCP 宣言ブロック（export 関数）……… Component-graph IR（AOT）
         ↓ Backend Compile（litedbmodel）
      SQL IR = dialect SQL テキスト + fragment 木 + param slots(Expression IR) + assembly + relation ops + transaction plan
         ↓
@@ -238,7 +241,7 @@ posts, _ := postQueries.Search(ctx, db, SearchInput{AuthorID: 7, Since: "2026-01
 | `emits` | ドメインイベント | outbox テーブルへ `INSERT`（同一 tx） |
 | `idempotency` | クライアントトークン重複防止 | idempotency テーブルへ `INSERT`（`UNIQUE` 違反で重複検出） |
 
-**Command 導出（graphddb mutation-derivation 同型）:** `behavior('CreatePost',{effect:'command',body:$=>Insert(Post,{onWrite:Post.writes.create,...})})` の宣言的 intent から、コンパイラが `Post.writes.create` を展開して**順序付き多文トランザクション**を導出:
+**Command 導出（graphddb mutation-derivation 同型）:** `CreatePost($: Command<...>) { return Insert(Post, { onWrite: Post.writes.create, ... }) }`（§2.4）の宣言的 intent から、コンパイラが `Post.writes.create` を展開して**順序付き多文トランザクション**を導出:
 
 ```
 BEGIN;
@@ -261,7 +264,7 @@ COMMIT;
 
 ## 7. SCP 宣言ブロック → IR コンパイル
 
-`behavior(name, { effect, input, body })`（§2.4・SCP 語彙）の本体は **SCP の Behavior（Composite Component）**として扱われ、bc のコンパイルパイプラインで Component-graph IR へ落ちる。名前付き Behavior が**ルート**、`input`=Input Port、`body` 返り値=Output Port、内部 DAG は配線から導出（§2.4）:
+`behaviors/` の export 関数（`$: Query<In>` / `Command<In>`・§2.4）の本体は **SCP の Behavior（Composite Component）**として扱われ、bc のコンパイルパイプラインで Component-graph IR へ落ちる。関数名=Behavior 名（ルート）、`$` の型引数=Input Port、返り値=Output Port、内部 DAG は配線から導出（§2.4）:
 
 ```
 TS 宣言（AST）
@@ -326,7 +329,7 @@ bundle 直列化は bc の envelope（`irVersion`/`exprVersion` + fail-closed）
 
 **litedbmodel v2 が実装（§1 表の具体化）:**
 1. **Catalog**: `Select/Insert/Update/Delete/Fragment/Tx` の Port schema。
-2. **Authoring Parse**: 公開 API・SCP 宣言（`behavior(...)`）→ Component-graph IR。
+2. **Authoring Parse**: 公開 API・SCP 宣言（`behaviors/` の export 関数）→ Component-graph IR。
 3. **Backend Compile**: IR → dialect SQL + fragment 木 + `?`→`$N`（既存 SqlBuilder を IR 消費型へ移植）。
 4. **Handlers**: Catalog 名 → driver 実行 + assembly。
 5. **Error Mapping**: driver エラー → SCP Failure（Policy Kind: fail/retry/continue）。
@@ -360,7 +363,7 @@ feasibility §9 で確定済み。要点のみ:
 
 bc の migration（litedbmodel は Phase 4 = 統合 generator + C2 実証で参入）と bc issue #1（RDB PoC）に整合。
 
-1. **v2 α**: **SQLite + TS**・Query 契約のみで縦1本（公開 API/`behavior(...)` → Component-graph IR → Backend Compile → 薄い Runtime）。golden = 同一入力→同一 SQL + 同一結果。動的展開仕様（SKIP/fragment 木）を確定。← bc issue #1 の本体。
+1. **v2 α**: **SQLite + TS**・Query 契約のみで縦1本（公開 API/export 関数 → Component-graph IR → Backend Compile → 薄い Runtime）。golden = 同一入力→同一 SQL + 同一結果。動的展開仕様（SKIP/fragment 木）を確定。← bc issue #1 の本体。
 2. **v2 β**: Postgres/MySQL 方言追加（SqlBuilder 資産を IR 消費型へ移植）。write-side（単文 Command + write-time relations）。typed-object + hydrate + lazy 確定。
 3. **v2 RC**: Python/Rust/Go runtime + conformance（言語軸）。codegen（bc 共有 generator に SQL catalog 供給）。
 4. **v2.0 GA**: 多言語 CQRS 公開・4レジストリ publish 基盤（behavior-contracts 方式）。write-time tx DAG 導出・gate-first 最適化。
