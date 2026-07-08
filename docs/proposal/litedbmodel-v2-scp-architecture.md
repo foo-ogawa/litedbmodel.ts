@@ -125,57 +125,46 @@ SCP の宣言が表すのは**「Component を合成して名前を与える＝B
 **Query / Command（read-only か write か）は SCP の責務ではない。** これは Behavior の component graph
 （write-Catalog を含むか）から**導出される CQRS 層の分類**であり、**SCP 宣言・authoring には一切書かない**。
 
-> **ルート指定（「全 export を publish するのか？」への回答）:**
-> **しない。** publish される root Behavior は**明示マーカー付きのものだけ**（マーカー無しはただのヘルパ）。
-> マーカーは SCP-native な**単一アノテーション `@behavior`**（effect 非依存。query/command を含まない）。
-> ただし **TS のデコレータはクラスメンバ専用**という言語制約があり、`@behavior export const X = …`（トップレベル const/関数へのデコレータ）は**構文上不可**（設計の好みでなく TS の制約）。よって `@behavior` は**クラスメソッド**に付ける。builder（`behavior('name',{...})`）もラッパ（`query(...)`）も採らない。
+> **ルート指定（「全 export／全メソッドを publish するのか？」への回答）:**
+> root Behavior は**クラス単位で指定**する。**`SemanticBehavior` を継承した（または `@behavior` を付けた）クラスの各 public メソッドが、そのまま root Behavior**。
+> publish しないヘルパは**そもそもこのクラスに入れない**（どうしても要るなら `private`/`#`）。**per-method のマーカーは不要**。
+> マーカーはクラスに1つ・effect 非依存（query/command を含まない）。builder（`behavior('name',{...})`）やメソッドごとのラッパ（`query(...)`）は採らない。
 
-**(既定) `@behavior` メソッドデコレータ — SCP-native・effect 非依存:**
 ```ts
-// behaviors/posts.ts
-class PostBehaviors {
-  @behavior                                // ← このメソッドは Behavior（ルート）。effect は書かない
+// behaviors/posts.ts — このクラスの public メソッド = root Behavior。
+class PostBehaviors extends SemanticBehavior {          // または: @behavior class PostBehaviors { … }
   PostSearch($: In<{ authorId: number; status?: string; since: string; limit?: number }>) {
-    const posts = Select(Post, {           // Catalog leaf component（litedbmodel 供給）
+    const posts = Select(Post, {                        // Catalog leaf component（litedbmodel 供給）
       where: [
         Post.author_id.eq($.in.authorId),
-        $.in.status ? Post.status.eq($.in.status) : SKIP,  // SKIP → fragment の存在規則（§8）
+        $.in.status ? Post.status.eq($.in.status) : SKIP, // SKIP → fragment の存在規則（§8）
         Post.created_at.gte($.in.since),
       ],
       order: Post.created_at.desc(),
       limit: $.in.limit ?? 20,
     });
-    const authors = posts.map((p) =>       // 構造化制御は SCP 共通（.map / ?: / &&）
+    const authors = posts.map((p) =>                    // 構造化制御は SCP 共通（.map / ?: / &&）
       Select(User, { where: [User.id.eq(p.author_id)], select: ['id', 'name'] }));
-    return { posts, authors };             // ← Output Port（ルートの出力）
+    return { posts, authors };                          // ← Output Port（ルートの出力）
   }
 
-  @behavior
   CreatePost($: In<{ authorId: number; title: string; requestId: string }>) {
     return Insert(Post, { values: { author_id: $.in.authorId, title: $.in.title },
                           onWrite: Post.writes.create, returning: ['id', 'title'] });
   }
 
-  private helper(rows: Post[]) { return rows.filter((r) => !r.deleted); } // @behavior 無し → publish されない
+  private helper(rows: Post[]) { return rows.filter((r) => !r.deleted); } // private → publish されない
 }
 ```
 
-**(代替) クラスを避ける場合 — plain 関数 + 明示レジストリ（マーカー/ラッパ無し）:**
-```ts
-function PostSearch($: In<{ /* … */ }>) { const posts = Select(Post, { /* … */ }); return { posts }; }
-function CreatePost($: In<{ /* … */ }>) { return Insert(Post, { /* … */ }); }
-function helper() { /* … */ }                          // レジストリに載せない → publish されない
-
-export const behaviors = [PostSearch, CreatePost];     // ← ここに載せたものだけが Behavior（ルート）
-```
-
 **ルートの指定（直接回答）:**
-- **ルート = `@behavior` を付けたメソッド（既定）／`export const behaviors=[...]` に載せた関数（代替）だけ**。それ以外は publish されない（大量の export を全部 component 化しない）。
-- **Behavior 名** = メソッド／関数名。**Input Port** = `$` の型 `In<...>`。**Output Port** = 返り値。内部 DAG は `$` 参照・`.map`・`?:` の**配線から Compiler が導出**（`await`/実行順は書かない）。
-- **Effect（Query/Command）は authoring に書かない。** component graph に write-Catalog（`Insert`/`Update`/`Delete`/`Tx`）が含まれるかで litedbmodel の **CQRS 層が導出**（含まなければ Query=read-only、含めば Command）。read-only 保証が要る箇所は Catalog 側の型で担保。
+- **ルート = `SemanticBehavior` 継承（既定）または `@behavior` 付きクラスの、各 public メソッド**。`private`/`#` はヘルパ扱いで publish されない。→ **マーカーはクラスに1個**、メソッドには不要。「大量の export を全部 component 化」はしない。
+- **Behavior 名** = メソッド名。**Input Port** = `$` の型 `In<...>`。**Output Port** = 返り値。内部 DAG は `$` 参照・`.map`・`?:` の**配線から Compiler が導出**（`await`/実行順は書かない）。
+- **Effect（Query/Command）は authoring に書かない。** component graph に write-Catalog（`Insert`/`Update`/`Delete`/`Tx`）が含まれるかで litedbmodel の **CQRS 層が導出**（含まなければ Query=read-only、含めば Command）。read-only 保証が要る箇所は Catalog 側の型で担保。クラス名（`XxxQueries`/`XxxCommands`）は命名慣習にすぎず意味を持たない。
+- **`extends SemanticBehavior` を既定**とする（デコレータ設定に依存せず、litedbmodel の `DBModel` / graphddb の `DDBModel` 基底クラス方式と一貫）。`@behavior` クラスデコレータも同義（有効な TS・同一 IR）。
 - leaf（Specialty Component）は Catalog（`Select`/`Insert`…）のみ。**SCP 宣言に litedbmodel 独自語彙は無い**。graphddb の `$`-rooted 束縛（`from("$.field")`）が同モデルの具体形。
 
-**注（エコシステム・§11/§15）:** この authoring surface（`@behavior`／レジストリで root 指定・`$` 配線・structured control）は **effect 非依存で本来 behavior-contracts が持つべき SCP 層**。consumer は Catalog だけ供給し、Query/Command 分類は各 consumer の CQRS 層が graph から導出する（C2）。現状 bc 未実装・graphddb は独自 `publishQuery` のため、**共有 authoring（effect 非依存の Behavior マーカー）を別 issue 化する**。
+**注（エコシステム・§11/§15）:** この authoring surface（`SemanticBehavior` 基底で root 指定・`$` 配線・structured control）は **effect 非依存で本来 behavior-contracts が持つべき SCP 層**。consumer は Catalog だけ供給し、Query/Command 分類は各 consumer の CQRS 層が graph から導出する（C2）。現状 bc 未実装・graphddb は独自 `publishQuery` のため、**共有 authoring（effect 非依存の `SemanticBehavior` 基底）を別 issue 化する**。
 
 - **公開されるのは Behavior 名**（`PostSearch` / `CreatePost`）のみ。SQL 種別（SELECT/INSERT）や effect 分類は runtime 不可視（分類は導出物）。
 - 入力の arity（単数/配列）・cardinality（one/many）は Catalog/Key から**導出され型で強制**（N+1 型安全）。
