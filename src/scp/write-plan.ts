@@ -309,10 +309,10 @@ function compileEdge(e: EdgeEffect, nextId: IdGen): TxStatement {
  * serialized to a JSON text column by the runtime (the outbox `payload` column). Emitting the
  * payload as a single `obj` param keeps the SQL text stable (two `?` slots).
  *
- * KNOWN LIMITATION (pre-existing guard bug, tracked separately): a SINGLE-field payload
- * `{obj:{one:…}}` is currently rejected by the portability guard, which treats any single-key
- * object as an operator node and reads the lone field name as an unknown opcode. Multi-field
- * payloads are fine. Until the guard is fixed, single-field emit payloads are unusable.
+ * Single-field payloads (`{obj:{one:…}}`) are fully supported: the portability guard treats
+ * the `obj` arg as a FIELD MAP (its keys are data field names, not opcodes) and recurses into
+ * the field values only — the same semantics as bc's guard/evaluator. (Fixed in #38; the guard
+ * previously misread the lone field name as an unknown opcode.)
  */
 function compileEmit(e: EmitEffect, nextId: IdGen): TxStatement {
   const payloadObj: Record<string, ExprNode> = {};
