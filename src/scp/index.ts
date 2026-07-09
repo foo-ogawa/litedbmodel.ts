@@ -153,6 +153,27 @@ export type { TransactionResult, ShortCircuitReason } from './write-runtime';
 // The Command bundle + 1-tx execution surface (WS5 — the write path of §2.3 / §6).
 export { compileWriteBundle, executeCommand, executeTransactionBundle } from './runtime';
 
+// Reusable handler/normalization seams (WS3) — exported so the mode-3 codegen path binds the
+// IDENTICAL SQL handlers into bc's generated `bind()` (byte-identity by construction).
+export { buildHandlers, normalizeInput } from './runtime';
+
+// Mode-3 codegen (WS7f, #35 — spec §9 exec-mode 3): supply the litedbmodel SQL catalog to bc's
+// shared generator; emit per-language source (IR baked as a native literal) + the SQL catalog
+// companion. Generated code output is byte-identical to the mode-2 thin-runtime (proven by the
+// codegen conformance leg).
+export {
+  CODEGEN_LANGUAGES,
+  generateCodegenArtifact,
+  bundleToPortableIR,
+  assertLanguageSupported,
+  codegenExecuteBundleForTest,
+} from './codegen';
+export type {
+  CodegenLanguage,
+  SqlCatalogCompanion,
+  CodegenArtifact,
+} from './codegen';
+
 // Read relations (WS4, #24): pre-compiled batch relation ops + staged batch resolution.
 // BOTH the declarative-select and the lazy surface resolve through the SAME compiled op.
 export {

@@ -53,7 +53,8 @@
     "vendor:bc-php:check": "node scripts/vendor-behavior-contracts-php.mjs --check",
     "conformance:gen": "vitest run --config conformance/vitest.config.ts",
     "conformance:vectors": "npm run build:scp && tsx conformance/vectors-runner.ts",
-    "conformance:run": "npm run build:scp && tsx conformance/vectors-run.ts"
+    "conformance:run": "npm run build:scp && tsx conformance/vectors-run.ts",
+    "conformance:codegen": "npm run build:scp && tsx conformance/codegen/codegen-runner.ts"
   },
   "keywords": [
     "orm",
