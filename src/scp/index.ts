@@ -100,8 +100,33 @@ export type { SqlFailureKind } from './errors';
 // Thin TS runtime (spec §3 / §10 / §11): validate → SKIP → expand → eval → bind → execute → assembly.
 // `compileBundle` emits the §8 published artifact (Backend-Compiled once, TS-side);
 // `executeBundle` runs that artifact via bc runtime-core alone (the multi-language target).
-export { executeBehavior, compileBundle, executeBundle } from './runtime';
-export type { SqliteDb, ExecuteOptions, SqlBundle } from './runtime';
+export { executeBehavior, compileBundle, executeBundle, read, readBundle, resolveRelationViaPlan } from './runtime';
+export type { SqliteDb, ExecuteOptions, SqlBundle, ReadRuntimeOptions } from './runtime';
+
+// Read relations (WS4, #24): pre-compiled batch relation ops + staged batch resolution.
+// BOTH the declarative-select and the lazy surface resolve through the SAME compiled op.
+export {
+  compileRelationOp,
+  runRelationOp,
+  distributeToParent,
+  RELATION_KEYS_HEAD,
+} from './relation';
+export type {
+  RelationKind,
+  RelationDecl,
+  RelationOp,
+  RelationBatch,
+  RelationDriver,
+} from './relation';
+
+// typed-object result + hydrate factory + lazy relation context (WS4, #24).
+export {
+  buildResultSet,
+  readRelationContext,
+  RelationContext,
+  RELATION_CONTEXT,
+} from './typed-object';
+export type { HydrateFactory, ReadOptions } from './typed-object';
 
 // Re-export bc's shared authoring vocabulary so authors import the whole surface from
 // litedbmodel (leaf vocabulary is the Catalog; expressions/structured control are bc's —

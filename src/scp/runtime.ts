@@ -53,6 +53,8 @@ import { compileComponentNodes } from './bridge';
 import { renderOperation } from './render';
 import type { CompiledOperation, ExprNode, Fragment, FragmentTree } from './ir';
 import { mapSqliteError, SqlFailure } from './errors';
+import { compileRelationOp, runRelationOp, distributeToParent, type RelationDecl, type RelationOp, type RelationDriver } from './relation';
+import { buildResultSet, type ReadOptions } from './typed-object';
 
 /** The synthetic port that carries a SQL node's render scope (see module doc). */
 const SCOPE_PORT = '__scope';
@@ -314,6 +316,12 @@ export interface ExecuteOptions {
   readonly db: SqliteDb;
   /** The behavior method (component) name to run (default: the first component). */
   readonly entry?: string;
+  /**
+   * The model's read-relation declarations (spec §4/§5). Compiled ONCE into the bundle's
+   * relation ops so the typed-object read surface ({@link read}) can batch-resolve both
+   * declarative-select and lazy relations via the SAME compiled op.
+   */
+  readonly relations?: readonly RelationDecl[];
 }
 
 // ── Backend-Compiled bundle (§8 published artifact — the WS7 multi-language target) ──
@@ -346,6 +354,14 @@ export interface SqlBundle {
   readonly operations: Record<string, CompiledOperation>;
   /** Optional input heads normalized to present-as-null (absent-key SKIP). */
   readonly optionalHeads: string[];
+  /**
+   * Pre-compiled read-relation batch ops (spec §8 `relation ops`), keyed by relation name.
+   * Derived ONCE (TS-side) from the model relation declarations, dialect-aware (SQLite).
+   * Pure JSON (each op's `query` is a {@link CompiledOperation}) so a thin per-language
+   * runtime gets the relation batch SQL for free (WS7). BOTH read surfaces (declarative
+   * select + lazy) resolve through these ops — the identical compiled op.
+   */
+  readonly relations: Record<string, RelationOp>;
 }
 
 /**
@@ -366,7 +382,7 @@ export function executeBehavior(
   input: Scope,
   options: ExecuteOptions,
 ): Value {
-  return executeBundle(compileBundle(contract, options.entry), input, options);
+  return executeBundle(compileBundle(contract, options.entry, options.relations), input, options);
 }
 
 /**
@@ -377,7 +393,11 @@ export function executeBehavior(
  * losslessly and a thin per-language runtime can execute it with bc runtime-core + a SQL
  * handler alone (proven by the bundle round-trip test).
  */
-export function compileBundle(contract: BehaviorModelContract, entry?: string): SqlBundle {
+export function compileBundle(
+  contract: BehaviorModelContract,
+  entry?: string,
+  relations: readonly RelationDecl[] = [],
+): SqlBundle {
   const component = entry
     ? contract.components.find((c) => c.name === entry)
     : contract.components[0];
@@ -387,6 +407,14 @@ export function compileBundle(contract: BehaviorModelContract, entry?: string): 
   const operations: Record<string, CompiledOperation> = {};
   for (const [id, op] of compileComponentNodes(component)) operations[id] = op;
   const surrogate = surrogateComponent(component, operations);
+  // Backend-Compile every relation declaration ONCE into a pure-JSON relation op (spec §8).
+  const relationOps: Record<string, RelationOp> = {};
+  for (const decl of relations) {
+    if (relationOps[decl.name] !== undefined) {
+      throw new Error(`scp runtime: duplicate relation declaration '${decl.name}'`);
+    }
+    relationOps[decl.name] = compileRelationOp(decl);
+  }
   return {
     irVersion: contract.ir.irVersion,
     exprVersion: contract.ir.exprVersion,
@@ -394,6 +422,7 @@ export function compileBundle(contract: BehaviorModelContract, entry?: string): 
     component: surrogate,
     operations,
     optionalHeads: [...optionalHeadsOf(operations)],
+    relations: relationOps,
   };
 }
 
@@ -426,6 +455,130 @@ export function executeBundle(bundle: SqlBundle, input: Scope, options: ExecuteO
     // code if present; otherwise re-throw verbatim.
     throw reErrorToSqlFailure(e);
   }
+}
+
+// ── typed-object read surface (WS4, #24 — result + Read relations) ────────────
+
+/** Options for the typed-object {@link read} surface: base execution + relation read opts. */
+export interface ReadRuntimeOptions<R = Record<string, unknown>> extends ExecuteOptions, ReadOptions<R> {}
+
+/**
+ * The v2 typed-object read surface (spec §4/§5/§12): run a read behavior whose output is a
+ * row list (a Select), then wrap each raw row in a plain TYPED-OBJECT (own props = data only,
+ * NOT a DBModel instance) with read relations attached.
+ *
+ * - A relation named in `options.with` is DECLARATIVELY selected: batch-prefetched ONCE over
+ *   the whole page (staged, no N+1) and attached as an OWN prop.
+ * - Every OTHER declared relation is LAZY: a prototype getter that, on `await result.author`,
+ *   fires the SAME compiled relation op over the sibling set (batched — still no N+1).
+ * - `options.hydrate` recovers host objects (`(raw) => new Domain(raw)`) — the consumer-side
+ *   method-UX recovery. It stays in the runtime and never enters the bundle.
+ *
+ * Both surfaces share the ONE compiled relation op in the bundle (spec §5). The base row list
+ * is produced by the SAME {@link executeBundle} path (bc runtime-core + SQL handlers), so the
+ * read query itself is fully IR-driven; relations are the runtime's staged-batch concern.
+ *
+ * @throws if the behavior output is not a row list (the typed-object surface is for reads).
+ */
+export function read<R = Record<string, unknown>>(
+  contract: BehaviorModelContract,
+  input: Scope,
+  options: ReadRuntimeOptions<R>,
+): R[] {
+  return readBundle(compileBundle(contract, options.entry, options.relations), input, options);
+}
+
+/** {@link read} against an already-compiled {@link SqlBundle} (the published §8 artifact). */
+export function readBundle<R = Record<string, unknown>>(
+  bundle: SqlBundle,
+  input: Scope,
+  options: ReadRuntimeOptions<R>,
+): R[] {
+  const out = executeBundle(bundle, input, options);
+  if (!Array.isArray(out)) {
+    throw new Error(
+      `scp read: the read behavior output is not a row list (got ${out === null ? 'null' : typeof out}); ` +
+        `the typed-object read surface expects a Select-shaped output`,
+    );
+  }
+  const rawRows = out as unknown as Record<string, unknown>[];
+  const readOpts: ReadOptions<R> = {
+    ...(options.with !== undefined ? { with: options.with } : {}),
+    ...(options.hydrate !== undefined ? { hydrate: options.hydrate } : {}),
+  };
+  return buildResultSet<R>(rawRows, bundle.relations, options.db, readOpts);
+}
+
+// ── Staged-batch relation resolution THROUGH bc's plan (spec §5) ──────────────
+
+/** The synthetic catalog name of a batched-relation map node (runtime-internal, not authored). */
+const RELATION_BATCH_COMPONENT = '__RelationBatch';
+/** The port a batched-relation map element evaluates to: the parent's batch-key value. */
+const RELATION_KEY_PORT = '__key';
+
+/**
+ * Resolve ONE relation for a page of parent rows by driving bc's PLAN mechanism (spec §5:
+ * `deriveExecutionPlan` — result path → stage groups + concurrency). This is the staged-batch
+ * path: it builds a bc component with a single `map.batched` node over the parent rows and
+ * runs it through {@link runBehavior} (the SAME multi-language execution core WS7 languages
+ * use). Because the map is `batched`, bc evaluates every parent's key port and invokes the
+ * relation handler EXACTLY ONCE with `{items:[…]}` — so the relation op fires ONE batched
+ * query for the whole page (structurally no N+1, enforced by bc's batch contract). The
+ * handler runs the IDENTICAL compiled {@link RelationOp} the declarative-select and lazy
+ * surfaces use, and `into` attaches each parent's resolved child(ren).
+ *
+ * Returns the parent rows augmented with the relation under `op.name` (per cardinality).
+ */
+export function resolveRelationViaPlan(
+  op: RelationOp,
+  parents: readonly Record<string, unknown>[],
+  db: RelationDriver,
+): Record<string, unknown>[] {
+  // One batched map node over the parent list. Each element evaluates its batch-key port
+  // (`{ref:[<elemAs>, parentKey]}`); the batched handler receives all keys at once.
+  const elemAs = '$p';
+  const node: Component['body'][number] = {
+    id: 'rel',
+    map: {
+      over: { ref: ['__parents'] },
+      as: elemAs,
+      component: RELATION_BATCH_COMPONENT,
+      ports: { [RELATION_KEY_PORT]: { ref: [elemAs, op.parentKey] } },
+      into: op.name,
+      batched: true,
+    },
+  } as Component['body'][number];
+  const component: Component = {
+    name: '__resolveRelation',
+    inputPorts: { __parents: { required: true } },
+    body: [node],
+    output: { ref: ['rel'] },
+  } as unknown as Component;
+  const ir: ComponentGraphIR = {
+    irVersion: 1,
+    exprVersion: 1,
+    components: [component],
+  } as ComponentGraphIR;
+
+  // The batched-relation handler: bc calls it ONCE with every parent's evaluated key port.
+  // It runs the relation op's batch query a SINGLE time and returns per-parent results aligned
+  // to `items` (bc's MAP_BATCH_RESULT_MISMATCH enforces the 1:1 alignment).
+  const handlers: Handlers = {
+    [RELATION_BATCH_COMPONENT]: (portsOrItems: Record<string, Value>): ExecOutcome => {
+      const items = (portsOrItems as { items?: unknown }).items;
+      if (!Array.isArray(items)) {
+        return { error: `${RELATION_BATCH_COMPONENT}: expected a batched {items:[…]} invocation` };
+      }
+      // Reconstruct the parent-key-bearing rows from the evaluated key ports, run the op ONCE.
+      const keyRows = items.map((it) => ({ [op.parentKey]: (it as Record<string, unknown>)[RELATION_KEY_PORT] }));
+      const { batch } = runRelationOp(op, keyRows, db);
+      const aligned = keyRows.map((r) => distributeToParent(op, r, batch) as Value);
+      return { ok: aligned as unknown as Value };
+    },
+  };
+
+  const out = runBehavior(ir, handlers, { __parents: parents as unknown as Value }, '__resolveRelation');
+  return out as unknown as Record<string, unknown>[];
 }
 
 /**
