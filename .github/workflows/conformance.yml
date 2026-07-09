@@ -21,7 +21,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22+: scripts/check-no-local-deps.mjs uses `globSync` from
+          # `node:fs`, which is only exported from Node 22 onward (Node 20 throws
+          # `SyntaxError: … does not provide an export named 'globSync'`). Matches
+          # the local dev floor (Node 22+) and graphddb's CI (node-version: 22).
+          node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
       - name: Version SSoT in lockstep (npm → PyPI/crates/Go-tag/Packagist)
@@ -36,9 +40,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
+      # The repo `.npmrc` sets `ignore-scripts=true`, so `npm ci` skips
+      # better-sqlite3's native `install` script and its `better_sqlite3.node`
+      # addon is never built. The conformance harness opens an in-memory SQLite
+      # (`new Database(':memory:')`) to execute vectors, so build the addon now
+      # from the prebuild (fast) or from source. Mirrors the conformance-livedb job.
+      - name: Build the better-sqlite3 native addon (skipped by ignore-scripts)
+        run: npm rebuild better-sqlite3 || (cd node_modules/better-sqlite3 && npx node-gyp rebuild --release)
       - name: Build the SCP dist artifact (consumed by the vectors runner)
         run: npm run build:scp
       - name: Corpus drift gate + TS reference runner (part of the suite)
@@ -74,14 +85,17 @@ jobs:
         if: matrix.lang == 'go'
         env:
           # behavior-contracts is a PRIVATE repo pinned by VCS tag (go/v0.2.0) — NO local replace.
-          # Resolving it needs GOPRIVATE + an authenticated git rewrite (token in secrets).
-          GH_TOKEN: ${{ secrets.BEHAVIOR_CONTRACTS_TOKEN }}
+          # Resolving it needs GOPRIVATE + an authenticated git rewrite. Uses the same
+          # fine-grained read-only PAT graphddb stores (Contents: Read on
+          # foo-ogawa/behavior-contracts) under the BEHAVIOR_CONTRACTS_PAT secret.
+          BEHAVIOR_CONTRACTS_PAT: ${{ secrets.BEHAVIOR_CONTRACTS_PAT }}
         run: |
-          echo "GOPRIVATE=github.com/foo-ogawa/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${BEHAVIOR_CONTRACTS_PAT}@github.com/foo-ogawa/behavior-contracts".insteadOf "https://github.com/foo-ogawa/behavior-contracts"
+          echo "GOPRIVATE=github.com/foo-ogawa/behavior-contracts" >> "$GITHUB_ENV"
           echo "GOFLAGS=-mod=mod" >> "$GITHUB_ENV"
-          if [ -n "$GH_TOKEN" ]; then
-            git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-          fi
+      - name: Go — warm private module graph (retry transient auth)
+        if: matrix.lang == 'go'
+        uses: ./.github/actions/warm-go-module
       - name: Go — build
         if: matrix.lang == 'go'
         run: cd go && go build ./...
@@ -132,16 +146,17 @@ jobs:
       TEST_DB_PORT: "5433"
       TEST_MYSQL_HOST: "127.0.0.1"
       TEST_MYSQL_PORT: "3307"
-      GOPRIVATE: github.com/foo-ogawa/*
+      GOPRIVATE: github.com/foo-ogawa/behavior-contracts
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+          cache-dependency-path: go/go.sum
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -157,11 +172,13 @@ jobs:
             -e "GRANT ALL PRIVILEGES ON \`scp\_%\`.* TO 'testuser'@'%'; FLUSH PRIVILEGES;"
       - name: Auth for the private behavior-contracts Go VCS-tag dependency
         env:
-          GH_TOKEN: ${{ secrets.BEHAVIOR_CONTRACTS_TOKEN }}
+          # Same fine-grained read-only PAT graphddb uses (Contents: Read on
+          # foo-ogawa/behavior-contracts), stored as BEHAVIOR_CONTRACTS_PAT.
+          BEHAVIOR_CONTRACTS_PAT: ${{ secrets.BEHAVIOR_CONTRACTS_PAT }}
         run: |
-          if [ -n "$GH_TOKEN" ]; then
-            git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-          fi
+          git config --global url."https://x-access-token:${BEHAVIOR_CONTRACTS_PAT}@github.com/foo-ogawa/behavior-contracts".insteadOf "https://github.com/foo-ogawa/behavior-contracts"
+      - name: Warm private go module graph (retry transient auth)
+        uses: ./.github/actions/warm-go-module
       - name: Install Node deps + Python DB drivers + PHP deps
         run: |
           npm ci --ignore-scripts

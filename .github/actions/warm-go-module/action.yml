@@ -1,0 +1,40 @@
+name: Warm private go module
+description: >-
+  Pre-fetch the go module graph (including the PRIVATE behavior-contracts/go
+  module) into the module cache BEFORE the conformance harness builds go_runner,
+  retrying on transient failures. The private module resolves via authenticated
+  git (no registry); GitHub occasionally answers that git ls-remote with a
+  transient HTTP 401 (fine-grained PAT secondary rate-limit / auth race), which
+  otherwise fails the whole job even though the token is valid — observed on
+  graphddb PR #302 where the php job 401'd twice while go/rust passed in the same
+  run with the same PAT. This warms the cache with retry so a single transient
+  401 no longer fails the run, and the later `go build`/conformance reads from
+  the warmed cache. Assumes the authenticated git URL + GOPRIVATE are already
+  configured (the "Configure Go access to private behavior-contracts" step) and
+  Go is on PATH (a preceding actions/setup-go).
+
+runs:
+  using: composite
+  steps:
+    - name: Warm private behavior-contracts go module (retry transient 401)
+      shell: bash
+      working-directory: go
+      run: |
+        set -u
+        # 5 attempts with linear backoff (5s,10s,15s,20s). `go mod download`
+        # (no args) fetches every module in go.mod — the public deps come from
+        # the reliable proxy; only the private behavior-contracts/go fetch is the
+        # flaky one, and retrying the whole download absorbs its transient 401.
+        for attempt in 1 2 3 4 5; do
+          if go mod download; then
+            echo "✓ go module graph warmed (attempt ${attempt})"
+            exit 0
+          fi
+          if [ "${attempt}" -lt 5 ]; then
+            backoff="$((attempt * 5))"
+            echo "go mod download failed (attempt ${attempt}/5) — likely a transient 401 / auth race on the private behavior-contracts/go fetch; retrying in ${backoff}s..." >&2
+            sleep "${backoff}"
+          fi
+        done
+        echo "✗ go mod download still failing after 5 attempts — this is NOT a transient flake; check the BEHAVIOR_CONTRACTS_PAT (expiry/permissions) and the git insteadOf/GOPRIVATE setup." >&2
+        exit 1
