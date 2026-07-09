@@ -195,8 +195,10 @@ final class Render
         if (count($parts) === 0) {
             return '';
         }
-        $connector = (string) ($tree->connector ?? 'AND');
-        return implode(' ' . $connector . ' ', $parts);
+        // Read the connector directly from the tree (render.ts:113 `tree.connector`).
+        // No `?? 'AND'` fallback: a well-formed FragmentTree always carries its
+        // connector (SSoT); defaulting here would be an ad-hoc engine-code default.
+        return implode(' ' . (string) $tree->connector . ' ', $parts);
     }
 
     /** Count `?` placeholders in a static SQL segment (render.ts `countPlaceholders`). */
