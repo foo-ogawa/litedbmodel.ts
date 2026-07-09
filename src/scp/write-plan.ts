@@ -39,11 +39,15 @@
  * RETURNING row, exposed to the derive/edges/emits stages under {@link ENTITY_ROOT}). Only
  * bc's closed operator set (`ref`) is emitted — no invented opcode (hard rule).
  *
- * ## INITIAL scope (spec §6 / §13) — single-statement Command + fixed-order relations
+ * ## Transaction derivation (spec §6 / §14) — tx-DAG + gate-first
  *
- * The ordering is FIXED (requires → idempotency → unique → body → derive → edges → emits), not
- * a derived dependency DAG. A case needing full DAG derivation (cross-fragment dependency graph
- * → tx-DAG) is DEFERRED to WS8 — see {@link assertInitialScope}; this module never half-builds it.
+ * A Command carries one or more named base writes, each with its §6 effects. Statements form a
+ * data-dependency DAG (`$.ref.<writeName>.<field>` consumes an earlier write's RETURNING row,
+ * exposed via `TxStatement.binds`), with a gate-first constraint (every gate precedes every
+ * body/derive/edge/emit). The DAG is topologically ordered (Kahn, stable ascending declaration
+ * `seq` tie-break) into a single-transaction statement plan. Underivable shapes (dependency
+ * cycle, dangling `$.ref`, referenced write without RETURNING, duplicate bind, composite
+ * `$.entity`) are LOUD rejects — never a silently mis-ordered plan.
  */
 
 import type { CompiledOperation, ExprNode } from './ir';
@@ -303,8 +307,12 @@ function compileEdge(e: EdgeEffect, nextId: IdGen): TxStatement {
  * `emits` → an outbox INSERT (same tx): `INSERT INTO <outbox>(type, payload) VALUES(?, ?)`.
  * `type` is the literal event name; `payload` is a bc `{obj:{…}}` of the path-rooted values,
  * serialized to a JSON text column by the runtime (the outbox `payload` column). Emitting the
- * payload as a single `obj` param keeps the SQL text stable (two `?` slots) regardless of the
- * payload's field count.
+ * payload as a single `obj` param keeps the SQL text stable (two `?` slots).
+ *
+ * KNOWN LIMITATION (pre-existing guard bug, tracked separately): a SINGLE-field payload
+ * `{obj:{one:…}}` is currently rejected by the portability guard, which treats any single-key
+ * object as an operator node and reads the lone field name as an unknown opcode. Multi-field
+ * payloads are fine. Until the guard is fixed, single-field emit payloads are unusable.
  */
 function compileEmit(e: EmitEffect, nextId: IdGen): TxStatement {
   const payloadObj: Record<string, ExprNode> = {};
