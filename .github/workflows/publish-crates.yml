@@ -1,0 +1,87 @@
+name: Publish Runtime to crates.io
+
+# Publishes the Rust SCP runtime crate (`litedbmodel_runtime`) to crates.io when a GitHub Release
+# is published (the same trigger as the npm / PyPI publishers). Mirrors graphddb's
+# publish-crates.yml.
+#
+# The crate version lives in rust/litedbmodel_runtime/Cargo.toml and is kept in lockstep with the
+# npm package.json SSoT by scripts/sync-versions.mjs. This job is idempotent: if that exact version
+# is already on crates.io it skips (a release that didn't touch the crate must not fail here).
+#
+# OWNER GATE: this job targets the `release` GitHub Environment — configure required reviewers on it
+# so the publish waits for an explicit owner approval. Requires the repo secret
+# CARGO_REGISTRY_TOKEN (crates.io → Account Settings → API Tokens; scope: publish-update, and
+# publish-new for the first upload).
+
+on:
+  # The GitHub Release is created by the "GitHub Release" workflow using the default GITHUB_TOKEN,
+  # and GitHub does NOT re-trigger workflows from a token-created release event — so
+  # `release: published` alone never fires here. Chain off the "GitHub Release" workflow completing
+  # instead (same pattern as the npm / PyPI publishers). `workflow_dispatch` allows a manual publish.
+  release:
+    types: [published]
+  workflow_run:
+    workflows: ["GitHub Release"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    if: >-
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    environment: release
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      # Plain checkout (default branch) — works for release / workflow_run / workflow_dispatch
+      # alike; main carries the released Cargo.toml version.
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Decide whether a crates.io publish is needed
+        id: need
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import sys,json;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='litedbmodel_runtime'))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # crates.io requires a User-Agent; without it the API returns 403 (which would break this
+          # guard and make every release attempt a publish).
+          CODE=$(curl -s -A "litedbmodel-ci (https://github.com/foo-ogawa/litedbmodel)" \
+            -o /dev/null -w '%{http_code}' "https://crates.io/api/v1/crates/litedbmodel_runtime/$VERSION")
+          if [ "$CODE" = "200" ]; then
+            echo "litedbmodel_runtime@$VERSION already on crates.io — skipping publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "litedbmodel_runtime@$VERSION not found on crates.io (HTTP $CODE) — will publish."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Unit tests (litedbmodel_runtime, SQLite conformance bar only)
+        if: steps.need.outputs.publish == 'true'
+        run: cargo test -p litedbmodel_runtime
+
+      - name: Package check (dry-run)
+        if: steps.need.outputs.publish == 'true'
+        run: cargo publish -p litedbmodel_runtime --dry-run
+
+      - name: Publish litedbmodel_runtime
+        if: steps.need.outputs.publish == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p litedbmodel_runtime

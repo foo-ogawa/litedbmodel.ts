@@ -5,8 +5,11 @@
  * the runtime that interprets it stay in lockstep across all 5 registries:
  *
  *   - python/pyproject.toml                        -> PyPI       (litedbmodel-runtime)
+ *   - python/litedbmodel_runtime/__init__.py       -> (in-source __version__ shipped in the wheel)
  *   - rust/litedbmodel_runtime/Cargo.toml          -> crates.io  (litedbmodel_runtime)
+ *   - rust/litedbmodel_runtime/src/lib.rs          -> (in-source VERSION const shipped in the crate)
  *   - rust/vectors_runner/Cargo.toml               -> (workspace member; version-locked)
+ *   - rust/livedb_runner/Cargo.toml                -> (workspace member, publish=false; version-locked)
  *   - go/litedbmodel_runtime/runtime.go `Version`  -> Go module VCS tag `go/v<version>`
  *   - php/src/Runtime.php `VERSION`                -> Packagist  (litedbmodel/runtime)
  *
@@ -56,6 +59,31 @@ const targets = [
     path: resolve(root, 'rust/vectors_runner/Cargo.toml'),
     re: /^version = "([^"]*)"$/m,
     render: (v) => `version = "${v}"`,
+  },
+  {
+    // Workspace member (publish = false) but version-locked to the SSoT so the whole cargo
+    // workspace — and Cargo.lock — stays coherent at one version. It depends on
+    // litedbmodel_runtime via an in-repo `path`, so its version must never lag the published crate.
+    label: 'rust/livedb_runner/Cargo.toml',
+    path: resolve(root, 'rust/livedb_runner/Cargo.toml'),
+    re: /^version = "([^"]*)"$/m,
+    render: (v) => `version = "${v}"`,
+  },
+  {
+    // The published crate's runtime version constant (crates.io ships this file). Must track the
+    // SSoT or `litedbmodel_runtime::VERSION` reports a stale version in the published artifact.
+    label: 'rust/litedbmodel_runtime/src/lib.rs',
+    path: resolve(root, 'rust/litedbmodel_runtime/src/lib.rs'),
+    re: /pub const VERSION: &str = "([^"]*)";/,
+    render: (v) => `pub const VERSION: &str = "${v}";`,
+  },
+  {
+    // The published wheel's runtime version dunder (PyPI ships this file). Must track the SSoT or
+    // `litedbmodel_runtime.__version__` reports a stale version in the published artifact.
+    label: 'python/litedbmodel_runtime/__init__.py',
+    path: resolve(root, 'python/litedbmodel_runtime/__init__.py'),
+    re: /^__version__ = "([^"]*)"$/m,
+    render: (v) => `__version__ = "${v}"`,
   },
   {
     label: 'go/litedbmodel_runtime/runtime.go',

@@ -149,8 +149,7 @@ export function buildResultSet<R = Record<string, unknown>>(
       enumerable: false,
       configurable: true,
       get(this: Record<string, unknown>): Promise<unknown> {
-        const self = this;
-        const ctx = readRelationContext(self);
+        const ctx = readRelationContext(this);
         if (ctx === undefined) {
           return Promise.reject(
             new Error(
@@ -162,7 +161,7 @@ export function buildResultSet<R = Record<string, unknown>>(
         // v1 parity: `await post.author` yields a Promise (getter → relation-op launch,
         // feasibility §9). The batch itself is synchronous (better-sqlite3) but memoized
         // across siblings, so N accesses still issue ONE query (no N+1).
-        return Promise.resolve(ctx.resolve(name, self));
+        return Promise.resolve(ctx.resolve(name, this));
       },
     });
   }

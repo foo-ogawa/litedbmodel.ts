@@ -25,7 +25,7 @@ from .runtime import (
     render_operation_bundle,
 )
 
-__version__ = "1.2.10"
+__version__ = "2.0.0"
 
 __all__ = [
     "__version__",
