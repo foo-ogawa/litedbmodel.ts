@@ -272,8 +272,15 @@ function executeRendered(db: SqliteDb, op: CompiledOperation, scope: Scope, dial
   }
 }
 
-/** Build the SQL handler registry: one handler per SQL Catalog name (spec §11 item 4). */
-function buildHandlers(db: SqliteDb, compiled: Record<string, CompiledOperation>, dialect: Dialect): Handlers {
+/**
+ * Build the SQL handler registry: one handler per SQL Catalog name (spec §11 item 4).
+ *
+ * Exported so the mode-3 codegen path (WS7f) binds the IDENTICAL SQL handlers into bc's
+ * generated `bind(handlers)` accessor — the generated module bakes the surrogate IR literal and
+ * calls the SAME `runBehavior`, so pairing it with THIS handler builder makes the codegen output
+ * byte-identical to {@link executeBundle} by construction (not a parallel reimplementation).
+ */
+export function buildHandlers(db: SqliteDb, compiled: Record<string, CompiledOperation>, dialect: Dialect): Handlers {
   const handle = (ports: Record<string, Value>, ctx: HandlerCtx): ExecOutcome => {
     const op = compiled[ctx.nodeId];
     if (op === undefined) {
@@ -302,7 +309,7 @@ function buildHandlers(db: SqliteDb, compiled: Record<string, CompiledOperation>
  * that is missing is left absent so a real wiring bug surfaces loudly as bc's
  * `UNKNOWN_BINDING` rather than being silently defaulted.
  */
-function normalizeInput(component: Component, optionalHeads: Set<string>, input: Scope): Scope {
+export function normalizeInput(component: Component, optionalHeads: Set<string>, input: Scope): Scope {
   const out: Scope = { ...input };
   for (const [port, schema] of Object.entries(component.inputPorts)) {
     if (schema.required !== true && !(port in out)) out[port] = null;

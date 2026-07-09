@@ -4,6 +4,10 @@ node_modules/
 # Build output
 dist/
 
+# Codegen conformance scratch dirs (mode-3 emitted-source temp; cleaned per run)
+.codegen-conf-*/
+.codegen-out-*/
+
 # IDE
 .idea/
 .vscode/
