@@ -9,3 +9,7 @@ description = "Thin multi-language runtime for litedbmodel v2 SCP §8 bundles (R
 serde = { workspace = true }
 serde_json = { workspace = true }
 behavior-contracts = { workspace = true }
+# In-process SQLite driver for the conformance bar (real execution — the sanctioned in-proc
+# substitute for docker; #34 AC). `bundled` builds the SQLite amalgamation so no system libsqlite
+# is required. This is the runnable seam; PG/MySQL drivers plug into the same `Driver` trait later.
+rusqlite = { workspace = true }

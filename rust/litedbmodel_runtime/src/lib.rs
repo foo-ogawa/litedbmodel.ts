@@ -1,52 +1,39 @@
-//! litedbmodel v2 SCP — Rust runtime (WS7d scaffold, #30).
+//! litedbmodel v2 SCP — Rust thin runtime (WS7e, #34).
 //!
 //! Interprets the language-neutral §8 published bundle (`SqlBundle`: sql + fragment tree +
 //! closed-set Expression-IR param slots + transaction plan, dialect-tagged) and executes it
-//! against a SQL driver, semantics-identical to the TS reference (`src/scp`). The generic
-//! Expression-IR evaluation is delegated to the shared common core `behavior-contracts` crate,
-//! mirroring the TS reference's npm dependency — this crate re-implements no generic evaluator.
+//! against a SQL driver, semantics-identical to the TS reference (`src/scp`) and the audited
+//! Python/PHP sibling runtimes. The generic Expression-IR evaluation and the plan/map/wire/output
+//! orchestration are delegated to the shared common core `behavior-contracts` crate
+//! (`run_behavior` / `evaluate_expression`), mirroring the TS reference's npm dependency — this
+//! crate re-implements NO generic evaluator and NO SQL generation. The SQL text comes wholly from
+//! the published bundle; the old standalone `litedbmodel.rs` SQL generation is retired.
 //!
-//! `WS7A_SCAFFOLD`: the runtime surface is declared here; the bodies are WS7d. They return an
-//! error so a premature call fails loudly instead of returning a fake result.
+//! Module map (mirrors the Python/PHP ports):
+//!   - [`dialect`] — the `?`→`$N` finalize + orderByNulls dialect strategy (spec §4/§8/§10).
+//!   - [`render`]  — the NORMATIVE fragment-tree render + param assembly (dynamic-expansion spec).
+//!   - [`driver`]  — the synchronous SQL-driver seam (in-proc `rusqlite`; PG/MySQL plug in later).
+//!   - [`errors`]  — SQLite error → structured `SqlFailure` (kind + honored bc Policy Kind).
+//!   - [`value`]   — JSON ⇄ bc `Value` conversion + the `$bigint` conformance codec.
+//!   - [`runtime`] — render → execute → assembly, and the gate-first write transaction.
 
-use serde_json::Value;
+pub mod dialect;
+pub mod driver;
+pub mod errors;
+pub mod render;
+pub mod runtime;
+pub mod value;
 
 /// Version mirrored from package.json by scripts/sync-versions.mjs (SSoT).
 pub const VERSION: &str = "1.2.10";
 
-/// A runtime error placeholder until the WS7d bodies land.
-#[derive(Debug)]
-pub struct NotImplemented(pub &'static str);
-
-impl std::fmt::Display for NotImplemented {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "litedbmodel_runtime: {} is WS7d (WS7a scaffold only)", self.0)
-    }
-}
-impl std::error::Error for NotImplemented {}
-
-/// The rendered output of one §8 CompiledOperation.
-pub struct Rendered {
-    pub sql: String,
-    pub params: Vec<Value>,
-}
-
-/// Render a §8 CompiledOperation against a scope for a dialect. WS7d.
-pub fn render_operation(_operation: &Value, _scope: &Value, _dialect: &str) -> Result<Rendered, NotImplemented> {
-    Err(NotImplemented("render_operation"))
-}
-
-/// Execute a §8 read/exec SqlBundle end-to-end. WS7d.
-pub fn execute_bundle(_bundle: &Value, _input: &Value) -> Result<Value, NotImplemented> {
-    Err(NotImplemented("execute_bundle"))
-}
-
-/// Execute a §8 write-tx SqlBundle as one gate-first transaction. WS7d.
-pub fn execute_transaction_bundle(_bundle: &Value, _input: &Value) -> Result<Value, NotImplemented> {
-    Err(NotImplemented("execute_transaction_bundle"))
-}
-
-/// The dialect NULLS-ordering primitive. WS7d.
-pub fn order_by_nulls(_expr: &str, _dir: &str, _nulls: &str, _dialect: &str) -> Result<String, NotImplemented> {
-    Err(NotImplemented("order_by_nulls"))
-}
+// ── public surface (mirrors the Python `__all__`) ──────────────────────────────
+pub use dialect::{dialect_for, to_dollar_placeholders, Dialect};
+pub use driver::{Driver, PreparedStatement, RunInfo, SqliteDriver};
+pub use errors::{map_sqlite_error, re_error_to_sql_failure, SqlFailure};
+pub use render::{render_operation, RenderedSql, WHERE_SLOT};
+pub use runtime::{
+    execute_bundle, execute_transaction_bundle, order_by_nulls, render_operation_bundle,
+    ENTITY_ROOT, SCOPE_PORT,
+};
+pub use value::{decode_scope, decode_value, encode_value, Scope};
