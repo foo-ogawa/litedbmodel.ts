@@ -24,6 +24,11 @@ pub mod render;
 pub mod runtime;
 pub mod value;
 
+/// WS7g (#36) live PostgreSQL / MySQL drivers — behind the `livedb` feature so the default
+/// conformance build (SQLite bar) needs neither the `postgres` nor `mysql` crate.
+#[cfg(feature = "livedb")]
+pub mod livedb;
+
 /// Version mirrored from package.json by scripts/sync-versions.mjs (SSoT).
 pub const VERSION: &str = "1.2.10";
 
@@ -31,6 +36,8 @@ pub const VERSION: &str = "1.2.10";
 pub use dialect::{dialect_for, to_dollar_placeholders, Dialect};
 pub use driver::{Driver, PreparedStatement, RunInfo, SqliteDriver};
 pub use errors::{map_sqlite_error, re_error_to_sql_failure, SqlFailure};
+#[cfg(feature = "livedb")]
+pub use livedb::{MysqlDriver, PostgresDriver};
 pub use render::{render_operation, RenderedSql, WHERE_SLOT};
 pub use runtime::{
     execute_bundle, execute_transaction_bundle, order_by_nulls, render_operation_bundle,
