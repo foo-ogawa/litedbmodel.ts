@@ -187,9 +187,9 @@ function collectFragmentRefOptHeads(node: Fragment | FragmentTree, heads: Set<st
  * author declared it optional via `opt(…)`). These are normalized to present-as-null so
  * `refOpt` drops/defaults cleanly instead of failing on an absent head.
  */
-function optionalHeadsOf(compiled: Map<string, CompiledOperation>): Set<string> {
+function optionalHeadsOf(compiled: Record<string, CompiledOperation>): Set<string> {
   const heads = new Set<string>();
-  for (const op of compiled.values()) {
+  for (const op of Object.values(compiled)) {
     if (op.where !== null) skipGuardedHeads(op.where, heads);
     operationRefOptHeads(op, heads);
   }
@@ -215,20 +215,20 @@ function scopePort(op: CompiledOperation): unknown {
 }
 
 /** Rewrite one body node to its surrogate (SQL nodes → single `__scope` port). */
-function surrogateNode(node: Component['body'][number], compiled: Map<string, CompiledOperation>): Component['body'][number] {
+function surrogateNode(node: Component['body'][number], compiled: Record<string, CompiledOperation>): Component['body'][number] {
   if ('cond' in node) return node; // pure Expression — bc evaluates it unchanged
   if ('map' in node) {
-    const op = compiled.get(node.id);
+    const op = compiled[node.id];
     if (op === undefined) return node;
     return { ...node, map: { ...node.map, ports: { [SCOPE_PORT]: scopePort(op) } } };
   }
-  const op = compiled.get(node.id);
+  const op = compiled[node.id];
   if (op === undefined) return node;
   return { ...node, ports: { [SCOPE_PORT]: scopePort(op) } };
 }
 
 /** Rewrite a whole component to its surrogate graph (structure + wiring preserved). */
-function surrogateComponent(component: Component, compiled: Map<string, CompiledOperation>): Component {
+function surrogateComponent(component: Component, compiled: Record<string, CompiledOperation>): Component {
   return { ...component, body: component.body.map((n) => surrogateNode(n, compiled)) };
 }
 
@@ -266,9 +266,9 @@ function executeRendered(db: SqliteDb, op: CompiledOperation, scope: Scope): Exe
 }
 
 /** Build the SQL handler registry: one handler per SQL Catalog name (spec §11 item 4). */
-function buildHandlers(db: SqliteDb, compiled: Map<string, CompiledOperation>): Handlers {
+function buildHandlers(db: SqliteDb, compiled: Record<string, CompiledOperation>): Handlers {
   const handle = (ports: Record<string, Value>, ctx: HandlerCtx): ExecOutcome => {
-    const op = compiled.get(ctx.nodeId);
+    const op = compiled[ctx.nodeId];
     if (op === undefined) {
       return { error: `scp runtime: no compiled operation for node '${ctx.nodeId}' (${ctx.component})` };
     }
@@ -316,6 +316,38 @@ export interface ExecuteOptions {
   readonly entry?: string;
 }
 
+// ── Backend-Compiled bundle (§8 published artifact — the WS7 multi-language target) ──
+
+/**
+ * The Backend-Compiled bundle of ONE behavior method (spec §8): the fully compiled SQL IR a
+ * thin per-language runtime (bc runtime-core + a SQL handler) can execute WITHOUT
+ * re-implementing litedbmodel's Backend-Compile. It is pure serializable JSON:
+ *
+ *  - `component` — the bc component's WIRING ONLY (body node ids / parent / map `over`+`as` /
+ *    `cond` / output / plan / inputPorts). The catalog nodes' original Expression-IR ports
+ *    are replaced by the surrogate `__scope` port so a consumer runtime feeds bc's
+ *    `runBehavior` the plan/map/wire orchestration with NO SQL-structural port to mis-evaluate.
+ *  - `operations` — `nodeId → CompiledOperation` (§8: `sql` with the `{where}` splice,
+ *    `where` fragment tree with existence rules, `params` static slots, `assembly`). Param
+ *    slots stay as Expression IR (`{coalesce:[…]}`, `{ref:[…]}`) so bc runtime-core owns
+ *    value/SKIP evaluation per language (they are NOT pre-evaluated to literals).
+ *  - `optionalHeads` — the input heads normalized to present-as-null (absent-key SKIP), so a
+ *    consumer runtime reproduces the same normalization from the bundle (not from TS state).
+ *
+ * `dialect` is `'sqlite'` for α (the dialect axis is compiled once, TS-side — spec §10).
+ */
+export interface SqlBundle {
+  readonly irVersion: number;
+  readonly exprVersion: number;
+  readonly dialect: 'sqlite';
+  /** The surrogate component (wiring/plan/output only; catalog ports → `__scope`). */
+  readonly component: Component;
+  /** Backend-Compiled SQL IR per catalog node id (§8 shape). */
+  readonly operations: Record<string, CompiledOperation>;
+  /** Optional input heads normalized to present-as-null (absent-key SKIP). */
+  readonly optionalHeads: string[];
+}
+
 /**
  * Execute a published behavior contract (WS2 {@link BehaviorModelContract}) end-to-end:
  * Backend-Compile every SQL node → surrogate IR → bc `runBehavior` (plan / map / wire /
@@ -334,27 +366,64 @@ export function executeBehavior(
   input: Scope,
   options: ExecuteOptions,
 ): Value {
-  const entryName = options.entry;
-  const component = entryName
-    ? contract.components.find((c) => c.name === entryName)
+  return executeBundle(compileBundle(contract, options.entry), input, options);
+}
+
+/**
+ * Backend-Compile ONE behavior method of a contract into the serializable {@link SqlBundle}
+ * (spec §8) — the published multi-language artifact. This runs the WS1↔WS3 bridge and the
+ * surrogate rewrite ONCE, on the TS side (spec §10: the dialect axis is compiled once), and
+ * emits pure JSON: no TS runtime state is captured, so `JSON.stringify(bundle)` round-trips
+ * losslessly and a thin per-language runtime can execute it with bc runtime-core + a SQL
+ * handler alone (proven by the bundle round-trip test).
+ */
+export function compileBundle(contract: BehaviorModelContract, entry?: string): SqlBundle {
+  const component = entry
+    ? contract.components.find((c) => c.name === entry)
     : contract.components[0];
   if (component === undefined) {
-    throw new Error(`scp runtime: entry component '${entryName ?? '<first>'}' not found in contract`);
+    throw new Error(`scp runtime: entry component '${entry ?? '<first>'}' not found in contract`);
   }
+  const operations: Record<string, CompiledOperation> = {};
+  for (const [id, op] of compileComponentNodes(component)) operations[id] = op;
+  const surrogate = surrogateComponent(component, operations);
+  return {
+    irVersion: contract.ir.irVersion,
+    exprVersion: contract.ir.exprVersion,
+    dialect: 'sqlite',
+    component: surrogate,
+    operations,
+    optionalHeads: [...optionalHeadsOf(operations)],
+  };
+}
 
-  const compiled = compileComponentNodes(component);
-  const surrogate = surrogateComponent(component, compiled);
-  const ir: ComponentGraphIR = { ...contract.ir, components: [surrogate] };
-  const handlers = buildHandlers(options.db, compiled);
-  const normalized = normalizeInput(component, optionalHeadsOf(compiled), input);
+/**
+ * Execute a {@link SqlBundle} (the §8 published artifact) end-to-end: feed bc `runBehavior`
+ * the bundle's surrogate component (plan / map / wire / output orchestration) with SQL
+ * handlers that render the bundle's `CompiledOperation`s and run REAL SQLite. This is the
+ * SAME code path a thin per-language runtime follows — it consumes ONLY the serialized
+ * bundle + bc runtime-core, never re-running litedbmodel's Backend-Compile. The bundle
+ * round-trip test parses this from JSON (no TS state) to prove self-sufficiency (WS7).
+ *
+ * @throws {SqlFailure} a mapped driver failure re-surfaced at the boundary.
+ */
+export function executeBundle(bundle: SqlBundle, input: Scope, options: ExecuteOptions): Value {
+  const surrogate = bundle.component;
+  const ir: ComponentGraphIR = {
+    irVersion: bundle.irVersion as 1,
+    exprVersion: bundle.exprVersion,
+    components: [surrogate],
+  };
+  const handlers = buildHandlers(options.db, bundle.operations);
+  const optionalHeads = new Set(bundle.optionalHeads);
+  const normalized = normalizeInput(surrogate, optionalHeads, input);
 
   try {
     return runBehavior(ir, handlers, normalized, surrogate.name);
   } catch (e) {
     // A `fail`-policy node's `{error}` re-throws through runPlan as `OP_FAILED` carrying the
-    // mapped-failure message. Re-surface it as the structured SqlFailure by re-mapping the
-    // original driver error is not possible here (message-only), so we re-map from the
-    // message-embedded code if present; otherwise re-throw verbatim.
+    // mapped-failure message. Re-surface the structured SqlFailure from the message-embedded
+    // code if present; otherwise re-throw verbatim.
     throw reErrorToSqlFailure(e);
   }
 }

@@ -157,6 +157,12 @@ placeholder `?`、`[ ]` は省略可能部。全て v1 SQLite builder / `_buildS
 
 `<cols>` は `select` を `, ` で join（単一 `['*']` は `*`）。RETURNING columns も `, ` join。
 
+> **列順は canonical（辞書順）— v2 破壊的変更（v1.x は保全）:** `Insert` の列順・`Update` の SET 列順は
+> **辞書順（alphabetical）に正規化**する。これは言語非依存で、多言語 byte-identical conformance（WS7）に
+> **必須**の決定性要件。v1.x の単一レコード INSERT は author 挿入順を保持していた（`DBModel._insert` 高速パス）が、
+> v2 はこれを廃し、imperative パス（`DBModel._insert`）も SCP Backend-Compile パス（bc-canonical port キー）も
+> **同一の辞書順**に揃える（「現行 v2 直接実行 == SCP」を構造的に保証）。旧 author 順が必要な利用は v1.x ブランチに残す。
+
 ---
 
 ## 8. 決定性チェックリスト（多言語実装の受け入れ基準）

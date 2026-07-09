@@ -222,37 +222,37 @@ describe('WS3 α parity — INSERT (golden SQL + real persistence)', () => {
     }
   }
 
-  it('golden INSERT SQL == v1 SqliteSqlBuilder; row persists and matches direct execution', () => {
+  it('golden INSERT SQL uses canonical column order derived like DBModel (non-alpha record)', () => {
+    // Un-faked: derive the v2 columns the SAME way `DBModel._insert` does — Object.keys of a
+    // NON-alphabetical author record, then `.sort()` (the canonical-order alignment, FIX 1).
+    // This exercises the sort rather than hand-pre-sorting the columns. (The full byte-for-
+    // byte parity against the REAL DBModel.create public path is in bundle-roundtrip.test.ts.)
     const db = freshDb();
     const contract = publishBehaviors(CreatePost);
-    const node = contract.methods.Create.component.body.find(
-      (n) => 'component' in n && n.component === 'Insert',
+    const op = compileNode(
+      contract.methods.Create.component.body.find((n) => 'component' in n && n.component === 'Insert') as never,
     );
-    const op = compileNode(node as never);
-    const rendered = renderOperation(op, { author_id: 8n, title: 'Brand New', created_at: '2026-05-01' });
+    const rendered = renderOperation(op, { author_id: 8, title: 'Brand New', created_at: '2026-05-01' });
 
-    // bc canonicalizes port keys, so the `values.<field>` families lower in alphabetical
-    // column order (author_id, created_at, title) — deterministic (same input → same SQL).
-    const v1 = sqliteSqlBuilder.buildInsert({
+    // Author key order is NON-alphabetical; DBModel._insert derives + sorts it canonically.
+    const authorRecord = { title: 'Brand New', author_id: 8, created_at: '2026-05-01' };
+    const canonicalColumns = Object.keys(authorRecord).sort();
+    const v2 = sqliteSqlBuilder.buildInsert({
       tableName: 'posts',
-      columns: ['author_id', 'created_at', 'title'],
-      records: [{ author_id: 8, created_at: '2026-05-01', title: 'Brand New' }],
+      columns: canonicalColumns,
+      records: [authorRecord],
       returning: 'id, author_id, title',
     });
-    expect(rendered.sql).toBe(v1.sql);
+    expect(rendered.sql).toBe(v2.sql);
     expect(rendered.sql).toBe(
       'INSERT INTO posts (author_id, created_at, title) VALUES (?, ?, ?) RETURNING id, author_id, title',
     );
 
     // Real execution: the SCP runtime inserts and returns the new row.
-    const scpRows = executeBehavior(
-      contract,
-      { author_id: 8, title: 'Brand New', created_at: '2026-05-01' },
-      { db, entry: 'Create' },
-    );
+    const scpRows = executeBehavior(contract, authorRecord, { db, entry: 'Create' });
     expect(scpRows).toEqual([{ id: 5, author_id: 8, title: 'Brand New' }]);
-    // v1 direct execution of the same INSERT SQL yields the same RETURNING shape.
-    const v1Row = db.prepare(v1.sql).get(...v1.params);
-    expect(v1Row).toEqual({ id: 6, author_id: 8, title: 'Brand New' });
+    // Direct execution of the same INSERT SQL yields the same RETURNING shape.
+    const v2Row = db.prepare(v2.sql).get(...v2.params);
+    expect(v2Row).toEqual({ id: 6, author_id: 8, title: 'Brand New' });
   });
 });

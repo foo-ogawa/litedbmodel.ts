@@ -98,8 +98,10 @@ export { mapSqliteError, SqlFailure } from './errors';
 export type { SqlFailureKind } from './errors';
 
 // Thin TS runtime (spec §3 / §10 / §11): validate → SKIP → expand → eval → bind → execute → assembly.
-export { executeBehavior } from './runtime';
-export type { SqliteDb, ExecuteOptions } from './runtime';
+// `compileBundle` emits the §8 published artifact (Backend-Compiled once, TS-side);
+// `executeBundle` runs that artifact via bc runtime-core alone (the multi-language target).
+export { executeBehavior, compileBundle, executeBundle } from './runtime';
+export type { SqliteDb, ExecuteOptions, SqlBundle } from './runtime';
 
 // Re-export bc's shared authoring vocabulary so authors import the whole surface from
 // litedbmodel (leaf vocabulary is the Catalog; expressions/structured control are bc's —
