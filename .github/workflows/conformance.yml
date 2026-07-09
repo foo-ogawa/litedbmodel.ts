@@ -46,10 +46,14 @@ jobs:
       # The repo `.npmrc` sets `ignore-scripts=true`, so `npm ci` skips
       # better-sqlite3's native `install` script and its `better_sqlite3.node`
       # addon is never built. The conformance harness opens an in-memory SQLite
-      # (`new Database(':memory:')`) to execute vectors, so build the addon now
-      # from the prebuild (fast) or from source. Mirrors the conformance-livedb job.
+      # (`new Database(':memory:')`) to execute vectors. NOTE: a bare
+      # `npm rebuild better-sqlite3` ALSO honours ignore-scripts and prints
+      # "rebuilt dependencies successfully" WITHOUT building the addon — the
+      # per-command `ignore-scripts=false` override is required to run the
+      # install script (prebuild-install fast path) and actually produce the
+      # `.node`. Fall back to a from-source node-gyp build if no prebuild exists.
       - name: Build the better-sqlite3 native addon (skipped by ignore-scripts)
-        run: npm rebuild better-sqlite3 || (cd node_modules/better-sqlite3 && npx node-gyp rebuild --release)
+        run: npm_config_ignore_scripts=false npm rebuild better-sqlite3 --build-from-source=false || (cd node_modules/better-sqlite3 && npx node-gyp rebuild --release)
       - name: Build the SCP dist artifact (consumed by the vectors runner)
         run: npm run build:scp
       - name: Corpus drift gate + TS reference runner (part of the suite)
@@ -183,7 +187,11 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm install behavior-contracts@0.2.0 --no-save
-          npm rebuild better-sqlite3 || (cd node_modules/better-sqlite3 && npx node-gyp rebuild --release)
+          # `ignore-scripts=false` override is required: a bare `npm rebuild`
+          # honours the repo `.npmrc` ignore-scripts and reports success WITHOUT
+          # building the addon (see conformance-ts). Force the install script to
+          # run so `better_sqlite3.node` is actually produced.
+          npm_config_ignore_scripts=false npm rebuild better-sqlite3 --build-from-source=false || (cd node_modules/better-sqlite3 && npx node-gyp rebuild --release)
           python3 -m pip install "psycopg[binary]" pymysql behavior-contracts==0.2.0
           composer -d php install
       - name: Build the SCP dist artifact (consumed by the corpus generator)
