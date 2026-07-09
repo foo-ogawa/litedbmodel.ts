@@ -65,12 +65,24 @@ const MY = {
 
 const L = components();
 
+// ── Isolated table namespace (fix #37) ─────────────────────────────────────────
+// This file owns dedicated `scp_posts` / `scp_users` tables that it seeds and tears
+// down itself (see beforeAll/afterAll). This is TRUE data isolation from the shared
+// `posts`/`users` seed that other integration files (e.g. Mysql.test.ts) wipe and
+// reseed in their own beforeEach — under the single shared MySQL `testdb`, running
+// all integration files together previously let that reseed clobber the base seed
+// this file depended on, tripping the "rows exist" assertions. Mirrors WS7g's
+// per-namespace live-DB isolation (scp_* databases). Same normative render/compile
+// path and the same v1 builders/DBConditions — only the table identifiers change.
+const T_POSTS = 'scp_posts';
+const T_USERS = 'scp_users';
+
 // ── The authored behaviors (declaration surface — dialect-neutral IR) ──────────
 
 class PostQueries extends SemanticBehavior {
   ByUser($: In<{ user_id: number }>) {
     return L.Select({
-      table: 'posts',
+      table: T_POSTS,
       select: ['id', 'user_id', 'title', 'view_count'],
       where: [whereEq($.user_id, $.user_id)],
       order: 'id ASC',
@@ -79,7 +91,7 @@ class PostQueries extends SemanticBehavior {
 
   ByIds($: In<{ ids: number[] }>) {
     return L.Select({
-      table: 'posts',
+      table: T_POSTS,
       select: ['id', 'title'],
       where: [whereIn(inColumn($, 'id'), $.ids)],
       order: 'id ASC',
@@ -90,7 +102,7 @@ class PostQueries extends SemanticBehavior {
 class PostWrites extends SemanticBehavior {
   Create($: In<{ user_id: number; title: string; content: string }>) {
     return L.Insert({
-      table: 'posts',
+      table: T_POSTS,
       'values.user_id': $.user_id,
       'values.title': $.title,
       'values.content': $.content,
@@ -103,7 +115,7 @@ class PostWrites extends SemanticBehavior {
 class CreatePostWithCount extends SemanticBehavior {
   Create($: In<{ user_id: number; title: string; content: string }>) {
     return L.Insert({
-      table: 'posts',
+      table: T_POSTS,
       'values.user_id': $.user_id,
       'values.title': $.title,
       'values.content': $.content,
@@ -114,8 +126,8 @@ class CreatePostWithCount extends SemanticBehavior {
 
 const postCountWrites = entityWrites<CreatePostWithCount>((w) => ({
   create: w.lifecycle({
-    requires: [w.exists('users', { id: '$.input.user_id' })],
-    derive: [w.increment('users', { id: '$.input.user_id' }, 'post_count_scp', +1)],
+    requires: [w.exists(T_USERS, { id: '$.input.user_id' })],
+    derive: [w.increment(T_USERS, { id: '$.input.user_id' }, 'post_count_scp', +1)],
   }),
 }));
 
@@ -157,29 +169,85 @@ beforeAll(async () => {
   try {
     pgPool = new Pool(PG);
     await pgPool.query('SELECT 1');
-    // The write-tx derive targets a `post_count_scp` column; add it idempotently.
-    await pgPool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS post_count_scp INTEGER NOT NULL DEFAULT 0');
+    // Own, isolated tables (fix #37) — drop-then-create so the seed is deterministic
+    // regardless of what other integration files did to the shared `posts`/`users`.
+    // `post_count_scp` on scp_users is the write-tx derive target.
+    await pgPool.query(`DROP TABLE IF EXISTS ${T_POSTS} CASCADE`);
+    await pgPool.query(`DROP TABLE IF EXISTS ${T_USERS} CASCADE`);
+    await pgPool.query(`
+      CREATE TABLE ${T_USERS} (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        post_count_scp INTEGER NOT NULL DEFAULT 0
+      )`);
+    await pgPool.query(`
+      CREATE TABLE ${T_POSTS} (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES ${T_USERS}(id),
+        title VARCHAR(255) NOT NULL,
+        content TEXT,
+        view_count INTEGER NOT NULL DEFAULT 0
+      )`);
+    // Deterministic seed: users id 1,2; posts id 1,2 (user 1) and id 3 (user 2)
+    // — matches the parity fixtures (user_id=1 present, id IN (1,3) present).
+    await pgPool.query(`INSERT INTO ${T_USERS} (id, name) VALUES (1, 'Alice'), (2, 'Bob')`);
+    await pgPool.query(`SELECT setval('${T_USERS}_id_seq', 2)`);
+    await pgPool.query(`INSERT INTO ${T_POSTS} (id, user_id, title, content, view_count) VALUES
+      (1, 1, 'First Post', 'Hello World!', 100),
+      (2, 1, 'Second Post', 'Another post', 0),
+      (3, 2, 'Bob''s Post', 'Content here', 50)`);
+    await pgPool.query(`SELECT setval('${T_POSTS}_id_seq', 3)`);
   } catch (e) {
     throw new Error(`Postgres is required for WS6 integration but is not reachable at ${PG.host}:${PG.port} — ${(e as Error).message}`);
   }
   try {
-    myConn = await mysql.createConnection(MY);
+    myConn = await mysql.createConnection({ ...MY, multipleStatements: false });
     await myConn.query('SELECT 1');
-    // MySQL has no ADD COLUMN IF NOT EXISTS pre-8.0.29; guard via information_schema.
-    const [cols] = await myConn.query(
-      "SELECT COUNT(*) AS c FROM information_schema.columns WHERE table_schema = ? AND table_name = 'users' AND column_name = 'post_count_scp'",
-      [MY.database],
-    );
-    const exists = (cols as Row[])[0].c;
-    if (Number(exists) === 0) {
-      await myConn.query('ALTER TABLE users ADD COLUMN post_count_scp INT NOT NULL DEFAULT 0');
-    }
+    await myConn.query(`DROP TABLE IF EXISTS ${T_POSTS}`);
+    await myConn.query(`DROP TABLE IF EXISTS ${T_USERS}`);
+    await myConn.query(`
+      CREATE TABLE ${T_USERS} (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        post_count_scp INT NOT NULL DEFAULT 0
+      )`);
+    await myConn.query(`
+      CREATE TABLE ${T_POSTS} (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        content TEXT,
+        view_count INT NOT NULL DEFAULT 0,
+        FOREIGN KEY (user_id) REFERENCES ${T_USERS}(id)
+      )`);
+    await myConn.query(`INSERT INTO ${T_USERS} (id, name) VALUES (1, 'Alice'), (2, 'Bob')`);
+    await myConn.query(`INSERT INTO ${T_POSTS} (id, user_id, title, content, view_count) VALUES
+      (1, 1, 'First Post', 'Hello World!', 100),
+      (2, 1, 'Second Post', 'Another post', 0),
+      (3, 2, 'Bob''s Post', 'Content here', 50)`);
   } catch (e) {
     throw new Error(`MySQL is required for WS6 integration but is not reachable at ${MY.host}:${MY.port} — ${(e as Error).message}`);
   }
 });
 
 afterAll(async () => {
+  // Tear down our isolated tables so no residue leaks to other files/runs.
+  try {
+    if (pgPool) {
+      await pgPool.query(`DROP TABLE IF EXISTS ${T_POSTS} CASCADE`);
+      await pgPool.query(`DROP TABLE IF EXISTS ${T_USERS} CASCADE`);
+    }
+  } catch {
+    /* best-effort cleanup */
+  }
+  try {
+    if (myConn) {
+      await myConn.query(`DROP TABLE IF EXISTS ${T_POSTS}`);
+      await myConn.query(`DROP TABLE IF EXISTS ${T_USERS}`);
+    }
+  } catch {
+    /* best-effort cleanup */
+  }
   if (pgPool) await pgPool.end();
   if (myConn) await myConn.end();
 });
@@ -194,14 +262,14 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     const bundle = compileBundle(contract, 'ByUser', [], 'postgres');
     const { sql, params } = renderBundleOp(bundle, { user_id: 1 }, dialect);
     // The compiled PG SQL uses `$N` placeholders.
-    expect(sql).toBe('SELECT id, user_id, title, view_count FROM posts WHERE user_id = $1 ORDER BY id ASC');
+    expect(sql).toBe(`SELECT id, user_id, title, view_count FROM ${T_POSTS} WHERE user_id = $1 ORDER BY id ASC`);
     const scpRows = await pgQuery(pgPool!, sql, params);
 
     // v1 direct execution: build the equivalent WHERE via v1 DBConditions, convert `?`→`$N`.
     const v1Params: unknown[] = [];
     const v1Where = new DBConditions({ user_id: 1 }).compile(v1Params);
     let i = 0;
-    const v1Sql = `SELECT id, user_id, title, view_count FROM posts WHERE ${v1Where} ORDER BY id ASC`.replace(/\?/g, () => `$${++i}`);
+    const v1Sql = `SELECT id, user_id, title, view_count FROM ${T_POSTS} WHERE ${v1Where} ORDER BY id ASC`.replace(/\?/g, () => `$${++i}`);
     const v1Rows = await pgQuery(pgPool!, v1Sql, v1Params);
 
     expect(scpRows).toEqual(v1Rows);
@@ -212,13 +280,13 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
   it('SELECT IN-list: `$N` numbered after IN expansion; SCP rows == v1', async () => {
     const bundle = compileBundle(contract, 'ByIds', [], 'postgres');
     const { sql, params } = renderBundleOp(bundle, { ids: [1, 3] }, dialect);
-    expect(sql).toBe('SELECT id, title FROM posts WHERE id IN ($1, $2) ORDER BY id ASC');
+    expect(sql).toBe(`SELECT id, title FROM ${T_POSTS} WHERE id IN ($1, $2) ORDER BY id ASC`);
     const scpRows = await pgQuery(pgPool!, sql, params);
 
     const v1Params: unknown[] = [];
     const v1Where = new DBConditions({ id: [1, 3] }).compile(v1Params);
     let i = 0;
-    const v1Sql = `SELECT id, title FROM posts WHERE ${v1Where} ORDER BY id ASC`.replace(/\?/g, () => `$${++i}`);
+    const v1Sql = `SELECT id, title FROM ${T_POSTS} WHERE ${v1Where} ORDER BY id ASC`.replace(/\?/g, () => `$${++i}`);
     const v1Rows = await pgQuery(pgPool!, v1Sql, v1Params);
     expect(scpRows).toEqual(v1Rows);
     expect(scpRows.map((r) => r.id)).toEqual([1, 3]);
@@ -231,7 +299,7 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     const { sql, params } = renderBundleOp(bundle, input, dialect);
     // The SCP Insert compiles columns in the canonical (alphabetical) order (WS3 SSoT), so the
     // column list is `content, title, user_id` regardless of declaration order.
-    expect(sql).toBe('INSERT INTO posts (content, title, user_id) VALUES ($1, $2, $3) RETURNING id, user_id, title, view_count');
+    expect(sql).toBe(`INSERT INTO ${T_POSTS} (content, title, user_id) VALUES ($1, $2, $3) RETURNING id, user_id, title, view_count`);
 
     const scpRows = await pgQuery(pgPool!, sql, params);
     expect(scpRows.length).toBe(1);
@@ -240,7 +308,7 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     // v1 parity: the REAL v1 builder produces the equivalent INSERT (canonical column order,
     // matching DBModel._insert's Object.keys().sort()), converted `?`→`$N`.
     const v1 = postgresSqlBuilder.buildInsert({
-      tableName: 'posts',
+      tableName: T_POSTS,
       columns: ['content', 'title', 'user_id'],
       records: [{ user_id: 2, title: 'v1 PG Post', content: 'from v1' }],
       returning: 'id, user_id, title, view_count',
@@ -254,32 +322,32 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     expect(v1Rows[0]).toMatchObject({ user_id: 2, title: 'v1 PG Post', view_count: 0 });
 
     // Cleanup the two inserted rows.
-    await pgPool!.query('DELETE FROM posts WHERE id = ANY($1::int[])', [[scpRows[0].id, v1Rows[0].id]]);
+    await pgPool!.query(`DELETE FROM ${T_POSTS} WHERE id = ANY($1::int[])`, [[scpRows[0].id, v1Rows[0].id]]);
   });
 
   it('read-relation batch (belongsTo author): SCP `$N` IN-batch == v1 IN-list on real PG', async () => {
-    // posts.user_id → users.id (belongsTo). Compile the relation op, render its batch SELECT.
+    // scp_posts.user_id → scp_users.id (belongsTo). Compile the relation op, render its batch SELECT.
     const op: RelationOp = compileRelationOp({
       name: 'author',
       kind: 'belongsTo',
-      targetTable: 'users',
+      targetTable: T_USERS,
       select: ['id', 'name'],
       parentKey: 'user_id',
       targetKey: 'id',
     });
-    const parentRows = await pgQuery(pgPool!, 'SELECT id, user_id FROM posts ORDER BY id', []);
+    const parentRows = await pgQuery(pgPool!, `SELECT id, user_id FROM ${T_POSTS} ORDER BY id`, []);
     const keys = [...new Set(parentRows.map((r) => Number(r.user_id)))];
     const rendered = renderOperation(op.query, { [RELATION_KEYS_HEAD]: keys }, dialect);
     const scpSql = rendered.sql;
     const scpParams = rendered.params.map(toPlain);
-    expect(scpSql).toMatch(/SELECT id, name FROM users WHERE id IN \(\$1(, \$\d+)*\)/);
+    expect(scpSql).toMatch(new RegExp(`SELECT id, name FROM ${T_USERS} WHERE id IN \\(\\$1(, \\$\\d+)*\\)`));
     const scpChildren = await pgQuery(pgPool!, scpSql, scpParams);
 
     // v1 parity: DBConditions IN-list over the same keys, converted to `$N`.
     const v1Params: unknown[] = [];
     const v1Where = new DBConditions({ id: keys }).compile(v1Params);
     let i = 0;
-    const v1Sql = `SELECT id, name FROM users WHERE ${v1Where}`.replace(/\?/g, () => `$${++i}`);
+    const v1Sql = `SELECT id, name FROM ${T_USERS} WHERE ${v1Where}`.replace(/\?/g, () => `$${++i}`);
     const v1Children = await pgQuery(pgPool!, v1Sql, v1Params);
     expect(scpChildren).toEqual(v1Children);
     expect(scpChildren.length).toBe(keys.length);
@@ -292,7 +360,7 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     const plan = bundle.transaction!;
     const input = { user_id: 1, title: 'TX PG', content: 'c' };
 
-    const before = await pgQuery(pgPool!, 'SELECT post_count_scp FROM users WHERE id = $1', [1]);
+    const before = await pgQuery(pgPool!, `SELECT post_count_scp FROM ${T_USERS} WHERE id = $1`, [1]);
     const beforeCount = Number(before[0].post_count_scp);
 
     // Execute the derived plan's statements in ONE real transaction, rendering each with PG.
@@ -323,14 +391,14 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     }
 
     // The post was inserted and the counter derived (+1) in the SAME tx.
-    const after = await pgQuery(pgPool!, 'SELECT post_count_scp FROM users WHERE id = $1', [1]);
+    const after = await pgQuery(pgPool!, `SELECT post_count_scp FROM ${T_USERS} WHERE id = $1`, [1]);
     expect(Number(after[0].post_count_scp)).toBe(beforeCount + 1);
-    const post = await pgQuery(pgPool!, 'SELECT id, user_id, title FROM posts WHERE id = $1', [entityId]);
+    const post = await pgQuery(pgPool!, `SELECT id, user_id, title FROM ${T_POSTS} WHERE id = $1`, [entityId]);
     expect(post[0]).toMatchObject({ user_id: 1, title: 'TX PG' });
 
     // Cleanup.
-    await pgPool!.query('DELETE FROM posts WHERE id = $1', [entityId]);
-    await pgPool!.query('UPDATE users SET post_count_scp = $1 WHERE id = $2', [beforeCount, 1]);
+    await pgPool!.query(`DELETE FROM ${T_POSTS} WHERE id = $1`, [entityId]);
+    await pgPool!.query(`UPDATE ${T_USERS} SET post_count_scp = $1 WHERE id = $2`, [beforeCount, 1]);
   });
 });
 
@@ -343,12 +411,12 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
   it('SELECT by user_id: SCP rows == v1 direct execution (`?` placeholders on real MySQL)', async () => {
     const bundle = compileBundle(contract, 'ByUser', [], 'mysql');
     const { sql, params } = renderBundleOp(bundle, { user_id: 1 }, dialect);
-    expect(sql).toBe('SELECT id, user_id, title, view_count FROM posts WHERE user_id = ? ORDER BY id ASC');
+    expect(sql).toBe(`SELECT id, user_id, title, view_count FROM ${T_POSTS} WHERE user_id = ? ORDER BY id ASC`);
     const scpRows = await myQuery(myConn!, sql, params);
 
     const v1Params: unknown[] = [];
     const v1Where = new DBConditions({ user_id: 1 }).compile(v1Params);
-    const v1Sql = `SELECT id, user_id, title, view_count FROM posts WHERE ${v1Where} ORDER BY id ASC`;
+    const v1Sql = `SELECT id, user_id, title, view_count FROM ${T_POSTS} WHERE ${v1Where} ORDER BY id ASC`;
     const v1Rows = await myQuery(myConn!, v1Sql, v1Params);
     expect(scpRows).toEqual(v1Rows);
     expect(scpRows.length).toBeGreaterThan(0);
@@ -357,12 +425,12 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
   it('SELECT IN-list: `?` expansion; SCP rows == v1', async () => {
     const bundle = compileBundle(contract, 'ByIds', [], 'mysql');
     const { sql, params } = renderBundleOp(bundle, { ids: [1, 3] }, dialect);
-    expect(sql).toBe('SELECT id, title FROM posts WHERE id IN (?, ?) ORDER BY id ASC');
+    expect(sql).toBe(`SELECT id, title FROM ${T_POSTS} WHERE id IN (?, ?) ORDER BY id ASC`);
     const scpRows = await myQuery(myConn!, sql, params);
 
     const v1Params: unknown[] = [];
     const v1Where = new DBConditions({ id: [1, 3] }).compile(v1Params);
-    const v1Sql = `SELECT id, title FROM posts WHERE ${v1Where} ORDER BY id ASC`;
+    const v1Sql = `SELECT id, title FROM ${T_POSTS} WHERE ${v1Where} ORDER BY id ASC`;
     const v1Rows = await myQuery(myConn!, v1Sql, v1Params);
     expect(scpRows).toEqual(v1Rows);
     expect(scpRows.map((r) => Number(r.id))).toEqual([1, 3]);
@@ -378,45 +446,45 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
     // MysqlSqlBuilder + mysql.ts do the same (RETURNING stripped, re-select the inserted PK).
     const insertSql = sql.replace(/\s+RETURNING\s+.+$/i, '');
     // Canonical (alphabetical) column order (WS3 SSoT): `content, title, user_id`.
-    expect(insertSql).toBe('INSERT INTO posts (content, title, user_id) VALUES (?, ?, ?)');
+    expect(insertSql).toBe(`INSERT INTO ${T_POSTS} (content, title, user_id) VALUES (?, ?, ?)`);
     const res = await myConn!.query(insertSql, params);
     const scpId = (res[0] as mysql.ResultSetHeader).insertId;
-    const scpRows = await myQuery(myConn!, 'SELECT id, user_id, title, view_count FROM posts WHERE id = ?', [scpId]);
+    const scpRows = await myQuery(myConn!, `SELECT id, user_id, title, view_count FROM ${T_POSTS} WHERE id = ?`, [scpId]);
     expect(scpRows[0]).toMatchObject({ user_id: 2, title: 'SCP MY Post', view_count: 0 });
 
     // v1 parity: the REAL v1 builder produces the equivalent INSERT (canonical column order).
     const v1 = mysqlSqlBuilder.buildInsert({
-      tableName: 'posts',
+      tableName: T_POSTS,
       columns: ['content', 'title', 'user_id'],
       records: [{ user_id: 2, title: 'v1 MY Post', content: 'from v1' }],
     });
     const v1res = await myConn!.query(v1.sql, v1.params as unknown[]);
     const v1Id = (v1res[0] as mysql.ResultSetHeader).insertId;
-    const v1Rows = await myQuery(myConn!, 'SELECT id, user_id, title, view_count FROM posts WHERE id = ?', [v1Id]);
+    const v1Rows = await myQuery(myConn!, `SELECT id, user_id, title, view_count FROM ${T_POSTS} WHERE id = ?`, [v1Id]);
     expect(Object.keys(scpRows[0]).sort()).toEqual(Object.keys(v1Rows[0]).sort());
     expect(v1Rows[0]).toMatchObject({ user_id: 2, title: 'v1 MY Post', view_count: 0 });
 
-    await myConn!.query('DELETE FROM posts WHERE id IN (?, ?)', [scpId, v1Id]);
+    await myConn!.query(`DELETE FROM ${T_POSTS} WHERE id IN (?, ?)`, [scpId, v1Id]);
   });
 
   it('read-relation batch (belongsTo author): SCP `?` IN-batch == v1 IN-list on real MySQL', async () => {
     const op: RelationOp = compileRelationOp({
       name: 'author',
       kind: 'belongsTo',
-      targetTable: 'users',
+      targetTable: T_USERS,
       select: ['id', 'name'],
       parentKey: 'user_id',
       targetKey: 'id',
     });
-    const parentRows = await myQuery(myConn!, 'SELECT id, user_id FROM posts ORDER BY id', []);
+    const parentRows = await myQuery(myConn!, `SELECT id, user_id FROM ${T_POSTS} ORDER BY id`, []);
     const keys = [...new Set(parentRows.map((r) => Number(r.user_id)))];
     const rendered = renderOperation(op.query, { [RELATION_KEYS_HEAD]: keys }, dialect);
-    expect(rendered.sql).toMatch(/SELECT id, name FROM users WHERE id IN \(\?(, \?)*\)/);
+    expect(rendered.sql).toMatch(new RegExp(`SELECT id, name FROM ${T_USERS} WHERE id IN \\(\\?(, \\?)*\\)`));
     const scpChildren = await myQuery(myConn!, rendered.sql, rendered.params.map(toPlain));
 
     const v1Params: unknown[] = [];
     const v1Where = new DBConditions({ id: keys }).compile(v1Params);
-    const v1Sql = `SELECT id, name FROM users WHERE ${v1Where}`;
+    const v1Sql = `SELECT id, name FROM ${T_USERS} WHERE ${v1Where}`;
     const v1Children = await myQuery(myConn!, v1Sql, v1Params);
     expect(scpChildren).toEqual(v1Children);
     expect(scpChildren.length).toBe(keys.length);
@@ -429,7 +497,7 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
     const plan = bundle.transaction!;
     const input = { user_id: 1, title: 'TX MY', content: 'c' };
 
-    const before = await myQuery(myConn!, 'SELECT post_count_scp FROM users WHERE id = ?', [1]);
+    const before = await myQuery(myConn!, `SELECT post_count_scp FROM ${T_USERS} WHERE id = ?`, [1]);
     const beforeCount = Number(before[0].post_count_scp);
 
     await myConn!.beginTransaction();
@@ -444,7 +512,7 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
           const insertSql = r.sql.replace(/\s+RETURNING\s+.+$/i, '');
           const res = await myConn!.query(insertSql, r.params.map(toPlain));
           entityId = (res[0] as mysql.ResultSetHeader).insertId;
-          const sel = await myQuery(myConn!, 'SELECT id, user_id, title FROM posts WHERE id = ?', [entityId]);
+          const sel = await myQuery(myConn!, `SELECT id, user_id, title FROM ${T_POSTS} WHERE id = ?`, [entityId]);
           scope.__entity = sel[0];
         } else {
           const res = await myConn!.query(r.sql, r.params.map(toPlain));
@@ -458,12 +526,12 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
       throw e;
     }
 
-    const after = await myQuery(myConn!, 'SELECT post_count_scp FROM users WHERE id = ?', [1]);
+    const after = await myQuery(myConn!, `SELECT post_count_scp FROM ${T_USERS} WHERE id = ?`, [1]);
     expect(Number(after[0].post_count_scp)).toBe(beforeCount + 1);
-    const post = await myQuery(myConn!, 'SELECT id, user_id, title FROM posts WHERE id = ?', [entityId]);
+    const post = await myQuery(myConn!, `SELECT id, user_id, title FROM ${T_POSTS} WHERE id = ?`, [entityId]);
     expect(post[0]).toMatchObject({ user_id: 1, title: 'TX MY' });
 
-    await myConn!.query('DELETE FROM posts WHERE id = ?', [entityId]);
-    await myConn!.query('UPDATE users SET post_count_scp = ? WHERE id = ?', [beforeCount, 1]);
+    await myConn!.query(`DELETE FROM ${T_POSTS} WHERE id = ?`, [entityId]);
+    await myConn!.query(`UPDATE ${T_USERS} SET post_count_scp = ? WHERE id = ?`, [beforeCount, 1]);
   });
 });
