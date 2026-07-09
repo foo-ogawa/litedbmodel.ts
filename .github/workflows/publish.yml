@@ -7,13 +7,19 @@ on:
     workflows: ["GitHub Release"]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   publish:
     if: >-
       github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
+    # OWNER GATE: target the `release` GitHub Environment (Settings → Environments → release) with
+    # required reviewers so the publish waits for an explicit owner approval — publish is NOT
+    # automatic on merge. Same gate as publish-pypi.yml / publish-crates.yml.
+    environment: release
     permissions:
       contents: read
     steps:

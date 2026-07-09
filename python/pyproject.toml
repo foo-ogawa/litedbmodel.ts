@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "litedbmodel-runtime"
-version = "1.2.10"
+version = "2.0.0"
 description = "Thin multi-language runtime for litedbmodel v2 SCP §8 bundles (Python port). Interprets the published SqlBundle (sql + fragment tree + Expression-IR param slots + transaction plan, dialect-tagged) and executes it against a SQL driver — semantics-identical to the TS reference. Delegates Expression-IR evaluation to behavior-contracts."
 readme = "README.md"
 requires-python = ">=3.9"

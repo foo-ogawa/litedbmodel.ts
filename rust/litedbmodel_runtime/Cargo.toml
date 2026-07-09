@@ -1,9 +1,17 @@
 [package]
 name = "litedbmodel_runtime"
-version = "1.2.10"
+version = "2.0.0"
 edition.workspace = true
 license.workspace = true
 description = "Thin multi-language runtime for litedbmodel v2 SCP §8 bundles (Rust port). Interprets the published SqlBundle and executes it against a SQL driver — semantics-identical to the TS reference. Delegates Expression-IR evaluation to the behavior-contracts crate."
+# Registry metadata (mirrors graphddb_runtime). NOTE: the canonical monorepo URL is owner-gated at
+# GA — go/go.mod resolves the Go module at github.com/foo-ogawa/litedbmodel while the npm
+# package.json still declares github.com/foo-ogawa/litedbmodel.ts. See RELEASING.md "Open decision".
+repository = "https://github.com/foo-ogawa/litedbmodel"
+homepage = "https://github.com/foo-ogawa/litedbmodel"
+readme = "../README.md"
+keywords = ["orm", "sql", "ir", "runtime", "conformance"]
+categories = ["database", "api-bindings"]
 
 [dependencies]
 serde = { workspace = true }

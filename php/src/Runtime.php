@@ -44,7 +44,7 @@ final class Runtime
     private const SCOPE_PORT = '__scope';
 
     /** Version mirrored from package.json by scripts/sync-versions.mjs (SSoT). */
-    public const VERSION = '1.2.10';
+    public const VERSION = '2.0.0';
 
     /**
      * Render a §8 CompiledOperation against a scope for a dialect → ['sql'=>…, 'params'=>…].

@@ -29,6 +29,10 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          # Go treats go/ as a subdirectory module (module path ends in /go), so
+          # `go get github.com/foo-ogawa/litedbmodel/go@vX.Y.Z` only resolves a tag named
+          # `go/vX.Y.Z` — the bare root `vX.Y.Z` tag is invisible to it.
+          echo "gotag=go/v$VERSION" >> "$GITHUB_OUTPUT"
       - name: Check whether release tag exists
         id: tag
         continue-on-error: true
@@ -39,6 +43,12 @@ jobs:
       - name: Install
         if: steps.tag.outcome == 'failure'
         run: npm ci --ignore-scripts
+      - name: Version SSoT in lockstep (npm → PyPI/crates/Go-tag/Packagist)
+        if: steps.tag.outcome == 'failure'
+        run: npm run sync:versions:check
+      - name: No local (../-escaping) dependencies
+        if: steps.tag.outcome == 'failure'
+        run: npm run deps:check
       - name: Audit
         if: steps.tag.outcome == 'failure'
         run: npm audit --audit-level=moderate
@@ -66,3 +76,23 @@ jobs:
             --target "${{ github.sha }}" \
             --title "${{ steps.pkg.outputs.tag }}" \
             --generate-notes
+      # The Go runtime ships as the subdirectory module github.com/foo-ogawa/litedbmodel/go.
+      # Go's module rules resolve a versioned import ONLY via a `go/vX.Y.Z` tag, so tag the SAME
+      # commit the root release points at (github.sha) — `go get .../litedbmodel/go@vX.Y.Z` then
+      # serves the go/ subtree of that commit. Without this, consumers are stuck on a `@main`
+      # pseudo-version. Packagist (litedbmodel/runtime) syncs off the root `vX.Y.Z` tag via its
+      # repo webhook, so no dedicated PHP publish workflow is needed (see RELEASING.md).
+      #
+      # This step is deliberately NOT gated on the root-tag outcome: it self-heals off the REMOTE
+      # existence of go/vX.Y.Z alone (present → no-op, absent → create+push), so a re-run backfills
+      # a transiently-missing go tag instead of skipping it forever. The ls-remote check prevents
+      # double-creation, so running every release is safe.
+      - name: Tag Go submodule (go/vX.Y.Z)
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.pkg.outputs.gotag }}" >/dev/null 2>&1; then
+            echo "Go tag ${{ steps.pkg.outputs.gotag }} already exists on origin — nothing to do."
+            exit 0
+          fi
+          echo "Go tag ${{ steps.pkg.outputs.gotag }} missing on origin — creating on ${{ github.sha }} and pushing."
+          git tag "${{ steps.pkg.outputs.gotag }}" "${{ github.sha }}"
+          git push origin "${{ steps.pkg.outputs.gotag }}"
