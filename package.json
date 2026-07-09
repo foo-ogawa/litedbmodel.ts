@@ -13,6 +13,11 @@
       "types": "./dist/drivers/index.d.ts",
       "default": "./dist/drivers/index.js"
     },
+    "./scp": {
+      "types": "./dist/scp/index.d.ts",
+      "import": "./dist/scp/index.mjs",
+      "require": "./dist/scp/index.cjs"
+    },
     "./eslint-plugin": {
       "default": "./eslint-plugin/index.js"
     }
@@ -23,7 +28,8 @@
     "eslint-plugin"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-scp.mjs",
+    "build:scp": "node scripts/build-scp.mjs",
     "watch": "tsc -w",
     "clean": "rm -rf dist",
     "test": "vitest run",

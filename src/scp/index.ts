@@ -77,6 +77,30 @@ export type {
   ComponentRefNode,
 } from './authoring';
 
+// Backend-Compile bridge (WS1↔WS3): real bc ComponentGraphIR port shape → WS1 CompiledOperation.
+export { compileNode, compileComponentNodes, IN_SENTINEL } from './bridge';
+
+// SQL WHERE authoring helpers (closed-set encodings the bridge decodes).
+export {
+  whereEq,
+  whereNe,
+  whereLt,
+  whereLe,
+  whereGt,
+  whereGe,
+  whereIsNull,
+  whereIn,
+  inColumn,
+} from './authoring-sql';
+
+// Error Mapping (spec §11 item 5): driver error → SCP Failure + Policy Kind.
+export { mapSqliteError, SqlFailure } from './errors';
+export type { SqlFailureKind } from './errors';
+
+// Thin TS runtime (spec §3 / §10 / §11): validate → SKIP → expand → eval → bind → execute → assembly.
+export { executeBehavior } from './runtime';
+export type { SqliteDb, ExecuteOptions } from './runtime';
+
 // Re-export bc's shared authoring vocabulary so authors import the whole surface from
 // litedbmodel (leaf vocabulary is the Catalog; expressions/structured control are bc's —
 // C2). There is NO litedbmodel-local authoring opcode beyond the Catalog.
