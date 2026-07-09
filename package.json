@@ -45,7 +45,13 @@
     "docker:down": "docker compose -f docker-compose.test.yml down",
     "docker:reset": "docker compose -f docker-compose.test.yml down -v && docker compose -f docker-compose.test.yml up -d",
     "test:integration:docker": "npm run docker:up && sleep 3 && npm run test:integration; npm run docker:down",
-    "test:ci": "vitest run test/unit"
+    "test:ci": "vitest run test/unit",
+    "sync:versions": "node scripts/sync-versions.mjs",
+    "sync:versions:check": "node scripts/sync-versions.mjs --check",
+    "deps:check": "node scripts/check-no-local-deps.mjs",
+    "conformance:gen": "vitest run --config conformance/vitest.config.ts",
+    "conformance:vectors": "npm run build:scp && tsx conformance/vectors-runner.ts",
+    "conformance:run": "npm run build:scp && tsx conformance/vectors-run.ts"
   },
   "keywords": [
     "orm",
@@ -84,6 +90,7 @@
     "terser": "^5.44.1",
     "typedoc": "^0.28.15",
     "typedoc-plugin-markdown": "^4.9.0",
+    "tsx": "^4.22.3",
     "typescript": "^5.3.0",
     "typescript-eslint": "^8.60.0",
     "vitest": "^4.1.7"

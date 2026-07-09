@@ -38,4 +38,13 @@ chat_log/
 # Benchmark subdirectories
 benchmark/node_modules/
 
+# Language runtime build artifacts (WS7 multi-language scaffold)
+rust/target/
+go/bin/
+php/vendor/
+php/composer.lock
+python/**/__pycache__/
+python/*.egg-info/
+python/**/*.egg-info/
+
 

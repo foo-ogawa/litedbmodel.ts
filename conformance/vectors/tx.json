@@ -1,0 +1,609 @@
+{
+  "suite": "tx",
+  "corpusVersion": 1,
+  "note": "Write-time-relations gate-first transaction bundles: commit + gate short-circuit.",
+  "vectors": [
+    {
+      "name": "create: gate-first tx commits (author exists, unique, idempotent)",
+      "kind": "tx",
+      "dialect": "sqlite",
+      "bundle": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "sqlite",
+        "component": {
+          "body": [
+            {
+              "component": "Insert",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "title": {
+                      "ref": [
+                        "title"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "title": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Create",
+          "output": {
+            "ref": [
+              "n0"
+            ]
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Insert",
+            "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+            "where": null,
+            "params": [
+              {
+                "ref": [
+                  "author_id"
+                ]
+              },
+              {
+                "ref": [
+                  "title"
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [],
+        "relations": {},
+        "transaction": {
+          "phase": "create",
+          "entityFrom": "tx_body_3",
+          "statements": [
+            {
+              "id": "tx_requires_0",
+              "role": "gate:requires",
+              "op": {
+                "component": "Select",
+                "sql": "SELECT 1 FROM users WHERE id = ?",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "existsElseRollback",
+              "label": "requires users"
+            },
+            {
+              "id": "tx_idem_1",
+              "role": "gate:idempotency",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO idem (token) VALUES (?) ON CONFLICT DO NOTHING",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "request_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseNoop",
+              "label": "idempotency idem"
+            },
+            {
+              "id": "tx_unique_2",
+              "role": "gate:unique",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO uniq (name, s0, f0) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                "where": null,
+                "params": [
+                  "title_per_author",
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseRollback",
+              "label": "unique title_per_author"
+            },
+            {
+              "id": "tx_body_3",
+              "role": "body",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "Insert Insert"
+            },
+            {
+              "id": "tx_derive_4",
+              "role": "derive",
+              "op": {
+                "component": "Update",
+                "sql": "UPDATE users SET post_count = post_count + ?{where}",
+                "where": {
+                  "connector": "AND",
+                  "fragments": [
+                    {
+                      "always": true,
+                      "sql": "id = ?",
+                      "params": [
+                        {
+                          "ref": [
+                            "author_id"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "params": [
+                  1
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "derive users.post_count"
+            },
+            {
+              "id": "tx_emit_5",
+              "role": "emit",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO outbox (type, payload) VALUES (?, ?)",
+                "where": null,
+                "params": [
+                  "PostCreated",
+                  {
+                    "obj": {
+                      "postId": {
+                        "ref": [
+                          "__entity",
+                          "id"
+                        ]
+                      },
+                      "userId": {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "emit PostCreated"
+            }
+          ],
+          "onIdempotentHit": "rollback"
+        }
+      },
+      "input": {
+        "author_id": 7,
+        "title": "New Post",
+        "request_id": "req-1"
+      },
+      "schema": [
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, post_count INTEGER NOT NULL DEFAULT 0)",
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, author_id INTEGER NOT NULL REFERENCES users(id), title TEXT NOT NULL, created_at TEXT)",
+        "CREATE TABLE idem (token TEXT PRIMARY KEY)",
+        "CREATE TABLE uniq (name TEXT NOT NULL, s0 INTEGER NOT NULL, f0 TEXT NOT NULL, PRIMARY KEY (name, s0, f0))",
+        "CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, payload TEXT NOT NULL)",
+        "INSERT INTO users (id, name, post_count) VALUES (7, 'Ada', 2)",
+        "INSERT INTO users (id, name, post_count) VALUES (8, 'Alan', 0)"
+      ],
+      "expectedResult": {
+        "committed": true,
+        "entity": {
+          "id": 1,
+          "author_id": 7,
+          "title": "New Post"
+        },
+        "executed": [
+          "tx_requires_0",
+          "tx_idem_1",
+          "tx_unique_2",
+          "tx_body_3",
+          "tx_derive_4",
+          "tx_emit_5"
+        ]
+      },
+      "expectedDbState": [
+        {
+          "query": "SELECT id, author_id, title FROM posts ORDER BY id",
+          "rows": [
+            {
+              "id": 1,
+              "author_id": 7,
+              "title": "New Post"
+            }
+          ]
+        },
+        {
+          "query": "SELECT id, post_count FROM users ORDER BY id",
+          "rows": [
+            {
+              "id": 7,
+              "post_count": 3
+            },
+            {
+              "id": 8,
+              "post_count": 0
+            }
+          ]
+        },
+        {
+          "query": "SELECT type, payload FROM outbox ORDER BY id",
+          "rows": [
+            {
+              "type": "PostCreated",
+              "payload": "{\"postId\":1,\"userId\":7}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "create: gate short-circuits on missing author (ROLLBACK, no body write)",
+      "kind": "tx",
+      "dialect": "sqlite",
+      "bundle": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "sqlite",
+        "component": {
+          "body": [
+            {
+              "component": "Insert",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "title": {
+                      "ref": [
+                        "title"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "title": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Create",
+          "output": {
+            "ref": [
+              "n0"
+            ]
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Insert",
+            "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+            "where": null,
+            "params": [
+              {
+                "ref": [
+                  "author_id"
+                ]
+              },
+              {
+                "ref": [
+                  "title"
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [],
+        "relations": {},
+        "transaction": {
+          "phase": "create",
+          "entityFrom": "tx_body_3",
+          "statements": [
+            {
+              "id": "tx_requires_0",
+              "role": "gate:requires",
+              "op": {
+                "component": "Select",
+                "sql": "SELECT 1 FROM users WHERE id = ?",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "existsElseRollback",
+              "label": "requires users"
+            },
+            {
+              "id": "tx_idem_1",
+              "role": "gate:idempotency",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO idem (token) VALUES (?) ON CONFLICT DO NOTHING",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "request_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseNoop",
+              "label": "idempotency idem"
+            },
+            {
+              "id": "tx_unique_2",
+              "role": "gate:unique",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO uniq (name, s0, f0) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                "where": null,
+                "params": [
+                  "title_per_author",
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseRollback",
+              "label": "unique title_per_author"
+            },
+            {
+              "id": "tx_body_3",
+              "role": "body",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "Insert Insert"
+            },
+            {
+              "id": "tx_derive_4",
+              "role": "derive",
+              "op": {
+                "component": "Update",
+                "sql": "UPDATE users SET post_count = post_count + ?{where}",
+                "where": {
+                  "connector": "AND",
+                  "fragments": [
+                    {
+                      "always": true,
+                      "sql": "id = ?",
+                      "params": [
+                        {
+                          "ref": [
+                            "author_id"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "params": [
+                  1
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "derive users.post_count"
+            },
+            {
+              "id": "tx_emit_5",
+              "role": "emit",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO outbox (type, payload) VALUES (?, ?)",
+                "where": null,
+                "params": [
+                  "PostCreated",
+                  {
+                    "obj": {
+                      "postId": {
+                        "ref": [
+                          "__entity",
+                          "id"
+                        ]
+                      },
+                      "userId": {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "emit PostCreated"
+            }
+          ],
+          "onIdempotentHit": "rollback"
+        }
+      },
+      "input": {
+        "author_id": 999,
+        "title": "Orphan",
+        "request_id": "req-2"
+      },
+      "schema": [
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, post_count INTEGER NOT NULL DEFAULT 0)",
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, author_id INTEGER NOT NULL REFERENCES users(id), title TEXT NOT NULL, created_at TEXT)",
+        "CREATE TABLE idem (token TEXT PRIMARY KEY)",
+        "CREATE TABLE uniq (name TEXT NOT NULL, s0 INTEGER NOT NULL, f0 TEXT NOT NULL, PRIMARY KEY (name, s0, f0))",
+        "CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, payload TEXT NOT NULL)",
+        "INSERT INTO users (id, name, post_count) VALUES (7, 'Ada', 2)",
+        "INSERT INTO users (id, name, post_count) VALUES (8, 'Alan', 0)"
+      ],
+      "expectedResult": {
+        "committed": false,
+        "shortCircuit": {
+          "statementId": "tx_requires_0",
+          "reason": "requires_absent"
+        },
+        "entity": null,
+        "executed": [
+          "tx_requires_0"
+        ]
+      },
+      "expectedDbState": [
+        {
+          "query": "SELECT id, author_id, title FROM posts ORDER BY id",
+          "rows": []
+        },
+        {
+          "query": "SELECT id, post_count FROM users ORDER BY id",
+          "rows": [
+            {
+              "id": 7,
+              "post_count": 2
+            },
+            {
+              "id": 8,
+              "post_count": 0
+            }
+          ]
+        },
+        {
+          "query": "SELECT type, payload FROM outbox ORDER BY id",
+          "rows": []
+        }
+      ]
+    }
+  ]
+}

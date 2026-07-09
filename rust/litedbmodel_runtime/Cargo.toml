@@ -1,0 +1,11 @@
+[package]
+name = "litedbmodel_runtime"
+version = "1.2.10"
+edition.workspace = true
+license.workspace = true
+description = "Thin multi-language runtime for litedbmodel v2 SCP §8 bundles (Rust port). Interprets the published SqlBundle and executes it against a SQL driver — semantics-identical to the TS reference. Delegates Expression-IR evaluation to the behavior-contracts crate."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+behavior-contracts = { workspace = true }

@@ -1,0 +1,81 @@
+name: Conformance & Release Discipline
+
+# WS7a (#30) skeleton — the multi-language conformance LOCK + release-discipline gates for the
+# litedbmodel v2 SCP §8 artifact. WS7b-e extend the `langs` matrix with the real per-language
+# runtime builds + vector runners; WS7a wires the TS reference leg + the version/no-local-deps
+# gates + the scaffold build checks so every language skeleton stays buildable.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Release discipline: version SSoT + no escaping local deps ───────────────
+  release-discipline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Version SSoT in lockstep (npm → PyPI/crates/Go-tag/Packagist)
+        run: npm run sync:versions:check
+      - name: No local (../-escaping) dependencies
+        run: npm run deps:check
+
+  # ── TS reference conformance: corpus is byte-true + the TS runner is green ──
+  conformance-ts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Build the SCP dist artifact (consumed by the vectors runner)
+        run: npm run build:scp
+      - name: Corpus drift gate + TS reference runner (part of the suite)
+        run: npx vitest run test/scp/conformance-vectors.test.ts
+      - name: Cross-language orchestrator (TS leg; WS7b-e languages auto-join)
+        run: npx tsx conformance/vectors-run.ts
+      - name: Frozen golden unchanged (additive-refreeze)
+        run: |
+          npx tsx conformance/vectors-runner.ts > /tmp/ts-summary.json 2>/dev/null
+          diff <(jq -S . conformance/frozen/ts-golden.frozen.json) <(jq -S . /tmp/ts-summary.json)
+
+  # ── Language scaffolds stay buildable (WS7b-e fill in the runtime bodies) ───
+  scaffold-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lang: [python, go, rust, php]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python — package imports
+        if: matrix.lang == 'python'
+        run: |
+          python3 -m py_compile python/litedbmodel_runtime/*.py
+      - name: Go — build
+        if: matrix.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - name: Go — build (cont.)
+        if: matrix.lang == 'go'
+        run: cd go && go build ./...
+      - name: Rust — check
+        if: matrix.lang == 'rust'
+        run: cd rust && cargo check
+      - name: PHP — lint
+        if: matrix.lang == 'php'
+        run: |
+          php -l php/src/Runtime.php
+          php -l php/conformance/vectors_runner.php
