@@ -38,16 +38,40 @@ The chain is **merge-to-`main` → GitHub Release → publish workflows**, mirro
 4. **Go** needs no upload — `go get .../litedbmodel/go@vX.Y.Z` resolves the `go/vX.Y.Z` tag that
    `release.yml` pushed.
 
-### The OWNER-APPROVAL gate
+### One-time prerequisites — MUST be configured before the release sequence
 
-All three registry publish jobs declare `environment: release`. Configure the **`release` GitHub
-Environment** (repo Settings → Environments → `release`) with **Required reviewers** = the owner.
-Then every registry upload **pauses for an explicit owner approval** in the Actions UI before it
-runs — publish is **never automatic on merge**. This is the single sign-off point for all of npm +
-PyPI + crates.io.
+Status verified **2026-07-10** against `foo-ogawa/litedbmodel`. None of the ❌ items are done yet;
+each blocks the step noted.
 
-Required repo **secrets**: `NPM_TOKEN`, `PYPI_API_TOKEN`, `CARGO_REGISTRY_TOKEN`
-(+ `BEHAVIOR_CONTRACTS_TOKEN` / `BEHAVIOR_CONTRACTS_PAT` for the private bc Go/vendored deps in CI).
+**A. Repo secrets** (`gh secret set <NAME> --repo foo-ogawa/litedbmodel`)
+
+| Secret | Purpose | Status |
+|---|---|---|
+| `NPM_TOKEN` | npm publish (`litedbmodel`) | ✅ present — **verify it is an *automation* token** with publish rights (bypasses 2FA) |
+| `PYPI_API_TOKEN` | PyPI publish (`litedbmodel-runtime`) | ❌ missing — see PyPI note below |
+| `CARGO_REGISTRY_TOKEN` | crates.io publish (`litedbmodel_runtime`) | ❌ missing — publishing account must have a verified email |
+| `BEHAVIOR_CONTRACTS_PAT` | private `behavior-contracts` **Go** module fetch (CI + go build) | ❌ missing — fine-grained PAT, **Contents: Read on `foo-ogawa/behavior-contracts`** (same name graphddb uses). Currently blocks the 3 CI jobs `conformance-ts` / `conformance-livedb` / `scaffold-build (go)` |
+
+**B. `release` GitHub Environment — NOT YET CREATED (currently 0 environments).** The three registry
+publish jobs declare `environment: release`. If the environment does not exist, GitHub auto-creates
+it **with no protection rules on first run → publish would proceed WITHOUT approval**. You MUST
+create it first: repo Settings → Environments → `release` → **Required reviewers = the owner**. Then
+every registry upload pauses for explicit owner approval in the Actions UI — the single sign-off
+point for npm + PyPI + crates.io. Publish is never automatic on merge.
+
+**C. Registry account setup**
+
+| Registry | Name | Status / action |
+|---|---|---|
+| npm | `litedbmodel` | ✅ owned by foo-ogawa (v1.2.10) — v2.0.0 publishes over it |
+| PyPI | `litedbmodel-runtime` | 🆓 unclaimed (404). First publish claims it. Project doesn't exist yet, so a project-scoped token can't be minted — use an **account-scoped** `PYPI_API_TOKEN` for the first release, **or (recommended) configure PyPI Trusted Publishing (OIDC)** and drop the token entirely |
+| crates.io | `litedbmodel_runtime` | 🆓 likely free (novel name). Needs `CARGO_REGISTRY_TOKEN` + verified-email account |
+| Packagist | `litedbmodel/runtime` | ❌ not submitted (404). **First release only: submit the repo once at packagist.org** and connect the GitHub→Packagist webhook (thereafter tag pushes auto-sync) |
+
+**D. Downstream note (not a publish blocker):** the Go module fetches `behavior-contracts` from its
+**private** repo, so anyone consuming `github.com/foo-ogawa/litedbmodel/go` needs read access to
+`foo-ogawa/behavior-contracts`. If the Go module is meant for public consumption, make bc's Go module
+public (or otherwise redistribute it) before advertising the Go package.
 
 ---
 
