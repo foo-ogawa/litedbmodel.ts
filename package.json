@@ -1,6 +1,6 @@
 {
   "name": "litedbmodel",
-  "version": "1.2.10",
+  "version": "2.0.0",
   "description": "A lightweight TypeScript ORM for PostgreSQL, MySQL, and SQLite with Active Record pattern",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,6 +13,11 @@
       "types": "./dist/drivers/index.d.ts",
       "default": "./dist/drivers/index.js"
     },
+    "./scp": {
+      "types": "./dist/scp/index.d.ts",
+      "import": "./dist/scp/index.mjs",
+      "require": "./dist/scp/index.cjs"
+    },
     "./eslint-plugin": {
       "default": "./eslint-plugin/index.js"
     }
@@ -23,7 +28,8 @@
     "eslint-plugin"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-scp.mjs",
+    "build:scp": "node scripts/build-scp.mjs",
     "watch": "tsc -w",
     "clean": "rm -rf dist",
     "test": "vitest run",
@@ -39,7 +45,21 @@
     "docker:down": "docker compose -f docker-compose.test.yml down",
     "docker:reset": "docker compose -f docker-compose.test.yml down -v && docker compose -f docker-compose.test.yml up -d",
     "test:integration:docker": "npm run docker:up && sleep 3 && npm run test:integration; npm run docker:down",
-    "test:ci": "vitest run test/unit"
+    "test:ci": "vitest run test/unit",
+    "sync:versions": "node scripts/sync-versions.mjs",
+    "sync:versions:check": "node scripts/sync-versions.mjs --check",
+    "deps:check": "node scripts/check-no-local-deps.mjs",
+    "vendor:bc-php": "node scripts/vendor-behavior-contracts-php.mjs",
+    "vendor:bc-php:check": "node scripts/vendor-behavior-contracts-php.mjs --check",
+    "conformance:gen": "vitest run --config conformance/vitest.config.ts",
+    "conformance:gen:livedb": "vitest run --config conformance/vitest.livedb.config.ts",
+    "conformance:vectors": "npm run build:scp && tsx conformance/vectors-runner.ts",
+    "conformance:run": "npm run build:scp && tsx conformance/vectors-run.ts",
+    "conformance:codegen": "npm run build:scp && tsx conformance/codegen/codegen-runner.ts",
+    "conformance:livedb": "tsx conformance/livedb-run.ts",
+    "docker:livedb:up": "docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml up -d postgres mysql",
+    "docker:livedb:down": "docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml down -v",
+    "conformance:livedb:docker": "npm run docker:livedb:up && sleep 5 && npm run conformance:gen:livedb && npm run conformance:livedb; e=$?; npm run docker:livedb:down; exit $e"
   },
   "keywords": [
     "orm",
@@ -54,12 +74,13 @@
   ],
   "author": "foo-ogawa",
   "license": "MIT",
-  "homepage": "https://github.com/foo-ogawa/litedbmodel.ts#readme",
+  "homepage": "https://github.com/foo-ogawa/litedbmodel#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/foo-ogawa/litedbmodel.ts.git"
+    "url": "git+https://github.com/foo-ogawa/litedbmodel.git"
   },
   "dependencies": {
+    "behavior-contracts": "^0.2.0",
     "reflect-metadata": "^0.2.2"
   },
   "devDependencies": {
@@ -77,6 +98,7 @@
     "terser": "^5.44.1",
     "typedoc": "^0.28.15",
     "typedoc-plugin-markdown": "^4.9.0",
+    "tsx": "^4.22.3",
     "typescript": "^5.3.0",
     "typescript-eslint": "^8.60.0",
     "vitest": "^4.1.7"

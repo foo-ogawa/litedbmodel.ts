@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["litedbmodel_runtime", "vectors_runner", "livedb_runner"]
+# The SQLite conformance bar (cargo build/test/check/fmt without -p) must NOT pull the live-DB
+# postgres+mysql crates — livedb_runner (which enables the `livedb` feature) is opt-in via
+# `cargo run -p livedb_runner`. default-members keeps the default build lean (WS7g #36).
+default-members = ["litedbmodel_runtime", "vectors_runner"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps JSON object key insertion order, required for the canonical fragment/param
+# ordering to survive a round-trip through the §8 bundle.
+serde_json = { version = "1", features = ["preserve_order"] }
+# behavior-contracts (crates.io): the shared common core the SCP runtime delegates the CLOSED
+# Expression-IR evaluation to, mirroring the TS reference's npm dependency. Published crate — NO
+# local `path = "../.."` (the no-local-deps gate forbids it).
+behavior-contracts = "0.2.0"
+# In-process SQLite for the conformance bar (bundled amalgamation → no system dep).
+rusqlite = { version = "0.32", features = ["bundled"] }

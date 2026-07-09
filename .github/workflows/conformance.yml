@@ -1,0 +1,230 @@
+name: Conformance & Release Discipline
+
+# WS7a (#30) skeleton — the multi-language conformance LOCK + release-discipline gates for the
+# litedbmodel v2 SCP §8 artifact. WS7b-e extend the `langs` matrix with the real per-language
+# runtime builds + vector runners; WS7a wires the TS reference leg + the version/no-local-deps
+# gates + the scaffold build checks so every language skeleton stays buildable.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Release discipline: version SSoT + no escaping local deps ───────────────
+  release-discipline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Node 22+: scripts/check-no-local-deps.mjs uses `globSync` from
+          # `node:fs`, which is only exported from Node 22 onward (Node 20 throws
+          # `SyntaxError: … does not provide an export named 'globSync'`). Matches
+          # the local dev floor (Node 22+) and graphddb's CI (node-version: 22).
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Version SSoT in lockstep (npm → PyPI/crates/Go-tag/Packagist)
+        run: npm run sync:versions:check
+      - name: No local (../-escaping) dependencies
+        run: npm run deps:check
+
+  # ── Cross-language conformance: corpus byte-true + all runnable language legs green ──
+  # `vectors-run.ts` DISCOVERS every implemented language runner (ts/py/php/go/rust) and runs
+  # each, and the codegen leg (mode-3) executes the py/go emitted modules — so the sibling
+  # toolchains must be present here too, exactly like graphddb's go.yml sets up Python/PHP/Rust
+  # for its conformance golden. (php + rust ship on the ubuntu runner; Node/Python/Go are set up
+  # below.) The go leg additionally needs the private behavior-contracts VCS module (secret).
+  conformance-ts:
+    runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: github.com/foo-ogawa/behavior-contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: go/go.sum
+      - name: Auth for the private behavior-contracts Go VCS-tag dependency
+        env:
+          BEHAVIOR_CONTRACTS_PAT: ${{ secrets.BEHAVIOR_CONTRACTS_PAT }}
+        run: |
+          git config --global url."https://x-access-token:${BEHAVIOR_CONTRACTS_PAT}@github.com/foo-ogawa/behavior-contracts".insteadOf "https://github.com/foo-ogawa/behavior-contracts"
+      - name: Warm private go module graph (retry transient auth)
+        uses: ./.github/actions/warm-go-module
+      - run: npm ci --ignore-scripts
+      # The python vectors runner + the codegen py-exec leg import litedbmodel_runtime, which
+      # consumes the shared behavior-contracts core — install both the local runtime package and
+      # the published bc core so `python3` legs run instead of exiting 1 with an ImportError.
+      - name: Install the Python runtime + behavior-contracts core (for the py legs)
+        # `./python`'s pyproject pins `behavior-contracts==0.2.0` as a hard dep, so this pulls the
+        # bc core too. Without it the py vectors runner + codegen py-exec exit 1 on ImportError.
+        run: python3 -m pip install ./python
+      # The repo `.npmrc` sets `ignore-scripts=true`, so `npm ci` skips
+      # better-sqlite3's native `install` script and its `better_sqlite3.node`
+      # addon is never built. The conformance harness opens an in-memory SQLite
+      # (`new Database(':memory:')`) to execute vectors. NOTE: a bare
+      # `npm rebuild better-sqlite3` ALSO honours ignore-scripts and prints
+      # "rebuilt dependencies successfully" WITHOUT building the addon — the
+      # per-command `ignore-scripts=false` override is required to run the
+      # install script (prebuild-install fast path) and actually produce the
+      # `.node`. Fall back to a from-source node-gyp build if no prebuild exists.
+      - name: Build the better-sqlite3 native addon (skipped by ignore-scripts)
+        run: npm_config_ignore_scripts=false npm rebuild better-sqlite3 --build-from-source=false || (cd node_modules/better-sqlite3 && npx node-gyp rebuild --release)
+      - name: Build the SCP dist artifact (consumed by the vectors runner)
+        run: npm run build:scp
+      - name: Corpus drift gate + TS reference runner (part of the suite)
+        run: npx vitest run test/scp/conformance-vectors.test.ts
+      - name: Cross-language orchestrator (ts/py/php/go/rust auto-join, incl. codegen leg)
+        run: npx tsx conformance/vectors-run.ts
+      - name: Frozen golden unchanged (additive-refreeze)
+        run: |
+          npx tsx conformance/vectors-runner.ts > /tmp/ts-summary.json 2>/dev/null
+          diff <(jq -S . conformance/frozen/ts-golden.frozen.json) <(jq -S . /tmp/ts-summary.json)
+
+  # ── Language scaffolds stay buildable (WS7b-e fill in the runtime bodies) ───
+  scaffold-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lang: [python, go, rust, php]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python — package imports
+        if: matrix.lang == 'python'
+        run: |
+          python3 -m py_compile python/litedbmodel_runtime/*.py
+      - name: Go — setup
+        if: matrix.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          # The WS7c Go runtime consumes behavior-contracts + a pure-Go SQLite (modernc); the
+          # dependency graph's `go` floors require a modern toolchain (mirrors graphddb's go leg).
+          go-version: '1.25'
+      - name: Go — auth for the private behavior-contracts VCS-tag dependency
+        if: matrix.lang == 'go'
+        env:
+          # behavior-contracts is a PRIVATE repo pinned by VCS tag (go/v0.2.0) — NO local replace.
+          # Resolving it needs GOPRIVATE + an authenticated git rewrite. Uses the same
+          # fine-grained read-only PAT graphddb stores (Contents: Read on
+          # foo-ogawa/behavior-contracts) under the BEHAVIOR_CONTRACTS_PAT secret.
+          BEHAVIOR_CONTRACTS_PAT: ${{ secrets.BEHAVIOR_CONTRACTS_PAT }}
+        run: |
+          git config --global url."https://x-access-token:${BEHAVIOR_CONTRACTS_PAT}@github.com/foo-ogawa/behavior-contracts".insteadOf "https://github.com/foo-ogawa/behavior-contracts"
+          echo "GOPRIVATE=github.com/foo-ogawa/behavior-contracts" >> "$GITHUB_ENV"
+          echo "GOFLAGS=-mod=mod" >> "$GITHUB_ENV"
+      - name: Go — warm private module graph (retry transient auth)
+        if: matrix.lang == 'go'
+        uses: ./.github/actions/warm-go-module
+      - name: Go — build
+        if: matrix.lang == 'go'
+        run: cd go && go build ./...
+      - name: Rust — check
+        if: matrix.lang == 'rust'
+        run: cd rust && cargo check
+      - name: PHP — lint
+        if: matrix.lang == 'php'
+        run: |
+          php -l php/src/Runtime.php
+          php -l php/conformance/vectors_runner.php
+
+  # ── WS7g (#36): coordinated cross-language LIVE-DB validation (real PG + MySQL) ──
+  # Each of Python/Go/PHP/Rust runs the exec/tx bundles compiled for postgres + mysql against a
+  # REAL dockerized Postgres 16 + MySQL 8 (GitHub `services:`, host-published ports), asserting the
+  # assembled result equals the frozen SQLite reference (§10). NO mock, NO silent skip — a leg that
+  # can't reach the DB exits 3 and fails the job. Each language isolates its tables in its own
+  # namespace (scp_py / scp_go / scp_php / scp_rust) so the one stack has no cross-contamination.
+  conformance-livedb:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U testuser -d testdb"
+          --health-interval 2s --health-timeout 5s --health-retries 15
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpass
+          MYSQL_USER: testuser
+          MYSQL_PASSWORD: testpass
+          MYSQL_DATABASE: testdb
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -u root -prootpass"
+          --health-interval 2s --health-timeout 5s --health-retries 15
+    env:
+      # Host-published service ports (match docker-compose.livedb.yml + the runners' defaults).
+      TEST_DB_HOST: localhost
+      TEST_DB_PORT: "5433"
+      TEST_MYSQL_HOST: "127.0.0.1"
+      TEST_MYSQL_PORT: "3307"
+      GOPRIVATE: github.com/foo-ogawa/behavior-contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: go/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo, pdo_pgsql, pdo_mysql, mbstring
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Grant the test user the per-language `scp_%` MySQL databases
+        run: |
+          mysql -h 127.0.0.1 -P 3307 -u root -prootpass \
+            -e "GRANT ALL PRIVILEGES ON \`scp\_%\`.* TO 'testuser'@'%'; FLUSH PRIVILEGES;"
+      - name: Auth for the private behavior-contracts Go VCS-tag dependency
+        env:
+          # Same fine-grained read-only PAT graphddb uses (Contents: Read on
+          # foo-ogawa/behavior-contracts), stored as BEHAVIOR_CONTRACTS_PAT.
+          BEHAVIOR_CONTRACTS_PAT: ${{ secrets.BEHAVIOR_CONTRACTS_PAT }}
+        run: |
+          git config --global url."https://x-access-token:${BEHAVIOR_CONTRACTS_PAT}@github.com/foo-ogawa/behavior-contracts".insteadOf "https://github.com/foo-ogawa/behavior-contracts"
+      - name: Warm private go module graph (retry transient auth)
+        uses: ./.github/actions/warm-go-module
+      - name: Install Node deps + Python DB drivers + PHP deps
+        run: |
+          npm ci --ignore-scripts
+          npm install behavior-contracts@0.2.0 --no-save
+          # `ignore-scripts=false` override is required: a bare `npm rebuild`
+          # honours the repo `.npmrc` ignore-scripts and reports success WITHOUT
+          # building the addon (see conformance-ts). Force the install script to
+          # run so `better_sqlite3.node` is actually produced.
+          npm_config_ignore_scripts=false npm rebuild better-sqlite3 --build-from-source=false || (cd node_modules/better-sqlite3 && npx node-gyp rebuild --release)
+          python3 -m pip install "psycopg[binary]" pymysql behavior-contracts==0.2.0
+          composer -d php install
+      - name: Build the SCP dist artifact (consumed by the corpus generator)
+        run: npm run build:scp
+      - name: Generate the live-DB corpus (pg+mysql bundles; cross-checked vs frozen)
+        run: npm run conformance:gen:livedb
+      - name: Run all 4 language live-DB legs against real PG + MySQL
+        run: npm run conformance:livedb

@@ -1,0 +1,151 @@
+{
+  "suite": "dialect",
+  "corpusVersion": 1,
+  "note": "Dialect primitive orderByNulls (WS6-flagged untested): PG/SQLite native NULLS, MySQL IS NULL emulation.",
+  "vectors": [
+    {
+      "name": "orderByNulls sqlite ASC NULLS FIRST",
+      "kind": "dialect",
+      "dialect": "sqlite",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "ASC",
+        "nulls": "FIRST"
+      },
+      "expected": "created_at ASC NULLS FIRST"
+    },
+    {
+      "name": "orderByNulls sqlite ASC NULLS LAST",
+      "kind": "dialect",
+      "dialect": "sqlite",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "ASC",
+        "nulls": "LAST"
+      },
+      "expected": "created_at ASC NULLS LAST"
+    },
+    {
+      "name": "orderByNulls sqlite DESC NULLS FIRST",
+      "kind": "dialect",
+      "dialect": "sqlite",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "DESC",
+        "nulls": "FIRST"
+      },
+      "expected": "created_at DESC NULLS FIRST"
+    },
+    {
+      "name": "orderByNulls sqlite DESC NULLS LAST",
+      "kind": "dialect",
+      "dialect": "sqlite",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "DESC",
+        "nulls": "LAST"
+      },
+      "expected": "created_at DESC NULLS LAST"
+    },
+    {
+      "name": "orderByNulls postgres ASC NULLS FIRST",
+      "kind": "dialect",
+      "dialect": "postgres",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "ASC",
+        "nulls": "FIRST"
+      },
+      "expected": "created_at ASC NULLS FIRST"
+    },
+    {
+      "name": "orderByNulls postgres ASC NULLS LAST",
+      "kind": "dialect",
+      "dialect": "postgres",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "ASC",
+        "nulls": "LAST"
+      },
+      "expected": "created_at ASC NULLS LAST"
+    },
+    {
+      "name": "orderByNulls postgres DESC NULLS FIRST",
+      "kind": "dialect",
+      "dialect": "postgres",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "DESC",
+        "nulls": "FIRST"
+      },
+      "expected": "created_at DESC NULLS FIRST"
+    },
+    {
+      "name": "orderByNulls postgres DESC NULLS LAST",
+      "kind": "dialect",
+      "dialect": "postgres",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "DESC",
+        "nulls": "LAST"
+      },
+      "expected": "created_at DESC NULLS LAST"
+    },
+    {
+      "name": "orderByNulls mysql ASC NULLS FIRST",
+      "kind": "dialect",
+      "dialect": "mysql",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "ASC",
+        "nulls": "FIRST"
+      },
+      "expected": "created_at IS NULL DESC, created_at ASC"
+    },
+    {
+      "name": "orderByNulls mysql ASC NULLS LAST",
+      "kind": "dialect",
+      "dialect": "mysql",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "ASC",
+        "nulls": "LAST"
+      },
+      "expected": "created_at IS NULL ASC, created_at ASC"
+    },
+    {
+      "name": "orderByNulls mysql DESC NULLS FIRST",
+      "kind": "dialect",
+      "dialect": "mysql",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "DESC",
+        "nulls": "FIRST"
+      },
+      "expected": "created_at IS NULL DESC, created_at DESC"
+    },
+    {
+      "name": "orderByNulls mysql DESC NULLS LAST",
+      "kind": "dialect",
+      "dialect": "mysql",
+      "primitive": "orderByNulls",
+      "args": {
+        "expr": "created_at",
+        "dir": "DESC",
+        "nulls": "LAST"
+      },
+      "expected": "created_at IS NULL ASC, created_at DESC"
+    }
+  ]
+}

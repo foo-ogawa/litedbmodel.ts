@@ -944,6 +944,12 @@ export abstract class DBModel {
           recordColumns.push(key);
         }
       }
+      // v2 (breaking vs v1.x): compiled SQL uses deterministic CANONICAL (alphabetical)
+      // column order — language-neutral and required for cross-language byte-identical
+      // conformance (WS7). This aligns the imperative single-record path with the
+      // multi-record path (below) AND with the SCP Backend-Compile path (bridge.ts, which
+      // reads bc-canonical port keys), so "v2 direct execution == SCP" holds by construction.
+      recordColumns.sort();
       groupedByPattern = new Map([['_', { columns: recordColumns, records: [record], rawRecords: [rawRecords[0]] }]]);
     } else {
       groupedByPattern = new Map();

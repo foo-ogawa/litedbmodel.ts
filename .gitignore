@@ -4,6 +4,10 @@ node_modules/
 # Build output
 dist/
 
+# Codegen conformance scratch dirs (mode-3 emitted-source temp; cleaned per run)
+.codegen-conf-*/
+.codegen-out-*/
+
 # IDE
 .idea/
 .vscode/
@@ -37,5 +41,15 @@ chat_log/
 
 # Benchmark subdirectories
 benchmark/node_modules/
+
+# Language runtime build artifacts (WS7 multi-language scaffold)
+rust/target/
+go/bin/
+php/vendor/
+php/composer.lock
+php/.phpunit.cache/
+python/**/__pycache__/
+python/*.egg-info/
+python/**/*.egg-info/
 
 

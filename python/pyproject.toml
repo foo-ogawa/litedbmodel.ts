@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "litedbmodel-runtime"
+version = "2.0.0"
+description = "Thin multi-language runtime for litedbmodel v2 SCP §8 bundles (Python port). Interprets the published SqlBundle (sql + fragment tree + Expression-IR param slots + transaction plan, dialect-tagged) and executes it against a SQL driver — semantics-identical to the TS reference. Delegates Expression-IR evaluation to behavior-contracts."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "foo-ogawa" }]
+keywords = ["orm", "sql", "ir", "runtime", "conformance", "litedbmodel"]
+
+# behavior-contracts (PyPI): the litedbmodel SCP runtime delegates the CLOSED Expression-IR
+# evaluation (ref/refOpt/coalesce/eq/… — the SKIP guards + param slots) to the shared common
+# core, exactly as the TS reference imports `behavior-contracts` from npm. HARD dependency,
+# consumed from the published PyPI registry (NO local path — the no-local-deps gate forbids it).
+dependencies = ["behavior-contracts==0.2.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+# WS7g (#36) live-DB conformance drivers (from PyPI — NO local path). Installed only for the
+# coordinated cross-language live-PG/MySQL pass (livedb_runner.py); the SQLite conformance bar
+# never needs them (the driver module imports psycopg / pymysql lazily inside connect()).
+livedb = ["psycopg[binary]>=3.1", "pymysql>=1.1"]
+
+[tool.setuptools]
+packages = ["litedbmodel_runtime"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

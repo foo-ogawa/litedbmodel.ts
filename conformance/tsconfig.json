@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "noEmit": true
+  },
+  "include": ["harness.ts", "gen-vectors.ts", "gen-vectors.test.ts", "../src/**/*.ts"],
+  "// note": "vectors-runner.ts and vectors-run.ts are EXCLUDED from the typecheck: they import the BUILT dist/scp/index.mjs (the consumer artifact) which TS bundler-resolution cannot type without a colocated .d.mts. They are validated by ACTUALLY RUNNING them (npm run conformance:vectors / conformance:run) — a stronger check than a type pass. harness.ts (source-imported) IS typechecked here."
+}

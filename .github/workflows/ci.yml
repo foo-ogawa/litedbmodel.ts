@@ -15,7 +15,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22 to match the local dev floor and the other workflows
+          # (release-discipline needs `node:fs` globSync, Node 22+).
+          node-version: 22
           cache: npm
       - name: Install
         run: npm ci --ignore-scripts

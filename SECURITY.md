@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in litedbmodel, please report it through one of these channels:
 
-- **GitHub Security Advisories** (preferred): [Report a vulnerability](https://github.com/foo-ogawa/litedbmodel.ts/security/advisories/new)
+- **GitHub Security Advisories** (preferred): [Report a vulnerability](https://github.com/foo-ogawa/litedbmodel/security/advisories/new)
 - **Email**: security@foo-ogawa.dev
 
 Please do **not** open a public GitHub issue for security vulnerabilities.

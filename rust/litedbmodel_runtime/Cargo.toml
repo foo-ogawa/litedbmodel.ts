@@ -1,0 +1,30 @@
+[package]
+name = "litedbmodel_runtime"
+version = "2.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Thin multi-language runtime for litedbmodel v2 SCP §8 bundles (Rust port). Interprets the published SqlBundle and executes it against a SQL driver — semantics-identical to the TS reference. Delegates Expression-IR evaluation to the behavior-contracts crate."
+# Registry metadata (mirrors graphddb_runtime). Repo renamed to foo-ogawa/litedbmodel (2026-07-10);
+# package.json, go/go.mod, and this crate all agree on the github.com/foo-ogawa/litedbmodel path.
+repository = "https://github.com/foo-ogawa/litedbmodel"
+homepage = "https://github.com/foo-ogawa/litedbmodel"
+readme = "../README.md"
+keywords = ["orm", "sql", "ir", "runtime", "conformance"]
+categories = ["database", "api-bindings"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+behavior-contracts = { workspace = true }
+# In-process SQLite driver for the conformance bar (real execution — the sanctioned in-proc
+# substitute for docker; #34 AC). `bundled` builds the SQLite amalgamation so no system libsqlite
+# is required. This is the runnable seam; PG/MySQL drivers plug into the same `Driver` trait later.
+rusqlite = { workspace = true }
+# WS7g (#36) live-DB drivers — synchronous PostgreSQL + MySQL clients that plug into the SAME
+# `Driver` trait. Feature-gated so the default conformance build (cargo test/check for the SQLite
+# bar) needs neither crate; the livedb_runner binary enables `--features livedb`.
+postgres = { version = "0.19", optional = true }
+mysql = { version = "25", optional = true }
+
+[features]
+livedb = ["dep:postgres", "dep:mysql"]
