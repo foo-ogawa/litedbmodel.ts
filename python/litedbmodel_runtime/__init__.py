@@ -13,7 +13,7 @@ the TS runtime.
 from __future__ import annotations
 
 from .dialect import SQLITE, POSTGRES, MYSQL, Dialect, dialect_for, to_dollar_placeholders
-from .driver import Driver, PreparedStatement, RunInfo, SqliteDriver
+from .driver import Driver, MysqlDriver, PostgresDriver, PreparedStatement, RunInfo, SqliteDriver
 from .errors import SqlFailure, map_sqlite_error
 from .render import RenderedSql, WHERE_SLOT, render_operation
 from .runtime import (
@@ -41,6 +41,8 @@ __all__ = [
     "PreparedStatement",
     "RunInfo",
     "SqliteDriver",
+    "PostgresDriver",
+    "MysqlDriver",
     # errors
     "SqlFailure",
     "map_sqlite_error",

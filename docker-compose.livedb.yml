@@ -1,0 +1,30 @@
+# WS7g (#36) — host-access override for the coordinated cross-language live-DB validation pass.
+#
+# The base docker-compose.test.yml puts postgres+mysql on an INTERNAL-ONLY network (no published
+# host ports) — correct for the in-container `test-integration` service, but the WS7g pass runs
+# FOUR language toolchains (Python/Go/PHP/Rust) from the HOST against the same live DBs. Building a
+# single image carrying all four toolchains + their DB drivers is impractical for one pass, so this
+# override republishes the two DB ports to the host (5433→pg, 3307→mysql; matching the WS6 TS
+# ScpDialect.test.ts host defaults) and drops the internal flag so host clients can connect.
+#
+#   docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml up -d postgres mysql
+#
+# The DBs still init from test/fixtures/init*.sql; each language leg creates its OWN schema
+# (scp_py / scp_go / scp_php / scp_rust namespaced tables) to avoid cross-contamination.
+services:
+  postgres:
+    ports:
+      - "5433:5432"
+
+  mysql:
+    ports:
+      - "3307:3306"
+    # Grant testuser rights on the per-language `scp_%` databases. `zz-`-prefixed so it runs AFTER
+    # the base init-mysql.sql (docker-entrypoint-initdb.d executes alphabetically). Compose merges
+    # this into the base mysql `volumes` list, keeping the base init mount.
+    volumes:
+      - ./test/fixtures/livedb-grants.sql:/docker-entrypoint-initdb.d/zz-livedb-grants.sql:ro
+
+networks:
+  test-internal:
+    internal: false

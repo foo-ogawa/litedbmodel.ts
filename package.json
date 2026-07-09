@@ -52,9 +52,14 @@
     "vendor:bc-php": "node scripts/vendor-behavior-contracts-php.mjs",
     "vendor:bc-php:check": "node scripts/vendor-behavior-contracts-php.mjs --check",
     "conformance:gen": "vitest run --config conformance/vitest.config.ts",
+    "conformance:gen:livedb": "vitest run --config conformance/vitest.livedb.config.ts",
     "conformance:vectors": "npm run build:scp && tsx conformance/vectors-runner.ts",
     "conformance:run": "npm run build:scp && tsx conformance/vectors-run.ts",
-    "conformance:codegen": "npm run build:scp && tsx conformance/codegen/codegen-runner.ts"
+    "conformance:codegen": "npm run build:scp && tsx conformance/codegen/codegen-runner.ts",
+    "conformance:livedb": "tsx conformance/livedb-run.ts",
+    "docker:livedb:up": "docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml up -d postgres mysql",
+    "docker:livedb:down": "docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml down -v",
+    "conformance:livedb:docker": "npm run docker:livedb:up && sleep 5 && npm run conformance:gen:livedb && npm run conformance:livedb; e=$?; npm run docker:livedb:down; exit $e"
   },
   "keywords": [
     "orm",

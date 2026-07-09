@@ -13,3 +13,11 @@ behavior-contracts = { workspace = true }
 # substitute for docker; #34 AC). `bundled` builds the SQLite amalgamation so no system libsqlite
 # is required. This is the runnable seam; PG/MySQL drivers plug into the same `Driver` trait later.
 rusqlite = { workspace = true }
+# WS7g (#36) live-DB drivers — synchronous PostgreSQL + MySQL clients that plug into the SAME
+# `Driver` trait. Feature-gated so the default conformance build (cargo test/check for the SQLite
+# bar) needs neither crate; the livedb_runner binary enables `--features livedb`.
+postgres = { version = "0.19", optional = true }
+mysql = { version = "25", optional = true }
+
+[features]
+livedb = ["dep:postgres", "dep:mysql"]

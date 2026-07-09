@@ -1,0 +1,2907 @@
+{
+  "suite": "livedb",
+  "corpusVersion": 1,
+  "note": "WS7g (#36) live-DB corpus: exec/tx bundles compiled for postgres + mysql, executed against REAL dockerized PG + MySQL by each language runtime; expectedResult/expectedDbState are the byte-true SQLite reference (dialect-invariant §10 promise).",
+  "vectors": [
+    {
+      "name": "Feed: status present + belongsTo/hasMany relations",
+      "kind": "exec",
+      "input": {
+        "author_id": 7,
+        "status": "live",
+        "since": "2026-01-01"
+      },
+      "bundlePg": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "postgres",
+        "component": {
+          "body": [
+            {
+              "component": "Select",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "limit": {
+                      "ref": [
+                        "limit"
+                      ]
+                    },
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "status": {
+                      "ref": [
+                        "status"
+                      ]
+                    },
+                    "since": {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "n1",
+              "map": {
+                "as": "$e0",
+                "component": "Select",
+                "over": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "parent": "n0",
+                "ports": {
+                  "__scope": {
+                    "obj": {
+                      "$e0": {
+                        "ref": [
+                          "$e0"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "created_at": {
+              "required": true,
+              "type": "unknown"
+            },
+            "limit": {
+              "required": true,
+              "type": "unknown"
+            },
+            "since": {
+              "required": true,
+              "type": "unknown"
+            },
+            "status": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Feed",
+          "output": {
+            "obj": {
+              "authors": {
+                "ref": [
+                  "n1"
+                ]
+              },
+              "posts": {
+                "ref": [
+                  "n0"
+                ]
+              }
+            }
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ],
+              [
+                1
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Select",
+            "sql": "SELECT id, author_id, title, status FROM posts{where} ORDER BY id ASC LIMIT ?",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "author_id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "author_id"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "sql": "status = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "status"
+                      ]
+                    }
+                  ],
+                  "when": {
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
+                    ]
+                  }
+                },
+                {
+                  "always": true,
+                  "sql": "created_at >= ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [
+              {
+                "coalesce": [
+                  {
+                    "refOpt": [
+                      "limit"
+                    ]
+                  },
+                  20
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          },
+          "n1": {
+            "component": "Select",
+            "sql": "SELECT id, name FROM users{where}",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "$e0",
+                        "author_id"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [
+          "status",
+          "limit"
+        ],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "query": {
+              "component": "Select",
+              "sql": "SELECT id, name FROM users{where}",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "query": {
+              "component": "Select",
+              "sql": "WITH ranked AS (SELECT id, post_id, label, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags{where}) SELECT id, post_id, label FROM ranked WHERE _rn <= 2",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "post_id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          }
+        }
+      },
+      "bundleMysql": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "mysql",
+        "component": {
+          "body": [
+            {
+              "component": "Select",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "limit": {
+                      "ref": [
+                        "limit"
+                      ]
+                    },
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "status": {
+                      "ref": [
+                        "status"
+                      ]
+                    },
+                    "since": {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "n1",
+              "map": {
+                "as": "$e0",
+                "component": "Select",
+                "over": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "parent": "n0",
+                "ports": {
+                  "__scope": {
+                    "obj": {
+                      "$e0": {
+                        "ref": [
+                          "$e0"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "created_at": {
+              "required": true,
+              "type": "unknown"
+            },
+            "limit": {
+              "required": true,
+              "type": "unknown"
+            },
+            "since": {
+              "required": true,
+              "type": "unknown"
+            },
+            "status": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Feed",
+          "output": {
+            "obj": {
+              "authors": {
+                "ref": [
+                  "n1"
+                ]
+              },
+              "posts": {
+                "ref": [
+                  "n0"
+                ]
+              }
+            }
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ],
+              [
+                1
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Select",
+            "sql": "SELECT id, author_id, title, status FROM posts{where} ORDER BY id ASC LIMIT ?",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "author_id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "author_id"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "sql": "status = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "status"
+                      ]
+                    }
+                  ],
+                  "when": {
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
+                    ]
+                  }
+                },
+                {
+                  "always": true,
+                  "sql": "created_at >= ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [
+              {
+                "coalesce": [
+                  {
+                    "refOpt": [
+                      "limit"
+                    ]
+                  },
+                  20
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          },
+          "n1": {
+            "component": "Select",
+            "sql": "SELECT id, name FROM users{where}",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "$e0",
+                        "author_id"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [
+          "status",
+          "limit"
+        ],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "query": {
+              "component": "Select",
+              "sql": "SELECT id, name FROM users{where}",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "query": {
+              "component": "Select",
+              "sql": "WITH ranked AS (SELECT id, post_id, label, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags{where}) SELECT id, post_id, label FROM ranked WHERE _rn <= 2",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "post_id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          }
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')"
+      ],
+      "expectedResult": {
+        "authors": [
+          [
+            {
+              "id": 7,
+              "name": "Ada"
+            }
+          ]
+        ],
+        "posts": [
+          {
+            "id": 1,
+            "author_id": 7,
+            "title": "Hello",
+            "status": "live"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Feed: status absent (SKIP drop) + relations",
+      "kind": "exec",
+      "input": {
+        "author_id": 7,
+        "since": "2026-01-01"
+      },
+      "bundlePg": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "postgres",
+        "component": {
+          "body": [
+            {
+              "component": "Select",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "limit": {
+                      "ref": [
+                        "limit"
+                      ]
+                    },
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "status": {
+                      "ref": [
+                        "status"
+                      ]
+                    },
+                    "since": {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "n1",
+              "map": {
+                "as": "$e0",
+                "component": "Select",
+                "over": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "parent": "n0",
+                "ports": {
+                  "__scope": {
+                    "obj": {
+                      "$e0": {
+                        "ref": [
+                          "$e0"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "created_at": {
+              "required": true,
+              "type": "unknown"
+            },
+            "limit": {
+              "required": true,
+              "type": "unknown"
+            },
+            "since": {
+              "required": true,
+              "type": "unknown"
+            },
+            "status": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Feed",
+          "output": {
+            "obj": {
+              "authors": {
+                "ref": [
+                  "n1"
+                ]
+              },
+              "posts": {
+                "ref": [
+                  "n0"
+                ]
+              }
+            }
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ],
+              [
+                1
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Select",
+            "sql": "SELECT id, author_id, title, status FROM posts{where} ORDER BY id ASC LIMIT ?",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "author_id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "author_id"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "sql": "status = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "status"
+                      ]
+                    }
+                  ],
+                  "when": {
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
+                    ]
+                  }
+                },
+                {
+                  "always": true,
+                  "sql": "created_at >= ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [
+              {
+                "coalesce": [
+                  {
+                    "refOpt": [
+                      "limit"
+                    ]
+                  },
+                  20
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          },
+          "n1": {
+            "component": "Select",
+            "sql": "SELECT id, name FROM users{where}",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "$e0",
+                        "author_id"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [
+          "status",
+          "limit"
+        ],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "query": {
+              "component": "Select",
+              "sql": "SELECT id, name FROM users{where}",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "query": {
+              "component": "Select",
+              "sql": "WITH ranked AS (SELECT id, post_id, label, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags{where}) SELECT id, post_id, label FROM ranked WHERE _rn <= 2",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "post_id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          }
+        }
+      },
+      "bundleMysql": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "mysql",
+        "component": {
+          "body": [
+            {
+              "component": "Select",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "limit": {
+                      "ref": [
+                        "limit"
+                      ]
+                    },
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "status": {
+                      "ref": [
+                        "status"
+                      ]
+                    },
+                    "since": {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "n1",
+              "map": {
+                "as": "$e0",
+                "component": "Select",
+                "over": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "parent": "n0",
+                "ports": {
+                  "__scope": {
+                    "obj": {
+                      "$e0": {
+                        "ref": [
+                          "$e0"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "created_at": {
+              "required": true,
+              "type": "unknown"
+            },
+            "limit": {
+              "required": true,
+              "type": "unknown"
+            },
+            "since": {
+              "required": true,
+              "type": "unknown"
+            },
+            "status": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Feed",
+          "output": {
+            "obj": {
+              "authors": {
+                "ref": [
+                  "n1"
+                ]
+              },
+              "posts": {
+                "ref": [
+                  "n0"
+                ]
+              }
+            }
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ],
+              [
+                1
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Select",
+            "sql": "SELECT id, author_id, title, status FROM posts{where} ORDER BY id ASC LIMIT ?",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "author_id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "author_id"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "sql": "status = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "status"
+                      ]
+                    }
+                  ],
+                  "when": {
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
+                    ]
+                  }
+                },
+                {
+                  "always": true,
+                  "sql": "created_at >= ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [
+              {
+                "coalesce": [
+                  {
+                    "refOpt": [
+                      "limit"
+                    ]
+                  },
+                  20
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          },
+          "n1": {
+            "component": "Select",
+            "sql": "SELECT id, name FROM users{where}",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "$e0",
+                        "author_id"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [
+          "status",
+          "limit"
+        ],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "query": {
+              "component": "Select",
+              "sql": "SELECT id, name FROM users{where}",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "query": {
+              "component": "Select",
+              "sql": "WITH ranked AS (SELECT id, post_id, label, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags{where}) SELECT id, post_id, label FROM ranked WHERE _rn <= 2",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "post_id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          }
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')"
+      ],
+      "expectedResult": {
+        "authors": [
+          [
+            {
+              "id": 7,
+              "name": "Ada"
+            }
+          ],
+          [
+            {
+              "id": 7,
+              "name": "Ada"
+            }
+          ]
+        ],
+        "posts": [
+          {
+            "id": 1,
+            "author_id": 7,
+            "title": "Hello",
+            "status": "live"
+          },
+          {
+            "id": 2,
+            "author_id": 7,
+            "title": "World",
+            "status": "draft"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Feed: hasMany limit=2 caps children",
+      "kind": "exec",
+      "input": {
+        "author_id": 7,
+        "since": "2026-01-01",
+        "status": "live"
+      },
+      "bundlePg": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "postgres",
+        "component": {
+          "body": [
+            {
+              "component": "Select",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "limit": {
+                      "ref": [
+                        "limit"
+                      ]
+                    },
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "status": {
+                      "ref": [
+                        "status"
+                      ]
+                    },
+                    "since": {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "n1",
+              "map": {
+                "as": "$e0",
+                "component": "Select",
+                "over": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "parent": "n0",
+                "ports": {
+                  "__scope": {
+                    "obj": {
+                      "$e0": {
+                        "ref": [
+                          "$e0"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "created_at": {
+              "required": true,
+              "type": "unknown"
+            },
+            "limit": {
+              "required": true,
+              "type": "unknown"
+            },
+            "since": {
+              "required": true,
+              "type": "unknown"
+            },
+            "status": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Feed",
+          "output": {
+            "obj": {
+              "authors": {
+                "ref": [
+                  "n1"
+                ]
+              },
+              "posts": {
+                "ref": [
+                  "n0"
+                ]
+              }
+            }
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ],
+              [
+                1
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Select",
+            "sql": "SELECT id, author_id, title, status FROM posts{where} ORDER BY id ASC LIMIT ?",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "author_id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "author_id"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "sql": "status = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "status"
+                      ]
+                    }
+                  ],
+                  "when": {
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
+                    ]
+                  }
+                },
+                {
+                  "always": true,
+                  "sql": "created_at >= ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [
+              {
+                "coalesce": [
+                  {
+                    "refOpt": [
+                      "limit"
+                    ]
+                  },
+                  20
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          },
+          "n1": {
+            "component": "Select",
+            "sql": "SELECT id, name FROM users{where}",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "$e0",
+                        "author_id"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [
+          "status",
+          "limit"
+        ],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "query": {
+              "component": "Select",
+              "sql": "SELECT id, name FROM users{where}",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "query": {
+              "component": "Select",
+              "sql": "WITH ranked AS (SELECT id, post_id, label, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags{where}) SELECT id, post_id, label FROM ranked WHERE _rn <= 2",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "post_id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          }
+        }
+      },
+      "bundleMysql": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "mysql",
+        "component": {
+          "body": [
+            {
+              "component": "Select",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "limit": {
+                      "ref": [
+                        "limit"
+                      ]
+                    },
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "status": {
+                      "ref": [
+                        "status"
+                      ]
+                    },
+                    "since": {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "n1",
+              "map": {
+                "as": "$e0",
+                "component": "Select",
+                "over": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "parent": "n0",
+                "ports": {
+                  "__scope": {
+                    "obj": {
+                      "$e0": {
+                        "ref": [
+                          "$e0"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "created_at": {
+              "required": true,
+              "type": "unknown"
+            },
+            "limit": {
+              "required": true,
+              "type": "unknown"
+            },
+            "since": {
+              "required": true,
+              "type": "unknown"
+            },
+            "status": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Feed",
+          "output": {
+            "obj": {
+              "authors": {
+                "ref": [
+                  "n1"
+                ]
+              },
+              "posts": {
+                "ref": [
+                  "n0"
+                ]
+              }
+            }
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ],
+              [
+                1
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Select",
+            "sql": "SELECT id, author_id, title, status FROM posts{where} ORDER BY id ASC LIMIT ?",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "author_id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "author_id"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "sql": "status = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "status"
+                      ]
+                    }
+                  ],
+                  "when": {
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
+                    ]
+                  }
+                },
+                {
+                  "always": true,
+                  "sql": "created_at >= ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "since"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [
+              {
+                "coalesce": [
+                  {
+                    "refOpt": [
+                      "limit"
+                    ]
+                  },
+                  20
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          },
+          "n1": {
+            "component": "Select",
+            "sql": "SELECT id, name FROM users{where}",
+            "where": {
+              "connector": "AND",
+              "fragments": [
+                {
+                  "always": true,
+                  "sql": "id = ?",
+                  "params": [
+                    {
+                      "ref": [
+                        "$e0",
+                        "author_id"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "params": [],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [
+          "status",
+          "limit"
+        ],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "query": {
+              "component": "Select",
+              "sql": "SELECT id, name FROM users{where}",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "query": {
+              "component": "Select",
+              "sql": "WITH ranked AS (SELECT id, post_id, label, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags{where}) SELECT id, post_id, label FROM ranked WHERE _rn <= 2",
+              "where": {
+                "connector": "AND",
+                "fragments": [
+                  {
+                    "always": true,
+                    "sql": "post_id IN (?)",
+                    "params": [
+                      {
+                        "ref": [
+                          "__keys"
+                        ]
+                      }
+                    ],
+                    "expand": 0
+                  }
+                ]
+              },
+              "params": [],
+              "assembly": {
+                "shape": "items"
+              }
+            }
+          }
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')"
+      ],
+      "expectedResult": {
+        "authors": [
+          [
+            {
+              "id": 7,
+              "name": "Ada"
+            }
+          ]
+        ],
+        "posts": [
+          {
+            "id": 1,
+            "author_id": 7,
+            "title": "Hello",
+            "status": "live"
+          }
+        ]
+      }
+    },
+    {
+      "name": "create: gate-first tx commits (author exists, unique, idempotent)",
+      "kind": "tx",
+      "input": {
+        "author_id": 7,
+        "title": "New Post",
+        "request_id": "req-1"
+      },
+      "bundlePg": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "postgres",
+        "component": {
+          "body": [
+            {
+              "component": "Insert",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "title": {
+                      "ref": [
+                        "title"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "title": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Create",
+          "output": {
+            "ref": [
+              "n0"
+            ]
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Insert",
+            "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+            "where": null,
+            "params": [
+              {
+                "ref": [
+                  "author_id"
+                ]
+              },
+              {
+                "ref": [
+                  "title"
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [],
+        "relations": {},
+        "transaction": {
+          "phase": "create",
+          "entityFrom": "tx_body_3",
+          "statements": [
+            {
+              "id": "tx_requires_0",
+              "role": "gate:requires",
+              "op": {
+                "component": "Select",
+                "sql": "SELECT 1 FROM users WHERE id = ?",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "existsElseRollback",
+              "label": "requires users"
+            },
+            {
+              "id": "tx_idem_1",
+              "role": "gate:idempotency",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO idem (token) VALUES (?) ON CONFLICT DO NOTHING",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "request_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseNoop",
+              "label": "idempotency idem"
+            },
+            {
+              "id": "tx_unique_2",
+              "role": "gate:unique",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO uniq (name, s0, f0) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                "where": null,
+                "params": [
+                  "title_per_author",
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseRollback",
+              "label": "unique title_per_author"
+            },
+            {
+              "id": "tx_body_3",
+              "role": "body",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "Insert Insert"
+            },
+            {
+              "id": "tx_derive_4",
+              "role": "derive",
+              "op": {
+                "component": "Update",
+                "sql": "UPDATE users SET post_count = post_count + ?{where}",
+                "where": {
+                  "connector": "AND",
+                  "fragments": [
+                    {
+                      "always": true,
+                      "sql": "id = ?",
+                      "params": [
+                        {
+                          "ref": [
+                            "author_id"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "params": [
+                  1
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "derive users.post_count"
+            },
+            {
+              "id": "tx_emit_5",
+              "role": "emit",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO outbox (type, payload) VALUES (?, ?)",
+                "where": null,
+                "params": [
+                  "PostCreated",
+                  {
+                    "obj": {
+                      "postId": {
+                        "ref": [
+                          "__entity",
+                          "id"
+                        ]
+                      },
+                      "userId": {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "emit PostCreated"
+            }
+          ],
+          "onIdempotentHit": "rollback"
+        }
+      },
+      "bundleMysql": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "mysql",
+        "component": {
+          "body": [
+            {
+              "component": "Insert",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "title": {
+                      "ref": [
+                        "title"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "title": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Create",
+          "output": {
+            "ref": [
+              "n0"
+            ]
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Insert",
+            "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+            "where": null,
+            "params": [
+              {
+                "ref": [
+                  "author_id"
+                ]
+              },
+              {
+                "ref": [
+                  "title"
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [],
+        "relations": {},
+        "transaction": {
+          "phase": "create",
+          "entityFrom": "tx_body_3",
+          "statements": [
+            {
+              "id": "tx_requires_0",
+              "role": "gate:requires",
+              "op": {
+                "component": "Select",
+                "sql": "SELECT 1 FROM users WHERE id = ?",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "existsElseRollback",
+              "label": "requires users"
+            },
+            {
+              "id": "tx_idem_1",
+              "role": "gate:idempotency",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT IGNORE INTO idem (token) VALUES (?)",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "request_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseNoop",
+              "label": "idempotency idem"
+            },
+            {
+              "id": "tx_unique_2",
+              "role": "gate:unique",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT IGNORE INTO uniq (name, s0, f0) VALUES (?, ?, ?)",
+                "where": null,
+                "params": [
+                  "title_per_author",
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseRollback",
+              "label": "unique title_per_author"
+            },
+            {
+              "id": "tx_body_3",
+              "role": "body",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "Insert Insert"
+            },
+            {
+              "id": "tx_derive_4",
+              "role": "derive",
+              "op": {
+                "component": "Update",
+                "sql": "UPDATE users SET post_count = post_count + ?{where}",
+                "where": {
+                  "connector": "AND",
+                  "fragments": [
+                    {
+                      "always": true,
+                      "sql": "id = ?",
+                      "params": [
+                        {
+                          "ref": [
+                            "author_id"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "params": [
+                  1
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "derive users.post_count"
+            },
+            {
+              "id": "tx_emit_5",
+              "role": "emit",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO outbox (type, payload) VALUES (?, ?)",
+                "where": null,
+                "params": [
+                  "PostCreated",
+                  {
+                    "obj": {
+                      "postId": {
+                        "ref": [
+                          "__entity",
+                          "id"
+                        ]
+                      },
+                      "userId": {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "emit PostCreated"
+            }
+          ],
+          "onIdempotentHit": "rollback"
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, post_count INTEGER NOT NULL DEFAULT 0)",
+        "CREATE TABLE posts (id SERIAL PRIMARY KEY, author_id INTEGER NOT NULL REFERENCES users(id), title TEXT NOT NULL, created_at TEXT)",
+        "CREATE TABLE idem (token TEXT PRIMARY KEY)",
+        "CREATE TABLE uniq (name TEXT NOT NULL, s0 INTEGER NOT NULL, f0 TEXT NOT NULL, PRIMARY KEY (name, s0, f0))",
+        "CREATE TABLE outbox (id SERIAL PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL)",
+        "INSERT INTO users (id, name, post_count) VALUES (7, 'Ada', 2)",
+        "INSERT INTO users (id, name, post_count) VALUES (8, 'Alan', 0)"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255), post_count INT NOT NULL DEFAULT 0)",
+        "CREATE TABLE posts (id INT AUTO_INCREMENT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, created_at VARCHAR(255), FOREIGN KEY (author_id) REFERENCES users(id))",
+        "CREATE TABLE idem (token VARCHAR(255) PRIMARY KEY)",
+        "CREATE TABLE uniq (name VARCHAR(190) NOT NULL, s0 INT NOT NULL, f0 VARCHAR(190) NOT NULL, PRIMARY KEY (name, s0, f0))",
+        "CREATE TABLE outbox (id INT AUTO_INCREMENT PRIMARY KEY, type VARCHAR(255) NOT NULL, payload TEXT NOT NULL)",
+        "INSERT INTO users (id, name, post_count) VALUES (7, 'Ada', 2)",
+        "INSERT INTO users (id, name, post_count) VALUES (8, 'Alan', 0)"
+      ],
+      "expectedResult": {
+        "committed": true,
+        "entity": {
+          "id": 1,
+          "author_id": 7,
+          "title": "New Post"
+        },
+        "executed": [
+          "tx_requires_0",
+          "tx_idem_1",
+          "tx_unique_2",
+          "tx_body_3",
+          "tx_derive_4",
+          "tx_emit_5"
+        ]
+      },
+      "expectedDbState": [
+        {
+          "query": "SELECT id, author_id, title FROM posts ORDER BY id",
+          "rows": [
+            {
+              "id": 1,
+              "author_id": 7,
+              "title": "New Post"
+            }
+          ]
+        },
+        {
+          "query": "SELECT id, post_count FROM users ORDER BY id",
+          "rows": [
+            {
+              "id": 7,
+              "post_count": 3
+            },
+            {
+              "id": 8,
+              "post_count": 0
+            }
+          ]
+        },
+        {
+          "query": "SELECT type, payload FROM outbox ORDER BY id",
+          "rows": [
+            {
+              "type": "PostCreated",
+              "payload": "{\"postId\":1,\"userId\":7}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "create: gate short-circuits on missing author (ROLLBACK, no body write)",
+      "kind": "tx",
+      "input": {
+        "author_id": 999,
+        "title": "Orphan",
+        "request_id": "req-2"
+      },
+      "bundlePg": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "postgres",
+        "component": {
+          "body": [
+            {
+              "component": "Insert",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "title": {
+                      "ref": [
+                        "title"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "title": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Create",
+          "output": {
+            "ref": [
+              "n0"
+            ]
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Insert",
+            "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+            "where": null,
+            "params": [
+              {
+                "ref": [
+                  "author_id"
+                ]
+              },
+              {
+                "ref": [
+                  "title"
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [],
+        "relations": {},
+        "transaction": {
+          "phase": "create",
+          "entityFrom": "tx_body_3",
+          "statements": [
+            {
+              "id": "tx_requires_0",
+              "role": "gate:requires",
+              "op": {
+                "component": "Select",
+                "sql": "SELECT 1 FROM users WHERE id = ?",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "existsElseRollback",
+              "label": "requires users"
+            },
+            {
+              "id": "tx_idem_1",
+              "role": "gate:idempotency",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO idem (token) VALUES (?) ON CONFLICT DO NOTHING",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "request_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseNoop",
+              "label": "idempotency idem"
+            },
+            {
+              "id": "tx_unique_2",
+              "role": "gate:unique",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO uniq (name, s0, f0) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                "where": null,
+                "params": [
+                  "title_per_author",
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseRollback",
+              "label": "unique title_per_author"
+            },
+            {
+              "id": "tx_body_3",
+              "role": "body",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "Insert Insert"
+            },
+            {
+              "id": "tx_derive_4",
+              "role": "derive",
+              "op": {
+                "component": "Update",
+                "sql": "UPDATE users SET post_count = post_count + ?{where}",
+                "where": {
+                  "connector": "AND",
+                  "fragments": [
+                    {
+                      "always": true,
+                      "sql": "id = ?",
+                      "params": [
+                        {
+                          "ref": [
+                            "author_id"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "params": [
+                  1
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "derive users.post_count"
+            },
+            {
+              "id": "tx_emit_5",
+              "role": "emit",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO outbox (type, payload) VALUES (?, ?)",
+                "where": null,
+                "params": [
+                  "PostCreated",
+                  {
+                    "obj": {
+                      "postId": {
+                        "ref": [
+                          "__entity",
+                          "id"
+                        ]
+                      },
+                      "userId": {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "emit PostCreated"
+            }
+          ],
+          "onIdempotentHit": "rollback"
+        }
+      },
+      "bundleMysql": {
+        "irVersion": 1,
+        "exprVersion": 2,
+        "dialect": "mysql",
+        "component": {
+          "body": [
+            {
+              "component": "Insert",
+              "id": "n0",
+              "ports": {
+                "__scope": {
+                  "obj": {
+                    "author_id": {
+                      "ref": [
+                        "author_id"
+                      ]
+                    },
+                    "title": {
+                      "ref": [
+                        "title"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "inputPorts": {
+            "author_id": {
+              "required": true,
+              "type": "unknown"
+            },
+            "title": {
+              "required": true,
+              "type": "unknown"
+            }
+          },
+          "name": "Create",
+          "output": {
+            "ref": [
+              "n0"
+            ]
+          },
+          "plan": {
+            "concurrency": 16,
+            "groups": [
+              [
+                0
+              ]
+            ]
+          }
+        },
+        "operations": {
+          "n0": {
+            "component": "Insert",
+            "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+            "where": null,
+            "params": [
+              {
+                "ref": [
+                  "author_id"
+                ]
+              },
+              {
+                "ref": [
+                  "title"
+                ]
+              }
+            ],
+            "assembly": {
+              "shape": "items"
+            }
+          }
+        },
+        "optionalHeads": [],
+        "relations": {},
+        "transaction": {
+          "phase": "create",
+          "entityFrom": "tx_body_3",
+          "statements": [
+            {
+              "id": "tx_requires_0",
+              "role": "gate:requires",
+              "op": {
+                "component": "Select",
+                "sql": "SELECT 1 FROM users WHERE id = ?",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "existsElseRollback",
+              "label": "requires users"
+            },
+            {
+              "id": "tx_idem_1",
+              "role": "gate:idempotency",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT IGNORE INTO idem (token) VALUES (?)",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "request_id"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseNoop",
+              "label": "idempotency idem"
+            },
+            {
+              "id": "tx_unique_2",
+              "role": "gate:unique",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT IGNORE INTO uniq (name, s0, f0) VALUES (?, ?, ?)",
+                "where": null,
+                "params": [
+                  "title_per_author",
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "gate": "insertedElseRollback",
+              "label": "unique title_per_author"
+            },
+            {
+              "id": "tx_body_3",
+              "role": "body",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+                "where": null,
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "Insert Insert"
+            },
+            {
+              "id": "tx_derive_4",
+              "role": "derive",
+              "op": {
+                "component": "Update",
+                "sql": "UPDATE users SET post_count = post_count + ?{where}",
+                "where": {
+                  "connector": "AND",
+                  "fragments": [
+                    {
+                      "always": true,
+                      "sql": "id = ?",
+                      "params": [
+                        {
+                          "ref": [
+                            "author_id"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "params": [
+                  1
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "derive users.post_count"
+            },
+            {
+              "id": "tx_emit_5",
+              "role": "emit",
+              "op": {
+                "component": "Insert",
+                "sql": "INSERT INTO outbox (type, payload) VALUES (?, ?)",
+                "where": null,
+                "params": [
+                  "PostCreated",
+                  {
+                    "obj": {
+                      "postId": {
+                        "ref": [
+                          "__entity",
+                          "id"
+                        ]
+                      },
+                      "userId": {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "assembly": {
+                  "shape": "items"
+                }
+              },
+              "label": "emit PostCreated"
+            }
+          ],
+          "onIdempotentHit": "rollback"
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, post_count INTEGER NOT NULL DEFAULT 0)",
+        "CREATE TABLE posts (id SERIAL PRIMARY KEY, author_id INTEGER NOT NULL REFERENCES users(id), title TEXT NOT NULL, created_at TEXT)",
+        "CREATE TABLE idem (token TEXT PRIMARY KEY)",
+        "CREATE TABLE uniq (name TEXT NOT NULL, s0 INTEGER NOT NULL, f0 TEXT NOT NULL, PRIMARY KEY (name, s0, f0))",
+        "CREATE TABLE outbox (id SERIAL PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL)",
+        "INSERT INTO users (id, name, post_count) VALUES (7, 'Ada', 2)",
+        "INSERT INTO users (id, name, post_count) VALUES (8, 'Alan', 0)"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255), post_count INT NOT NULL DEFAULT 0)",
+        "CREATE TABLE posts (id INT AUTO_INCREMENT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, created_at VARCHAR(255), FOREIGN KEY (author_id) REFERENCES users(id))",
+        "CREATE TABLE idem (token VARCHAR(255) PRIMARY KEY)",
+        "CREATE TABLE uniq (name VARCHAR(190) NOT NULL, s0 INT NOT NULL, f0 VARCHAR(190) NOT NULL, PRIMARY KEY (name, s0, f0))",
+        "CREATE TABLE outbox (id INT AUTO_INCREMENT PRIMARY KEY, type VARCHAR(255) NOT NULL, payload TEXT NOT NULL)",
+        "INSERT INTO users (id, name, post_count) VALUES (7, 'Ada', 2)",
+        "INSERT INTO users (id, name, post_count) VALUES (8, 'Alan', 0)"
+      ],
+      "expectedResult": {
+        "committed": false,
+        "shortCircuit": {
+          "statementId": "tx_requires_0",
+          "reason": "requires_absent"
+        },
+        "entity": null,
+        "executed": [
+          "tx_requires_0"
+        ]
+      },
+      "expectedDbState": [
+        {
+          "query": "SELECT id, author_id, title FROM posts ORDER BY id",
+          "rows": []
+        },
+        {
+          "query": "SELECT id, post_count FROM users ORDER BY id",
+          "rows": [
+            {
+              "id": 7,
+              "post_count": 2
+            },
+            {
+              "id": 8,
+              "post_count": 0
+            }
+          ]
+        },
+        {
+          "query": "SELECT type, payload FROM outbox ORDER BY id",
+          "rows": []
+        }
+      ]
+    }
+  ]
+}
