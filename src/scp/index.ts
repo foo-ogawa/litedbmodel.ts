@@ -2,9 +2,10 @@
  * litedbmodel v2 SCP — public surface (WS1, #21).
  *
  * The SQL-backend consumer layer over behavior-contracts (spec §1). WS1 delivers the
- * Catalog definition and the SQLite Backend Compile + dynamic-expansion render. WS2
- * (authoring parse), WS3 (runtime execution / handlers), WS4/5 (relations) and the other
- * dialects (PG/MySQL) are out of scope here.
+ * Catalog definition and the SQLite Backend Compile + dynamic-expansion render; WS2
+ * delivers the Authoring Parse (SemanticBehavior declaration + eager public-API path →
+ * one internal Component-graph IR). WS3 (runtime execution / handlers), WS4/5 (relations)
+ * and the other dialects (PG/MySQL) are out of scope here.
  */
 
 // Catalog (spec §11 item 1)
@@ -50,4 +51,57 @@ export { renderOperation } from './render';
 export type { RenderedSql } from './render';
 
 // Portability guard (closed Expression IR set only)
-export { assertExprPortable, assertOperationPortable } from './guard';
+export {
+  assertExprPortable,
+  assertOperationPortable,
+  assertComponentPortable,
+  assertComponentGraphPortable,
+} from './guard';
+
+// Authoring Parse (spec §2.4 / §7 / §9) — SemanticBehavior declaration + eager public-API
+// path → one internal Component-graph IR.
+export {
+  components,
+  publishBehaviors,
+  compileEager,
+} from './authoring';
+export type {
+  ComponentFns,
+  BehaviorMethodSpec,
+  BehaviorModelContract,
+  PublishBehaviorsOptions,
+  EagerBehavior,
+  Component,
+  ComponentGraphIR,
+  MapNode,
+  ComponentRefNode,
+} from './authoring';
+
+// Re-export bc's shared authoring vocabulary so authors import the whole surface from
+// litedbmodel (leaf vocabulary is the Catalog; expressions/structured control are bc's —
+// C2). There is NO litedbmodel-local authoring opcode beyond the Catalog.
+export {
+  SemanticBehavior,
+  behavior,
+  when,
+  concat,
+  add,
+  sub,
+  mul,
+  div,
+  mod,
+  neg,
+  eq,
+  ne,
+  lt,
+  le,
+  gt,
+  ge,
+  and,
+  or,
+  not,
+  coalesce,
+  len,
+  opt,
+} from 'behavior-contracts';
+export type { In, Recorded, BehaviorClass } from 'behavior-contracts';

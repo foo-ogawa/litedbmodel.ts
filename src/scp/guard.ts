@@ -9,7 +9,7 @@
  * plus the operator-set check.
  */
 
-import { assertPortable, PORTABLE_EXPR_OPERATORS, PortabilityError } from 'behavior-contracts';
+import { assertPortable, PORTABLE_EXPR_OPERATORS, PortabilityError, type Component, type ComponentGraphIR } from 'behavior-contracts';
 import type { CompiledOperation, ExprNode, Fragment, FragmentTree } from './ir';
 
 /**
@@ -55,4 +55,42 @@ function assertFragmentPortable(node: Fragment | FragmentTree, path: string): vo
 export function assertOperationPortable(op: CompiledOperation): void {
   op.params.forEach((p, i) => assertExprPortable(p, `$.params[${i}]`));
   if (op.where !== null) assertFragmentPortable(op.where, '$.where');
+}
+
+// ── Authoring→IR lower guard (WS2, #22 — auto-applied on the single compile path) ─────
+
+/**
+ * Assert every Expression IR node in ONE lowered component's port wiring is portable
+ * (WS2 AC). Walks every `componentRef`/`map` node's `ports` (and `map.over` / `map.when`)
+ * and every `cond` node's `if`/`then`/`else`, applying {@link assertExprPortable} — so any
+ * operator outside bc's closed set is rejected fail-closed at compile time. This is the
+ * litedbmodel-owned portability layer the authoring lower path auto-applies, over and
+ * above bc's own `assertPortableComponentGraph` self-check.
+ */
+export function assertComponentPortable(component: Component): void {
+  const at = `component '${component.name}'`;
+  for (const n of component.body) {
+    if ('map' in n) {
+      assertExprPortable(n.map.over, `${at}/${n.id}.map.over`);
+      assertExprPortable(n.map.ports, `${at}/${n.id}.map.ports`);
+      if (n.map.when !== undefined) assertExprPortable(n.map.when, `${at}/${n.id}.map.when`);
+    } else if ('cond' in n) {
+      assertExprPortable(n.cond.if, `${at}/${n.id}.cond.if`);
+      assertExprPortable(n.cond.then, `${at}/${n.id}.cond.then`);
+      assertExprPortable(n.cond.else, `${at}/${n.id}.cond.else`);
+    } else {
+      assertExprPortable(n.ports, `${at}/${n.id}.ports`);
+    }
+  }
+  assertExprPortable(component.output, `${at}.output`);
+}
+
+/**
+ * Assert every component of a lowered Component-graph IR is portable (WS2 AC). The
+ * authoring lower path ({@link publishBehaviors} / {@link compileEager}) invokes this
+ * automatically so a non-portable opcode anywhere in the emitted IR is a fail-closed
+ * compile error. Throws {@link PortabilityError} on the first violation.
+ */
+export function assertComponentGraphPortable(ir: ComponentGraphIR): void {
+  for (const c of ir.components) assertComponentPortable(c);
 }
