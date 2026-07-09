@@ -63,12 +63,26 @@ jobs:
         if: matrix.lang == 'python'
         run: |
           python3 -m py_compile python/litedbmodel_runtime/*.py
-      - name: Go — build
+      - name: Go — setup
         if: matrix.lang == 'go'
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
-      - name: Go — build (cont.)
+          # The WS7c Go runtime consumes behavior-contracts + a pure-Go SQLite (modernc); the
+          # dependency graph's `go` floors require a modern toolchain (mirrors graphddb's go leg).
+          go-version: '1.25'
+      - name: Go — auth for the private behavior-contracts VCS-tag dependency
+        if: matrix.lang == 'go'
+        env:
+          # behavior-contracts is a PRIVATE repo pinned by VCS tag (go/v0.2.0) — NO local replace.
+          # Resolving it needs GOPRIVATE + an authenticated git rewrite (token in secrets).
+          GH_TOKEN: ${{ secrets.BEHAVIOR_CONTRACTS_TOKEN }}
+        run: |
+          echo "GOPRIVATE=github.com/foo-ogawa/*" >> "$GITHUB_ENV"
+          echo "GOFLAGS=-mod=mod" >> "$GITHUB_ENV"
+          if [ -n "$GH_TOKEN" ]; then
+            git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+      - name: Go — build
         if: matrix.lang == 'go'
         run: cd go && go build ./...
       - name: Rust — check
