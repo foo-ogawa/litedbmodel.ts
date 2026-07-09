@@ -33,16 +33,44 @@ jobs:
       - name: No local (../-escaping) dependencies
         run: npm run deps:check
 
-  # ── TS reference conformance: corpus is byte-true + the TS runner is green ──
+  # ── Cross-language conformance: corpus byte-true + all runnable language legs green ──
+  # `vectors-run.ts` DISCOVERS every implemented language runner (ts/py/php/go/rust) and runs
+  # each, and the codegen leg (mode-3) executes the py/go emitted modules — so the sibling
+  # toolchains must be present here too, exactly like graphddb's go.yml sets up Python/PHP/Rust
+  # for its conformance golden. (php + rust ship on the ubuntu runner; Node/Python/Go are set up
+  # below.) The go leg additionally needs the private behavior-contracts VCS module (secret).
   conformance-ts:
     runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: github.com/foo-ogawa/behavior-contracts
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: go/go.sum
+      - name: Auth for the private behavior-contracts Go VCS-tag dependency
+        env:
+          BEHAVIOR_CONTRACTS_PAT: ${{ secrets.BEHAVIOR_CONTRACTS_PAT }}
+        run: |
+          git config --global url."https://x-access-token:${BEHAVIOR_CONTRACTS_PAT}@github.com/foo-ogawa/behavior-contracts".insteadOf "https://github.com/foo-ogawa/behavior-contracts"
+      - name: Warm private go module graph (retry transient auth)
+        uses: ./.github/actions/warm-go-module
       - run: npm ci --ignore-scripts
+      # The python vectors runner + the codegen py-exec leg import litedbmodel_runtime, which
+      # consumes the shared behavior-contracts core — install both the local runtime package and
+      # the published bc core so `python3` legs run instead of exiting 1 with an ImportError.
+      - name: Install the Python runtime + behavior-contracts core (for the py legs)
+        # `./python`'s pyproject pins `behavior-contracts==0.2.0` as a hard dep, so this pulls the
+        # bc core too. Without it the py vectors runner + codegen py-exec exit 1 on ImportError.
+        run: python3 -m pip install ./python
       # The repo `.npmrc` sets `ignore-scripts=true`, so `npm ci` skips
       # better-sqlite3's native `install` script and its `better_sqlite3.node`
       # addon is never built. The conformance harness opens an in-memory SQLite
@@ -58,7 +86,7 @@ jobs:
         run: npm run build:scp
       - name: Corpus drift gate + TS reference runner (part of the suite)
         run: npx vitest run test/scp/conformance-vectors.test.ts
-      - name: Cross-language orchestrator (TS leg; WS7b-e languages auto-join)
+      - name: Cross-language orchestrator (ts/py/php/go/rust auto-join, incl. codegen leg)
         run: npx tsx conformance/vectors-run.ts
       - name: Frozen golden unchanged (additive-refreeze)
         run: |
