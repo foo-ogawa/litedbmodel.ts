@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/litedbmodel.svg)](https://www.npmjs.com/package/litedbmodel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**[📖 API Documentation](https://github.com/foo-ogawa/litedbmodel.ts/blob/main/docs/api/README.md)**
+**[📖 API Documentation](https://github.com/foo-ogawa/litedbmodel/blob/main/docs/api/README.md)**
 
 **Production-safe SQL-first Database Access Layer for AI-assisted development.**
 

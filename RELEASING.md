@@ -110,12 +110,10 @@ Run from the repo root:
 
 ---
 
-## Open decision (owner) — canonical monorepo repository name
+## Repository name — RESOLVED (2026-07-10)
 
-The Go module path is `github.com/foo-ogawa/litedbmodel/go` (no `.ts`), but the npm `package.json`
-still declares `repository: github.com/foo-ogawa/litedbmodel.ts`. For Go's VCS-tag resolution and
-the Packagist webhook to work, the repository must actually live at the path the Go module and the
-crate metadata reference. **Before the first v2 publish, the owner must decide the final repo name**
-(rename `litedbmodel.ts` → `litedbmodel`, or update `go/go.mod` + the Rust crate `repository` back
-to `.ts`) and make `package.json`, `go/go.mod`, and `rust/litedbmodel_runtime/Cargo.toml` agree.
-This is a naming/ownership decision, not a code fix, so it is left to the owner.
+The GitHub repository has been renamed `litedbmodel.ts` → **`litedbmodel`** (owner decision; GitHub
+301-redirects the old URL). All manifests now agree on `github.com/foo-ogawa/litedbmodel`:
+`go/go.mod` (`.../litedbmodel/go`), `rust/litedbmodel_runtime/Cargo.toml` (`repository`), and
+`package.json` (`repository`/`homepage`). Go's VCS-tag resolution and the Packagist webhook resolve
+against the live repo path. No further action required here.

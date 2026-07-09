@@ -74,10 +74,10 @@
   ],
   "author": "foo-ogawa",
   "license": "MIT",
-  "homepage": "https://github.com/foo-ogawa/litedbmodel.ts#readme",
+  "homepage": "https://github.com/foo-ogawa/litedbmodel#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/foo-ogawa/litedbmodel.ts.git"
+    "url": "git+https://github.com/foo-ogawa/litedbmodel.git"
   },
   "dependencies": {
     "behavior-contracts": "^0.2.0",
