@@ -25,33 +25,48 @@
 /** The reserved scope binding under which the body write's RETURNING row is exposed (`$.entity.*`). */
 export const ENTITY_ROOT = '__entity';
 
-/** The path root a write-relation value binds from. */
-export type PathRoot = 'input' | 'entity';
+/**
+ * The path root a write-relation value binds from:
+ *   - `input`  — the Command input port (bc flat scope).
+ *   - `entity` — the SOLE body write's RETURNING row (the WS5 single-base-write shorthand),
+ *     bound under {@link ENTITY_ROOT}.
+ *   - `ref`    — a NAMED upstream write's RETURNING row (`$.ref.<writeName>.<field>`, WS8a
+ *     composite/DAG scope). `entity` is exactly `ref` targeting the sole base write; keeping
+ *     it distinct preserves the WS5 vocabulary while composite writes address writes by name.
+ */
+export type PathRoot = 'input' | 'entity' | 'ref';
 
-/** A parsed, path-rooted write-relation value (`$.input.x` / `$.entity.x`). */
+/** A parsed, path-rooted write-relation value (`$.input.x` / `$.entity.x` / `$.ref.w.x`). */
 export interface EffectPath {
   readonly root: PathRoot;
+  /**
+   * For `ref`: the upstream write's NAME (the statement whose RETURNING row is referenced).
+   * Absent for `input` / `entity` (those have a single implicit source).
+   */
+  readonly writeName?: string;
   /** The field name after the root (a single physical column; no nested paths in α). */
   readonly field: string;
 }
 
 const PATH_RE = /^\$\.(input|entity)\.([A-Za-z_][A-Za-z0-9_]*)$/;
+const REF_PATH_RE = /^\$\.ref\.([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/;
 
 /**
  * Parse a path-rooted write-relation value string into an {@link EffectPath}. Fail-closed on
- * a malformed path — a write-relation value MUST be `$.input.<field>` or `$.entity.<field>`
- * (no free-form paths, no implicit root), so a typo is a loud build error, never a silent
- * default (hard rule).
+ * a malformed path — a write-relation value MUST be `$.input.<field>`, `$.entity.<field>`, or
+ * `$.ref.<writeName>.<field>` (no free-form paths, no implicit root), so a typo is a loud build
+ * error, never a silent default (hard rule).
  */
 export function parseEffectPath(value: string): EffectPath {
   const m = PATH_RE.exec(value);
-  if (m === null) {
-    throw new Error(
-      `write-time relations: '${value}' is not a valid path-rooted value; ` +
-        `use '$.input.<field>' (the Command input) or '$.entity.<field>' (the written row).`,
-    );
-  }
-  return { root: m[1] as PathRoot, field: m[2] };
+  if (m !== null) return { root: m[1] as PathRoot, field: m[2] };
+  const r = REF_PATH_RE.exec(value);
+  if (r !== null) return { root: 'ref', writeName: r[1], field: r[2] };
+  throw new Error(
+    `write-time relations: '${value}' is not a valid path-rooted value; use ` +
+      `'$.input.<field>' (the Command input), '$.entity.<field>' (the sole written row), or ` +
+      `'$.ref.<writeName>.<field>' (a named upstream write's RETURNING row).`,
+  );
 }
 
 // ── The §6 effect vocabulary (path-rooted, pure data) ─────────────────────────

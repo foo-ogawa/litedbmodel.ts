@@ -333,12 +333,26 @@ pub fn execute_transaction_bundle(
                 }
             }
 
+            let first_row = rows.into_iter().next();
+
+            // Capture the SOLE body RETURNING row as `$.entity` (WS5 single-write back-compat).
             if entity_from == Some(id) {
-                entity = rows.into_iter().next().unwrap_or(Value::Null);
+                entity = first_row.clone().unwrap_or(Value::Null);
                 if !matches!(entity, Value::Null) {
                     scope
                         .borrow_mut()
                         .push((ENTITY_ROOT.to_string(), entity.clone()));
+                }
+            }
+
+            // WS8a composite: bind THIS statement's RETURNING row under its `binds` name so a later
+            // `$.ref.<binds>.<field>` resolves against it (the tx-DAG data-dependency edge). Self-
+            // describing — the runtime binds the row the plan told it to; no re-derivation.
+            if let Some(binds) = stmt.get("binds").and_then(|b| b.as_str()) {
+                if let Some(row) = first_row {
+                    if !matches!(row, Value::Null) {
+                        scope.borrow_mut().push((binds.to_string(), row));
+                    }
                 }
             }
         }

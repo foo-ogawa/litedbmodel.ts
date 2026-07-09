@@ -58,7 +58,7 @@ import { buildResultSet, type ReadOptions } from './typed-object';
 import { compileNode } from './bridge';
 import { deriveTransactionPlan, type BaseWrite, type TransactionPlan } from './write-plan';
 import { executeTransaction, type TransactionResult } from './write-runtime';
-import { lifecycleFor, type EntityWritesDefinition, type WriteLifecyclePhase } from './writes';
+import { lifecycleFor, type EntityWritesDefinition, type LifecycleContract, type WriteLifecyclePhase } from './writes';
 import { dialectFor, type Dialect, type DialectName } from './dialect';
 
 /** The synthetic port that carries a SQL node's render scope (see module doc). */
@@ -563,6 +563,87 @@ export function compileWriteBundle(
     relations: {},
     transaction: plan,
   };
+}
+
+/**
+ * One member of a COMPOSITE (multi-write) Command (WS8a, #28 — spec §6 nested write / §14 tx-DAG):
+ * a named base write (its sole Insert/Update/Delete node in `entry`) carrying its OWN save-contract
+ * `effects`. A later member references an earlier member's RETURNING row via `$.ref.<name>.<field>`.
+ */
+export interface CompositeWriteEntry {
+  /** The Command method whose sole base-write node is this member's body. */
+  readonly entry: string;
+  /** The member's stable name (downstream members address its row as `$.ref.<name>.<field>`). */
+  readonly name: string;
+  /** The member's write-time-relations lifecycle for this phase (its gates/derive/edges/emits). */
+  readonly lifecycle: LifecycleContract;
+}
+
+/**
+ * Backend-Compile a COMPOSITE (multi-write) Command into a {@link SqlBundle} carrying ONE derived,
+ * gate-first, TOPOLOGICALLY-ORDERED transaction plan (spec §6 nested write / §14 "write-time tx DAG
+ * 導出"). Each {@link CompositeWriteEntry} contributes a named base write + its effects; a later
+ * member depends on an earlier via `$.ref.<name>.*` (e.g. a child INSERT keyed by the parent's
+ * RETURNING id). {@link deriveTransactionPlan} builds the data-dependency graph + gate-first
+ * constraint and derives the correct ordered plan (deterministic, stable tie-break; a cycle or
+ * dangling ref is ESCALATED). The plan is pure JSON — the 5 language runtimes execute it verbatim
+ * (they already bind each statement's `binds` row into scope for downstream `$.ref` resolution).
+ *
+ * @throws if an entry is missing/not a single-write node, or the DAG cannot be derived (cycle /
+ *   dangling `$.ref` / missing RETURNING on a referenced write) — all fail-closed.
+ */
+export function compileCompositeWriteBundle(
+  contract: BehaviorModelContract,
+  entries: readonly CompositeWriteEntry[],
+  phase: WriteLifecyclePhase,
+  dialectName: DialectName = 'sqlite',
+): SqlBundle {
+  if (entries.length < 2) {
+    throw new Error('scp write: a composite write bundle needs at least 2 named write members (use compileWriteBundle for a single write).');
+  }
+  const dialect = dialectFor(dialectName);
+  const bases: BaseWrite[] = [];
+  const operations: Record<string, CompiledOperation> = {};
+  let firstComponent: Component | undefined;
+  for (const e of entries) {
+    const component = contract.components.find((c) => c.name === e.entry);
+    if (component === undefined) throw new Error(`scp write: entry component '${e.entry}' not found in contract`);
+    if (firstComponent === undefined) firstComponent = component;
+    const writeNode = baseWriteNodeOf(component);
+    const baseOp = compileNode(writeNode as never, dialect);
+    bases.push({ op: baseOp, label: `${(writeNode as { component: string }).component} ${e.name}`, name: e.name, effects: e.lifecycle.effects });
+    for (const [id, op] of compileComponentNodes(component, dialect)) operations[`${e.name}.${id}`] = op;
+  }
+  // The lifecycle arg is unused in composite scope (each base carries its own effects); pass empty.
+  const plan = deriveTransactionPlan(phase, bases, { effects: {} }, dialect);
+
+  const surrogate = surrogateComponent(firstComponent!, operations);
+  return {
+    irVersion: contract.ir.irVersion,
+    exprVersion: contract.ir.exprVersion,
+    dialect: dialectName,
+    component: surrogate,
+    operations,
+    optionalHeads: [...optionalHeadsOf(operations)],
+    relations: {},
+    transaction: plan,
+  };
+}
+
+/**
+ * Execute a COMPOSITE (multi-write) Command end-to-end as ONE real SQLite transaction with gate-
+ * first short-circuit + DAG-ordered statements (spec §6 / §14): Backend-Compile the members into a
+ * bundle with the derived tx-DAG plan, then run {@link executeTransactionBundle}.
+ */
+export function executeCompositeCommand(
+  contract: BehaviorModelContract,
+  entries: readonly CompositeWriteEntry[],
+  phase: WriteLifecyclePhase,
+  input: Scope,
+  options: ExecuteOptions,
+): TransactionResult {
+  const bundle = compileCompositeWriteBundle(contract, entries, phase, options.dialect);
+  return executeTransactionBundle(bundle, input, options);
 }
 
 /**

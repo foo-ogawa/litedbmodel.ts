@@ -153,6 +153,11 @@ export type { TransactionResult, ShortCircuitReason } from './write-runtime';
 // The Command bundle + 1-tx execution surface (WS5 — the write path of §2.3 / §6).
 export { compileWriteBundle, executeCommand, executeTransactionBundle } from './runtime';
 
+// Composite (multi-write) Command surface (WS8a, #28 — spec §6 nested write / §14 tx-DAG derivation):
+// several named base writes with data dependencies → ONE topologically-ordered gate-first tx plan.
+export { compileCompositeWriteBundle, executeCompositeCommand } from './runtime';
+export type { CompositeWriteEntry } from './runtime';
+
 // Reusable handler/normalization seams (WS3) — exported so the mode-3 codegen path binds the
 // IDENTICAL SQL handlers into bc's generated `bind()` (byte-identity by construction).
 export { buildHandlers, normalizeInput } from './runtime';

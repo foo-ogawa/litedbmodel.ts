@@ -141,10 +141,16 @@ export function executeTransaction(db: SqliteDb, plan: TransactionPlan, input: S
         }
       }
 
-      // Capture the body RETURNING row as `$.entity` for the derive/edges/emits stages.
+      // Capture the SOLE body RETURNING row as `$.entity` (WS5 single-write back-compat).
       if (stmt.id === plan.entityFrom) {
         entity = result.rows.length > 0 ? result.rows[0] : null;
         if (entity !== null) scope[ENTITY_ROOT] = entity as unknown as Value;
+      }
+      // Composite (WS8a): bind THIS statement's RETURNING row under its `binds` name so a later
+      // `$.ref.<binds>.<field>` resolves against it (the DAG's data-dependency edge). Self-
+      // describing: the runtime just binds the row the plan told it to — no re-derivation.
+      if (stmt.binds !== undefined && result.rows.length > 0) {
+        scope[stmt.binds] = result.rows[0] as unknown as Value;
       }
     }
     db.prepare('COMMIT').run();

@@ -3,7 +3,7 @@
 //! These exercise the public surface against small hand-written §8 fixtures and the in-proc
 //! `rusqlite` driver — REAL SQL, not stubs — covering render (SKIP / IN-list / empty-WHERE /
 //! dialect `?`→`$N`), a read bundle end-to-end, and a gate-first write transaction (commit +
-//! short-circuit). The frozen 47-vector corpus is asserted by `rust/vectors_runner`; these are the
+//! short-circuit). The frozen 49-vector corpus is asserted by `rust/vectors_runner`; these are the
 //! crate-local `cargo test` gate on top.
 
 use behavior_contracts::{deep_equals, Value};

@@ -47,6 +47,7 @@ import {
   // bundle axis (the §8 published artifact + its execution)
   compileBundle,
   compileWriteBundle,
+  compileCompositeWriteBundle,
   executeBundle,
   executeTransactionBundle,
   publishBehaviors,
@@ -212,6 +213,68 @@ const postWrites = entityWrites<PostCommands>((w) => ({
     emits: [w.event('PostCreated', 'outbox', { postId: '$.entity.id', userId: '$.input.author_id' })],
   }),
 }));
+
+// ── WS8a composite (multi-write) fixtures: a nested write (post → comment) ────────
+
+/**
+ * A composite Command: create a Post (parent) AND its first Comment (child) in ONE tx. The child's
+ * `post_id` is bound from the PARENT's RETURNING id (`$.ref.post.id`) — a genuine write-time data
+ * dependency the tx-DAG derivation must resolve (parent ordered before child). The parent carries
+ * gate-first guards (requires author) + a derive (bump post_count); the child depends on the parent.
+ */
+class BlogComposite extends SemanticBehavior {
+  CreatePost($: In<{ author_id: number; title: string; body: string }>) {
+    return L.Insert({ table: 'posts', 'values.author_id': $.author_id, 'values.title': $.title, returning: 'id, author_id, title' });
+  }
+  CreateComment($: In<{ body: string }>) {
+    // The authored port is a placeholder; the composite-vector builder rewrites post_id to the real
+    // `$.ref.post.id` ref (the authoring `$` proxy addresses input, not sibling writes — the ref is
+    // injected post-derivation, mirroring test/scp/tx-dag.test.ts). The DERIVATION + RUNTIME under
+    // conformance are the real code paths; only the one cross-write port is patched.
+    return L.Insert({ table: 'comments', 'values.post_id': $.body, 'values.body': $.body, returning: 'id, post_id, body' });
+  }
+}
+
+const postParentWrites = entityWrites<BlogComposite>((w) => ({
+  create: w.lifecycle({
+    requires: [w.exists('users', { id: '$.input.author_id' })],
+    derive: [w.increment('users', { id: '$.input.author_id' }, 'post_count', +1)],
+  }),
+})).create!;
+
+const commentChildWrites = entityWrites<BlogComposite>((w) => ({
+  create: w.lifecycle({}),
+})).create!;
+
+/** The composite-write DDL + seed (parent posts, child comments, users). */
+const COMPOSITE_SCHEMA: readonly string[] = [
+  `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, post_count INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, author_id INTEGER NOT NULL REFERENCES users(id), title TEXT NOT NULL)`,
+  `CREATE TABLE comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL REFERENCES posts(id), body TEXT NOT NULL)`,
+  `INSERT INTO users (id, name, post_count) VALUES (7, 'Ada', 0)`,
+];
+
+/**
+ * Build the composite tx-DAG bundle (post parent → comment child) with the child's post_id rewritten
+ * to the real `$.ref.post.id` ref. The derivation + serialization are the genuine reference paths.
+ */
+function compositeBundle(dialect: DialectName): SqlBundle {
+  const contract = publishBehaviors(BlogComposite);
+  const bundle = compileCompositeWriteBundle(
+    contract,
+    [
+      { entry: 'CreatePost', name: 'post', lifecycle: { effects: postParentWrites.effects } },
+      { entry: 'CreateComment', name: 'comment', lifecycle: { effects: commentChildWrites.effects } },
+    ],
+    'create',
+    dialect,
+  );
+  // Rewrite the child body's post_id to the parent's RETURNING id (the cross-write dependency).
+  const child = bundle.transaction!.statements.find((s) => s.binds === 'comment')!;
+  (child.op as { params: unknown[] }).params = [{ ref: ['post', 'id'] }, { ref: ['body'] }];
+  (child.op as { sql: string }).sql = 'INSERT INTO comments (post_id, body) VALUES (?, ?) RETURNING id, post_id, body';
+  return bundle;
+}
 
 /** Read-relation declarations: belongsTo author + hasMany tags (with limit). */
 const blogRelations: readonly RelationDecl[] = [
@@ -469,6 +532,37 @@ export function generateCorpus(): Suite[] {
         { author_id: 999, title: 'Orphan', request_id: 'req-2' },
         WRITE_SCHEMA,
         dbAsserts,
+      ),
+    );
+
+    // ── WS8a composite (multi-write) tx-DAG vectors ──────────────────────────
+    // A nested write: the child comment's post_id is DERIVED from the parent post's RETURNING id
+    // (topologically ordered parent-before-child). The 5 runtimes execute the serialized plan
+    // verbatim — binding each statement's `binds` row into scope so `$.ref.post.id` resolves.
+    const compBundle = compositeBundle(d);
+    const compAsserts = [
+      'SELECT id, author_id, title FROM posts ORDER BY id',
+      'SELECT id, post_id, body FROM comments ORDER BY id',
+      'SELECT id, post_count FROM users ORDER BY id',
+    ];
+    tx.push(
+      txVector(
+        `composite: nested write commits parent+child in one tx-DAG (child.post_id = $.ref.post.id)`,
+        compBundle,
+        { author_id: 7, title: 'Nested', body: 'First comment' },
+        COMPOSITE_SCHEMA,
+        compAsserts,
+      ),
+    );
+    // Gate-first across the DAG: absent author → the parent's requires gate short-circuits BEFORE
+    // either the parent body or the dependent child body runs (whole-DAG rollback).
+    tx.push(
+      txVector(
+        `composite: gate-first across the DAG short-circuits before parent AND child (ROLLBACK)`,
+        compBundle,
+        { author_id: 999, title: 'Ghost', body: 'never' },
+        COMPOSITE_SCHEMA,
+        compAsserts,
       ),
     );
   }

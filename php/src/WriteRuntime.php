@@ -71,11 +71,22 @@ final class WriteRuntime
                     }
                 }
 
-                // Capture the body RETURNING row as `$.entity` for derive/edges/emits.
+                // Capture the SOLE body RETURNING row as `$.entity` (WS5 single-write back-compat).
                 if ($entityFrom !== null && (string) ($stmt->id ?? '') === (string) $entityFrom) {
                     $entity = count($result['rows']) > 0 ? $result['rows'][0] : null;
                     if ($entity instanceof \stdClass) {
                         $scope[self::ENTITY_ROOT] = $entity;
+                    }
+                }
+
+                // WS8a composite: bind THIS statement's RETURNING row under its `binds` name so a
+                // later `$.ref.<binds>.<field>` resolves against it (the tx-DAG data-dependency
+                // edge). Self-describing — bind the row the plan named; no re-derivation.
+                $binds = $stmt->binds ?? null;
+                if (is_string($binds) && count($result['rows']) > 0) {
+                    $row = $result['rows'][0];
+                    if ($row instanceof \stdClass) {
+                        $scope[$binds] = $row;
                     }
                 }
             }

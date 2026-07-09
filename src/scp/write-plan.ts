@@ -39,11 +39,15 @@
  * RETURNING row, exposed to the derive/edges/emits stages under {@link ENTITY_ROOT}). Only
  * bc's closed operator set (`ref`) is emitted — no invented opcode (hard rule).
  *
- * ## INITIAL scope (spec §6 / §13) — single-statement Command + fixed-order relations
+ * ## Transaction derivation (spec §6 / §14) — tx-DAG + gate-first
  *
- * The ordering is FIXED (requires → idempotency → unique → body → derive → edges → emits), not
- * a derived dependency DAG. A case needing full DAG derivation (cross-fragment dependency graph
- * → tx-DAG) is DEFERRED to WS8 — see {@link assertInitialScope}; this module never half-builds it.
+ * A Command carries one or more named base writes, each with its §6 effects. Statements form a
+ * data-dependency DAG (`$.ref.<writeName>.<field>` consumes an earlier write's RETURNING row,
+ * exposed via `TxStatement.binds`), with a gate-first constraint (every gate precedes every
+ * body/derive/edge/emit). The DAG is topologically ordered (Kahn, stable ascending declaration
+ * `seq` tie-break) into a single-transaction statement plan. Underivable shapes (dependency
+ * cycle, dangling `$.ref`, referenced write without RETURNING, duplicate bind, composite
+ * `$.entity`) are LOUD rejects — never a silently mis-ordered plan.
  */
 
 import type { CompiledOperation, ExprNode } from './ir';
@@ -58,6 +62,7 @@ import {
   type EmitEffect,
   type IdempotencyEffect,
   type LifecycleContract,
+  type LifecycleEffects,
   type RequiresEffect,
   type UniqueEffect,
   type WriteLifecyclePhase,
@@ -97,6 +102,15 @@ export interface TxStatement {
   readonly op: CompiledOperation;
   /** For a gate statement: the short-circuit rule. Absent for body/derive/edge/emit. */
   readonly gate?: GateRule;
+  /**
+   * For a composite (multi-write) body statement: the scope binding under which THIS statement's
+   * RETURNING row is exposed to LATER statements — a downstream `$.ref.<binds>.<field>` resolves
+   * to `scope[<binds>][<field>]` (spec §6 nested write). This is the DAG's data-dependency edge,
+   * self-describing so the 5 runtimes just bind the row and continue (no re-derivation). Absent for
+   * a statement no later statement depends on; the WS5 single-base write additionally exposes its
+   * row under {@link TransactionPlan.entityFrom} / {@link ENTITY_ROOT} for `$.entity.*` back-compat.
+   */
+  readonly binds?: string;
   /** Human label (diagnostics; e.g. `requires users`, `derive users.post_count`). */
   readonly label: string;
 }
@@ -127,13 +141,19 @@ export interface TransactionPlan {
 // ── Path → Expression IR ref (closed-set only) ────────────────────────────────
 
 /**
- * Lower a path-rooted write-relation value (`$.input.<f>` / `$.entity.<f>`) to a bc closed-set
- * `ref` Expression IR node. `$.input.<f>` → `{ref:['<f>']}` (bc flat input scope); `$.entity.<f>`
- * → `{ref:['__entity','<f>']}` (the body RETURNING row bound under {@link ENTITY_ROOT}).
+ * Lower a path-rooted write-relation value to a bc closed-set `ref` Expression IR node:
+ *   - `$.input.<f>`          → `{ref:['<f>']}`                 (bc flat input scope).
+ *   - `$.entity.<f>`         → `{ref:['__entity','<f>']}`      (the sole body RETURNING row).
+ *   - `$.ref.<write>.<f>`    → `{ref:['<write>','<f>']}`       (a named upstream write's RETURNING
+ *                                                              row, bound under `<write>` via
+ *                                                              {@link TxStatement.binds}).
+ * Only bc's closed `ref` operator is emitted — no invented opcode (hard rule).
  */
 function pathToRef(value: string): ExprNode {
   const p = parseEffectPath(value);
-  return p.root === 'input' ? ({ ref: [p.field] } as ExprNode) : ({ ref: [ENTITY_ROOT, p.field] } as ExprNode);
+  if (p.root === 'input') return { ref: [p.field] } as ExprNode;
+  if (p.root === 'entity') return { ref: [ENTITY_ROOT, p.field] } as ExprNode;
+  return { ref: [p.writeName!, p.field] } as ExprNode; // 'ref' → named upstream write row
 }
 
 // ── Per-effect statement compilers (all emit WS1 CompiledOperation shapes) ─────
@@ -287,8 +307,12 @@ function compileEdge(e: EdgeEffect, nextId: IdGen): TxStatement {
  * `emits` → an outbox INSERT (same tx): `INSERT INTO <outbox>(type, payload) VALUES(?, ?)`.
  * `type` is the literal event name; `payload` is a bc `{obj:{…}}` of the path-rooted values,
  * serialized to a JSON text column by the runtime (the outbox `payload` column). Emitting the
- * payload as a single `obj` param keeps the SQL text stable (two `?` slots) regardless of the
- * payload's field count.
+ * payload as a single `obj` param keeps the SQL text stable (two `?` slots).
+ *
+ * KNOWN LIMITATION (pre-existing guard bug, tracked separately): a SINGLE-field payload
+ * `{obj:{one:…}}` is currently rejected by the portability guard, which treats any single-key
+ * object as an operator node and reads the lone field name as an unknown opcode. Multi-field
+ * payloads are fine. Until the guard is fixed, single-field emit payloads are unusable.
  */
 function compileEmit(e: EmitEffect, nextId: IdGen): TxStatement {
   const payloadObj: Record<string, ExprNode> = {};
@@ -307,42 +331,200 @@ function compileEmit(e: EmitEffect, nextId: IdGen): TxStatement {
 
 /**
  * The base write op the Command declares (`Insert`/`Update`/`Delete` with `onWrite`). This is
- * the single-statement Command body the plan wraps in a transaction; WS5 initial scope is a
- * SINGLE base write (not a multi-fragment DAG — WS8).
+ * the Command body statement the plan wraps in a transaction. A Command may declare ONE base
+ * write (WS5 single-statement scope) OR several (WS8a composite / nested write, spec §6:
+ * "多対多や nested write（親作成と同時に子作成）は edges/追加 write で表現し、同一 tx にまとめる").
  */
 export interface BaseWrite {
   /** The compiled base write op (from the bridge, e.g. `compileNode` of the Insert node). */
   readonly op: CompiledOperation;
   /** The body statement's role (always `body`). */
   readonly label: string;
+  /**
+   * The write's stable NAME (WS8a composite scope) — later statements reference its RETURNING row
+   * as `$.ref.<name>.<field>`, and the derived body statement `binds` this name. Omitted for the
+   * WS5 single-base write (its row is addressed as `$.entity.*` under {@link ENTITY_ROOT}).
+   */
+  readonly name?: string;
+  /**
+   * The write's OWN save-contract effects (WS8a composite scope): its gates/derive/edges/emits.
+   * For the WS5 single-base write, the lifecycle is passed as the top-level `lifecycle` arg and
+   * this is omitted. When a base write carries `effects`, the derivation treats it as one DAG
+   * node group (its gates → its body → its after-effects), then topologically orders ALL groups.
+   */
+  readonly effects?: LifecycleEffects;
 }
 
 /**
- * Assert the derivation stays inside WS5 INITIAL scope (spec §6 / §13): a SINGLE base write.
- * A multi-write / cross-fragment DAG is DEFERRED to WS8 — rejected loudly here so we never
- * half-build the dependency-graph→tx-DAG derivation.
+ * A DAG node: one compiled statement plus the ref-heads it CONSUMES (upstream write names it
+ * depends on) and the name it PRODUCES (its `binds`, if any). The topological sort orders nodes
+ * so every producer precedes its consumers, with gate-first + a stable declaration-order tie-break.
  */
-function assertInitialScope(bases: readonly BaseWrite[]): void {
-  if (bases.length !== 1) {
+interface DagNode {
+  readonly stmt: TxStatement;
+  /** Declaration index (the monotonic id-allocation order) — the deterministic tie-break key. */
+  readonly seq: number;
+  /** The upstream write names this statement's params/where reference (its data-dependency edges). */
+  readonly consumes: readonly string[];
+  /** The name this statement produces for downstream consumers (its `binds`), or null. */
+  readonly produces: string | null;
+  /** Whether this node is a gate (drives the gate-first ordering constraint). */
+  readonly isGate: boolean;
+}
+
+/**
+ * Compile ONE base write + its effects into an ordered node group: its gate statements, its body
+ * (which `binds` the write name for composite scope), then its derive/edges/emits. `seqBase` is
+ * the group's starting declaration index; the returned nodes carry contiguous `seq` values so the
+ * topo tie-break is a stable, insertion-independent total order.
+ */
+function compileWriteGroup(
+  base: BaseWrite,
+  lifecycle: LifecycleContract,
+  nextId: IdGen,
+  dialect: Dialect,
+  seqRef: { n: number },
+): { nodes: DagNode[]; bodyId: string } {
+  const e = lifecycle.effects;
+  const nodes: DagNode[] = [];
+  const mk = (stmt: TxStatement, isGate: boolean): DagNode => {
+    const consumes = refHeadsOf(stmt).filter((h) => h !== ENTITY_ROOT && !isInputHead(h, stmt));
+    return { stmt, seq: seqRef.n++, consumes, produces: stmt.binds ?? null, isGate };
+  };
+
+  for (const r of e.requires ?? []) nodes.push(mk(compileRequires(r, nextId), true));
+  if (e.idempotency !== undefined) nodes.push(mk(compileIdempotency(e.idempotency, nextId, dialect), true));
+  for (const u of e.unique ?? []) nodes.push(mk(compileUnique(u, nextId, dialect), true));
+
+  const bodyId = nextId('body');
+  const bodyStmt: TxStatement = {
+    id: bodyId,
+    role: 'body',
+    op: base.op,
+    label: base.label,
+    ...(base.name !== undefined ? { binds: base.name } : {}),
+  };
+  nodes.push(mk(bodyStmt, false));
+
+  for (const d of e.derive ?? []) nodes.push(mk(compileDerive(d, nextId), false));
+  for (const ed of e.edges ?? []) nodes.push(mk(compileEdge(ed, nextId), false));
+  for (const em of e.emits ?? []) nodes.push(mk(compileEmit(em, nextId), false));
+
+  return { nodes, bodyId };
+}
+
+/**
+ * Topologically order the DAG nodes into the executable statement sequence (spec §6 / §14 "write-
+ * time tx DAG 導出"). Edges:
+ *   1. DATA dependency — a node consuming `$.ref.<w>.*` runs AFTER the node that produces `<w>`.
+ *   2. GATE-FIRST — every gate runs before every non-gate (a semantic invariant: a gate must be
+ *      able to short-circuit BEFORE any dependent body/derive/edge/emit work; spec §6 "Gate First").
+ * Determinism: a Kahn topo sort whose ready-set is drained in ascending `seq` (declaration order),
+ * so the SAME input always yields the SAME order → byte-identical SQL (the golden bar). A cycle
+ * (data dependency vs gate-first, or a mutual `$.ref` cycle) is UNRESOLVABLE — ESCALATE loudly
+ * rather than pick a silent order (hard rule: no guessed default on a genuine ambiguity).
+ */
+function topoOrder(nodes: readonly DagNode[]): TxStatement[] {
+  const byName = new Map<string, DagNode>();
+  for (const n of nodes) {
+    if (n.produces !== null) {
+      if (byName.has(n.produces)) {
+        throw new Error(`write-plan: two writes both bind the name '${n.produces}' — write names must be unique in a composite Command.`);
+      }
+      byName.set(n.produces, n);
+    }
+  }
+
+  // Build the edge set producer→consumer + gate→non-gate. `preds` counts in-edges per node.
+  const idOf = new Map<DagNode, string>();
+  for (const n of nodes) idOf.set(n, n.stmt.id);
+  const succ = new Map<string, Set<string>>(); // stmt id → dependent stmt ids
+  const indeg = new Map<string, number>();
+  const nodeById = new Map<string, DagNode>();
+  for (const n of nodes) {
+    nodeById.set(n.stmt.id, n);
+    succ.set(n.stmt.id, new Set());
+    indeg.set(n.stmt.id, 0);
+  }
+  const addEdge = (fromId: string, toId: string): void => {
+    if (fromId === toId) return;
+    const s = succ.get(fromId)!;
+    if (!s.has(toId)) {
+      s.add(toId);
+      indeg.set(toId, indeg.get(toId)! + 1);
+    }
+  };
+
+  // 1. data-dependency edges (producer → each consumer).
+  for (const n of nodes) {
+    for (const dep of n.consumes) {
+      const producer = byName.get(dep);
+      if (producer === undefined) {
+        throw new Error(
+          `write-plan: statement '${n.stmt.label}' references '$.ref.${dep}.*' but no write in this ` +
+            `Command binds the name '${dep}' — a dangling write reference (fail-closed; no silent skip).`,
+        );
+      }
+      addEdge(producer.stmt.id, n.stmt.id);
+    }
+  }
+  // 2. gate-first edges (every gate → every non-gate).
+  const gates = nodes.filter((n) => n.isGate);
+  const nonGates = nodes.filter((n) => !n.isGate);
+  for (const g of gates) for (const b of nonGates) addEdge(g.stmt.id, b.stmt.id);
+
+  // Kahn's algorithm; the ready frontier is drained in ascending declaration `seq` (stable).
+  const ordered: TxStatement[] = [];
+  const ready: DagNode[] = nodes.filter((n) => indeg.get(n.stmt.id) === 0).sort((a, b) => a.seq - b.seq);
+  while (ready.length > 0) {
+    const n = ready.shift()!;
+    ordered.push(n.stmt);
+    for (const depId of succ.get(n.stmt.id)!) {
+      indeg.set(depId, indeg.get(depId)! - 1);
+      if (indeg.get(depId) === 0) {
+        const dn = nodeById.get(depId)!;
+        // insert keeping the frontier sorted by seq (stable deterministic drain)
+        let lo = 0;
+        while (lo < ready.length && ready[lo].seq < dn.seq) lo++;
+        ready.splice(lo, 0, dn);
+      }
+    }
+  }
+
+  if (ordered.length !== nodes.length) {
+    const stuck = nodes.filter((n) => !ordered.includes(n.stmt)).map((n) => n.stmt.label);
     throw new Error(
-      `write-plan: WS5 initial scope is a SINGLE base-write Command + fixed-order write-time ` +
-        `relations (got ${bases.length} base writes). Multi-write / cross-fragment DAG derivation ` +
-        `is deferred to WS8 (spec §6/§13); it is intentionally not half-built here.`,
+      `write-plan: the write-time transaction DAG has a CYCLE (unresolvable ordering among ` +
+        `[${stuck.join(', ')}]). This is either a mutual '$.ref' data dependency or a gate that ` +
+        `depends on a body row (a gate cannot depend on a not-yet-written row). ESCALATE: the ` +
+        `Command's write dependencies are contradictory — no order satisfies both the data ` +
+        `dependencies and gate-first. (Fail-closed; the derivation never guesses an order.)`,
     );
   }
+  return ordered;
 }
 
 /**
- * Derive the ORDERED, gate-first {@link TransactionPlan} from a Command's base write + its
- * lifecycle save contract (spec §6). The statement order is FIXED (initial scope):
+ * Derive the ORDERED, gate-first {@link TransactionPlan} from a Command's base write(s) + its
+ * lifecycle save contract (spec §6 / §14).
  *
- *   requires (gate) → idempotency (gate) → unique (gate) → BODY → derive → edges → emits
+ * ## Single base write (WS5 scope)
  *
- * `$.entity.*` references in derive/edges/emits require the body write to RETURN the entity
- * row; if any later stage references `$.entity.*` but the body has no RETURNING, that is a
- * loud build error (fail-closed — no silent absent-entity default).
+ * One base write + a top-level `lifecycle`; the order is the fixed §6 group
+ * (requires → idempotency → unique → BODY → derive → edges → emits). `$.entity.*` references in
+ * derive/edges/emits require the body write to RETURN the entity row (else a loud build error).
  *
- * @throws if not single-base-write scope, or a `$.entity.*` reference lacks a RETURNING body.
+ * ## Composite / nested write (WS8a scope) — real DAG derivation
+ *
+ * Multiple base writes, each carrying its OWN {@link BaseWrite.effects} and a `name`. A later
+ * write references an earlier write's RETURNING row via `$.ref.<name>.<field>` (e.g. a child
+ * INSERT keyed by the parent's returned id). The derivation builds the data-dependency graph
+ * (statement → the writes it references) + the gate-first constraint, TOPOLOGICALLY orders it
+ * (deterministic, stable tie-break), and emits ONE ordered gate-first transaction plan. A cycle
+ * or dangling reference is ESCALATED (no silent mis-derivation).
+ *
+ * @throws if a `$.entity.*` reference lacks a RETURNING body, a `$.ref.*` is dangling, two writes
+ *   bind the same name, or the dependency graph has a cycle.
  */
 export function deriveTransactionPlan(
   phase: WriteLifecyclePhase,
@@ -350,53 +532,127 @@ export function deriveTransactionPlan(
   lifecycle: LifecycleContract,
   dialect: Dialect = SQLITE,
 ): TransactionPlan {
-  assertInitialScope(bases);
-  const base = bases[0];
-  const e = lifecycle.effects;
+  if (bases.length === 0) {
+    throw new Error('write-plan: a Command must declare at least one base write (Insert/Update/Delete).');
+  }
   const nextId = makeIdGen();
+  const seqRef = { n: 0 };
+  const composite = bases.length > 1;
 
-  const gates: TxStatement[] = [];
-  for (const r of e.requires ?? []) gates.push(compileRequires(r, nextId));
-  if (e.idempotency !== undefined) gates.push(compileIdempotency(e.idempotency, nextId, dialect));
-  for (const u of e.unique ?? []) gates.push(compileUnique(u, nextId, dialect));
+  // Each base write contributes a node group. In single-base WS5 scope the lifecycle is the
+  // top-level arg; in composite scope each base carries its own `effects` (the shared top-level
+  // `lifecycle` still applies to the FIRST base — the Command body — for backward-compatible
+  // single-write callers that pass effects there).
+  const allNodes: DagNode[] = [];
+  const bodyIds: string[] = [];
+  bases.forEach((base, i) => {
+    const lc: LifecycleContract = base.effects !== undefined ? { effects: base.effects } : i === 0 ? lifecycle : { effects: {} };
+    const { nodes, bodyId } = compileWriteGroup(base, lc, nextId, dialect, seqRef);
+    allNodes.push(...nodes);
+    bodyIds.push(bodyId);
+  });
 
-  const bodyId = nextId('body');
-  const body: TxStatement = { id: bodyId, role: 'body', op: base.op, label: base.label };
+  const statements = topoOrder(allNodes);
 
-  const after: TxStatement[] = [];
-  for (const d of e.derive ?? []) after.push(compileDerive(d, nextId));
-  for (const ed of e.edges ?? []) after.push(compileEdge(ed, nextId));
-  for (const em of e.emits ?? []) after.push(compileEmit(em, nextId));
-
-  const statements = [...gates, body, ...after];
-
-  // If any after-body statement references `$.entity.*`, the body MUST RETURN the entity row.
-  const usesEntity = referencesEntity(after);
-  const bodyReturns = /\breturning\b/i.test(base.op.sql);
-  const entityFrom = usesEntity ? bodyId : bodyReturns ? bodyId : null;
-  if (usesEntity && !bodyReturns) {
+  // `$.entity.*` back-compat: the SOLE base write's RETURNING row is exposed under __entity.
+  const soleBody = bases[0];
+  const soleBodyId = bodyIds[0];
+  const usesEntity = referencesHead(statements, ENTITY_ROOT);
+  const soleBodyReturns = /\breturning\b/i.test(soleBody.op.sql);
+  if (usesEntity && composite) {
+    throw new Error(
+      `write-plan: a composite (multi-write) Command uses '$.entity.*' — ambiguous which write it ` +
+        `denotes. Address each write's row by name via '$.ref.<writeName>.<field>' (fail-closed).`,
+    );
+  }
+  if (usesEntity && !soleBodyReturns) {
     throw new Error(
       `write-plan: a derive/edges/emits stage references '$.entity.*' but the body write ` +
-        `('${base.label}') has no RETURNING clause — the written row cannot be exposed to later ` +
+        `('${soleBody.label}') has no RETURNING clause — the written row cannot be exposed to later ` +
         `stages. Add a RETURNING to the base write (fail-closed; no absent-entity default).`,
     );
   }
+  const entityFrom = usesEntity || (!composite && soleBodyReturns) ? soleBodyId : null;
 
-  // Hard rule: every param slot in the plan (gates, body, derive, edges, emits) is closed-set
-  // Expression IR only. Assert fail-closed — an invented opcode is a build error, never bodged.
+  // Every write that a later statement references via `$.ref.<name>.*` MUST RETURN its row.
+  for (const base of bases) {
+    if (base.name === undefined) continue;
+    if (referencesHead(statements, base.name) && !/\breturning\b/i.test(base.op.sql)) {
+      throw new Error(
+        `write-plan: write '${base.name}' is referenced as '$.ref.${base.name}.*' by a later ` +
+          `statement but its op has no RETURNING clause — its row cannot be bound for downstream ` +
+          `writes. Add a RETURNING to write '${base.name}' (fail-closed; no absent-row default).`,
+      );
+    }
+  }
+
+  // Hard rule: every param slot in the plan is closed-set Expression IR only. Fail-closed.
   for (const s of statements) assertOperationPortable(s.op);
 
   return { phase, entityFrom, statements, onIdempotentHit: 'rollback' };
 }
 
-/** True if any statement's compiled op references a `{ref:['__entity', …]}` head. */
-function referencesEntity(statements: readonly TxStatement[]): boolean {
+/** Collect the ref-heads (`ref[0]`) a statement's params + where reference. */
+function refHeadsOf(stmt: TxStatement): string[] {
+  const heads = new Set<string>();
+  collectRefHeads(stmt.op.params, heads);
+  if (stmt.op.where !== null) collectWhereHeads(stmt.op.where, heads);
+  return [...heads];
+}
+
+/**
+ * True if a ref-head is an INPUT head (a bare `$.input.<f>` → `{ref:['<f>']}`), i.e. NOT a
+ * cross-statement dependency. An input head is a single-element `ref` path whose head is a plain
+ * field. We distinguish it from a write-name head (`$.ref.<w>.<f>` → `{ref:['<w>','<f>']}`, a
+ * 2-element path) and the sole-entity head (`__entity`). A 2-element `ref` whose head is neither
+ * `__entity` nor a declared write name would be a dangling reference (caught in {@link topoOrder}).
+ */
+function isInputHead(head: string, stmt: TxStatement): boolean {
+  // An input ref is a 1-element path `{ref:[head]}`; a dependency ref is 2-element `{ref:[w,f]}`.
+  return refPathLengthFor(stmt, head) === 1;
+}
+
+/** The (max) path length of a `ref` node whose head equals `head`, within a statement's op. */
+function refPathLengthFor(stmt: TxStatement, head: string): number {
+  let maxLen = 0;
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const el of node) walk(el);
+      return;
+    }
+    const keys = Object.keys(node);
+    if (keys.length === 1 && keys[0] === 'ref') {
+      const path = (node as Record<string, unknown>).ref;
+      if (Array.isArray(path) && path[0] === head) maxLen = Math.max(maxLen, path.length);
+      return;
+    }
+    for (const k of keys) walk((node as Record<string, unknown>)[k]);
+  };
+  walk(stmt.op.params);
+  if (stmt.op.where !== null) {
+    const collectWhere = (node: unknown): void => {
+      if (node === null || typeof node !== 'object') return;
+      const n = node as { connector?: string; fragments?: unknown[]; params?: unknown[] };
+      if ('connector' in n && Array.isArray(n.fragments)) {
+        for (const f of n.fragments) collectWhere(f);
+        return;
+      }
+      if (Array.isArray(n.params)) walk(n.params);
+    };
+    collectWhere(stmt.op.where);
+  }
+  return maxLen;
+}
+
+/** True if any statement's compiled op references a `{ref:[head, …]}` head. */
+function referencesHead(statements: readonly TxStatement[], head: string): boolean {
   const heads = new Set<string>();
   for (const s of statements) {
     collectRefHeads(s.op.params, heads);
     if (s.op.where !== null) collectWhereHeads(s.op.where, heads);
   }
-  return heads.has(ENTITY_ROOT);
+  return heads.has(head);
 }
 
 function collectRefHeads(node: unknown, heads: Set<string>): void {

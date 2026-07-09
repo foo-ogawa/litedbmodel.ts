@@ -235,6 +235,13 @@ def execute_transaction_bundle(bundle: Mapping[str, Any], input_scope: Mapping[s
                 if entity is not None:
                     scope[ENTITY_ROOT] = entity
 
+            # WS8a composite: bind THIS statement's RETURNING row under its `binds` name so a later
+            # `$.ref.<binds>.<field>` resolves against it (the tx-DAG data-dependency edge). Self-
+            # describing — the runtime binds the row the plan told it to; no re-derivation.
+            binds = stmt.get("binds")
+            if binds is not None and rows:
+                scope[binds] = rows[0]
+
         driver.prepare("COMMIT").run([])
         result: Dict[str, Any] = {"committed": True, "entity": entity, "executed": executed}
         return result
