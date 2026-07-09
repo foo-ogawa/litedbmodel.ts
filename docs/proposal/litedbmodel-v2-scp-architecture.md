@@ -265,6 +265,8 @@ COMMIT;
 - 多対多や nested write（親作成と同時に子作成）は `edges`/追加 write で表現し、同一 tx にまとめる。
 
 > **難所（正直な評価・§13）:** SQL の tx 導出は DynamoDB の `TransactWriteItems`（≤25・read-your-writes 無し）と違い、対話的・ロック・read-after-write・gate-first 短絡を伴う。初期は「単文 Command + 明示 write-time relations（固定順）」に限定し、複雑な DAG 導出は後段（feasibility §7 と整合）。
+>
+> **後段の状況（WS8a・#28・§14 GA）:** 複合 write（複数 base write / nested write）の **tx DAG 導出**を実装済み。各 write は名前を持ち、後続 write は先行 write の RETURNING 行を `$.ref.<writeName>.<field>` で参照する（例: 子 INSERT の `post_id` = 親の RETURNING id）。導出はデータ依存グラフ（statement → 参照する write）＋ gate-first 制約（全 gate は全 body/derive/edge/emit に先行）を構築し、**トポロジカルソート**（安定した宣言順タイブレーク → 同一入力で byte-identical な SQL 列）で 1 tx の順序付き計画へ落とす。依存サイクル / 宙ぶらりんの `$.ref` / RETURNING 欠落は loud-reject（暗黙のフォールバック無し）。導出された DAG は純 JSON として §8 bundle に載り、各 statement の `binds` 名で RETURNING 行を scope に束縛するだけで 5 言語 runtime がそのまま実行する（再導出しない）。gate-first は DAG 全体で有効（任意 gate の短絡が下流の body/derive/edge/emit をすべて打ち切る）。
 
 ## 7. SCP 宣言ブロック → IR コンパイル
 

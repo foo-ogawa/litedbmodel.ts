@@ -6,7 +6,7 @@ semantics-identical to the TS reference (`src/scp`).
 
 **Status: WS7c (#32) — implemented.** The runtime renders every §8 CompiledOperation byte-for-byte
 with the TS golden (all 3 dialects), executes read/exec bundles + write-time-relations transaction
-bundles against real in-proc SQLite, and passes the full frozen conformance corpus (47/47 vectors).
+bundles against real in-proc SQLite, and passes the full frozen conformance corpus (49/49 vectors).
 
 ## What it does
 

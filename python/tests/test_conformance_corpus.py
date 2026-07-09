@@ -35,8 +35,9 @@ def test_vector_passes(suite, vector):
     assert result["ok"], f"[{suite}] {vector['name']}: {result.get('detail')}"
 
 
-def test_corpus_has_all_four_suites_and_47_vectors():
+def test_corpus_has_all_four_suites_and_49_vectors():
     vs = _all_vectors()
     suites = {s for s, _ in vs}
     assert suites == {"render", "exec", "tx", "dialect"}
-    assert len(vs) == 47
+    # 47 baseline + 2 WS8a composite (multi-write) tx-DAG vectors (#28).
+    assert len(vs) == 49

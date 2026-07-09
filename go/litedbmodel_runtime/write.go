@@ -94,9 +94,10 @@ func execTxStatement(db SQLDB, op *bc.JObj, scope *bc.Obj, dialect Dialect) (exe
 
 // txPlanStatements reads the plan's ordered statements, entityFrom, and returns them.
 type txStatement struct {
-	id   string
-	gate string // "" when not a gate
-	op   *bc.JObj
+	id    string
+	gate  string // "" when not a gate
+	binds string // "" when this statement's row is not bound for downstream $.ref (WS8a composite)
+	op    *bc.JObj
 }
 
 func parseTxPlan(plan *bc.JObj) (statements []txStatement, entityFrom string, err error) {
@@ -122,6 +123,9 @@ func parseTxPlan(plan *bc.JObj) (statements []txStatement, entityFrom string, er
 		}
 		if gN, ok := s.Get("gate"); ok {
 			st.gate, _ = gN.(string)
+		}
+		if bN, ok := s.Get("binds"); ok {
+			st.binds, _ = bN.(string)
 		}
 		if opN, ok := s.Get("op"); ok {
 			st.op, _ = opN.(*bc.JObj)
@@ -201,13 +205,22 @@ func executeTransaction(db TxDB, plan *bc.JObj, input *bc.Obj, dialect Dialect) 
 			}
 		}
 
-		// Capture the body RETURNING row as `$.entity` for the derive/edges/emits stages.
+		// Capture the SOLE body RETURNING row as `$.entity` (WS5 single-write back-compat).
 		if stmt.id == entityFrom {
 			if len(result.rows) > 0 {
 				if row, ok := result.rows[0].(*bc.Obj); ok {
 					entity = row
 					scope.Set(entityRoot, entity)
 				}
+			}
+		}
+
+		// WS8a composite: bind THIS statement's RETURNING row under its `binds` name so a later
+		// `$.ref.<binds>.<field>` resolves against it (the tx-DAG data-dependency edge). Self-
+		// describing — the runtime binds the row the plan told it to; no re-derivation.
+		if stmt.binds != "" && len(result.rows) > 0 {
+			if row, ok := result.rows[0].(*bc.Obj); ok {
+				scope.Set(stmt.binds, row)
 			}
 		}
 	}

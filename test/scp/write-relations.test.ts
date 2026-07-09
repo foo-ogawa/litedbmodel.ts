@@ -465,14 +465,16 @@ describe('WS5 — fail-closed derivation guards (no bodging, no silent defaults)
     ).toThrow(/not a valid path-rooted value/);
   });
 
-  it('a base-write scope of >1 write node is rejected as deferred-to-WS8 (not half-built)', () => {
-    // Two write nodes in one Command → the multi-write DAG derivation deferred to WS8.
-    const plan = () =>
-      deriveTransactionPlan('create', [
-        { op: compileNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] } } } as never), label: 'a' },
-        { op: compileNode({ id: 'b', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] } } } as never), label: 'b' },
-      ], { effects: {} });
-    expect(plan).toThrow(/deferred to WS8/);
+  it('WS8a: two independent named base writes derive to ONE tx DAG (restriction lifted, not half-built)', () => {
+    // Two INDEPENDENT write nodes in one Command → WS8a derives them into one ordered tx plan
+    // (the WS5 "deferred to WS8" loud-reject is now genuinely implemented, not rejected).
+    const plan = deriveTransactionPlan('create', [
+      { op: compileNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] } } } as never), label: 'a', name: 'a', effects: {} },
+      { op: compileNode({ id: 'b', component: 'Insert', ports: { table: 'tags', 'values.label': { ref: ['label'] } } } as never), label: 'b', name: 'b', effects: {} },
+    ], { effects: {} });
+    // Both bodies present, ordered deterministically by declaration seq (a before b), no gates.
+    expect(plan.statements.map((s) => s.role)).toEqual(['body', 'body']);
+    expect(plan.statements.map((s) => s.binds)).toEqual(['a', 'b']);
   });
 
   it('edgeWrites rejects a non-edge effect (edge entity carries only edge writes)', () => {

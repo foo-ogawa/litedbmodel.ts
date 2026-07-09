@@ -6,7 +6,7 @@ reference (`src/scp`) and the Python/PHP sibling ports.
 
 **Status: WS7e — implemented (#34).** The runtime consumes the published §8 bundle + the
 `behavior-contracts` common core and executes it against an in-process SQLite driver, passing the
-frozen 47-vector conformance corpus byte-for-byte across all three dialects and agreeing with the
+frozen 49-vector conformance corpus byte-for-byte across all three dialects and agreeing with the
 TS/Python/PHP runtimes.
 
 ## behavior-contracts dependency
@@ -43,7 +43,7 @@ rust/
 ## Conformance
 
 ```
-cargo run --quiet --bin vectors_runner   # 47/47 across render/exec/tx/dialect (real in-proc sqlite)
+cargo run --quiet --bin vectors_runner   # 49/49 across render/exec/tx/dialect (real in-proc sqlite)
 cargo test                                # crate-local integration tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check

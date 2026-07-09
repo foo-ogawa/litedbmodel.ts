@@ -23,7 +23,7 @@ the per-suite pass counts of the whole vector corpus. It is the *additive-refree
 |---------|---------|----------|
 | render  | 30      | CRUD (Select/Insert/Update/Delete) × 3 dialects × SKIP present/null, empty-WHERE, IN-list N/empty |
 | exec    | 3       | Read bundles vs seeded SQLite: SKIP-present, absent-key SKIP (normalizeInput), belongsTo + hasMany(limit) relations |
-| tx      | 2       | Write-time-relations gate-first transaction: commit (requires/idempotency/unique/body/derive/emit) + gate short-circuit ROLLBACK |
+| tx      | 4       | Write-time-relations gate-first transaction: single-write commit (requires/idempotency/unique/body/derive/emit) + gate short-circuit ROLLBACK; **WS8a composite (multi-write) tx-DAG** (#28): nested-write commit (child.post_id = `$.ref.post.id`, parent→child topological order) + gate-first-across-the-DAG ROLLBACK |
 | dialect | 12      | `orderByNulls` (WS6-flagged untested) × 3 dialects × {ASC,DESC} × {FIRST,LAST} — PG/SQLite native NULLS, MySQL `IS NULL` emulation |
 
-Total: **47 vectors**.
+Total: **49 vectors** (47 baseline + 2 WS8a composite tx-DAG, #28).
