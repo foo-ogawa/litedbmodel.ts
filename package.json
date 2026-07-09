@@ -49,6 +49,8 @@
     "sync:versions": "node scripts/sync-versions.mjs",
     "sync:versions:check": "node scripts/sync-versions.mjs --check",
     "deps:check": "node scripts/check-no-local-deps.mjs",
+    "vendor:bc-php": "node scripts/vendor-behavior-contracts-php.mjs",
+    "vendor:bc-php:check": "node scripts/vendor-behavior-contracts-php.mjs --check",
     "conformance:gen": "vitest run --config conformance/vitest.config.ts",
     "conformance:vectors": "npm run build:scp && tsx conformance/vectors-runner.ts",
     "conformance:run": "npm run build:scp && tsx conformance/vectors-run.ts"
