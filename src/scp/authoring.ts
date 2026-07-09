@@ -226,7 +226,7 @@ export type EagerBehavior = ($: Recorded, L: ComponentFns) => unknown;
  * `SemanticBehavior` subclass whose single public method IS `fn` (with `L` bound), and
  * runs it through the SAME {@link compileBehaviors} the declaration path uses.
  * Consequently the eager path and an equivalent declaration method produce byte-identical
- * component IR (pinned by `test/scp/single-compile-path.test.ts`).
+ * component IR (pinned by the single-compile-path equivalence test in `test/scp/authoring.test.ts`).
  *
  * Because `fn` is installed AS the class method (not delegated to via a closure), bc's
  * source scan runs over `fn`'s own source — native control syntax inside `fn` is rejected
