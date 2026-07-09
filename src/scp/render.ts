@@ -15,8 +15,8 @@
  *       (including the ` WHERE ` keyword) collapses to the empty string.
  *   §4 AND/OR structure + parenthesization: a nested tree renders `(… <connector> …)`.
  *   §5 IN-list array expansion: a fragment slot marked `expand` turns its `(?)` into
- *       `(?, ?, …)` for each element of the bound array (0 elements → `(NULL)` sentinel,
- *       matching litedbmodel v1's `1 = 0` degeneration handled at compile time instead).
+ *       `(?, ?, …)` for each element of the bound array (0 elements → the `1 = 0`
+ *       always-false degeneration, byte-identical to litedbmodel v1's empty-IN handling).
  */
 
 import { evaluateExpression, type Scope, type Value } from 'behavior-contracts';
