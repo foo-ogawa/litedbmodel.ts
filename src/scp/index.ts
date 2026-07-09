@@ -103,6 +103,48 @@ export type { SqlFailureKind } from './errors';
 export { executeBehavior, compileBundle, executeBundle, read, readBundle, resolveRelationViaPlan } from './runtime';
 export type { SqliteDb, ExecuteOptions, SqlBundle, ReadRuntimeOptions } from './runtime';
 
+// Write-time relations (WS5, #25 — spec §6): entityWrites/edgeWrites declaration vocabulary,
+// the gate-first transaction-plan derivation, and the 1-tx real-SQLite runtime.
+export {
+  entityWrites,
+  edgeWrites,
+  lifecycleFor,
+  parseEffectPath,
+  ENTITY_ROOT,
+} from './writes';
+export type {
+  PathRoot,
+  EffectPath,
+  RequiresEffect,
+  UniqueEffect,
+  DeriveEffect,
+  EdgeEffect,
+  EmitEffect,
+  IdempotencyEffect,
+  LifecycleEffects,
+  LifecycleContract,
+  WriteLifecyclePhase,
+  EntityWritesDefinition,
+  EntityWritesShape,
+  WriteRecorder,
+} from './writes';
+
+export { deriveTransactionPlan } from './write-plan';
+export type {
+  StatementRole,
+  GateRule,
+  TxStatement,
+  TransactionPlan,
+  IdempotentHitPolicy,
+  BaseWrite,
+} from './write-plan';
+
+export { executeTransaction, countingDriver } from './write-runtime';
+export type { TransactionResult, ShortCircuitReason } from './write-runtime';
+
+// The Command bundle + 1-tx execution surface (WS5 — the write path of §2.3 / §6).
+export { compileWriteBundle, executeCommand, executeTransactionBundle } from './runtime';
+
 // Read relations (WS4, #24): pre-compiled batch relation ops + staged batch resolution.
 // BOTH the declarative-select and the lazy surface resolve through the SAME compiled op.
 export {

@@ -55,6 +55,10 @@ import type { CompiledOperation, ExprNode, Fragment, FragmentTree } from './ir';
 import { mapSqliteError, SqlFailure } from './errors';
 import { compileRelationOp, runRelationOp, distributeToParent, type RelationDecl, type RelationOp, type RelationDriver } from './relation';
 import { buildResultSet, type ReadOptions } from './typed-object';
+import { compileNode } from './bridge';
+import { deriveTransactionPlan, type BaseWrite, type TransactionPlan } from './write-plan';
+import { executeTransaction, type TransactionResult } from './write-runtime';
+import { lifecycleFor, type EntityWritesDefinition, type WriteLifecyclePhase } from './writes';
 
 /** The synthetic port that carries a SQL node's render scope (see module doc). */
 const SCOPE_PORT = '__scope';
@@ -362,6 +366,15 @@ export interface SqlBundle {
    * select + lazy) resolve through these ops — the identical compiled op.
    */
   readonly relations: Record<string, RelationOp>;
+  /**
+   * The derived write-time-relations transaction plan (spec §6 / §8 `transaction plan`), present
+   * ONLY for a Command bundle whose base write declares an `onWrite` lifecycle. Pure JSON:
+   * ordered statements + gate-first rules + `$.entity` exposure. A WS7 runtime executes the SAME
+   * plan via {@link executeTransactionBundle} (bc-core render + a SQL handler + BEGIN/COMMIT) —
+   * no re-derivation per language (spec §6). Absent for read bundles and for Command bundles with
+   * no write-time relations (those run through the ordinary {@link executeBundle} path).
+   */
+  readonly transaction?: TransactionPlan;
 }
 
 /**
@@ -455,6 +468,113 @@ export function executeBundle(bundle: SqlBundle, input: Scope, options: ExecuteO
     // code if present; otherwise re-throw verbatim.
     throw reErrorToSqlFailure(e);
   }
+}
+
+// ── Write-time relations: Command bundle + 1-tx execution (WS5, #25 — spec §6) ──
+
+/**
+ * Find the single base-write catalog node (`Insert`/`Update`/`Delete`) of a Command component.
+ * WS5 initial scope is a single-statement Command (spec §6/§13): exactly one write node whose
+ * `onWrite` lifecycle the transaction plan wraps. More than one write node ⇒ the multi-write DAG
+ * derivation deferred to WS8 (rejected loudly, never half-built).
+ */
+function baseWriteNodeOf(component: Component): Component['body'][number] {
+  const writes = component.body.filter(
+    (n) => !('cond' in n) && !('map' in n) && (n.component === 'Insert' || n.component === 'Update' || n.component === 'Delete'),
+  );
+  if (writes.length === 0) {
+    throw new Error(`scp write: Command '${component.name}' has no base write (Insert/Update/Delete) node`);
+  }
+  if (writes.length > 1) {
+    throw new Error(
+      `scp write: Command '${component.name}' has ${writes.length} base write nodes; WS5 initial ` +
+        `scope is a SINGLE-statement Command + write-time relations (multi-write DAG is WS8, spec §6/§13).`,
+    );
+  }
+  return writes[0];
+}
+
+/**
+ * Backend-Compile a Command method + its `entityWrites` save contract into a {@link SqlBundle}
+ * that carries the derived, gate-first write-time-relations {@link TransactionPlan} (spec §6/§8).
+ * The base write op is Backend-Compiled ONCE (the same {@link compileNode} bridge), and
+ * {@link deriveTransactionPlan} lowers the lifecycle's §6 effect arrays around it into the ordered
+ * statement list. The whole plan is pure JSON (it round-trips inside the bundle), so a WS7 runtime
+ * honors the SAME plan via {@link executeTransactionBundle} — no re-derivation.
+ *
+ * @throws if the method is not a Command, the phase lifecycle is not declared, the scope is not a
+ *   single base write, or a `$.entity.*` reference lacks a RETURNING body (all fail-closed).
+ */
+export function compileWriteBundle(
+  contract: BehaviorModelContract,
+  entry: string,
+  writes: EntityWritesDefinition,
+  phase: WriteLifecyclePhase,
+): SqlBundle {
+  const component = contract.components.find((c) => c.name === entry);
+  if (component === undefined) {
+    throw new Error(`scp write: entry component '${entry}' not found in contract`);
+  }
+  const lifecycle = lifecycleFor(writes, phase);
+  if (lifecycle === undefined) {
+    throw new Error(`scp write: the '${phase}' lifecycle is not declared in the entityWrites save contract`);
+  }
+  const writeNode = baseWriteNodeOf(component);
+  const baseOp = compileNode(writeNode as never);
+  const base: BaseWrite = { op: baseOp, label: `${baseOp.component} ${(writeNode as { component: string }).component}` };
+  const plan = deriveTransactionPlan(phase, [base], lifecycle);
+
+  // The bundle still carries the surrogate component/operations for structural parity with a read
+  // bundle (WS7 uniformity), but the write path executes via the transaction plan, not runBehavior.
+  const operations: Record<string, CompiledOperation> = {};
+  for (const [id, op] of compileComponentNodes(component)) operations[id] = op;
+  const surrogate = surrogateComponent(component, operations);
+  return {
+    irVersion: contract.ir.irVersion,
+    exprVersion: contract.ir.exprVersion,
+    dialect: 'sqlite',
+    component: surrogate,
+    operations,
+    optionalHeads: [...optionalHeadsOf(operations)],
+    relations: {},
+    transaction: plan,
+  };
+}
+
+/**
+ * Execute a Command end-to-end as ONE real SQLite transaction with gate-first short-circuit
+ * (spec §6): Backend-Compile the Command + its save contract into a {@link SqlBundle} with a
+ * transaction plan, then run {@link executeTransactionBundle}. This is the v2 public write path
+ * ("write-time relations が自動導出 → 1 tx", spec §2.3).
+ *
+ * @throws {SqlFailure} a mapped driver failure (the transaction ROLLBACKs first).
+ */
+export function executeCommand(
+  contract: BehaviorModelContract,
+  writes: EntityWritesDefinition,
+  phase: WriteLifecyclePhase,
+  input: Scope,
+  options: ExecuteOptions & { readonly entry: string },
+): TransactionResult {
+  const bundle = compileWriteBundle(contract, options.entry, writes, phase);
+  return executeTransactionBundle(bundle, input, options);
+}
+
+/**
+ * Execute a {@link SqlBundle}'s derived transaction plan (spec §6/§8) as ONE real SQLite
+ * transaction. This is the SAME code path a thin per-language runtime follows: it consumes ONLY
+ * the serialized {@link TransactionPlan} (pure JSON) + the render pipeline + a SQL driver, never
+ * re-deriving the plan. The bundle round-trip test parses this from JSON (no TS state) to prove
+ * WS7 self-sufficiency.
+ *
+ * @throws if the bundle carries no transaction plan (it is not a write-time-relations Command
+ *   bundle), or {@link SqlFailure} on a mapped driver failure.
+ */
+export function executeTransactionBundle(bundle: SqlBundle, input: Scope, options: ExecuteOptions): TransactionResult {
+  if (bundle.transaction === undefined) {
+    throw new Error('scp write: this bundle carries no transaction plan (not a write-time-relations Command bundle)');
+  }
+  return executeTransaction(options.db, bundle.transaction, input);
 }
 
 // ── typed-object read surface (WS4, #24 — result + Read relations) ────────────
