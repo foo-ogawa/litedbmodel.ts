@@ -47,7 +47,6 @@ export const IN_SENTINEL = '@in';
 import type { Component, ComponentRefNode, MapNode } from './authoring';
 import {
   compileSelect,
-  compileInsert,
   compileUpdate,
   compileDelete,
   type Condition,
@@ -56,6 +55,8 @@ import {
   type UpdateDesc,
   type DeleteDesc,
 } from './compile-sqlite';
+import { compileInsertFor } from './compile-dialect';
+import { SQLITE, type Dialect } from './dialect';
 import type { CompiledOperation, ExprNode } from './ir';
 
 /** A bc body node that references a catalog component (not a `cond` node). */
@@ -273,7 +274,7 @@ function returningOf(ports: Record<string, unknown>): string[] | undefined {
  * {@link CompiledOperation}. This is the real IR → WS1 compile-input bridge for the
  * SQL CRUD primitives.
  */
-export function compileNode(node: RefLike): CompiledOperation {
+export function compileNode(node: RefLike, dialect: Dialect = SQLITE): CompiledOperation {
   const { component, ports } = nodeRef(node);
   const table = stringPort(ports, 'table');
   if (table === undefined) throw new Error(`bridge: ${component} node requires a literal 'table' port`);
@@ -300,7 +301,7 @@ export function compileNode(node: RefLike): CompiledOperation {
       const desc: InsertDesc = { table, values, ...conflictOf(ports) };
       const returning = returningOf(ports);
       if (returning !== undefined) desc.returning = returning;
-      return compileInsert(desc);
+      return compileInsertFor(dialect, desc);
     }
     case 'Update': {
       const set = collectFamily(ports, 'set');
@@ -331,11 +332,11 @@ export function compileNode(node: RefLike): CompiledOperation {
  * evaluated by bc's `runBehavior`). The thin runtime looks up a node's `CompiledOperation`
  * by `ctx.nodeId` when its handler fires.
  */
-export function compileComponentNodes(component: Component): Map<string, CompiledOperation> {
+export function compileComponentNodes(component: Component, dialect: Dialect = SQLITE): Map<string, CompiledOperation> {
   const out = new Map<string, CompiledOperation>();
   for (const n of component.body) {
     if ('cond' in n) continue;
-    out.set(n.id, compileNode(n));
+    out.set(n.id, compileNode(n, dialect));
   }
   return out;
 }

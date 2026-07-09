@@ -49,6 +49,7 @@
 import type { CompiledOperation, ExprNode } from './ir';
 import { WHERE_SLOT } from './ir';
 import { assertOperationPortable } from './guard';
+import { SQLITE, type Dialect } from './dialect';
 import {
   ENTITY_ROOT,
   parseEffectPath,
@@ -173,10 +174,12 @@ function compileRequires(e: RequiresEffect, nextId: IdGen): TxStatement {
  * DO NOTHING`. ZERO affected ⇒ DUPLICATE ⇒ short-circuit (no double write). Runs FIRST-among-
  * gates after requires, per the §6 example ordering.
  */
-function compileIdempotency(e: IdempotencyEffect, nextId: IdGen): TxStatement {
+function compileIdempotency(e: IdempotencyEffect, nextId: IdGen, dialect: Dialect): TxStatement {
+  // A bare do-nothing guard INSERT (no conflict-column target): SQLite/Postgres emit
+  // `… ON CONFLICT DO NOTHING`; MySQL emits `INSERT IGNORE INTO …`. Routed through the SSoT.
   const op: CompiledOperation = {
     component: 'Insert',
-    sql: `INSERT INTO ${e.table} (${e.column}) VALUES (?) ON CONFLICT DO NOTHING`,
+    sql: dialect.guardInsert(e.table, [e.column], '?'),
     where: null,
     params: [pathToRef(e.token)],
     assembly: { shape: 'items' },
@@ -190,7 +193,7 @@ function compileIdempotency(e: IdempotencyEffect, nextId: IdGen): TxStatement {
  * columns are `[name] + scope + fields` (deterministic order); `name` is a literal discriminator
  * bound as a param via a closed-set string literal (not SQL-inlined) to keep the render path uniform.
  */
-function compileUnique(e: UniqueEffect, nextId: IdGen): TxStatement {
+function compileUnique(e: UniqueEffect, nextId: IdGen, dialect: Dialect): TxStatement {
   const scopeCols = e.scope.map((_, i) => `s${i}`);
   const fieldCols = e.fields.map((_, i) => `f${i}`);
   const cols = ['name', ...scopeCols, ...fieldCols];
@@ -202,7 +205,7 @@ function compileUnique(e: UniqueEffect, nextId: IdGen): TxStatement {
   ];
   const op: CompiledOperation = {
     component: 'Insert',
-    sql: `INSERT INTO ${e.guardTable} (${cols.join(', ')}) VALUES (${placeholders}) ON CONFLICT DO NOTHING`,
+    sql: dialect.guardInsert(e.guardTable, cols, placeholders),
     where: null,
     params,
     assembly: { shape: 'items' },
@@ -345,6 +348,7 @@ export function deriveTransactionPlan(
   phase: WriteLifecyclePhase,
   bases: readonly BaseWrite[],
   lifecycle: LifecycleContract,
+  dialect: Dialect = SQLITE,
 ): TransactionPlan {
   assertInitialScope(bases);
   const base = bases[0];
@@ -353,8 +357,8 @@ export function deriveTransactionPlan(
 
   const gates: TxStatement[] = [];
   for (const r of e.requires ?? []) gates.push(compileRequires(r, nextId));
-  if (e.idempotency !== undefined) gates.push(compileIdempotency(e.idempotency, nextId));
-  for (const u of e.unique ?? []) gates.push(compileUnique(u, nextId));
+  if (e.idempotency !== undefined) gates.push(compileIdempotency(e.idempotency, nextId, dialect));
+  for (const u of e.unique ?? []) gates.push(compileUnique(u, nextId, dialect));
 
   const bodyId = nextId('body');
   const body: TxStatement = { id: bodyId, role: 'body', op: base.op, label: base.label };

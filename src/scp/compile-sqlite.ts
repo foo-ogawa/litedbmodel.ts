@@ -27,6 +27,8 @@
 
 import type { AssemblySpec, CompiledOperation, ExprNode, Fragment, FragmentTree } from './ir';
 import { WHERE_SLOT } from './ir';
+import { SQLITE } from './dialect';
+import { compileInsertFor } from './compile-dialect';
 
 // ── Authoring-adjacent operation description (Backend Compile input) ──────────
 //
@@ -165,28 +167,15 @@ export function compileSelect(desc: SelectDesc): CompiledOperation {
   return { component: 'Select', sql, where, params, assembly: assembly('items') };
 }
 
-/** Compile an INSERT. All params are static (no WHERE); order = column order. */
+/**
+ * Compile an INSERT (SQLite). All params are static (no WHERE); order = column order. The
+ * dialect-specific conflict/verb rendering is delegated to the SQLite {@link SQLITE} strategy
+ * ({@link compileInsertFor}) — the SAME dialect-parameterized compile the PG/MySQL Backend
+ * Compile uses (WS6), so SQLite is byte-for-byte unchanged and the other dialects diverge only
+ * where the v1 SqlBuilders diverge.
+ */
 export function compileInsert(desc: InsertDesc): CompiledOperation {
-  const columns = Object.keys(desc.values);
-  const placeholders = columns.map(() => '?').join(', ');
-  const params: ExprNode[] = columns.map((c) => desc.values[c]);
-
-  let sql: string;
-  if (desc.onConflict !== undefined && desc.onConflictAction !== undefined) {
-    if (desc.onConflictAction === 'ignore') {
-      sql = `INSERT OR IGNORE INTO ${desc.table} (${columns.join(', ')}) VALUES (${placeholders})`;
-    } else {
-      const updateCols = desc.onConflictAction.updateColumns === 'all' ? columns : desc.onConflictAction.updateColumns;
-      const updateClauses = updateCols.map((c) => `${c} = excluded.${c}`);
-      sql = `INSERT INTO ${desc.table} (${columns.join(', ')}) VALUES (${placeholders}) ON CONFLICT (${desc.onConflict.join(', ')}) DO UPDATE SET ${updateClauses.join(', ')}`;
-    }
-  } else {
-    sql = `INSERT INTO ${desc.table} (${columns.join(', ')}) VALUES (${placeholders})`;
-  }
-
-  if (desc.returning !== undefined) sql += ` RETURNING ${desc.returning.join(', ')}`;
-
-  return { component: 'Insert', sql, where: null, params, assembly: assembly('items') };
+  return compileInsertFor(SQLITE, desc);
 }
 
 /** Compile an UPDATE. SET params (static) precede the `{where}` splice (spec §6). */

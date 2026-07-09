@@ -59,6 +59,7 @@ import { compileNode } from './bridge';
 import { deriveTransactionPlan, type BaseWrite, type TransactionPlan } from './write-plan';
 import { executeTransaction, type TransactionResult } from './write-runtime';
 import { lifecycleFor, type EntityWritesDefinition, type WriteLifecyclePhase } from './writes';
+import { dialectFor, type Dialect, type DialectName } from './dialect';
 
 /** The synthetic port that carries a SQL node's render scope (see module doc). */
 const SCOPE_PORT = '__scope';
@@ -247,8 +248,8 @@ function surrogateComponent(component: Component, compiled: Record<string, Compi
  * driver error is mapped ({@link mapSqliteError}) and returned as bc `{ error }` so the
  * node's Policy Kind governs propagation.
  */
-function executeRendered(db: SqliteDb, op: CompiledOperation, scope: Scope): ExecOutcome {
-  const rendered = renderOperation(op, scope);
+function executeRendered(db: SqliteDb, op: CompiledOperation, scope: Scope, dialect: Dialect): ExecOutcome {
+  const rendered = renderOperation(op, scope, dialect);
   const params = rendered.params.map(toDriverParam);
   let stmt: ReturnType<SqliteDb['prepare']>;
   try {
@@ -272,7 +273,7 @@ function executeRendered(db: SqliteDb, op: CompiledOperation, scope: Scope): Exe
 }
 
 /** Build the SQL handler registry: one handler per SQL Catalog name (spec §11 item 4). */
-function buildHandlers(db: SqliteDb, compiled: Record<string, CompiledOperation>): Handlers {
+function buildHandlers(db: SqliteDb, compiled: Record<string, CompiledOperation>, dialect: Dialect): Handlers {
   const handle = (ports: Record<string, Value>, ctx: HandlerCtx): ExecOutcome => {
     const op = compiled[ctx.nodeId];
     if (op === undefined) {
@@ -282,7 +283,7 @@ function buildHandlers(db: SqliteDb, compiled: Record<string, CompiledOperation>
     if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) {
       return { error: `scp runtime: node '${ctx.nodeId}' surrogate scope did not evaluate to an object` };
     }
-    return executeRendered(db, op, scope as Scope);
+    return executeRendered(db, op, scope as Scope, dialect);
   };
   // One binding per SQL CRUD Catalog name (all share the render→execute handler; the
   // pre-compiled op keyed by nodeId already encodes the per-node operation).
@@ -326,6 +327,13 @@ export interface ExecuteOptions {
    * declarative-select and lazy relations via the SAME compiled op.
    */
   readonly relations?: readonly RelationDecl[];
+  /**
+   * The target SQL dialect (spec §4/§10). Defaults to `'sqlite'` (the in-process runtime seam
+   * is synchronous SQLite). A `'postgres'`/`'mysql'` bundle is Backend-Compiled dialect-tagged
+   * for the dialect golden + a language runtime; the `?`→`$N` (PG) conversion is applied at
+   * render time. The SSoT dialect strategy governs every dialect divergence.
+   */
+  readonly dialect?: DialectName;
 }
 
 // ── Backend-Compiled bundle (§8 published artifact — the WS7 multi-language target) ──
@@ -346,12 +354,15 @@ export interface ExecuteOptions {
  *  - `optionalHeads` — the input heads normalized to present-as-null (absent-key SKIP), so a
  *    consumer runtime reproduces the same normalization from the bundle (not from TS state).
  *
- * `dialect` is `'sqlite'` for α (the dialect axis is compiled once, TS-side — spec §10).
+ * `dialect` is the target SQL dialect (`'sqlite'`/`'postgres'`/`'mysql'`); the dialect axis is
+ * compiled ONCE, TS-side (spec §10). A PG bundle's `operations[*].sql` still carries `?`
+ * placeholders — the `?`→`$N` conversion is the render-time final one-pass, so the bundle stays
+ * uniform and dialect-tagged.
  */
 export interface SqlBundle {
   readonly irVersion: number;
   readonly exprVersion: number;
-  readonly dialect: 'sqlite';
+  readonly dialect: DialectName;
   /** The surrogate component (wiring/plan/output only; catalog ports → `__scope`). */
   readonly component: Component;
   /** Backend-Compiled SQL IR per catalog node id (§8 shape). */
@@ -395,7 +406,7 @@ export function executeBehavior(
   input: Scope,
   options: ExecuteOptions,
 ): Value {
-  return executeBundle(compileBundle(contract, options.entry, options.relations), input, options);
+  return executeBundle(compileBundle(contract, options.entry, options.relations, options.dialect), input, options);
 }
 
 /**
@@ -410,7 +421,9 @@ export function compileBundle(
   contract: BehaviorModelContract,
   entry?: string,
   relations: readonly RelationDecl[] = [],
+  dialectName: DialectName = 'sqlite',
 ): SqlBundle {
+  const dialect = dialectFor(dialectName);
   const component = entry
     ? contract.components.find((c) => c.name === entry)
     : contract.components[0];
@@ -418,9 +431,11 @@ export function compileBundle(
     throw new Error(`scp runtime: entry component '${entry ?? '<first>'}' not found in contract`);
   }
   const operations: Record<string, CompiledOperation> = {};
-  for (const [id, op] of compileComponentNodes(component)) operations[id] = op;
+  for (const [id, op] of compileComponentNodes(component, dialect)) operations[id] = op;
   const surrogate = surrogateComponent(component, operations);
-  // Backend-Compile every relation declaration ONCE into a pure-JSON relation op (spec §8).
+  // Backend-Compile every relation declaration ONCE into a pure-JSON relation op (spec §8),
+  // dialect-aware (the relation batch SELECTs carry no dialect-divergent text today, but the
+  // decl is compiled through the SAME dialect-parameterized path for uniformity/WS7).
   const relationOps: Record<string, RelationOp> = {};
   for (const decl of relations) {
     if (relationOps[decl.name] !== undefined) {
@@ -431,7 +446,7 @@ export function compileBundle(
   return {
     irVersion: contract.ir.irVersion,
     exprVersion: contract.ir.exprVersion,
-    dialect: 'sqlite',
+    dialect: dialectName,
     component: surrogate,
     operations,
     optionalHeads: [...optionalHeadsOf(operations)],
@@ -456,7 +471,7 @@ export function executeBundle(bundle: SqlBundle, input: Scope, options: ExecuteO
     exprVersion: bundle.exprVersion,
     components: [surrogate],
   };
-  const handlers = buildHandlers(options.db, bundle.operations);
+  const handlers = buildHandlers(options.db, bundle.operations, dialectFor(bundle.dialect));
   const optionalHeads = new Set(bundle.optionalHeads);
   const normalized = normalizeInput(surrogate, optionalHeads, input);
 
@@ -510,7 +525,9 @@ export function compileWriteBundle(
   entry: string,
   writes: EntityWritesDefinition,
   phase: WriteLifecyclePhase,
+  dialectName: DialectName = 'sqlite',
 ): SqlBundle {
+  const dialect = dialectFor(dialectName);
   const component = contract.components.find((c) => c.name === entry);
   if (component === undefined) {
     throw new Error(`scp write: entry component '${entry}' not found in contract`);
@@ -520,19 +537,19 @@ export function compileWriteBundle(
     throw new Error(`scp write: the '${phase}' lifecycle is not declared in the entityWrites save contract`);
   }
   const writeNode = baseWriteNodeOf(component);
-  const baseOp = compileNode(writeNode as never);
+  const baseOp = compileNode(writeNode as never, dialect);
   const base: BaseWrite = { op: baseOp, label: `${baseOp.component} ${(writeNode as { component: string }).component}` };
-  const plan = deriveTransactionPlan(phase, [base], lifecycle);
+  const plan = deriveTransactionPlan(phase, [base], lifecycle, dialect);
 
   // The bundle still carries the surrogate component/operations for structural parity with a read
   // bundle (WS7 uniformity), but the write path executes via the transaction plan, not runBehavior.
   const operations: Record<string, CompiledOperation> = {};
-  for (const [id, op] of compileComponentNodes(component)) operations[id] = op;
+  for (const [id, op] of compileComponentNodes(component, dialect)) operations[id] = op;
   const surrogate = surrogateComponent(component, operations);
   return {
     irVersion: contract.ir.irVersion,
     exprVersion: contract.ir.exprVersion,
-    dialect: 'sqlite',
+    dialect: dialectName,
     component: surrogate,
     operations,
     optionalHeads: [...optionalHeadsOf(operations)],
@@ -556,7 +573,7 @@ export function executeCommand(
   input: Scope,
   options: ExecuteOptions & { readonly entry: string },
 ): TransactionResult {
-  const bundle = compileWriteBundle(contract, options.entry, writes, phase);
+  const bundle = compileWriteBundle(contract, options.entry, writes, phase, options.dialect);
   return executeTransactionBundle(bundle, input, options);
 }
 
@@ -574,7 +591,7 @@ export function executeTransactionBundle(bundle: SqlBundle, input: Scope, option
   if (bundle.transaction === undefined) {
     throw new Error('scp write: this bundle carries no transaction plan (not a write-time-relations Command bundle)');
   }
-  return executeTransaction(options.db, bundle.transaction, input);
+  return executeTransaction(options.db, bundle.transaction, input, dialectFor(bundle.dialect));
 }
 
 // ── typed-object read surface (WS4, #24 — result + Read relations) ────────────

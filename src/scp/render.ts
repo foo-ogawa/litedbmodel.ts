@@ -22,6 +22,7 @@
 import { evaluateExpression, type Scope, type Value } from 'behavior-contracts';
 import type { CompiledOperation, Fragment, FragmentTree } from './ir';
 import { WHERE_SLOT } from './ir';
+import { SQLITE, type Dialect } from './dialect';
 
 /** The result of rendering: final SQL text + flat params (1:1 with `?`). */
 export interface RenderedSql {
@@ -122,14 +123,14 @@ function renderTree(tree: FragmentTree, scope: Scope, params: Value[]): string {
  * post-WHERE statics (LIMIT / OFFSET) after — so a single left-to-right walk of the
  * spliced SQL yields the canonical `?` order.
  */
-export function renderOperation(op: CompiledOperation, input: Scope): RenderedSql {
+export function renderOperation(op: CompiledOperation, input: Scope, dialect: Dialect = SQLITE): RenderedSql {
   const params: Value[] = [];
   const markerIdx = op.sql.indexOf(WHERE_SLOT);
 
   if (markerIdx === -1) {
     // No dynamic WHERE: all params are static, in position order.
     for (const slot of op.params) params.push(evaluateExpression(slot, input));
-    return { sql: op.sql, params };
+    return { sql: finalize(op.sql, dialect), params };
   }
 
   const before = op.sql.slice(0, markerIdx);
@@ -150,7 +151,18 @@ export function renderOperation(op: CompiledOperation, input: Scope): RenderedSq
 
   for (const slot of postStatics) params.push(evaluateExpression(slot, input));
 
-  return { sql: before + whereSql + after, params };
+  return { sql: finalize(before + whereSql + after, dialect), params };
+}
+
+/**
+ * Apply the dialect's final placeholder pass over the FULLY-assembled SQL text (spec §8): for
+ * Postgres this converts `?`→`$1,$2,…` in ONE left-to-right pass (the number-reassignment
+ * problem is designed out — it runs once, after IN-list expansion + fragment splicing are all
+ * done); for SQLite/MySQL it is identity. This is the single place the `?`→`$N` conversion
+ * happens, so `params` order (already position-ordered by the walk above) matches `$N` order.
+ */
+function finalize(sql: string, dialect: Dialect): string {
+  return dialect.finalizePlaceholders(sql);
 }
 
 /** Count `?` placeholders in a static SQL segment (no fragment markers present). */

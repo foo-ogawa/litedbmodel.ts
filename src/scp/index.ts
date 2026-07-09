@@ -50,6 +50,14 @@ export type {
 export { renderOperation } from './render';
 export type { RenderedSql } from './render';
 
+// Dialect strategy table (WS6, #26 — the SSoT for PG/MySQL/SQLite SQL divergences + `?`→`$N`).
+export { dialectFor, toDollarPlaceholders, SQLITE, POSTGRES, MYSQL } from './dialect';
+export type { Dialect, DialectName, ConflictAction } from './dialect';
+
+// Dialect-parameterized Backend Compile (WS6, #26 — shared IR→structure, per-dialect SQL text).
+export { compileInsertFor } from './compile-dialect';
+export type { InsertShape } from './compile-dialect';
+
 // Portability guard (closed Expression IR set only)
 export {
   assertExprPortable,

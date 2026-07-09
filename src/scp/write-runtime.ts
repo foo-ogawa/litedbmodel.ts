@@ -40,6 +40,7 @@ import type { CompiledOperation } from './ir';
 import { renderOperation } from './render';
 import { mapSqliteError } from './errors';
 import { ENTITY_ROOT } from './writes';
+import { SQLITE, type Dialect } from './dialect';
 import type { GateRule, TransactionPlan, TxStatement } from './write-plan';
 import type { SqliteDb } from './runtime';
 
@@ -80,8 +81,9 @@ function execStatement(
   db: SqliteDb,
   op: CompiledOperation,
   scope: Scope,
+  dialect: Dialect,
 ): { rows: Record<string, unknown>[]; changes: number } {
-  const rendered = renderOperation(op, scope);
+  const rendered = renderOperation(op, scope, dialect);
   const params = rendered.params.map(toDriverParam);
   const stmt = db.prepare(rendered.sql);
   const hasReturn = op.component === 'Select' || /\breturning\b/i.test(rendered.sql);
@@ -117,7 +119,7 @@ function gateShortCircuit(gate: GateRule, result: { rows: Record<string, unknown
  * @param input  the Command input scope (`$.input.*` = bc flat scope).
  * @throws {SqlFailure} a mapped driver failure (the transaction is ROLLBACKed first, spec §11).
  */
-export function executeTransaction(db: SqliteDb, plan: TransactionPlan, input: Scope): TransactionResult {
+export function executeTransaction(db: SqliteDb, plan: TransactionPlan, input: Scope, dialect: Dialect = SQLITE): TransactionResult {
   db.prepare('BEGIN').run();
   const executed: string[] = [];
   // The evolving scope: input names at the top level (bc flat scope) + the body RETURNING row
@@ -128,7 +130,7 @@ export function executeTransaction(db: SqliteDb, plan: TransactionPlan, input: S
 
   try {
     for (const stmt of plan.statements) {
-      const result = runOne(db, stmt, scope, executed);
+      const result = runOne(db, stmt, scope, executed, dialect);
 
       // Gate-first: a failing gate short-circuits — ROLLBACK and STOP (tail never executes).
       if (stmt.gate !== undefined) {
@@ -164,8 +166,9 @@ function runOne(
   stmt: TxStatement,
   scope: Scope,
   executed: string[],
+  dialect: Dialect,
 ): { rows: Record<string, unknown>[]; changes: number } {
-  const result = execStatement(db, stmt.op, scope);
+  const result = execStatement(db, stmt.op, scope, dialect);
   executed.push(stmt.id);
   return result;
 }
