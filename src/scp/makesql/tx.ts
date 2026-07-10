@@ -57,6 +57,35 @@ import {
 export type TxExpr = unknown;
 
 /**
+ * Encode a CONCRETE value into a bc Expression IR node that `evaluateExpression` returns VERBATIM.
+ *
+ * A batch-write op (createMany / updateMany / deleteMany) is compiled by driving the v1 builders
+ * (compile-crud), so its `params` are already CONCRETE grouped values — NOT deferred Expression IR.
+ * But the tx runtime renders every statement param through bc `evaluateExpression` (spec §6 /
+ * `renderStatement`), which fail-closes on a BARE array ("bare array is not an expression") and on a
+ * multi-key plain object. The batch INSERT on Postgres binds REAL arrays as single params
+ * (`UNNEST($1::int[], …)` → `[[7,8], …]`), so those concrete params must be wrapped in the bc
+ * literal-carrier ops so they survive evaluation unchanged:
+ *   - array   → `{arr:[literalize(e)…]}`   (bc evaluates each element, so wrap recursively)
+ *   - object  → `{obj:{k:literalize(v)…}}`  (a plain map, e.g. a JSON payload object)
+ *   - scalar  → the value itself (null/bool/string/number pass through evaluateExpression verbatim;
+ *               an integral number becomes a bigint, normalized back at the driver boundary).
+ * This reuses ONLY vocabulary every language runtime's bc already implements (`{arr}`/`{obj}` — the
+ * emit outbox payload already rides `{obj}` on live PG+MySQL), so a batch write executes through the
+ * SAME per-statement tx loop in all five runtimes with NO runtime change.
+ */
+export function literalize(value: unknown): TxExpr {
+  if (value === null || value === undefined) return null;
+  if (Array.isArray(value)) return { arr: value.map((e) => literalize(e)) };
+  if (typeof value === 'object') {
+    const obj: Record<string, TxExpr> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) obj[k] = literalize(v);
+    return { obj };
+  }
+  return value;
+}
+
+/**
  * The compiled op of a transaction statement — a `makeSQL` template. `sql` is the COMPLETE
  * tuned SQL text (byte-parity with the v1 write path) with `?` placeholders; `params` are
  * closed-set Expression IR resolved at execute time against the tx scope. This is the makeSQL
@@ -595,6 +624,40 @@ export function deriveTransactionPlan(
   return { phase, entityFrom, statements, onIdempotentHit: 'rollback' };
 }
 
+/**
+ * Lower a list of CONCRETE batch-write ops (createMany / updateMany / deleteMany — each already
+ * compiled by driving the v1 builders in `compile-crud`, so its `sql` is byte-identical to v1 and
+ * its `params` are concrete grouped values) into a gate-free {@link TransactionPlan} of `body`
+ * statements, run IN THE DECLARED ORDER as ONE transaction. This is the makeSQL re-expression of a
+ * BATCH write: createMany with heterogeneous column-set groups is exactly a composition of several
+ * INSERT statements (`_insert:928-975` grouping), and each group's SQL is one v1-copied statement.
+ *
+ * Each op's concrete params are {@link literalize}d into bc literal-carrier IR so they survive the
+ * tx runtime's `evaluateExpression` render pass unchanged (a PG batch binds real arrays). The plan
+ * carries NO gates and NO `$.entity`/`$.ref` bindings — a batch write is N independent grouped
+ * statements, executed in order (the last statement's RETURNING rows, if any, are the `entity`).
+ */
+export function deriveBatchPlan(
+  phase: WriteLifecyclePhase,
+  ops: readonly { sql: string; params: readonly unknown[]; label?: string }[],
+): TransactionPlan {
+  if (ops.length === 0) {
+    throw new Error('write-plan: a batch write must declare at least one statement (createMany/updateMany/deleteMany produced none).');
+  }
+  const nextId = makeIdGen();
+  const statements: TxStatement[] = ops.map((op, i) => ({
+    id: nextId('body'),
+    role: 'body' as const,
+    op: { sql: op.sql, params: op.params.map((p) => literalize(p)) },
+    label: op.label ?? `batch[${i}]`,
+  }));
+  // A batch write has NO single `$.entity` row — it is N grouped statements, each possibly RETURNING
+  // its own rows. `entityFrom` stays null; the runtime accumulates EVERY body statement's RETURNING
+  // rows into `TransactionResult.returnedRows` (ordered by group), reproducing v1 `createMany`'s
+  // "all created rows" result while `expectedDbState` proves the persisted state.
+  return { phase, entityFrom: null, statements, onIdempotentHit: 'rollback' };
+}
+
 /** Collect the ref-heads (`ref[0]`) a statement's params reference. */
 function refHeadsOf(stmt: TxStatement): string[] {
   const heads = new Set<string>();
@@ -669,6 +732,14 @@ export interface TransactionResult {
   readonly shortCircuit?: { readonly statementId: string; readonly reason: ShortCircuitReason };
   readonly entity: Record<string, unknown> | null;
   readonly executed: readonly string[];
+  /**
+   * For a BATCH write (createMany/updateMany/deleteMany — a gate-free plan with `entityFrom:null`):
+   * the RETURNING rows of every body statement, ordered by statement. Present ONLY when a body
+   * statement RETURNED rows and the plan has no `$.entity` (batch mode); absent for a gate-first
+   * single/composite Command (which exposes its written row via `entity`). This carries v1
+   * `createMany`'s "all created rows" result across the multi-statement batch.
+   */
+  readonly returnedRows?: readonly (readonly Record<string, unknown>[])[];
 }
 
 /** bc evaluates ints to bigint; convert a rendered param to a driver-bindable value. */
@@ -729,6 +800,14 @@ export function executeTransaction(db: SqliteDb, plan: TransactionPlan, input: S
   const executed: string[] = [];
   const scope: Scope = { ...input };
   let entity: Record<string, unknown> | null = null;
+  // Batch mode (createMany/updateMany/deleteMany): a gate-free, ref-free plan (no `$.entity`, no
+  // gates, no `$.ref` binds) — a pure list of body statements. Only THEN accumulate each body
+  // statement's RETURNING rows in order (a composite Command also has `entityFrom:null` but carries
+  // `binds`/gates and is NOT batch — its written rows flow via scope refs, not `returnedRows`).
+  const isBatch =
+    plan.entityFrom === null &&
+    plan.statements.every((s) => s.gate === undefined && s.binds === undefined && s.role === 'body');
+  const returnedRows: Record<string, unknown>[][] = [];
 
   try {
     for (const stmt of plan.statements) {
@@ -750,9 +829,10 @@ export function executeTransaction(db: SqliteDb, plan: TransactionPlan, input: S
       if (stmt.binds !== undefined && result.rows.length > 0) {
         scope[stmt.binds] = result.rows[0] as unknown as Value;
       }
+      if (isBatch && stmt.role === 'body' && result.rows.length > 0) returnedRows.push(result.rows);
     }
     db.prepare('COMMIT').run();
-    return { committed: true, entity, executed };
+    return { committed: true, entity, executed, ...(returnedRows.length > 0 ? { returnedRows } : {}) };
   } catch (e) {
     try {
       db.prepare('ROLLBACK').run();

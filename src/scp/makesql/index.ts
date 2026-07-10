@@ -52,6 +52,7 @@ export {
   compileFindByPkeys,
   compileUpdateSingle,
   compileDelete,
+  compileDeleteMany,
 } from './compile-crud';
 export type { InsertManyBuildOptions } from './compile-crud';
 
@@ -85,6 +86,8 @@ export { makeSqlComponentIR, makeSqlInput } from './ir';
 // Write-time relations → makeSQL transaction plan + 1-tx runtime (epic #43/#45 Phase B).
 export {
   deriveTransactionPlan,
+  deriveBatchPlan,
+  literalize,
   executeTransaction,
   countingDriver,
   renderTxStatement,

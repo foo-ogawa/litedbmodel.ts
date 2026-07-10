@@ -214,6 +214,12 @@ export { compileWriteBundle, executeCommand, executeTransactionBundle } from './
 export { compileCompositeWriteBundle, executeCompositeCommand } from './runtime';
 export type { CompositeWriteEntry } from './runtime';
 
+// Batch writes (createMany / updateMany / deleteMany): ONE logical op → N grouped statements lowered
+// to a gate-free tx plan (executed by the SAME multi-statement tx loop in all 5 runtimes). The
+// batch SQL is byte-copied from the v1 builders (compileInsertMany/compileUpdateMany/compileDeleteMany).
+export { compileCreateManyBundle, compileUpdateManyBundle, compileDeleteManyBundle } from './runtime';
+export { compileDeleteMany } from './makesql';
+
 // Mode-3 codegen (WS7f, #35 — spec §9 exec-mode 3): supply the litedbmodel SQL catalog to bc's
 // shared generator; emit per-language source (IR baked as a native literal) + the SQL catalog
 // companion. Generated code output is byte-identical to the mode-2 thin-runtime (proven by the

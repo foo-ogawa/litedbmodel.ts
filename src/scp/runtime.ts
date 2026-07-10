@@ -47,11 +47,20 @@ import {
 import {
   compileWriteNode,
   deriveTransactionPlan,
+  deriveBatchPlan,
   executeTransaction,
   type BaseWrite,
   type TransactionPlan,
   type TransactionResult,
 } from './makesql/tx';
+import {
+  compileInsertMany,
+  compileUpdateMany,
+  compileDeleteMany,
+  type InsertManyBuildOptions,
+} from './makesql/compile-crud';
+import { assembleMakeSQL, type MakeSQL } from './makesql/makesql';
+import type { UpdateManyBuildOptions } from '../drivers/types';
 import {
   lifecycleFor,
   type EntityWritesDefinition,
@@ -386,6 +395,75 @@ export function compileCompositeWriteBundle(
     relations: {},
     transaction: plan,
   };
+}
+
+// ── Batch writes: createMany / updateMany / deleteMany (a v1→v2 regression fix) ──
+//
+// A batch write is ONE LOGICAL operation that produces N grouped SQL statements (createMany with a
+// heterogeneous column-set groups records into one INSERT per group, mirroring `DBModel._insert`;
+// updateMany is one UNNEST/JSON/CASE statement; deleteMany is a PK-set IN-list DELETE). This is
+// DISTINCT from the deferred composite multi-write DAG (`baseWriteNodeOf` still rejects >1 authored
+// base write). The batch compilers (`compileInsertMany`/`compileUpdateMany`/`compileDeleteMany`) copy
+// the v1 builders byte-for-byte; here they are lowered into a gate-free {@link TransactionPlan} of
+// body statements ({@link deriveBatchPlan}), so ALL FIVE runtimes execute the multi-statement batch
+// through the SAME per-statement tx loop with no runtime change (concrete params are literalized to
+// bc IR so they survive the render pass — see `deriveBatchPlan`/`literalize`).
+
+/** Flatten a batch compiler's `MakeSQL` component to a concrete `{ sql, params }` op. */
+function flattenBatchOp(node: MakeSQL, label: string): { sql: string; params: readonly unknown[]; label: string } {
+  const assembled = assembleMakeSQL(node);
+  return { sql: assembled.sql, params: assembled.params, label };
+}
+
+/**
+ * Compile a `createMany` into a batch write {@link SqlBundle} carrying a gate-free
+ * {@link TransactionPlan}. Heterogeneous column-set groups become MULTIPLE ordered INSERT
+ * statements — byte-identical to what `DBModel._insert` emits per group (via `compileInsertMany`).
+ */
+export function compileCreateManyBundle(
+  name: string,
+  options: InsertManyBuildOptions,
+  dialectName: DialectName = 'sqlite',
+): SqlBundle {
+  const components = compileInsertMany(dialectName, options);
+  const ops = components.map((c, i) => flattenBatchOp(c, `createMany group ${i}`));
+  const plan = deriveBatchPlan('create', ops);
+  return { dialect: dialectName, name, statement: { sql: ops[0]?.sql ?? '', params: (ops[0]?.params ?? []) as unknown[] }, optionalHeads: [], relations: {}, transaction: plan };
+}
+
+/**
+ * Compile an `updateMany` into a batch write {@link SqlBundle} (one UNNEST/JSON/CASE statement,
+ * byte-identical to `compileUpdateMany` driving the v1 `buildUpdateMany` / JSON-batch builder).
+ */
+export function compileUpdateManyBundle(
+  name: string,
+  options: UpdateManyBuildOptions,
+  dialectName: DialectName = 'sqlite',
+): SqlBundle {
+  const op = flattenBatchOp(compileUpdateMany(dialectName, options), 'updateMany');
+  const plan = deriveBatchPlan('update', [op]);
+  return { dialect: dialectName, name, statement: { sql: op.sql, params: op.params as unknown[] }, optionalHeads: [], relations: {}, transaction: plan };
+}
+
+/**
+ * Compile a `deleteMany` into a batch write {@link SqlBundle} — a PK-set IN-list DELETE (single-key)
+ * or one DELETE per composite-key group, driven by the v1 `DBConditions` builder (`compileDeleteMany`).
+ */
+export function compileDeleteManyBundle(
+  name: string,
+  options: { tableName: string; keyColumns: string[]; keys: Record<string, unknown>[]; returning?: string },
+  dialectName: DialectName = 'sqlite',
+): SqlBundle {
+  const components = compileDeleteMany({ dialect: dialectName, ...options });
+  const ops = components.map((c, i) => flattenBatchOp(c, `deleteMany group ${i}`));
+  if (ops.length === 0) {
+    // Empty key set: nothing to delete. Emit a no-op plan (zero statements is rejected by
+    // deriveBatchPlan, so surface a single always-false DELETE keyed by the v1 empty IN-list is
+    // NOT needed — an empty deleteMany simply has no statements). Represent as an empty transaction.
+    return { dialect: dialectName, name, statement: { sql: '', params: [] }, optionalHeads: [], relations: {}, transaction: { phase: 'remove', entityFrom: null, statements: [], onIdempotentHit: 'rollback' } };
+  }
+  const plan = deriveBatchPlan('remove', ops);
+  return { dialect: dialectName, name, statement: { sql: ops[0].sql, params: ops[0].params as unknown[] }, optionalHeads: [], relations: {}, transaction: plan };
 }
 
 /**

@@ -305,3 +305,61 @@ export function compileDelete(opts: {
   if (opts.returning) sql += ` RETURNING ${opts.returning}`;
   return { sql, params };
 }
+
+// ============================================================================
+// DELETE batch (deleteMany) — a single DELETE keyed by a PK-set IN-list, driven
+// by the ORIGINAL v1 condition builder (compileDelete → DBConditions/conditionsFor).
+// ============================================================================
+
+/**
+ * Compile a `deleteMany` — delete the rows whose primary key is in a given SET of key values — as a
+ * COMPOSITION of `makeSQL` DELETE components (one per PK column-set group, mirroring the createMany
+ * grouping contract). A single-column PK reduces to ONE DELETE with the v1 IN-list condition
+ * (`{ pk: [values] }` → PG `= ANY` / MySQL·SQLite JSON-subquery via `conditionsFor`); a COMPOSITE PK
+ * groups the key-tuples by their present key set and emits ONE DELETE per group whose WHERE is the
+ * v1 conjunction of per-column IN-lists (each group homogeneous). Every group's WHERE text comes
+ * from the SAME original `DBConditions`/`conditionsFor` builder ({@link compileDelete}) — NEVER a
+ * hand-roll — so the deleteMany SQL is byte-identical to what the v1 condition path emits.
+ *
+ * The returned components compose (via the batch tx plan) into the full multi-statement `deleteMany`
+ * the production path would execute. An empty key set yields NO components (nothing to delete).
+ */
+export function compileDeleteMany(opts: {
+  dialect: Dialect;
+  tableName: string;
+  /** The PK column names (single or composite). */
+  keyColumns: string[];
+  /** The key-tuples to delete: each row maps every PK column → its value. */
+  keys: Record<string, unknown>[];
+  returning?: string;
+}): MakeSQL[] {
+  const { dialect, tableName, keyColumns, keys, returning } = opts;
+  if (keyColumns.length === 0) throw new Error('compileDeleteMany: keyColumns must be non-empty');
+  if (keys.length === 0) return [];
+
+  if (keyColumns.length === 1) {
+    // Single PK → ONE DELETE with a v1 IN-list condition (`{ pk: [values] }`).
+    const col = keyColumns[0];
+    const values = keys.map((k) => k[col]);
+    const conditions: ConditionObject = { [col]: values };
+    return [compileDelete({ dialect, tableName, conditions, returning })];
+  }
+
+  // Composite PK → group key-tuples by their present-column set (mirrors createMany grouping), one
+  // DELETE per group whose WHERE is the v1 conjunction of per-column IN-lists (each group homogeneous).
+  const grouped = new Map<string, Record<string, unknown>[]>();
+  for (const key of keys) {
+    const present = keyColumns.filter((c) => key[c] !== undefined).sort();
+    const patternKey = present.join(',');
+    if (!grouped.has(patternKey)) grouped.set(patternKey, []);
+    grouped.get(patternKey)!.push(key);
+  }
+  const components: MakeSQL[] = [];
+  for (const group of grouped.values()) {
+    const present = keyColumns.filter((c) => group[0][c] !== undefined);
+    const conditions: ConditionObject = {};
+    for (const c of present) conditions[c] = group.map((k) => k[c]);
+    components.push(compileDelete({ dialect, tableName, conditions, returning }));
+  }
+  return components;
+}
