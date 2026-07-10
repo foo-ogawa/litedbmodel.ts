@@ -26,8 +26,13 @@ export type Dialect = 'postgres' | 'mysql' | 'sqlite';
 /**
  * Render `?` placeholders into the dialect form.
  *
- * - PostgreSQL: `?` → `$1, $2, …` (naive left-to-right, byte-identical to the original
- *   `src/drivers/postgres.ts` `convertPlaceholders`).
+ * - PostgreSQL: `?` → `$1, $2, …` left-to-right, **quote-aware** — a `?` inside a
+ *   single-quoted SQL string literal is NOT a placeholder and is left untouched (mirrors
+ *   `litedbmodel.rs` `rewrite_placeholders`, #42). For SQL with no literal `?` (all
+ *   compiled forms today) this is byte-identical to the original naive
+ *   `src/drivers/postgres.ts` `convertPlaceholders`; it only diverges — correctly — when a
+ *   string literal contains a `?` (e.g. a Raw-SQL escape hatch), which the naive form would
+ *   mis-number.
  * - MySQL / SQLite: `?` unchanged.
  *
  * There is NO array placeholder-count-expansion for ANY dialect (epic #43/#45): every
@@ -38,8 +43,24 @@ export type Dialect = 'postgres' | 'mysql' | 'sqlite';
  */
 export function renderPlaceholders(sql: string, dialect: Dialect): string {
   if (dialect !== 'postgres') return sql;
+  let out = '';
   let index = 0;
-  return sql.replace(/\?/g, () => `$${++index}`);
+  let inString = false;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (inString) {
+      out += ch;
+      if (ch === "'") inString = false; // end of string literal (SQL '' escape re-opens on the next ')
+    } else if (ch === "'") {
+      out += ch;
+      inString = true;
+    } else if (ch === '?') {
+      out += `$${++index}`;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
 }
 
 /**
