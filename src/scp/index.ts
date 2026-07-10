@@ -1,12 +1,75 @@
 /**
  * litedbmodel v2 SCP — public surface (WS1, #21).
  *
- * The SQL-backend consumer layer over behavior-contracts (spec §1). WS1 delivers the
- * Catalog definition and the SQLite Backend Compile + dynamic-expansion render; WS2
- * delivers the Authoring Parse (SemanticBehavior declaration + eager public-API path →
- * one internal Component-graph IR). WS3 (runtime execution / handlers), WS4/5 (relations)
- * and the other dialects (PG/MySQL) are out of scope here.
+ * The SQL-backend consumer layer over behavior-contracts (spec §1).
+ *
+ * ## CANONICAL bc integration (epic #43 / design #45): the `makeSQL` catalog leaf.
+ *
+ * The LOCKED minimal model is ONE behavior-contracts catalog component
+ * **`makeSQL(sql, params, skip?)`** (like graphddb's `GetItem`/`Query`) + its handler
+ * (bind params → execute SQL) + the compile that emits tuned dialect SQL text (reusing
+ * the original tuned builders — byte-for-byte). A query is a COMPOSITION of `makeSQL`
+ * components; a subquery is a NESTED `makeSQL` in a param slot. `= ANY`, `CROSS JOIN
+ * LATERAL`, `UNNEST`, cast, batch shapes are all TEXT inside `sql` — never modeled.
+ * bc supplies composition / value-eval / envelope / plan. The whole `./makesql`
+ * subtree (re-exported below) is the recommended integration surface.
+ *
+ * ## Superseded (legacy) reduced path.
+ *
+ * The earlier abstract path (`ir.ts` FragmentTree + `WHERE_SLOT`, `relation.ts`
+ * `RelationOp`, `compile-sqlite.ts` reduced SELECT/INSERT/UPDATE forms, `render.ts`,
+ * `dialect.ts` strategy table) reduced the tuned SQL to a closed expression/relation-op
+ * vocabulary and regressed the byte-parity the library is built on (see
+ * `docs/proposal/v2-sql-parity-checklist.md`). It is SUPERSEDED by `./makesql`: SQL
+ * structure now lives as text inside `makeSQL`, not as IR "kinds". The legacy modules
+ * remain exported (below) only for the historical WS test-suite; new code must use
+ * `./makesql`.
  */
+
+// ── CANONICAL: the LOCKED `makeSQL` bc integration (epic #43 / design #45). ──────────
+export {
+  MAKESQL,
+  makeSqlCatalogEntry,
+  LITEDBMODEL_MAKESQL_CATALOG,
+  isMakeSQL,
+  assembleMakeSQL,
+  composeMakeSQL,
+  renderPlaceholders,
+  renderPorts,
+  makeSqlHandler,
+  makeSqlHandlerSync,
+  compileWhere,
+  compileOptionalEq,
+  whereClause,
+  andTrailing,
+  formatterFor,
+  pgCastFormatter,
+  noCastFormatter,
+  compileSelect as compileSelectMakeSQL,
+  builderFor,
+  compileInsert as compileInsertMakeSQL,
+  compileUpdateMany,
+  compileFindByPkeys,
+  compileUpdateSingle,
+  compileDelete as compileDeleteMakeSQL,
+  inferPgArrayType,
+  compileSingleKeyUnlimited,
+  compileSingleKeyLimited,
+  compileCompositeKeyUnlimited,
+  compileCompositeKeyLimited,
+  makeSqlComponentIR,
+  makeSqlInput,
+} from './makesql';
+export type {
+  MakeSQL,
+  SqlParam,
+  AssembledSql,
+  Dialect as MakeSQLDialect,
+  SqlExecutor,
+  SqlExecutorSync,
+  SelectDesc as MakeSQLSelectDesc,
+  RelationCompileBase,
+} from './makesql';
 
 // Catalog (spec §11 item 1)
 export {
