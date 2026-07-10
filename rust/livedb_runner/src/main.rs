@@ -19,7 +19,9 @@ use std::process::ExitCode;
 
 use litedbmodel_runtime::livedb::{MysqlDriver, PostgresDriver};
 use litedbmodel_runtime::value::encode_value;
-use litedbmodel_runtime::{execute_bundle_pooled, execute_transaction_bundle, Driver};
+use litedbmodel_runtime::{
+    execute_bundle_pooled, execute_transaction_bundle, read_bundle_pooled, Driver,
+};
 use serde_json::{json, Value as J};
 
 const SUPPORTED_CORPUS_VERSION: i64 = 2;
@@ -28,6 +30,7 @@ const MYSQL_DB: &str = "scp_rust";
 
 const ALL_TABLES: &[&str] = &[
     "post_tags",
+    "comments",
     "posts",
     "tags",
     "docs",
@@ -159,6 +162,36 @@ fn run_exec(driver: &(dyn Driver + Sync), bundle: &J, v: &J) -> Result<(), Strin
     }
 }
 
+/// A read-RELATION EXECUTION vector: run the parent read (pooled #40 fan-out) + batch-load/hydrate
+/// the `with` relations, compare to the PER-DIALECT golden (`expected_key` = expectedResultPg /
+/// expectedResultMysql — a limited hasMany's `_rn` window column is present on MySQL but projected
+/// away by PG's LATERAL form).
+fn run_read(
+    driver: &(dyn Driver + Sync),
+    bundle: &J,
+    v: &J,
+    expected_key: &str,
+) -> Result<(), String> {
+    let input = numeric_canon(&v["input"]);
+    let with_names: Vec<String> = v
+        .get("with")
+        .and_then(|w| w.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let result = read_bundle_pooled(bundle, &input, driver, &with_names)
+        .map_err(|e| format!("read threw: {}", e.message))?;
+    let got = encode_value(&result);
+    if eq(&got, &v[expected_key]) {
+        Ok(())
+    } else {
+        Err(format!("result {got} != {}", v[expected_key]))
+    }
+}
+
 fn run_tx(driver: &(dyn Driver + Sync), bundle: &J, v: &J) -> Result<(), String> {
     let input = numeric_canon(&v["input"]);
     let result = execute_transaction_bundle(bundle, &input, driver)
@@ -195,6 +228,7 @@ fn run_dialect_leg(
     vectors: &[J],
     bundle_key: &str,
     schema_key: &str,
+    read_expected_key: &str,
 ) -> Tally {
     let mut t = Tally { pass: 0, fail: 0 };
     eprintln!("\nlivedb-{name} — {} vectors (real {name})", vectors.len());
@@ -208,6 +242,7 @@ fn run_dialect_leg(
         let bundle = &v[bundle_key];
         let res = match v.get("kind").and_then(|k| k.as_str()).unwrap_or("") {
             "exec" => run_exec(driver, bundle, v),
+            "read" => run_read(driver, bundle, v, read_expected_key),
             "tx" => run_tx(driver, bundle, v),
             other => Err(format!("unknown kind {other}")),
         };
@@ -321,7 +356,15 @@ fn main() -> ExitCode {
 
     let pg_t = {
         let mut reset = |schema: &[String]| reset_pg(&pg, schema);
-        run_dialect_leg("pg", &pg, &mut reset, &vectors, "bundlePg", "schemaPg")
+        run_dialect_leg(
+            "pg",
+            &pg,
+            &mut reset,
+            &vectors,
+            "bundlePg",
+            "schemaPg",
+            "expectedResultPg",
+        )
     };
     let my_t = {
         let mut reset = |schema: &[String]| reset_mysql(&my, schema);
@@ -332,6 +375,7 @@ fn main() -> ExitCode {
             &vectors,
             "bundleMysql",
             "schemaMysql",
+            "expectedResultMysql",
         )
     };
 

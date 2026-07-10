@@ -178,7 +178,7 @@ fn infer_pg_array_type(values: &[Value]) -> &'static str {
 
 /// Resolve the FIRST unresolved cast token to the element type inferred from `values` (mirrors TS
 /// `resolvePgArrayCast`). SQL with no token is returned unchanged.
-fn resolve_pg_array_cast(sql: &str, values: &[Value]) -> String {
+pub(crate) fn resolve_pg_array_cast(sql: &str, values: &[Value]) -> String {
     match sql.find(PG_ARRAY_CAST_TOKEN) {
         None => sql.to_string(),
         Some(at) => {

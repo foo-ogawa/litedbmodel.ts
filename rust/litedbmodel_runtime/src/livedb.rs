@@ -534,9 +534,16 @@ fn my_cell_to_value(row: &MySqlRow, idx: usize) -> Result<Value, SqlFailure> {
         return Ok(Value::Null);
     }
     let type_name = col.type_info().name().to_ascii_uppercase();
-    // Integer families → Int; float/decimal → Float; everything else → string.
+    // Integer families → Int; float/decimal → Float; everything else → string. An UNSIGNED integer
+    // column (e.g. the `ROW_NUMBER() OVER (...) AS _rn` window column MySQL types as BIGINT UNSIGNED
+    // in a limited-hasMany relation batch) decodes as u64 in sqlx, so read it as u64 then narrow to
+    // the bc i64 int (the corpus values are well within the i64 range).
     let v = if type_name.contains("INT") {
-        row.try_get::<i64, _>(idx).map(Value::Int)
+        if type_name.contains("UNSIGNED") {
+            row.try_get::<u64, _>(idx).map(|u| Value::Int(u as i64))
+        } else {
+            row.try_get::<i64, _>(idx).map(Value::Int)
+        }
     } else if type_name.contains("FLOAT")
         || type_name.contains("DOUBLE")
         || type_name.contains("DECIMAL")
