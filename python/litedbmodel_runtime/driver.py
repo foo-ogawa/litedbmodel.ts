@@ -95,19 +95,82 @@ class SqliteDriver:
         self.conn.close()
 
 
-# ── Live PostgreSQL / MySQL drivers (WS7g, #36) ────────────────────────────────
+# ── Live PostgreSQL / MySQL drivers (WS7g #36; async/pooled #40) ────────────────
 #
-# The SAME synchronous `Driver` seam, now backed by REAL psycopg (Postgres) / PyMySQL (MySQL)
-# connections — proving the deferred live-DB execution axis (spec §10 dialect axis). The runtime
-# is UNCHANGED: it renders the dialect-tagged bundle (Postgres → `$N`, MySQL → `?`), binds the
-# rendered params positionally, and calls `prepare(sql).all(...)` / `.run(...)`. Each live driver
-# adapts the rendered placeholder text to its DB's native paramstyle (both DB-API drivers here use
-# `%s`), and MySQL emulates the missing `RETURNING` at this seam (strip → execute → re-select the
-# inserted PK) — the sanctioned dialect-behavior-by-convention (mirrors the WS6 TS ScpDialect).
+# The SAME synchronous `Driver` seam, now backed by a CONNECTION POOL over REAL psycopg (Postgres)
+# / PyMySQL (MySQL) connections — proving the deferred live-DB execution axis (spec §10) AND turning
+# the read plan's `concurrency` into REAL parallel DB I/O (#40). The Python bc `run_plan` dispatches
+# the INDEPENDENT sibling relations of a plan stage on a `ThreadPoolExecutor` when
+# `concurrency > 1` (bc#23); a single DB-API connection is NOT safe for concurrent use, so each
+# `prepare().all()` CHECKS OUT ITS OWN pooled connection — distinct threads run on distinct
+# connections in parallel. The runtime is UNCHANGED: it renders the dialect-tagged bundle
+# (Postgres → `$N`, MySQL → `?`), binds params positionally, and calls `prepare(sql).all(...)` /
+# `.run(...)`. Each live driver adapts the rendered placeholder text to its DB's native paramstyle
+# (both DB-API drivers here use `%s`), and MySQL emulates the missing `RETURNING` at this seam
+# (strip → execute → re-select the inserted PK) — the WS6 TS ScpDialect behavior-by-convention.
 #
-# The transaction envelope: the runtime issues `prepare("BEGIN"|"COMMIT"|"ROLLBACK").run([])`.
-# The live drivers run with autocommit ON so those literal statements control the transaction
-# exactly like the SQLite seam's implicit-then-explicit tx — a real BEGIN…COMMIT on the live DB.
+# WRITE-TX STAYS SERIAL: the runtime issues `prepare("BEGIN"|"COMMIT"|"ROLLBACK").run([])`. On
+# `BEGIN` the driver PINS one pooled connection into a single writer slot and routes every
+# subsequent statement to it until `COMMIT`/`ROLLBACK` releases it — one connection, tx-DAG order,
+# gate-first short-circuit. Reads (no active tx) each check out + return a pooled connection. The
+# connections run with autocommit ON so the literal BEGIN…COMMIT bracket a REAL transaction.
+
+# The read plan's default concurrency (spec) — the pool is sized to match so `concurrency` sibling
+# relations can each hold a live connection without starving.
+DEFAULT_POOL_SIZE = 16
+
+
+class _ConnectionPool:
+    """A minimal thread-safe, bounded pool of DB-API connections (dependency-free).
+
+    A bounded ``queue`` of live connections created lazily up to ``max_size``. ``acquire`` blocks
+    for a free connection (or opens a new one below the ceiling); ``release`` returns it. This keeps
+    the parallel-read seam dependency-free (no psycopg_pool / DBUtils needed) while giving each
+    concurrent sibling its own connection.
+    """
+
+    __slots__ = ("_factory", "_max", "_free", "_opened", "_lock")
+
+    def __init__(self, factory, max_size: int) -> None:
+        import queue as _queue
+        import threading as _threading
+
+        self._factory = factory
+        self._max = max_size
+        self._free: "Any" = _queue.LifoQueue()
+        self._opened = 0
+        self._lock = _threading.Lock()
+
+    def acquire(self) -> Any:
+        import queue as _queue
+
+        # Fast path: reuse a free connection.
+        try:
+            return self._free.get_nowait()
+        except _queue.Empty:
+            pass
+        # Open a new one if below the ceiling; else wait for a release.
+        with self._lock:
+            if self._opened < self._max:
+                self._opened += 1
+                return self._factory()
+        return self._free.get()  # block until a connection is released
+
+    def release(self, conn: Any) -> None:
+        self._free.put(conn)
+
+    def close(self) -> None:
+        import queue as _queue
+
+        while True:
+            try:
+                conn = self._free.get_nowait()
+            except _queue.Empty:
+                break
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 # `$1`, `$2`, … (Postgres render output).
 _DOLLAR_RE = re.compile(r"\$\d+")
@@ -129,28 +192,39 @@ def _qmark_to_pyformat(sql: str) -> str:
     return sql.replace("%", "%%").replace("?", "%s")
 
 
-class _LivePrepared:
-    """A prepared statement over a live DB-API connection (psycopg / PyMySQL).
+_TXN_CONTROL = frozenset({"BEGIN", "COMMIT", "ROLLBACK", "START TRANSACTION"})
 
-    `paramstyle_xform` adapts the rendered placeholder text; `emulate_returning` toggles the MySQL
-    RETURNING emulation. Transaction-control literals (BEGIN/COMMIT/ROLLBACK) execute verbatim.
+
+def _is_txn_control(sql: str) -> bool:
+    return sql.strip().upper() in _TXN_CONTROL
+
+
+class _PooledPrepared:
+    """A prepared statement over a POOLED live DB-API driver (psycopg / PyMySQL).
+
+    For a read (no active tx) it checks out a connection from the pool, runs the statement, and
+    returns the connection — so concurrent siblings run on DISTINCT connections. Inside a write-tx
+    it runs on the driver's PINNED writer connection (set on BEGIN, released on COMMIT/ROLLBACK).
+    ``paramstyle_xform`` adapts the rendered placeholder text; ``emulate_returning`` toggles the
+    MySQL RETURNING emulation.
     """
 
-    __slots__ = ("_conn", "_sql", "_xform", "_emulate_returning")
+    __slots__ = ("_driver", "_sql", "_params")
 
-    def __init__(self, conn: Any, sql: str, xform, emulate_returning: bool) -> None:
-        self._conn = conn
+    def __init__(self, driver: "_PooledDriver", sql: str) -> None:
+        self._driver = driver
         self._sql = sql
-        self._xform = xform
-        self._emulate_returning = emulate_returning
+        self._params: Sequence[Any] = ()
 
-    def _fetch_all(self, cur) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _fetch_all(cur) -> List[Dict[str, Any]]:
         cols = [d[0] for d in cur.description] if cur.description is not None else []
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
-    def all(self, params: Sequence[Any]) -> List[Dict[str, Any]]:
+    def _run_all(self, conn: Any) -> List[Dict[str, Any]]:
+        xform = self._driver._xform
         # MySQL has no RETURNING: strip it, run the INSERT, re-select the inserted PK's columns.
-        if self._emulate_returning:
+        if self._driver._emulate_returning:
             m = _RETURNING_RE.search(self._sql)
             if m is not None:
                 returning_cols = m.group(1)
@@ -161,92 +235,159 @@ class _LivePrepared:
                         f"scp mysql driver: cannot emulate RETURNING for non-INSERT statement: {self._sql!r}"
                     )
                 table = table_m.group(1)
-                cur = self._conn.cursor()
-                cur.execute(self._xform(insert_sql), tuple(params))
+                cur = conn.cursor()
+                cur.execute(xform(insert_sql), tuple(self._params))
                 last_id = cur.lastrowid
                 cur.close()
-                sel = self._conn.cursor()
+                sel = conn.cursor()
                 sel.execute(f"SELECT {returning_cols} FROM {table} WHERE id = %s", (last_id,))
                 rows = self._fetch_all(sel)
                 sel.close()
                 return rows
-        cur = self._conn.cursor()
-        cur.execute(self._xform(self._sql), tuple(params))
+        cur = conn.cursor()
+        cur.execute(xform(self._sql), tuple(self._params))
         rows = self._fetch_all(cur)
         cur.close()
         return rows
 
+    def all(self, params: Sequence[Any]) -> List[Dict[str, Any]]:
+        self._params = params
+        return self._driver._with_conn(self._run_all)
+
     def run(self, params: Sequence[Any]) -> RunInfo:
-        cur = self._conn.cursor()
-        cur.execute(self._xform(self._sql), tuple(params))
-        changes = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
-        last = cur.lastrowid if getattr(cur, "lastrowid", None) is not None else 0
-        cur.close()
-        return RunInfo(changes, last)
+        # Transaction-control literals pin / release the single writer connection.
+        if _is_txn_control(self._sql):
+            self._driver._handle_txn_control(self._sql)
+            return RunInfo(0, 0)
+
+        def op(conn: Any) -> RunInfo:
+            cur = conn.cursor()
+            cur.execute(self._driver._xform(self._sql), tuple(params))
+            changes = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
+            last = cur.lastrowid if getattr(cur, "lastrowid", None) is not None else 0
+            cur.close()
+            return RunInfo(changes, last)
+
+        return self._driver._with_conn(op)
 
 
-class PostgresDriver:
-    """A live Postgres driver (psycopg 3) implementing the :class:`Driver` seam.
+class _PooledDriver:
+    """Shared pooled live-driver base (Postgres / MySQL) — the parallel-read + serial-write seam."""
 
-    Renders a `postgres`-tagged bundle → `$N` text; this driver rewrites `$N`→`%s` for psycopg and
-    executes REAL SQL over a live connection. Autocommit ON so the runtime's BEGIN/COMMIT/ROLLBACK
-    literals control the transaction (a genuine PG transaction for the gate-first write-tx).
+    __slots__ = ("_pool", "_xform", "_emulate_returning", "_writer")
+
+    def __init__(self, pool: _ConnectionPool, xform, emulate_returning: bool) -> None:
+        self._pool = pool
+        self._xform = xform
+        self._emulate_returning = emulate_returning
+        self._writer: Any = None  # pinned connection for the active write-tx (single-threaded)
+
+    def _with_conn(self, op):
+        """Run ``op(conn)`` on the pinned writer (in a tx) or a freshly checked-out pooled conn."""
+        if self._writer is not None:
+            return op(self._writer)
+        conn = self._pool.acquire()
+        try:
+            return op(conn)
+        finally:
+            self._pool.release(conn)
+
+    def _handle_txn_control(self, sql: str) -> None:
+        upper = sql.strip().upper()
+        if upper in ("BEGIN", "START TRANSACTION"):
+            conn = self._pool.acquire()
+            cur = conn.cursor()
+            cur.execute("BEGIN")
+            cur.close()
+            self._writer = conn
+        else:  # COMMIT / ROLLBACK: run on the pinned writer, then return it to the pool.
+            conn = self._writer
+            self._writer = None
+            if conn is not None:
+                cur = conn.cursor()
+                cur.execute(upper)
+                cur.close()
+                self._pool.release(conn)
+
+    def exec_ddl(self, statements: Sequence[str]) -> None:
+        conn = self._pool.acquire()
+        try:
+            cur = conn.cursor()
+            for stmt in statements:
+                cur.execute(stmt)
+            cur.close()
+        finally:
+            self._pool.release(conn)
+
+    def prepare(self, sql: str) -> _PooledPrepared:
+        return _PooledPrepared(self, sql)
+
+    def close(self) -> None:
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            except Exception:
+                pass
+            self._writer = None
+        self._pool.close()
+
+
+class PostgresDriver(_PooledDriver):
+    """A live Postgres driver (psycopg 3, POOLED) implementing the :class:`Driver` seam.
+
+    Renders a `postgres`-tagged bundle → `$N`; rewrites `$N`→`%s` for psycopg. A bounded pool of
+    autocommit connections lets independent sibling relations run concurrently on distinct
+    connections; the write-tx pins one connection for its BEGIN…COMMIT span.
     """
 
-    __slots__ = ("conn",)
-
-    def __init__(self, conn: Any) -> None:
-        self.conn = conn
-
     @classmethod
-    def connect(cls, *, host: str, port: int, user: str, password: str, dbname: str) -> "PostgresDriver":
+    def connect(
+        cls,
+        *,
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        dbname: str,
+        pool_size: int = DEFAULT_POOL_SIZE,
+    ) -> "PostgresDriver":
         import psycopg  # imported lazily so the SQLite conformance never needs the driver installed
 
-        conn = psycopg.connect(host=host, port=port, user=user, password=password, dbname=dbname, autocommit=True)
-        return cls(conn)
+        def factory():
+            return psycopg.connect(
+                host=host, port=port, user=user, password=password, dbname=dbname, autocommit=True
+            )
 
-    def exec_ddl(self, statements: Sequence[str]) -> None:
-        cur = self.conn.cursor()
-        for stmt in statements:
-            cur.execute(stmt)
-        cur.close()
-
-    def prepare(self, sql: str) -> _LivePrepared:
-        return _LivePrepared(self.conn, sql, _dollar_to_pyformat, emulate_returning=False)
-
-    def close(self) -> None:
-        self.conn.close()
+        pool = _ConnectionPool(factory, pool_size)
+        return cls(pool, _dollar_to_pyformat, emulate_returning=False)
 
 
-class MysqlDriver:
-    """A live MySQL driver (PyMySQL) implementing the :class:`Driver` seam.
+class MysqlDriver(_PooledDriver):
+    """A live MySQL driver (PyMySQL, POOLED) implementing the :class:`Driver` seam.
 
-    Renders a `mysql`-tagged bundle → `?` text; this driver rewrites `?`→`%s` for PyMySQL. MySQL
-    8.0 has NO `RETURNING`, so an INSERT…RETURNING is emulated at this seam (strip → INSERT →
-    re-select the AUTO_INCREMENT PK's columns) — the dialect-behavior-by-convention the WS6 TS
-    ScpDialect uses. Autocommit ON so the runtime's BEGIN/COMMIT/ROLLBACK literals bracket the tx.
+    Renders a `mysql`-tagged bundle → `?`; rewrites `?`→`%s` for PyMySQL. MySQL 8.0 has NO
+    `RETURNING`, so an INSERT…RETURNING is emulated at this seam (strip → INSERT → re-select the
+    AUTO_INCREMENT PK's columns) — the WS6 TS ScpDialect behavior-by-convention. A bounded pool of
+    autocommit connections gives concurrent siblings distinct connections; the write-tx pins one.
     """
 
-    __slots__ = ("conn",)
-
-    def __init__(self, conn: Any) -> None:
-        self.conn = conn
-
     @classmethod
-    def connect(cls, *, host: str, port: int, user: str, password: str, dbname: str) -> "MysqlDriver":
+    def connect(
+        cls,
+        *,
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        dbname: str,
+        pool_size: int = DEFAULT_POOL_SIZE,
+    ) -> "MysqlDriver":
         import pymysql  # lazy import (conformance bar never needs it)
 
-        conn = pymysql.connect(host=host, port=port, user=user, password=password, database=dbname, autocommit=True)
-        return cls(conn)
+        def factory():
+            return pymysql.connect(
+                host=host, port=port, user=user, password=password, database=dbname, autocommit=True
+            )
 
-    def exec_ddl(self, statements: Sequence[str]) -> None:
-        cur = self.conn.cursor()
-        for stmt in statements:
-            cur.execute(stmt)
-        cur.close()
-
-    def prepare(self, sql: str) -> _LivePrepared:
-        return _LivePrepared(self.conn, sql, _qmark_to_pyformat, emulate_returning=True)
-
-    def close(self) -> None:
-        self.conn.close()
+        pool = _ConnectionPool(factory, pool_size)
+        return cls(pool, _qmark_to_pyformat, emulate_returning=True)
