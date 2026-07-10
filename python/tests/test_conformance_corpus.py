@@ -35,9 +35,10 @@ def test_vector_passes(suite, vector):
     assert result["ok"], f"[{suite}] {vector['name']}: {result.get('detail')}"
 
 
-def test_corpus_has_all_four_suites_and_49_vectors():
+def test_corpus_has_all_four_suites_and_36_vectors():
     vs = _all_vectors()
     suites = {s for s, _ in vs}
     assert suites == {"render", "exec", "tx", "dialect"}
-    # 47 baseline + 2 WS8a composite (multi-write) tx-DAG vectors (#28).
-    assert len(vs) == 49
+    # CORPUS_VERSION 2 (static-makeSQL regen): render 18 (9 read + 9 write-render) + exec 2 +
+    # tx 4 (2 single + 2 composite DAG) + dialect 12 (orderByNulls × 3 dialects × 4 combos) = 36.
+    assert len(vs) == 36

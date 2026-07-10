@@ -24,17 +24,15 @@ def _imports_from(module: str) -> set[str]:
     return names
 
 
-def test_render_consumes_bc_evaluate_expression():
-    assert "evaluate_expression" in _imports_from("render.py")
-
-
-def test_runtime_consumes_bc_run_behavior():
-    assert "run_behavior" in _imports_from("runtime.py")
+def test_static_bundle_consumes_bc_evaluate_expression():
+    names = _imports_from("static_bundle.py")
+    assert "evaluate_expression" in names
+    assert "run_behavior" in names
 
 
 def test_no_local_generic_evaluator_reimplemented():
     # The runtime must not define its own expression evaluator (that would reimplement bc-core).
-    src = (PKG / "render.py").read_text(encoding="utf-8") + (PKG / "runtime.py").read_text(encoding="utf-8")
+    src = (PKG / "static_bundle.py").read_text(encoding="utf-8") + (PKG / "runtime.py").read_text(encoding="utf-8")
     for banned in ("def evaluate_expression", "def evaluate(", "def _eval_expr", "def run_behavior"):
         assert banned not in src, f"runtime reimplements bc-core: found '{banned}'"
 

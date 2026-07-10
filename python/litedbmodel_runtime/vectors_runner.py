@@ -42,12 +42,12 @@ from litedbmodel_runtime import (  # noqa: E402
     dialect_for,
     execute_bundle,
     execute_transaction_bundle,
-    render_operation,
+    render_read_primary,
 )
 from litedbmodel_runtime.driver import SqliteDriver  # noqa: E402
 
 # The corpus schema version this runner supports (pin — bumped on additive refreeze).
-SUPPORTED_CORPUS_VERSION = 1
+SUPPORTED_CORPUS_VERSION = 2
 
 
 def _vectors_dir() -> Path:
@@ -131,19 +131,30 @@ def _run_vector(v: Dict[str, Any]) -> Dict[str, Any]:
     kind = v["kind"]
     try:
         if kind == "render":
-            r = render_operation(v["operation"], decode_value(v["input"]), dialect_for(v["dialect"]))
-            sql_ok = r.sql == v["expectedSql"]
-            params_ok = _eq([encode_value(p) for p in r.params], v["expectedParams"])
+            r = render_read_primary(v["readGraph"], decode_value(v["input"]))
+            sql_ok = r["sql"] == v["expectedSql"]
+            params_ok = _eq([encode_value(p) for p in r["params"]], v["expectedParams"])
             if sql_ok and params_ok:
                 return {"ok": True}
             parts: List[str] = []
             if not sql_ok:
-                parts.append(f"sql {json.dumps(r.sql)} != {json.dumps(v['expectedSql'])}")
+                parts.append(f"sql {json.dumps(r['sql'])} != {json.dumps(v['expectedSql'])}")
             if not params_ok:
                 parts.append(
-                    f"params {json.dumps([encode_value(p) for p in r.params])} != {json.dumps(v['expectedParams'])}"
+                    f"params {json.dumps([encode_value(p) for p in r['params']])} != {json.dumps(v['expectedParams'])}"
                 )
             return {"ok": False, "detail": "; ".join(parts)}
+
+        if kind == "write-render":
+            # A write statement's compiled makeSQL template is asserted byte-identical to golden
+            # (the deferred Expression-IR params are NOT evaluated here — they resolve at tx time).
+            stmt = v["statement"]
+            sql_ok = stmt["sql"] == v["expectedSql"]
+            params_ok = _eq([encode_value(p) for p in stmt["params"]], v["expectedParams"])
+            return {
+                "ok": sql_ok and params_ok,
+                "detail": None if sql_ok and params_ok else "write-render mismatch",
+            }
 
         if kind == "exec":
             driver = _seed_driver(list(v["schema"]))
