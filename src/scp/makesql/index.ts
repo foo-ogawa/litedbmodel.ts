@@ -81,6 +81,29 @@ export {
 // bc IR wiring (a query rides runBehavior as a makeSQL component).
 export { makeSqlComponentIR, makeSqlInput } from './ir';
 
+// Write-time relations → makeSQL transaction plan + 1-tx runtime (epic #43/#45 Phase B).
+export {
+  deriveTransactionPlan,
+  executeTransaction,
+  countingDriver,
+  renderTxStatement,
+  compileWriteNode,
+  IN_SENTINEL,
+} from './tx';
+export type {
+  TxExpr,
+  TxOp,
+  StatementRole,
+  GateRule,
+  TxStatement,
+  IdempotentHitPolicy,
+  TransactionPlan,
+  BaseWrite,
+  SqliteDb,
+  ShortCircuitReason,
+  TransactionResult,
+} from './tx';
+
 // Authoring → makeSQL bundle (Phase A, epic #43/#45): the ADDITIVE producer that routes an
 // authored behavior's declared/eager query (WS2 `../authoring.ts` component IR) through the
 // makeSQL compile* — preserving the single-compile-path invariant (declaration ≡ eager).
