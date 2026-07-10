@@ -25,14 +25,15 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use litedbmodel_runtime::value::{decode_scope, encode_value};
+use litedbmodel_runtime::value::encode_value;
 use litedbmodel_runtime::{
-    dialect_for, execute_bundle, execute_transaction_bundle, render_operation, Driver, SqliteDriver,
+    dialect_for, execute_bundle, execute_transaction_bundle, render_read_primary_bundle, Driver,
+    SqliteDriver,
 };
 use serde_json::{json, Value as J};
 
 /// The corpus schema version this runner supports (pin — bumped on additive refreeze).
-const SUPPORTED_CORPUS_VERSION: i64 = 1;
+const SUPPORTED_CORPUS_VERSION: i64 = 2;
 
 fn vectors_dir() -> PathBuf {
     if let Ok(env) = std::env::var("LITEDBMODEL_VECTORS") {
@@ -133,6 +134,7 @@ fn run_vector(v: &J) -> VectorResult {
     let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
     match kind {
         "render" => run_render(v),
+        "write-render" => run_write_render(v),
         "exec" => run_exec(v),
         "tx" => run_tx(v),
         "dialect" => run_dialect(v),
@@ -141,36 +143,41 @@ fn run_vector(v: &J) -> VectorResult {
 }
 
 fn run_render(v: &J) -> VectorResult {
-    let dialect = match dialect_for(v["dialect"].as_str().unwrap_or("")) {
-        Ok(d) => d,
-        Err(e) => return fail(format!("threw: {e}")),
-    };
-    let scope = match decode_scope(&v["input"]) {
-        Ok(s) => s,
-        Err(e) => return fail(format!("threw: {e}")),
-    };
-    let rendered = match render_operation(&v["operation"], &scope, dialect) {
+    // Render the PRIMARY read node's static makeSQL statements of the ReadGraph → dialect SQL +
+    // flat params, asserted byte-identical to the reference-captured golden.
+    let rendered = match render_read_primary_bundle(&v["readGraph"], &v["input"]) {
         Ok(r) => r,
         Err(e) => return fail(format!("threw: {e}")),
     };
-    let sql_ok = rendered.sql == v["expectedSql"].as_str().unwrap_or("");
-    let got_params = J::Array(rendered.params.iter().map(encode_value).collect());
-    let params_ok = eq(&got_params, &v["expectedParams"]);
+    let sql_ok = rendered["sql"] == v["expectedSql"];
+    let params_ok = eq(&rendered["params"], &v["expectedParams"]);
     if sql_ok && params_ok {
         return pass();
     }
     let mut parts: Vec<String> = Vec::new();
     if !sql_ok {
-        parts.push(format!(
-            "sql {:?} != {:?}",
-            rendered.sql,
-            v["expectedSql"].as_str().unwrap_or("")
-        ));
+        parts.push(format!("sql {} != {}", rendered["sql"], v["expectedSql"]));
     }
     if !params_ok {
-        parts.push(format!("params {got_params} != {}", v["expectedParams"]));
+        parts.push(format!(
+            "params {} != {}",
+            rendered["params"], v["expectedParams"]
+        ));
     }
     fail(parts.join("; "))
+}
+
+fn run_write_render(v: &J) -> VectorResult {
+    // A write statement's compiled makeSQL template is asserted byte-identical to golden (the
+    // deferred Expression-IR params are NOT evaluated here — they resolve at tx time).
+    let stmt = &v["statement"];
+    let sql_ok = stmt["sql"] == v["expectedSql"];
+    let params_ok = eq(&stmt["params"], &v["expectedParams"]);
+    if sql_ok && params_ok {
+        pass()
+    } else {
+        fail("write-render mismatch")
+    }
 }
 
 fn schema_of(v: &J) -> Vec<String> {

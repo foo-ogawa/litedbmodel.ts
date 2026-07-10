@@ -1,0 +1,429 @@
+//! litedbmodel v2 SCP — the STATIC, PORTABLE makeSQL bundle RUNTIME (Rust port, epic #43/#45).
+//!
+//! Byte-for-byte port of the TS `src/scp/makesql/static-bundle.ts` + `makesql.ts` + `handler.ts`
+//! runtime halves — the SOLE makeSQL read/render path — mirroring the audited Python/Go/PHP sibling
+//! ports. It consumes the PRE-COMPILED, portable artifacts the corpus ships (a read `ReadGraph` = a
+//! bc `ComponentGraphIR` of `__makeSqlNode` surrogate nodes + per-node STATIC statement templates),
+//! and EXECUTES them via the shared behavior-contracts Rust crate ([`run_behavior`] drives
+//! map / Φ-merge / wiring; [`evaluate_expression`] resolves the deferred value-specs + skip). This
+//! module re-implements NO generic evaluator and does NO SQL re-derivation — every statement's
+//! `sql` is fixed text; the runtime only evaluates its deferred params + skip, resolves the WHERE
+//! connector from the present set, assembles + renders placeholders, and binds.
+//!
+//! A statement template (StaticStatement) is `{sql, params, skip?, whereFragment?}`:
+//! - `sql` — complete tuned dialect text (`?` placeholders), value-independent.
+//! - `params` — deferred value-specs = closed-set bc Expression IR, 1:1 with the top `?`.
+//! - `skip` — optional bc presence expression; truthy ⇒ the whole statement drops.
+//! - `whereFragment` — a bare predicate body; the runtime prepends ` WHERE `/` AND ` from the
+//!   present set (a skipped earlier fragment never leaves a dangling connector).
+//!
+//! An IN-list value-spec is the marker `{"__jsonArray": <spec>, "dialect": <d>}`: postgres binds the
+//! array as-is (a text[] param); mysql/sqlite JSON-encode it to a single param (server-side
+//! expansion). This mirrors the TS `evalSpec`.
+
+use behavior_contracts::{evaluate_expression, run_behavior, ComponentExec, ExecOutcome, Value};
+use serde_json::Value as J;
+
+use crate::driver::Driver;
+use crate::errors::{re_error_to_sql_failure, SqlFailure};
+use crate::value::{encode_value, Scope};
+
+/// The synthetic port that carries a SQL node's render scope (mirrors TS SCOPE_PORT).
+pub const SCOPE_PORT: &str = "__scope";
+/// The makeSQL catalog leaf name every rewritten SQL node references (mirrors TS NODE_COMPONENT).
+pub const NODE_COMPONENT: &str = "__makeSqlNode";
+
+/// The result of rendering: final SQL text + flat params (1:1 with `?`/`$N`).
+pub struct RenderedSql {
+    pub sql: String,
+    pub params: Vec<Value>,
+}
+
+// ── makeSQL assembly (port of makesql.ts assembleMakeSQL / composeMakeSQL) ─────
+
+/// A concrete makeSQL after value evaluation: fixed sql text + a flat value list.
+struct MakeSqlNode {
+    sql: String,
+    params: Vec<Value>,
+}
+
+/// Split `sql` on `?` and interleave each concrete param (mirrors TS assembleMakeSQL). Our concrete
+/// runtime nodes carry only bound values (nested-makeSQL splicing is compile-time in the corpus
+/// text), so this is the value-fill flatten with a placeholder/param arity check.
+fn assemble_make_sql(node: &MakeSqlNode) -> Result<(String, Vec<Value>), String> {
+    let chunks: Vec<&str> = node.sql.split('?').collect();
+    if chunks.len() - 1 != node.params.len() {
+        return Err(format!(
+            "makeSQL placeholder/param mismatch: {} '?' vs {} params in {:?}",
+            chunks.len() - 1,
+            node.params.len(),
+            node.sql
+        ));
+    }
+    let mut sql = String::from(chunks[0]);
+    let mut params = Vec::with_capacity(node.params.len());
+    for (i, p) in node.params.iter().enumerate() {
+        sql.push('?');
+        sql.push_str(chunks[i + 1]);
+        params.push(p.clone());
+    }
+    Ok((sql, params))
+}
+
+/// Concatenate the assembled sql + params of every present node (mirrors TS composeMakeSQL).
+fn compose_make_sql(nodes: &[MakeSqlNode]) -> Result<(String, Vec<Value>), String> {
+    let mut sql = String::new();
+    let mut params: Vec<Value> = Vec::new();
+    for n in nodes {
+        let (s, p) = assemble_make_sql(n)?;
+        sql.push_str(&s);
+        params.extend(p);
+    }
+    Ok((sql, params))
+}
+
+// ── Dialect placeholder render (port of handler.ts renderPlaceholders) ─────────
+
+/// Rewrite `?` → the dialect placeholder form: PG `$N` (quote-aware), MySQL/SQLite keep `?`.
+/// Byte-for-byte port of the TS renderPlaceholders: a `?` inside a single-quoted string literal is
+/// NOT a placeholder.
+pub fn render_placeholders(sql: &str, dialect_name: &str) -> String {
+    if dialect_name != "postgres" {
+        return sql.to_string();
+    }
+    let mut out = String::with_capacity(sql.len());
+    let mut index = 0;
+    let mut in_string = false;
+    for ch in sql.chars() {
+        if in_string {
+            out.push(ch);
+            if ch == '\'' {
+                in_string = false;
+            }
+        } else if ch == '\'' {
+            out.push(ch);
+            in_string = true;
+        } else if ch == '?' {
+            index += 1;
+            out.push('$');
+            out.push_str(&index.to_string());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+// ── Deferred value-spec evaluation (port of static-bundle.ts evalSpec) ─────────
+
+/// Serialize JSON with no inter-token spaces (matches JS `JSON.stringify`).
+fn compact_json(v: &J) -> String {
+    serde_json::to_string(v).unwrap_or_else(|_| "null".to_string())
+}
+
+/// Evaluate one deferred value-spec against the scope, handling the `__jsonArray` marker: postgres
+/// keeps the array as-is (a text[] param); mysql/sqlite JSON-encode it to ONE string param.
+/// Everything else is a plain bc Expression IR value. The target dialect for an IN-list rides the
+/// marker's own `dialect` field (compiled TS-side), so no ambient dialect is threaded here.
+fn eval_spec(spec: &J, scope: &Scope) -> Result<Value, String> {
+    if let Some(inner) = spec.get("__jsonArray") {
+        let arr_v = evaluate_expression(inner, scope).map_err(|e| e.message)?;
+        let arr = match arr_v {
+            Value::Arr(a) => a,
+            _ => {
+                return Err("static-bundle: IN-list value-spec did not evaluate to an array".into())
+            }
+        };
+        let spec_dialect = spec.get("dialect").and_then(|d| d.as_str()).unwrap_or("");
+        if spec_dialect == "postgres" {
+            return Ok(Value::Arr(arr)); // bound as ONE text[] param
+        }
+        // Single JSON param — compact form matching the TS JSON.stringify byte shape.
+        let encoded = J::Array(arr.iter().map(encode_value).collect());
+        return Ok(Value::Str(compact_json(&encoded)));
+    }
+    evaluate_expression(spec, scope).map_err(|e| e.message)
+}
+
+// ── Statement-list render (port of static-bundle.ts renderStatements) ──────────
+
+/// Evaluate a list of static statement templates against a scope → final SQL + params. Byte-for-byte
+/// port of the TS renderStatements: drop skipped statements (skip truthy), resolve each WHERE-
+/// fragment's ` WHERE `/` AND ` connector from the present set, compose + render placeholders.
+pub fn render_statements(
+    statements: &[J],
+    dialect_name: &str,
+    scope: &Scope,
+) -> Result<RenderedSql, String> {
+    let mut nodes: Vec<MakeSqlNode> = Vec::new();
+    let mut where_seen = false;
+    for stmt in statements {
+        if let Some(skip) = stmt.get("skip") {
+            if !skip.is_null() {
+                let drop = evaluate_expression(skip, scope).map_err(|e| e.message)?;
+                if !matches!(drop, Value::Null | Value::Bool(false)) {
+                    continue; // truthy ⇒ drop the whole statement
+                }
+            }
+        }
+        let mut sql_text = stmt
+            .get("sql")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        if stmt.get("whereFragment") == Some(&J::Bool(true)) {
+            sql_text = if where_seen {
+                format!(" AND {sql_text}")
+            } else {
+                format!(" WHERE {sql_text}")
+            };
+            where_seen = true;
+        }
+        let mut params: Vec<Value> = Vec::new();
+        if let Some(specs) = stmt.get("params").and_then(|p| p.as_array()) {
+            for spec in specs {
+                params.push(eval_spec(spec, scope)?);
+            }
+        }
+        nodes.push(MakeSqlNode {
+            sql: sql_text,
+            params,
+        });
+    }
+    let (sql, params) = compose_make_sql(&nodes)?;
+    Ok(RenderedSql {
+        sql: render_placeholders(&sql, dialect_name),
+        params,
+    })
+}
+
+// ── Input normalization (SSoT-driven — mirrors TS normalizeInput) ─────────────
+
+/// The surrogate IR's first component (`components[0]`).
+fn primary_component(graph: &J) -> Option<&J> {
+    graph
+        .get("ir")
+        .and_then(|ir| ir.get("components"))
+        .and_then(|c| c.as_array())
+        .and_then(|c| c.first())
+}
+
+/// Normalize omitted OPTIONAL heads to present-as-null (absent-key SKIP). Optional = the read
+/// graph's component schema-optional ports OR the graph's `optionalHeads` (SKIP-guarded / refOpt).
+fn normalize_read_graph_input(graph: &J, input: &Scope) -> Scope {
+    let mut out = input.clone();
+    let present = |scope: &Scope, k: &str| scope.iter().any(|(sk, _)| sk == k);
+    if let Some(comp) = primary_component(graph) {
+        if let Some(ports) = comp.get("inputPorts").and_then(|p| p.as_object()) {
+            for (port, schema) in ports {
+                let required = schema.get("required") == Some(&J::Bool(true));
+                if !required && !present(&out, port) {
+                    out.push((port.clone(), Value::Null));
+                }
+            }
+        }
+    }
+    if let Some(heads) = graph.get("optionalHeads").and_then(|h| h.as_array()) {
+        for head in heads.iter().filter_map(|h| h.as_str()) {
+            if !present(&out, head) {
+                out.push((head.to_string(), Value::Null));
+            }
+        }
+    }
+    out
+}
+
+// ── ReadGraph render axis (port of static-bundle.ts renderReadPrimary) ─────────
+
+/// The first body node id that has compiled statements (the SELECT the relations map over).
+fn primary_node_id(graph: &J) -> Result<String, String> {
+    let comp = primary_component(graph)
+        .ok_or_else(|| "static-bundle: read graph has no component".to_string())?;
+    let by_id = graph
+        .get("statementsById")
+        .and_then(|s| s.as_object())
+        .ok_or_else(|| "static-bundle: read graph has no statementsById".to_string())?;
+    let body = comp
+        .get("body")
+        .and_then(|b| b.as_array())
+        .ok_or_else(|| "static-bundle: read graph component has no body".to_string())?;
+    for n in body {
+        if let Some(id) = n.get("id").and_then(|i| i.as_str()) {
+            if by_id.contains_key(id) {
+                return Ok(id.to_string());
+            }
+        }
+    }
+    Err("static-bundle: read graph has no primary node to render".into())
+}
+
+/// The static statement templates for a node id (a JSON array).
+fn statements_for(graph: &J, node_id: &str) -> Vec<J> {
+    graph
+        .get("statementsById")
+        .and_then(|s| s.get(node_id))
+        .and_then(|a| a.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Render the PRIMARY read node's statements of a ReadGraph → dialect SQL + params (the render axis
+/// for conformance golden). The primary node is the first body node in the surrogate IR order (map
+/// nodes reference it). Optional heads are normalized to present-as-null first.
+pub fn render_read_primary(graph: &J, input: &Scope) -> Result<RenderedSql, String> {
+    let primary_id = primary_node_id(graph)?;
+    let scope = normalize_read_graph_input(graph, input);
+    let dialect_name = graph.get("dialect").and_then(|d| d.as_str()).unwrap_or("");
+    render_statements(&statements_for(graph, &primary_id), dialect_name, &scope)
+}
+
+// ── ReadGraph execution (port of static-bundle.ts executeReadGraph) ────────────
+
+/// Convert a rendered param to a driver-bindable value (mirrors TS `toDriverParam`).
+///
+/// bc evaluates integers to a plain i64, so no bigint narrowing is needed; a bool is left as-is
+/// (bound as 0/1 by the driver). An object [`Value::Obj`] is an emit payload (`{obj:…}`) serialized
+/// to compact JSON for a text column — byte-identical to the TS `JSON.stringify` (no spaces).
+pub(crate) fn to_driver_param(v: &Value) -> Value {
+    match v {
+        Value::Obj(_) => Value::Str(compact_json(&encode_value(v))),
+        other => other.clone(),
+    }
+}
+
+/// The makeSQL handler registry: one render→execute handler behind the `__makeSqlNode` catalog
+/// leaf; the per-node static statements are keyed by nodeId.
+struct ReadGraphHandlers<'a> {
+    driver: &'a dyn Driver,
+    graph: &'a J,
+    dialect: String,
+}
+
+impl ReadGraphHandlers<'_> {
+    fn render_and_execute(&self, node_id: &str, scope: &Scope) -> ExecOutcome {
+        let stmts = statements_for(self.graph, node_id);
+        if self
+            .graph
+            .get("statementsById")
+            .and_then(|s| s.get(node_id))
+            .is_none()
+        {
+            return ExecOutcome::Error(format!(
+                "static-bundle: no statements for node '{node_id}'"
+            ));
+        }
+        let rendered = match render_statements(&stmts, &self.dialect, scope) {
+            Ok(r) => r,
+            Err(e) => return ExecOutcome::Error(e),
+        };
+        let params: Vec<Value> = rendered.params.iter().map(to_driver_param).collect();
+        let mut stmt = self.driver.prepare(&rendered.sql);
+        match stmt.all(&params) {
+            Ok(rows) => ExecOutcome::Ok(Value::Arr(rows)),
+            Err(e) => ExecOutcome::Error(e.message),
+        }
+    }
+}
+
+impl ComponentExec for ReadGraphHandlers<'_> {
+    fn exec(
+        &mut self,
+        _component: &str,
+        _ports: &[(String, Value)],
+        _bound: Option<&Value>,
+    ) -> Option<ExecOutcome> {
+        // run_behavior always dispatches through exec_ctx (we need the node id → statements).
+        Some(ExecOutcome::Error(
+            "static-bundle: makeSQL handler requires the node identity (exec_ctx)".into(),
+        ))
+    }
+
+    fn exec_ctx(
+        &mut self,
+        node_id: &str,
+        _component: &str,
+        ports: &[(String, Value)],
+        _bound: Option<&Value>,
+    ) -> Option<ExecOutcome> {
+        let scope = match ports.iter().find(|(k, _)| k == SCOPE_PORT).map(|(_, v)| v) {
+            Some(Value::Obj(pairs)) => pairs.clone(),
+            _ => {
+                return Some(ExecOutcome::Error(format!(
+                    "static-bundle: node '{node_id}' surrogate scope did not evaluate to an object"
+                )))
+            }
+        };
+        Some(self.render_and_execute(node_id, &scope))
+    }
+}
+
+/// Execute a compiled ReadGraph via bc `run_behavior` + a makeSQL handler: bc drives map iteration /
+/// wire binding / Φ output; the handler renders each node's static statements against the evaluated
+/// `__scope` and runs REAL SQL. Returns the component's Φ output. Byte-true to the TS
+/// executeReadGraph — the "bc composes, makeSQL executes" design.
+pub fn execute_read_graph(
+    graph: &J,
+    input: &Scope,
+    driver: &dyn Driver,
+) -> Result<Value, SqlFailure> {
+    let ir = graph
+        .get("ir")
+        .ok_or_else(|| plain_failure("scp runtime: readGraph has no ir"))?;
+    let dialect = graph
+        .get("dialect")
+        .and_then(|d| d.as_str())
+        .unwrap_or("")
+        .to_string();
+    let name = graph.get("name").and_then(|n| n.as_str());
+    let normalized = normalize_read_graph_input(graph, input);
+    let mut handlers = ReadGraphHandlers {
+        driver,
+        graph,
+        dialect,
+    };
+    run_behavior(ir, &mut handlers, &normalized, name)
+        .map_err(|e| re_error_to_sql_failure(&e.to_string()))
+}
+
+// ── Tx op render (port of tx.ts renderStatement) ───────────────────────────────
+
+/// Render a tx statement's makeSQL op `{sql, params}` against the tx scope: evaluate each deferred
+/// Expression-IR param, assemble + render placeholders (the SAME assemble the read path uses).
+pub fn render_tx_op(op: &J, scope: &Scope, dialect_name: &str) -> Result<RenderedSql, String> {
+    let sql_text = op
+        .get("sql")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let mut concrete: Vec<Value> = Vec::new();
+    if let Some(specs) = op.get("params").and_then(|p| p.as_array()) {
+        for spec in specs {
+            concrete.push(evaluate_expression(spec, scope).map_err(|e| e.message)?);
+        }
+    }
+    let (sql, params) = assemble_make_sql(&MakeSqlNode {
+        sql: sql_text,
+        params: concrete,
+    })?;
+    Ok(RenderedSql {
+        sql: render_placeholders(&sql, dialect_name),
+        params,
+    })
+}
+
+// ── small helper ───────────────────────────────────────────────────────────────
+
+/// A structural error carrying a `SQLITE_` tag is re-surfaced with the mapped kind; otherwise a
+/// plain `driver_error`.
+fn plain_failure(message: &str) -> SqlFailure {
+    if message.contains("SQLITE_") {
+        re_error_to_sql_failure(message)
+    } else {
+        SqlFailure {
+            kind: "driver_error".into(),
+            policy: "fail".into(),
+            sqlite_code: None,
+            message: message.to_string(),
+        }
+    }
+}
