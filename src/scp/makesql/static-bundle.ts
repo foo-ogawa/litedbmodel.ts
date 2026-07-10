@@ -37,11 +37,13 @@
 import {
   evaluateExpression,
   runBehavior,
+  runBehaviorAsync,
   type Scope,
   type Value,
   type Component as BcComponent,
   type ComponentGraphIR,
   type Handlers,
+  type AsyncHandlers,
   type HandlerCtx,
   type ExecOutcome,
 } from 'behavior-contracts';
@@ -756,6 +758,56 @@ export function executeReadGraph(graph: ReadGraph, input: Scope, db: SqliteDb): 
 
   try {
     return runBehavior(graph.ir, handlers, normalized, graph.name);
+  } catch (e) {
+    throw reErrorToSqlFailure(e);
+  }
+}
+
+/** An async driver seam: run a rendered `{ sql, params }` and resolve to result rows (#40). */
+export type SqlExecutorAsync = (sql: string, params: unknown[]) => Promise<Record<string, unknown>[]>;
+
+/**
+ * Async twin of {@link executeReadGraph} — the PG / MySQL execution model (#40).
+ *
+ * Byte-identical composition (SAME IR, SAME per-node SQL text + params, SAME Φ output), but bc's
+ * `runBehaviorAsync` drives it: the makeSQL handler returns a Promise, and bc dispatches the
+ * INDEPENDENT sibling nodes of a plan stage on `runPlanAsync`'s bounded-parallel path (bc#23),
+ * bounded by the plan's `concurrency` (default 16). Against a pooled async driver (`pg` / `mysql2`,
+ * each `exec` call resolving on its own pooled connection), that becomes REAL parallel read-relation
+ * DB I/O — the plan's declared concurrency finally cashes out as concurrent dispatch. The result is
+ * deterministic (bc commits stage outcomes in declaration order), so it equals the serial
+ * `executeReadGraph` output exactly; only the wall-clock changes.
+ *
+ * The conformance bar stays on the SYNC in-proc better-sqlite3 path (`executeReadGraph`); this async
+ * path is the live PG/MySQL execution model and is proven by the latency-injecting concurrency test.
+ */
+export async function executeReadGraphAsync(
+  graph: ReadGraph,
+  input: Scope,
+  exec: SqlExecutorAsync,
+): Promise<Value> {
+  const handle = async (ports: Record<string, Value>, ctx: HandlerCtx): Promise<ExecOutcome> => {
+    const stmts = graph.statementsById[ctx.nodeId];
+    if (stmts === undefined) return { error: `static-bundle: no statements for node '${ctx.nodeId}'` };
+    const scope = ports[SCOPE_PORT];
+    if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) {
+      return { error: `static-bundle: node '${ctx.nodeId}' surrogate scope did not evaluate to an object` };
+    }
+    const { sql, params } = renderStatements(stmts, graph.dialect, scope as Scope);
+    try {
+      const rows = await exec(sql, params);
+      return { ok: rows as unknown as Value };
+    } catch (e) {
+      return { error: mapSqliteError(e).message };
+    }
+  };
+  const handlers: AsyncHandlers = { [NODE_COMPONENT]: handle };
+
+  const normalized: Scope = { ...input };
+  for (const head of graph.optionalHeads) if (!(head in normalized)) normalized[head] = null;
+
+  try {
+    return await runBehaviorAsync(graph.ir, handlers, normalized, graph.name);
   } catch (e) {
     throw reErrorToSqlFailure(e);
   }

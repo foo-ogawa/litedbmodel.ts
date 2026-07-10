@@ -124,6 +124,12 @@ export {
   executeReadBehavior,
   compileReadGraph,
   executeReadGraph,
+  executeReadGraphAsync,
   renderReadPrimary,
 } from './static-bundle';
-export type { StaticBundle, StaticStatement, ValueSpec, ReadGraph } from './static-bundle';
+export type { StaticBundle, StaticStatement, ValueSpec, ReadGraph, SqlExecutorAsync } from './static-bundle';
+
+// Pooled async executor factories (PG / MySQL) that turn the plan's concurrency into real parallel
+// read-relation DB I/O behind the async seam (#40).
+export { pgPoolExecutor, mysqlPoolExecutor } from './pool-executor';
+export type { PgPoolLike, MysqlPoolLike } from './pool-executor';

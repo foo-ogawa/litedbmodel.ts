@@ -68,7 +68,10 @@ export {
   executeReadBehavior,
   compileReadGraph,
   executeReadGraph,
+  executeReadGraphAsync,
   renderReadPrimary,
+  pgPoolExecutor,
+  mysqlPoolExecutor,
 } from './makesql';
 export type {
   MakeSQL,
@@ -77,6 +80,7 @@ export type {
   Dialect as MakeSQLDialect,
   SqlExecutor,
   SqlExecutorSync,
+  SqlExecutorAsync,
   SelectDesc as MakeSQLSelectDesc,
   RelationCompileBase,
   AuthoredMakeSQL,
@@ -85,6 +89,8 @@ export type {
   StaticStatement,
   ValueSpec,
   ReadGraph,
+  PgPoolLike,
+  MysqlPoolLike,
 } from './makesql';
 
 // Catalog (spec §11 item 1)
