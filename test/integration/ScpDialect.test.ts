@@ -149,6 +149,14 @@ class PostQueries extends SemanticBehavior {
   ByAmt($: In<{ keys: number[] }>) {
     return L.Select({ table: T_TYPED, select: ['label'], where: [whereIn(inColumn($, 'amt'), $.keys)], order: 'label ASC' });
   }
+
+  // count() (#47 item 2 — v1 `DBModel._count`): `SELECT COUNT(*) as count FROM t[ WHERE …]`.
+  CountAll(_$: In<Record<string, never>>) {
+    return L.Count({ table: T_POSTS });
+  }
+  CountByUser($: In<{ user_id: number }>) {
+    return L.Count({ table: T_POSTS, where: [whereEq($.user_id, $.user_id)] });
+  }
 }
 
 class PostWrites extends SemanticBehavior {
@@ -448,6 +456,41 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     });
   }
 
+  // count() (#47 item 2) — `SELECT COUNT(*) as count FROM t[ WHERE …]` executes live + matches v1.
+  it('COUNT(*) all rows: SCP `SELECT COUNT(*) as count` == v1 _count (real PG)', async () => {
+    const bundle = compileBundle(contract, 'CountAll', [], 'postgres');
+    const rendered = renderReadPrimary(bundle.readGraph!, {} as never);
+    expect(rendered.sql).toBe(`SELECT COUNT(*) as count FROM ${T_POSTS}`);
+    const scpRows = (await executeBundleAsync(bundle, {} as never, {
+      exec: pgPoolExecutor(pgPool!),
+      entry: 'CountAll',
+      dialect: 'postgres',
+    })) as unknown as Row[];
+    // v1 _count returns parseInt(rows[0].count); the same one-row [{count}] shape is asserted.
+    const v1Rows = await pgQuery(pgPool!, `SELECT COUNT(*) as count FROM ${T_POSTS}`, []);
+    expect(Number(scpRows[0].count)).toBe(Number(v1Rows[0].count));
+    expect(Number(scpRows[0].count)).toBe(3);
+  });
+
+  it('COUNT(*) WHERE user_id: SCP == v1 _count with condition (real PG)', async () => {
+    const bundle = compileBundle(contract, 'CountByUser', [], 'postgres');
+    const rendered = renderReadPrimary(bundle.readGraph!, { user_id: 1 } as never);
+    expect(rendered.sql).toBe(`SELECT COUNT(*) as count FROM ${T_POSTS} WHERE user_id = $1`);
+    const scpRows = (await executeBundleAsync(bundle, { user_id: 1 } as never, {
+      exec: pgPoolExecutor(pgPool!),
+      entry: 'CountByUser',
+      dialect: 'postgres',
+    })) as unknown as Row[];
+    expect(Number(scpRows[0].count)).toBe(2);
+    // Empty result → 0 (not null): a real DB always returns one COUNT row.
+    const empty = (await executeBundleAsync(bundle, { user_id: 999 } as never, {
+      exec: pgPoolExecutor(pgPool!),
+      entry: 'CountByUser',
+      dialect: 'postgres',
+    })) as unknown as Row[];
+    expect(Number(empty[0].count)).toBe(0);
+  });
+
   it('INSERT + RETURNING: SCP persists + returns; parity with v1 postgresSqlBuilder', async () => {
     const wc = publishBehaviors(PostWrites);
     const bundle = compileBundle(wc, 'Create', [], 'postgres');
@@ -615,6 +658,25 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
       expect(scpRows.map((r) => String(r.label))).toEqual(['A', 'C']);
     });
   }
+
+  // count() (#47 item 2) — `SELECT COUNT(*) as count FROM t[ WHERE …]` executes live on MySQL.
+  it('COUNT(*) all rows + WHERE: SCP `SELECT COUNT(*) as count` on real MySQL', async () => {
+    const all = compileBundle(contract, 'CountAll', [], 'mysql');
+    expect(renderReadPrimary(all.readGraph!, {} as never).sql).toBe(`SELECT COUNT(*) as count FROM ${T_POSTS}`);
+    const allRows = (await executeBundleAsync(all, {} as never, {
+      exec: mysqlPoolExecutor(myConn! as never),
+      entry: 'CountAll',
+      dialect: 'mysql',
+    })) as unknown as Row[];
+    expect(Number(allRows[0].count)).toBe(3);
+    const byUser = compileBundle(contract, 'CountByUser', [], 'mysql');
+    const byRows = (await executeBundleAsync(byUser, { user_id: 1 } as never, {
+      exec: mysqlPoolExecutor(myConn! as never),
+      entry: 'CountByUser',
+      dialect: 'mysql',
+    })) as unknown as Row[];
+    expect(Number(byRows[0].count)).toBe(2);
+  });
 
   it('INSERT: SCP persists (MySQL keeps `?`, RETURNING stripped by re-select) + parity with v1', async () => {
     const wc = publishBehaviors(PostWrites);

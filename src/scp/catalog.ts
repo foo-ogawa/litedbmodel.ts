@@ -44,6 +44,7 @@ import { classifyBehaviorEffect, type Catalog, type CatalogEntry, type Component
  */
 export type CatalogName =
   | 'Select'
+  | 'Count'
   | 'Insert'
   | 'Update'
   | 'Delete'
@@ -116,6 +117,11 @@ export const LITEDBMODEL_CATALOG: Catalog = {
   // Read: `items` (a Select root yields a row list; per-row collapse to `item` is the
   // consumer's cardinality concern, mirrored from graphddb Query's `cardinality` port).
   Select: entry('Select', { ...SELECT_PORTS, cardinality: P('string') }, 'items', true),
+  // COUNT(*) aggregate read (v1 `DBModel._count`): `SELECT COUNT(*) as count FROM t[ WHERE …]`.
+  // Only `table` (required) + the optional `where` fragment tree — v1's count carries no
+  // projection/order/limit/offset (it counts the filtered rows). Output is a one-row `[{count}]`
+  // list (the `items` shape, like every read); the consumer reads `count` — v1's `parseInt(count)`.
+  Count: entry('Count', { table: P('string', true), where: P('fragment') }, 'items', true),
   // Writes yield the RETURNING row list (`items`); a single-row write collapses at the
   // consumer boundary, same as reads.
   Insert: entry('Insert', WRITE_PORTS, 'items', true),
@@ -141,6 +147,7 @@ export function catalogEntry(name: string): CatalogEntry | undefined {
 /** The catalog names litedbmodel declares (the C2 per-DSL surface). */
 export const CATALOG_NAMES: readonly CatalogName[] = [
   'Select',
+  'Count',
   'Insert',
   'Update',
   'Delete',

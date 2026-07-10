@@ -90,17 +90,35 @@ export function assertComponentPortable(component: Component): void {
   for (const n of component.body) {
     if ('map' in n) {
       assertExprPortable(n.map.over, `${at}/${n.id}.map.over`);
-      assertExprPortable(n.map.ports, `${at}/${n.id}.map.ports`);
+      assertPortsPortable(n.map.ports, `${at}/${n.id}.map.ports`);
       if (n.map.when !== undefined) assertExprPortable(n.map.when, `${at}/${n.id}.map.when`);
     } else if ('cond' in n) {
       assertExprPortable(n.cond.if, `${at}/${n.id}.cond.if`);
       assertExprPortable(n.cond.then, `${at}/${n.id}.cond.then`);
       assertExprPortable(n.cond.else, `${at}/${n.id}.cond.else`);
     } else {
-      assertExprPortable(n.ports, `${at}/${n.id}.ports`);
+      assertPortsPortable(n.ports, `${at}/${n.id}.ports`);
     }
   }
   assertExprPortable(component.output, `${at}.output`);
+}
+
+/**
+ * A component node's `ports` (and a `map.ports`) is a FIELD MAP — port NAME → ExprNode — not an
+ * Expression node itself. Walk each port VALUE as an expression, never the ports object as a whole:
+ * a SINGLE-port node (`{ table: 'posts' }`, e.g. a `Count` with only `table`) would otherwise be
+ * misread by {@link walkExpr}'s single-key = OPERATOR heuristic as an unknown-opcode `{table:…}`
+ * node. Recursing the values sidesteps that (same rationale bc's guard applies to `{obj:{…}}`).
+ */
+function assertPortsPortable(ports: unknown, path: string): void {
+  if (ports === null || typeof ports !== 'object' || Array.isArray(ports)) {
+    // Not a ports map (shouldn't happen for a well-formed node) — defer to the expr walker.
+    assertExprPortable(ports as ExprNode, path);
+    return;
+  }
+  for (const [name, value] of Object.entries(ports as Record<string, unknown>)) {
+    assertExprPortable(value as ExprNode, `${path}.${name}`);
+  }
 }
 
 /**

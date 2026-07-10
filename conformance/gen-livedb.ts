@@ -143,6 +143,16 @@ class Blog extends SemanticBehavior {
     return L.Select({ table: 'typed', select: ['label'], where: [whereIn(inColumn($, 'amt'), $.keys)], order: 'label ASC' });
   }
 
+  // count() (#47 item 2 — v1 `DBModel._count`): `SELECT COUNT(*) as count FROM posts[ WHERE …]`.
+  /** count() over ALL rows: `SELECT COUNT(*) as count FROM posts`. */
+  CountAll(_$: In<Record<string, never>>) {
+    return L.Count({ table: 'posts' });
+  }
+  /** count() WITH a WHERE filter: `SELECT COUNT(*) as count FROM posts WHERE author_id = ?`. */
+  CountByAuthor($: In<{ author_id: number }>) {
+    return L.Count({ table: 'posts', where: [whereEq($.author_id, $.author_id)] });
+  }
+
   /**
    * A PLAIN posts row list (a Select), the parent page for read-RELATION EXECUTION vectors (#43).
    * Unlike `Feed` (whose output is a `{posts, authors}` Φ shape), this returns a bare row list, so
@@ -826,6 +836,35 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
       schemaSqlite: TYPED_SCHEMA_SQLITE,
       schemaPg: TYPED_SCHEMA_PG,
       schemaMysql: TYPED_SCHEMA_MYSQL,
+    },
+    // count() (#47 item 2) — v1 `SELECT COUNT(*) as count FROM posts[ WHERE …]`, live on PG + MySQL.
+    // READ_SCHEMA posts: 3 rows total; author 7 → 2, author 8 → 1, author 999 → 0.
+    {
+      name: 'CountAll: COUNT(*) over all posts → 3 [#47]',
+      entry: 'CountAll',
+      input: {},
+      relations: [],
+      schemaSqlite: READ_SCHEMA_SQLITE,
+      schemaPg: READ_SCHEMA_PG,
+      schemaMysql: READ_SCHEMA_MYSQL,
+    },
+    {
+      name: 'CountByAuthor: COUNT(*) WHERE author_id = 7 → 2 [#47]',
+      entry: 'CountByAuthor',
+      input: { author_id: 7 },
+      relations: [],
+      schemaSqlite: READ_SCHEMA_SQLITE,
+      schemaPg: READ_SCHEMA_PG,
+      schemaMysql: READ_SCHEMA_MYSQL,
+    },
+    {
+      name: 'CountByAuthor: COUNT(*) WHERE author_id = 999 → 0 (empty) [#47]',
+      entry: 'CountByAuthor',
+      input: { author_id: 999 },
+      relations: [],
+      schemaSqlite: READ_SCHEMA_SQLITE,
+      schemaPg: READ_SCHEMA_PG,
+      schemaMysql: READ_SCHEMA_MYSQL,
     },
   ];
 

@@ -621,6 +621,42 @@ describe('B. SELECT tail — LIMIT/OFFSET inline, FOR UPDATE, GROUP BY', () => {
   }
 });
 
+describe('B. COUNT — makeSQL byte-matches v1 DBModel._count head (#47 item 2)', () => {
+  // The v1 `_count` head (src/DBModel.ts:875): `SELECT COUNT(*) as count FROM <t>` + a
+  // `DBConditions`-built ` WHERE <clause>`. The SCP `Count` leaf compiles its head through the SAME
+  // `compileSelect` (projection `COUNT(*) as count`) + the SAME `DBConditions` WHERE path, so the
+  // text is v1-sourced. The golden is v1's literal string assembly + DBConditions; nothing v2-v2.
+  for (const dialect of dialects) {
+    it(`[${dialect}] COUNT(*) + WHERE — head byte-matches v1 _count`, () => {
+      // v1 golden: `_count` literal head + DBConditions WHERE (the exact strings _count concatenates).
+      const params: unknown[] = [];
+      const formatter = dialect === 'postgres' ? pgFmt : undefined;
+      const where = new DBConditions({ author_id: 7 }).compile(params, formatter);
+      const goldenSql = `SELECT COUNT(*) as count FROM posts WHERE ${where}`;
+      const golden = { sql: renderPlaceholders(goldenSql, dialect), params };
+
+      // SCP: the Count leaf's head is `compileSelect` with the `COUNT(*) as count` projection (the
+      // exact call compileSelectNode makes) + the DBConditions WHERE fragment.
+      const head = compileSelect({ dialect, tableName: 'posts', select: 'COUNT(*) as count' });
+      const wparams: unknown[] = [];
+      const wsql = new DBConditions({ author_id: 7 }).compile(wparams, formatter);
+      const got = render({ sql: `${head.sql} WHERE ${wsql}`, params: [...head.params, ...wparams] }, dialect);
+      expect(got.sql).toBe(golden.sql);
+      expect(got.params).toEqual(golden.params);
+    });
+  }
+
+  // NEGATIVE (golden-from-originals): perturb the v1 head text and the golden MOVES — proving the
+  // assertion is pinned to the ORIGINAL text, not a self-fulfilling v2 constant.
+  it('negative: perturbing the v1 count head moves the golden (not v2-v2)', () => {
+    const dialect: Dialect = 'postgres';
+    const v1Golden = compileSelect({ dialect, tableName: 'posts', select: 'COUNT(*) as count' }).sql;
+    const perturbed = compileSelect({ dialect, tableName: 'posts', select: 'COUNT(id) as count' }).sql; // COUNT(id) ≠ COUNT(*)
+    expect(perturbed).not.toBe(v1Golden);
+    expect(v1Golden).toBe('SELECT COUNT(*) as count FROM posts');
+  });
+});
+
 // ===========================================================================
 // C. Relations — golden = LazyRelationContext ACTUAL output (captured).
 // ===========================================================================

@@ -22,15 +22,15 @@ import {
 describe('LITEDBMODEL_CATALOG shape', () => {
   it('declares exactly the WS1 catalog names', () => {
     expect(Object.keys(LITEDBMODEL_CATALOG).sort()).toEqual(
-      ['Delete', 'Fragment', 'Insert', 'Select', 'Tx', 'Update'],
+      ['Count', 'Delete', 'Fragment', 'Insert', 'Select', 'Tx', 'Update'],
     );
     expect([...CATALOG_NAMES].sort()).toEqual(
-      ['Delete', 'Fragment', 'Insert', 'Select', 'Tx', 'Update'],
+      ['Count', 'Delete', 'Fragment', 'Insert', 'Select', 'Tx', 'Update'],
     );
   });
 
   it('CRUD + Fragment are portable; Tx (the atomic envelope) is not', () => {
-    for (const name of ['Select', 'Insert', 'Update', 'Delete', 'Fragment']) {
+    for (const name of ['Select', 'Count', 'Insert', 'Update', 'Delete', 'Fragment']) {
       expect(catalogEntry(name)?.portableToIR).toBe(true);
     }
     expect(catalogEntry('Tx')?.portableToIR).toBe(false);

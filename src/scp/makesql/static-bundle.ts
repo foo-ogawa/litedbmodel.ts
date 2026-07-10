@@ -352,26 +352,33 @@ function selectTail(desc: Parameters<typeof compileSelect>[0], table: string): s
  */
 export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatement[] {
   const { component, ports } = nodeRef(node);
-  if (component !== 'Select') {
-    throw new Error(`static-bundle: compileSelectNode only compiles Select nodes (got '${component}')`);
+  if (component !== 'Select' && component !== 'Count') {
+    throw new Error(`static-bundle: compileSelectNode only compiles Select/Count nodes (got '${component}')`);
   }
   const table = stringPort(ports, 'table');
-  if (table === undefined) throw new Error(`static-bundle: Select node requires a literal 'table' port`);
+  if (table === undefined) throw new Error(`static-bundle: ${component} node requires a literal 'table' port`);
+  // A `Count` node projects `COUNT(*) as count` (v1 `DBModel._count`: `SELECT COUNT(*) as count
+  // FROM t`), a `Select` its own column list (default `*`). Both heads go through the ORIGINAL
+  // `compileSelect`, so the text is v1-sourced (count head byte-identical to `_count`).
+  const isCount = component === 'Count';
   const select = stringArrayPort(ports, 'select');
-  const cols = select && select.length > 0 ? select.join(', ') : '*';
+  const cols = isCount ? 'COUNT(*) as count' : select && select.length > 0 ? select.join(', ') : '*';
 
   const statements: StaticStatement[] = [];
   // Head `SELECT <cols> FROM <t>` — driven by the ORIGINAL `_buildSelectSQL` (via compileSelect,
   // no WHERE/tail) so the skeleton text is byte-identical to v1.
   statements.push({ sql: compileSelect({ dialect, tableName: table, select: cols }).sql, params: [] });
 
-  const whereFrags = lowerWherePort(ports, dialect, 'Select');
+  const whereFrags = lowerWherePort(ports, dialect, component);
   for (const frag of whereFrags) {
     // A bare predicate body flagged `whereFragment`; the runtime resolves the ` WHERE `/` AND `
     // connector from the present set (a compile-time connector would be wrong when an earlier
     // fragment skips).
     statements.push({ sql: frag.sql, params: frag.params, whereFragment: true, ...(frag.skip !== undefined ? { skip: frag.skip } : {}) });
   }
+
+  // A Count carries no projection/order/limit/offset tail (v1 `_count` is `COUNT(*)` + WHERE only).
+  if (isCount) return statements;
 
   // GROUP BY / ORDER BY tail — the ORIGINAL `_buildSelectSQL` append text (via compileSelect over
   // a bare table, then slicing off the leading `SELECT * FROM <t>` head it shares).
@@ -397,12 +404,12 @@ export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatem
  */
 function compilePrimaryNode(node: ComponentRefNode, dialect: Dialect): StaticStatement[] {
   const component = 'map' in node ? (node as MapNode).map.component : node.component;
-  if (component === 'Select') return compileSelectNode(node, dialect);
+  if (component === 'Select' || component === 'Count') return compileSelectNode(node, dialect);
   if (component === 'Insert' || component === 'Update' || component === 'Delete') {
     const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> });
     return [{ sql: op.sql, params: op.params }];
   }
-  throw new Error(`static-bundle: catalog component '${component}' has no makeSQL compile (SQL CRUD only: Select/Insert/Update/Delete)`);
+  throw new Error(`static-bundle: catalog component '${component}' has no makeSQL compile (SQL CRUD only: Select/Count/Insert/Update/Delete)`);
 }
 
 /**
@@ -686,7 +693,7 @@ function scopePort(statements: readonly StaticStatement[]): unknown {
 /** Compile ONE authored SQL node (Select or CRUD write) into its static statements. */
 function compileNodeStatements(node: RefLike, dialect: Dialect): StaticStatement[] {
   const component = 'map' in node ? (node as MapNode).map.component : node.component;
-  if (component === 'Select') return compileSelectNode(node, dialect);
+  if (component === 'Select' || component === 'Count') return compileSelectNode(node, dialect);
   const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> });
   return [{ sql: op.sql, params: op.params }];
 }
