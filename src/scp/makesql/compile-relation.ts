@@ -48,6 +48,32 @@ export function inferPgArrayType(values: unknown[], sqlCast?: string): string {
   return 'text[]';
 }
 
+/**
+ * The DEFERRED PG array-cast token (#46): a placeholder emitted in the STATIC SQL text where
+ * the `= ANY(?::<T>[])` / `UNNEST(?::<T>[])` element type `<T>` cannot be known at symbolic
+ * compile time (a schema-less `whereIn`, or a relation batch compiled without concrete keys).
+ * The render/handler layer resolves it from the BOUND values via {@link inferPgArrayType} — a
+ * mechanical dialect-render step, the same category as the `?`→`$N` placeholder render. This
+ * reproduces v1's live-PG-correct cast (`::int[]` for int keys, etc.), which v1 got because
+ * `inferPgArrayType` saw the real values at runtime.
+ *
+ * A byte sequence no legitimate SQL identifier/type text contains, so the resolve is a safe
+ * literal substring replace (never a regex over user text).
+ */
+export const PG_ARRAY_CAST_TOKEN = '@@PG_ARRAY_CAST@@';
+
+/**
+ * Resolve the FIRST unresolved {@link PG_ARRAY_CAST_TOKEN} in a PG SQL fragment to the element
+ * type inferred from the bound `values` (v1 `inferPgArrayType`). Called at render time, once per
+ * array param, left-to-right — so each deferred array cast binds the type of its own value set.
+ * SQL with no token is returned unchanged (every non-deferred cast is already concrete).
+ */
+export function resolvePgArrayCast(sql: string, values: unknown[]): string {
+  const at = sql.indexOf(PG_ARRAY_CAST_TOKEN);
+  if (at < 0) return sql;
+  return sql.slice(0, at) + inferPgArrayType(values) + sql.slice(at + PG_ARRAY_CAST_TOKEN.length);
+}
+
 export interface RelationCompileBase {
   dialect: Dialect;
   tableName: string;
@@ -59,6 +85,24 @@ export interface RelationCompileBase {
   order?: string;
   /** Per-column sqlCast map (drives PG `?::type[]`). */
   sqlCastMap?: Map<string, string>;
+  /**
+   * Emit the {@link PG_ARRAY_CAST_TOKEN} for the PG `?::<T>[]` element type instead of inferring
+   * it from `values` NOW (#46). Set when the SQL text is compiled SYMBOLICALLY (placeholder keys),
+   * so the element type is resolved at render from the REAL bound keys — never baked to `text[]`.
+   * A `sqlCast` (concrete column type) still wins over the token.
+   */
+  deferPgArrayCast?: boolean;
+}
+
+/**
+ * The PG array-cast element type for a batch cast, honoring `sqlCast` (concrete column type) →
+ * the deferred {@link PG_ARRAY_CAST_TOKEN} (resolve at render from bound values) → inference from
+ * the compile-time sample `values`. Centralizes the #43/#46 precedence for every relation shape.
+ */
+function pgArrayCastType(values: unknown[], sqlCast?: string, defer?: boolean): string {
+  if (sqlCast) return `${sqlCast}[]`;
+  if (defer) return PG_ARRAY_CAST_TOKEN;
+  return inferPgArrayType(values);
 }
 
 // ============================================================================
@@ -78,7 +122,7 @@ export function compileSingleKeyUnlimited(
 ): MakeSQL {
   if (opts.dialect === 'postgres') {
     const sqlCast = opts.sqlCastMap?.get(opts.targetKey);
-    const pgType = inferPgArrayType(opts.values, sqlCast);
+    const pgType = pgArrayCastType(opts.values, sqlCast, opts.deferPgArrayCast);
     const conditions: ConditionObject = {
       __raw__: [`${opts.tableName}.${opts.targetKey} = ANY(?::${pgType})`, [opts.values]],
       ...opts.conditions,
@@ -116,7 +160,7 @@ export function compileSingleKeyLimited(
 ): MakeSQL {
   if (opts.dialect === 'postgres') {
     const sqlCast = opts.sqlCastMap?.get(opts.targetKey);
-    const pgType = inferPgArrayType(opts.values, sqlCast);
+    const pgType = pgArrayCastType(opts.values, sqlCast, opts.deferPgArrayCast);
     const lateralConditions: ConditionObject = {
       __raw__: `${opts.tableName}.${opts.targetKey} = _keys.key`,
       ...opts.conditions,

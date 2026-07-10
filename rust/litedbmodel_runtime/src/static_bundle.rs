@@ -145,11 +145,59 @@ fn eval_spec(spec: &J, scope: &Scope) -> Result<Value, String> {
     evaluate_expression(spec, scope).map_err(|e| e.message)
 }
 
+// ── Deferred PG array-cast resolution (#46 — mirrors compile-relation.ts) ──────
+
+/// The DEFERRED PG array-cast placeholder: emitted in the STATIC SQL where the `= ANY(?::<T>[])`
+/// element type is unknown at symbolic compile (a schema-less `whereIn`). Resolved at render from
+/// the BOUND array via `infer_pg_array_type` — the same render-layer step as `?`→`$N`.
+const PG_ARRAY_CAST_TOKEN: &str = "@@PG_ARRAY_CAST@@";
+
+/// Port of the ORIGINAL `inferPgArrayType` (v1 `LazyRelation`): the element type inferred from the
+/// sample values (no sqlCast at this schema-less surface). A bc integer arrives as `Value::Int`.
+fn infer_pg_array_type(values: &[Value]) -> &'static str {
+    match values.first() {
+        None => "text[]",
+        Some(Value::Bool(_)) => "boolean[]",
+        Some(Value::Int(_)) => "int[]",
+        Some(Value::Float(_)) => {
+            // A float that is an exact integer is still an int key; only a genuine fractional
+            // value is numeric (mirrors TS `Number.isInteger` over the whole array).
+            let all_int = values.iter().all(|v| match v {
+                Value::Float(f) => f.fract() == 0.0,
+                _ => false,
+            });
+            if all_int {
+                "int[]"
+            } else {
+                "numeric[]"
+            }
+        }
+        _ => "text[]",
+    }
+}
+
+/// Resolve the FIRST unresolved cast token to the element type inferred from `values` (mirrors TS
+/// `resolvePgArrayCast`). SQL with no token is returned unchanged.
+fn resolve_pg_array_cast(sql: &str, values: &[Value]) -> String {
+    match sql.find(PG_ARRAY_CAST_TOKEN) {
+        None => sql.to_string(),
+        Some(at) => {
+            format!(
+                "{}{}{}",
+                &sql[..at],
+                infer_pg_array_type(values),
+                &sql[at + PG_ARRAY_CAST_TOKEN.len()..]
+            )
+        }
+    }
+}
+
 // ── Statement-list render (port of static-bundle.ts renderStatements) ──────────
 
 /// Evaluate a list of static statement templates against a scope → final SQL + params. Byte-for-byte
 /// port of the TS renderStatements: drop skipped statements (skip truthy), resolve each WHERE-
-/// fragment's ` WHERE `/` AND ` connector from the present set, compose + render placeholders.
+/// fragment's ` WHERE `/` AND ` connector from the present set, resolve any deferred PG array cast
+/// from the bound array, compose + render placeholders.
 pub fn render_statements(
     statements: &[J],
     dialect_name: &str,
@@ -183,6 +231,18 @@ pub fn render_statements(
         if let Some(specs) = stmt.get("params").and_then(|p| p.as_array()) {
             for spec in specs {
                 params.push(eval_spec(spec, scope)?);
+            }
+        }
+        // Resolve any deferred PG array cast (#46) from the bound array param, left-to-right —
+        // each postgres __jsonArray param resolves exactly one cast token in order.
+        if dialect_name == "postgres" {
+            for p in &params {
+                if let Value::Arr(arr) = p {
+                    if !sql_text.contains(PG_ARRAY_CAST_TOKEN) {
+                        break;
+                    }
+                    sql_text = resolve_pg_array_cast(&sql_text, arr);
+                }
             }
         }
         nodes.push(MakeSqlNode {

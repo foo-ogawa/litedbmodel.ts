@@ -56,7 +56,7 @@ import { mapSqliteError } from '../errors';
 import { type ConditionObject } from '../../DBConditions';
 import { conditionsFor } from './json-array';
 import { compileSelect } from './compile-select';
-import { inferPgArrayType } from './compile-relation';
+import { PG_ARRAY_CAST_TOKEN, resolvePgArrayCast } from './compile-relation';
 
 // ── Expression IR alias (a value-spec / skip expression is a closed-set bc node) ──
 
@@ -217,14 +217,18 @@ function jsonArraySpec(dialect: Dialect, valueSpec: ValueSpec): ValueSpec {
  *   - MySQL/SQLite: `conditionsFor({col:[…]})` → the single-JSON `JsonArrayConditions` form
  *     (`JSON_TABLE`/`json_each`) — the SAME text the eager path emits; ONE `?`, one JSON param.
  *   - PostgreSQL: the `LazyRelation`/`inferPgArrayType` single-array-param form
- *     `col = ANY(?::<type>[])`. Element type is unknown at symbolic-compile time, so
- *     `inferPgArrayType([])` = `text[]` (the v1 no-samples anchor); the array binds verbatim as
- *     ONE param. This is the v1 relation builder's text, not a v2 template.
+ *     `col = ANY(?::<type>[])`. Element type is unknown at symbolic-compile time (this authored
+ *     `whereIn` surface carries NO column type — spec §7 `inColumn`), so the cast is emitted as
+ *     the DEFERRED {@link PG_ARRAY_CAST_TOKEN} and resolved at render from the BOUND array via v1
+ *     `inferPgArrayType` (#46 — `renderStatements`). Baking `inferPgArrayType([])` = `text[]` here
+ *     was the #43 regression (`integer = text` on real PG for an int IN-list). The array binds
+ *     verbatim as ONE param. This is the v1 relation builder's text, not a v2 template.
  */
 function inListFragment(dialect: Dialect, column: string, valueSpec: ValueSpec): WhereFragment {
   if (dialect === 'postgres') {
-    // The v1 PG `= ANY(?::type[])` form (LazyRelation anchor). No compile-time samples → text[].
-    const conditions: ConditionObject = { __raw__: [`${column} = ANY(?::${inferPgArrayType([])})`, [PROBE]] };
+    // The v1 PG `= ANY(?::type[])` form (LazyRelation anchor). Element type is deferred to render
+    // (the token), resolved from the real bound array — never a compile-time `text[]`.
+    const conditions: ConditionObject = { __raw__: [`${column} = ANY(?::${PG_ARRAY_CAST_TOKEN})`, [PROBE]] };
     return { sql: v1ConditionText(conditions, dialect), params: [jsonArraySpec(dialect, valueSpec)] };
   }
   // MySQL/SQLite: the single-JSON IN-list is the JsonArrayConditions form (v1/epic builder).
@@ -543,6 +547,17 @@ function renderStatements(statements: readonly StaticStatement[], dialect: Diale
       whereSeen = true;
     }
     const params: SqlParam[] = stmt.params.map((p) => evalSpec(p, scope) as SqlParam);
+    // Resolve any deferred PG array cast (#46) from the bound array param, left-to-right — the
+    // schema-less `whereIn` IN-list emits a cast TOKEN whose element type is known only now (from
+    // the real values). Same render-layer step as `?`→`$N`; PG-only (the token appears only in
+    // the PG IN-list text). Each `__jsonArray` postgres param resolves exactly one token in order.
+    if (dialect === 'postgres') {
+      for (const p of params) {
+        if (!Array.isArray(p)) continue;
+        if (!sql.includes(PG_ARRAY_CAST_TOKEN)) break;
+        sql = resolvePgArrayCast(sql, p);
+      }
+    }
     nodes.push({ sql, params });
   }
   const assembled = composeMakeSQL(nodes);

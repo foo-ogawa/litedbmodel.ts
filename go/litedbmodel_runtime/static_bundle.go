@@ -216,6 +216,54 @@ func evalSpec(spec bc.JNode, scope *bc.Obj, dialectName string) (bc.Value, error
 	return toRenderParam(v), nil
 }
 
+// ── Deferred PG array-cast resolution (#46 — mirrors compile-relation.ts) ──────
+
+// pgArrayCastToken is the DEFERRED PG array-cast placeholder: emitted in the STATIC SQL where the
+// `= ANY(?::<T>[])` element type is unknown at symbolic compile (a schema-less `whereIn`). Resolved
+// at render from the BOUND array via inferPgArrayType — the same render-layer step as `?`→`$N`.
+const pgArrayCastToken = "@@PG_ARRAY_CAST@@"
+
+// inferPgArrayType ports the ORIGINAL inferPgArrayType (v1 LazyRelation): the element type inferred
+// from the sample values (no sqlCast at this schema-less surface). A bc integer arrives as int64;
+// a non-integer number as float64.
+func inferPgArrayType(values []bc.Value) string {
+	if len(values) == 0 {
+		return "text[]"
+	}
+	switch values[0].(type) {
+	case bool:
+		return "boolean[]"
+	case int64, int:
+		return "int[]"
+	case float64:
+		// A float64 that is an exact integer collapsed from a bc int (toRenderParam) is still an
+		// int key; only a genuine fractional value is numeric.
+		allInt := true
+		for _, v := range values {
+			if f, ok := v.(float64); !ok || f != float64(int64(f)) {
+				allInt = false
+				break
+			}
+		}
+		if allInt {
+			return "int[]"
+		}
+		return "numeric[]"
+	default:
+		return "text[]"
+	}
+}
+
+// resolvePgArrayCast resolves the FIRST unresolved cast token to the element type inferred from
+// values (mirrors TS resolvePgArrayCast). SQL with no token is unchanged.
+func resolvePgArrayCast(sql string, values []bc.Value) string {
+	at := strings.Index(sql, pgArrayCastToken)
+	if at < 0 {
+		return sql
+	}
+	return sql[:at] + inferPgArrayType(values) + sql[at+len(pgArrayCastToken):]
+}
+
 // ── Statement-list render (port of static-bundle.ts renderStatements) ──────────
 
 // renderStatements evaluates a list of static statement templates against a scope → final SQL +
@@ -263,6 +311,18 @@ func renderStatements(statements []bc.JNode, dialectName string, scope *bc.Obj) 
 						return Rendered{}, err
 					}
 					params = append(params, v)
+				}
+			}
+		}
+		// Resolve any deferred PG array cast (#46) from the bound array param, left-to-right —
+		// each postgres __jsonArray param resolves exactly one cast token in order.
+		if dialectName == "postgres" {
+			for _, p := range params {
+				if arr, ok := p.([]bc.Value); ok {
+					if !strings.Contains(sqlText, pgArrayCastToken) {
+						break
+					}
+					sqlText = resolvePgArrayCast(sqlText, arr)
 				}
 			}
 		}

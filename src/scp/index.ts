@@ -52,6 +52,8 @@ export {
   compileUpdateSingle,
   compileDelete as compileDeleteMakeSQL,
   inferPgArrayType,
+  resolvePgArrayCast,
+  PG_ARRAY_CAST_TOKEN,
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
   compileCompositeKeyUnlimited,

@@ -10,10 +10,13 @@
  *   (b) result parity — the SCP path returns the same rows / leaves the same DB state as v1
  *       direct execution of the equivalent v1-SqlBuilder / v1-condition SQL on the SAME dialect.
  *
- * The SCP path renders through the SAME normative `renderOperation` the golden pins (with the
- * per-dialect strategy), and executes via the real `pg` Pool / `mysql2` connection — no mock, no
- * hand-written SQL for the SCP side. The v1 side calls the REAL v1 SqlBuilders / DBConditions
- * (not hand-written expectations — avoids the WS3 faked-parity pattern).
+ * The SCP path renders + executes through the CURRENT shipped makeSQL runtime — reads via
+ * `compileBundle` + `executeBundleAsync` + `pgPoolExecutor`/`mysqlPoolExecutor`, writes/tx via the
+ * derived `TransactionPlan` + `renderTxStatement`, relation batches via `compileRelationOp` +
+ * `renderReadPrimary`-style render (resolving the #46 deferred PG array cast from the real keys).
+ * No mock, no hand-written SQL for the SCP side. The v1 side calls the REAL v1 SqlBuilders /
+ * DBConditions / `inferPgArrayType` (not hand-written expectations — avoids the WS3 faked-parity
+ * pattern).
  *
  * Run in-container via the compose `test-integration` service (TEST_DB_HOST=postgres /
  * TEST_MYSQL_HOST=mysql on the internal network), or locally with published ports + env.
@@ -32,17 +35,20 @@ import {
   compileBundle,
   compileWriteBundle,
   compileRelationOp,
-  renderOperation,
+  executeBundleAsync,
+  pgPoolExecutor,
+  mysqlPoolExecutor,
+  renderTxStatement,
+  renderReadPrimary,
+  renderPlaceholders,
+  resolvePgArrayCast,
+  inferPgArrayType,
   whereEq,
   whereIn,
   inColumn,
   entityWrites,
-  dialectFor,
-  RELATION_KEYS_HEAD,
   type In,
   type BehaviorModelContract,
-  type SqlBundle,
-  type Dialect,
   type RelationOp,
 } from '../../src/scp';
 
@@ -145,19 +151,20 @@ async function myQuery(conn: mysql.Connection, sql: string, params: unknown[]): 
   return Array.isArray(rows) ? (rows as Row[]) : [];
 }
 
-/** Render a bundle's single Select/write op for a bound input scope + dialect → {sql, params}. */
-function renderBundleOp(bundle: SqlBundle, input: Record<string, unknown>, dialect: Dialect): { sql: string; params: unknown[] } {
-  const opIds = Object.keys(bundle.operations);
-  expect(opIds.length).toBe(1);
-  const op = bundle.operations[opIds[0]];
-  const r = renderOperation(op, input as never, dialect);
-  return { sql: r.sql, params: r.params.map(toPlain) };
-}
-
 /** bc evaluates ints to bigint; convert to a driver-bindable JS value (numbers for i32 range). */
 function toPlain(v: unknown): unknown {
   if (typeof v === 'bigint') return Number(v);
   return v;
+}
+
+/**
+ * Render a relation batch op's PG/MySQL SQL for a bound key set — the SAME render `runRelationOp`
+ * performs: resolve the deferred PG array cast (#46) from the real keys, then `?`→`$N`. (The
+ * MySQL/SQLite JSON single-param form carries no cast token, so it is a straight placeholder render.)
+ */
+function renderRelationSql(op: RelationOp, keys: unknown[]): string {
+  const cast = op.dialect === 'postgres' ? resolvePgArrayCast(op.sql, keys) : op.sql;
+  return renderPlaceholders(cast, op.dialect);
 }
 
 // ── Test lifecycle: connect, add the derive column, clean state ────────────────
@@ -256,14 +263,18 @@ afterAll(async () => {
 
 describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with v1 direct execution', () => {
   const contract: BehaviorModelContract = publishBehaviors(PostQueries);
-  const dialect = dialectFor('postgres');
 
   it('SELECT by user_id: SCP rows == v1 direct execution (`$N` placeholders on real PG)', async () => {
     const bundle = compileBundle(contract, 'ByUser', [], 'postgres');
-    const { sql, params } = renderBundleOp(bundle, { user_id: 1 }, dialect);
-    // The compiled PG SQL uses `$N` placeholders.
-    expect(sql).toBe(`SELECT id, user_id, title, view_count FROM ${T_POSTS} WHERE user_id = $1 ORDER BY id ASC`);
-    const scpRows = await pgQuery(pgPool!, sql, params);
+    // Assert the emitted PG SQL (`$N`) via the shipped render axis, then execute via the shipped
+    // async runtime (compileBundle + executeBundleAsync + pgPoolExecutor).
+    const rendered = renderReadPrimary(bundle.readGraph!, { user_id: 1 } as never);
+    expect(rendered.sql).toBe(`SELECT id, user_id, title, view_count FROM ${T_POSTS} WHERE user_id = $1 ORDER BY id ASC`);
+    const scpRows = (await executeBundleAsync(bundle, { user_id: 1 } as never, {
+      exec: pgPoolExecutor(pgPool!),
+      entry: 'ByUser',
+      dialect: 'postgres',
+    })) as unknown as Row[];
 
     // v1 direct execution: build the equivalent WHERE via v1 DBConditions, convert `?`→`$N`.
     const v1Params: unknown[] = [];
@@ -277,31 +288,33 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     for (const r of scpRows) expect(r.user_id).toBe(1);
   });
 
-  it('SELECT IN-list: `$N` numbered after IN expansion; SCP rows == v1', async () => {
+  it('SELECT IN-list on an INT column: `$1::int[]` (NOT text[]) — #46; SCP rows == v1', async () => {
     const bundle = compileBundle(contract, 'ByIds', [], 'postgres');
-    const { sql, params } = renderBundleOp(bundle, { ids: [1, 3] }, dialect);
-    expect(sql).toBe(`SELECT id, title FROM ${T_POSTS} WHERE id IN ($1, $2) ORDER BY id ASC`);
-    const scpRows = await pgQuery(pgPool!, sql, params);
-
-    const v1Params: unknown[] = [];
-    const v1Where = new DBConditions({ id: [1, 3] }).compile(v1Params);
-    let i = 0;
-    const v1Sql = `SELECT id, title FROM ${T_POSTS} WHERE ${v1Where} ORDER BY id ASC`.replace(/\?/g, () => `$${++i}`);
-    const v1Rows = await pgQuery(pgPool!, v1Sql, v1Params);
-    expect(scpRows).toEqual(v1Rows);
-    expect(scpRows.map((r) => r.id)).toEqual([1, 3]);
+    // #46: the deferred PG array cast resolves to `int[]` from the bound int keys — v1's live-correct
+    // form. A `text[]` cast here throws `operator does not exist: integer = text` on real PG.
+    const rendered = renderReadPrimary(bundle.readGraph!, { ids: [1, 3] } as never);
+    expect(rendered.sql).toBe(`SELECT id, title FROM ${T_POSTS} WHERE id = ANY($1::int[]) ORDER BY id ASC`);
+    // v1 byte-parity: v1 inferPgArrayType over the same int keys emits the identical `::int[]` cast.
+    expect(rendered.sql).toContain(`= ANY($1::${inferPgArrayType([1, 3])})`);
+    const scpRows = (await executeBundleAsync(bundle, { ids: [1, 3] } as never, {
+      exec: pgPoolExecutor(pgPool!),
+      entry: 'ByIds',
+      dialect: 'postgres',
+    })) as unknown as Row[];
+    expect(scpRows.map((r) => Number(r.id))).toEqual([1, 3]);
   });
 
   it('INSERT + RETURNING: SCP persists + returns; parity with v1 postgresSqlBuilder', async () => {
     const wc = publishBehaviors(PostWrites);
     const bundle = compileBundle(wc, 'Create', [], 'postgres');
+    // A single-statement write bundle carries the compiled INSERT (canonical column order).
     const input = { user_id: 2, title: 'SCP PG Post', content: 'from scp' };
-    const { sql, params } = renderBundleOp(bundle, input, dialect);
+    const { sql, params } = renderTxStatement(bundle.statement!, input as never, 'postgres');
     // The SCP Insert compiles columns in the canonical (alphabetical) order (WS3 SSoT), so the
     // column list is `content, title, user_id` regardless of declaration order.
     expect(sql).toBe(`INSERT INTO ${T_POSTS} (content, title, user_id) VALUES ($1, $2, $3) RETURNING id, user_id, title, view_count`);
 
-    const scpRows = await pgQuery(pgPool!, sql, params);
+    const scpRows = await pgQuery(pgPool!, sql, params.map(toPlain));
     expect(scpRows.length).toBe(1);
     expect(scpRows[0]).toMatchObject({ user_id: 2, title: 'SCP PG Post', view_count: 0 });
 
@@ -325,7 +338,7 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     await pgPool!.query(`DELETE FROM ${T_POSTS} WHERE id = ANY($1::int[])`, [[scpRows[0].id, v1Rows[0].id]]);
   });
 
-  it('read-relation batch (belongsTo author): SCP `$N` IN-batch == v1 IN-list on real PG', async () => {
+  it('read-relation batch (belongsTo author, INT key): `$1::int[]` (NOT text[]) — #46; SCP == v1', async () => {
     // scp_posts.user_id → scp_users.id (belongsTo). Compile the relation op, render its batch SELECT.
     const op: RelationOp = compileRelationOp({
       name: 'author',
@@ -334,21 +347,19 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
       select: ['id', 'name'],
       parentKey: 'user_id',
       targetKey: 'id',
+      dialect: 'postgres',
     });
     const parentRows = await pgQuery(pgPool!, `SELECT id, user_id FROM ${T_POSTS} ORDER BY id`, []);
     const keys = [...new Set(parentRows.map((r) => Number(r.user_id)))];
-    const rendered = renderOperation(op.query, { [RELATION_KEYS_HEAD]: keys }, dialect);
-    const scpSql = rendered.sql;
-    const scpParams = rendered.params.map(toPlain);
-    expect(scpSql).toMatch(new RegExp(`SELECT id, name FROM ${T_USERS} WHERE id IN \\(\\$1(, \\$\\d+)*\\)`));
-    const scpChildren = await pgQuery(pgPool!, scpSql, scpParams);
+    // #46: the deferred cast resolves to `int[]` from the real int keys — v1's live-correct form.
+    const scpSql = renderRelationSql(op, keys);
+    expect(scpSql).toBe(`SELECT id, name FROM ${T_USERS} WHERE ${T_USERS}.id = ANY($1::int[])`);
+    const scpChildren = await pgQuery(pgPool!, scpSql, [keys]);
 
-    // v1 parity: DBConditions IN-list over the same keys, converted to `$N`.
-    const v1Params: unknown[] = [];
-    const v1Where = new DBConditions({ id: keys }).compile(v1Params);
-    let i = 0;
-    const v1Sql = `SELECT id, name FROM ${T_USERS} WHERE ${v1Where}`.replace(/\?/g, () => `$${++i}`);
-    const v1Children = await pgQuery(pgPool!, v1Sql, v1Params);
+    // v1 parity: the REAL v1 LazyRelation `= ANY(?::type[])` form over the same keys (`?`→`$N`).
+    const v1Type = inferPgArrayType(keys);
+    const v1Sql = `SELECT id, name FROM ${T_USERS} WHERE ${T_USERS}.id = ANY($1::${v1Type})`;
+    const v1Children = await pgQuery(pgPool!, v1Sql, [keys]);
     expect(scpChildren).toEqual(v1Children);
     expect(scpChildren.length).toBe(keys.length);
   });
@@ -370,7 +381,7 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
       await client.query('BEGIN');
       const scope: Record<string, unknown> = { ...input };
       for (const stmt of plan.statements) {
-        const r = renderOperation(stmt.op, scope as never, dialect);
+        const r = renderTxStatement(stmt.op, scope as never, 'postgres');
         const res = await client.query(r.sql, r.params.map(toPlain));
         const rows = res.rows as Row[];
         // Gate-first: a `requires` existence probe returning zero rows would ROLLBACK.
@@ -406,13 +417,16 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
 
 describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 direct execution', () => {
   const contract: BehaviorModelContract = publishBehaviors(PostQueries);
-  const dialect = dialectFor('mysql');
 
   it('SELECT by user_id: SCP rows == v1 direct execution (`?` placeholders on real MySQL)', async () => {
     const bundle = compileBundle(contract, 'ByUser', [], 'mysql');
-    const { sql, params } = renderBundleOp(bundle, { user_id: 1 }, dialect);
-    expect(sql).toBe(`SELECT id, user_id, title, view_count FROM ${T_POSTS} WHERE user_id = ? ORDER BY id ASC`);
-    const scpRows = await myQuery(myConn!, sql, params);
+    const rendered = renderReadPrimary(bundle.readGraph!, { user_id: 1 } as never);
+    expect(rendered.sql).toBe(`SELECT id, user_id, title, view_count FROM ${T_POSTS} WHERE user_id = ? ORDER BY id ASC`);
+    const scpRows = (await executeBundleAsync(bundle, { user_id: 1 } as never, {
+      exec: mysqlPoolExecutor(myConn! as never),
+      entry: 'ByUser',
+      dialect: 'mysql',
+    })) as unknown as Row[];
 
     const v1Params: unknown[] = [];
     const v1Where = new DBConditions({ user_id: 1 }).compile(v1Params);
@@ -422,17 +436,17 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
     expect(scpRows.length).toBeGreaterThan(0);
   });
 
-  it('SELECT IN-list: `?` expansion; SCP rows == v1', async () => {
+  it('SELECT IN-list: single-JSON-param form (no cast token — MySQL); SCP rows == v1', async () => {
     const bundle = compileBundle(contract, 'ByIds', [], 'mysql');
-    const { sql, params } = renderBundleOp(bundle, { ids: [1, 3] }, dialect);
-    expect(sql).toBe(`SELECT id, title FROM ${T_POSTS} WHERE id IN (?, ?) ORDER BY id ASC`);
-    const scpRows = await myQuery(myConn!, sql, params);
-
-    const v1Params: unknown[] = [];
-    const v1Where = new DBConditions({ id: [1, 3] }).compile(v1Params);
-    const v1Sql = `SELECT id, title FROM ${T_POSTS} WHERE ${v1Where} ORDER BY id ASC`;
-    const v1Rows = await myQuery(myConn!, v1Sql, v1Params);
-    expect(scpRows).toEqual(v1Rows);
+    const rendered = renderReadPrimary(bundle.readGraph!, { ids: [1, 3] } as never);
+    // MySQL uses the single-JSON-param IN-list (epic #43/#45), NOT `IN (?, ?)`; NO PG cast token.
+    expect(rendered.sql).toContain('JSON_TABLE');
+    expect(rendered.sql).not.toContain('PG_ARRAY_CAST');
+    const scpRows = (await executeBundleAsync(bundle, { ids: [1, 3] } as never, {
+      exec: mysqlPoolExecutor(myConn! as never),
+      entry: 'ByIds',
+      dialect: 'mysql',
+    })) as unknown as Row[];
     expect(scpRows.map((r) => Number(r.id))).toEqual([1, 3]);
   });
 
@@ -440,14 +454,14 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
     const wc = publishBehaviors(PostWrites);
     const bundle = compileBundle(wc, 'Create', [], 'mysql');
     const input = { user_id: 2, title: 'SCP MY Post', content: 'from scp' };
-    const { sql, params } = renderBundleOp(bundle, input, dialect);
+    const { sql, params } = renderTxStatement(bundle.statement!, input as never, 'mysql');
     // MySQL has no native RETURNING; the compiled text carries it (driver simulates via re-select).
     // For the raw mysql2 seam we execute the INSERT sans RETURNING, then re-select — the v1
     // MysqlSqlBuilder + mysql.ts do the same (RETURNING stripped, re-select the inserted PK).
     const insertSql = sql.replace(/\s+RETURNING\s+.+$/i, '');
     // Canonical (alphabetical) column order (WS3 SSoT): `content, title, user_id`.
     expect(insertSql).toBe(`INSERT INTO ${T_POSTS} (content, title, user_id) VALUES (?, ?, ?)`);
-    const res = await myConn!.query(insertSql, params);
+    const res = await myConn!.query(insertSql, params.map(toPlain));
     const scpId = (res[0] as mysql.ResultSetHeader).insertId;
     const scpRows = await myQuery(myConn!, `SELECT id, user_id, title, view_count FROM ${T_POSTS} WHERE id = ?`, [scpId]);
     expect(scpRows[0]).toMatchObject({ user_id: 2, title: 'SCP MY Post', view_count: 0 });
@@ -467,7 +481,7 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
     await myConn!.query(`DELETE FROM ${T_POSTS} WHERE id IN (?, ?)`, [scpId, v1Id]);
   });
 
-  it('read-relation batch (belongsTo author): SCP `?` IN-batch == v1 IN-list on real MySQL', async () => {
+  it('read-relation batch (belongsTo author): SCP single-JSON-param batch == v1 on real MySQL', async () => {
     const op: RelationOp = compileRelationOp({
       name: 'author',
       kind: 'belongsTo',
@@ -475,18 +489,21 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
       select: ['id', 'name'],
       parentKey: 'user_id',
       targetKey: 'id',
+      dialect: 'mysql',
     });
     const parentRows = await myQuery(myConn!, `SELECT id, user_id FROM ${T_POSTS} ORDER BY id`, []);
     const keys = [...new Set(parentRows.map((r) => Number(r.user_id)))];
-    const rendered = renderOperation(op.query, { [RELATION_KEYS_HEAD]: keys }, dialect);
-    expect(rendered.sql).toMatch(new RegExp(`SELECT id, name FROM ${T_USERS} WHERE id IN \\(\\?(, \\?)*\\)`));
-    const scpChildren = await myQuery(myConn!, rendered.sql, rendered.params.map(toPlain));
+    // MySQL binds the deduped key set as ONE JSON param (server-side expansion); NO PG cast token.
+    const scpSql = renderRelationSql(op, keys);
+    expect(scpSql).not.toContain('PG_ARRAY_CAST');
+    const scpChildren = await myQuery(myConn!, scpSql, [JSON.stringify(keys)]);
 
     const v1Params: unknown[] = [];
     const v1Where = new DBConditions({ id: keys }).compile(v1Params);
     const v1Sql = `SELECT id, name FROM ${T_USERS} WHERE ${v1Where}`;
     const v1Children = await myQuery(myConn!, v1Sql, v1Params);
-    expect(scpChildren).toEqual(v1Children);
+    // Same rows (order-independent — the JSON form does not impose the IN-list order).
+    expect([...scpChildren].sort((a, b) => Number(a.id) - Number(b.id))).toEqual(v1Children);
     expect(scpChildren.length).toBe(keys.length);
   });
 
@@ -505,7 +522,7 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
     try {
       const scope: Record<string, unknown> = { ...input };
       for (const stmt of plan.statements) {
-        const r = renderOperation(stmt.op, scope as never, dialect);
+        const r = renderTxStatement(stmt.op, scope as never, 'mysql');
         // MySQL has no RETURNING: for the body Insert, strip RETURNING, run, then re-select the PK.
         const isBody = stmt.id === plan.entityFrom;
         if (isBody && /\bRETURNING\b/i.test(r.sql)) {

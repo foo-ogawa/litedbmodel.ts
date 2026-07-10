@@ -1185,7 +1185,7 @@
               "params": []
             },
             {
-              "sql": "id = ANY(?::text[])",
+              "sql": "id = ANY(?::@@PG_ARRAY_CAST@@)",
               "params": [
                 {
                   "__jsonArray": {
@@ -1213,7 +1213,7 @@
           3
         ]
       },
-      "expectedSql": "SELECT id, title FROM posts WHERE id = ANY($1::text[]) ORDER BY id ASC",
+      "expectedSql": "SELECT id, title FROM posts WHERE id = ANY($1::int[]) ORDER BY id ASC",
       "expectedParams": [
         [
           1,

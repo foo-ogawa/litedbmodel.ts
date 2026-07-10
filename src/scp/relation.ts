@@ -31,6 +31,7 @@ import { renderPlaceholders, type Dialect } from './makesql/handler';
 import {
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
+  resolvePgArrayCast,
 } from './makesql/compile-relation';
 
 /** A read relation cardinality (v1 parity). `belongsTo`/`hasOne` are single; `hasMany` many. */
@@ -135,6 +136,11 @@ function compiledBatchSql(decl: RelationDecl, dialect: Dialect): string {
     order: decl.order,
     targetKey: decl.targetKey,
     values: placeholderKeys,
+    // The keys are UNKNOWN at symbolic compile (placeholder set), so the PG `= ANY(?::<T>[])`
+    // element type is DEFERRED to render (#46) — resolved from the real deduped keys via
+    // `inferPgArrayType`, reproducing v1's live-correct cast (`::int[]` for int keys). Baking a
+    // compile-time `text[]` here was the #43 regression (`integer = text` on real PG).
+    deferPgArrayCast: true,
   };
   const node: MakeSQL =
     decl.limit !== undefined
@@ -180,7 +186,11 @@ export function runRelationOp(
 ): { sql: string; keys: unknown[]; batch: RelationBatch } {
   const keys = dedupeKeys(parents, op.parentKey);
   const batch: RelationBatch = new Map();
-  const sql = renderPlaceholders(op.sql, op.dialect);
+  // Resolve the deferred PG array cast (#46) from the REAL deduped keys BEFORE the `?`→`$N`
+  // render (both are render-layer dialect steps; the cast token carries no `?`). PG only — the
+  // MySQL/SQLite forms bind the JSON array param and carry no cast token.
+  const cast = op.dialect === 'postgres' ? resolvePgArrayCast(op.sql, keys) : op.sql;
+  const sql = renderPlaceholders(cast, op.dialect);
   if (keys.length === 0) return { sql, keys, batch };
   const rows = db.prepare(sql).all(bindKeys(op, keys)) as Record<string, unknown>[];
   for (const row of rows) {

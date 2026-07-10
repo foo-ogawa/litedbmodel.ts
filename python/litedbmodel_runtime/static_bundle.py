@@ -156,6 +156,41 @@ def _eval_spec(spec: Any, scope: Mapping[str, Any], dialect_name: str) -> Any:
     return _to_driver_param(evaluate_expression(spec, scope))
 
 
+# ── Deferred PG array-cast resolution (#46 — mirrors compile-relation.ts) ──────
+
+# The DEFERRED PG array-cast token: a placeholder in the STATIC SQL where the `= ANY(?::<T>[])`
+# element type is unknown at symbolic compile (a schema-less `whereIn`). Resolved at render from
+# the BOUND array via infer_pg_array_type — the same render-layer step as `?`→`$N`.
+PG_ARRAY_CAST_TOKEN = "@@PG_ARRAY_CAST@@"
+
+
+def infer_pg_array_type(values: Sequence[Any], sql_cast: Any = None) -> str:
+    """Port of the ORIGINAL ``inferPgArrayType`` (v1 ``LazyRelation``): sql_cast wins, else the
+    element type is inferred from the sample values. ``bool`` is checked before ``int`` because
+    ``bool`` is an ``int`` subclass in Python."""
+    if sql_cast:
+        return f"{sql_cast}[]"
+    if len(values) == 0:
+        return "text[]"
+    sample = values[0]
+    if isinstance(sample, bool):
+        return "boolean[]"
+    if isinstance(sample, int):
+        return "int[]"
+    if isinstance(sample, float):
+        return "numeric[]"
+    return "text[]"
+
+
+def resolve_pg_array_cast(sql: str, values: Sequence[Any]) -> str:
+    """Resolve the FIRST unresolved PG array-cast token to the element type inferred from
+    ``values`` (mirrors TS ``resolvePgArrayCast``). SQL with no token is unchanged."""
+    at = sql.find(PG_ARRAY_CAST_TOKEN)
+    if at < 0:
+        return sql
+    return sql[:at] + infer_pg_array_type(values) + sql[at + len(PG_ARRAY_CAST_TOKEN):]
+
+
 # ── Statement-list render (port of static-bundle.ts renderStatements) ──────────
 
 
@@ -168,7 +203,8 @@ def render_statements(
 
     Byte-for-byte port of the TS ``renderStatements``: drop skipped statements (skip truthy),
     resolve each surviving WHERE-fragment's `` WHERE ``/`` AND `` connector from the present set,
-    build concrete makeSQL nodes, then compose + render placeholders to the dialect form.
+    resolve any deferred PG array cast from the bound array, build concrete makeSQL nodes, then
+    compose + render placeholders to the dialect form.
     """
     nodes: List[Dict[str, Any]] = []
     where_seen = False
@@ -182,6 +218,15 @@ def render_statements(
             sql = (" AND " if where_seen else " WHERE ") + stmt["sql"]
             where_seen = True
         params = [_eval_spec(p, scope, dialect_name) for p in stmt["params"]]
+        # Resolve any deferred PG array cast (#46) from the bound array param, left-to-right —
+        # each postgres __jsonArray param resolves exactly one cast token in order.
+        if dialect_name == "postgres":
+            for p in params:
+                if not isinstance(p, list):
+                    continue
+                if PG_ARRAY_CAST_TOKEN not in sql:
+                    break
+                sql = resolve_pg_array_cast(sql, p)
         nodes.append({"sql": sql, "params": params})
     assembled = compose_make_sql(nodes)
     return {"sql": render_placeholders(assembled["sql"], dialect_name), "params": assembled["params"]}

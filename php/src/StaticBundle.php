@@ -153,13 +153,58 @@ final class StaticBundle
         return ExprEval::evaluate($spec, $scope);
     }
 
+    // ── Deferred PG array-cast resolution (#46 — mirrors compile-relation.ts) ────
+
+    /** The DEFERRED PG array-cast placeholder, resolved at render from the bound array. */
+    private const PG_ARRAY_CAST_TOKEN = '@@PG_ARRAY_CAST@@';
+
+    /**
+     * Port of the ORIGINAL inferPgArrayType (v1 LazyRelation): the element type inferred from the
+     * sample values (no sqlCast at this schema-less surface). PHP has no bool/int subclass trap.
+     *
+     * @param list<mixed> $values
+     */
+    private static function inferPgArrayType(array $values): string
+    {
+        if (count($values) === 0) {
+            return 'text[]';
+        }
+        $sample = $values[0];
+        if (is_bool($sample)) {
+            return 'boolean[]';
+        }
+        if (is_int($sample)) {
+            return 'int[]';
+        }
+        if (is_float($sample)) {
+            return 'numeric[]';
+        }
+        return 'text[]';
+    }
+
+    /**
+     * Resolve the FIRST unresolved cast token to the element type inferred from $values (mirrors TS
+     * resolvePgArrayCast). SQL with no token is unchanged.
+     *
+     * @param list<mixed> $values
+     */
+    private static function resolvePgArrayCast(string $sql, array $values): string
+    {
+        $at = strpos($sql, self::PG_ARRAY_CAST_TOKEN);
+        if ($at === false) {
+            return $sql;
+        }
+        return substr($sql, 0, $at) . self::inferPgArrayType($values)
+            . substr($sql, $at + strlen(self::PG_ARRAY_CAST_TOKEN));
+    }
+
     // ── Statement-list render (port of static-bundle.ts renderStatements) ───────
 
     /**
      * Evaluate a list of static statement templates against a scope → final ['sql'=>…, 'params'=>…].
      * Byte-for-byte port of the TS renderStatements: drop skipped statements (skip truthy), resolve
-     * each WHERE-fragment's ` WHERE `/` AND ` connector from the present set, compose + render
-     * placeholders.
+     * each WHERE-fragment's ` WHERE `/` AND ` connector from the present set, resolve any deferred PG
+     * array cast from the bound array, compose + render placeholders.
      *
      * @param list<\stdClass> $statements
      * @param array<string,mixed> $scope
@@ -188,6 +233,18 @@ final class StaticBundle
             $specs = is_array($stmt->params ?? null) ? $stmt->params : [];
             foreach ($specs as $spec) {
                 $params[] = self::evalSpec($spec, $scope, $dialectName);
+            }
+            // Resolve any deferred PG array cast (#46) from the bound array param, left-to-right —
+            // each postgres __jsonArray param resolves exactly one cast token in order.
+            if ($dialectName === 'postgres') {
+                foreach ($params as $p) {
+                    if (is_array($p)) {
+                        if (strpos($sqlText, self::PG_ARRAY_CAST_TOKEN) === false) {
+                            break;
+                        }
+                        $sqlText = self::resolvePgArrayCast($sqlText, $p);
+                    }
+                }
             }
             $nodes[] = ['sql' => $sqlText, 'params' => $params];
         }

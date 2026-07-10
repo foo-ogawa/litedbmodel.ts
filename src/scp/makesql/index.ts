@@ -58,6 +58,8 @@ export type { InsertManyBuildOptions } from './compile-crud';
 // Compile (relations).
 export {
   inferPgArrayType,
+  resolvePgArrayCast,
+  PG_ARRAY_CAST_TOKEN,
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
   compileCompositeKeyUnlimited,
