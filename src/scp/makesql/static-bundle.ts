@@ -39,6 +39,7 @@ import type { Component, ComponentRefNode, MapNode, BehaviorModelContract } from
 import { IN_SENTINEL } from '../bridge';
 import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
 import { renderPlaceholders, type Dialect } from './handler';
+import { compileWriteNode } from './tx';
 import { mapSqliteError } from '../errors';
 
 // ── Expression IR alias (a value-spec / skip expression is a closed-set bc node) ──
@@ -319,12 +320,32 @@ export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatem
   return statements;
 }
 
-// ── Compile a behavior method → static bundle (the SELECT primary of a read method) ──
+// ── Compile a behavior method → static bundle (CRUD primary node) ──────────────
 
 /**
- * Compile the primary read `Select` of an authored behavior method into a {@link StaticBundle}.
+ * Compile ONE authored primary catalog node into its static `makeSQL` statement templates. A
+ * `Select` lowers to the fragment/tail statements ({@link compileSelectNode}); a single
+ * `Insert`/`Update`/`Delete` lowers via the SAME symbolic write compile the write-tx spine uses
+ * ({@link compileWriteNode} in `./tx` — complete tuned SQL text + deferred Expression-IR params),
+ * yielding ONE statement. This is the makeSQL SCP path for a standalone CRUD query (a Command
+ * with write-time relations rides the tx-DAG plan, not this single-statement path).
+ */
+function compilePrimaryNode(node: ComponentRefNode, dialect: Dialect): StaticStatement[] {
+  const component = 'map' in node ? (node as MapNode).map.component : node.component;
+  if (component === 'Select') return compileSelectNode(node, dialect);
+  if (component === 'Insert' || component === 'Update' || component === 'Delete') {
+    const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> });
+    return [{ sql: op.sql, params: op.params }];
+  }
+  throw new Error(`static-bundle: catalog component '${component}' has no makeSQL compile (SQL CRUD only: Select/Insert/Update/Delete)`);
+}
+
+/**
+ * Compile the primary CRUD query of an authored behavior method into a {@link StaticBundle}.
  * Relation `.map` nodes are NOT part of the primary bundle (they are the read-relations concern
- * — step 3); a read method whose primary is not a Select is rejected loudly.
+ * — step 3, still on the reduced spine). The compile is SYMBOLIC (no concrete input); the runtime
+ * ({@link executeStaticBundle} for reads / {@link executeStaticWrite} for writes) evaluates skip +
+ * value-specs per-input.
  */
 export function compileStaticBundle(
   contract: BehaviorModelContract,
@@ -342,7 +363,7 @@ export function compileStaticBundle(
   }
   if (primary === undefined) throw new Error(`static-bundle: behavior '${component.name}' has no primary catalog node`);
 
-  const statements = compileSelectNode(primary, dialect);
+  const statements = compilePrimaryNode(primary, dialect);
   return {
     dialect,
     name: component.name,
@@ -500,6 +521,27 @@ export function executeStaticBundle(bundle: StaticBundle, input: Scope, db: Sqli
   try {
     stmt = db.prepare(sql);
     return stmt.all(...params) as Record<string, unknown>[];
+  } catch (e) {
+    throw mapSqliteError(e);
+  }
+}
+
+/**
+ * Execute a single-statement WRITE {@link StaticBundle} (Insert/Update/Delete) against real
+ * SQLite: evaluate the deferred value-specs per-input, render, and run the statement. A statement
+ * with a RETURNING tail returns its rows; a non-returning write returns a single-row summary
+ * `[{ changes, lastInsertRowid }]`. A driver error maps to a {@link SqlFailure} at the boundary.
+ * (A Command with write-time relations rides the tx-DAG plan of `./tx`, not this path.)
+ */
+export function executeStaticWrite(bundle: StaticBundle, input: Scope, db: SqliteDb): Record<string, unknown>[] {
+  const scope = normalizeInput(bundle, input);
+  const { sql, params } = renderBundle(bundle, scope);
+  const hasReturn = /\breturning\b/i.test(sql);
+  try {
+    const stmt = db.prepare(sql);
+    if (hasReturn) return stmt.all(...params) as Record<string, unknown>[];
+    const info = stmt.run(...params);
+    return [{ changes: info.changes, lastInsertRowid: toDriverParam(BigInt(info.lastInsertRowid)) }];
   } catch (e) {
     throw mapSqliteError(e);
   }

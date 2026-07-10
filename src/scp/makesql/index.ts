@@ -121,5 +121,6 @@ export {
   compileStaticBundle,
   compileSelectNode,
   executeStaticBundle,
+  executeStaticWrite,
 } from './static-bundle';
 export type { StaticBundle, StaticStatement, ValueSpec } from './static-bundle';
