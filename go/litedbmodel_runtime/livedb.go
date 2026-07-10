@@ -30,13 +30,22 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 )
 
+// DefaultPoolSize aligns the *sql.DB pool ceiling with the read plan's default concurrency (spec).
+// The bc Go RunPlan fans out the independent sibling relations of a stage onto goroutines bounded by
+// plan.Concurrency (default 16), each running through the SQLDB seam; sizing the pool to match lets
+// all those concurrent siblings hold a real connection at once without queueing (#40). The write-tx
+// runs on ONE connection (a single *sql.Tx), so the pool ceiling never affects write serialization.
+const DefaultPoolSize = 16
+
 // OpenPostgres opens a live Postgres via the pgx stdlib database/sql driver ($N native, RETURNING
-// native). dsn e.g. "postgres://user:pass@host:port/db?sslmode=disable".
+// native). dsn e.g. "postgres://user:pass@host:port/db?sslmode=disable". The pool is sized to the
+// default plan concurrency so parallel read-relation dispatch (bc#23) has connections to spend.
 func OpenPostgres(dsn string) (*sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(DefaultPoolSize)
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
@@ -44,13 +53,14 @@ func OpenPostgres(dsn string) (*sql.DB, error) {
 }
 
 // OpenMysql opens a live MySQL via the RETURNING-emulating "mysql-scp" driver. dsn e.g.
-// "user:pass@tcp(host:port)/db?multiStatements=false".
+// "user:pass@tcp(host:port)/db?multiStatements=false". Pool sized to the default plan concurrency.
 func OpenMysql(dsn string) (*sql.DB, error) {
 	registerMysqlScp()
 	db, err := sql.Open("mysql-scp", dsn)
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(DefaultPoolSize)
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
