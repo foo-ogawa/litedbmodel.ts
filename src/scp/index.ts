@@ -66,6 +66,7 @@ export {
   compileSelectNode,
   executeStaticBundle,
   executeStaticWrite,
+  executeReadBehavior,
 } from './makesql';
 export type {
   MakeSQL,

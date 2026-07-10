@@ -34,7 +34,17 @@
  * text is emitted once.
  */
 
-import { evaluateExpression, type Scope, type Value } from 'behavior-contracts';
+import {
+  evaluateExpression,
+  runBehavior,
+  type Scope,
+  type Value,
+  type Component as BcComponent,
+  type ComponentGraphIR,
+  type Handlers,
+  type HandlerCtx,
+  type ExecOutcome,
+} from 'behavior-contracts';
 import type { Component, ComponentRefNode, MapNode, BehaviorModelContract } from '../authoring';
 import { IN_SENTINEL } from '../bridge';
 import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
@@ -468,14 +478,14 @@ function evalSpec(spec: ValueSpec, scope: Scope): unknown {
 }
 
 /**
- * Evaluate a bundle's statements against an input scope: drop skipped statements (skip
+ * Evaluate a list of statement templates against a scope: drop skipped statements (skip
  * expression truthy), resolve each surviving statement's WHERE-role connector from the present
  * set, build concrete `makeSQL` nodes, assemble + render to the dialect placeholder form.
  */
-function renderBundle(bundle: StaticBundle, scope: Scope): { sql: string; params: unknown[] } {
+function renderStatements(statements: readonly StaticStatement[], dialect: Dialect, scope: Scope): { sql: string; params: unknown[] } {
   const nodes: MakeSQL[] = [];
   let whereSeen = false;
-  for (const stmt of bundle.statements) {
+  for (const stmt of statements) {
     if (stmt.skip !== undefined) {
       const drop = evaluateExpression(stmt.skip, scope);
       if (drop !== null && drop !== false) continue;
@@ -489,7 +499,12 @@ function renderBundle(bundle: StaticBundle, scope: Scope): { sql: string; params
     nodes.push({ sql, params });
   }
   const assembled = composeMakeSQL(nodes);
-  return { sql: renderPlaceholders(assembled.sql, bundle.dialect), params: assembled.params };
+  return { sql: renderPlaceholders(assembled.sql, dialect), params: assembled.params };
+}
+
+/** Evaluate a whole bundle's statements against the input scope (convenience over the list). */
+function renderBundle(bundle: StaticBundle, scope: Scope): { sql: string; params: unknown[] } {
+  return renderStatements(bundle.statements, bundle.dialect, scope);
 }
 
 /** The minimal synchronous SQLite driver surface (better-sqlite3 `Database`). */
@@ -545,4 +560,159 @@ export function executeStaticWrite(bundle: StaticBundle, input: Scope, db: Sqlit
   } catch (e) {
     throw mapSqliteError(e);
   }
+}
+
+// ============================================================================
+// Step 0 — the bc-runBehavior read executor: bc composes (map / Φ-merge / wiring),
+// makeSQL executes. A read behavior method whose output is a Φ-merge of SQL nodes
+// (`{obj:{posts:ref[n0], authors:map(n0)}}`) is executed by rewriting each SQL node
+// to a `makeSQL` node carrying a synthetic `__scope` port and running bc `runBehavior`
+// with a handler that renders that node's static statements against the evaluated scope.
+// This gives map iteration + Φ output + wiring FOR FREE (bc owns orchestration).
+// ============================================================================
+
+/** The synthetic port that carries a SQL node's render scope (bc evaluates it in-scope). */
+const SCOPE_PORT = '__scope';
+/** The makeSQL catalog leaf name every rewritten SQL node references. */
+const NODE_COMPONENT = '__makeSqlNode';
+
+/** Collect every ref/refOpt path HEAD used inside an Expression IR node. */
+function collectAllHeads(node: unknown, heads: Set<string>): void {
+  if (node === null || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (const el of node) collectAllHeads(el, heads);
+    return;
+  }
+  const keys = Object.keys(node);
+  if (keys.length === 1 && (keys[0] === 'ref' || keys[0] === 'refOpt')) {
+    const path = (node as Record<string, unknown>)[keys[0]];
+    if (Array.isArray(path) && typeof path[0] === 'string') heads.add(path[0] as string);
+    return;
+  }
+  for (const k of keys) collectAllHeads((node as Record<string, unknown>)[k], heads);
+}
+
+/** Every binding head a node's compiled statements reference (params + skip). */
+function statementHeads(statements: readonly StaticStatement[]): Set<string> {
+  const heads = new Set<string>();
+  for (const stmt of statements) {
+    for (const p of stmt.params) collectAllHeads(p, heads);
+    if (stmt.skip !== undefined) collectAllHeads(stmt.skip, heads);
+  }
+  return heads;
+}
+
+/**
+ * Build the surrogate `__scope` port for a node: a bc `{obj:{…}}` re-exporting each referenced
+ * head as `{ref:[head]}` (excluding the IN-sentinel column marker). bc evaluates this in ITS
+ * scope (so `input`, sibling wire results and the `map` element `as` all resolve), then the
+ * handler renders the node's static statements against the resulting plain scope.
+ */
+function scopePort(statements: readonly StaticStatement[]): unknown {
+  const obj: Record<string, unknown> = {};
+  for (const head of statementHeads(statements)) {
+    if (head === IN_SENTINEL) continue;
+    obj[head] = { ref: [head] };
+  }
+  return { obj };
+}
+
+/** Compile ONE authored SQL node (Select or CRUD write) into its static statements. */
+function compileNodeStatements(node: RefLike, dialect: Dialect): StaticStatement[] {
+  const component = 'map' in node ? (node as MapNode).map.component : node.component;
+  if (component === 'Select') return compileSelectNode(node, dialect);
+  const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> });
+  return [{ sql: op.sql, params: op.params }];
+}
+
+/**
+ * Execute a READ behavior method whose output may be a Φ-merge of SQL nodes (including relation
+ * `.map` nodes) via bc `runBehavior` + a makeSQL handler. Each SQL body node is rewritten to a
+ * `makeSQL` node with one `__scope` port; bc drives map iteration / wire binding / Φ output; the
+ * handler renders each node's static statements against the evaluated scope and runs REAL SQLite.
+ * This is the design's "bc composes, makeSQL executes". Returns the component's Φ output.
+ */
+export function executeReadBehavior(
+  contract: BehaviorModelContract,
+  input: Scope,
+  dialect: Dialect,
+  db: SqliteDb,
+  entry?: string,
+): Value {
+  const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
+  if (component === undefined) throw new Error(`static-bundle: entry component '${entry ?? '<first>'}' not found in contract`);
+
+  // Compile each SQL node's static statements ONCE, keyed by node id.
+  const statementsById = new Map<string, StaticStatement[]>();
+  const optional = optionalHeadsOfComponent(component, dialect);
+  for (const n of component.body) {
+    if ('cond' in n) continue;
+    statementsById.set(n.id, compileNodeStatements(n as RefLike, dialect));
+  }
+
+  // Rewrite the component body: each SQL node keeps its id / wiring / map shape but its ports
+  // collapse to the synthetic `__scope` port (bc evaluates it in-scope; handler renders the node).
+  const surrogateBody = component.body.map((n) => {
+    if ('cond' in n) return n;
+    const stmts = statementsById.get(n.id)!;
+    if ('map' in n) {
+      return { ...n, map: { ...n.map, component: NODE_COMPONENT, ports: { [SCOPE_PORT]: scopePort(stmts) } } };
+    }
+    return { ...n, component: NODE_COMPONENT, ports: { [SCOPE_PORT]: scopePort(stmts) } };
+  });
+  const surrogate = { ...component, body: surrogateBody } as unknown as BcComponent;
+  const ir: ComponentGraphIR = { irVersion: 1, exprVersion: 2, components: [surrogate] };
+
+  // The makeSQL handler: render this node's static statements against the evaluated `__scope`.
+  const handle = (ports: Record<string, Value>, ctx: HandlerCtx): ExecOutcome => {
+    const stmts = statementsById.get(ctx.nodeId);
+    if (stmts === undefined) return { error: `static-bundle: no statements for node '${ctx.nodeId}'` };
+    const scope = ports[SCOPE_PORT];
+    if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) {
+      return { error: `static-bundle: node '${ctx.nodeId}' surrogate scope did not evaluate to an object` };
+    }
+    const { sql, params } = renderStatements(stmts, dialect, scope as Scope);
+    try {
+      const rows = db.prepare(sql).all(...params) as Record<string, unknown>[];
+      return { ok: rows as unknown as Value };
+    } catch (e) {
+      return { error: mapSqliteError(e).message };
+    }
+  };
+  const handlers: Handlers = { [NODE_COMPONENT]: handle };
+
+  const normalized: Scope = { ...input };
+  for (const head of optional) if (!(head in normalized)) normalized[head] = null;
+
+  try {
+    return runBehavior(ir, handlers, normalized, surrogate.name);
+  } catch (e) {
+    throw reErrorToSqlFailure(e);
+  }
+}
+
+/** Optional heads across ALL SQL nodes of a component (schema + SKIP-guard + refOpt). */
+function optionalHeadsOfComponent(component: Component, dialect: Dialect): Set<string> {
+  const optional = new Set<string>();
+  for (const [port, schema] of Object.entries(component.inputPorts)) {
+    if (schema.required !== true) optional.add(port);
+  }
+  for (const n of component.body) skipGuardHeads(n, optional);
+  for (const n of component.body) {
+    if ('cond' in n) continue;
+    const stmts = compileNodeStatements(n as RefLike, dialect);
+    for (const stmt of stmts) {
+      for (const p of stmt.params) collectRefOptHeads(p, optional);
+      if (stmt.skip !== undefined) collectRefOptHeads(stmt.skip, optional);
+    }
+  }
+  return optional;
+}
+
+/** Re-surface a mapped SqlFailure from a runBehavior OP_FAILED message (SQLITE_* code embedded). */
+function reErrorToSqlFailure(e: unknown): unknown {
+  const message = e instanceof Error ? e.message : String(e);
+  const m = /(SQLITE_[A-Z_]+)/.exec(message);
+  if (m) return mapSqliteError({ code: m[1], message });
+  return e;
 }
