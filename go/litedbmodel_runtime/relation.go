@@ -16,6 +16,7 @@ package litedbmodel_runtime
 
 import (
 	"fmt"
+	"strings"
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
 )
@@ -33,24 +34,29 @@ func errRelationNotDeclared(name string) error {
 }
 
 // RelationOp is the pre-compiled STATIC batch op read out of bundle.relations[name] (pure JSON).
+// Single-key relations carry ParentKey/TargetKey; composite (#47 item 1) carry ParentKeys/TargetKeys.
 type RelationOp struct {
-	Name      string
-	Kind      string // "belongsTo" | "hasMany" | "hasOne"
-	ParentKey string
-	TargetKey string
-	Dialect   string
-	SQL       string
+	Name       string
+	Kind       string // "belongsTo" | "hasMany" | "hasOne"
+	ParentKey  string
+	TargetKey  string
+	ParentKeys []string // composite: ordered parent key columns (nil for single-key)
+	TargetKeys []string // composite: ordered child key columns (nil for single-key)
+	Dialect    string
+	SQL        string
 }
 
 // relationOpFromJObj reads one bundle.relations entry into a RelationOp.
 func relationOpFromJObj(o *bc.JObj) RelationOp {
 	return RelationOp{
-		Name:      getStrJ(o, "name"),
-		Kind:      getStrJ(o, "kind"),
-		ParentKey: getStrJ(o, "parentKey"),
-		TargetKey: getStrJ(o, "targetKey"),
-		Dialect:   getStrJ(o, "dialect"),
-		SQL:       getStrJ(o, "sql"),
+		Name:       getStrJ(o, "name"),
+		Kind:       getStrJ(o, "kind"),
+		ParentKey:  getStrJ(o, "parentKey"),
+		TargetKey:  getStrJ(o, "targetKey"),
+		ParentKeys: getStrArrJ(o, "parentKeys"),
+		TargetKeys: getStrArrJ(o, "targetKeys"),
+		Dialect:    getStrJ(o, "dialect"),
+		SQL:        getStrJ(o, "sql"),
 	}
 }
 
@@ -60,6 +66,48 @@ func getStrJ(o *bc.JObj, k string) string {
 		return s
 	}
 	return ""
+}
+
+// getStrArrJ reads an optional string[] field (nil if absent) — the composite key column lists.
+func getStrArrJ(o *bc.JObj, k string) []string {
+	v, ok := o.Get(k)
+	if !ok {
+		return nil
+	}
+	arr, ok := v.([]bc.JNode)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		s, _ := e.(string)
+		out = append(out, s)
+	}
+	return out
+}
+
+// parentKeyCols / targetKeyCols return the ordered key columns (single-key → 1-element).
+func (op RelationOp) parentKeyCols() []string {
+	if op.ParentKeys != nil {
+		return op.ParentKeys
+	}
+	return []string{op.ParentKey}
+}
+
+func (op RelationOp) targetKeyCols() []string {
+	if op.TargetKeys != nil {
+		return op.TargetKeys
+	}
+	return []string{op.TargetKey}
+}
+
+// keyIdentity is the stringified key identity for dedupe/grouping (tuple → space-joined scalars).
+func keyIdentity(values []bc.Value) string {
+	parts := make([]string, len(values))
+	for i, v := range values {
+		parts[i] = stringifyKey(v)
+	}
+	return strings.Join(parts, " ")
 }
 
 // stringifyKey mirrors TS `String(v)` for the key-identity used by dedupe + grouping. A whole
@@ -84,64 +132,104 @@ func stringifyKey(v bc.Value) string {
 	}
 }
 
-// dedupeKeys returns the deduped, non-nil parent-key values (insertion order preserved) — a
-// byte-for-byte port of the TS dedupeKeys (skip nil, dedupe on String(v), keep first-seen order).
-func dedupeKeys(parents []bc.Value, parentKey string) []bc.Value {
+// dedupeKeys returns the deduped, non-nil parent-key TUPLES (insertion order preserved). Drop a
+// tuple if ANY key column is nil; dedupe on the stringified tuple identity. Port of TS dedupeKeys.
+func dedupeKeys(parents []bc.Value, keyCols []string) [][]bc.Value {
 	seen := map[string]struct{}{}
-	out := []bc.Value{}
+	out := [][]bc.Value{}
 	for _, p := range parents {
 		obj, ok := p.(*bc.Obj)
 		if !ok {
 			continue
 		}
-		v, present := obj.Get(parentKey)
-		if !present || v == nil {
+		tuple := make([]bc.Value, len(keyCols))
+		anyNil := false
+		for i, c := range keyCols {
+			v, present := obj.Get(c)
+			if !present || v == nil {
+				anyNil = true
+				break
+			}
+			tuple[i] = v
+		}
+		if anyNil {
 			continue
 		}
-		s := stringifyKey(v)
+		s := keyIdentity(tuple)
 		if _, dup := seen[s]; dup {
 			continue
 		}
 		seen[s] = struct{}{}
-		out = append(out, v)
+		out = append(out, tuple)
 	}
 	return out
 }
 
-// bindKeys binds the deduped key set to the op's single array param per dialect (TS bindKeys):
-// PG binds the array verbatim (a []bc.Value → pgx array); MySQL/SQLite bind the JSON-encoded array
-// string (server-side json_each/JSON_TABLE expansion). Compact JSON matches TS JSON.stringify.
-func bindKeys(op RelationOp, keys []bc.Value) any {
+// bindKeys binds the deduped keys to the op's params per dialect + arity (TS bindKeys). Single-key:
+// PG → ONE scalar array param; MySQL/SQLite → ONE JSON scalar-array string. Composite: PG → ONE
+// array param PER key column (transposed tuples); MySQL/SQLite → ONE JSON array-of-tuples string.
+// Returns the positional args list.
+func bindKeys(op RelationOp, tuples [][]bc.Value) []any {
+	composite := op.ParentKeys != nil
 	if op.Dialect == "postgres" {
-		args := make([]any, len(keys))
-		for i, k := range keys {
-			args[i] = toDriverParam(k)
+		nCols := 1
+		if composite {
+			nCols = len(op.parentKeyCols())
+		}
+		args := make([]any, nCols)
+		for col := 0; col < nCols; col++ {
+			colArr := make([]any, len(tuples))
+			for i, t := range tuples {
+				colArr[i] = toDriverParam(t[col])
+			}
+			args[col] = colArr
 		}
 		return args
 	}
-	return jsStringify(bc.Value([]bc.Value(keys)))
+	// MySQL/SQLite: ONE JSON param — a scalar array (single-key) or an array-of-tuples (composite).
+	var payload []bc.Value
+	if composite {
+		payload = make([]bc.Value, len(tuples))
+		for i, t := range tuples {
+			payload[i] = bc.Value([]bc.Value(t))
+		}
+	} else {
+		payload = make([]bc.Value, len(tuples))
+		for i, t := range tuples {
+			payload[i] = t[0]
+		}
+	}
+	return []any{jsStringify(bc.Value(payload))}
 }
 
-// RelationBatch is the child rows grouped for a batch: stringified target-key → child rows.
+// RelationBatch is the child rows grouped for a batch: stringified target-key identity → child rows.
 type RelationBatch map[string][]bc.Value
 
 // RunRelationOp runs ONE relation batch op for a set of parent rows (port of TS runRelationOp).
-// Dedup the parent keys, resolve the deferred PG array cast from the REAL keys BEFORE the `?`→`$N`
-// render (PG only), render placeholders; on a NON-empty key set execute the batch binding the keys
-// as the SINGLE array param and group the child rows by target key. An EMPTY key set issues NO
-// query (the correct empty-set behaviour), matching TS.
+// Dedup the parent-key tuples, resolve the deferred PG array cast(s) from the REAL keys (one per key
+// column for composite) BEFORE the `?`→`$N` render; on a NON-empty key set execute binding the keys
+// (single array / per-column arrays / JSON tuples) and group the child rows by target-key identity.
+// An EMPTY key set issues NO query, matching TS.
 func RunRelationOp(op RelationOp, parents []bc.Value, db SQLDB) (RelationBatch, error) {
-	keys := dedupeKeys(parents, op.ParentKey)
+	pCols := op.parentKeyCols()
+	keys := dedupeKeys(parents, pCols)
 	batch := RelationBatch{}
 	sqlText := op.SQL
 	if op.Dialect == "postgres" {
-		sqlText = resolvePgArrayCast(sqlText, keys)
+		for col := range pCols {
+			colVals := make([]bc.Value, len(keys))
+			for i, t := range keys {
+				colVals[i] = t[col]
+			}
+			sqlText = resolvePgArrayCast(sqlText, colVals)
+		}
 	}
 	sqlText = renderPlaceholders(sqlText, op.Dialect)
 	if len(keys) == 0 {
 		return batch, nil
 	}
-	rows, err := queryRows(db, sqlText, []any{bindKeys(op, keys)})
+	tCols := op.targetKeyCols()
+	rows, err := queryRows(db, sqlText, bindKeys(op, keys))
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +238,11 @@ func RunRelationOp(op RelationOp, parents []bc.Value, db SQLDB) (RelationBatch, 
 		if !ok {
 			continue
 		}
-		tv, _ := obj.Get(op.TargetKey)
-		k := stringifyKey(tv)
+		tuple := make([]bc.Value, len(tCols))
+		for i, c := range tCols {
+			tuple[i], _ = obj.Get(c)
+		}
+		k := keyIdentity(tuple)
 		batch[k] = append(batch[k], r)
 	}
 	return batch, nil
@@ -159,11 +250,22 @@ func RunRelationOp(op RelationOp, parents []bc.Value, db SQLDB) (RelationBatch, 
 
 // DistributeToParent distributes a resolved batch onto ONE parent per cardinality (port of TS
 // distributeToParent): hasMany → the child list ([] when none); belongsTo/hasOne → the single child
-// (or nil). Keyed by String(parent[parentKey]).
+// (or nil). Keyed by the parent's key-tuple identity.
 func DistributeToParent(op RelationOp, parent *bc.Obj, batch RelationBatch) bc.Value {
 	var rows []bc.Value
-	if key, ok := parent.Get(op.ParentKey); ok && key != nil {
-		rows = batch[stringifyKey(key)]
+	pCols := op.parentKeyCols()
+	tuple := make([]bc.Value, len(pCols))
+	anyNil := false
+	for i, c := range pCols {
+		v, ok := parent.Get(c)
+		if !ok || v == nil {
+			anyNil = true
+			break
+		}
+		tuple[i] = v
+	}
+	if !anyNil {
+		rows = batch[keyIdentity(tuple)]
 	}
 	if op.Kind == "hasMany" {
 		if rows == nil {

@@ -168,6 +168,21 @@ class Blog extends SemanticBehavior {
       order: 'id ASC',
     });
   }
+
+  /**
+   * A COMPOSITE-key parent page (#47 item 1): `docs` keyed by (tenant_id, doc_id). Each doc gets a
+   * composite belongsTo `owner` (matched on the SAME (tenant_id, owner_id) tuple → users) and a
+   * composite hasMany `revisions` (matched on (tenant_id, doc_id)). The batch-load + hydrate the
+   * composite `RelationOp` shape drives, across all 5 runtimes.
+   */
+  Docs($: In<{ tenant_id: number }>) {
+    return L.Select({
+      table: 'docs2',
+      select: ['tenant_id', 'doc_id', 'owner_id', 'title'],
+      where: [whereEq($.tenant_id, $.tenant_id)],
+      order: 'doc_id ASC',
+    });
+  }
 }
 
 class PostCommands extends SemanticBehavior {
@@ -227,6 +242,72 @@ const postReadRelations: readonly RelationDecl[] = [
     limit: 2,
   },
 ];
+
+/**
+ * COMPOSITE-key read-relation declarations (#47 item 1). `owner` is a composite belongsTo matched
+ * on the (tenant_id, owner_id) → users2(tenant_id, uid) tuple; `revisions` a composite hasMany
+ * matched on (tenant_id, doc_id) → revs(tenant_id, doc_id). Both ride the composite `RelationOp`
+ * shape (parentKeys/targetKeys arrays) — the batch-load + hydrate every runtime must reproduce.
+ */
+const docCompositeRelations: readonly RelationDecl[] = [
+  {
+    name: 'owner',
+    kind: 'belongsTo',
+    targetTable: 'users2',
+    select: ['tenant_id', 'uid', 'name'],
+    parentKeys: ['tenant_id', 'owner_id'],
+    targetKeys: ['tenant_id', 'uid'],
+  },
+  {
+    name: 'revisions',
+    kind: 'hasMany',
+    targetTable: 'revs',
+    select: ['tenant_id', 'doc_id', 'rev'],
+    parentKeys: ['tenant_id', 'doc_id'],
+    targetKeys: ['tenant_id', 'doc_id'],
+    order: 'rev ASC',
+  },
+];
+
+// The composite-key read schema (docs2 keyed by (tenant_id, doc_id); users2 by (tenant_id, uid);
+// revs by (tenant_id, doc_id)). Two tenants share the SAME uid/doc_id values, so a composite key is
+// REQUIRED to disambiguate — a single-key relation would cross-hydrate across tenants.
+const COMPOSITE_ROWS = {
+  docs2: [
+    [1, 10, 100, 'Doc A1'],
+    [1, 11, 101, 'Doc B1'],
+    [2, 10, 100, 'Doc A2'],
+  ],
+  users2: [
+    [1, 100, 'Ada'],
+    [1, 101, 'Alan'],
+    [2, 100, 'Bob'],
+  ],
+  revs: [
+    [1, 10, 'r1'],
+    [1, 10, 'r2'],
+    [1, 11, 'r3'],
+    [2, 10, 'r9'],
+  ],
+} as const;
+
+function compositeSchema(kind: 'sqlite' | 'pg' | 'mysql'): readonly string[] {
+  const intT = kind === 'mysql' ? 'INT' : 'INTEGER';
+  const txtT = kind === 'mysql' ? 'VARCHAR(255)' : 'TEXT';
+  const ddl = [
+    `CREATE TABLE docs2 (tenant_id ${intT} NOT NULL, doc_id ${intT} NOT NULL, owner_id ${intT} NOT NULL, title ${txtT} NOT NULL, PRIMARY KEY (tenant_id, doc_id))`,
+    `CREATE TABLE users2 (tenant_id ${intT} NOT NULL, uid ${intT} NOT NULL, name ${txtT} NOT NULL, PRIMARY KEY (tenant_id, uid))`,
+    `CREATE TABLE revs (tenant_id ${intT} NOT NULL, doc_id ${intT} NOT NULL, rev ${txtT} NOT NULL, PRIMARY KEY (tenant_id, doc_id, rev))`,
+  ];
+  const ins: string[] = [];
+  for (const [t, s, o, title] of COMPOSITE_ROWS.docs2) ins.push(`INSERT INTO docs2 VALUES (${t}, ${s}, ${o}, '${title}')`);
+  for (const [t, u, n] of COMPOSITE_ROWS.users2) ins.push(`INSERT INTO users2 VALUES (${t}, ${u}, '${n}')`);
+  for (const [t, d, r] of COMPOSITE_ROWS.revs) ins.push(`INSERT INTO revs VALUES (${t}, ${d}, '${r}')`);
+  return [...ddl, ...ins];
+}
+const COMPOSITE_SCHEMA_SQLITE = compositeSchema('sqlite');
+const COMPOSITE_SCHEMA_PG = compositeSchema('pg');
+const COMPOSITE_SCHEMA_MYSQL = compositeSchema('mysql');
 
 // ── The SQLite reference schema (from harness.ts) — the reference execution seam ──
 
@@ -890,6 +971,12 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
     input: Record<string, unknown>;
     with: readonly string[];
     relations: readonly RelationDecl[];
+    /** The parent behavior entry (default `Posts`). */
+    entry?: string;
+    /** The reference/live schemas (default the single-key READ schemas). */
+    schemaSqlite?: readonly string[];
+    schemaPg?: readonly string[];
+    schemaMysql?: readonly string[];
   }
   const readSpecs: ReadSpec[] = [
     // belongsTo (single key) alone: each post gets its `author` object (or null).
@@ -902,13 +989,32 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
     { name: 'Posts: belongsTo + hasMany + hasMany-limit all hydrated [#43]', input: { author_id: 7 }, with: ['author', 'comments', 'tags'], relations: postReadRelations },
     // EMPTY parent set → every relation short-circuits (no query), each parent hydrates empty.
     { name: 'Posts: empty parent set → relations short-circuit, empty hydration [#43]', input: { author_id: 999 }, with: ['author', 'comments', 'tags'], relations: postReadRelations },
+    // COMPOSITE-key relations (#47 item 1) — the (tenant_id, …) tuple disambiguates tenants that
+    // share uid/doc_id. belongsTo `owner` + hasMany `revisions`, both single-tenant + cross-tenant.
+    {
+      name: 'Docs[tenant 1]: composite belongsTo owner + hasMany revisions hydrated [#47]',
+      input: { tenant_id: 1 }, with: ['owner', 'revisions'], relations: docCompositeRelations,
+      entry: 'Docs', schemaSqlite: COMPOSITE_SCHEMA_SQLITE, schemaPg: COMPOSITE_SCHEMA_PG, schemaMysql: COMPOSITE_SCHEMA_MYSQL,
+    },
+    {
+      name: 'Docs[tenant 2]: composite keys disambiguate — same uid/doc_id, different tenant [#47]',
+      input: { tenant_id: 2 }, with: ['owner', 'revisions'], relations: docCompositeRelations,
+      entry: 'Docs', schemaSqlite: COMPOSITE_SCHEMA_SQLITE, schemaPg: COMPOSITE_SCHEMA_PG, schemaMysql: COMPOSITE_SCHEMA_MYSQL,
+    },
+    {
+      name: 'Docs[tenant 9]: empty composite parent set → relations short-circuit [#47]',
+      input: { tenant_id: 9 }, with: ['owner', 'revisions'], relations: docCompositeRelations,
+      entry: 'Docs', schemaSqlite: COMPOSITE_SCHEMA_SQLITE, schemaPg: COMPOSITE_SCHEMA_PG, schemaMysql: COMPOSITE_SCHEMA_MYSQL,
+    },
   ];
 
   const read: LiveReadVector[] = readSpecs.map((s) => {
-    const pg = compileBundle(blog, 'Posts', s.relations, 'postgres');
-    const mysql = compileBundle(blog, 'Posts', s.relations, 'mysql');
-    const sqlite = compileBundle(blog, 'Posts', s.relations, 'sqlite');
-    const ref = readReference(sqlite, s.input, READ_SCHEMA_SQLITE, s.with);
+    const entry = s.entry ?? 'Posts';
+    const schemaSqlite = s.schemaSqlite ?? READ_SCHEMA_SQLITE;
+    const pg = compileBundle(blog, entry, s.relations, 'postgres');
+    const mysql = compileBundle(blog, entry, s.relations, 'mysql');
+    const sqlite = compileBundle(blog, entry, s.relations, 'sqlite');
+    const ref = readReference(sqlite, s.input, schemaSqlite, s.with);
     return {
       name: s.name,
       kind: 'read',
@@ -916,8 +1022,8 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
       with: s.with,
       bundlePg: clone(pg),
       bundleMysql: clone(mysql),
-      schemaPg: READ_SCHEMA_PG,
-      schemaMysql: READ_SCHEMA_MYSQL,
+      schemaPg: s.schemaPg ?? READ_SCHEMA_PG,
+      schemaMysql: s.schemaMysql ?? READ_SCHEMA_MYSQL,
       expectedResultPg: ref.pg,
       expectedResultMysql: ref.mysql,
     };

@@ -105,6 +105,80 @@ function pgArrayCastType(values: unknown[], sqlCast?: string, defer?: boolean): 
   return inferPgArrayType(values);
 }
 
+/**
+ * The STATIC composite-key batch forms (#47 item 1) — length-INDEPENDENT so the compiled `op.sql`
+ * is fixed (one param per column on PG; ONE JSON param on MySQL/SQLite), the SAME static-op
+ * property the single-key relation forms have. PG stays byte-identical to v1's `unnest`-JOIN
+ * (`batchLoadWithUnnestJoin`), with the element-type cast DEFERRED (#46) to render from the real
+ * keys. MySQL/SQLite use the single-JSON tuple form (the owner-approved deviation the single-key
+ * IN-list and the batch UPDATE composite already use — RESULT parity, NOT byte-identity): a
+ * `JSON_TABLE`/`json_each` subquery over one JSON array-of-tuples param. The v1 literal
+ * `(k1,k2) IN ((?,?),…)` byte-form stays proven by the golden `compileCompositeKeyUnlimited`.
+ *
+ * The JSON tuple param is `[[k1a,k2a],[k1b,k2b],…]` (positional element arrays), read back by
+ * ordinal path (`$[0]`, `$[1]`, …) so no per-column JSON key names are needed.
+ */
+export function compileCompositeKeyStaticUnlimited(
+  opts: RelationCompileBase & { targetKeys: string[] },
+): MakeSQL {
+  const { tableName, targetKeys } = opts;
+  if (opts.dialect === 'postgres') {
+    // PG unnest-JOIN — ONE array param per key column (length-independent). Deferred cast (#46):
+    // the element type is resolved at render from the real per-column key arrays.
+    const unnestParams = targetKeys
+      .map((k) => `?::${pgArrayCastType([], opts.sqlCastMap?.get(k), opts.deferPgArrayCast)}`)
+      .join(', ');
+    const unnestAlias = `_unnest_${tableName}`;
+    const columnAliases = targetKeys.map((k) => `_unnest_${tableName}_${k}`).join(', ');
+    const joinConditions = targetKeys
+      .map((key) => `${tableName}.${key} = ${unnestAlias}._unnest_${tableName}_${key}`)
+      .join(' AND ');
+    const joinClause = `JOIN unnest(${unnestParams}) AS ${unnestAlias}(${columnAliases}) ON ${joinConditions}`;
+    // One placeholder array PER column fixes the arity of the JOIN params (each binds one array).
+    return compileSelect({
+      dialect: opts.dialect,
+      tableName,
+      select: opts.select,
+      join: joinClause,
+      joinParams: targetKeys.map(() => [null]),
+      conditions: opts.conditions,
+      order: opts.order,
+    });
+  }
+  // MySQL/SQLite: composite membership via ONE JSON array-of-tuples param, read by ORDINAL path.
+  const jsonSubquery = compositeJsonMembership(opts.dialect, tableName, targetKeys);
+  const conditions: ConditionObject = { ...opts.conditions, __raw__: [jsonSubquery, [[null]]] };
+  return compileSelect({
+    dialect: opts.dialect,
+    tableName,
+    select: opts.select,
+    conditions,
+    order: opts.order,
+  });
+}
+
+/**
+ * The MySQL/SQLite composite-membership predicate over ONE JSON array-of-tuples param (ordinal
+ * paths). MySQL: `(k1,k2) IN (SELECT c0, c1 FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]',
+ * …)))` — an IN-subquery so it inherits the SAME per-column type coercion `(k1,k2) IN ((?,?),…)`
+ * would (the single-key rationale). SQLite: `EXISTS (SELECT 1 FROM json_each(?) je WHERE
+ * json_extract(je.value,'$[0]') = t.k1 AND …)` — the composite json_each form the batch UPDATE uses.
+ */
+function compositeJsonMembership(dialect: Dialect, tableName: string, targetKeys: string[]): string {
+  if (dialect === 'mysql') {
+    const cols = targetKeys.map((_, i) => `c${i}`);
+    const jtCols = cols.map((c, i) => `${c} JSON PATH '$[${i}]'`).join(', ');
+    const selectCols = cols.map((c) => `JSON_UNQUOTE(${c})`).join(', ');
+    const keyTuple = targetKeys.map((k) => `${tableName}.${k}`).join(', ');
+    return `(${keyTuple}) IN (SELECT ${selectCols} FROM JSON_TABLE(?, '$[*]' COLUMNS(${jtCols})) jt)`;
+  }
+  // SQLite: EXISTS over json_each, matching every key column by ordinal element.
+  const match = targetKeys
+    .map((k, i) => `json_extract(je.value, '$[${i}]') = ${tableName}.${k}`)
+    .join(' AND ');
+  return `EXISTS (SELECT 1 FROM json_each(?) je WHERE ${match})`;
+}
+
 // ============================================================================
 // Single-key, unlimited.
 // ============================================================================

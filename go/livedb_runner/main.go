@@ -36,7 +36,7 @@ const (
 )
 
 // tables the corpus touches (drop dependents first).
-var allTables = []string{"post_tags", "order_lines", "comments", "posts", "tags", "docs", "typed", "users", "idem", "uniq", "outbox"}
+var allTables = []string{"post_tags", "order_lines", "comments", "posts", "tags", "docs", "docs2", "revs", "typed", "users", "users2", "idem", "uniq", "outbox"}
 
 func corpusPath() string {
 	if p := os.Getenv("LITEDBMODEL_LIVEDB_VECTORS"); p != "" {

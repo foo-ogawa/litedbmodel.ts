@@ -24,24 +24,59 @@ use crate::errors::SqlFailure;
 use crate::runtime::execute_bundle_pooled;
 use crate::static_bundle::{render_placeholders, resolve_pg_array_cast};
 
-/// One relation batch op read out of `bundle["relations"][name]` (pure JSON).
+/// One relation batch op read out of `bundle["relations"][name]` (pure JSON). Single-key relations
+/// carry `parent_key`/`target_key`; composite (#47 item 1) carry `parent_keys`/`target_keys`.
 struct RelationOp {
     kind: String,
     parent_key: String,
     target_key: String,
+    parent_keys: Option<Vec<String>>,
+    target_keys: Option<Vec<String>>,
     dialect: String,
     sql: String,
 }
 
 fn op_from_json(o: &serde_json::Value) -> RelationOp {
     let s = |k: &str| o.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let str_arr = |k: &str| -> Option<Vec<String>> {
+        o.get(k).and_then(|v| v.as_array()).map(|a| {
+            a.iter()
+                .map(|e| e.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+    };
     RelationOp {
         kind: s("kind"),
         parent_key: s("parentKey"),
         target_key: s("targetKey"),
+        parent_keys: str_arr("parentKeys"),
+        target_keys: str_arr("targetKeys"),
         dialect: s("dialect"),
         sql: s("sql"),
     }
+}
+
+impl RelationOp {
+    /// The ordered PARENT / CHILD key columns (single-key → 1-element; composite → the tuple).
+    fn parent_key_cols(&self) -> Vec<String> {
+        self.parent_keys
+            .clone()
+            .unwrap_or_else(|| vec![self.parent_key.clone()])
+    }
+    fn target_key_cols(&self) -> Vec<String> {
+        self.target_keys
+            .clone()
+            .unwrap_or_else(|| vec![self.target_key.clone()])
+    }
+}
+
+/// The stringified key identity for dedupe/grouping (tuple → space-joined scalars, mirror of TS).
+fn key_identity(values: &[Value]) -> String {
+    values
+        .iter()
+        .map(stringify_key)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Mirror TS `String(v)` for the key-identity used by dedupe + grouping: a whole float prints as an
@@ -77,87 +112,124 @@ fn obj_get<'a>(o: &'a Value, key: &str) -> Option<&'a Value> {
     }
 }
 
-/// The deduped, non-null parent-key values (insertion order preserved — deterministic). A byte-for-
-/// byte port of the TS `dedupeKeys` (skip null, dedupe on String(v), keep first-seen order).
-fn dedupe_keys(parents: &[Value], parent_key: &str) -> Vec<Value> {
+/// The deduped, non-null parent-key TUPLES (insertion order preserved). Drop a tuple if ANY key
+/// column is null; dedupe on the stringified tuple identity. Port of the TS `dedupeKeys`.
+fn dedupe_keys(parents: &[Value], key_cols: &[String]) -> Vec<Vec<Value>> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut out: Vec<Value> = Vec::new();
+    let mut out: Vec<Vec<Value>> = Vec::new();
     for p in parents {
-        match obj_get(p, parent_key) {
-            None | Some(Value::Null) => continue,
-            Some(v) => {
-                let s = stringify_key(v);
-                if seen.insert(s) {
-                    out.push(v.clone());
+        let mut tuple: Vec<Value> = Vec::with_capacity(key_cols.len());
+        let mut any_null = false;
+        for c in key_cols {
+            match obj_get(p, c) {
+                None | Some(Value::Null) => {
+                    any_null = true;
+                    break;
                 }
+                Some(v) => tuple.push(v.clone()),
             }
+        }
+        if any_null {
+            continue;
+        }
+        if seen.insert(key_identity(&tuple)) {
+            out.push(tuple);
         }
     }
     out
 }
 
-/// Bind the deduped key set to the op's single array param per dialect (mirrors TS `bindKeys`):
-/// PG → the array verbatim (`Value::Arr` → `PgParam::Array`); MySQL/SQLite → the JSON-encoded array
-/// string (server-side expansion). Compact JSON matches the TS `JSON.stringify` byte form.
-fn bind_keys(op: &RelationOp, keys: &[Value]) -> Value {
+/// Bind the deduped keys to the op's params per dialect + arity (mirrors TS `bindKeys`). Single-key:
+/// PG → ONE scalar array (`Value::Arr`); MySQL/SQLite → ONE JSON scalar-array string. Composite:
+/// PG → ONE array param PER key column (transposed tuples); MySQL/SQLite → ONE JSON array-of-tuples
+/// string. Returns the positional param list.
+fn bind_keys(op: &RelationOp, tuples: &[Vec<Value>]) -> Vec<Value> {
+    let composite = op.parent_keys.is_some();
     if op.dialect == "postgres" {
-        Value::Arr(keys.to_vec())
+        let n_cols = if composite {
+            op.parent_key_cols().len()
+        } else {
+            1
+        };
+        return (0..n_cols)
+            .map(|col| Value::Arr(tuples.iter().map(|t| t[col].clone()).collect()))
+            .collect();
+    }
+    // MySQL/SQLite: ONE JSON param — a scalar array (single-key) or an array-of-tuples (composite).
+    let json = if composite {
+        json_tuples(tuples)
     } else {
-        Value::Str(json_array(keys))
+        json_array(&tuples.iter().map(|t| t[0].clone()).collect::<Vec<_>>())
+    };
+    vec![Value::Str(json)]
+}
+
+/// Compact JSON serialization of one scalar key (mirror of TS `JSON.stringify` element form).
+fn json_scalar(k: &Value) -> String {
+    match k {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => {
+            if f.fract() == 0.0 && f.is_finite() {
+                (*f as i64).to_string()
+            } else {
+                f.to_string()
+            }
+        }
+        Value::Str(s) => serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string()),
+        other => format!("{other:?}"),
     }
 }
 
 /// Compact JSON array serialization matching TS `JSON.stringify` for scalar keys (int/str/bool/null).
 fn json_array(keys: &[Value]) -> String {
-    let parts: Vec<String> = keys
-        .iter()
-        .map(|k| match k {
-            Value::Null => "null".to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::Int(i) => i.to_string(),
-            Value::Float(f) => {
-                if f.fract() == 0.0 && f.is_finite() {
-                    (*f as i64).to_string()
-                } else {
-                    f.to_string()
-                }
-            }
-            Value::Str(s) => serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string()),
-            other => format!("{other:?}"),
-        })
-        .collect();
+    let parts: Vec<String> = keys.iter().map(json_scalar).collect();
     format!("[{}]", parts.join(","))
 }
 
-/// The child rows grouped for a batch: stringified target-key → child rows.
+/// Compact JSON array-of-tuples (`[[k1,k2],…]`) — the composite MySQL/SQLite JSON param.
+fn json_tuples(tuples: &[Vec<Value>]) -> String {
+    let parts: Vec<String> = tuples.iter().map(|t| json_array(t)).collect();
+    format!("[{}]", parts.join(","))
+}
+
+/// The child rows grouped for a batch: stringified target-key identity → child rows.
 type RelationBatch = HashMap<String, Vec<Value>>;
 
-/// Run ONE relation batch op for a set of parent rows (port of TS `runRelationOp`). Dedup the parent
-/// keys, resolve the deferred PG array cast from the REAL keys BEFORE the `?`→`$N` render (PG only),
-/// render placeholders; on a NON-empty key set execute the batch binding the keys as the SINGLE array
-/// param and group the child rows by target key. An EMPTY key set issues NO query (the correct empty-
-/// set behaviour), matching TS.
+/// Run ONE relation batch op for a set of parent rows (port of TS `runRelationOp`). Dedup the parent-
+/// key tuples, resolve the deferred PG array cast(s) from the REAL keys (one per key column for
+/// composite) BEFORE the `?`→`$N` render; on a NON-empty key set execute binding the keys (single
+/// array / per-column arrays / JSON tuples) and group the child rows by target-key identity. An
+/// EMPTY key set issues NO query, matching TS.
 fn run_relation_op(
     op: &RelationOp,
     parents: &[Value],
     driver: &dyn Driver,
 ) -> Result<RelationBatch, SqlFailure> {
-    let keys = dedupe_keys(parents, &op.parent_key);
+    let p_cols = op.parent_key_cols();
+    let keys = dedupe_keys(parents, &p_cols);
     let mut batch: RelationBatch = HashMap::new();
     let mut sql = op.sql.clone();
     if op.dialect == "postgres" {
-        sql = resolve_pg_array_cast(&sql, &keys);
+        for col in 0..p_cols.len() {
+            let col_vals: Vec<Value> = keys.iter().map(|t| t[col].clone()).collect();
+            sql = resolve_pg_array_cast(&sql, &col_vals);
+        }
     }
     let sql = render_placeholders(&sql, &op.dialect);
     if keys.is_empty() {
         return Ok(batch);
     }
+    let t_cols = op.target_key_cols();
     let bound = bind_keys(op, &keys);
-    let rows = driver.prepare(&sql).all(std::slice::from_ref(&bound))?;
+    let rows = driver.prepare(&sql).all(&bound)?;
     for row in rows {
-        let k = obj_get(&row, &op.target_key)
-            .map(stringify_key)
-            .unwrap_or_else(|| "null".to_string());
+        let tuple: Vec<Value> = t_cols
+            .iter()
+            .map(|c| obj_get(&row, c).cloned().unwrap_or(Value::Null))
+            .collect();
+        let k = key_identity(&tuple);
         batch.entry(k).or_default().push(row);
     }
     Ok(batch)
@@ -165,11 +237,24 @@ fn run_relation_op(
 
 /// Distribute a resolved batch onto ONE parent per cardinality (port of TS `distributeToParent`):
 /// hasMany → the child list (`[]` when none); belongsTo/hasOne → the single child (or null). Keyed
-/// by String(parent[parentKey]).
+/// by the parent's key-tuple identity.
 fn distribute_to_parent(op: &RelationOp, parent: &Value, batch: &RelationBatch) -> Value {
-    let rows = match obj_get(parent, &op.parent_key) {
-        None | Some(Value::Null) => None,
-        Some(k) => batch.get(&stringify_key(k)),
+    let p_cols = op.parent_key_cols();
+    let mut tuple: Vec<Value> = Vec::with_capacity(p_cols.len());
+    let mut any_null = false;
+    for c in &p_cols {
+        match obj_get(parent, c) {
+            None | Some(Value::Null) => {
+                any_null = true;
+                break;
+            }
+            Some(v) => tuple.push(v.clone()),
+        }
+    }
+    let rows = if any_null {
+        None
+    } else {
+        batch.get(&key_identity(&tuple))
     };
     if op.kind == "hasMany" {
         return Value::Arr(rows.cloned().unwrap_or_default());

@@ -31,6 +31,7 @@ import { renderPlaceholders, type Dialect } from './makesql/handler';
 import {
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
+  compileCompositeKeyStaticUnlimited,
   resolvePgArrayCast,
 } from './makesql/compile-relation';
 
@@ -51,10 +52,17 @@ export interface RelationDecl {
   readonly targetTable: string;
   /** Child columns to project (the child typed-object own props). */
   readonly select: readonly string[];
-  /** The PARENT column whose value is the batch key. */
-  readonly parentKey: string;
-  /** The CHILD column matched against the parent key. */
-  readonly targetKey: string;
+  /** The PARENT column whose value is the batch key (single-key relations). */
+  readonly parentKey?: string;
+  /** The CHILD column matched against the parent key (single-key relations). */
+  readonly targetKey?: string;
+  /**
+   * COMPOSITE-key relations (#47 item 1): the ORDERED parent columns whose tuple is the batch key.
+   * Mutually exclusive with {@link parentKey}. Pairs positionally with {@link targetKeys}.
+   */
+  readonly parentKeys?: readonly string[];
+  /** COMPOSITE-key relations: the ORDERED child columns matched against the parent-key tuple. */
+  readonly targetKeys?: readonly string[];
   /** Optional per-parent ORDER BY body (dialect-neutral text). */
   readonly order?: string;
   /** Optional per-parent row limit (`hasMany` only). */
@@ -71,15 +79,24 @@ export interface RelationDecl {
 export interface RelationOp {
   readonly name: string;
   readonly kind: RelationKind;
-  /** Parent column supplying the batch key values (dedup key). */
-  readonly parentKey: string;
-  /** Child column the batch groups rows by (matches the parent key). */
-  readonly targetKey: string;
+  /** Parent column supplying the batch key values (dedup key) — single-key relations. */
+  readonly parentKey?: string;
+  /** Child column the batch groups rows by (matches the parent key) — single-key relations. */
+  readonly targetKey?: string;
+  /**
+   * COMPOSITE-key relations (#47 item 1): the ORDERED parent columns whose tuple is the dedup key.
+   * Present iff the op is composite (mutually exclusive with {@link parentKey}).
+   */
+  readonly parentKeys?: readonly string[];
+  /** COMPOSITE-key relations: the ORDERED child columns the batch groups rows by (the key tuple). */
+  readonly targetKeys?: readonly string[];
   /** The target SQL dialect the batch SELECT text is compiled for. */
   readonly dialect: Dialect;
   /**
-   * The batched child SELECT as STATIC makeSQL text: ONE `?` binds the deduped parent-key set
-   * (PG `= ANY(?::t[])` / MySQL·SQLite single-JSON `json_each`/`JSON_TABLE`). Value-independent.
+   * The batched child SELECT as STATIC makeSQL text. Single-key: ONE `?` binds the deduped
+   * parent-key set (PG `= ANY(?::t[])` / MySQL·SQLite single-JSON). Composite: PG binds ONE array
+   * param PER key column (`unnest(?::t1[], ?::t2[])`); MySQL·SQLite bind ONE JSON array-of-tuples
+   * param. Value-length-independent either way, so `sql` is fixed.
    */
   readonly sql: string;
 }
@@ -108,7 +125,21 @@ export function compileRelationOp(decl: RelationDecl): RelationOp {
     );
   }
   const dialect: Dialect = decl.dialect ?? 'sqlite';
+  const composite = isCompositeDecl(decl);
+  if (composite && decl.limit !== undefined) {
+    throw new Error(`relation '${decl.name}': composite-key per-parent 'limit' is not supported yet (#47 item 1 covers unlimited composite belongsTo/hasMany)`);
+  }
   const sql = compiledBatchSql(decl, dialect);
+  if (composite) {
+    return {
+      name: decl.name,
+      kind: decl.kind,
+      parentKeys: [...(decl.parentKeys as readonly string[])],
+      targetKeys: [...(decl.targetKeys as readonly string[])],
+      dialect,
+      sql,
+    };
+  }
   return {
     name: decl.name,
     kind: decl.kind,
@@ -120,12 +151,50 @@ export function compileRelationOp(decl: RelationDecl): RelationOp {
 }
 
 /**
+ * A relation decl is COMPOSITE iff it carries `parentKeys`/`targetKeys` arrays. Validates the two
+ * are present together, equal-length (paired positionally), and non-empty; and that the single-key
+ * `parentKey`/`targetKey` are NOT also set (mutually exclusive). Single-key iff both arrays absent.
+ */
+function isCompositeDecl(decl: RelationDecl): boolean {
+  const hasArrays = decl.parentKeys !== undefined || decl.targetKeys !== undefined;
+  if (!hasArrays) {
+    if (decl.parentKey === undefined || decl.targetKey === undefined) {
+      throw new Error(`relation '${decl.name}': a single-key relation requires 'parentKey' and 'targetKey'`);
+    }
+    return false;
+  }
+  if (decl.parentKeys === undefined || decl.targetKeys === undefined) {
+    throw new Error(`relation '${decl.name}': a composite-key relation requires BOTH 'parentKeys' and 'targetKeys'`);
+  }
+  if (decl.parentKeys.length === 0 || decl.parentKeys.length !== decl.targetKeys.length) {
+    throw new Error(`relation '${decl.name}': 'parentKeys' and 'targetKeys' must be non-empty and equal-length (got ${decl.parentKeys.length} vs ${decl.targetKeys.length})`);
+  }
+  if (decl.parentKey !== undefined || decl.targetKey !== undefined) {
+    throw new Error(`relation '${decl.name}': cannot mix single-key ('parentKey'/'targetKey') with composite ('parentKeys'/'targetKeys')`);
+  }
+  return true;
+}
+
+/**
  * Compile the STATIC batch SELECT text: the makeSQL relation builder emits complete tuned SQL
  * whose deduped-key array is ONE param. We compile against a single placeholder key array so
  * the text is fixed; the runtime re-binds the real deduped keys against the SAME text (the
  * single-JSON / `= ANY` forms are length-independent, so the text is stable).
  */
 function compiledBatchSql(decl: RelationDecl, dialect: Dialect): string {
+  // A COMPOSITE decl compiles to the STATIC composite form (PG: one array param per key column;
+  // MySQL/SQLite: one JSON array-of-tuples param) — length-independent, so the text is fixed.
+  if (decl.parentKeys !== undefined) {
+    const node = compileCompositeKeyStaticUnlimited({
+      dialect,
+      tableName: decl.targetTable,
+      select: decl.select.join(', '),
+      order: decl.order,
+      targetKeys: [...(decl.targetKeys as readonly string[])],
+      deferPgArrayCast: true,
+    });
+    return assembleMakeSQL(node).sql;
+  }
   // A one-element placeholder key set fixes the SQL text (single-JSON-param / `= ANY` forms are
   // value-length-independent). The concrete keys are bound at execute time.
   const placeholderKeys: unknown[] = [null];
@@ -134,7 +203,7 @@ function compiledBatchSql(decl: RelationDecl, dialect: Dialect): string {
     tableName: decl.targetTable,
     select: decl.select.join(', '),
     order: decl.order,
-    targetKey: decl.targetKey,
+    targetKey: decl.targetKey as string,
     values: placeholderKeys,
     // The keys are UNKNOWN at symbolic compile (placeholder set), so the PG `= ANY(?::<T>[])`
     // element type is DEFERRED to render (#46) — resolved from the real deduped keys via
@@ -160,41 +229,72 @@ export interface RelationDriver {
 /** The child rows grouped for a batch: parent-key value (stringified) → child rows. */
 export type RelationBatch = Map<string, Record<string, unknown>[]>;
 
-/**
- * Bind the deduped key set to the batch op's single array param per dialect: PG binds the array
- * verbatim (`= ANY(?::t[])`); MySQL/SQLite bind the JSON-encoded array string (server-side
- * `json_each`/`JSON_TABLE` expansion). This is the ONE param the static batch `sql` expects.
- */
-function bindKeys(op: RelationOp, keys: unknown[]): unknown {
-  if (op.dialect === 'postgres') return keys;
-  return JSON.stringify(keys);
+/** The ordered PARENT key columns of an op (single-key → 1-element list; composite → the tuple). */
+function parentKeyCols(op: RelationOp): readonly string[] {
+  return op.parentKeys ?? [op.parentKey as string];
+}
+
+/** The ordered CHILD key columns of an op (single-key → 1-element list; composite → the tuple). */
+function targetKeyCols(op: RelationOp): readonly string[] {
+  return op.targetKeys ?? [op.targetKey as string];
+}
+
+/** The stringified key identity for dedupe/grouping. Single scalar → `String(v)`; tuple → joined. */
+function keyIdentity(values: readonly unknown[]): string {
+  // A NUL separator no scalar `String(v)` contains, so distinct tuples never collide.
+  return values.map((v) => String(v)).join(' ');
 }
 
 /**
- * Run ONE {@link RelationOp} for a set of parent rows: dedup the parent keys, render the STATIC
- * batch SELECT once (dialect placeholder form) and execute it with the deduped keys bound as the
- * SINGLE array param, then group the child rows by their target key. The single batch primitive
- * BOTH the declarative-select and the lazy surface invoke.
+ * Bind the deduped keys to the batch op's params per dialect + arity. Single-key: PG binds the
+ * scalar array verbatim (`= ANY(?::t[])`); MySQL/SQLite bind the JSON-encoded array. Composite: PG
+ * binds ONE array param PER key column (transposed tuples → `unnest(?::t1[], ?::t2[])`);
+ * MySQL/SQLite bind ONE JSON array-of-tuples string. Returns the positional param list.
+ */
+function bindKeys(op: RelationOp, tuples: readonly unknown[][]): unknown[] {
+  const composite = op.parentKeys !== undefined;
+  if (op.dialect === 'postgres') {
+    if (!composite) return [tuples.map((t) => t[0])]; // ONE scalar array param
+    // Transpose tuples → per-column arrays: `[[1,a],[2,b]] → [[1,2],[a,b]]` — one array param each.
+    return parentKeyCols(op).map((_, col) => tuples.map((t) => t[col]));
+  }
+  // MySQL/SQLite: single-key → JSON scalar array; composite → JSON array-of-tuples. ONE param.
+  const payload = composite ? tuples.map((t) => [...t]) : tuples.map((t) => t[0]);
+  return [JSON.stringify(payload)];
+}
+
+/**
+ * Run ONE {@link RelationOp} for a set of parent rows: dedup the parent-key tuples, render the
+ * STATIC batch SELECT once (dialect placeholder form) resolving the deferred PG array cast(s) from
+ * the REAL keys, execute it with the keys bound (single array / per-column arrays / JSON tuples),
+ * then group the child rows by their target-key identity. The single batch primitive BOTH the
+ * declarative-select and the lazy surface invoke, single-key AND composite.
  *
- * Returns `{ sql, keys, batch }`. An empty key set issues NO query (the correct empty-set
- * behavior — the `json_each`/`= ANY` over no keys selects nothing), matching v1.
+ * Returns `{ sql, keys, batch }` (`keys` = the deduped parent-key tuples). An empty key set issues
+ * NO query (the correct empty-set behavior — the membership over no keys selects nothing).
  */
 export function runRelationOp(
   op: RelationOp,
   parents: readonly Record<string, unknown>[],
   db: RelationDriver,
-): { sql: string; keys: unknown[]; batch: RelationBatch } {
-  const keys = dedupeKeys(parents, op.parentKey);
+): { sql: string; keys: unknown[][]; batch: RelationBatch } {
+  const pCols = parentKeyCols(op);
+  const keys = dedupeKeys(parents, pCols);
   const batch: RelationBatch = new Map();
-  // Resolve the deferred PG array cast (#46) from the REAL deduped keys BEFORE the `?`→`$N`
-  // render (both are render-layer dialect steps; the cast token carries no `?`). PG only — the
-  // MySQL/SQLite forms bind the JSON array param and carry no cast token.
-  const cast = op.dialect === 'postgres' ? resolvePgArrayCast(op.sql, keys) : op.sql;
+  // Resolve the deferred PG array cast(s) (#46) from the REAL keys BEFORE the `?`→`$N` render. A
+  // single-key op has ONE cast; a composite PG op has ONE cast PER key column — resolve each from
+  // its own column's key values, left-to-right (resolvePgArrayCast resolves the first token each
+  // call). MySQL/SQLite carry no cast token.
+  let cast = op.sql;
+  if (op.dialect === 'postgres') {
+    for (let col = 0; col < pCols.length; col++) cast = resolvePgArrayCast(cast, keys.map((t) => t[col]));
+  }
   const sql = renderPlaceholders(cast, op.dialect);
   if (keys.length === 0) return { sql, keys, batch };
-  const rows = db.prepare(sql).all(bindKeys(op, keys)) as Record<string, unknown>[];
+  const tCols = targetKeyCols(op);
+  const rows = db.prepare(sql).all(...bindKeys(op, keys)) as Record<string, unknown>[];
   for (const row of rows) {
-    const k = String(row[op.targetKey]);
+    const k = keyIdentity(tCols.map((c) => row[c]));
     const list = batch.get(k);
     if (list === undefined) batch.set(k, [row]);
     else list.push(row);
@@ -202,17 +302,21 @@ export function runRelationOp(
   return { sql, keys, batch };
 }
 
-/** The deduped, non-null parent-key values (insertion order preserved — deterministic). */
-function dedupeKeys(parents: readonly Record<string, unknown>[], parentKey: string): unknown[] {
+/**
+ * The deduped, non-null parent-key TUPLES (insertion order preserved — deterministic). A tuple is
+ * dropped if ANY of its key columns is null/undefined (no partial keys). Deduped on the stringified
+ * tuple identity (so `1` and `"1"` collapse exactly as `String(v)`).
+ */
+function dedupeKeys(parents: readonly Record<string, unknown>[], keyCols: readonly string[]): unknown[][] {
   const seen = new Set<string>();
-  const out: unknown[] = [];
+  const out: unknown[][] = [];
   for (const p of parents) {
-    const v = p[parentKey];
-    if (v === undefined || v === null) continue;
-    const s = String(v);
+    const tuple = keyCols.map((c) => p[c]);
+    if (tuple.some((v) => v === undefined || v === null)) continue;
+    const s = keyIdentity(tuple);
     if (seen.has(s)) continue;
     seen.add(s);
-    out.push(v);
+    out.push(tuple);
   }
   return out;
 }
@@ -220,15 +324,16 @@ function dedupeKeys(parents: readonly Record<string, unknown>[], parentKey: stri
 /**
  * Distribute a resolved {@link RelationBatch} onto ONE parent per the relation cardinality:
  * `hasMany` → the child list (`[]` when none); `belongsTo`/`hasOne` → the single child (or
- * `null`). `null`/`[]` is the declared cardinality's empty representation, not an ad-hoc default.
+ * `null`). Keyed by the parent's key-tuple identity. `null`/`[]` is the declared cardinality's
+ * empty representation, not an ad-hoc default.
  */
 export function distributeToParent(
   op: RelationOp,
   parent: Record<string, unknown>,
   batch: RelationBatch,
 ): Record<string, unknown>[] | Record<string, unknown> | null {
-  const key = parent[op.parentKey];
-  const rows = key === undefined || key === null ? undefined : batch.get(String(key));
+  const tuple = parentKeyCols(op).map((c) => parent[c]);
+  const rows = tuple.some((v) => v === undefined || v === null) ? undefined : batch.get(keyIdentity(tuple));
   if (op.kind === 'hasMany') return rows ?? [];
   return rows !== undefined && rows.length > 0 ? rows[0] : null;
 }

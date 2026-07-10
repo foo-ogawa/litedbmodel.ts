@@ -92,6 +92,10 @@ const T_USERS = 'scp_users';
 const T_TYPED = 'scp_typed';
 const TYPED_BIG_TS = [5000000001, 5000000002, 5000000003] as const;
 const TYPED_TS_TS = ['2026-01-01 00:00:00', '2026-02-01 00:00:00', '2026-03-01 00:00:00'] as const;
+// #47 item 1: composite-key relation tables — (tenant_id, doc_id) docs, (tenant_id, uid) users.
+const T_DOCS2 = 'scp_docs2';
+const T_USERS2 = 'scp_users2';
+const T_REVS = 'scp_revs';
 // Fixed UUIDs for the #46 uuid IN-list coverage (posts 1/2/3).
 const POST_GUIDS = [
   '11111111-1111-1111-1111-111111111111',
@@ -221,6 +225,26 @@ function renderRelationSql(op: RelationOp, keys: unknown[]): string {
   return renderPlaceholders(cast, op.dialect);
 }
 
+/**
+ * Render + bind a COMPOSITE relation op for a set of parent key tuples (#47 item 1) — the SAME work
+ * the composite `runRelationOp` does: resolve ONE deferred PG cast per key column, `?`→`$N`, then
+ * bind ONE array param PER column (PG, transposed) / ONE JSON array-of-tuples param (MySQL). Returns
+ * `{ sql, params }` for direct pool execution.
+ */
+function renderCompositeRelation(
+  op: RelationOp,
+  cols: readonly string[],
+  tuples: readonly unknown[][],
+): { sql: string; params: unknown[] } {
+  let cast = op.sql;
+  if (op.dialect === 'postgres') {
+    for (let col = 0; col < cols.length; col++) cast = resolvePgArrayCast(cast, tuples.map((t) => t[col]));
+    return { sql: renderPlaceholders(cast, op.dialect), params: cols.map((_, col) => tuples.map((t) => t[col])) };
+  }
+  const sql = renderPlaceholders(op.sql, op.dialect);
+  return { sql, params: [JSON.stringify(tuples.map((t) => [...t]))] };
+}
+
 // ── Test lifecycle: connect, add the derive column, clean state ────────────────
 
 let pgPool: Pool | null = null;
@@ -271,6 +295,16 @@ beforeAll(async () => {
       (${TYPED_BIG_TS[0]}, 'alpha', TRUE,  '${TYPED_TS_TS[0]}', 10.50, 'A'),
       (${TYPED_BIG_TS[1]}, 'beta',  FALSE, '${TYPED_TS_TS[1]}', 20.25, 'B'),
       (${TYPED_BIG_TS[2]}, 'gamma', TRUE,  '${TYPED_TS_TS[2]}', 30.75, 'C')`);
+    // #47 item 1: composite-key relation tables — two tenants share uid/doc_id (100 / 10).
+    await pgPool.query(`DROP TABLE IF EXISTS ${T_DOCS2}`);
+    await pgPool.query(`DROP TABLE IF EXISTS ${T_USERS2}`);
+    await pgPool.query(`DROP TABLE IF EXISTS ${T_REVS}`);
+    await pgPool.query(`CREATE TABLE ${T_USERS2} (tenant_id INT, uid INT, name TEXT, PRIMARY KEY (tenant_id, uid))`);
+    await pgPool.query(`CREATE TABLE ${T_DOCS2} (tenant_id INT, doc_id INT, owner_id INT, title TEXT, PRIMARY KEY (tenant_id, doc_id))`);
+    await pgPool.query(`CREATE TABLE ${T_REVS} (tenant_id INT, doc_id INT, rev TEXT, PRIMARY KEY (tenant_id, doc_id, rev))`);
+    await pgPool.query(`INSERT INTO ${T_USERS2} VALUES (1,100,'Ada'),(1,101,'Alan'),(2,100,'Bob')`);
+    await pgPool.query(`INSERT INTO ${T_DOCS2} VALUES (1,10,100,'Doc A1'),(1,11,101,'Doc B1'),(2,10,100,'Doc A2')`);
+    await pgPool.query(`INSERT INTO ${T_REVS} VALUES (1,10,'r1'),(1,10,'r2'),(1,11,'r3'),(2,10,'r9')`);
   } catch (e) {
     throw new Error(`Postgres is required for WS6 integration but is not reachable at ${PG.host}:${PG.port} — ${(e as Error).message}`);
   }
@@ -310,6 +344,16 @@ beforeAll(async () => {
       (${TYPED_BIG_TS[0]}, 'alpha', 1, '${TYPED_TS_TS[0]}', 10.50, 'A'),
       (${TYPED_BIG_TS[1]}, 'beta',  0, '${TYPED_TS_TS[1]}', 20.25, 'B'),
       (${TYPED_BIG_TS[2]}, 'gamma', 1, '${TYPED_TS_TS[2]}', 30.75, 'C')`);
+    // #47 item 1: composite-key relation tables (MySQL types).
+    await myConn.query(`DROP TABLE IF EXISTS ${T_DOCS2}`);
+    await myConn.query(`DROP TABLE IF EXISTS ${T_USERS2}`);
+    await myConn.query(`DROP TABLE IF EXISTS ${T_REVS}`);
+    await myConn.query(`CREATE TABLE ${T_USERS2} (tenant_id INT, uid INT, name VARCHAR(255), PRIMARY KEY (tenant_id, uid))`);
+    await myConn.query(`CREATE TABLE ${T_DOCS2} (tenant_id INT, doc_id INT, owner_id INT, title VARCHAR(255), PRIMARY KEY (tenant_id, doc_id))`);
+    await myConn.query(`CREATE TABLE ${T_REVS} (tenant_id INT, doc_id INT, rev VARCHAR(255), PRIMARY KEY (tenant_id, doc_id, rev))`);
+    await myConn.query(`INSERT INTO ${T_USERS2} VALUES (1,100,'Ada'),(1,101,'Alan'),(2,100,'Bob')`);
+    await myConn.query(`INSERT INTO ${T_DOCS2} VALUES (1,10,100,'Doc A1'),(1,11,101,'Doc B1'),(2,10,100,'Doc A2')`);
+    await myConn.query(`INSERT INTO ${T_REVS} VALUES (1,10,'r1'),(1,10,'r2'),(1,11,'r3'),(2,10,'r9')`);
   } catch (e) {
     throw new Error(`MySQL is required for WS6 integration but is not reachable at ${MY.host}:${MY.port} — ${(e as Error).message}`);
   }
@@ -320,6 +364,9 @@ afterAll(async () => {
   try {
     if (pgPool) {
       await pgPool.query(`DROP TABLE IF EXISTS ${T_TYPED} CASCADE`);
+      await pgPool.query(`DROP TABLE IF EXISTS ${T_DOCS2} CASCADE`);
+      await pgPool.query(`DROP TABLE IF EXISTS ${T_USERS2} CASCADE`);
+      await pgPool.query(`DROP TABLE IF EXISTS ${T_REVS} CASCADE`);
       await pgPool.query(`DROP TABLE IF EXISTS ${T_POSTS} CASCADE`);
       await pgPool.query(`DROP TABLE IF EXISTS ${T_USERS} CASCADE`);
     }
@@ -329,6 +376,9 @@ afterAll(async () => {
   try {
     if (myConn) {
       await myConn.query(`DROP TABLE IF EXISTS ${T_TYPED}`);
+      await myConn.query(`DROP TABLE IF EXISTS ${T_DOCS2}`);
+      await myConn.query(`DROP TABLE IF EXISTS ${T_USERS2}`);
+      await myConn.query(`DROP TABLE IF EXISTS ${T_REVS}`);
       await myConn.query(`DROP TABLE IF EXISTS ${T_POSTS}`);
       await myConn.query(`DROP TABLE IF EXISTS ${T_USERS}`);
     }
@@ -551,6 +601,39 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     expect(scpChildren.length).toBe(keys.length);
   });
 
+  // #47 item 1 — COMPOSITE-key relation batch binds + executes live on PG (unnest per-column arrays),
+  // and the (tenant_id, …) tuple correctly disambiguates the two tenants sharing uid/doc_id.
+  it('composite belongsTo (tenant_id, owner_id) → users2: `unnest(?::int[], ?::int[])` binds live on PG', async () => {
+    const op: RelationOp = compileRelationOp({
+      name: 'owner', kind: 'belongsTo', targetTable: T_USERS2, select: ['tenant_id', 'uid', 'name'],
+      parentKeys: ['tenant_id', 'owner_id'], targetKeys: ['tenant_id', 'uid'], dialect: 'postgres',
+    });
+    const docs = await pgQuery(pgPool!, `SELECT tenant_id, doc_id, owner_id FROM ${T_DOCS2} ORDER BY tenant_id, doc_id`, []);
+    const tuples = docs.map((d) => [Number(d.tenant_id), Number(d.owner_id)]);
+    const { sql, params } = renderCompositeRelation(op, ['tenant_id', 'owner_id'], tuples);
+    expect(sql).toContain('unnest($1::int[], $2::int[])');
+    const children = await pgQuery(pgPool!, sql, params);
+    // (2,100) must resolve to Bob (tenant 2), NOT Ada (tenant 1) — the composite key disambiguates.
+    const bob = children.find((c) => Number(c.tenant_id) === 2 && Number(c.uid) === 100);
+    expect(bob?.name).toBe('Bob');
+    const ada = children.find((c) => Number(c.tenant_id) === 1 && Number(c.uid) === 100);
+    expect(ada?.name).toBe('Ada');
+  });
+
+  it('composite hasMany (tenant_id, doc_id) → revs: per-tenant revisions bind live on PG', async () => {
+    const op: RelationOp = compileRelationOp({
+      name: 'revisions', kind: 'hasMany', targetTable: T_REVS, select: ['tenant_id', 'doc_id', 'rev'],
+      parentKeys: ['tenant_id', 'doc_id'], targetKeys: ['tenant_id', 'doc_id'], order: 'rev ASC', dialect: 'postgres',
+    });
+    const tuples = [[1, 10], [2, 10]]; // same doc_id 10 across two tenants
+    const { sql, params } = renderCompositeRelation(op, ['tenant_id', 'doc_id'], tuples);
+    const rows = await pgQuery(pgPool!, sql, params);
+    const t1 = rows.filter((r) => Number(r.tenant_id) === 1).map((r) => String(r.rev)).sort();
+    const t2 = rows.filter((r) => Number(r.tenant_id) === 2).map((r) => String(r.rev)).sort();
+    expect(t1).toEqual(['r1', 'r2']); // tenant 1 doc 10 → r1,r2 (NOT r9)
+    expect(t2).toEqual(['r9']); // tenant 2 doc 10 → r9 only
+  });
+
   it('write-tx Command (Insert + derive counter) commits atomically as ONE tx on real PG', async () => {
     const contract = publishBehaviors(CreatePostWithCount);
     const bundle = compileWriteBundle(contract, 'Create', postCountWrites, 'create', 'postgres');
@@ -733,6 +816,37 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
     // Same rows (order-independent — the JSON form does not impose the IN-list order).
     expect([...scpChildren].sort((a, b) => Number(a.id) - Number(b.id))).toEqual(v1Children);
     expect(scpChildren.length).toBe(keys.length);
+  });
+
+  // #47 item 1 — COMPOSITE-key relation batch binds + executes live on MySQL (single-JSON tuple
+  // param, `(k1,k2) IN (SELECT … JSON_TABLE …)`), disambiguating tenants sharing uid/doc_id.
+  it('composite belongsTo (tenant_id, owner_id): single-JSON tuple form binds live on MySQL', async () => {
+    const op: RelationOp = compileRelationOp({
+      name: 'owner', kind: 'belongsTo', targetTable: T_USERS2, select: ['tenant_id', 'uid', 'name'],
+      parentKeys: ['tenant_id', 'owner_id'], targetKeys: ['tenant_id', 'uid'], dialect: 'mysql',
+    });
+    expect(op.sql).toContain('JSON_TABLE');
+    const tuples = [[1, 100], [2, 100]]; // same uid 100 across two tenants
+    const { sql, params } = renderCompositeRelation(op, ['tenant_id', 'owner_id'], tuples);
+    const children = await myQuery(myConn!, sql, params);
+    const bob = children.find((c) => Number(c.tenant_id) === 2 && Number(c.uid) === 100);
+    const ada = children.find((c) => Number(c.tenant_id) === 1 && Number(c.uid) === 100);
+    expect(bob?.name).toBe('Bob');
+    expect(ada?.name).toBe('Ada');
+    expect(children.length).toBe(2); // exactly the two composite matches, no cross-tenant bleed
+  });
+
+  it('composite hasMany (tenant_id, doc_id) → revs: per-tenant revisions bind live on MySQL', async () => {
+    const op: RelationOp = compileRelationOp({
+      name: 'revisions', kind: 'hasMany', targetTable: T_REVS, select: ['tenant_id', 'doc_id', 'rev'],
+      parentKeys: ['tenant_id', 'doc_id'], targetKeys: ['tenant_id', 'doc_id'], order: 'rev ASC', dialect: 'mysql',
+    });
+    const { sql, params } = renderCompositeRelation(op, ['tenant_id', 'doc_id'], [[1, 10], [2, 10]]);
+    const rows = await myQuery(myConn!, sql, params);
+    const t1 = rows.filter((r) => Number(r.tenant_id) === 1).map((r) => String(r.rev)).sort();
+    const t2 = rows.filter((r) => Number(r.tenant_id) === 2).map((r) => String(r.rev)).sort();
+    expect(t1).toEqual(['r1', 'r2']);
+    expect(t2).toEqual(['r9']);
   });
 
   it('write-tx Command (Insert + derive counter) commits atomically as ONE tx on real MySQL', async () => {

@@ -32,7 +32,9 @@ import {
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
   compileCompositeKeyUnlimited,
+  compileCompositeKeyStaticUnlimited,
   compileCompositeKeyLimited,
+  resolvePgArrayCast,
   type Dialect,
   type MakeSQL,
 } from '../../src/scp/makesql';
@@ -890,4 +892,49 @@ describe('C. Relations — makeSQL byte-matches LazyRelation (all shapes, all di
       expect(got.params).toEqual(golden.params);
     });
   }
+});
+
+describe('C. Composite STATIC relation form (#47 item 1) — PG byte-matches v1 unnest-JOIN', () => {
+  // The STATIC composite op (compileCompositeKeyStaticUnlimited) is length-INDEPENDENT so the op.sql
+  // is fixed. On PG it is byte-identical to v1's composite unnest-JOIN: the golden below drives the
+  // REAL v1 `compileCompositeKeyUnlimited` (proven above to match LazyRelation) and the static form,
+  // with both deferred casts resolved from the same int keys, reproduces it. MySQL/SQLite deviate to
+  // the single-JSON tuple form (the owner-approved deviation the single-key IN-list uses).
+  it('[postgres] static unnest byte-matches the v1 composite unnest-JOIN', () => {
+    const v1 = render(
+      compileCompositeKeyUnlimited({
+        dialect: 'postgres',
+        tableName: 'comments',
+        select: 'tenant_id, post_id',
+        targetKeys: ['tenant_id', 'post_id'],
+        tuples: [[100, 1]],
+      }),
+      'postgres',
+    ).sql;
+    const staticNode = compileCompositeKeyStaticUnlimited({
+      dialect: 'postgres',
+      tableName: 'comments',
+      select: 'tenant_id, post_id',
+      targetKeys: ['tenant_id', 'post_id'],
+      deferPgArrayCast: true,
+    });
+    let sql = assembleMakeSQL(staticNode).sql;
+    sql = resolvePgArrayCast(sql, [100]); // first column keys (int → int[])
+    sql = resolvePgArrayCast(sql, [1]); // second column keys (int → int[])
+    expect(renderPlaceholders(sql, 'postgres')).toBe(v1);
+  });
+
+  // NEGATIVE (golden-from-originals): perturb the v1 composite builder (drop a key column) → the
+  // golden moves, proving the assertion is pinned to the ORIGINAL unnest text, not a v2 constant.
+  it('negative: perturbing the v1 composite key set moves the golden', () => {
+    const twoKey = render(
+      compileCompositeKeyUnlimited({ dialect: 'postgres', tableName: 'comments', select: 'tenant_id, post_id', targetKeys: ['tenant_id', 'post_id'], tuples: [[100, 1]] }),
+      'postgres',
+    ).sql;
+    const oneKey = render(
+      compileCompositeKeyUnlimited({ dialect: 'postgres', tableName: 'comments', select: 'tenant_id', targetKeys: ['tenant_id'], tuples: [[100]] }),
+      'postgres',
+    ).sql;
+    expect(oneKey).not.toBe(twoKey); // fewer key columns → different unnest arity → golden moves
+  });
 });

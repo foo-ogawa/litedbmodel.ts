@@ -5369,6 +5369,905 @@
       "expectedResultMysql": []
     },
     {
+      "name": "Docs[tenant 1]: composite belongsTo owner + hasMany revisions hydrated [#47]",
+      "kind": "read",
+      "input": {
+        "tenant_id": 1
+      },
+      "with": [
+        "owner",
+        "revisions"
+      ],
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "Docs",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "Docs",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "tenant_id": {
+                            "ref": [
+                              "tenant_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "tenant_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Docs",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT tenant_id, doc_id, owner_id, title FROM docs2",
+                "params": []
+              },
+              {
+                "sql": "tenant_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "tenant_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY doc_id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "owner": {
+            "name": "owner",
+            "kind": "belongsTo",
+            "parentKeys": [
+              "tenant_id",
+              "owner_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "uid"
+            ],
+            "dialect": "postgres",
+            "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid"
+          },
+          "revisions": {
+            "name": "revisions",
+            "kind": "hasMany",
+            "parentKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "dialect": "postgres",
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC"
+          }
+        }
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "Docs",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "Docs",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "tenant_id": {
+                            "ref": [
+                              "tenant_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "tenant_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Docs",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT tenant_id, doc_id, owner_id, title FROM docs2",
+                "params": []
+              },
+              {
+                "sql": "tenant_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "tenant_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY doc_id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "owner": {
+            "name": "owner",
+            "kind": "belongsTo",
+            "parentKeys": [
+              "tenant_id",
+              "owner_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "uid"
+            ],
+            "dialect": "mysql",
+            "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)"
+          },
+          "revisions": {
+            "name": "revisions",
+            "kind": "hasMany",
+            "parentKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "dialect": "mysql",
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC"
+          }
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE docs2 (tenant_id INTEGER NOT NULL, doc_id INTEGER NOT NULL, owner_id INTEGER NOT NULL, title TEXT NOT NULL, PRIMARY KEY (tenant_id, doc_id))",
+        "CREATE TABLE users2 (tenant_id INTEGER NOT NULL, uid INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (tenant_id, uid))",
+        "CREATE TABLE revs (tenant_id INTEGER NOT NULL, doc_id INTEGER NOT NULL, rev TEXT NOT NULL, PRIMARY KEY (tenant_id, doc_id, rev))",
+        "INSERT INTO docs2 VALUES (1, 10, 100, 'Doc A1')",
+        "INSERT INTO docs2 VALUES (1, 11, 101, 'Doc B1')",
+        "INSERT INTO docs2 VALUES (2, 10, 100, 'Doc A2')",
+        "INSERT INTO users2 VALUES (1, 100, 'Ada')",
+        "INSERT INTO users2 VALUES (1, 101, 'Alan')",
+        "INSERT INTO users2 VALUES (2, 100, 'Bob')",
+        "INSERT INTO revs VALUES (1, 10, 'r1')",
+        "INSERT INTO revs VALUES (1, 10, 'r2')",
+        "INSERT INTO revs VALUES (1, 11, 'r3')",
+        "INSERT INTO revs VALUES (2, 10, 'r9')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE docs2 (tenant_id INT NOT NULL, doc_id INT NOT NULL, owner_id INT NOT NULL, title VARCHAR(255) NOT NULL, PRIMARY KEY (tenant_id, doc_id))",
+        "CREATE TABLE users2 (tenant_id INT NOT NULL, uid INT NOT NULL, name VARCHAR(255) NOT NULL, PRIMARY KEY (tenant_id, uid))",
+        "CREATE TABLE revs (tenant_id INT NOT NULL, doc_id INT NOT NULL, rev VARCHAR(255) NOT NULL, PRIMARY KEY (tenant_id, doc_id, rev))",
+        "INSERT INTO docs2 VALUES (1, 10, 100, 'Doc A1')",
+        "INSERT INTO docs2 VALUES (1, 11, 101, 'Doc B1')",
+        "INSERT INTO docs2 VALUES (2, 10, 100, 'Doc A2')",
+        "INSERT INTO users2 VALUES (1, 100, 'Ada')",
+        "INSERT INTO users2 VALUES (1, 101, 'Alan')",
+        "INSERT INTO users2 VALUES (2, 100, 'Bob')",
+        "INSERT INTO revs VALUES (1, 10, 'r1')",
+        "INSERT INTO revs VALUES (1, 10, 'r2')",
+        "INSERT INTO revs VALUES (1, 11, 'r3')",
+        "INSERT INTO revs VALUES (2, 10, 'r9')"
+      ],
+      "expectedResultPg": [
+        {
+          "tenant_id": 1,
+          "doc_id": 10,
+          "owner_id": 100,
+          "title": "Doc A1",
+          "owner": {
+            "tenant_id": 1,
+            "uid": 100,
+            "name": "Ada"
+          },
+          "revisions": [
+            {
+              "tenant_id": 1,
+              "doc_id": 10,
+              "rev": "r1"
+            },
+            {
+              "tenant_id": 1,
+              "doc_id": 10,
+              "rev": "r2"
+            }
+          ]
+        },
+        {
+          "tenant_id": 1,
+          "doc_id": 11,
+          "owner_id": 101,
+          "title": "Doc B1",
+          "owner": {
+            "tenant_id": 1,
+            "uid": 101,
+            "name": "Alan"
+          },
+          "revisions": [
+            {
+              "tenant_id": 1,
+              "doc_id": 11,
+              "rev": "r3"
+            }
+          ]
+        }
+      ],
+      "expectedResultMysql": [
+        {
+          "tenant_id": 1,
+          "doc_id": 10,
+          "owner_id": 100,
+          "title": "Doc A1",
+          "owner": {
+            "tenant_id": 1,
+            "uid": 100,
+            "name": "Ada"
+          },
+          "revisions": [
+            {
+              "tenant_id": 1,
+              "doc_id": 10,
+              "rev": "r1"
+            },
+            {
+              "tenant_id": 1,
+              "doc_id": 10,
+              "rev": "r2"
+            }
+          ]
+        },
+        {
+          "tenant_id": 1,
+          "doc_id": 11,
+          "owner_id": 101,
+          "title": "Doc B1",
+          "owner": {
+            "tenant_id": 1,
+            "uid": 101,
+            "name": "Alan"
+          },
+          "revisions": [
+            {
+              "tenant_id": 1,
+              "doc_id": 11,
+              "rev": "r3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Docs[tenant 2]: composite keys disambiguate — same uid/doc_id, different tenant [#47]",
+      "kind": "read",
+      "input": {
+        "tenant_id": 2
+      },
+      "with": [
+        "owner",
+        "revisions"
+      ],
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "Docs",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "Docs",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "tenant_id": {
+                            "ref": [
+                              "tenant_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "tenant_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Docs",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT tenant_id, doc_id, owner_id, title FROM docs2",
+                "params": []
+              },
+              {
+                "sql": "tenant_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "tenant_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY doc_id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "owner": {
+            "name": "owner",
+            "kind": "belongsTo",
+            "parentKeys": [
+              "tenant_id",
+              "owner_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "uid"
+            ],
+            "dialect": "postgres",
+            "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid"
+          },
+          "revisions": {
+            "name": "revisions",
+            "kind": "hasMany",
+            "parentKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "dialect": "postgres",
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC"
+          }
+        }
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "Docs",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "Docs",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "tenant_id": {
+                            "ref": [
+                              "tenant_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "tenant_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Docs",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT tenant_id, doc_id, owner_id, title FROM docs2",
+                "params": []
+              },
+              {
+                "sql": "tenant_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "tenant_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY doc_id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "owner": {
+            "name": "owner",
+            "kind": "belongsTo",
+            "parentKeys": [
+              "tenant_id",
+              "owner_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "uid"
+            ],
+            "dialect": "mysql",
+            "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)"
+          },
+          "revisions": {
+            "name": "revisions",
+            "kind": "hasMany",
+            "parentKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "dialect": "mysql",
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC"
+          }
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE docs2 (tenant_id INTEGER NOT NULL, doc_id INTEGER NOT NULL, owner_id INTEGER NOT NULL, title TEXT NOT NULL, PRIMARY KEY (tenant_id, doc_id))",
+        "CREATE TABLE users2 (tenant_id INTEGER NOT NULL, uid INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (tenant_id, uid))",
+        "CREATE TABLE revs (tenant_id INTEGER NOT NULL, doc_id INTEGER NOT NULL, rev TEXT NOT NULL, PRIMARY KEY (tenant_id, doc_id, rev))",
+        "INSERT INTO docs2 VALUES (1, 10, 100, 'Doc A1')",
+        "INSERT INTO docs2 VALUES (1, 11, 101, 'Doc B1')",
+        "INSERT INTO docs2 VALUES (2, 10, 100, 'Doc A2')",
+        "INSERT INTO users2 VALUES (1, 100, 'Ada')",
+        "INSERT INTO users2 VALUES (1, 101, 'Alan')",
+        "INSERT INTO users2 VALUES (2, 100, 'Bob')",
+        "INSERT INTO revs VALUES (1, 10, 'r1')",
+        "INSERT INTO revs VALUES (1, 10, 'r2')",
+        "INSERT INTO revs VALUES (1, 11, 'r3')",
+        "INSERT INTO revs VALUES (2, 10, 'r9')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE docs2 (tenant_id INT NOT NULL, doc_id INT NOT NULL, owner_id INT NOT NULL, title VARCHAR(255) NOT NULL, PRIMARY KEY (tenant_id, doc_id))",
+        "CREATE TABLE users2 (tenant_id INT NOT NULL, uid INT NOT NULL, name VARCHAR(255) NOT NULL, PRIMARY KEY (tenant_id, uid))",
+        "CREATE TABLE revs (tenant_id INT NOT NULL, doc_id INT NOT NULL, rev VARCHAR(255) NOT NULL, PRIMARY KEY (tenant_id, doc_id, rev))",
+        "INSERT INTO docs2 VALUES (1, 10, 100, 'Doc A1')",
+        "INSERT INTO docs2 VALUES (1, 11, 101, 'Doc B1')",
+        "INSERT INTO docs2 VALUES (2, 10, 100, 'Doc A2')",
+        "INSERT INTO users2 VALUES (1, 100, 'Ada')",
+        "INSERT INTO users2 VALUES (1, 101, 'Alan')",
+        "INSERT INTO users2 VALUES (2, 100, 'Bob')",
+        "INSERT INTO revs VALUES (1, 10, 'r1')",
+        "INSERT INTO revs VALUES (1, 10, 'r2')",
+        "INSERT INTO revs VALUES (1, 11, 'r3')",
+        "INSERT INTO revs VALUES (2, 10, 'r9')"
+      ],
+      "expectedResultPg": [
+        {
+          "tenant_id": 2,
+          "doc_id": 10,
+          "owner_id": 100,
+          "title": "Doc A2",
+          "owner": {
+            "tenant_id": 2,
+            "uid": 100,
+            "name": "Bob"
+          },
+          "revisions": [
+            {
+              "tenant_id": 2,
+              "doc_id": 10,
+              "rev": "r9"
+            }
+          ]
+        }
+      ],
+      "expectedResultMysql": [
+        {
+          "tenant_id": 2,
+          "doc_id": 10,
+          "owner_id": 100,
+          "title": "Doc A2",
+          "owner": {
+            "tenant_id": 2,
+            "uid": 100,
+            "name": "Bob"
+          },
+          "revisions": [
+            {
+              "tenant_id": 2,
+              "doc_id": 10,
+              "rev": "r9"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Docs[tenant 9]: empty composite parent set → relations short-circuit [#47]",
+      "kind": "read",
+      "input": {
+        "tenant_id": 9
+      },
+      "with": [
+        "owner",
+        "revisions"
+      ],
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "Docs",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "Docs",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "tenant_id": {
+                            "ref": [
+                              "tenant_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "tenant_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Docs",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT tenant_id, doc_id, owner_id, title FROM docs2",
+                "params": []
+              },
+              {
+                "sql": "tenant_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "tenant_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY doc_id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "owner": {
+            "name": "owner",
+            "kind": "belongsTo",
+            "parentKeys": [
+              "tenant_id",
+              "owner_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "uid"
+            ],
+            "dialect": "postgres",
+            "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid"
+          },
+          "revisions": {
+            "name": "revisions",
+            "kind": "hasMany",
+            "parentKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "dialect": "postgres",
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC"
+          }
+        }
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "Docs",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "Docs",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "tenant_id": {
+                            "ref": [
+                              "tenant_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "tenant_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Docs",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT tenant_id, doc_id, owner_id, title FROM docs2",
+                "params": []
+              },
+              {
+                "sql": "tenant_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "tenant_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY doc_id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "owner": {
+            "name": "owner",
+            "kind": "belongsTo",
+            "parentKeys": [
+              "tenant_id",
+              "owner_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "uid"
+            ],
+            "dialect": "mysql",
+            "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)"
+          },
+          "revisions": {
+            "name": "revisions",
+            "kind": "hasMany",
+            "parentKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "targetKeys": [
+              "tenant_id",
+              "doc_id"
+            ],
+            "dialect": "mysql",
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC"
+          }
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE docs2 (tenant_id INTEGER NOT NULL, doc_id INTEGER NOT NULL, owner_id INTEGER NOT NULL, title TEXT NOT NULL, PRIMARY KEY (tenant_id, doc_id))",
+        "CREATE TABLE users2 (tenant_id INTEGER NOT NULL, uid INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (tenant_id, uid))",
+        "CREATE TABLE revs (tenant_id INTEGER NOT NULL, doc_id INTEGER NOT NULL, rev TEXT NOT NULL, PRIMARY KEY (tenant_id, doc_id, rev))",
+        "INSERT INTO docs2 VALUES (1, 10, 100, 'Doc A1')",
+        "INSERT INTO docs2 VALUES (1, 11, 101, 'Doc B1')",
+        "INSERT INTO docs2 VALUES (2, 10, 100, 'Doc A2')",
+        "INSERT INTO users2 VALUES (1, 100, 'Ada')",
+        "INSERT INTO users2 VALUES (1, 101, 'Alan')",
+        "INSERT INTO users2 VALUES (2, 100, 'Bob')",
+        "INSERT INTO revs VALUES (1, 10, 'r1')",
+        "INSERT INTO revs VALUES (1, 10, 'r2')",
+        "INSERT INTO revs VALUES (1, 11, 'r3')",
+        "INSERT INTO revs VALUES (2, 10, 'r9')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE docs2 (tenant_id INT NOT NULL, doc_id INT NOT NULL, owner_id INT NOT NULL, title VARCHAR(255) NOT NULL, PRIMARY KEY (tenant_id, doc_id))",
+        "CREATE TABLE users2 (tenant_id INT NOT NULL, uid INT NOT NULL, name VARCHAR(255) NOT NULL, PRIMARY KEY (tenant_id, uid))",
+        "CREATE TABLE revs (tenant_id INT NOT NULL, doc_id INT NOT NULL, rev VARCHAR(255) NOT NULL, PRIMARY KEY (tenant_id, doc_id, rev))",
+        "INSERT INTO docs2 VALUES (1, 10, 100, 'Doc A1')",
+        "INSERT INTO docs2 VALUES (1, 11, 101, 'Doc B1')",
+        "INSERT INTO docs2 VALUES (2, 10, 100, 'Doc A2')",
+        "INSERT INTO users2 VALUES (1, 100, 'Ada')",
+        "INSERT INTO users2 VALUES (1, 101, 'Alan')",
+        "INSERT INTO users2 VALUES (2, 100, 'Bob')",
+        "INSERT INTO revs VALUES (1, 10, 'r1')",
+        "INSERT INTO revs VALUES (1, 10, 'r2')",
+        "INSERT INTO revs VALUES (1, 11, 'r3')",
+        "INSERT INTO revs VALUES (2, 10, 'r9')"
+      ],
+      "expectedResultPg": [],
+      "expectedResultMysql": []
+    },
+    {
       "name": "create: gate-first tx commits (author exists, unique, idempotent)",
       "kind": "tx",
       "input": {

@@ -57,6 +57,7 @@ export {
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
   compileCompositeKeyUnlimited,
+  compileCompositeKeyStaticUnlimited,
   compileCompositeKeyLimited,
   makeSqlComponentIR,
   makeSqlInput,

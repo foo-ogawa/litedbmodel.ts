@@ -21,24 +21,16 @@ from .static_bundle import PG_ARRAY_CAST_TOKEN, render_placeholders, resolve_pg_
 __all__ = ["dedupe_keys", "run_relation_op", "distribute_to_parent", "read_bundle"]
 
 
-def dedupe_keys(parents: Sequence[Mapping[str, Any]], parent_key: str) -> List[Any]:
-    """The deduped, non-null parent-key values (insertion order preserved — deterministic).
+def _parent_key_cols(op: Mapping[str, Any]) -> List[str]:
+    """The ordered PARENT key columns (single-key → 1-element; composite → the tuple)."""
+    pk = op.get("parentKeys")
+    return list(pk) if pk is not None else [op["parentKey"]]
 
-    Byte-for-byte port of the TS ``dedupeKeys``: skip ``None`` keys, dedupe on the STRINGIFIED key
-    (so ``1`` and ``"1"`` collapse exactly as TS ``String(v)``), preserve first-seen order.
-    """
-    seen: set[str] = set()
-    out: List[Any] = []
-    for p in parents:
-        v = p.get(parent_key)
-        if v is None:
-            continue
-        s = _stringify(v)
-        if s in seen:
-            continue
-        seen.add(s)
-        out.append(v)
-    return out
+
+def _target_key_cols(op: Mapping[str, Any]) -> List[str]:
+    """The ordered CHILD key columns (single-key → 1-element; composite → the tuple)."""
+    tk = op.get("targetKeys")
+    return list(tk) if tk is not None else [op["targetKey"]]
 
 
 def _stringify(v: Any) -> str:
@@ -48,16 +40,43 @@ def _stringify(v: Any) -> str:
     return str(v)
 
 
-def _bind_keys(op: Mapping[str, Any], keys: Sequence[Any]) -> Any:
-    """Bind the deduped key set to the op's single array param per dialect (mirrors TS ``bindKeys``).
+def _key_identity(values: Sequence[Any]) -> str:
+    """The stringified key identity for dedupe/grouping (tuple → space-joined scalars, mirror of TS)."""
+    return " ".join(_stringify(v) for v in values)
 
-    PG binds the array verbatim (``= ANY(?::t[])`` — a native list param); MySQL/SQLite bind the
-    JSON-encoded array string (server-side ``json_each``/``JSON_TABLE`` expansion). Compact JSON to
-    match the TS ``JSON.stringify`` byte form.
+
+def dedupe_keys(parents: Sequence[Mapping[str, Any]], key_cols: Sequence[str]) -> List[List[Any]]:
+    """The deduped, non-null parent-key TUPLES (insertion order preserved). Drop a tuple if ANY key
+    column is None; dedupe on the stringified tuple identity. Port of TS ``dedupeKeys``."""
+    seen: set[str] = set()
+    out: List[List[Any]] = []
+    for p in parents:
+        tuple_ = [p.get(c) for c in key_cols]
+        if any(v is None for v in tuple_):
+            continue
+        s = _key_identity(tuple_)
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(tuple_)
+    return out
+
+
+def _bind_keys(op: Mapping[str, Any], tuples: Sequence[Sequence[Any]]) -> List[Any]:
+    """Bind the deduped keys to the op's params per dialect + arity (mirrors TS ``bindKeys``).
+
+    Single-key: PG → ONE scalar list param; MySQL/SQLite → ONE JSON scalar-array string. Composite:
+    PG → ONE list param PER key column (transposed tuples → ``unnest(?::t1[], ?::t2[])``);
+    MySQL/SQLite → ONE JSON array-of-tuples string. Returns the positional param list.
     """
+    composite = op.get("parentKeys") is not None
     if op["dialect"] == "postgres":
-        return list(keys)
-    return json.dumps(list(keys), separators=(",", ":"), ensure_ascii=False)
+        if not composite:
+            return [[t[0] for t in tuples]]  # ONE scalar array param
+        n = len(_parent_key_cols(op))
+        return [[t[col] for t in tuples] for col in range(n)]  # one array param per column
+    payload = [list(t) for t in tuples] if composite else [t[0] for t in tuples]
+    return [json.dumps(payload, separators=(",", ":"), ensure_ascii=False)]
 
 
 def run_relation_op(
@@ -67,21 +86,26 @@ def run_relation_op(
 ) -> Dict[str, Any]:
     """Run ONE relation batch op for a set of parent rows (byte-for-byte port of TS ``runRelationOp``).
 
-    Dedup the parent keys, resolve the deferred PG array cast from the REAL deduped keys BEFORE the
-    ``?``→``$N`` render (PG only; MySQL/SQLite carry no cast token), render placeholders, then — on a
-    NON-empty key set — execute the batch binding the keys as the SINGLE array param and group the
-    child rows into ``{ str(target_key): [rows] }``. An EMPTY key set issues NO query (the correct
-    empty-set behaviour), matching TS. Returns ``{sql, keys, batch}``.
+    Dedup the parent-key tuples, resolve the deferred PG array cast(s) from the REAL keys (one per
+    key column for composite) BEFORE the ``?``→``$N`` render, render placeholders, then — on a
+    NON-empty key set — execute binding the keys (single array / per-column arrays / JSON tuples) and
+    group the child rows by their target-key identity. EMPTY key set → NO query. Returns
+    ``{sql, keys, batch}`` (``keys`` = the deduped parent-key tuples).
     """
-    keys = dedupe_keys(parents, op["parentKey"])
+    p_cols = _parent_key_cols(op)
+    keys = dedupe_keys(parents, p_cols)
     batch: Dict[str, List[Dict[str, Any]]] = {}
-    cast = resolve_pg_array_cast(op["sql"], keys) if op["dialect"] == "postgres" else op["sql"]
+    cast = op["sql"]
+    if op["dialect"] == "postgres":
+        for col in range(len(p_cols)):
+            cast = resolve_pg_array_cast(cast, [t[col] for t in keys])
     sql = render_placeholders(cast, op["dialect"])
     if len(keys) == 0:
         return {"sql": sql, "keys": keys, "batch": batch}
-    rows = driver.prepare(sql).all([_bind_keys(op, keys)])
+    t_cols = _target_key_cols(op)
+    rows = driver.prepare(sql).all(_bind_keys(op, keys))
     for row in rows:
-        k = _stringify(row[op["targetKey"]])
+        k = _key_identity([row[c] for c in t_cols])
         batch.setdefault(k, []).append(row)
     return {"sql": sql, "keys": keys, "batch": batch}
 
@@ -94,10 +118,10 @@ def distribute_to_parent(
     """Distribute a resolved batch onto ONE parent per cardinality (port of TS ``distributeToParent``).
 
     ``hasMany`` → the child list (``[]`` when none); ``belongsTo``/``hasOne`` → the single child (or
-    ``None``). Keyed by ``str(parent[parentKey])`` — the declared cardinality's empty representation.
+    ``None``). Keyed by the parent's key-tuple identity.
     """
-    key = parent.get(op["parentKey"])
-    rows = None if key is None else batch.get(_stringify(key))
+    tuple_ = [parent.get(c) for c in _parent_key_cols(op)]
+    rows = None if any(v is None for v in tuple_) else batch.get(_key_identity(tuple_))
     if op["kind"] == "hasMany":
         return rows if rows is not None else []
     return rows[0] if rows else None
