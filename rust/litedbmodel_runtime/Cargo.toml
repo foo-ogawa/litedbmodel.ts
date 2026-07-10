@@ -20,11 +20,20 @@ behavior-contracts = { workspace = true }
 # substitute for docker; #34 AC). `bundled` builds the SQLite amalgamation so no system libsqlite
 # is required. This is the runnable seam; PG/MySQL drivers plug into the same `Driver` trait later.
 rusqlite = { workspace = true }
-# WS7g (#36) live-DB drivers — synchronous PostgreSQL + MySQL clients that plug into the SAME
-# `Driver` trait. Feature-gated so the default conformance build (cargo test/check for the SQLite
-# bar) needs neither crate; the livedb_runner binary enables `--features livedb`.
-postgres = { version = "0.19", optional = true }
-mysql = { version = "25", optional = true }
+# WS7g (#36) live-DB drivers — ASYNC + connection-pool clients that plug into the SAME `Driver`
+# trait (#40: restore the old `litedbmodel.rs` async+pool execution model; the v2 migration had
+# regressed to the synchronous `postgres`/`mysql` crates + single connection). Postgres rides
+# `tokio-postgres` + `deadpool-postgres` (the PG pool), MySQL + SQLite ride `sqlx` on the tokio
+# runtime — matching the old `.rs` `Pool::{Postgres(deadpool_postgres::Pool), Mysql(MySqlPool),
+# Sqlite(SqlitePool)}`. A shared tokio runtime blocks the sync `Driver` seam on each pooled call, so
+# concurrent `all()` calls from different threads each check out a DISTINCT pooled connection → real
+# parallel DB I/O. Feature-gated so the default conformance build (SQLite bar via rusqlite) pulls
+# none of these; the livedb_runner binary enables `--features livedb`.
+tokio-postgres = { version = "0.7", optional = true, features = ["with-chrono-0_4"] }
+deadpool-postgres = { version = "0.14", optional = true, features = ["rt_tokio_1"] }
+sqlx = { version = "0.8", optional = true, default-features = false, features = ["runtime-tokio", "mysql", "sqlite"] }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "sync", "macros"] }
+futures-util = { version = "0.3", optional = true }
 
 [features]
-livedb = ["dep:postgres", "dep:mysql"]
+livedb = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:sqlx", "dep:tokio", "dep:futures-util"]

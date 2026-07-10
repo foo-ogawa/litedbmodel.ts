@@ -299,29 +299,43 @@ struct ReadGraphHandlers<'a> {
     dialect: String,
 }
 
+/// Render one read node's static statements against `scope` and execute them on `driver`.
+///
+/// The ONE render→execute step behind a `__makeSqlNode`. Shared by the serial handler
+/// ([`ReadGraphHandlers`]) and the parallel dispatch path ([`execute_read_graph_parallel`]) so both
+/// produce byte-identical SQL + params — the parallel path only changes WHICH thread runs this, not
+/// WHAT it runs. Takes `driver` by `&dyn Driver` so a `Sync` pooled driver can service concurrent
+/// calls (each acquiring its own pooled connection).
+fn render_and_execute_node(
+    driver: &dyn Driver,
+    graph: &J,
+    dialect: &str,
+    node_id: &str,
+    scope: &Scope,
+) -> ExecOutcome {
+    if graph
+        .get("statementsById")
+        .and_then(|s| s.get(node_id))
+        .is_none()
+    {
+        return ExecOutcome::Error(format!("static-bundle: no statements for node '{node_id}'"));
+    }
+    let stmts = statements_for(graph, node_id);
+    let rendered = match render_statements(&stmts, dialect, scope) {
+        Ok(r) => r,
+        Err(e) => return ExecOutcome::Error(e),
+    };
+    let params: Vec<Value> = rendered.params.iter().map(to_driver_param).collect();
+    let mut stmt = driver.prepare(&rendered.sql);
+    match stmt.all(&params) {
+        Ok(rows) => ExecOutcome::Ok(Value::Arr(rows)),
+        Err(e) => ExecOutcome::Error(e.message),
+    }
+}
+
 impl ReadGraphHandlers<'_> {
     fn render_and_execute(&self, node_id: &str, scope: &Scope) -> ExecOutcome {
-        let stmts = statements_for(self.graph, node_id);
-        if self
-            .graph
-            .get("statementsById")
-            .and_then(|s| s.get(node_id))
-            .is_none()
-        {
-            return ExecOutcome::Error(format!(
-                "static-bundle: no statements for node '{node_id}'"
-            ));
-        }
-        let rendered = match render_statements(&stmts, &self.dialect, scope) {
-            Ok(r) => r,
-            Err(e) => return ExecOutcome::Error(e),
-        };
-        let params: Vec<Value> = rendered.params.iter().map(to_driver_param).collect();
-        let mut stmt = self.driver.prepare(&rendered.sql);
-        match stmt.all(&params) {
-            Ok(rows) => ExecOutcome::Ok(Value::Arr(rows)),
-            Err(e) => ExecOutcome::Error(e.message),
-        }
+        render_and_execute_node(self.driver, self.graph, &self.dialect, node_id, scope)
     }
 }
 
@@ -383,6 +397,89 @@ pub fn execute_read_graph(
     };
     run_behavior(ir, &mut handlers, &normalized, name)
         .map_err(|e| re_error_to_sql_failure(&e.to_string()))
+}
+
+// ── Parallel read-relation dispatch (executor-layer fan-out; #40) ──────────────
+//
+// bc's Rust `run_behavior` owns the read-graph orchestration (map iteration / Φ-merge / wiring)
+// and calls the makeSQL handler SYNCHRONOUSLY per node through a `FnMut` seam (`run_plan`). The
+// published `behavior-contracts` 0.2.0 crate exposes NO async/parallel `run_behavior` — only the
+// lower-level `run_plan_parallel`, which dispatches the INDEPENDENT members of a plan stage on
+// scoped worker threads bounded by `concurrency`. So sibling-relation parallelism cannot live
+// INSIDE a single `run_behavior` call without forking bc; per the issue we put the fan-out in the
+// EXECUTOR layer around it.
+//
+// [`dispatch_read_nodes_parallel`] is that seam: given the independent read nodes of one plan stage
+// (each `(node_id, scope)`, already resolved against the primary's rows — the tx-DAG carries no
+// intra-stage data edge between siblings), it renders + executes them CONCURRENTLY via
+// `run_plan_parallel`, each on its own thread checking out its own pooled connection from a `Sync`
+// pooled driver — real parallel DB I/O. Results are committed in ascending declaration order, so
+// the assembled output is deterministic and byte-identical to the serial path (concurrency changes
+// only the wall-clock, never the result). The conformance corpus ships single-relation read graphs,
+// so `execute_read_graph` (serial `run_behavior`) remains the byte-invariant conformance path; this
+// capability is exercised by the multi-sibling latency proof in `tests/`.
+
+use behavior_contracts::{run_plan_parallel, ExecutionPlanSpec, OpSpec};
+
+/// Dispatch a stage's INDEPENDENT read nodes concurrently against a `Sync` (pooled) driver.
+///
+/// `nodes` are `(node_id, scope)` pairs with NO intra-stage parent dependency (sibling relations
+/// mapping over the same primary). Renders + executes each via [`render_and_execute_node`] on scoped
+/// worker threads (bounded by `concurrency`, default the plan's 16), then returns each node's rows
+/// in the SAME order as `nodes` — deterministic regardless of finish order. This is the executor's
+/// parallel fan-out; the SQL text + params per node are byte-identical to the serial path.
+pub fn dispatch_read_nodes_parallel<D: Driver + Sync>(
+    driver: &D,
+    graph: &J,
+    dialect: &str,
+    nodes: &[(String, Scope)],
+    concurrency: i64,
+) -> Result<Vec<Value>, SqlFailure> {
+    if nodes.is_empty() {
+        return Ok(Vec::new());
+    }
+    // One flat stage of independent ops (no parents) — the bounded-parallel dispatch shape.
+    let ops: Vec<OpSpec> = nodes
+        .iter()
+        .map(|(id, _)| OpSpec {
+            id: id.clone(),
+            parent: None,
+            bind_field: None,
+            relation_kind: None,
+            policy: None,
+        })
+        .collect();
+    let plan = ExecutionPlanSpec {
+        groups: vec![(0..nodes.len()).collect()],
+        concurrency,
+    };
+    // Map node id → its scope for the (thread-shared, read-only) exec closure.
+    let by_id: std::collections::HashMap<&str, &Scope> =
+        nodes.iter().map(|(id, s)| (id.as_str(), s)).collect();
+
+    let exec = |op: &OpSpec, _bound: Option<&Value>| -> ExecOutcome {
+        let scope = match by_id.get(op.id.as_str()) {
+            Some(s) => *s,
+            None => {
+                return ExecOutcome::Error(format!("parallel dispatch: unknown node '{}'", op.id))
+            }
+        };
+        render_and_execute_node(driver, graph, dialect, &op.id, scope)
+    };
+
+    let result = run_plan_parallel(Some(&plan), &ops, exec)
+        .map_err(|e| plain_failure(&format!("parallel dispatch: {}", e.message)))?;
+
+    // Commit order = declaration order (run_plan_parallel guarantees deterministic results).
+    let tree = result.final_tree();
+    let mut out: Vec<Value> = Vec::with_capacity(nodes.len());
+    for (id, _) in nodes {
+        match tree.iter().find(|(k, _)| k == id) {
+            Some((_, v)) => out.push(v.clone()),
+            None => out.push(Value::Arr(Vec::new())), // a skipped node contributes no rows
+        }
+    }
+    Ok(out)
 }
 
 // ── Tx op render (port of tx.ts renderStatement) ───────────────────────────────

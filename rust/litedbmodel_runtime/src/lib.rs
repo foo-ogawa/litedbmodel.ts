@@ -45,7 +45,7 @@ pub use runtime::{
     ENTITY_ROOT,
 };
 pub use static_bundle::{
-    execute_read_graph, render_placeholders, render_read_primary, render_statements, render_tx_op,
-    RenderedSql, NODE_COMPONENT, SCOPE_PORT,
+    dispatch_read_nodes_parallel, execute_read_graph, render_placeholders, render_read_primary,
+    render_statements, render_tx_op, RenderedSql, NODE_COMPONENT, SCOPE_PORT,
 };
 pub use value::{decode_scope, decode_value, encode_value, Scope};

@@ -11,6 +11,7 @@ name = "livedb_runner"
 path = "src/main.rs"
 
 [dependencies]
-# The `livedb` feature pulls in the runtime's synchronous postgres + mysql drivers.
+# The `livedb` feature pulls in the runtime's ASYNC + connection-pool postgres + mysql drivers
+# (tokio-postgres + deadpool-postgres / sqlx on the tokio runtime; #40).
 litedbmodel_runtime = { path = "../litedbmodel_runtime", features = ["livedb"] }
 serde_json = { workspace = true }
