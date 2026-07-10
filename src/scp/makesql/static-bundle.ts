@@ -56,7 +56,6 @@ import { mapSqliteError } from '../errors';
 import { type ConditionObject } from '../../DBConditions';
 import { conditionsFor } from './json-array';
 import { compileSelect } from './compile-select';
-import { PG_ARRAY_CAST_TOKEN, resolvePgArrayCast } from './compile-relation';
 
 // ── Expression IR alias (a value-spec / skip expression is a closed-set bc node) ──
 
@@ -216,19 +215,24 @@ function jsonArraySpec(dialect: Dialect, valueSpec: ValueSpec): ValueSpec {
  * The IN-list membership fragment, driven by the ORIGINAL builders (never hand-rolled):
  *   - MySQL/SQLite: `conditionsFor({col:[…]})` → the single-JSON `JsonArrayConditions` form
  *     (`JSON_TABLE`/`json_each`) — the SAME text the eager path emits; ONE `?`, one JSON param.
- *   - PostgreSQL: the `LazyRelation`/`inferPgArrayType` single-array-param form
- *     `col = ANY(?::<type>[])`. Element type is unknown at symbolic-compile time (this authored
- *     `whereIn` surface carries NO column type — spec §7 `inColumn`), so the cast is emitted as
- *     the DEFERRED {@link PG_ARRAY_CAST_TOKEN} and resolved at render from the BOUND array via v1
- *     `inferPgArrayType` (#46 — `renderStatements`). Baking `inferPgArrayType([])` = `text[]` here
- *     was the #43 regression (`integer = text` on real PG for an int IN-list). The array binds
- *     verbatim as ONE param. This is the v1 relation builder's text, not a v2 template.
+ *   - PostgreSQL: the single-array-param form `col = ANY(?)` with NO element-type cast. This
+ *     authored `whereIn` surface carries NO column type (spec §7 `inColumn`), so there is nothing
+ *     to cast the array TO at compile time — and value-inference (v1's `inferPgArrayType`) cannot
+ *     recover it either: `[]` is indistinguishable from any element type, and a uuid value is
+ *     indistinguishable-from-text by value. Emitting a cast therefore RE-BROKE #46 twice on live
+ *     PG (empty int → `integer = text`; uuid → `uuid = text`). Instead we cast NOTHING and let
+ *     PostgreSQL infer the array element type from the column context (`id` int → `int[]`, a uuid
+ *     column → `uuid[]`, empty → the column's type → zero rows, no error) — proven on live PG16
+ *     for int/bigint/uuid/bool/numeric/text and all three empty cases. This is v1-RESULT-parity
+ *     (same rows, incl. empty → zero rows via `1 = 0` in v1): v1's authored surface had no
+ *     `= ANY` form (it expanded `IN(?,?,…)`), so byte-identity to a v1 `= ANY(?::T[])` is not the
+ *     requirement here — only that the rows match. The array binds verbatim as ONE param.
  */
 function inListFragment(dialect: Dialect, column: string, valueSpec: ValueSpec): WhereFragment {
   if (dialect === 'postgres') {
-    // The v1 PG `= ANY(?::type[])` form (LazyRelation anchor). Element type is deferred to render
-    // (the token), resolved from the real bound array — never a compile-time `text[]`.
-    const conditions: ConditionObject = { __raw__: [`${column} = ANY(?::${PG_ARRAY_CAST_TOKEN})`, [PROBE]] };
+    // `col = ANY(?)` — no cast. PG infers the array element type from the column, which is correct
+    // for every type INCLUDING empty and uuid (a value-inferred cast cannot, and re-broke #46).
+    const conditions: ConditionObject = { __raw__: [`${column} = ANY(?)`, [PROBE]] };
     return { sql: v1ConditionText(conditions, dialect), params: [jsonArraySpec(dialect, valueSpec)] };
   }
   // MySQL/SQLite: the single-JSON IN-list is the JsonArrayConditions form (v1/epic builder).
@@ -547,17 +551,10 @@ function renderStatements(statements: readonly StaticStatement[], dialect: Diale
       whereSeen = true;
     }
     const params: SqlParam[] = stmt.params.map((p) => evalSpec(p, scope) as SqlParam);
-    // Resolve any deferred PG array cast (#46) from the bound array param, left-to-right — the
-    // schema-less `whereIn` IN-list emits a cast TOKEN whose element type is known only now (from
-    // the real values). Same render-layer step as `?`→`$N`; PG-only (the token appears only in
-    // the PG IN-list text). Each `__jsonArray` postgres param resolves exactly one token in order.
-    if (dialect === 'postgres') {
-      for (const p of params) {
-        if (!Array.isArray(p)) continue;
-        if (!sql.includes(PG_ARRAY_CAST_TOKEN)) break;
-        sql = resolvePgArrayCast(sql, p);
-      }
-    }
+    // The authored PG IN-list emits `col = ANY(?)` with NO cast token (#46 — PG infers the array
+    // element type from the column, correct for empty/uuid where value-inference cannot). No
+    // render-time cast resolution is needed here; the relation-batch path resolves its own v1
+    // `::T[]` cast in `runRelationOp`, not on this authored-statement surface.
     nodes.push({ sql, params });
   }
   const assembled = composeMakeSQL(nodes);

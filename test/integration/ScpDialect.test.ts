@@ -82,6 +82,12 @@ const L = components();
 // path and the same v1 builders/DBConditions — only the table identifiers change.
 const T_POSTS = 'scp_posts';
 const T_USERS = 'scp_users';
+// Fixed UUIDs for the #46 uuid IN-list coverage (posts 1/2/3).
+const POST_GUIDS = [
+  '11111111-1111-1111-1111-111111111111',
+  '22222222-2222-2222-2222-222222222222',
+  '33333333-3333-3333-3333-333333333333',
+];
 
 // ── The authored behaviors (declaration surface — dialect-neutral IR) ──────────
 
@@ -100,6 +106,17 @@ class PostQueries extends SemanticBehavior {
       table: T_POSTS,
       select: ['id', 'title'],
       where: [whereIn(inColumn($, 'id'), $.ids)],
+      order: 'id ASC',
+    });
+  }
+
+  // #46: an IN-list on a UUID column. Value-inference cannot tell a uuid from text by value, so
+  // the authored surface emits `= ANY($1)` with NO cast and lets PG infer `uuid[]` from the column.
+  ByGuids($: In<{ guids: string[] }>) {
+    return L.Select({
+      table: T_POSTS,
+      select: ['id', 'guid'],
+      where: [whereIn(inColumn($, 'guid'), $.guids)],
       order: 'id ASC',
     });
   }
@@ -193,16 +210,18 @@ beforeAll(async () => {
         user_id INTEGER NOT NULL REFERENCES ${T_USERS}(id),
         title VARCHAR(255) NOT NULL,
         content TEXT,
-        view_count INTEGER NOT NULL DEFAULT 0
+        view_count INTEGER NOT NULL DEFAULT 0,
+        guid UUID
       )`);
     // Deterministic seed: users id 1,2; posts id 1,2 (user 1) and id 3 (user 2)
-    // — matches the parity fixtures (user_id=1 present, id IN (1,3) present).
+    // — matches the parity fixtures (user_id=1 present, id IN (1,3) present). `guid` is a UUID
+    // column (#46 uuid IN-list coverage): posts 1/2/3 carry the three POST_GUIDS values.
     await pgPool.query(`INSERT INTO ${T_USERS} (id, name) VALUES (1, 'Alice'), (2, 'Bob')`);
     await pgPool.query(`SELECT setval('${T_USERS}_id_seq', 2)`);
-    await pgPool.query(`INSERT INTO ${T_POSTS} (id, user_id, title, content, view_count) VALUES
-      (1, 1, 'First Post', 'Hello World!', 100),
-      (2, 1, 'Second Post', 'Another post', 0),
-      (3, 2, 'Bob''s Post', 'Content here', 50)`);
+    await pgPool.query(`INSERT INTO ${T_POSTS} (id, user_id, title, content, view_count, guid) VALUES
+      (1, 1, 'First Post', 'Hello World!', 100, '${POST_GUIDS[0]}'),
+      (2, 1, 'Second Post', 'Another post', 0, '${POST_GUIDS[1]}'),
+      (3, 2, 'Bob''s Post', 'Content here', 50, '${POST_GUIDS[2]}')`);
     await pgPool.query(`SELECT setval('${T_POSTS}_id_seq', 3)`);
   } catch (e) {
     throw new Error(`Postgres is required for WS6 integration but is not reachable at ${PG.host}:${PG.port} — ${(e as Error).message}`);
@@ -288,20 +307,68 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     for (const r of scpRows) expect(r.user_id).toBe(1);
   });
 
-  it('SELECT IN-list on an INT column: `$1::int[]` (NOT text[]) — #46; SCP rows == v1', async () => {
+  it('SELECT IN-list on an INT column: no-cast `= ANY($1)` — #46; PG infers int[]; SCP rows == v1', async () => {
     const bundle = compileBundle(contract, 'ByIds', [], 'postgres');
-    // #46: the deferred PG array cast resolves to `int[]` from the bound int keys — v1's live-correct
-    // form. A `text[]` cast here throws `operator does not exist: integer = text` on real PG.
+    // #46: the authored IN-list emits `= ANY($1)` with NO element-type cast — PG infers `int[]` from
+    // the `id` column. A value-inferred `::text[]` cast threw `operator does not exist: integer =
+    // text` on real PG (the #43/#46 regression). No-cast is v1-RESULT-parity (same rows as v1's
+    // `IN (1, 3)`), and is the ONE form that also survives the empty + uuid cases below.
     const rendered = renderReadPrimary(bundle.readGraph!, { ids: [1, 3] } as never);
-    expect(rendered.sql).toBe(`SELECT id, title FROM ${T_POSTS} WHERE id = ANY($1::int[]) ORDER BY id ASC`);
-    // v1 byte-parity: v1 inferPgArrayType over the same int keys emits the identical `::int[]` cast.
-    expect(rendered.sql).toContain(`= ANY($1::${inferPgArrayType([1, 3])})`);
+    expect(rendered.sql).toBe(`SELECT id, title FROM ${T_POSTS} WHERE id = ANY($1) ORDER BY id ASC`);
     const scpRows = (await executeBundleAsync(bundle, { ids: [1, 3] } as never, {
       exec: pgPoolExecutor(pgPool!),
       entry: 'ByIds',
       dialect: 'postgres',
     })) as unknown as Row[];
     expect(scpRows.map((r) => Number(r.id))).toEqual([1, 3]);
+
+    // v1 RESULT parity: v1's authored IN-list expanded to `id IN ($1, $2)` (DBConditions). Same rows.
+    const v1Params: unknown[] = [];
+    const v1Where = new DBConditions({ id: [1, 3] }).compile(v1Params);
+    let i = 0;
+    const v1Sql = `SELECT id, title FROM ${T_POSTS} WHERE ${v1Where} ORDER BY id ASC`.replace(/\?/g, () => `$${++i}`);
+    const v1Rows = await pgQuery(pgPool!, v1Sql, v1Params);
+    expect(scpRows).toEqual(v1Rows);
+  });
+
+  it('SELECT IN-list EMPTY int array: `= ANY($1)` with [] → ZERO rows, no error — #46; == v1 `1 = 0`', async () => {
+    const bundle = compileBundle(contract, 'ByIds', [], 'postgres');
+    // The blocker: an empty int IN-list. `inferPgArrayType([])` = `text[]` → `integer = text` at PLAN
+    // time. No-cast `= ANY($1)` with an empty array binds fine → PG infers int[] from the column and
+    // selects zero rows. v1 short-circuited `[]` to `1 = 0` (DBConditions) → the SAME zero rows.
+    const rendered = renderReadPrimary(bundle.readGraph!, { ids: [] } as never);
+    expect(rendered.sql).toBe(`SELECT id, title FROM ${T_POSTS} WHERE id = ANY($1) ORDER BY id ASC`);
+    const scpRows = (await executeBundleAsync(bundle, { ids: [] } as never, {
+      exec: pgPoolExecutor(pgPool!),
+      entry: 'ByIds',
+      dialect: 'postgres',
+    })) as unknown as Row[];
+    expect(scpRows).toEqual([]);
+  });
+
+  it('SELECT IN-list on a UUID column (non-empty): `= ANY($1)` → PG infers uuid[]; correct rows — #46', async () => {
+    const bundle = compileBundle(contract, 'ByGuids', [], 'postgres');
+    // uuid values are indistinguishable-from-text by value, so a value-inferred cast is `text[]` →
+    // `uuid = text` error. No-cast lets PG infer `uuid[]` from the column.
+    const rendered = renderReadPrimary(bundle.readGraph!, { guids: [POST_GUIDS[0], POST_GUIDS[2]] } as never);
+    expect(rendered.sql).toBe(`SELECT id, guid FROM ${T_POSTS} WHERE guid = ANY($1) ORDER BY id ASC`);
+    const scpRows = (await executeBundleAsync(bundle, { guids: [POST_GUIDS[0], POST_GUIDS[2]] } as never, {
+      exec: pgPoolExecutor(pgPool!),
+      entry: 'ByGuids',
+      dialect: 'postgres',
+    })) as unknown as Row[];
+    expect(scpRows.map((r) => Number(r.id))).toEqual([1, 3]);
+    expect(scpRows.map((r) => String(r.guid))).toEqual([POST_GUIDS[0], POST_GUIDS[2]]);
+  });
+
+  it('SELECT IN-list EMPTY uuid array: `= ANY($1)` with [] → ZERO rows, no error — #46', async () => {
+    const bundle = compileBundle(contract, 'ByGuids', [], 'postgres');
+    const scpRows = (await executeBundleAsync(bundle, { guids: [] } as never, {
+      exec: pgPoolExecutor(pgPool!),
+      entry: 'ByGuids',
+      dialect: 'postgres',
+    })) as unknown as Row[];
+    expect(scpRows).toEqual([]);
   });
 
   it('INSERT + RETURNING: SCP persists + returns; parity with v1 postgresSqlBuilder', async () => {
