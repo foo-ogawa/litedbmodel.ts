@@ -80,3 +80,13 @@ export {
 
 // bc IR wiring (a query rides runBehavior as a makeSQL component).
 export { makeSqlComponentIR, makeSqlInput } from './ir';
+
+// Authoring → makeSQL bundle (Phase A, epic #43/#45): the ADDITIVE producer that routes an
+// authored behavior's declared/eager query (WS2 `../authoring.ts` component IR) through the
+// makeSQL compile* — preserving the single-compile-path invariant (declaration ≡ eager).
+export {
+  compileAuthoredBehavior,
+  compileAuthoredNode,
+  compileRelationMap,
+} from './authoring-compile';
+export type { AuthoredMakeSQL, RelationMapInput } from './authoring-compile';

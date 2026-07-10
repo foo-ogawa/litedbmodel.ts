@@ -59,6 +59,9 @@ export {
   compileCompositeKeyLimited,
   makeSqlComponentIR,
   makeSqlInput,
+  compileAuthoredBehavior,
+  compileAuthoredNode,
+  compileRelationMap,
 } from './makesql';
 export type {
   MakeSQL,
@@ -69,6 +72,8 @@ export type {
   SqlExecutorSync,
   SelectDesc as MakeSQLSelectDesc,
   RelationCompileBase,
+  AuthoredMakeSQL,
+  RelationMapInput,
 } from './makesql';
 
 // Catalog (spec §11 item 1)
