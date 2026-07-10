@@ -19,7 +19,7 @@
  * SQLite (`test/scp/json-array-parity.test.ts`). Everything else stays v1 byte-match.
  */
 
-import { DBConditions, type ConditionObject } from '../../DBConditions';
+import { type ConditionObject } from '../../DBConditions';
 import type { SqlCastFormatter } from '../../DBValues';
 import type { MakeSQL } from './makesql';
 import { conditionsFor } from './json-array';
@@ -66,28 +66,6 @@ export function compileWhere(conditions: ConditionObject, dialect: Dialect): Mak
   const formatter = formatterFor(dialect);
   const core = conditionsFor(conditions, dialect).compile(params, formatter);
   return { sql: core, params };
-}
-
-/**
- * Compile an OPTIONAL (SKIP-guarded) single-column equality: `<col> = ?`, present only
- * when the runtime value at `presentWhen` is non-null. The core text is emitted by the
- * original `DBConditions` (byte-identical). At bind time the caller resolves `skip`
- * from `presentWhen`; here we only carry the compiled shape and the value.
- *
- * @param column     column name (the condition key).
- * @param value      bound value for the present case.
- * @param skip       resolved presence: true ⇒ omit this component entirely.
- */
-export function compileOptionalEq(
-  column: string,
-  value: unknown,
-  dialect: Dialect,
-  skip: boolean
-): MakeSQL {
-  const params: unknown[] = [];
-  const core = new DBConditions({ [column]: '__probe__' }).compile(params, formatterFor(dialect));
-  // core === `<col> = ?`; replace the probe param with the real value.
-  return { sql: core, params: [value], skip };
 }
 
 // ============================================================================

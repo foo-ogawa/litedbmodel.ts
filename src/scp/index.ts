@@ -39,7 +39,6 @@ export {
   makeSqlHandler,
   makeSqlHandlerSync,
   compileWhere,
-  compileOptionalEq,
   whereClause,
   andTrailing,
   formatterFor,

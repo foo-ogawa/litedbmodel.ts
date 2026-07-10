@@ -32,7 +32,6 @@ export type { Dialect, SqlExecutor, SqlExecutorSync } from './handler';
 // Compile (WHERE / conditions / values).
 export {
   compileWhere,
-  compileOptionalEq,
   whereClause,
   andTrailing,
   formatterFor,

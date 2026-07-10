@@ -36,6 +36,7 @@ import { evaluateExpression, type Scope, type Value } from 'behavior-contracts';
 import { assembleMakeSQL, type MakeSQL } from './makesql';
 import { renderPlaceholders, type Dialect as MakeSQLDialect } from './handler';
 import { mapSqliteError } from '../errors';
+import { DBConditions, type ConditionObject } from '../../DBConditions';
 import {
   ENTITY_ROOT,
   parseEffectPath,
@@ -285,7 +286,24 @@ function binOperands(node: unknown, op: string, at: string): [unknown, unknown] 
   return [args[0], args[1]];
 }
 
+/** The comparison-operator SQL symbols, keyed by the bc operator name (drives the v1 custom-op key). */
 const CMP_OPS: Record<string, string> = { lt: '<', le: '<=', gt: '>', ge: '>=', ne: '<>' };
+
+/** A probe placeholder value fed to the v1 builder so it emits one `?` per bound slot. */
+const PROBE = '__probe__';
+
+/**
+ * Produce a bare condition body's TEXT by driving the ORIGINAL v1 `DBConditions.compile()` — the
+ * SAME builder the eager write path and `compile-crud` use, so the WHERE text is byte-identical
+ * to v1 by construction (a v2 hand-roll would make the corpus tautological). The throwaway
+ * `probe` array absorbs the probe values; the real runtime values are the caller's deferred
+ * Expression-IR params. The write path targets a single dialect at render but the WHERE `= ?` /
+ * `<op> ?` / `IS NULL` / `IS NOT NULL` forms are dialect-invariant in `DBConditions`.
+ */
+function v1ConditionText(conditions: ConditionObject): string {
+  const probe: unknown[] = [];
+  return new DBConditions(conditions).compile(probe);
+}
 
 /** Lower one where-member Expression node → a `<sql, params>` WHERE fragment (deferred params). */
 function lowerWhereMember(node: unknown, at: string): { sql: string; params: TxExpr[] } {
@@ -293,13 +311,15 @@ function lowerWhereMember(node: unknown, at: string): { sql: string; params: TxE
   if (op === undefined) throw new Error(`compileWriteNode: ${at}: a where member must be a single-operator Expression node`);
   if (op === 'eq') {
     const [col, val] = binOperands(node, op, at);
-    if (val === null) return { sql: `${columnOf(col, at)} IS NULL`, params: [] };
-    return { sql: `${columnOf(col, at)} = ?`, params: [val] };
+    const column = columnOf(col, at);
+    if (val === null) return { sql: v1ConditionText({ [column]: null }), params: [] };
+    return { sql: v1ConditionText({ [column]: PROBE }), params: [val] };
   }
   if (op in CMP_OPS) {
     const [col, val] = binOperands(node, op, at);
-    if (op === 'ne' && val === null) return { sql: `${columnOf(col, at)} IS NOT NULL`, params: [] };
-    return { sql: `${columnOf(col, at)} ${CMP_OPS[op]} ?`, params: [val] };
+    const column = columnOf(col, at);
+    if (op === 'ne' && val === null) return { sql: v1ConditionText({ [`${column} IS NOT NULL`]: true }), params: [] };
+    return { sql: v1ConditionText({ [`${column} ${CMP_OPS[op]} ?`]: PROBE }), params: [val] };
   }
   throw new Error(`compileWriteNode: ${at}: unsupported where operator '${op}' (write path supports eq/ne/lt/le/gt/ge)`);
 }
@@ -318,6 +338,7 @@ function lowerWherePort(ports: Record<string, unknown>, at: string): { sql: stri
     parts.push(f.sql);
     params.push(...f.params);
   });
+  // Join with the SAME ` AND ` connector `DBConditions.compile` uses (parts.join(' AND ')).
   return { sql: parts.join(' AND '), params };
 }
 

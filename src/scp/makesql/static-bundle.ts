@@ -51,6 +51,10 @@ import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
 import { renderPlaceholders, type Dialect } from './handler';
 import { compileWriteNode } from './tx';
 import { mapSqliteError } from '../errors';
+import { type ConditionObject } from '../../DBConditions';
+import { conditionsFor } from './json-array';
+import { compileSelect } from './compile-select';
+import { inferPgArrayType } from './compile-relation';
 
 // ── Expression IR alias (a value-spec / skip expression is a closed-set bc node) ──
 
@@ -164,9 +168,18 @@ function binOperands(node: unknown, op: string, at: string): [unknown, unknown] 
   return [args[0], args[1]];
 }
 
+/** The comparison-operator SQL symbols, keyed by the bc operator name (drives the v1 custom-op key). */
 const CMP_OPS: Record<string, string> = { lt: '<', le: '<=', gt: '>', ge: '>=', ne: '<>' };
 
 // ── WHERE member → static SQL fragment + deferred value-specs ──────────────────
+//
+// The fragment TEXT is ALWAYS produced by driving the ORIGINAL v1 builder
+// (`DBConditions.compile()` via `conditionsFor` — the SAME path `compile.ts` /
+// `compile-select.ts` / `compile-relation.ts` use), so it is byte-identical to v1 by
+// construction. A hand-rolled string template would make the corpus v2-to-v2 (tautological)
+// and would NOT catch a v1-original regression — hence NONE remain here. Only the DEFERRED
+// value-specs (bc Expression IR evaluated per-input at runtime) are computed structurally;
+// the placeholder COUNT in the v1-produced text is kept 1:1 with the value-spec list.
 
 /** A lowered WHERE fragment: complete text (`?`) + its deferred value-specs, in `?` order. */
 interface WhereFragment {
@@ -174,78 +187,92 @@ interface WhereFragment {
   readonly params: readonly ValueSpec[];
 }
 
+/** A probe placeholder value fed to the v1 builder so it emits one `?` per bound slot. */
+const PROBE = '__probe__';
+
 /**
- * The dialect single-JSON-param IN-list text (server-side expansion; epic #43/#45). The array
- * binds as ONE JSON param regardless of length (static text). Postgres keeps `= ANY(?::text[])`
- * — but for a STATIC bundle whose element type is unknown at compile time we anchor on the
- * value-driven builders at render for PG; the static read path here targets sqlite/mysql
- * single-JSON forms and PG `= ANY` with the JSONB text array. The concrete PG type-inference
- * parity leg remains the value-driven `compile-relation` path (relations), not this member.
+ * Produce a bare condition body's TEXT by driving the ORIGINAL v1 builder
+ * `DBConditions.compile()` (through `conditionsFor`, so MySQL/SQLite IN-lists take the
+ * single-JSON server-side form and PG stays base-class). The `conditions` object is built to
+ * be byte-identical to what the v1 eager path would pass for the same construct; the throwaway
+ * `probe` params array absorbs the probe values (the real runtime values are the caller's
+ * deferred value-specs). Returns the v1 text — no v2 hand-roll.
  */
-function inListText(dialect: Dialect, column: string): string {
-  if (dialect === 'mysql') {
-    return `${column} IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)`;
-  }
-  if (dialect === 'sqlite') {
-    return `${column} IN (SELECT value FROM json_each(?))`;
-  }
-  // postgres: array as one text[] param, server-side membership.
-  return `${column} = ANY(?)`;
+function v1ConditionText(conditions: ConditionObject, dialect: Dialect): string {
+  const probe: unknown[] = [];
+  return conditionsFor(conditions, dialect).compile(probe);
 }
 
 /** A deferred value-spec that JSON-encodes an array value-spec at runtime (single-param IN). */
 function jsonArraySpec(dialect: Dialect, valueSpec: ValueSpec): ValueSpec {
   // Marker op the runtime interprets: `{ __jsonArray: <valueSpec>, dialect }`. Postgres keeps
-  // the array as-is (bound as a text[] param via node-postgres); mysql/sqlite JSON-encode it.
+  // the array as-is (bound as a t[] param via node-postgres); mysql/sqlite JSON-encode it.
   return { __jsonArray: valueSpec, dialect };
 }
 
-/** Lower ONE where-member Expression node to a static fragment (deferred value-specs). */
+/**
+ * The IN-list membership fragment, driven by the ORIGINAL builders (never hand-rolled):
+ *   - MySQL/SQLite: `conditionsFor({col:[…]})` → the single-JSON `JsonArrayConditions` form
+ *     (`JSON_TABLE`/`json_each`) — the SAME text the eager path emits; ONE `?`, one JSON param.
+ *   - PostgreSQL: the `LazyRelation`/`inferPgArrayType` single-array-param form
+ *     `col = ANY(?::<type>[])`. Element type is unknown at symbolic-compile time, so
+ *     `inferPgArrayType([])` = `text[]` (the v1 no-samples anchor); the array binds verbatim as
+ *     ONE param. This is the v1 relation builder's text, not a v2 template.
+ */
+function inListFragment(dialect: Dialect, column: string, valueSpec: ValueSpec): WhereFragment {
+  if (dialect === 'postgres') {
+    // The v1 PG `= ANY(?::type[])` form (LazyRelation anchor). No compile-time samples → text[].
+    const conditions: ConditionObject = { __raw__: [`${column} = ANY(?::${inferPgArrayType([])})`, [PROBE]] };
+    return { sql: v1ConditionText(conditions, dialect), params: [jsonArraySpec(dialect, valueSpec)] };
+  }
+  // MySQL/SQLite: the single-JSON IN-list is the JsonArrayConditions form (v1/epic builder).
+  const conditions: ConditionObject = { [column]: [PROBE] };
+  return { sql: v1ConditionText(conditions, dialect), params: [jsonArraySpec(dialect, valueSpec)] };
+}
+
+/**
+ * Lower ONE where-member Expression node to a static fragment. The TEXT of every leaf is
+ * emitted by the ORIGINAL `DBConditions`; AND/OR groups join the v1-produced leaf texts with
+ * the EXACT connector `DBConditions.compile` uses (`parts.join(' AND '|' OR ')` + wrapping
+ * parens) — pure text glue, the original's own algorithm (mirrors `compile-pg.compileBaseSelect`).
+ */
 function lowerWhereMember(node: unknown, dialect: Dialect, at: string): WhereFragment {
   const op = opKey(node);
   if (op === undefined) throw new Error(`static-bundle: ${at}: a where member must be a single-operator Expression node`);
 
-  if (op === 'and') {
-    const args = (node as Record<string, unknown[]>).and;
-    if (!Array.isArray(args) || args.length < 2) throw new Error(`static-bundle: ${at}: 'and' group expects >= 2 members`);
+  if (op === 'and' || op === 'or') {
+    const args = (node as Record<string, unknown[]>)[op];
+    if (!Array.isArray(args) || args.length < 2) throw new Error(`static-bundle: ${at}: '${op}' group expects >= 2 members`);
     const parts: string[] = [];
     const params: ValueSpec[] = [];
     args.forEach((m, i) => {
-      const f = lowerWhereMember(m, dialect, `${at}.and[${i}]`);
+      const f = lowerWhereMember(m, dialect, `${at}.${op}[${i}]`);
       parts.push(f.sql);
       params.push(...f.params);
     });
-    return { sql: `(${parts.join(' AND ')})`, params };
-  }
-
-  if (op === 'or') {
-    const args = (node as Record<string, unknown[]>).or;
-    if (!Array.isArray(args) || args.length < 2) throw new Error(`static-bundle: ${at}: 'or' group expects >= 2 members`);
-    const parts: string[] = [];
-    const params: ValueSpec[] = [];
-    args.forEach((m, i) => {
-      const f = lowerWhereMember(m, dialect, `${at}.or[${i}]`);
-      parts.push(f.sql);
-      params.push(...f.params);
-    });
-    return { sql: `(${parts.join(' OR ')})`, params };
+    const connector = op === 'and' ? ' AND ' : ' OR ';
+    return { sql: `(${parts.join(connector)})`, params };
   }
 
   if (op === 'eq') {
     const [col, val] = binOperands(node, op, at);
     const inCol = inSentinelColumn(col);
-    if (inCol !== undefined) {
-      // IN-list membership: single-JSON-param (or PG text[]) — one `?`, static text.
-      return { sql: inListText(dialect, inCol), params: [jsonArraySpec(dialect, val)] };
-    }
-    if (val === null) return { sql: `${columnOf(col, at)} IS NULL`, params: [] };
-    return { sql: `${columnOf(col, at)} = ?`, params: [val] };
+    if (inCol !== undefined) return inListFragment(dialect, inCol, val);
+    const column = columnOf(col, at);
+    if (val === null) return { sql: v1ConditionText({ [column]: null }, dialect), params: [] };
+    // v1 default equality: `{col: value}` → `col = ?`.
+    return { sql: v1ConditionText({ [column]: PROBE }, dialect), params: [val] };
   }
 
   if (op in CMP_OPS) {
     const [col, val] = binOperands(node, op, at);
-    if (op === 'ne' && val === null) return { sql: `${columnOf(col, at)} IS NOT NULL`, params: [] };
-    return { sql: `${columnOf(col, at)} ${CMP_OPS[op]} ?`, params: [val] };
+    const column = columnOf(col, at);
+    if (op === 'ne' && val === null) {
+      // v1 `IS NOT NULL`: a boolean-true key that is a SQL expression returns the key verbatim.
+      return { sql: v1ConditionText({ [`${column} IS NOT NULL`]: true }, dialect), params: [] };
+    }
+    // v1 comparison: a custom-operator key (`col <op> ?`) returns the key + pushes the value.
+    return { sql: v1ConditionText({ [`${column} ${CMP_OPS[op]} ?`]: PROBE }, dialect), params: [val] };
   }
 
   throw new Error(`static-bundle: ${at}: unsupported where operator '${op}' (supported: eq/ne/lt/le/gt/ge/and/or; IN via ${IN_SENTINEL}; IS NULL via eq(col,null))`);
@@ -293,11 +320,25 @@ function skipFrom(guard: ValueSpec): ValueSpec {
 // ── Node → static statements (SELECT read path) ────────────────────────────────
 
 /**
+ * The ORIGINAL `_buildSelectSQL` GROUP BY / ORDER BY append text for a Select tail fragment.
+ * Drives `compileSelect` (a bare `SELECT * FROM <t>` head + the one tail field) and slices off
+ * the shared head, so the remaining ` GROUP BY …` / ` ORDER BY …` is v1's exact append — never
+ * a v2 hand-roll. The head is always `SELECT * FROM <table>` here (no `select`/conditions given).
+ */
+function selectTail(desc: Parameters<typeof compileSelect>[0], table: string): string {
+  const full = compileSelect(desc).sql;
+  const head = `SELECT * FROM ${table}`;
+  return full.startsWith(head) ? full.slice(head.length) : full;
+}
+
+/**
  * Compile ONE authored `Select` node into its static `makeSQL` statement templates:
  * the head `SELECT … FROM t` fragment plus one guarded WHERE fragment per member, then the
- * trailing GROUP BY / ORDER BY / LIMIT / OFFSET tail. LIMIT/OFFSET are INLINE literals in v1;
- * for the static bundle they are deferred value-specs bound as `?` (a portable equivalent that
- * a per-language runtime renders identically) — evaluated at runtime.
+ * trailing GROUP BY / ORDER BY / LIMIT / OFFSET tail. The head + GROUP BY + ORDER BY TEXT is
+ * produced by the ORIGINAL `compileSelect` (which reproduces `_buildSelectSQL` byte-for-byte),
+ * never a v2 hand-roll. LIMIT/OFFSET are INLINE literals in v1; for the static bundle they are
+ * deferred value-specs bound as `?` (a portable equivalent a per-language runtime renders
+ * identically) — evaluated at runtime.
  */
 export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatement[] {
   const { component, ports } = nodeRef(node);
@@ -310,7 +351,9 @@ export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatem
   const cols = select && select.length > 0 ? select.join(', ') : '*';
 
   const statements: StaticStatement[] = [];
-  statements.push({ sql: `SELECT ${cols} FROM ${table}`, params: [] });
+  // Head `SELECT <cols> FROM <t>` — driven by the ORIGINAL `_buildSelectSQL` (via compileSelect,
+  // no WHERE/tail) so the skeleton text is byte-identical to v1.
+  statements.push({ sql: compileSelect({ dialect, tableName: table, select: cols }).sql, params: [] });
 
   const whereFrags = lowerWherePort(ports, dialect, 'Select');
   for (const frag of whereFrags) {
@@ -320,10 +363,12 @@ export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatem
     statements.push({ sql: frag.sql, params: frag.params, whereFragment: true, ...(frag.skip !== undefined ? { skip: frag.skip } : {}) });
   }
 
+  // GROUP BY / ORDER BY tail — the ORIGINAL `_buildSelectSQL` append text (via compileSelect over
+  // a bare table, then slicing off the leading `SELECT * FROM <t>` head it shares).
   const group = stringPort(ports, 'group');
-  if (group !== undefined) statements.push({ sql: ` GROUP BY ${group}`, params: [] });
+  if (group !== undefined) statements.push({ sql: selectTail({ dialect, tableName: table, group }, table), params: [] });
   const order = stringPort(ports, 'order');
-  if (order !== undefined) statements.push({ sql: ` ORDER BY ${order}`, params: [] });
+  if (order !== undefined) statements.push({ sql: selectTail({ dialect, tableName: table, order }, table), params: [] });
   if (ports.limit !== undefined) statements.push({ sql: ` LIMIT ?`, params: [ports.limit as ValueSpec] });
   if (ports.offset !== undefined) statements.push({ sql: ` OFFSET ?`, params: [ports.offset as ValueSpec] });
 
