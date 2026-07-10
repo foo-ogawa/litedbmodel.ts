@@ -37,7 +37,7 @@ autoload under the package's own PSR-4 root (`LiteDbModel\Runtime\` → `src/`, 
 php/
   composer.json                       # package litedbmodel/runtime (no bc dep — bc is vendored)
   src/Runtime.php                     # the §8 bundle interpreter surface (render/exec/tx/orderByNulls)
-  src/Render.php                      # normative dynamic-expansion render (port of src/scp/render.ts)
+  src/StaticBundle.php                # static makeSQL render/execute (port of src/scp/makesql/*)
   src/Dialect.php                     # dialect strategy (finalizePlaceholders / orderByNulls)
   src/WriteRuntime.php                # gate-first write transaction (port of src/scp/write-runtime.ts)
   src/SqlFailure.php                  # PDO error → SCP failure mapping (port of src/scp/errors.ts)

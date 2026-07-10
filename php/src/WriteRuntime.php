@@ -9,9 +9,11 @@ namespace LiteDbModel\Runtime;
  * WS7d #33; spec §6 / §3 / §11).
  *
  * Executes a derived `TransactionPlan` (pure JSON, from the §8 bundle) against REAL SQL (PDO) as
- * ONE transaction with gate-first short-circuit (spec §6). It renders each ordered statement with
- * the SAME normative {@link Render::renderOperation} the read path uses, and drives an explicit
- * `BEGIN` / `COMMIT` / `ROLLBACK` envelope through PDO. Semantics-identical to the TS reference.
+ * ONE transaction with gate-first short-circuit (spec §6). It renders each ordered statement's
+ * static makeSQL op with the SAME {@link StaticBundle::renderTxOp} assemble/render the read path
+ * uses (evaluate deferred Expression-IR params → assemble → dialect placeholders), and drives an
+ * explicit `BEGIN` / `COMMIT` / `ROLLBACK` envelope through PDO. Semantics-identical to the TS
+ * reference (`src/scp/makesql/tx.ts`).
  *
  *   BEGIN;
  *     for each ordered statement:
@@ -118,10 +120,12 @@ final class WriteRuntime
     private static function runOne(\PDO $db, \stdClass $stmt, array $scope, array &$executed, Dialect $dialect): array
     {
         $op = $stmt->op;
-        $rendered = Render::renderOperation($op, $scope, $dialect);
+        $rendered = StaticBundle::renderTxOp($op, $scope, $dialect->name);
         $params = array_map([self::class, 'toDriverParam'], $rendered['params']);
-        $component = (string) ($op->component ?? '');
-        $hasReturn = $component === 'Select' || preg_match('/\breturning\b/i', $rendered['sql']) === 1;
+        $sql = $rendered['sql'];
+        // A returning statement (SELECT-prefixed gate/derive, or RETURNING body) yields rows;
+        // a plain write yields an affected-row count (mirrors TS execStatement hasReturn).
+        $hasReturn = preg_match('/^\s*select\b/i', $sql) === 1 || preg_match('/\breturning\b/i', $sql) === 1;
 
         $pdoStmt = $db->prepare($rendered['sql']);
         $pdoStmt->execute(array_values($params));
