@@ -34,7 +34,7 @@ import (
 )
 
 // supportedCorpusVersion is the corpus schema version this runner pins (bumped on additive refreeze).
-const supportedCorpusVersion = 1
+const supportedCorpusVersion = 2
 
 type tally struct {
 	Pass int
@@ -118,20 +118,20 @@ func inputScope(inputN bc.JNode) (*bc.Obj, error) {
 }
 
 func runRender(v *bc.JObj) (bool, string) {
-	opN, _ := v.Get("operation")
-	op, ok := opN.(*bc.JObj)
+	rgN, _ := v.Get("readGraph")
+	rgObj, ok := rgN.(*bc.JObj)
 	if !ok {
-		return false, "operation is not an object"
+		return false, "readGraph is not an object"
 	}
-	dialect, err := rt.DialectFor(getStr(v, "dialect"))
+	graph, err := rt.ReadGraphFromJObj(rgObj)
 	if err != nil {
-		return false, err.Error()
+		return false, "readGraph parse: " + err.Error()
 	}
 	scope, err := inputScope(mustGet(v, "input"))
 	if err != nil {
 		return false, "input decode: " + err.Error()
 	}
-	rendered, err := rt.RenderOperation(op, scope, dialect)
+	rendered, err := rt.RenderReadPrimary(graph, scope)
 	if err != nil {
 		return false, "render threw: " + err.Error()
 	}
@@ -148,6 +148,33 @@ func runRender(v *bc.JObj) (bool, string) {
 	var detail []string
 	if !sqlOk {
 		detail = append(detail, fmt.Sprintf("sql %q != %q", rendered.SQL, expectedSQL))
+	}
+	if !paramsOk {
+		detail = append(detail, fmt.Sprintf("params %s != %s", gotParams, wantParams))
+	}
+	return false, strings.Join(detail, "; ")
+}
+
+// runWriteRender asserts a write statement's compiled makeSQL template is byte-identical to golden
+// (its deferred Expression-IR params are NOT evaluated here — they resolve at tx time). The corpus
+// stores the template raw, so this compares the raw `sql` + canonical `params` against the expected.
+func runWriteRender(v *bc.JObj) (bool, string) {
+	stmt, ok := mustGet(v, "statement").(*bc.JObj)
+	if !ok {
+		return false, "statement is not an object"
+	}
+	gotSQL := getStr(stmt, "sql")
+	expectedSQL := getStr(v, "expectedSql")
+	sqlOk := gotSQL == expectedSQL
+	gotParams := canonicalJSON(mustGet(stmt, "params"))
+	wantParams := canonicalJSON(mustGet(v, "expectedParams"))
+	paramsOk := gotParams == wantParams
+	if sqlOk && paramsOk {
+		return true, ""
+	}
+	var detail []string
+	if !sqlOk {
+		detail = append(detail, fmt.Sprintf("sql %q != %q", gotSQL, expectedSQL))
 	}
 	if !paramsOk {
 		detail = append(detail, fmt.Sprintf("params %s != %s", gotParams, wantParams))
@@ -354,6 +381,8 @@ func runVector(v *bc.JObj) (bool, string) {
 	switch getStr(v, "kind") {
 	case "render":
 		return runRender(v)
+	case "write-render":
+		return runWriteRender(v)
 	case "exec":
 		return runExec(v)
 	case "tx":

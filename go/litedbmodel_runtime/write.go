@@ -2,7 +2,7 @@
 //
 // Executes a derived TransactionPlan (carried pure-JSON in the §8 bundle) against a real SQL
 // transaction with gate-first short-circuit. It renders each ordered statement with the SAME
-// normative RenderOperation the read path uses, and drives an explicit BEGIN / COMMIT / ROLLBACK
+// makeSQL assemble+renderPlaceholders the read path uses, and drives an explicit BEGIN / COMMIT / ROLLBACK
 // envelope through the SAME database/sql seam — no separate interpreter, no re-derivation of the
 // plan (the plan is honored, not rebuilt, spec §6). Ported byte-true to write-runtime.ts incl. the
 // three gate rules and the `$.entity` RETURNING-row exposure.
@@ -12,9 +12,40 @@ package litedbmodel_runtime
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
 )
+
+// selectPrefixRe matches a leading SELECT verb (tx.ts execStatement: a gate SELECT yields rows).
+var selectPrefixRe = regexp.MustCompile(`(?i)\bselect\b`)
+
+// renderTxOp renders a tx statement's makeSQL op `{sql, params}` against the tx scope (tx.ts
+// renderStatement): evaluate each deferred Expression-IR param to a concrete value, build a concrete
+// makeSQL, assemble + render placeholders. The SAME assemble/render the read path uses.
+func renderTxOp(op *bc.JObj, scope *bc.Obj, dialectName string) (Rendered, error) {
+	sqlText := ""
+	if s, ok := op.Get("sql"); ok {
+		sqlText, _ = s.(string)
+	}
+	var concrete []bc.Value
+	if pN, ok := op.Get("params"); ok {
+		if arr, ok := pN.([]bc.JNode); ok {
+			for _, spec := range arr {
+				v, err := bc.EvaluateExpression(spec, scope)
+				if err != nil {
+					return Rendered{}, err
+				}
+				concrete = append(concrete, v)
+			}
+		}
+	}
+	sqlOut, params, err := assembleMakeSQL(makeSQLNode{sql: sqlText, params: concrete})
+	if err != nil {
+		return Rendered{}, err
+	}
+	return Rendered{SQL: renderPlaceholders(sqlOut, dialectName), Params: params}, nil
+}
 
 // ShortCircuitReason is why a transaction did not commit (a gate short-circuit, not a driver error).
 type ShortCircuitReason string
@@ -65,11 +96,13 @@ func gateShortCircuit(gate string, r execStatementResult) ShortCircuitReason {
 	return ""
 }
 
-// execTxStatement renders + executes one statement's compiled op in the given scope
-// (write-runtime.ts execStatement). SELECT/RETURNING returns rows (changes = row count);
-// a non-returning write returns changes = affected. A driver error is a mapped SqlFailure.
+// execTxStatement renders + executes one statement's makeSQL op in the given scope (tx.ts
+// execStatement / renderStatement): evaluate the deferred Expression-IR params, assemble + render
+// placeholders (the SAME assemble the read path uses). A SELECT (leading verb) or a RETURNING write
+// returns rows (changes = row count); a non-returning write returns changes = affected. A driver
+// error is a mapped SqlFailure.
 func execTxStatement(db SQLDB, op *bc.JObj, scope *bc.Obj, dialect Dialect) (execStatementResult, error) {
-	rendered, err := RenderOperation(op, scope, dialect)
+	rendered, err := renderTxOp(op, scope, dialect.Name())
 	if err != nil {
 		return execStatementResult{}, err
 	}
@@ -77,7 +110,11 @@ func execTxStatement(db SQLDB, op *bc.JObj, scope *bc.Obj, dialect Dialect) (exe
 	for i, p := range rendered.Params {
 		args[i] = toDriverParam(p)
 	}
-	hasReturn := operationComponent(op) == "Select" || returningRe.MatchString(rendered.SQL)
+	head := rendered.SQL
+	if len(head) > 8 {
+		head = head[:8]
+	}
+	hasReturn := selectPrefixRe.MatchString(head) || returningRe.MatchString(rendered.SQL)
 	if hasReturn {
 		rows, err := queryRows(db, rendered.SQL, args)
 		if err != nil {
