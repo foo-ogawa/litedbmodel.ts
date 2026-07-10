@@ -31,9 +31,11 @@ require $root . '/php/src/SqlFailure.php';
 require $root . '/php/src/StaticBundle.php';
 require $root . '/php/src/WriteRuntime.php';
 require $root . '/php/src/Runtime.php';
+require $root . '/php/src/Relation.php';
 require $root . '/php/src/LiveDb.php';
 
 use LiteDbModel\Runtime\LiveDb;
+use LiteDbModel\Runtime\Relation;
 use LiteDbModel\Runtime\Runtime;
 
 const SUPPORTED_CORPUS_VERSION = 2;
@@ -90,7 +92,7 @@ function inputToScope(mixed $decoded): array
 }
 
 // The tables the corpus touches (drop dependents first).
-const ALL_TABLES = ['post_tags', 'posts', 'tags', 'docs', 'users', 'idem', 'uniq', 'outbox'];
+const ALL_TABLES = ['post_tags', 'comments', 'posts', 'tags', 'docs', 'users', 'idem', 'uniq', 'outbox'];
 
 function resetPg(PDO $db, array $schema): void
 {
@@ -122,6 +124,22 @@ function runExec(PDO $db, \stdClass $bundle, \stdClass $v): array
     return $ok ? ['ok' => true] : ['ok' => false, 'detail' => 'result ' . json_encode($result) . ' != ' . json_encode($v->expectedResult)];
 }
 
+/**
+ * A read-RELATION EXECUTION vector: run the parent read + batch-load/hydrate the `with` relations,
+ * compare to the PER-DIALECT golden ($expectedKey = expectedResultPg / expectedResultMysql — a
+ * limited hasMany's `_rn` window column is present on MySQL but projected away by PG's LATERAL form).
+ *
+ * @return array{ok:bool, detail?:string}
+ */
+function runRead(PDO $db, \stdClass $bundle, \stdClass $v, string $expectedKey): array
+{
+    $withNames = array_map('strval', (array) ($v->with ?? []));
+    $result = Relation::readBundle($bundle, inputToScope($v->input), $db, $withNames);
+    $expected = $v->{$expectedKey};
+    $ok = valuesEqual($result, $expected);
+    return $ok ? ['ok' => true] : ['ok' => false, 'detail' => 'result ' . json_encode($result) . ' != ' . json_encode($expected)];
+}
+
 /** @return array{ok:bool, detail?:string} */
 function runTx(PDO $db, \stdClass $bundle, \stdClass $v): array
 {
@@ -147,7 +165,7 @@ function runTx(PDO $db, \stdClass $bundle, \stdClass $v): array
  * @param array<int,\stdClass> $vectors
  * @return array{pass:int, fail:int}
  */
-function runDialectLeg(string $dialect, PDO $db, callable $reset, array $vectors, string $bundleKey, string $schemaKey): array
+function runDialectLeg(string $dialect, PDO $db, callable $reset, array $vectors, string $bundleKey, string $schemaKey, string $readExpectedKey): array
 {
     $t = ['pass' => 0, 'fail' => 0];
     fwrite(STDERR, "\nlivedb-{$dialect} — " . count($vectors) . " vectors (real {$dialect})\n");
@@ -157,8 +175,12 @@ function runDialectLeg(string $dialect, PDO $db, callable $reset, array $vectors
         $bundle = $v->{$bundleKey};
         try {
             $kind = (string) $v->kind;
-            $r = $kind === 'exec' ? runExec($db, $bundle, $v)
-                : ($kind === 'tx' ? runTx($db, $bundle, $v) : ['ok' => false, 'detail' => "unknown kind {$kind}"]);
+            $r = match ($kind) {
+                'exec' => runExec($db, $bundle, $v),
+                'read' => runRead($db, $bundle, $v, $readExpectedKey),
+                'tx' => runTx($db, $bundle, $v),
+                default => ['ok' => false, 'detail' => "unknown kind {$kind}"],
+            };
         } catch (\Throwable $e) {
             $r = ['ok' => false, 'detail' => 'threw: ' . $e->getMessage() . "\n" . $e->getTraceAsString()];
         }
@@ -211,8 +233,8 @@ try {
 }
 
 $vectors = $corpus->vectors;
-$pgT = runDialectLeg('pg', $pg, 'resetPg', $vectors, 'bundlePg', 'schemaPg');
-$myT = runDialectLeg('mysql', $my, 'resetMysql', $vectors, 'bundleMysql', 'schemaMysql');
+$pgT = runDialectLeg('pg', $pg, 'resetPg', $vectors, 'bundlePg', 'schemaPg', 'expectedResultPg');
+$myT = runDialectLeg('mysql', $my, 'resetMysql', $vectors, 'bundleMysql', 'schemaMysql', 'expectedResultMysql');
 
 $suites = ['livedb-pg' => $pgT, 'livedb-mysql' => $myT];
 $totalPass = $pgT['pass'] + $myT['pass'];

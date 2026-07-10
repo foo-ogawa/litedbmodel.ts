@@ -161,7 +161,7 @@ final class StaticBundle
      *
      * @param list<mixed> $arr
      */
-    private static function pgArrayLiteral(array $arr): string
+    public static function pgArrayLiteral(array $arr): string
     {
         $parts = [];
         foreach ($arr as $e) {
@@ -214,7 +214,7 @@ final class StaticBundle
      *
      * @param list<mixed> $values
      */
-    private static function resolvePgArrayCast(string $sql, array $values): string
+    public static function resolvePgArrayCast(string $sql, array $values): string
     {
         $at = strpos($sql, self::PG_ARRAY_CAST_TOKEN);
         if ($at === false) {
