@@ -48,11 +48,13 @@ export type { SelectDesc } from './compile-select';
 export {
   builderFor,
   compileInsert,
+  compileInsertMany,
   compileUpdateMany,
   compileFindByPkeys,
   compileUpdateSingle,
   compileDelete,
 } from './compile-crud';
+export type { InsertManyBuildOptions } from './compile-crud';
 
 // Compile (relations).
 export {

@@ -25,7 +25,7 @@ import type {
   FindByPkeysOptions,
 } from '../../drivers/types';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
-import { DBToken, type SqlCastFormatter } from '../../DBValues';
+import { DBToken, DBImmediateValue, type SqlCastFormatter } from '../../DBValues';
 import type { MakeSQL } from './makesql';
 import { formatterFor } from './compile';
 import type { Dialect } from './handler';
@@ -56,6 +56,113 @@ export function builderFor(dialect: Dialect): SqlBuilder {
 export function compileInsert(dialect: Dialect, options: InsertBuildOptions): MakeSQL {
   const { sql, params } = builderFor(dialect).buildInsert(options);
   return { sql, params };
+}
+
+/**
+ * Options for a heterogeneous `createMany`, mirroring the inputs `DBModel._insert` has
+ * AFTER serialization: the serialized `records`, their paired `rawRecords`, the shared
+ * `sqlCastMap` / ON CONFLICT / RETURNING. The per-group `columns` are DERIVED here (not
+ * supplied) — this is the whole point of the grouping.
+ */
+export interface InsertManyBuildOptions {
+  tableName: string;
+  /** Serialized records (as `DBModel._insert` holds them after `serializeRecord`). */
+  records: Record<string, unknown>[];
+  /** Raw records before serialization, paired 1:1 with `records` (PG UNNEST path). */
+  rawRecords?: Record<string, unknown>[];
+  sqlCastMap?: Map<string, string>;
+  onConflict?: string[];
+  onConflictIgnore?: boolean;
+  onConflictUpdate?: 'all' | string[];
+  returning?: string;
+}
+
+/**
+ * Compile a (possibly heterogeneous) `createMany` into a COMPOSITION of `makeSQL`
+ * INSERT components — one per column-set group, exactly as `DBModel._insert`
+ * (`src/DBModel.ts:928-1020`) groups records and emits one `buildInsert` per group.
+ *
+ * A `createMany` whose rows carry DIFFERENT column subsets is not one INSERT: the
+ * production write path groups rows by their sorted-column-set pattern
+ * (`patternKey = recordColumns.sort().join(',')`) so each batch INSERT is homogeneous
+ * (no DEFAULT keyword), and emits ONE statement per group. In the `makeSQL` model that
+ * is precisely a composition of several INSERT components — no new vocabulary. This
+ * function reproduces that grouping byte-for-byte:
+ *
+ *  - column detection per row drops `undefined` and DEFAULT immediates, exactly as
+ *    `_insert:940-946 / 958-964`;
+ *  - columns are CANONICAL sorted (`recordColumns.sort()`), the pattern key is the
+ *    joined sorted columns, group order is first-seen insertion order (`Map`), and each
+ *    group carries its serialized + raw records paired — mirroring `_insert:955-975`;
+ *  - each group's SQL text comes from the SAME original `buildInsert` (`compileInsert`),
+ *    so every component is byte-identical to the statement `_insert` sends for that
+ *    group.
+ *
+ * The composition of the returned components (via `composeMakeSQL`) is the full
+ * multi-statement `createMany` the production path executes.
+ */
+export function compileInsertMany(dialect: Dialect, options: InsertManyBuildOptions): MakeSQL[] {
+  const { records, rawRecords, tableName, sqlCastMap, onConflict, onConflictIgnore, onConflictUpdate, returning } = options;
+
+  // Group records by their sorted-column-set pattern — mirrors DBModel._insert:928-975
+  // exactly (fast single-record path + multi-record Map grouping, same DEFAULT/undefined
+  // filtering, same canonical sort, same first-seen group order, same raw/serialized pair).
+  const grouped = new Map<string, {
+    columns: string[];
+    records: Record<string, unknown>[];
+    rawRecords: Record<string, unknown>[];
+  }>();
+
+  if (records.length === 1) {
+    const record = records[0];
+    const recordColumns: string[] = [];
+    for (const key of Object.keys(record)) {
+      const val = record[key];
+      if (val !== undefined && !(val instanceof DBImmediateValue && val.value === 'DEFAULT')) {
+        recordColumns.push(key);
+      }
+    }
+    recordColumns.sort();
+    grouped.set('_', { columns: recordColumns, records: [record], rawRecords: [rawRecords ? rawRecords[0] : record] });
+  } else {
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+      const recordColumns: string[] = [];
+      for (const key of Object.keys(record)) {
+        const val = record[key];
+        if (val !== undefined && !(val instanceof DBImmediateValue && val.value === 'DEFAULT')) {
+          recordColumns.push(key);
+        }
+      }
+      recordColumns.sort();
+      const patternKey = recordColumns.join(',');
+      if (!grouped.has(patternKey)) {
+        grouped.set(patternKey, { columns: recordColumns, records: [], rawRecords: [] });
+      }
+      const group = grouped.get(patternKey)!;
+      group.records.push(record);
+      group.rawRecords.push(rawRecords ? rawRecords[i] : record);
+    }
+  }
+
+  // One makeSQL INSERT component per group, via the SAME original buildInsert.
+  const components: MakeSQL[] = [];
+  for (const { columns, records: groupRecords, rawRecords: groupRawRecords } of grouped.values()) {
+    components.push(
+      compileInsert(dialect, {
+        tableName,
+        columns,
+        records: groupRecords,
+        rawRecords: groupRawRecords,
+        sqlCastMap,
+        onConflict,
+        onConflictIgnore,
+        onConflictUpdate,
+        returning,
+      })
+    );
+  }
+  return components;
 }
 
 // ============================================================================

@@ -15,7 +15,7 @@ import { describe, it, expect } from 'vitest';
 import { DBModel } from '../../src/DBModel';
 import { LazyRelationContext } from '../../src/LazyRelation';
 import { DBConditions } from '../../src/DBConditions';
-import { dbNotNull, dbCast, dbCastIn, dbTupleIn, dbImmediate, dbDynamic, dbRaw, DBExists, DBSubquery, parentRef } from '../../src/DBValues';
+import { dbNotNull, dbCast, dbCastIn, dbTupleIn, dbImmediate, dbDynamic, dbRaw, DBExists, DBSubquery, DBImmediateValue, parentRef } from '../../src/DBValues';
 import { postgresSqlBuilder } from '../../src/drivers/PostgresSqlBuilder';
 import { mysqlSqlBuilder } from '../../src/drivers/MysqlSqlBuilder';
 import { sqliteSqlBuilder } from '../../src/drivers/SqliteSqlBuilder';
@@ -25,7 +25,7 @@ import {
   renderPlaceholders,
   compileWhere,
   compileSelect,
-  compileInsert,
+  compileInsertMany,
   compileUpdateMany,
   compileUpdateSingle,
   compileDelete,
@@ -206,36 +206,154 @@ describe('A. subquery / EXISTS — makeSQL byte-matches DBModel.inSubquery/exist
 // ===========================================================================
 // B. CRUD — golden = original dialect builders.
 // ===========================================================================
-describe('B. INSERT single & batch — makeSQL byte-matches dialect builders', () => {
-  const single = {
-    tableName: 'users',
-    columns: ['id', 'name'],
-    records: [{ id: 1, name: 'a' }],
-    rawRecords: [{ id: 1, name: 'a' }],
-    sqlCastMap: new Map([['id', 'uuid']]),
-    returning: 'id',
-  };
-  const batch = {
-    tableName: 'users',
-    columns: ['id', 'name'],
-    records: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }],
-    rawRecords: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }],
-    onConflict: ['id'],
-    onConflictUpdate: 'all' as const,
-    returning: 'id',
-  };
+// ---------------------------------------------------------------------------
+// De-tautologized INSERT golden: the golden is the REAL `DBModel._insert`
+// production output, captured by a subclass that records each `execute(sql, params)`
+// instead of running it (the same capture technique the relation goldens use, but on
+// the WRITE path — `_insert` goes through `execute`, not `query`). v2's
+// `compileInsertMany` composition is asserted to byte-match the captured statements —
+// same statements, same GROUPING, same params/order — NOT re-derived from `buildInsert`.
+// ---------------------------------------------------------------------------
+
+/** A DBModel subclass that captures each INSERT statement `_insert` would execute. */
+function makeInsertModel(driver: Dialect): {
+  Model: typeof DBModel;
+  captures: Rendered[];
+} {
+  const captures: Rendered[] = [];
+  class Base extends DBModel {
+    static getDriverType(): Dialect {
+      return driver;
+    }
+    // Writes normally require a live transaction; the golden captures SQL only.
+    protected static _checkWriteAllowed(): void {}
+    // `_insert` calls `this.execute(sql, params)` — record instead of running.
+    static execute(sqlOrFragment: any, params?: any): any {
+      captures.push({ sql: sqlOrFragment as string, params: (params ?? []) as unknown[] });
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    }
+  }
+  class Users extends Base {
+    protected static TABLE_NAME = 'users';
+    protected static SELECT_COLUMN = '*';
+  }
+  return { Model: Users as unknown as typeof DBModel, captures };
+}
+
+/** Drive the REAL `_insert`; return every captured statement, dialect-rendered. */
+async function captureInsert(
+  driver: Dialect,
+  records: Record<string, unknown>[],
+  options: Record<string, unknown> = {}
+): Promise<Rendered[]> {
+  const { Model, captures } = makeInsertModel(driver);
+  captures.length = 0;
+  await (Model as any)._insert(records, options);
+  return captures.map((c) => ({ sql: renderPlaceholders(c.sql, driver), params: c.params }));
+}
+
+/** v2: compile the createMany into composed makeSQL components; render each. */
+function renderComponents(components: MakeSQL[], dialect: Dialect): Rendered[] {
+  return components.map((c) => render(c, dialect));
+}
+
+describe('B. INSERT single & batch — makeSQL byte-matches REAL DBModel._insert (captured)', () => {
   for (const dialect of dialects) {
-    it(`[${dialect}] single INSERT (+per-col cast on PG)`, () => {
-      const golden = builderOf[dialect].buildInsert(single as any);
-      const got = render(compileInsert(dialect, single as any), dialect);
-      expect(got.sql).toBe(renderPlaceholders(golden.sql, dialect));
-      expect(got.params).toEqual(golden.params);
+    it(`[${dialect}] single INSERT`, async () => {
+      const records = [{ id: 1, name: 'a' }];
+      const golden = await captureInsert(dialect, records, { returning: 'id' });
+      const got = renderComponents(compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records, returning: 'id' }), dialect);
+      expect(got.length).toBe(golden.length);
+      expect(got).toEqual(golden);
     });
-    it(`[${dialect}] batch INSERT + ON CONFLICT DO UPDATE (all)`, () => {
-      const golden = builderOf[dialect].buildInsert(batch as any);
-      const got = render(compileInsert(dialect, batch as any), dialect);
-      expect(got.sql).toBe(renderPlaceholders(golden.sql, dialect));
-      expect(got.params).toEqual(golden.params);
+
+    it(`[${dialect}] homogeneous batch INSERT (single grouped statement)`, async () => {
+      const records = [{ id: 1, name: 'a' }, { id: 2, name: 'b' }];
+      const golden = await captureInsert(dialect, records, { returning: 'id' });
+      const got = renderComponents(compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records, returning: 'id' }), dialect);
+      // Homogeneous → exactly ONE INSERT component.
+      expect(golden.length).toBe(1);
+      expect(got.length).toBe(1);
+      expect(got).toEqual(golden);
+    });
+
+    it(`[${dialect}] upsert: createMany + ON CONFLICT DO UPDATE (all)`, async () => {
+      const records = [{ id: 1, name: 'a' }, { id: 2, name: 'b' }];
+      const opts = { onConflict: ['id'], onConflictUpdate: 'all', returning: 'id' };
+      const golden = await captureInsert(dialect, records, opts);
+      const got = renderComponents(
+        compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records, onConflict: ['id'], onConflictUpdate: 'all', returning: 'id' }),
+        dialect
+      );
+      expect(got.length).toBe(golden.length);
+      expect(got).toEqual(golden);
+    });
+
+    it(`[${dialect}] HETEROGENEOUS createMany → MULTIPLE grouped INSERT components (byte-match real _insert)`, async () => {
+      // Rows with DIFFERENT column subsets: {id,name}, {id,name,age}, {id,name}.
+      // Production `_insert` groups by sorted-column-set pattern and emits ONE INSERT
+      // per group → 2 statements ({id,name} batch, then {age,id,name} single).
+      const records = [
+        { id: 1, name: 'a' },
+        { id: 2, name: 'b', age: 20 },
+        { id: 3, name: 'c' },
+      ];
+      const golden = await captureInsert(dialect, records, { returning: 'id' });
+      const components = compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records, returning: 'id' });
+      const got = renderComponents(components, dialect);
+
+      // The gap this fixes: a heterogeneous createMany is a COMPOSITION of >1 makeSQL
+      // INSERT components — NOT one statement. Production `_insert` executes each group
+      // as its OWN statement (its own `execute` call, its own placeholder numbering), so
+      // the composition here is the ORDERED LIST of components, each rendered on its own.
+      expect(golden.length).toBe(2);
+      expect(components.length).toBe(2);
+      // Per-statement byte-match: same grouping, same SQL, same params/order.
+      expect(got).toEqual(golden);
+
+      // Grouping is exactly _insert's: first-seen {id,name} batch (UNNEST on PG /
+      // multi-VALUES on MySQL·SQLite), then the {age,id,name} single-row group.
+      expect(components[0].sql).toContain('(id, name)');
+      expect(components[1].sql).toContain('(age, id, name)');
+
+      // Each component individually assembles to the exact captured statement (the
+      // makeSQL assembly core, independent of the dialect placeholder pass).
+      components.forEach((c, i) => {
+        const asm = assembleMakeSQL(c);
+        expect(asm.params).toEqual(golden[i].params);
+      });
+    });
+
+    it(`[${dialect}] HETEROGENEOUS via DEFAULT/undefined omission → split by column-presence (byte-match real _insert)`, async () => {
+      // A column applied by DB DEFAULT is expressed by OMITTING it from the row's
+      // column set (never a `DEFAULT` literal — PG UNNEST binds arrays and cannot carry
+      // DEFAULT; see `DBModel._insert:929` "batch INSERT without DEFAULT keyword").
+      // `_insert` drops a column when its value is `undefined` OR a
+      // `DBImmediateValue('DEFAULT')` (`:943` single / `:961` batch), so these rows fall
+      // into a DIFFERENT column-set pattern → a separate grouped INSERT (a separate
+      // UNNEST on PG). No `DEFAULT` text appears anywhere.
+      const records = [
+        { id: 1, name: 'a', age: 10 },
+        { id: 2, name: 'b', age: new DBImmediateValue('DEFAULT') },
+        { id: 3, name: 'c', age: undefined },
+        { id: 4, name: 'd', age: 40 },
+      ];
+      const golden = await captureInsert(dialect, records, { returning: 'id' });
+      const components = compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records, returning: 'id' });
+      const got = renderComponents(components, dialect);
+
+      // Two groups: first-seen {age,id,name} (rows 1,4) then {id,name} (rows 2,3 —
+      // `age` omitted). MULTIPLE INSERT components, split by column presence.
+      expect(golden.length).toBe(2);
+      expect(components.length).toBe(2);
+      expect(got).toEqual(golden);
+
+      // No DEFAULT literal is ever emitted; the `age` column simply disappears from
+      // group 2 (both its text and its UNNEST/VALUES slot).
+      expect(components[0].sql).toContain('(age, id, name)');
+      expect(components[1].sql).toContain('(id, name)');
+      expect(components[1].sql).not.toContain('age');
+      expect(got.map((g) => g.sql).join('')).not.toContain('DEFAULT');
     });
   }
 });
