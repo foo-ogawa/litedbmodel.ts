@@ -113,3 +113,13 @@ export {
   compileRelationMap,
 } from './authoring-compile';
 export type { AuthoredMakeSQL, RelationMapInput } from './authoring-compile';
+
+// The STATIC, portable makeSQL bundle + runtime (design #45 owner-confirmed static-bundle):
+// symbolic compile (no concrete input) → deferred value-specs + skip expression, bc-evaluated
+// per-input at runtime. The SOLE makeSQL read/compile path (epic #43/#45 Phase B).
+export {
+  compileStaticBundle,
+  compileSelectNode,
+  executeStaticBundle,
+} from './static-bundle';
+export type { StaticBundle, StaticStatement, ValueSpec } from './static-bundle';

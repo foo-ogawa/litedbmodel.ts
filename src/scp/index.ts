@@ -62,6 +62,9 @@ export {
   compileAuthoredBehavior,
   compileAuthoredNode,
   compileRelationMap,
+  compileStaticBundle,
+  compileSelectNode,
+  executeStaticBundle,
 } from './makesql';
 export type {
   MakeSQL,
@@ -74,6 +77,9 @@ export type {
   RelationCompileBase,
   AuthoredMakeSQL,
   RelationMapInput,
+  StaticBundle,
+  StaticStatement,
+  ValueSpec,
 } from './makesql';
 
 // Catalog (spec §11 item 1)
