@@ -90,7 +90,7 @@ describe('A. WHERE — makeSQL byte-matches DBConditions (all constructs)', () =
   // byte-match on all three dialects. The NEW form is a frozen literal target here; its
   // RESULT PARITY with v1 is proven on real MySQL 8 + SQLite in json-array-parity.test.ts.
   const IN_LIST_JSON: Record<'mysql' | 'sqlite', Rendered> = {
-    mysql: { sql: 'id MEMBER OF (CAST(? AS JSON))', params: ['[1,2,3]'] },
+    mysql: { sql: "id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)", params: ['[1,2,3]'] },
     sqlite: { sql: 'id IN (SELECT value FROM json_each(?))', params: ['[1,2,3]'] },
   };
 
@@ -441,6 +441,28 @@ describe('B. INSERT single & batch — makeSQL byte-matches REAL DBModel._insert
   }
 });
 
+describe('B. createMany DBToken(NOW()) → v1 builder FALLBACK (not JSON form), byte-pinned', () => {
+  // A DBToken value (e.g. NOW()) cannot be JSON-encoded, so its group MUST fall back to
+  // the ORIGINAL multi-VALUES builder on MySQL/SQLite (the JSON_TABLE / json_each path is
+  // skipped for that group). Pin the fallback to the v1 builder's exact text.
+  for (const dialect of ['mysql', 'sqlite'] as const) {
+    it(`[${dialect}] group with NOW() token falls back to v1 buildInsert (byte-match)`, () => {
+      const records = [{ id: 1, name: 'a', created_at: dbRaw('NOW()') }];
+      const columns = ['created_at', 'id', 'name']; // sorted column set
+      const golden = builderOf[dialect].buildInsert({ tableName: 'users', columns, records });
+      const components = compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records });
+      expect(components.length).toBe(1);
+      const got = render(components[0], dialect);
+      // Byte-identical to v1 (NOW() inlined, id/name as ? — NOT a JSON_TABLE/json_each form).
+      expect(got.sql).toBe(renderPlaceholders(golden.sql, dialect));
+      expect(got.params).toEqual(golden.params);
+      expect(got.sql).toContain('VALUES (NOW(),');
+      expect(got.sql).not.toContain('JSON_TABLE');
+      expect(got.sql).not.toContain('json_each');
+    });
+  }
+});
+
 describe('B. RETURNING forms — bare / t.col alias (PG) / table.col (SQLite) / MySQL none', () => {
   it('buildReturning per dialect matches the anchor forms', () => {
     // PG batch UPDATE uses `t.col` alias; SQLite uses `table.col`; MySQL = undefined.
@@ -555,7 +577,7 @@ describe('B. single UPDATE / DELETE — makeSQL byte-matches original _update/_d
       } else {
         // MySQL/SQLite: NEW single-JSON-param IN-list form.
         const golden = dialect === 'mysql'
-          ? { sql: 'DELETE FROM users WHERE id MEMBER OF (CAST(? AS JSON))', params: ['[1,2,3]'] }
+          ? { sql: "DELETE FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)", params: ['[1,2,3]'] }
           : { sql: 'DELETE FROM users WHERE id IN (SELECT value FROM json_each(?))', params: ['[1,2,3]'] };
         expect(got).toEqual(golden);
       }
@@ -659,9 +681,13 @@ describe('C. Relations — makeSQL byte-matches LazyRelation (all shapes, all di
   function jsonifyRelation(v1: Rendered, dialect: 'mysql' | 'sqlite', col: string, values: unknown[]): Rendered {
     const nPlaceholders = `${col} IN (${values.map(() => '?').join(', ')})`;
     const jsonForm =
-      dialect === 'mysql' ? `${col} MEMBER OF (CAST(? AS JSON))` : `${col} IN (SELECT value FROM json_each(?))`;
+      dialect === 'mysql'
+        ? `${col} IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)`
+        : `${col} IN (SELECT value FROM json_each(?))`;
     expect(v1.sql).toContain(nPlaceholders); // guard: the v1 capture really had the N-form
-    const sql = v1.sql.replace(nPlaceholders, jsonForm);
+    // Use a replacer FUNCTION so `$` in jsonForm (e.g. `'$[*]'`, `PATH '$'`) is inserted
+    // literally — a string replacement would treat `$'`/`$&` as special patterns.
+    const sql = v1.sql.replace(nPlaceholders, () => jsonForm);
     // The N element params (wherever the IN-list sits in the param stream) collapse to
     // ONE JSON string param, in the same position. Locate the contiguous `values` run.
     const p = v1.params;

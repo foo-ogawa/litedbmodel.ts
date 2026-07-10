@@ -1,26 +1,30 @@
 /**
  * REAL-DB result-parity tests for the single-JSON-param array/batch forms (epic #43/#45).
  *
- * The MySQL/SQLite JSON forms (`MEMBER OF` / `JSON_TABLE` / `json_each`) INTENTIONALLY
- * deviate from v1's `IN (?, …)` / multi-VALUES / `VALUES ROW` / `CASE WHEN` SQL TEXT — so
+ * The MySQL/SQLite JSON forms (`JSON_TABLE` subquery / `json_each`) INTENTIONALLY deviate
+ * from v1's `IN (?, …)` / multi-VALUES / `VALUES ROW` / `CASE WHEN` SQL TEXT — so
  * byte-matching is the wrong bar for these dialects. The bar is RESULT PARITY: the NEW
  * JSON-form query must return the SAME rows / leave the SAME post-write DB state as v1's
  * N-placeholder form, on a REAL MySQL 8 + SQLite, over the same seed.
  *
- * Each case below runs BOTH forms:
+ * Each case runs BOTH forms against identical seed in isolated tables:
  *   - v1-form  = the ORIGINAL builders (`mysql|sqliteSqlBuilder.buildInsert/buildUpdateMany`,
  *                `new DBConditions(...)` IN-list) — the baseline this library shipped.
- *   - JSON-form = the NEW compile (`mysqlInsertJson`/`sqliteInsertJson`,
- *                `mysqlUpdateManyJson`/`sqliteUpdateManyJson`, `inListJson`) — one JSON param.
- * against identical seed data in isolated tables, then asserts identical result sets /
- * identical post-write state. Coverage: IN-list (incl. empty), createMany (homogeneous +
- * heterogeneous grouped + DEFAULT/undefined omission), updateMany + SKIP, and type
- * round-trips (int / bigint / decimal / text / bool / null).
+ *   - JSON-form = the ACTUAL compile path (`compileWhere` for IN-list — so the empty-array
+ *                case exercises the REAL routed `1 = 0`, not a faked re-run of v1;
+ *                `mysqlInsertJson`/`sqliteInsertJson`, `mysqlUpdateManyJson`/
+ *                `sqliteUpdateManyJson`) — one JSON param.
+ * Coverage: IN-list incl. CROSS-TYPE (int-col × string values, text-col × int values),
+ * bigint, decimal, and empty (routed `1 = 0`); createMany (homogeneous + heterogeneous
+ * grouped + DEFAULT/undefined omission); updateMany + SKIP; type round-trips
+ * (int/bigint/decimal/text/bool/null). (The DBToken(`NOW()`)-fallback pin lives in the
+ * byte-golden suite `makesql-golden.test.ts`, since it asserts v1 TEXT identity.)
  *
- * SQLite runs in-process (better-sqlite3, always available). MySQL requires the docker
- * MySQL 8 (`docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml up -d
- * mysql`, host localhost:3307). If MySQL is unreachable the MySQL leg is skipped with a
- * clear message; SQLite always runs. PostgreSQL is NOT tested here — it is unchanged.
+ * SQLite runs in-process (better-sqlite3, always available). MySQL requires docker MySQL 8
+ * (`npm run docker:livedb:up`, host localhost:3307). This suite is a PARITY PROOF, so a
+ * MySQL leg that cannot reach the DB FAILS (throws) rather than silently skipping — a
+ * green run without MySQL must never be mistaken for "parity proven". SQLite always runs.
+ * PostgreSQL is NOT tested here — it is unchanged.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -30,7 +34,9 @@ import { DBConditions } from '../../src/DBConditions';
 import { mysqlSqlBuilder } from '../../src/drivers/MysqlSqlBuilder';
 import { sqliteSqlBuilder } from '../../src/drivers/SqliteSqlBuilder';
 import {
-  inListJson,
+  compileWhere,
+  assembleMakeSQL,
+  renderPlaceholders,
   mysqlInsertJson,
   sqliteInsertJson,
   mysqlUpdateManyJson,
@@ -50,22 +56,32 @@ const MY = {
 };
 
 let myConn: mysql.Connection | undefined;
-let mysqlUp = false;
+let mysqlErr: string | undefined;
 
 beforeAll(async () => {
   try {
     myConn = await mysql.createConnection({ ...MY, multipleStatements: false });
     await myConn.query('SELECT 1');
-    mysqlUp = true;
   } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn(`[json-array-parity] MySQL not reachable at ${MY.host}:${MY.port} — MySQL leg skipped (${(e as Error).message}). Bring it up: docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml up -d mysql`);
+    mysqlErr = (e as Error).message;
   }
 });
 
 afterAll(async () => {
   if (myConn) await myConn.end();
 });
+
+/**
+ * Guard for MySQL-leg tests: FAIL (throw) when MySQL is unreachable — this suite is a
+ * parity PROOF, so a MySQL leg with no DB must not pass silently (coordinator BLOCKER #3).
+ */
+function requireMysql(): void {
+  if (!myConn) {
+    throw new Error(
+      `[json-array-parity] MySQL is REQUIRED for this parity proof but is unreachable at ${MY.host}:${MY.port} — ${mysqlErr}. Bring it up: npm run docker:livedb:up`
+    );
+  }
+}
 
 /** Run a query on MySQL, return row objects (plain). */
 async function my(sql: string, params: unknown[]): Promise<Record<string, unknown>[]> {
@@ -82,82 +98,95 @@ function sqliteDb(): Database.Database {
 // v1-form vs JSON-form builders per surface (dialect-parameterized).
 // ---------------------------------------------------------------------------
 
-/** v1 IN-list: `col IN (?, …)` via DBConditions. */
+type Dialect = 'mysql' | 'sqlite';
+
+/** v1 IN-list WHERE core: `col IN (?, …)` / empty `1 = 0` via the ORIGINAL DBConditions. */
 function v1InList(col: string, values: unknown[]): { sql: string; params: unknown[] } {
   const params: unknown[] = [];
   const where = new DBConditions({ [col]: values }).compile(params);
   return { sql: where, params };
 }
 
-// ===========================================================================
-// Test bodies — run for MySQL (if up) and SQLite. Each returns nothing; asserts inside.
-// ===========================================================================
+/**
+ * JSON-form IN-list WHERE core via the ACTUAL compile path (`compileWhere`) — the SAME
+ * code production runs. For MySQL/SQLite a non-empty array becomes the JSON-subquery
+ * form (ONE param); an EMPTY array is ROUTED to v1's `1 = 0` (no param). Rendered to the
+ * dialect placeholder form (a no-op for MySQL/SQLite). This is what proves the empty case
+ * goes through the real routing rather than a faked re-run (coordinator BLOCKER #2).
+ */
+function jsonInList(col: string, values: unknown[], dialect: Dialect): { sql: string; params: unknown[] } {
+  const bundle = compileWhere({ [col]: values }, dialect);
+  const asm = assembleMakeSQL(bundle);
+  return { sql: renderPlaceholders(asm.sql, dialect), params: asm.params };
+}
 
-type Dialect = 'mysql' | 'sqlite';
+// ===========================================================================
+// Test bodies — SQLite always runs; MySQL FAILS if unreachable (parity proof).
+// ===========================================================================
 
 describe('JSON-form == v1-form RESULT PARITY on real MySQL 8 + SQLite (epic #43/#45)', () => {
-  // ---- IN-list ----------------------------------------------------------
-  for (const dialect of ['mysql', 'sqlite'] as Dialect[]) {
-    it(`[${dialect}] IN-list (int/text/empty): JSON-form returns identical rows to v1-form`, async () => {
-      if (dialect === 'mysql' && !mysqlUp) return;
+  // ---- IN-list (incl. CROSS-TYPE, bigint, decimal, empty) ---------------
+  //
+  // Cross-type is the case that killed `MEMBER OF` (coordinator MAJOR #1): an int column
+  // compared against JSON STRING values (or a text column against JSON numbers) must
+  // coerce EXACTLY like v1's `col IN (list)`. The JSON-subquery form (MySQL JSON_TABLE /
+  // SQLite json_each) inherits that coercion; strict-JSON `MEMBER OF` did not.
+  const inCases: Array<{ label: string; col: string; values: unknown[] }> = [
+    { label: 'int col × int values', col: 'id', values: [1, 3, 10] },
+    { label: 'int col × STRING values (cross-type)', col: 'id', values: ['1', '10'] },
+    { label: 'text col × text values', col: 'code', values: ['AB', 'EF'] },
+    { label: 'text col × INT values (cross-type)', col: 'code', values: [2, 10] },
+    // Large 64-bit ints exceed JS Number precision, so they travel as strings (the only
+    // JSON-safe representation); the JSON-subquery form coerces them back exactly like v1.
+    { label: 'bigint col (precision, as strings)', col: 'big', values: ['9007199254740993', '9223372036854775807'] },
+    { label: 'decimal col (precision)', col: 'price', values: ['12345.678900', '0.001000'] },
+    { label: 'empty → routed 1 = 0 (no rows)', col: 'id', values: [] },
+    { label: 'int col, one absent', col: 'id', values: [10, 5, 999] },
+  ];
+  // Seed rows: bigint values bound as strings to survive JSON round-trip without float loss.
+  const inSeed = [
+    { id: 1, code: 'AB', big: '9007199254740993', price: '12345.678900' },
+    { id: 2, code: 'CD', big: '2', price: '0.001000' },
+    { id: 3, code: 'EF', big: '9223372036854775807', price: '5.250000' },
+    { id: 10, code: 'ZZ', big: '5', price: '99.990000' },
+  ];
 
-      const seed = [
-        { id: 1, code: 'AB', qty: 10 },
-        { id: 2, code: 'CD', qty: 20 },
-        { id: 3, code: 'EF', qty: 30 },
-        { id: 10, code: 'ZZ', qty: 5 },
-      ];
+  it('[sqlite] IN-list (cross-type/bigint/decimal/empty): JSON-form == v1-form rows', () => {
+    const db = sqliteDb();
+    db.exec('CREATE TABLE t(id INTEGER PRIMARY KEY, code TEXT, big INTEGER, price REAL)');
+    const ins = db.prepare('INSERT INTO t VALUES (?,?,?,?)');
+    for (const r of inSeed) ins.run(r.id, r.code, r.big, r.price);
+    for (const { label, col, values } of inCases) {
+      const v1 = v1InList(col, values);
+      const v1Rows = db.prepare(`SELECT id FROM t WHERE ${v1.sql} ORDER BY id`).all(...(v1.params as never[]));
+      const j = jsonInList(col, values, 'sqlite');
+      const jsonRows = db.prepare(`SELECT id FROM t WHERE ${j.sql} ORDER BY id`).all(...(j.params as never[]));
+      expect(jsonRows, `sqlite IN-list parity: ${label}`).toEqual(v1Rows);
+      // Non-empty JSON form must be exactly ONE param (no N-explosion); empty → routed 1=0, zero params.
+      expect(j.params.length).toBe(values.length === 0 ? 0 : 1);
+    }
+    db.close();
+  });
 
-      const cases: Array<{ col: string; values: unknown[] }> = [
-        { col: 'id', values: [1, 3, 10] }, // int IN-list
-        { col: 'code', values: ['AB', 'EF'] }, // text IN-list
-        { col: 'id', values: [] }, // empty → no rows (both forms → 1=0 / MEMBER OF [])
-        { col: 'qty', values: [10, 5, 999] }, // int, one absent
-      ];
-
-      if (dialect === 'sqlite') {
-        const db = sqliteDb();
-        db.exec('CREATE TABLE t(id INTEGER PRIMARY KEY, code TEXT, qty INTEGER)');
-        const ins = db.prepare('INSERT INTO t VALUES (?,?,?)');
-        for (const r of seed) ins.run(r.id, r.code, r.qty);
-        for (const { col, values } of cases) {
-          const v1 = v1InList(col, values);
-          const v1Rows = db.prepare(`SELECT * FROM t WHERE ${v1.sql} ORDER BY id`).all(...v1.params);
-          let jsonRows: unknown[];
-          if (values.length === 0) {
-            // Empty: JSON form keeps v1's `1 = 0` (verified below to equal v1 empty result).
-            jsonRows = db.prepare(`SELECT * FROM t WHERE ${v1.sql} ORDER BY id`).all(...v1.params);
-          } else {
-            const j = inListJson('sqlite', col, values);
-            jsonRows = db.prepare(`SELECT * FROM t WHERE ${j.sql} ORDER BY id`).all(j.param);
-          }
-          expect(jsonRows).toEqual(v1Rows);
-        }
-        db.close();
-      } else {
-        await my('DROP TABLE IF EXISTS pj_t', []);
-        await my('CREATE TABLE pj_t(id INT PRIMARY KEY, code VARCHAR(20), qty INT)', []);
-        for (const r of seed) await my('INSERT INTO pj_t VALUES (?,?,?)', [r.id, r.code, r.qty]);
-        for (const { col, values } of cases) {
-          const v1 = v1InList(col, values);
-          const v1Rows = await my(`SELECT * FROM pj_t WHERE ${v1.sql} ORDER BY id`, v1.params);
-          let jsonRows: Record<string, unknown>[];
-          if (values.length === 0) {
-            jsonRows = await my(`SELECT * FROM pj_t WHERE ${v1.sql} ORDER BY id`, v1.params);
-          } else {
-            const j = inListJson('mysql', col, values);
-            jsonRows = await my(`SELECT * FROM pj_t WHERE ${j.sql} ORDER BY id`, [j.param]);
-          }
-          expect(jsonRows).toEqual(v1Rows);
-        }
-      }
-    });
-  }
+  it('[mysql] IN-list (cross-type/bigint/decimal/empty): JSON-form == v1-form rows', async () => {
+    requireMysql();
+    await my('DROP TABLE IF EXISTS pj_t', []);
+    await my('CREATE TABLE pj_t(id INT PRIMARY KEY, code VARCHAR(20), big BIGINT, price DECIMAL(20,6))', []);
+    for (const r of inSeed) await my('INSERT INTO pj_t VALUES (?,?,?,?)', [r.id, r.code, r.big, r.price]);
+    for (const { label, col, values } of inCases) {
+      const v1 = v1InList(col, values);
+      const v1Rows = await my(`SELECT id FROM pj_t WHERE ${v1.sql} ORDER BY id`, v1.params);
+      const j = jsonInList(col, values, 'mysql');
+      const jsonRows = await my(`SELECT id FROM pj_t WHERE ${j.sql} ORDER BY id`, j.params);
+      expect(jsonRows, `mysql IN-list parity: ${label}`).toEqual(v1Rows);
+      expect(j.params.length).toBe(values.length === 0 ? 0 : 1);
+    }
+  });
 
   // ---- createMany (homogeneous + heterogeneous grouped + DEFAULT omission) --------
   for (const dialect of ['mysql', 'sqlite'] as Dialect[]) {
     it(`[${dialect}] createMany (homogeneous + types): JSON-form state == v1-form state`, async () => {
-      if (dialect === 'mysql' && !mysqlUp) return;
+      if (dialect === 'mysql') requireMysql();
 
       // Mixed types: int id, text name, decimal score, bool active, nullable note.
       // Booleans arrive at the builders already SERIALIZED to 0/1 (what v1's DBModel does
@@ -209,7 +238,7 @@ describe('JSON-form == v1-form RESULT PARITY on real MySQL 8 + SQLite (epic #43/
   // ---- heterogeneous createMany (grouped) + DEFAULT/undefined omission ----
   for (const dialect of ['mysql', 'sqlite'] as Dialect[]) {
     it(`[${dialect}] heterogeneous createMany (grouped, DEFAULT-omitted): JSON-form state == v1-form state`, async () => {
-      if (dialect === 'mysql' && !mysqlUp) return;
+      if (dialect === 'mysql') requireMysql();
 
       // Rows with DIFFERENT column subsets → `compileInsertMany` emits ONE component per
       // sorted-column-set group (age omitted where undefined). v1 baseline runs the SAME
@@ -266,7 +295,7 @@ describe('JSON-form == v1-form RESULT PARITY on real MySQL 8 + SQLite (epic #43/
   // ---- updateMany + SKIP ------------------------------------------------
   for (const dialect of ['mysql', 'sqlite'] as Dialect[]) {
     it(`[${dialect}] updateMany + SKIP: JSON-form state == v1-form state`, async () => {
-      if (dialect === 'mysql' && !mysqlUp) return;
+      if (dialect === 'mysql') requireMysql();
 
       const keyColumns = ['id'];
       const updateColumns = ['name', 'age'];
@@ -326,7 +355,7 @@ describe('JSON-form == v1-form RESULT PARITY on real MySQL 8 + SQLite (epic #43/
   // ---- Type round-trip (int / bigint / decimal / text / bool / null) via createMany ----
   for (const dialect of ['mysql', 'sqlite'] as Dialect[]) {
     it(`[${dialect}] type round-trip: JSON-form == v1-form for int/bigint/decimal/text/bool/null`, async () => {
-      if (dialect === 'mysql' && !mysqlUp) return;
+      if (dialect === 'mysql') requireMysql();
 
       // `flag` serialized to 0/1 (as v1 runtime does); `dec_val` avoids MySQL's reserved `dec`.
       const columns = ['id', 'big', 'dec_val', 'txt', 'flag', 'maybe'];

@@ -222,6 +222,10 @@ export function mysqlUpdateManyJson(opts: JsonUpdateManyOptions): MakeSQL {
   });
   const onConditions = keyColumns.map((k) => `u.${k} = ${selectExprOf.get(k)!(`v.${k}`)}`);
 
+  // Target aliased `u`, JSON_TABLE derived rows aliased `v`; the two aliases only need to
+  // differ from each other so `u.col` / `v.col` are unambiguous. (v1's MySQL builder used
+  // `AS t`; `u` here just keeps the target distinct from the `v` derived table — not a
+  // correctness requirement, purely disambiguation.)
   let sql =
     `UPDATE ${tableName} AS u ` +
     `JOIN JSON_TABLE(?, '$[*]' COLUMNS(${jtCols.join(', ')})) AS v ` +
@@ -232,21 +236,21 @@ export function mysqlUpdateManyJson(opts: JsonUpdateManyOptions): MakeSQL {
 }
 
 /**
- * Build the SQLite single-JSON-param batch UPDATE: `CASE WHEN` over `json_each(?)`,
- * SKIP preserved. The single json param carries every row (keys + update values +
- * `_skip_c` flags). Each update column becomes
- *   `c = CASE <key-match rows> WHEN <key>=<row.key> THEN (skip? t.c : row.c) … END`
- * driven by scanning the SAME json array via correlated `json_each` subqueries, and the
- * WHERE limits to the affected keys via `k IN (SELECT json_extract(value,'$.k') FROM
- * json_each(?))`.
+ * Build the SQLite batch UPDATE over `json_each(?)`, SKIP preserved. A single JSON
+ * array-of-objects (keys + update values + `_skip_c` flags) carries every row.
  *
- * To keep it ONE param and static text, the CASE is expressed with per-row correlated
- * lookups into the json array using the row index: for update column `c` and key `k`,
+ * NOTE on params: the SAME one JSON string is bound to EACH `?` — one per update column's
+ * correlated sub-SELECT plus one for the WHERE — so `params` has `updateColumns.length + 1`
+ * entries, ALL equal to that single JSON value. The row COUNT never multiplies the param
+ * count (the N-placeholder explosion is what this replaces); the repetition is only across
+ * the (fixed) number of SET columns, and the SQL text stays static regardless of row count.
+ *
+ * Each update column becomes a correlated lookup into the json array by matching key(s):
  *   `c = (SELECT CASE WHEN json_extract(je.value,'$._skip_c') THEN <table>.c
  *                     ELSE json_extract(je.value,'$.c') END
  *         FROM json_each(?) je
  *         WHERE json_extract(je.value,'$.k') = <table>.k [AND …] LIMIT 1)`
- * and the WHERE clause restricts rows to the affected keys.
+ * and the WHERE clause restricts affected rows to the keys present in the json array.
  */
 export function sqliteUpdateManyJson(opts: JsonUpdateManyOptions): MakeSQL {
   const { tableName, keyColumns, updateColumns, records, skipMap = new Map(), returning } = opts;

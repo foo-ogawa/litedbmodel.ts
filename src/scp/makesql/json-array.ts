@@ -10,9 +10,11 @@
  * avoids that explosion (`= ANY(?::t[])` / `UNNEST(?::t[])` binds the whole array as a
  * SINGLE param). This module gives MySQL/SQLite the same one-param property by moving
  * the expansion SERVER-side: the array (or the batch rows) is encoded as ONE JSON
- * string param and expanded inside the engine with `MEMBER OF` / `JSON_TABLE`
- * (MySQL 8.0.17+) and `json_each` / `json_extract` (SQLite json1, always present via
- * better-sqlite3).
+ * string param and expanded inside the engine with a `JSON_TABLE` subquery
+ * (MySQL 8.0.4+) and `json_each` / `json_extract` (SQLite json1, always present via
+ * better-sqlite3). The IN-list uses a `col IN (SELECT … JSON_TABLE …)` SUBQUERY (NOT
+ * `MEMBER OF`) precisely so it inherits v1's `col IN (list)` type coercion — `MEMBER OF`
+ * does strict JSON-type comparison and DIVERGES from v1 on cross-type IN-lists.
  *
  * This is an owner-approved improvement OVER v1 — so the emitted SQL TEXT for
  * MySQL/SQLite array/batch surfaces intentionally differs from v1. The correctness bar
@@ -35,24 +37,35 @@ import type { Dialect } from './handler';
 export type JsonArrayDialect = 'mysql' | 'sqlite';
 
 /**
- * The MySQL/SQLite IN-list JSON form for a plain `col IN [values]` condition.
+ * The MySQL/SQLite IN-list JSON form for a plain `col IN [values]` condition — a
+ * SUBQUERY form so it inherits the SAME comparison rules as v1's `col IN (list)`
+ * (crucially, MySQL's/SQLite's implicit type coercion), guaranteeing RESULT PARITY.
  *
- * - MySQL: `col MEMBER OF (CAST(? AS JSON))` — `MEMBER OF` (8.0.17+) auto-casts the
- *   left column to JSON and does a type-aware membership test, so it needs NO declared
- *   element type (unlike `JSON_TABLE`), which is exactly right here because the IN-list
- *   condition path (`DBConditions`) carries no column type. Verified type-correct on
- *   real MySQL 8 for int / bigint / decimal / string keys.
+ * - MySQL: `col IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH
+ *   '$')) jt)`. `col IN (subquery)` uses the SAME type-coercion rules as `col IN (list)`
+ *   — so e.g. an int column compared against JSON string values `["1","10"]` matches v1
+ *   exactly (whereas `MEMBER OF` does STRICT JSON-type comparison and DIVERGES — proven
+ *   on real MySQL 8). The `v JSON PATH '$'` + `JSON_UNQUOTE` extraction preserves
+ *   arbitrary-length text (avoiding CHAR's 255 truncation-to-NULL) and full bigint /
+ *   decimal precision, while yielding a value MySQL then coerces to the column type just
+ *   like a literal in the IN-list. NO column type is required (right, since the IN
+ *   condition path `DBConditions` carries none).
  * - SQLite: `col IN (SELECT value FROM json_each(?))` — `json_each` yields each element
- *   with its natural (dynamic) type; SQLite's own affinity handles the comparison.
+ *   with its natural (dynamic) type and the IN-subquery inherits SQLite's affinity
+ *   comparison, matching v1 (incl. cross-type int-col × string values).
  *
  * The single param is the JSON-encoded array string (`[1,2,3]`). Empty arrays are NOT
  * routed here — the caller keeps v1's `1 = 0` for the empty case (no param, exact v1
- * empty semantics).
+ * empty semantics). Cross-type / bigint / decimal parity vs v1 is proven on real
+ * MySQL 8 + SQLite in `test/scp/json-array-parity.test.ts`.
  */
 export function inListJson(dialect: JsonArrayDialect, col: string, values: unknown[]): { sql: string; param: string } {
   const param = JSON.stringify(values);
   if (dialect === 'mysql') {
-    return { sql: `${col} MEMBER OF (CAST(? AS JSON))`, param };
+    return {
+      sql: `${col} IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)`,
+      param,
+    };
   }
   return { sql: `${col} IN (SELECT value FROM json_each(?))`, param };
 }
