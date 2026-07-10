@@ -569,8 +569,23 @@ fn my_rows_to_values(rows: &[MySqlRow]) -> Result<Vec<Value>, SqlFailure> {
     Ok(out)
 }
 
-/// Parse `INSERT [IGNORE] INTO <table> ( … ) … RETURNING <cols>` → (table, cols, stripped-insert).
-fn parse_mysql_returning(sql: &str) -> Option<(String, String, String)> {
+/// The parsed pieces of an `INSERT … RETURNING` for the MySQL RETURNING emulation.
+struct MysqlReturning {
+    table: String,
+    /// RETURNING columns text with the strip-before-execute PK hint removed.
+    cols: String,
+    /// The INSERT with the RETURNING clause AND the PK hint stripped (byte-clean for execution).
+    insert: String,
+    /// The real PK columns (from the ` /*scp:pk=…*/` hint); empty ⇒ legacy `id` path.
+    pk_cols: Vec<String>,
+    /// The AUTO_INCREMENT column name (from the hint), or empty for a client-supplied PK.
+    auto_inc: String,
+    /// The INSERT column list (for pulling client-PK values by position).
+    insert_cols: Vec<String>,
+}
+
+/// Parse `INSERT [IGNORE] INTO <table> ( … ) … RETURNING <cols> [/*scp:pk=…;ai=…*/]`.
+fn parse_mysql_returning(sql: &str) -> Option<MysqlReturning> {
     let lower = sql.to_ascii_lowercase();
     let ret_pos = lower.rfind(" returning ")?;
     let trimmed = lower.trim_start();
@@ -583,9 +598,76 @@ fn parse_mysql_returning(sql: &str) -> Option<(String, String, String)> {
         .chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect();
-    let cols = sql[ret_pos + " returning ".len()..].trim().to_string();
-    let insert = sql[..ret_pos].to_string();
-    Some((table, cols, insert))
+    let cols_raw = sql[ret_pos + " returning ".len()..].trim().to_string();
+    let insert_raw = sql[..ret_pos].to_string();
+
+    // Parse + strip the PK hint ` /*scp:pk=col1,col2;ai=<col|>*/`.
+    let (pk_cols, auto_inc) = parse_pk_hint(&cols_raw);
+    let cols = strip_pk_hint(&cols_raw).trim().to_string();
+    let insert = strip_pk_hint(&insert_raw);
+
+    // Parse the INSERT column list `INSERT [IGNORE] INTO <t> (c1, c2, …)`.
+    let insert_cols = parse_insert_cols(&insert);
+
+    Some(MysqlReturning {
+        table,
+        cols,
+        insert,
+        pk_cols,
+        auto_inc,
+        insert_cols,
+    })
+}
+
+/// Strip a ` /*scp:pk=…*/` hint comment from a fragment.
+fn strip_pk_hint(s: &str) -> String {
+    if let (Some(a), Some(rel)) = (s.find("/*scp:pk="), s.find("*/")) {
+        // `rel` is the FIRST `*/`; guard it comes after the hint start.
+        if rel > a {
+            let mut out = String::new();
+            out.push_str(s[..a].trim_end());
+            out.push_str(&s[rel + 2..]);
+            return out;
+        }
+    }
+    s.to_string()
+}
+
+/// Parse the PK hint → (pk_columns, auto_inc). Absent ⇒ (empty, empty).
+fn parse_pk_hint(s: &str) -> (Vec<String>, String) {
+    let start = match s.find("/*scp:pk=") {
+        Some(i) => i + "/*scp:pk=".len(),
+        None => return (Vec::new(), String::new()),
+    };
+    let rest = &s[start..];
+    let end = match rest.find("*/") {
+        Some(i) => i,
+        None => return (Vec::new(), String::new()),
+    };
+    let body = &rest[..end]; // `col1,col2;ai=<col|>`
+    let mut parts = body.splitn(2, ";ai=");
+    let cols_part = parts.next().unwrap_or("");
+    let ai = parts.next().unwrap_or("").trim().to_string();
+    let pk_cols: Vec<String> = cols_part
+        .split(',')
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect();
+    (pk_cols, ai)
+}
+
+/// Parse the INSERT column list `INSERT [IGNORE] INTO <t> (c1, c2, …)`.
+fn parse_insert_cols(insert: &str) -> Vec<String> {
+    if let (Some(open), Some(close)) = (insert.find('('), insert.find(')')) {
+        if close > open {
+            return insert[open + 1..close]
+                .split(',')
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty())
+                .collect();
+        }
+    }
+    Vec::new()
 }
 
 impl PreparedStatement for MyPrepared<'_> {
@@ -599,30 +681,71 @@ impl PreparedStatement for MyPrepared<'_> {
         // DISTINCT parallel-read threads never contend for the same connection.
         let mut pinned = driver.writer.lock().unwrap().take();
         let result = driver.rt.block_on(async {
-            // MySQL RETURNING emulation: strip → INSERT → re-select the AUTO_INCREMENT PK's cols.
-            if let Some((table, cols, insert_sql)) = parse_mysql_returning(&sql) {
-                let q = bind_my(sqlx::query(&insert_sql), &params)?;
-                let last_id = match pinned.as_mut() {
+            // MySQL RETURNING emulation: strip → INSERT → re-select the inserted rows by the REAL
+            // primary key. The strip-before-execute PK hint (tx.ts mysqlPkHint) carries the PK
+            // columns + the AUTO_INCREMENT column, so the re-select keys off an AUTO_INCREMENT range
+            // (int identity) or the client-supplied PK values (UUID / composite) pulled from the
+            // bound INSERT params — NOT a hardcoded `WHERE id = ?` (which breaks for UUID/composite).
+            if let Some(r) = parse_mysql_returning(&sql) {
+                let q = bind_my(sqlx::query(&r.insert), &params)?;
+                let exec_res = match pinned.as_mut() {
                     Some(conn) => q
                         .execute(&mut **conn)
                         .await
-                        .map_err(|e| driver_failure(format!("mysql exec insert: {e}")))?
-                        .last_insert_id() as i64,
+                        .map_err(|e| driver_failure(format!("mysql exec insert: {e}")))?,
                     None => q
                         .execute(&driver.pool)
                         .await
-                        .map_err(|e| driver_failure(format!("mysql exec insert: {e}")))?
-                        .last_insert_id() as i64,
+                        .map_err(|e| driver_failure(format!("mysql exec insert: {e}")))?,
                 };
-                let sel = format!("SELECT {cols} FROM {table} WHERE id = ?");
-                let rows = match pinned.as_mut() {
-                    Some(conn) => sqlx::query(&sel).bind(last_id).fetch_all(&mut **conn).await,
-                    None => {
-                        sqlx::query(&sel)
-                            .bind(last_id)
-                            .fetch_all(&driver.pool)
-                            .await
+                let last_id = exec_res.last_insert_id() as i64;
+                let affected = exec_res.rows_affected().max(1) as i64;
+
+                // Build the re-select WHERE + its bound params.
+                let (where_sql, where_params): (String, Vec<Value>) = if r.pk_cols.is_empty() {
+                    ("id = ?".to_string(), vec![Value::Int(last_id)])
+                } else if !r.auto_inc.is_empty()
+                    && r.pk_cols.len() == 1
+                    && r.pk_cols[0] == r.auto_inc
+                {
+                    (
+                        format!("{ai} >= ? AND {ai} < ?", ai = r.auto_inc),
+                        vec![Value::Int(last_id), Value::Int(last_id + affected)],
+                    )
+                } else {
+                    // Client-supplied PK: pull each PK column's inserted value from the bound
+                    // INSERT params by column position (single-row client-PK insert).
+                    let mut conds: Vec<String> = Vec::new();
+                    let mut vals: Vec<Value> = Vec::new();
+                    let mut ok = true;
+                    for pk in &r.pk_cols {
+                        match r.insert_cols.iter().position(|c| c == pk) {
+                            Some(idx) if idx < params.len() => {
+                                conds.push(format!("{pk} = ?"));
+                                vals.push(params[idx].clone());
+                            }
+                            _ => {
+                                ok = false;
+                                break;
+                            }
+                        }
                     }
+                    if ok {
+                        (conds.join(" AND "), vals)
+                    } else {
+                        ("id = ?".to_string(), vec![Value::Int(last_id)])
+                    }
+                };
+
+                let sel = format!(
+                    "SELECT {cols} FROM {table} WHERE {where_sql}",
+                    cols = r.cols,
+                    table = r.table
+                );
+                let q2 = bind_my(sqlx::query(&sel), &where_params)?;
+                let rows = match pinned.as_mut() {
+                    Some(conn) => q2.fetch_all(&mut **conn).await,
+                    None => q2.fetch_all(&driver.pool).await,
                 }
                 .map_err(|e| driver_failure(format!("mysql re-select: {e}")))?;
                 return my_rows_to_values(&rows);

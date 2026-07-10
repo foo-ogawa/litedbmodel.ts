@@ -177,6 +177,11 @@ _DOLLAR_RE = re.compile(r"\$\d+")
 # `INSERT INTO <table> (...) ... RETURNING <cols>` — MySQL RETURNING emulation parse.
 _RETURNING_RE = re.compile(r"\s+RETURNING\s+(.+?)\s*$", re.IGNORECASE | re.DOTALL)
 _INSERT_TABLE_RE = re.compile(r"^\s*INSERT\s+(?:IGNORE\s+)?INTO\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+# The INSERT column list `INSERT [IGNORE] INTO <t> (c1, c2, …)` — for extracting client-PK values.
+_INSERT_COLS_RE = re.compile(r"^\s*INSERT\s+(?:IGNORE\s+)?INTO\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)", re.IGNORECASE)
+# The strip-before-execute PK hint the mysql bundle appends to an INSERT…RETURNING (tx.ts mysqlPkHint):
+#   ` /*scp:pk=col1,col2;ai=<autoIncCol|>*/`
+_PK_HINT_RE = re.compile(r"\s*/\*scp:pk=([^;*]*);ai=([^*]*)\*/", re.IGNORECASE)
 
 
 def _dollar_to_pyformat(sql: str) -> str:
@@ -197,6 +202,51 @@ _TXN_CONTROL = frozenset({"BEGIN", "COMMIT", "ROLLBACK", "START TRANSACTION"})
 
 def _is_txn_control(sql: str) -> bool:
     return sql.strip().upper() in _TXN_CONTROL
+
+
+def _parse_pk_hint(returning_cols: str):
+    """Parse the ` /*scp:pk=col1,col2;ai=<col|>*/` PK hint out of the RETURNING-cols text.
+
+    Returns ``(pk_columns, auto_inc_or_None)``. Absent hint → ``([], None)`` (legacy path).
+    """
+    hm = _PK_HINT_RE.search(returning_cols)
+    if hm is None:
+        return [], None
+    cols = [c.strip() for c in hm.group(1).split(",") if c.strip()]
+    ai = hm.group(2).strip()
+    return cols, (ai or None)
+
+
+def _returning_reselect_where(insert_sql, pk_cols, auto_inc, params, last_id, affected):
+    """Build the MySQL RETURNING re-select WHERE (SQL body with `?` + its params).
+
+    - AUTO_INCREMENT single-column PK: a range on the identity column covering the ``affected`` rows
+      just inserted (v1 `WHERE id >= ? AND id < ?` semantics, generalized to the real column name).
+    - Client-supplied PK (UUID / composite, ``auto_inc`` is None): the PK value(s) are among the
+      bound INSERT params — extract them by matching each PK column to its position in the INSERT
+      column list, and key the re-select `WHERE pk1 = ? AND …` on those inserted values.
+    - No hint (legacy): fall back to `id = ?` bound to LAST_INSERT_ID (the pre-fix auto-`id` path).
+    """
+    if not pk_cols:
+        return "id = ?", [last_id]
+    if auto_inc is not None and pk_cols == [auto_inc]:
+        return f"{auto_inc} >= ? AND {auto_inc} < ?", [last_id, last_id + affected]
+    # Client-supplied PK: pull each PK column's inserted value from the bound INSERT params by its
+    # column position (single-row client-PK insert; the corpus UUID / composite cases are single-row).
+    cm = _INSERT_COLS_RE.match(insert_sql)
+    if cm is None:
+        raise ValueError(f"scp mysql driver: cannot locate INSERT column list for PK re-select: {insert_sql!r}")
+    insert_cols = [c.strip() for c in cm.group(1).split(",")]
+    conds = []
+    vals = []
+    for pk in pk_cols:
+        try:
+            idx = insert_cols.index(pk)
+        except ValueError:
+            raise ValueError(f"scp mysql driver: PK column '{pk}' not in INSERT columns {insert_cols}")
+        conds.append(f"{pk} = ?")
+        vals.append(params[idx])
+    return " AND ".join(conds), vals
 
 
 class _PooledPrepared:
@@ -245,12 +295,19 @@ class _PooledPrepared:
 
     def _run_all(self, conn: Any) -> List[Dict[str, Any]]:
         xform = self._driver._xform
-        # MySQL has no RETURNING: strip it, run the INSERT, re-select the inserted PK's columns.
+        # MySQL has no RETURNING: strip it, run the INSERT, re-select the inserted rows by the REAL
+        # primary key. The strip-before-execute PK hint (tx.ts mysqlPkHint) carries the PK columns +
+        # the AUTO_INCREMENT column so the re-select keys off the actual PK — an AUTO_INCREMENT range
+        # for an int identity, or the client-supplied PK values (UUID / composite) pulled from the
+        # bound INSERT params — NOT a hardcoded `WHERE id = ?` (which breaks for UUID / composite PKs).
         if self._driver._emulate_returning:
             m = _RETURNING_RE.search(self._sql)
             if m is not None:
                 returning_cols = m.group(1)
-                insert_sql = self._sql[: m.start()]
+                pk_cols, auto_inc = _parse_pk_hint(returning_cols)
+                # Strip the hint from the returning-cols text (it is NOT a real column list).
+                returning_cols = _PK_HINT_RE.sub("", returning_cols).strip()
+                insert_sql = _PK_HINT_RE.sub("", self._sql[: m.start()])
                 table_m = _INSERT_TABLE_RE.match(insert_sql)
                 if table_m is None:
                     raise ValueError(
@@ -260,9 +317,13 @@ class _PooledPrepared:
                 cur = conn.cursor()
                 cur.execute(xform(insert_sql), tuple(self._params))
                 last_id = cur.lastrowid
+                affected = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 1
                 cur.close()
+                where_sql, where_params = _returning_reselect_where(
+                    insert_sql, pk_cols, auto_inc, list(self._params), last_id, affected
+                )
                 sel = conn.cursor()
-                sel.execute(f"SELECT {returning_cols} FROM {table} WHERE id = %s", (last_id,))
+                sel.execute(xform(f"SELECT {returning_cols} FROM {table} WHERE {where_sql}"), tuple(where_params))
                 rows = self._fetch_all(sel)
                 sel.close()
                 return rows

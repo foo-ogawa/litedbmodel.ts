@@ -192,7 +192,7 @@ export type {
   WriteRecorder,
 } from './writes';
 
-export { deriveTransactionPlan, executeTransaction, countingDriver, renderTxStatement, compileWriteNode } from './makesql';
+export { deriveTransactionPlan, executeTransaction, countingDriver, renderTxStatement, compileWriteNode, mysqlPkHint, stripMysqlPkHint } from './makesql';
 export type {
   TxExpr,
   TxOp,

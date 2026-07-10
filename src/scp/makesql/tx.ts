@@ -97,6 +97,15 @@ export interface TxOp {
   readonly sql: string;
   /** Deferred param slots — closed-set Expression IR (`{ref:…}` / literal / `{obj:…}`). */
   readonly params: readonly TxExpr[];
+  /**
+   * The target table's PRIMARY KEY descriptor, for the MySQL RETURNING emulation (MySQL has no
+   * native RETURNING). Present ONLY on an INSERT…RETURNING op. `columns` are the real PK column(s);
+   * `autoInc` is the single AUTO_INCREMENT column name (int identity), or null for a client-supplied
+   * PK (UUID / composite / natural key). The mysql-dialect bundle serializes this into a strip-
+   * before-execute SQL comment ({@link mysqlPkHint}) the driver emulation reads so it re-selects by
+   * the REAL PK — not a hardcoded `WHERE id = ?` (which breaks for UUID / composite PKs).
+   */
+  readonly pk?: { readonly columns: readonly string[]; readonly autoInc: string | null };
 }
 
 /** The role a transaction statement plays (drives the runtime's gate-first interpretation). */
@@ -392,6 +401,44 @@ function returningTail(ports: Record<string, unknown>): string {
 }
 
 /**
+ * Read the optional PRIMARY KEY descriptor ports of an Insert node (for the MySQL RETURNING
+ * emulation). `pk` is a comma-separated column list (`'doc_id'` / `'order_id,line_no'`); `autoInc`
+ * names the single AUTO_INCREMENT column, or is absent for a client-supplied PK. Absent `pk`
+ * defaults to null (the emulation then keeps its legacy `WHERE id`/`LAST_INSERT_ID` path, so the
+ * existing auto-increment-`id` corpus is unchanged).
+ */
+function pkPort(ports: Record<string, unknown>): { columns: readonly string[]; autoInc: string | null } | undefined {
+  const pk = stringPort(ports, 'pk');
+  if (pk === undefined) return undefined;
+  const columns = pk.split(',').map((c) => c.trim()).filter((c) => c.length > 0);
+  if (columns.length === 0) return undefined;
+  const ai = stringPort(ports, 'autoInc');
+  return { columns, autoInc: ai ?? null };
+}
+
+/** The strip-before-execute PK-hint comment marker the MySQL RETURNING emulation reads. */
+const MYSQL_PK_HINT_RE = /\s*\/\*scp:pk=[^*]*\*\//;
+
+/**
+ * Serialize a {@link TxOp.pk} descriptor into a strip-before-execute SQL comment appended to an
+ * INSERT…RETURNING op, so the MySQL driver emulation can re-select by the REAL primary key. The
+ * comment is STRIPPED (with the RETURNING clause) before the INSERT executes, so the executed SQL
+ * stays byte-clean; it is emitted ONLY into the mysql-dialect bundle (PG/SQLite keep native
+ * RETURNING and never see it). Format: ` /*scp:pk=col1,col2;ai=<autoIncCol|>*​/`.
+ */
+export function mysqlPkHint(op: TxOp): TxOp {
+  if (op.pk === undefined) return op;
+  if (!/\breturning\b/i.test(op.sql)) return op;
+  const hint = ` /*scp:pk=${op.pk.columns.join(',')};ai=${op.pk.autoInc ?? ''}*/`;
+  return { ...op, sql: op.sql + hint };
+}
+
+/** Strip a trailing MySQL PK-hint comment from a rendered SQL (defensive; runtimes strip too). */
+export function stripMysqlPkHint(sql: string): string {
+  return sql.replace(MYSQL_PK_HINT_RE, '');
+}
+
+/**
  * Compile ONE authored catalog write node (`Insert`/`Update`/`Delete`) into a makeSQL {@link TxOp}
  * — complete tuned SQL text + DEFERRED Expression-IR params. This is the makeSQL re-expression of
  * the reduced bridge's `compileNode` for the write path (the tx-DAG base writes). INSERT columns
@@ -410,7 +457,8 @@ export function compileWriteNode(node: WriteNodeLike): TxOp {
       const sorted = [...cols].sort();
       const placeholders = sorted.map(() => '?').join(', ');
       const sql = `INSERT INTO ${table} (${sorted.join(', ')}) VALUES (${placeholders})${returningTail(ports)}`;
-      return { sql, params: sorted.map((c) => values[c]) };
+      const pk = pkPort(ports);
+      return { sql, params: sorted.map((c) => values[c]), ...(pk !== undefined ? { pk } : {}) };
     }
     case 'Update': {
       const set = collectFamily(ports, 'set');

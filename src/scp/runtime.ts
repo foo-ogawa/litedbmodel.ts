@@ -48,6 +48,7 @@ import {
   compileWriteNode,
   deriveTransactionPlan,
   deriveBatchPlan,
+  mysqlPkHint,
   executeTransaction,
   type BaseWrite,
   type TransactionPlan,
@@ -332,7 +333,10 @@ export function compileWriteBundle(
     throw new Error(`scp write: the '${phase}' lifecycle is not declared in the entityWrites save contract`);
   }
   const writeNode = baseWriteNodeOf(component);
-  const baseOp = compileWriteNode(writeNode as never);
+  // MySQL has no native RETURNING; when the base write is an INSERT…RETURNING carrying a PK
+  // descriptor, annotate it with the strip-before-execute PK hint so the mysql emulation re-selects
+  // by the REAL PK (not a hardcoded `id`). PG/SQLite keep the op verbatim (native RETURNING).
+  const baseOp = dialectName === 'mysql' ? mysqlPkHint(compileWriteNode(writeNode as never)) : compileWriteNode(writeNode as never);
   const base: BaseWrite = { op: baseOp, label: `${(writeNode as { component: string }).component}` };
   const plan = deriveTransactionPlan(phase, [base], lifecycle, dialectName);
 
@@ -419,14 +423,26 @@ function flattenBatchOp(node: MakeSQL, label: string): { sql: string; params: re
  * Compile a `createMany` into a batch write {@link SqlBundle} carrying a gate-free
  * {@link TransactionPlan}. Heterogeneous column-set groups become MULTIPLE ordered INSERT
  * statements — byte-identical to what `DBModel._insert` emits per group (via `compileInsertMany`).
+ *
+ * `pk` (the target PK descriptor) is REQUIRED when the createMany carries a RETURNING clause on the
+ * MySQL dialect: a batch INSERT persists N rows, so the MySQL RETURNING emulation must re-select ALL
+ * N (a range on the AUTO_INCREMENT column, or the client-supplied PK values), not a single `id`.
  */
 export function compileCreateManyBundle(
   name: string,
-  options: InsertManyBuildOptions,
+  options: InsertManyBuildOptions & { pk?: { columns: readonly string[]; autoInc: string | null } },
   dialectName: DialectName = 'sqlite',
 ): SqlBundle {
   const components = compileInsertMany(dialectName, options);
-  const ops = components.map((c, i) => flattenBatchOp(c, `createMany group ${i}`));
+  const ops = components.map((c, i) => {
+    const flat = flattenBatchOp(c, `createMany group ${i}`);
+    // On MySQL, annotate a RETURNING batch INSERT with the PK hint so the driver emulation
+    // re-selects every inserted row of the group by the real PK.
+    if (dialectName === 'mysql' && options.pk !== undefined && options.returning !== undefined) {
+      return { ...flat, ...mysqlPkHint({ sql: flat.sql, params: flat.params, pk: options.pk }) };
+    }
+    return flat;
+  });
   const plan = deriveBatchPlan('create', ops);
   return { dialect: dialectName, name, statement: { sql: ops[0]?.sql ?? '', params: (ops[0]?.params ?? []) as unknown[] }, optionalHeads: [], relations: {}, transaction: plan };
 }

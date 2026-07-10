@@ -88,6 +88,8 @@ export {
   deriveTransactionPlan,
   deriveBatchPlan,
   literalize,
+  mysqlPkHint,
+  stripMysqlPkHint,
   executeTransaction,
   countingDriver,
   renderTxStatement,
