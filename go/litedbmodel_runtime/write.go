@@ -68,6 +68,9 @@ type TransactionResult struct {
 	ShortCircuit *ShortCircuit
 	Entity       *bc.Obj // body-write RETURNING row ($.entity), or nil
 	Executed     []string
+	// ReturnedRows: for a BATCH write (gate-free, ref-free plan, entityFrom empty) the RETURNING rows
+	// of every body statement in order (createMany's "all created rows"); nil for a gate-first Command.
+	ReturnedRows [][]bc.Value
 }
 
 // execStatementResult is one statement's rows + affected-row count.
@@ -132,6 +135,7 @@ func execTxStatement(db SQLDB, op *bc.JObj, scope *bc.Obj, dialect Dialect) (exe
 // txPlanStatements reads the plan's ordered statements, entityFrom, and returns them.
 type txStatement struct {
 	id    string
+	role  string // 'body' / 'gate:*' / 'derive' / 'edge' / 'emit'
 	gate  string // "" when not a gate
 	binds string // "" when this statement's row is not bound for downstream $.ref (WS8a composite)
 	op    *bc.JObj
@@ -157,6 +161,9 @@ func parseTxPlan(plan *bc.JObj) (statements []txStatement, entityFrom string, er
 		var st txStatement
 		if idN, ok := s.Get("id"); ok {
 			st.id, _ = idN.(string)
+		}
+		if rN, ok := s.Get("role"); ok {
+			st.role, _ = rN.(string)
 		}
 		if gN, ok := s.Get("gate"); ok {
 			st.gate, _ = gN.(string)
@@ -218,6 +225,16 @@ func executeTransaction(db TxDB, plan *bc.JObj, input *bc.Obj, dialect Dialect) 
 	}
 	var entity *bc.Obj
 	var executed []string
+	// Batch mode (createMany/updateMany/deleteMany): gate-free, ref-free plan (entityFrom empty, every
+	// statement a plain body) — accumulate each body statement's RETURNING rows in order.
+	isBatch := entityFrom == ""
+	for _, s := range statements {
+		if s.gate != "" || s.binds != "" || s.role != "body" {
+			isBatch = false
+			break
+		}
+	}
+	var returnedRows [][]bc.Value
 
 	for _, stmt := range statements {
 		result, err := execTxStatement(tx, stmt.op, scope, dialect)
@@ -260,11 +277,15 @@ func executeTransaction(db TxDB, plan *bc.JObj, input *bc.Obj, dialect Dialect) 
 				scope.Set(stmt.binds, row)
 			}
 		}
+
+		if isBatch && stmt.role == "body" && len(result.rows) > 0 {
+			returnedRows = append(returnedRows, result.rows)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		_ = tx.Rollback()
 		return TransactionResult{}, mapSqliteError(err)
 	}
-	return TransactionResult{Committed: true, Entity: entity, Executed: executed}, nil
+	return TransactionResult{Committed: true, Entity: entity, Executed: executed, ReturnedRows: returnedRows}, nil
 }

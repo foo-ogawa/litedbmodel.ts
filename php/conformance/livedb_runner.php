@@ -92,7 +92,7 @@ function inputToScope(mixed $decoded): array
 }
 
 // The tables the corpus touches (drop dependents first).
-const ALL_TABLES = ['post_tags', 'comments', 'posts', 'tags', 'docs', 'users', 'idem', 'uniq', 'outbox'];
+const ALL_TABLES = ['post_tags', 'order_lines', 'comments', 'posts', 'tags', 'docs', 'users', 'idem', 'uniq', 'outbox'];
 
 function resetPg(PDO $db, array $schema): void
 {
@@ -141,14 +141,17 @@ function runRead(PDO $db, \stdClass $bundle, \stdClass $v, string $expectedKey):
 }
 
 /** @return array{ok:bool, detail?:string} */
-function runTx(PDO $db, \stdClass $bundle, \stdClass $v): array
+function runTx(PDO $db, \stdClass $bundle, \stdClass $v, string $txExpectedKey): array
 {
+    // A write may GENUINELY diverge by dialect (DELETE…RETURNING returns rows on PG, [] on MySQL);
+    // the mysql leg then carries `expectedResultMysql`. Fall back to the shared `expectedResult`.
+    $expected = isset($v->{$txExpectedKey}) ? $v->{$txExpectedKey} : $v->expectedResult;
     $result = Runtime::executeTransactionBundle($bundle, inputToScope($v->input), $db);
-    $resultOk = valuesEqual($result, $v->expectedResult);
+    $resultOk = valuesEqual($result, $expected);
     $stateOk = true;
     $detail = [];
     if (!$resultOk) {
-        $detail[] = 'result ' . json_encode($result) . ' != ' . json_encode($v->expectedResult);
+        $detail[] = 'result ' . json_encode($result) . ' != ' . json_encode($expected);
     }
     foreach (($v->expectedDbState ?? []) as $s) {
         $rows = $db->query((string) $s->query)->fetchAll(PDO::FETCH_OBJ);
@@ -178,7 +181,7 @@ function runDialectLeg(string $dialect, PDO $db, callable $reset, array $vectors
             $r = match ($kind) {
                 'exec' => runExec($db, $bundle, $v),
                 'read' => runRead($db, $bundle, $v, $readExpectedKey),
-                'tx' => runTx($db, $bundle, $v),
+                'tx' => runTx($db, $bundle, $v, $readExpectedKey),
                 default => ['ok' => false, 'detail' => "unknown kind {$kind}"],
             };
         } catch (\Throwable $e) {

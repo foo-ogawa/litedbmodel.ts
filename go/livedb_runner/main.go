@@ -36,7 +36,7 @@ const (
 )
 
 // tables the corpus touches (drop dependents first).
-var allTables = []string{"post_tags", "comments", "posts", "tags", "docs", "users", "idem", "uniq", "outbox"}
+var allTables = []string{"post_tags", "order_lines", "comments", "posts", "tags", "docs", "users", "idem", "uniq", "outbox"}
 
 func corpusPath() string {
 	if p := os.Getenv("LITEDBMODEL_LIVEDB_VECTORS"); p != "" {
@@ -105,6 +105,18 @@ func encodeTxResult(r rt.TransactionResult) string {
 		execParts[i] = jstr(e)
 	}
 	parts = append(parts, "\"executed\":["+strings.Join(execParts, ",")+"]")
+	// Batch write: the ordered per-statement RETURNING row lists (createMany's "all created rows").
+	if r.ReturnedRows != nil {
+		groups := make([]string, len(r.ReturnedRows))
+		for i, g := range r.ReturnedRows {
+			rowParts := make([]string, len(g))
+			for j, row := range g {
+				rowParts[j] = rt.EncodeConformanceJSON(row)
+			}
+			groups[i] = "[" + strings.Join(rowParts, ",") + "]"
+		}
+		parts = append(parts, "\"returnedRows\":["+strings.Join(groups, ",")+"]")
+	}
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
@@ -260,7 +272,7 @@ func runRead(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj, expectedKey string) (bo
 	return false, fmt.Sprintf("result %s != %s", got, want)
 }
 
-func runTx(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj) (bool, string) {
+func runTx(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj, txExpectedKey string) (bool, string) {
 	bundle, err := rt.BundleFromJObj(bundleObj)
 	if err != nil {
 		return false, "bundle parse: " + err.Error()
@@ -274,7 +286,13 @@ func runTx(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj) (bool, string) {
 		return false, "tx threw: " + err.Error()
 	}
 	got := encodeTxResult(result)
-	want := canonicalJSON(mustGet(v, "expectedResult"))
+	// A write may GENUINELY diverge by dialect (DELETE…RETURNING returns rows on PG, [] on MySQL);
+	// the mysql leg then carries `expectedResultMysql`. Fall back to the shared `expectedResult`.
+	expectedNode, ok := v.Get(txExpectedKey)
+	if !ok {
+		expectedNode = mustGet(v, "expectedResult")
+	}
+	want := canonicalJSON(expectedNode)
 	if got != want {
 		return false, fmt.Sprintf("result %s != %s", got, want)
 	}
@@ -322,7 +340,7 @@ func runDialectLeg(name string, db *sql.DB, mysql bool, vectors []*bc.JObj, bund
 		case "read":
 			ok2, detail = runRead(db, bundleObj, v, readExpectedKey)
 		case "tx":
-			ok2, detail = runTx(db, bundleObj, v)
+			ok2, detail = runTx(db, bundleObj, v, readExpectedKey)
 		default:
 			ok2, detail = false, "unknown kind "+getStr(v, "kind")
 		}

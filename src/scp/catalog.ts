@@ -86,6 +86,12 @@ const WRITE_PORTS: Record<string, PortSchema> = {
   returning: P('string'),
   onConflict: P('string'),
   onConflictAction: P('string'),
+  // PRIMARY KEY descriptor for the MySQL RETURNING emulation (INSERT…RETURNING): `pk` is a
+  // comma-separated PK column list, `autoInc` names the single AUTO_INCREMENT column (absent for a
+  // client-supplied PK). Consumed by compileWriteNode → mysqlPkHint so the emulation re-selects by
+  // the REAL PK. Inert on PG/SQLite (native RETURNING).
+  pk: P('string'),
+  autoInc: P('string'),
 };
 
 const entry = (name: CatalogName, inputPorts: Record<string, PortSchema>, shape: string, portableToIR: boolean): CatalogEntry => ({

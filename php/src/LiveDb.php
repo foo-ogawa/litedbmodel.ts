@@ -129,6 +129,15 @@ final class MysqlLivePdo extends \PDO
             ];
             return parent::prepare($insertSql, $options);
         }
+        // A non-INSERT RETURNING (UPDATE/DELETE … RETURNING): MySQL has no native RETURNING and the
+        // pre-image is gone, so v1 (`mysql.ts`) strips RETURNING, runs the write, and returns NO
+        // rows. Byte-faithful: prepare the stripped write; the statement returns [] (empty flag).
+        if (preg_match('/^\s*(?:UPDATE|DELETE)\b.*\bRETURNING\s+.+$/is', $query) === 1) {
+            $writeSql = preg_replace('/\s+RETURNING\s+.+$/is', '', $query) ?? $query;
+            $writeSql = preg_replace('#\s*/\*scp:pk=[^*]*\*/#', '', $writeSql) ?? $writeSql;
+            $this->pendingReturning = ['emptyReturning' => true];
+            return parent::prepare($writeSql, $options);
+        }
         $this->pendingReturning = null;
         return parent::prepare($query, $options);
     }
@@ -160,8 +169,11 @@ final class MysqlReturningStatement extends \PDOStatement
     public function execute(?array $params = null): bool
     {
         $bound = $params === null ? null : array_values($params);
-        $ok = parent::execute($bound); // the RETURNING-stripped INSERT
-        if ($this->returning !== null) {
+        $ok = parent::execute($bound); // the RETURNING-stripped write
+        if ($this->returning !== null && ($this->returning['emptyReturning'] ?? false)) {
+            // Non-INSERT RETURNING: the write ran; MySQL returns no rows (v1 parity).
+            $this->returningRows = [];
+        } elseif ($this->returning !== null) {
             [$whereSql, $whereParams] = $this->reselectWhere($bound ?? []);
             $sel = $this->pdo->prepare("SELECT {$this->returning['cols']} FROM {$this->returning['table']} WHERE {$whereSql}");
             $sel->execute($whereParams);

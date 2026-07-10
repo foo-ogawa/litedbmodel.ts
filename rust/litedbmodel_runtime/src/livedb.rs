@@ -619,6 +619,17 @@ fn parse_mysql_returning(sql: &str) -> Option<MysqlReturning> {
     })
 }
 
+/// If `sql` is a NON-INSERT statement carrying a RETURNING clause (UPDATE/DELETE … RETURNING),
+/// return the statement with the RETURNING clause + any PK hint stripped; else None.
+fn strip_non_insert_returning(sql: &str) -> Option<String> {
+    let lower = sql.to_ascii_lowercase();
+    let ret_pos = lower.rfind(" returning ")?;
+    if lower.trim_start().starts_with("insert ") {
+        return None; // handled by parse_mysql_returning
+    }
+    Some(strip_pk_hint(&sql[..ret_pos]))
+}
+
 /// Strip a ` /*scp:pk=…*/` hint comment from a fragment.
 fn strip_pk_hint(s: &str) -> String {
     if let (Some(a), Some(rel)) = (s.find("/*scp:pk="), s.find("*/")) {
@@ -749,6 +760,19 @@ impl PreparedStatement for MyPrepared<'_> {
                 }
                 .map_err(|e| driver_failure(format!("mysql re-select: {e}")))?;
                 return my_rows_to_values(&rows);
+            }
+
+            // A non-INSERT RETURNING (UPDATE/DELETE … RETURNING): MySQL has no native RETURNING and
+            // the pre-image is gone, so v1 (`mysql.ts`) strips RETURNING, runs the write, returns NO
+            // rows. Byte-faithful: execute the stripped write, return an empty row set.
+            if let Some(write_sql) = strip_non_insert_returning(&sql) {
+                let q = bind_my(sqlx::query(&write_sql), &params)?;
+                match pinned.as_mut() {
+                    Some(conn) => q.execute(&mut **conn).await,
+                    None => q.execute(&driver.pool).await,
+                }
+                .map_err(|e| driver_failure(format!("mysql write [{write_sql}]: {e}")))?;
+                return Ok(Vec::new());
             }
 
             let q = bind_my(sqlx::query(&sql), &params)?;

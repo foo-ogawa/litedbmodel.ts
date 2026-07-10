@@ -154,6 +154,12 @@ def execute_transaction_bundle(bundle: Mapping[str, Any], input_scope: Mapping[s
     executed: List[str] = []
     scope: Dict[str, Any] = dict(input_scope)
     entity: Optional[Dict[str, Any]] = None
+    # Batch mode (createMany/updateMany/deleteMany): a gate-free, ref-free plan (entityFrom is null,
+    # every statement a plain body) — accumulate each body statement's RETURNING rows in order.
+    is_batch = plan.get("entityFrom") is None and all(
+        s.get("gate") is None and s.get("binds") is None and s.get("role") == "body" for s in plan["statements"]
+    )
+    returned_rows: List[List[Dict[str, Any]]] = []
 
     try:
         for stmt in plan["statements"]:
@@ -181,8 +187,14 @@ def execute_transaction_bundle(bundle: Mapping[str, Any], input_scope: Mapping[s
             if binds is not None and rows:
                 scope[binds] = rows[0]
 
+            if is_batch and stmt.get("role") == "body" and rows:
+                returned_rows.append(rows)
+
         driver.prepare("COMMIT").run([])
-        return {"committed": True, "entity": entity, "executed": executed}
+        out: Dict[str, Any] = {"committed": True, "entity": entity, "executed": executed}
+        if returned_rows:
+            out["returnedRows"] = returned_rows
+        return out
     except SqlFailure:
         _safe_rollback(driver)
         raise

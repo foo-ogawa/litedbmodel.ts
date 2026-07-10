@@ -303,24 +303,27 @@ class _PooledPrepared:
         if self._driver._emulate_returning:
             m = _RETURNING_RE.search(self._sql)
             if m is not None:
-                returning_cols = m.group(1)
-                pk_cols, auto_inc = _parse_pk_hint(returning_cols)
-                # Strip the hint from the returning-cols text (it is NOT a real column list).
-                returning_cols = _PK_HINT_RE.sub("", returning_cols).strip()
-                insert_sql = _PK_HINT_RE.sub("", self._sql[: m.start()])
-                table_m = _INSERT_TABLE_RE.match(insert_sql)
+                returning_cols = _PK_HINT_RE.sub("", m.group(1)).strip()
+                pk_cols, auto_inc = _parse_pk_hint(m.group(1))
+                write_sql = _PK_HINT_RE.sub("", self._sql[: m.start()])
+                table_m = _INSERT_TABLE_RE.match(write_sql)
                 if table_m is None:
-                    raise ValueError(
-                        f"scp mysql driver: cannot emulate RETURNING for non-INSERT statement: {self._sql!r}"
-                    )
+                    # A non-INSERT RETURNING (UPDATE/DELETE … RETURNING): MySQL has no native
+                    # RETURNING and the pre-image is gone, so v1 (`mysql.ts`) strips RETURNING, runs
+                    # the write, and returns NO rows. Byte-faithful: execute the stripped write, [].
+                    cur = conn.cursor()
+                    cur.execute(xform(write_sql), tuple(self._params))
+                    cur.close()
+                    return []
+                # INSERT … RETURNING: run the INSERT, re-select the inserted rows by the REAL PK.
                 table = table_m.group(1)
                 cur = conn.cursor()
-                cur.execute(xform(insert_sql), tuple(self._params))
+                cur.execute(xform(write_sql), tuple(self._params))
                 last_id = cur.lastrowid
                 affected = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 1
                 cur.close()
                 where_sql, where_params = _returning_reselect_where(
-                    insert_sql, pk_cols, auto_inc, list(self._params), last_id, affected
+                    write_sql, pk_cols, auto_inc, list(self._params), last_id, affected
                 )
                 sel = conn.cursor()
                 sel.execute(xform(f"SELECT {returning_cols} FROM {table} WHERE {where_sql}"), tuple(where_params))

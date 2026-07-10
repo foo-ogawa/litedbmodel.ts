@@ -112,7 +112,7 @@ def _encode(v: Any) -> Any:
 # ── per-dialect table lifecycle ────────────────────────────────────────────────
 
 # The tables the corpus touches (drop order respects FK dependents-first).
-_ALL_TABLES = ["post_tags", "comments", "posts", "tags", "docs", "users", "idem", "uniq", "outbox"]
+_ALL_TABLES = ["post_tags", "order_lines", "comments", "posts", "tags", "docs", "users", "idem", "uniq", "outbox"]
 
 
 def _reset_pg(driver: "PostgresDriver", schema: List[str]) -> None:
@@ -152,13 +152,16 @@ def _run_read(driver, bundle, vector, expected_key) -> Dict[str, Any]:
     return {"ok": ok, "detail": None if ok else f"result {json.dumps(result)} != {json.dumps(expected)}"}
 
 
-def _run_tx(driver, bundle, vector) -> Dict[str, Any]:
+def _run_tx(driver, bundle, vector, tx_expected_key) -> Dict[str, Any]:
+    # A write may GENUINELY diverge by dialect (a DELETE…RETURNING returns the deleted row on PG/
+    # SQLite but MySQL has no native RETURNING → []); the mysql leg then carries `expectedResultMysql`.
+    expected = vector.get(tx_expected_key) if tx_expected_key in vector else vector["expectedResult"]
     result = _encode(execute_transaction_bundle(bundle, dict(vector["input"]), driver))
-    result_ok = _eq(result, vector["expectedResult"])
+    result_ok = _eq(result, expected)
     state_ok = True
     detail: List[str] = []
     if not result_ok:
-        detail.append(f"result {json.dumps(result)} != {json.dumps(vector['expectedResult'])}")
+        detail.append(f"result {json.dumps(result)} != {json.dumps(expected)}")
     for s in vector.get("expectedDbState", []) or []:
         got = _encode(driver.prepare(s["query"]).all([]))
         if not _eq(got, s["rows"]):
@@ -168,7 +171,7 @@ def _run_tx(driver, bundle, vector) -> Dict[str, Any]:
     return {"ok": ok, "detail": None if ok else "; ".join(detail)}
 
 
-def _run_dialect_leg(dialect: str, driver, reset_fn, corpus, bundle_key, schema_key, read_expected_key) -> Dict[str, int]:
+def _run_dialect_leg(dialect: str, driver, reset_fn, corpus, bundle_key, schema_key, read_expected_key, tx_expected_key) -> Dict[str, int]:
     t = {"pass": 0, "fail": 0}
     sys.stderr.write(f"\nlivedb-{dialect} — {len(corpus['vectors'])} vectors (real {dialect})\n")
     for v in corpus["vectors"]:
@@ -180,7 +183,7 @@ def _run_dialect_leg(dialect: str, driver, reset_fn, corpus, bundle_key, schema_
             elif v["kind"] == "read":
                 r = _run_read(driver, bundle, v, read_expected_key)
             elif v["kind"] == "tx":
-                r = _run_tx(driver, bundle, v)
+                r = _run_tx(driver, bundle, v, tx_expected_key)
             else:
                 r = {"ok": False, "detail": f"unknown kind {v['kind']}"}
         except Exception as e:  # a live-DB failure is a vector FAILURE, never a fake pass
@@ -219,8 +222,8 @@ def main() -> int:
         return 3
 
     try:
-        pg_t = _run_dialect_leg("pg", pg, _reset_pg, corpus, "bundlePg", "schemaPg", "expectedResultPg")
-        my_t = _run_dialect_leg("mysql", my, _reset_mysql, corpus, "bundleMysql", "schemaMysql", "expectedResultMysql")
+        pg_t = _run_dialect_leg("pg", pg, _reset_pg, corpus, "bundlePg", "schemaPg", "expectedResultPg", "expectedResultPg")
+        my_t = _run_dialect_leg("mysql", my, _reset_mysql, corpus, "bundleMysql", "schemaMysql", "expectedResultMysql", "expectedResultMysql")
     finally:
         pg.close()
         my.close()

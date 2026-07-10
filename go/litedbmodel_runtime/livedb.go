@@ -134,6 +134,16 @@ func (c *scpMysqlConn) QueryContext(ctx context.Context, query string, args []dr
 		sel := fmt.Sprintf("SELECT %s FROM %s WHERE %s", cols, table, whereSQL)
 		return c.queryViaStmt(ctx, sel, whereArgs)
 	}
+	// A non-INSERT RETURNING (UPDATE/DELETE … RETURNING): MySQL has no native RETURNING and the
+	// pre-image is gone, so v1 (`mysql.ts`) strips RETURNING, runs the write, and returns NO rows.
+	// Byte-faithful: execute the stripped write, return an empty row set.
+	if stripReturningRe.MatchString(query) {
+		writeSQL := pkHintRe.ReplaceAllString(stripReturningRe.ReplaceAllString(query, ""), "")
+		if _, _, err := c.execViaStmtWithAffected(ctx, writeSQL, args); err != nil {
+			return nil, err
+		}
+		return &emptyRows{}, nil
+	}
 	if q, ok := c.base.(driver.QueryerContext); ok {
 		rows, err := q.QueryContext(ctx, query, args)
 		if err == driver.ErrSkip {
@@ -143,6 +153,14 @@ func (c *scpMysqlConn) QueryContext(ctx context.Context, query string, args []dr
 	}
 	return c.queryViaStmt(ctx, query, args)
 }
+
+// emptyRows is a zero-column, zero-row driver.Rows for a non-INSERT RETURNING that MySQL cannot
+// return (the write's pre-image is gone — v1 `mysql.ts` returns no rows).
+type emptyRows struct{}
+
+func (*emptyRows) Columns() []string              { return []string{} }
+func (*emptyRows) Close() error                   { return nil }
+func (*emptyRows) Next(dest []driver.Value) error { return io.EOF }
 
 // ExecContext forwards to the base driver (writes never carry RETURNING on the exec/tx path).
 func (c *scpMysqlConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {

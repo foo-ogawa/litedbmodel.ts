@@ -179,11 +179,20 @@ pub fn execute_transaction_bundle(
         .and_then(|s| s.as_array())
         .ok_or_else(|| plain_failure("scp write: transaction plan missing 'statements'"))?;
     let entity_from = plan.get("entityFrom").and_then(|e| e.as_str());
+    // Batch mode (createMany/updateMany/deleteMany): gate-free, ref-free plan (entityFrom null, every
+    // statement a plain body) — accumulate each body statement's RETURNING rows in order.
+    let is_batch = entity_from.is_none()
+        && statements.iter().all(|s| {
+            s.get("gate").and_then(|g| g.as_str()).is_none()
+                && s.get("binds").and_then(|b| b.as_str()).is_none()
+                && s.get("role").and_then(|r| r.as_str()) == Some("body")
+        });
 
     driver.prepare("BEGIN").run(&[])?;
     let scope = RefCell::new(input_scope);
     let mut executed: Vec<Value> = Vec::new();
     let mut entity: Value = Value::Null;
+    let mut returned_rows: Vec<Value> = Vec::new();
 
     let mut run = || -> Result<Value, SqlFailure> {
         for stmt in statements {
@@ -217,6 +226,11 @@ pub fn execute_transaction_bundle(
                 }
             }
 
+            // Batch mode: capture ALL of this body statement's RETURNING rows (in order) before we
+            // consume `rows` into `first_row` below.
+            if is_batch && !rows.is_empty() {
+                returned_rows.push(Value::Arr(rows.clone()));
+            }
             let first_row = rows.into_iter().next();
 
             // Capture the SOLE body RETURNING row as `$.entity` (WS5 single-write back-compat).
@@ -242,11 +256,18 @@ pub fn execute_transaction_bundle(
         }
 
         driver.prepare("COMMIT").run(&[])?;
-        Ok(Value::Obj(vec![
-            ("committed".into(), Value::Bool(true)),
-            ("entity".into(), entity.clone()),
-            ("executed".into(), Value::Arr(executed.clone())),
-        ]))
+        let mut out = vec![
+            ("committed".to_string(), Value::Bool(true)),
+            ("entity".to_string(), entity.clone()),
+            ("executed".to_string(), Value::Arr(executed.clone())),
+        ];
+        if !returned_rows.is_empty() {
+            out.push((
+                "returnedRows".to_string(),
+                Value::Arr(returned_rows.clone()),
+            ));
+        }
+        Ok(Value::Obj(out))
     };
 
     match run() {

@@ -30,6 +30,7 @@ const MYSQL_DB: &str = "scp_rust";
 
 const ALL_TABLES: &[&str] = &[
     "post_tags",
+    "order_lines",
     "comments",
     "posts",
     "tags",
@@ -192,13 +193,21 @@ fn run_read(
     }
 }
 
-fn run_tx(driver: &(dyn Driver + Sync), bundle: &J, v: &J) -> Result<(), String> {
+fn run_tx(
+    driver: &(dyn Driver + Sync),
+    bundle: &J,
+    v: &J,
+    tx_expected_key: &str,
+) -> Result<(), String> {
     let input = numeric_canon(&v["input"]);
     let result = execute_transaction_bundle(bundle, &input, driver)
         .map_err(|e| format!("tx threw: {}", e.message))?;
     let got = encode_value(&result);
-    if !eq(&got, &v["expectedResult"]) {
-        return Err(format!("result {got} != {}", v["expectedResult"]));
+    // A write may GENUINELY diverge by dialect (DELETE…RETURNING returns rows on PG, [] on MySQL);
+    // the mysql leg then carries `expectedResultMysql`. Fall back to the shared `expectedResult`.
+    let expected = v.get(tx_expected_key).unwrap_or(&v["expectedResult"]);
+    if !eq(&got, expected) {
+        return Err(format!("result {got} != {expected}"));
     }
     if let Some(states) = v.get("expectedDbState").and_then(|s| s.as_array()) {
         for s in states {
@@ -243,7 +252,7 @@ fn run_dialect_leg(
         let res = match v.get("kind").and_then(|k| k.as_str()).unwrap_or("") {
             "exec" => run_exec(driver, bundle, v),
             "read" => run_read(driver, bundle, v, read_expected_key),
-            "tx" => run_tx(driver, bundle, v),
+            "tx" => run_tx(driver, bundle, v, read_expected_key),
             other => Err(format!("unknown kind {other}")),
         };
         match res {
