@@ -1,4 +1,18 @@
 /**
+ * ⚠️ SUPERSEDED for PostgreSQL by the fragment model (`src/scp/fragment/`, epic #43).
+ *
+ * The `RelationOp` "kinds" + `FragmentTree` + reduced `targetKey IN (?)` +
+ * `ROW_NUMBER()`-for-ALL-dialects (including PG) forms in THIS file are the retired
+ * SQLite-first regression the #43 reset throws away: they model SQL structure as an
+ * abstract IR and cannot express the tuned PG SQL (`= ANY(?::type[])`,
+ * `CROSS JOIN LATERAL`, `UNNEST` composite, cast). The PG-anchored relation batch SQL
+ * is now compiled byte-identical to the ORIGINAL `LazyRelation` by
+ * `src/scp/fragment/compile-pg.ts` (`compileBelongsTo` / `compileHasManyLimited` /
+ * `compileHasManyAny`) and assembled by `src/scp/fragment/assemble.ts`. Do NOT use the
+ * `IN (?)` / ROW_NUMBER-for-PG forms below for the PG slice. This module remains only
+ * for the not-yet-migrated legacy SQLite path and will be removed as #43 extends.
+ *
+ * ── (original doc) ──
  * litedbmodel v2 SCP — Relation ops (Read) + staged batch resolution (WS4, #24).
  *
  * Relations are NOT SQL JOINs by default (spec §5). They are the same
