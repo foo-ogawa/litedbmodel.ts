@@ -553,13 +553,15 @@ impl PreparedStatement for MyPrepared<'_> {
         if params.is_empty() && is_txn_control(&sql) {
             let upper = sql.trim().to_ascii_uppercase();
             return driver.rt.block_on(async move {
+                // Tx-control must run UNPREPARED: MySQL rejects BEGIN/COMMIT/ROLLBACK in the
+                // prepared-statement protocol (error 1295). `raw_sql` uses the simple-query path.
                 if upper == "BEGIN" || upper == "START TRANSACTION" {
                     let mut conn = driver
                         .pool
                         .acquire()
                         .await
                         .map_err(|e| driver_failure(format!("mysql acquire: {e}")))?;
-                    sqlx::query("BEGIN")
+                    sqlx::raw_sql("BEGIN")
                         .execute(&mut *conn)
                         .await
                         .map_err(|e| driver_failure(format!("mysql BEGIN: {e}")))?;
@@ -567,10 +569,14 @@ impl PreparedStatement for MyPrepared<'_> {
                 } else {
                     let conn = driver.writer.lock().unwrap().take();
                     if let Some(mut conn) = conn {
-                        sqlx::query(&upper)
-                            .execute(&mut *conn)
-                            .await
-                            .map_err(|e| driver_failure(format!("mysql {upper}: {e}")))?;
+                        sqlx::raw_sql(if upper == "COMMIT" {
+                            "COMMIT"
+                        } else {
+                            "ROLLBACK"
+                        })
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(|e| driver_failure(format!("mysql {upper}: {e}")))?;
                     }
                 }
                 Ok(RunInfo {
