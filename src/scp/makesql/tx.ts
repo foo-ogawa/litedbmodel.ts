@@ -144,7 +144,7 @@ function makeIdGen(): IdGen {
 function compileRequires(e: RequiresEffect, nextId: IdGen): TxStatement {
   const cols = Object.keys(e.keys);
   if (cols.length === 0) throw new Error(`write-plan: requires on '${e.table}' declares no keys`);
-  const whereSql = cols.map((c) => `${c} = ?`).join(' AND ');
+  const whereSql = v1EqualityWhereText(cols);
   const op: TxOp = {
     sql: `SELECT 1 FROM ${e.table} WHERE ${whereSql}`,
     params: cols.map((c) => pathToRef(e.keys[c])),
@@ -180,7 +180,7 @@ function compileUnique(e: UniqueEffect, nextId: IdGen, dialect: MakeSQLDialect):
 function compileDerive(e: DeriveEffect, nextId: IdGen): TxStatement {
   const keyCols = Object.keys(e.keys);
   if (keyCols.length === 0) throw new Error(`write-plan: derive on '${e.table}' declares no keys`);
-  const whereSql = keyCols.map((c) => `${c} = ?`).join(' AND ');
+  const whereSql = v1EqualityWhereText(keyCols);
   const op: TxOp = {
     sql: `UPDATE ${e.table} SET ${e.attribute} = ${e.attribute} + ? WHERE ${whereSql}`,
     // SET amount is the first param (before the WHERE keys), matching the v1 param order.
@@ -201,7 +201,7 @@ function compileEdge(e: EdgeEffect, nextId: IdGen): TxStatement {
       };
       return { id: nextId('edge'), role: 'edge', op, label: `edge m2m link ${e.table}` };
     }
-    const whereSql = cols.map((c) => `${c} = ?`).join(' AND ');
+    const whereSql = v1EqualityWhereText(cols);
     const op: TxOp = {
       sql: `DELETE FROM ${e.table} WHERE ${whereSql}`,
       params: cols.map((c) => pathToRef(e.columns[c])),
@@ -213,7 +213,7 @@ function compileEdge(e: EdgeEffect, nextId: IdGen): TxStatement {
   const whereCols = Object.keys(e.where!);
   const setClauses = setCols.map((c) => (e.action === 'set' ? `${c} = ?` : `${c} = NULL`));
   const setParams: TxExpr[] = e.action === 'set' ? setCols.map((c) => pathToRef(e.columns[c])) : [];
-  const whereSql = whereCols.map((c) => `${c} = ?`).join(' AND ');
+  const whereSql = v1EqualityWhereText(whereCols);
   const op: TxOp = {
     sql: `UPDATE ${e.table} SET ${setClauses.join(', ')} WHERE ${whereSql}`,
     params: [...setParams, ...whereCols.map((c) => pathToRef(e.where![c]))],
@@ -303,6 +303,21 @@ const PROBE = '__probe__';
 function v1ConditionText(conditions: ConditionObject): string {
   const probe: unknown[] = [];
   return new DBConditions(conditions).compile(probe);
+}
+
+/**
+ * The tuned WHERE-body TEXT for a set of PK-equality columns (`k1 = ? AND k2 = ?`), produced by
+ * driving the ORIGINAL v1 `DBConditions.compile()` (via {@link v1ConditionText}) — the SAME
+ * builder the read path uses — so the write-tx predicate text is byte-identical to v1 by
+ * construction (a v1 predicate regression now moves a tx golden). The throwaway probe params are
+ * discarded; the real runtime values are the caller's deferred Expression-IR params, bound 1:1
+ * with the `?` placeholders. `DBConditions.compile` iterates the condition object in insertion
+ * order and joins with ` AND `, so the `?`/param order matches the caller's column order.
+ */
+function v1EqualityWhereText(columns: readonly string[]): string {
+  const conditions: ConditionObject = {};
+  for (const c of columns) conditions[c] = PROBE;
+  return v1ConditionText(conditions);
 }
 
 /** Lower one where-member Expression node → a `<sql, params>` WHERE fragment (deferred params). */
