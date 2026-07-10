@@ -217,9 +217,31 @@ class _PooledPrepared:
         self._params: Sequence[Any] = ()
 
     @staticmethod
-    def _fetch_all(cur) -> List[Dict[str, Any]]:
+    def _scalar(v: Any) -> Any:
+        """Coerce a driver cell to a canonical bc scalar (int/float/bool/str/None).
+
+        psycopg maps a PG ``uuid`` column to a Python ``uuid.UUID`` and other rich types
+        (Decimal, date/datetime) to their own classes. The conformance row encoding — and the
+        cross-language reference — are JSON scalars, so a non-native cell is stringified to its
+        canonical text form, exactly as SQLite/MySQL return a uuid-as-text or the Rust PG driver
+        falls back to ``String``. Native scalars pass through unchanged (bool before int, since
+        ``bool`` is an ``int`` subclass).
+        """
+        if v is None or isinstance(v, (bool, int, float, str)):
+            return v
+        from decimal import Decimal
+
+        if isinstance(v, Decimal):
+            f = float(v)
+            return int(f) if f.is_integer() else f
+        if isinstance(v, (bytes, bytearray)):
+            return bytes(v).decode("utf-8", "replace")
+        return str(v)
+
+    @classmethod
+    def _fetch_all(cls, cur) -> List[Dict[str, Any]]:
         cols = [d[0] for d in cur.description] if cur.description is not None else []
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        return [{c: cls._scalar(x) for c, x in zip(cols, r)} for r in cur.fetchall()]
 
     def _run_all(self, conn: Any) -> List[Dict[str, Any]]:
         xform = self._driver._xform

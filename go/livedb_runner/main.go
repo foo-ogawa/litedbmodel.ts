@@ -28,7 +28,7 @@ import (
 	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
 )
 
-const supportedCorpusVersion = 1
+const supportedCorpusVersion = 2
 
 const (
 	pgSchema = "scp_go"
@@ -36,7 +36,7 @@ const (
 )
 
 // tables the corpus touches (drop dependents first).
-var allTables = []string{"post_tags", "posts", "tags", "users", "idem", "uniq", "outbox"}
+var allTables = []string{"post_tags", "posts", "tags", "docs", "users", "idem", "uniq", "outbox"}
 
 func corpusPath() string {
 	if p := os.Getenv("LITEDBMODEL_LIVEDB_VECTORS"); p != "" {

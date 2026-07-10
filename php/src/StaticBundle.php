@@ -153,6 +153,32 @@ final class StaticBundle
         return ExprEval::evaluate($spec, $scope);
     }
 
+    /**
+     * Encode a flat scalar array to the Postgres array-literal text form (`{1,3}` /
+     * `{"a","b"}`) PDO can bind to a single `= ANY($1)` placeholder. Elements are quoted +
+     * escaped so text/uuid values (and empty `{}`) round-trip; PG coerces each element to the
+     * column's element type. Mirrors the JS pg driver's array serialization.
+     *
+     * @param list<mixed> $arr
+     */
+    private static function pgArrayLiteral(array $arr): string
+    {
+        $parts = [];
+        foreach ($arr as $e) {
+            if ($e === null) {
+                $parts[] = 'NULL';
+            } elseif (is_bool($e)) {
+                $parts[] = $e ? 't' : 'f';
+            } elseif (is_int($e) || is_float($e)) {
+                $parts[] = (string) $e;
+            } else {
+                // Quote + escape backslashes and double-quotes (PG array-literal escaping).
+                $parts[] = '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], (string) $e) . '"';
+            }
+        }
+        return '{' . implode(',', $parts) . '}';
+    }
+
     // ── Deferred PG array-cast resolution (#46 — mirrors compile-relation.ts) ────
 
     /** The DEFERRED PG array-cast placeholder, resolved at render from the bound array. */
@@ -372,9 +398,17 @@ final class StaticBundle
             }
             $stmts = is_array($byId->{$nodeId}) ? array_values($byId->{$nodeId}) : [];
             $rendered = self::renderStatements($stmts, $dialectName, get_object_vars($scopeVal));
-            $params = array_map(static function (mixed $v): mixed {
+            $params = array_map(static function (mixed $v) use ($dialectName): mixed {
                 if (is_bool($v)) {
                     return $v ? 1 : 0;
+                }
+                // A postgres IN-list / relation-batch array param (`= ANY($1)` / `= ANY($1::int[])`):
+                // PDO cannot bind a PHP array to a single placeholder, so encode it to the PG array
+                // literal text form (`{1,3}`) the server parses. The no-cast `= ANY($1)` still lets PG
+                // infer the element type from the column (int / uuid / empty), so this is a pure
+                // BINDING adaptation — no SQL-form change (#46).
+                if ($dialectName === 'postgres' && is_array($v)) {
+                    return self::pgArrayLiteral($v);
                 }
                 return $v;
             }, $rendered['params']);

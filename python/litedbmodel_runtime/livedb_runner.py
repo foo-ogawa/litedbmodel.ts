@@ -41,7 +41,7 @@ from litedbmodel_runtime import (  # noqa: E402
     execute_transaction_bundle,
 )
 
-SUPPORTED_CORPUS_VERSION = 1
+SUPPORTED_CORPUS_VERSION = 2
 # A distinct namespace per language so 4 languages share ONE docker stack without cross-talk.
 PG_SCHEMA = os.environ.get("LIVEDB_PG_SCHEMA", "scp_py")
 MYSQL_DB = os.environ.get("LIVEDB_MYSQL_DB", "scp_py")
@@ -111,7 +111,7 @@ def _encode(v: Any) -> Any:
 # ── per-dialect table lifecycle ────────────────────────────────────────────────
 
 # The tables the corpus touches (drop order respects FK dependents-first).
-_ALL_TABLES = ["post_tags", "posts", "tags", "users", "idem", "uniq", "outbox"]
+_ALL_TABLES = ["post_tags", "posts", "tags", "docs", "users", "idem", "uniq", "outbox"]
 
 
 def _reset_pg(driver: "PostgresDriver", schema: List[str]) -> None:

@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -40,6 +41,15 @@ func toDriverParam(v bc.Value) any {
 	switch t := v.(type) {
 	case *bc.Obj:
 		return jsStringify(t) // JSON text for the outbox payload column (JS JSON.stringify parity)
+	case float64:
+		// A rendered whole number arrives as float64 (toRenderParam collapses a bc int64 to a JS
+		// number). go-sql-driver's binary prepared-statement protocol sends a float64 as DOUBLE,
+		// which MySQL rejects for an integer slot such as `LIMIT ?` (Error 1210). Bind an integral
+		// value as int64 so it lands in the integer slot; both drivers coerce int↔numeric otherwise.
+		if t == math.Trunc(t) && !math.IsInf(t, 0) {
+			return int64(t)
+		}
+		return v
 	default:
 		return v
 	}

@@ -143,7 +143,10 @@ struct PgPrepared<'a> {
     sql: String,
 }
 
-/// An owned param that implements `tokio_postgres::types::ToSql` for the scalar shapes render emits.
+/// An owned param that implements `tokio_postgres::types::ToSql` for the shapes render emits: the
+/// scalar values, plus a homogeneous ARRAY for a no-cast `= ANY($1)` IN-list / relation-batch
+/// `= ANY($1::T[])` (#46 — the authored PG IN-list binds the list as ONE array param, letting PG
+/// infer the element type from the column: int / uuid / empty).
 #[derive(Debug)]
 enum PgParam {
     Null,
@@ -151,6 +154,7 @@ enum PgParam {
     Int(i64),
     Float(f64),
     Str(String),
+    Array(Vec<PgParam>),
 }
 
 impl ToSql for PgParam {
@@ -180,7 +184,29 @@ impl ToSql for PgParam {
                 PgType::FLOAT4 => (*f as f32).to_sql(ty, out),
                 _ => f.to_sql(ty, out),
             },
+            // A UUID column/element: PG's binary protocol expects the 16-byte form, and
+            // `String::to_sql` only accepts text types — so serialize the canonical hex string to
+            // its 16 bytes. This keeps the authored no-cast `= ANY($1)` form (#46 uuid IN-list): PG
+            // infers `uuid[]` from the column, and each element binds as a real uuid.
+            PgParam::Str(s) if *ty == PgType::UUID => {
+                let bytes = uuid_text_to_bytes(s).ok_or_else(
+                    || -> Box<dyn std::error::Error + Sync + Send> {
+                        format!("scp pg driver: malformed uuid text {s:?}").into()
+                    },
+                )?;
+                out.extend_from_slice(&bytes);
+                Ok(tokio_postgres::types::IsNull::No)
+            }
             PgParam::Str(s) => s.to_sql(ty, out),
+            // A `= ANY($1)` / `= ANY($1::T[])` array param: `ty` is the ARRAY type PG inferred from
+            // the column (e.g. `_int4`, `_uuid`, `_text`). Delegate to tokio-postgres's slice array
+            // serialization, which reads `ty.kind() == Array(member)` and serializes each element in
+            // the width the column's element type expects (the same width-aware path the scalars use
+            // above, since each element is itself a `PgParam` whose `to_sql` sees the member type).
+            PgParam::Array(elems) => elems
+                .as_slice()
+                .to_sql(ty, out)
+                .map(|_| tokio_postgres::types::IsNull::No),
         }
     }
     // Accept any target column type — the DB coerces the text/number param. We never reject at the
@@ -191,6 +217,57 @@ impl ToSql for PgParam {
     tokio_postgres::types::to_sql_checked!();
 }
 
+/// A `uuid` column read as its canonical text. tokio-postgres has no built-in `String`
+/// `FromSql` for `uuid` (that needs the `uuid` crate feature), so read the raw 16 bytes and format
+/// the canonical `8-4-4-4-12` hex — the SAME uuid-as-text form SQLite/MySQL return, so the assembled
+/// row encodes identically across dialects.
+struct PgUuidText(String);
+
+impl<'a> tokio_postgres::types::FromSql<'a> for PgUuidText {
+    fn from_sql(
+        _ty: &PgType,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        if raw.len() != 16 {
+            return Err(format!(
+                "scp pg driver: uuid column is {} bytes (expected 16)",
+                raw.len()
+            )
+            .into());
+        }
+        let h = |b: u8| format!("{b:02x}");
+        let hex: String = raw.iter().map(|b| h(*b)).collect();
+        // Insert hyphens at the canonical 8-4-4-4-12 boundaries.
+        let text = format!(
+            "{}-{}-{}-{}-{}",
+            &hex[0..8],
+            &hex[8..12],
+            &hex[12..16],
+            &hex[16..20],
+            &hex[20..32],
+        );
+        Ok(PgUuidText(text))
+    }
+
+    fn accepts(ty: &PgType) -> bool {
+        *ty == PgType::UUID
+    }
+}
+
+/// Parse a canonical UUID text (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, hyphens optional) to its 16
+/// raw bytes — the wire form PG's binary `uuid` param expects. Returns `None` on a malformed input.
+fn uuid_text_to_bytes(s: &str) -> Option<[u8; 16]> {
+    let hex: String = s.chars().filter(|c| *c != '-').collect();
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    for (i, b) in bytes.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(bytes)
+}
+
 fn to_pg_param(v: &Value) -> Result<PgParam, SqlFailure> {
     match v {
         Value::Null => Ok(PgParam::Null),
@@ -198,8 +275,16 @@ fn to_pg_param(v: &Value) -> Result<PgParam, SqlFailure> {
         Value::Int(i) => Ok(PgParam::Int(*i)),
         Value::Float(f) => Ok(PgParam::Float(*f)),
         Value::Str(s) => Ok(PgParam::Str(s.clone())),
+        // A no-cast `= ANY($1)` IN-list / relation-batch `= ANY($1::T[])` binds the list as ONE
+        // array param (#46) — recurse to build the homogeneous element vector.
+        Value::Arr(elems) => Ok(PgParam::Array(
+            elems
+                .iter()
+                .map(to_pg_param)
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
         other => Err(driver_failure(format!(
-            "scp pg driver: a {} reached the param binder (expected a scalar)",
+            "scp pg driver: a {} reached the param binder (expected a scalar or array)",
             other.type_name()
         ))),
     }
@@ -228,6 +313,11 @@ fn pg_cell_to_value(row: &tokio_postgres::Row, idx: usize) -> Result<Value, SqlF
         PgType::BOOL => row
             .try_get::<_, Option<bool>>(idx)
             .map(|o| o.map(Value::Bool)),
+        // A `uuid` column: tokio-postgres has no String FromSql for uuid, so read the raw 16 bytes
+        // and format the canonical text — matching the SQLite/MySQL uuid-as-text row encoding.
+        PgType::UUID => row
+            .try_get::<_, Option<PgUuidText>>(idx)
+            .map(|o| o.map(|u| Value::Str(u.0))),
         _ => row
             .try_get::<_, Option<String>>(idx)
             .map(|o| o.map(Value::Str)),

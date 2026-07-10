@@ -22,7 +22,7 @@ use litedbmodel_runtime::value::encode_value;
 use litedbmodel_runtime::{execute_bundle_pooled, execute_transaction_bundle, Driver};
 use serde_json::{json, Value as J};
 
-const SUPPORTED_CORPUS_VERSION: i64 = 1;
+const SUPPORTED_CORPUS_VERSION: i64 = 2;
 const PG_SCHEMA: &str = "scp_rust";
 const MYSQL_DB: &str = "scp_rust";
 
@@ -30,6 +30,7 @@ const ALL_TABLES: &[&str] = &[
     "post_tags",
     "posts",
     "tags",
+    "docs",
     "users",
     "idem",
     "uniq",

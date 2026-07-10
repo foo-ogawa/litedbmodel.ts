@@ -36,7 +36,7 @@ require $root . '/php/src/LiveDb.php';
 use LiteDbModel\Runtime\LiveDb;
 use LiteDbModel\Runtime\Runtime;
 
-const SUPPORTED_CORPUS_VERSION = 1;
+const SUPPORTED_CORPUS_VERSION = 2;
 const PG_SCHEMA = 'scp_php';
 const MYSQL_DB = 'scp_php';
 
@@ -90,7 +90,7 @@ function inputToScope(mixed $decoded): array
 }
 
 // The tables the corpus touches (drop dependents first).
-const ALL_TABLES = ['post_tags', 'posts', 'tags', 'users', 'idem', 'uniq', 'outbox'];
+const ALL_TABLES = ['post_tags', 'posts', 'tags', 'docs', 'users', 'idem', 'uniq', 'outbox'];
 
 function resetPg(PDO $db, array $schema): void
 {
