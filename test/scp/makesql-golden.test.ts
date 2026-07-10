@@ -15,7 +15,7 @@ import { describe, it, expect } from 'vitest';
 import { DBModel } from '../../src/DBModel';
 import { LazyRelationContext } from '../../src/LazyRelation';
 import { DBConditions } from '../../src/DBConditions';
-import { dbNotNull, dbCast, dbCastIn, dbTupleIn, dbImmediate, dbDynamic, dbRaw, DBExists, parentRef } from '../../src/DBValues';
+import { dbNotNull, dbCast, dbCastIn, dbTupleIn, dbImmediate, dbDynamic, dbRaw, DBExists, DBSubquery, parentRef } from '../../src/DBValues';
 import { postgresSqlBuilder } from '../../src/drivers/PostgresSqlBuilder';
 import { mysqlSqlBuilder } from '../../src/drivers/MysqlSqlBuilder';
 import { sqliteSqlBuilder } from '../../src/drivers/SqliteSqlBuilder';
@@ -138,6 +138,52 @@ describe('A. subquery / EXISTS — makeSQL byte-matches DBModel.inSubquery/exist
     expect(golden.sql).toContain('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status =');
   });
 
+  it('NOT IN(subquery) + composite (a,b) IN(subquery)', () => {
+    // NOT IN subquery.
+    const notIn = new DBSubquery(
+      [{ columnName: 'id', tableName: 'users' }],
+      'banned',
+      [{ columnName: 'user_id', tableName: 'banned' }],
+      [],
+      'NOT IN'
+    );
+    // Composite (tenant_id, id) IN (SELECT …).
+    const comp = new DBSubquery(
+      [
+        { columnName: 'tenant_id', tableName: 'users' },
+        { columnName: 'id', tableName: 'users' },
+      ],
+      'orders',
+      [
+        { columnName: 'tenant_id', tableName: 'orders' },
+        { columnName: 'user_id', tableName: 'orders' },
+      ],
+      [{ column: { columnName: 'status', tableName: 'orders' }, value: 'paid' }],
+      'IN'
+    );
+    for (const ex of [notIn, comp]) {
+      const condObj = { __subquery__: ex };
+      const params: unknown[] = [];
+      const goldenSql = new DBConditions(condObj).compile(params, pgFmt);
+      const golden = { sql: renderPlaceholders(goldenSql, 'postgres'), params };
+      const got = render(compileWhere(condObj, 'postgres'), 'postgres');
+      expect(got.sql).toBe(golden.sql);
+      expect(got.params).toEqual(golden.params);
+    }
+  });
+
+  it('= ANY(?::type[]) scalar-array condition (PG) via raw', () => {
+    const condObj = { __raw__: ['users.id = ANY(?::uuid[])', [['u1', 'u2']]] };
+    const params: unknown[] = [];
+    const goldenSql = new DBConditions(condObj).compile(params, pgFmt);
+    const golden = { sql: renderPlaceholders(goldenSql, 'postgres'), params };
+    const got = render(compileWhere(condObj, 'postgres'), 'postgres');
+    expect(got.sql).toBe(golden.sql);
+    expect(got.params).toEqual(golden.params);
+    expect(golden.sql).toBe('users.id = ANY($1::uuid[])');
+    expect(golden.params).toEqual([['u1', 'u2']]);
+  });
+
   it('EXISTS / NOT EXISTS correlated (via DBExists + parentRef)', () => {
     for (const [not, kw] of [[false, 'EXISTS'], [true, 'NOT EXISTS']] as const) {
       const ex = new DBExists(
@@ -192,6 +238,32 @@ describe('B. INSERT single & batch — makeSQL byte-matches dialect builders', (
       expect(got.params).toEqual(golden.params);
     });
   }
+});
+
+describe('B. RETURNING forms — bare / t.col alias (PG) / table.col (SQLite) / MySQL none', () => {
+  it('buildReturning per dialect matches the anchor forms', () => {
+    // PG batch UPDATE uses `t.col` alias; SQLite uses `table.col`; MySQL = undefined.
+    expect(postgresSqlBuilder.buildReturning('users', ['id', 'name'], 't')).toBe('t.id, t.name');
+    expect(postgresSqlBuilder.buildReturning('users', ['id'])).toBe('id'); // bare (no alias)
+    expect(sqliteSqlBuilder.buildReturning('users', ['id', 'name'])).toBe('users.id, users.name');
+    expect(mysqlSqlBuilder.buildReturning('users', ['id'])).toBeUndefined();
+  });
+  it('batch UPDATE carries the t.col RETURNING alias (PG)', () => {
+    const returning = postgresSqlBuilder.buildReturning('users', ['id'], 't')!;
+    const opts = {
+      tableName: 'users',
+      keyColumns: ['id'],
+      updateColumns: ['name'],
+      records: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }],
+      rawRecords: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }],
+      returning,
+    };
+    const golden = postgresSqlBuilder.buildUpdateMany(opts as any);
+    const got = render(compileUpdateMany('postgres', opts as any), 'postgres');
+    expect(got.sql).toBe(renderPlaceholders(golden.sql, 'postgres'));
+    expect(got.sql).toContain('RETURNING t.id');
+    expect(got.params).toEqual(golden.params);
+  });
 });
 
 describe('B. batch UPDATE (+SKIP-column) — makeSQL byte-matches dialect builders', () => {

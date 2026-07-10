@@ -12,6 +12,7 @@
  *   3. exercise nested-`makeSQL` subquery params (splice) and `skip` (drop) end-to-end.
  */
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- bc runtime/driver seams need casts */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
 import { runBehavior, assertPortableComponentGraph, type Handlers } from 'behavior-contracts';
