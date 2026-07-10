@@ -48,7 +48,11 @@ import {
   inferPgArrayType,
   stripMysqlPkHint,
   whereEq,
+  whereGe,
   whereIn,
+  or,
+  coalesce,
+  opt,
   inColumn,
   entityWrites,
   type SqlBundle,
@@ -152,6 +156,20 @@ class PostQueries extends SemanticBehavior {
   }
   ByAmt($: In<{ keys: number[] }>) {
     return L.Select({ table: T_TYPED, select: ['label'], where: [whereIn(inColumn($, 'amt'), $.keys)], order: 'label ASC' });
+  }
+
+  // #47 item 5 — the WHERE assembly (AND/OR group) + LIMIT/OFFSET tail are now driven from v1's
+  // DBConditions/compileSelect (not a v2 hand-roll); this behavior exercises both live for parity.
+  // An OR group over two eq members + a LIMIT + OFFSET.
+  Page($: In<{ user_id: number; other_id: number; offset: number }>) {
+    return L.Select({
+      table: T_POSTS,
+      select: ['id', 'user_id', 'title'],
+      where: [or(whereEq($.user_id, $.user_id), whereEq($.user_id, $.other_id))],
+      order: 'id ASC',
+      limit: 2,
+      offset: coalesce(opt($.offset), 0),
+    });
   }
 
   // count() (#47 item 2 — v1 `DBModel._count`): `SELECT COUNT(*) as count FROM t[ WHERE …]`.
@@ -541,6 +559,26 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     expect(Number(empty[0].count)).toBe(0);
   });
 
+  // #47 item 5 — the OR-group WHERE + LIMIT/OFFSET tail (now v1-sourced) execute live on PG and
+  // return the SAME rows as v1 direct execution of the equivalent DBConditions OR + inline LIMIT.
+  it('OR-group WHERE + LIMIT/OFFSET: SCP rows == v1 direct execution (real PG)', async () => {
+    const bundle = compileBundle(contract, 'Page', [], 'postgres');
+    const input = { user_id: 1, other_id: 2, offset: 0 };
+    const scpRows = (await executeBundleAsync(bundle, input as never, {
+      exec: pgPoolExecutor(pgPool!),
+      entry: 'Page',
+      dialect: 'postgres',
+    })) as unknown as Row[];
+    // v1 direct: an OR over the two user_ids + inline LIMIT/OFFSET (v1 inlines the count as a literal).
+    const v1Params: unknown[] = [];
+    const v1Where = new DBConditions({ __or__: [{ user_id: 1 }, { user_id: 2 }] }).compile(v1Params);
+    let i = 0;
+    const v1Sql = `SELECT id, user_id, title FROM ${T_POSTS} WHERE ${v1Where} ORDER BY id ASC LIMIT 2 OFFSET 0`.replace(/\?/g, () => `$${++i}`);
+    const v1Rows = await pgQuery(pgPool!, v1Sql, v1Params);
+    expect(scpRows).toEqual(v1Rows);
+    expect(scpRows.length).toBe(2); // LIMIT 2 caps the page (all 3 posts belong to user 1 or 2)
+  });
+
   it('INSERT + RETURNING: SCP persists + returns; parity with v1 postgresSqlBuilder', async () => {
     const wc = publishBehaviors(PostWrites);
     const bundle = compileBundle(wc, 'Create', [], 'postgres');
@@ -759,6 +797,23 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
       dialect: 'mysql',
     })) as unknown as Row[];
     expect(Number(byRows[0].count)).toBe(2);
+  });
+
+  // #47 item 5 — OR-group WHERE + LIMIT/OFFSET tail (v1-sourced) execute live on MySQL, rows == v1.
+  it('OR-group WHERE + LIMIT/OFFSET: SCP rows == v1 direct execution (real MySQL)', async () => {
+    const bundle = compileBundle(contract, 'Page', [], 'mysql');
+    const input = { user_id: 1, other_id: 2, offset: 0 };
+    const scpRows = (await executeBundleAsync(bundle, input as never, {
+      exec: mysqlPoolExecutor(myConn! as never),
+      entry: 'Page',
+      dialect: 'mysql',
+    })) as unknown as Row[];
+    const v1Params: unknown[] = [];
+    const v1Where = new DBConditions({ __or__: [{ user_id: 1 }, { user_id: 2 }] }).compile(v1Params);
+    const v1Sql = `SELECT id, user_id, title FROM ${T_POSTS} WHERE ${v1Where} ORDER BY id ASC LIMIT 2 OFFSET 0`;
+    const v1Rows = await myQuery(myConn!, v1Sql, v1Params);
+    expect(scpRows).toEqual(v1Rows);
+    expect(scpRows.length).toBe(2);
   });
 
   it('INSERT: SCP persists (MySQL keeps `?`, RETURNING stripped by re-select) + parity with v1', async () => {

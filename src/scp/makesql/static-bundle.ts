@@ -53,7 +53,7 @@ import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
 import { renderPlaceholders, type Dialect } from './handler';
 import { compileWriteNode } from './tx';
 import { mapSqliteError } from '../errors';
-import { type ConditionObject } from '../../DBConditions';
+import { DBConditions, type ConditionObject } from '../../DBConditions';
 import { conditionsFor } from './json-array';
 import { compileSelect } from './compile-select';
 
@@ -204,6 +204,32 @@ function v1ConditionText(conditions: ConditionObject, dialect: Dialect): string 
   return conditionsFor(conditions, dialect).compile(probe);
 }
 
+/**
+ * Assemble an AND/OR GROUP's text by driving the ORIGINAL `DBConditions.compile()` — the SAME join
+ * + paren-wrapping the v1 eager path performs — NOT a v2 hand-roll (#47 item 5). The already-v1-
+ * produced leaf texts are fed as `__raw__` members of a nested `DBConditions` under the group's
+ * operator; a parent references that nested group, so v1's own `compileCondition` emits the wrapping
+ * `(${nested.compile()})` and `nested.compile()` joins the leaves with ` AND `/` OR ` — i.e. the
+ * `(A AND B)` / `(A OR B)` text is byte-produced by v1's builder, not concatenated here.
+ *
+ * `DBConditions.compile` appends probe values per `__raw__` in encounter order, so the parent probe
+ * list length equals the group's total placeholder count; the leaf value-specs (kept 1:1 with those
+ * placeholders by the caller) remain the runtime binds — the probe array is throwaway.
+ */
+function v1GroupText(op: 'and' | 'or', leafSqls: readonly string[]): string {
+  const operator: 'AND' | 'OR' = op === 'and' ? 'AND' : 'OR';
+  // Each leaf is a v1-produced predicate string → a `__raw__` member. `add` preserves order and the
+  // nested group's `compile()` joins them with ` ${operator} ` (v1's exact algorithm).
+  const inner = new DBConditions({}, operator);
+  for (const sql of leafSqls) inner.add({ __raw__: sql }, operator);
+  // A parent whose sole member is the nested group → v1 wraps it as `(${inner.compile()})`
+  // (DBConditions.compileCondition, the `value instanceof DBConditions` branch) — the group parens.
+  const parent = new DBConditions({});
+  parent.add(inner);
+  const probe: unknown[] = [];
+  return parent.compile(probe);
+}
+
 /** A deferred value-spec that JSON-encodes an array value-spec at runtime (single-param IN). */
 function jsonArraySpec(dialect: Dialect, valueSpec: ValueSpec): ValueSpec {
   // Marker op the runtime interprets: `{ __jsonArray: <valueSpec>, dialect }`. Postgres keeps
@@ -260,8 +286,10 @@ function lowerWhereMember(node: unknown, dialect: Dialect, at: string): WhereFra
       parts.push(f.sql);
       params.push(...f.params);
     });
-    const connector = op === 'and' ? ' AND ' : ' OR ';
-    return { sql: `(${parts.join(connector)})`, params };
+    // Assemble the group text through the ORIGINAL `DBConditions` join + paren-wrap (item 5) — NOT
+    // a v2 `parts.join(connector)` hand-roll. The v1-produced leaf texts keep their `?` order, so
+    // the deferred value-specs (`params`) still bind 1:1 with the placeholders in the assembled sql.
+    return { sql: v1GroupText(op, parts), params };
   }
 
   if (op === 'eq') {
@@ -342,6 +370,21 @@ function selectTail(desc: Parameters<typeof compileSelect>[0], table: string): s
 }
 
 /**
+ * The ` LIMIT `/` OFFSET ` KEYWORD text sourced from the ORIGINAL `_buildSelectSQL` (via
+ * `compileSelect`) — item 5. v1 INLINES the count as a literal (` LIMIT 10`); the static bundle
+ * keeps the INTENTIONAL divergence of binding it as a `?` deferred value-spec (a portable equivalent
+ * every language runtime renders identically, evaluated per-input). So we drive v1 with a sentinel
+ * count, take v1's exact ` LIMIT <n>`/` OFFSET <n>` append, and swap the sentinel for `?` — the
+ * keyword text is v1's, only the literal becomes a placeholder. Documented, all-dialect parity-checked.
+ */
+function limitOffsetTail(kind: 'limit' | 'offset', dialect: Dialect, table: string): string {
+  const SENTINEL = 987654321; // a distinctive count with no substring clash in the keyword text
+  const desc = kind === 'limit' ? { dialect, tableName: table, limit: SENTINEL } : { dialect, tableName: table, offset: SENTINEL };
+  const tail = selectTail(desc, table); // v1's ` LIMIT 987654321` / ` OFFSET 987654321`
+  return tail.replace(String(SENTINEL), '?'); // keep the bound-param behavior; keyword text is v1's
+}
+
+/**
  * Compile ONE authored `Select` node into its static `makeSQL` statement templates:
  * the head `SELECT … FROM t` fragment plus one guarded WHERE fragment per member, then the
  * trailing GROUP BY / ORDER BY / LIMIT / OFFSET tail. The head + GROUP BY + ORDER BY TEXT is
@@ -386,8 +429,10 @@ export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatem
   if (group !== undefined) statements.push({ sql: selectTail({ dialect, tableName: table, group }, table), params: [] });
   const order = stringPort(ports, 'order');
   if (order !== undefined) statements.push({ sql: selectTail({ dialect, tableName: table, order }, table), params: [] });
-  if (ports.limit !== undefined) statements.push({ sql: ` LIMIT ?`, params: [ports.limit as ValueSpec] });
-  if (ports.offset !== undefined) statements.push({ sql: ` OFFSET ?`, params: [ports.offset as ValueSpec] });
+  // LIMIT/OFFSET: the ` LIMIT `/` OFFSET ` keyword text is v1-sourced (via compileSelect), the count
+  // stays a bound `?` value-spec (the intentional portable divergence from v1's literal inlining).
+  if (ports.limit !== undefined) statements.push({ sql: limitOffsetTail('limit', dialect, table), params: [ports.limit as ValueSpec] });
+  if (ports.offset !== undefined) statements.push({ sql: limitOffsetTail('offset', dialect, table), params: [ports.offset as ValueSpec] });
 
   return statements;
 }

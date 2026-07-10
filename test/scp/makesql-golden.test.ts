@@ -34,6 +34,7 @@ import {
   compileCompositeKeyUnlimited,
   compileCompositeKeyStaticUnlimited,
   compileCompositeKeyLimited,
+  compileSelectNode,
   resolvePgArrayCast,
   type Dialect,
   type MakeSQL,
@@ -619,6 +620,27 @@ describe('B. SELECT tail — LIMIT/OFFSET inline, FOR UPDATE, GROUP BY', () => {
       );
       expect(got.sql).toBe(golden.sql);
       expect(got.params).toEqual(golden.params);
+    });
+  }
+});
+
+describe('B. hand-roll removal — LIMIT/OFFSET tail v1-sourced (#47 item 5)', () => {
+  // The static-bundle LIMIT/OFFSET tail used to be a v2 hand-roll (` LIMIT ?`); it now sources the
+  // ` LIMIT `/` OFFSET ` KEYWORD text from the ORIGINAL `compileSelect` (v1 `_buildSelectSQL`),
+  // keeping the intentional `?` bound-param divergence. The golden drives v1 directly.
+  for (const dialect of dialects) {
+    it(`[${dialect}] Select LIMIT/OFFSET keyword text == v1 compileSelect (count → ?)`, () => {
+      // v1 golden: the exact ` LIMIT <n>`/` OFFSET <n>` append v1 emits, with the literal → `?`.
+      // Static statements carry the `?` (pre-render) form, so compare `?`-form to `?`-form.
+      const v1LimitFull = compileSelect({ dialect, tableName: 'posts', limit: 987654321 }).sql;
+      const v1Tail = v1LimitFull.slice(`SELECT * FROM posts`.length).replace('987654321', '?'); // ` LIMIT ?`
+      const node = { component: 'Select', ports: { table: 'posts', select: { arr: ['id'] }, limit: { int: '10' } } };
+      const stmts = compileSelectNode(node as never, dialect);
+      const limitStmt = stmts.find((s) => / LIMIT /.test(s.sql));
+      expect(limitStmt?.sql).toBe(v1Tail);
+      // NEGATIVE (golden-from-originals): perturb v1's count and the golden tail moves.
+      const perturbed = compileSelect({ dialect, tableName: 'posts', limit: 42 }).sql.slice(`SELECT * FROM posts`.length);
+      expect(perturbed).not.toBe(v1LimitFull.slice(`SELECT * FROM posts`.length));
     });
   }
 });
