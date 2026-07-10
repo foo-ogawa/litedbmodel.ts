@@ -34,6 +34,9 @@ import {
   publishBehaviors,
   compileBundle,
   compileWriteBundle,
+  compileCreateManyBundle,
+  compileUpdateManyBundle,
+  compileDeleteManyBundle,
   compileRelationOp,
   executeBundleAsync,
   pgPoolExecutor,
@@ -43,10 +46,12 @@ import {
   renderPlaceholders,
   resolvePgArrayCast,
   inferPgArrayType,
+  stripMysqlPkHint,
   whereEq,
   whereIn,
   inColumn,
   entityWrites,
+  type SqlBundle,
   type In,
   type BehaviorModelContract,
   type RelationOp,
@@ -617,5 +622,246 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
 
     await myConn!.query(`DELETE FROM ${T_POSTS} WHERE id = ?`, [entityId]);
     await myConn!.query(`UPDATE ${T_USERS} SET post_count_scp = ? WHERE id = ?`, [beforeCount, 1]);
+  });
+});
+
+// ── Write-path completeness (#47 write side): the TS 5th-language live leg ─────
+//
+// createMany / updateMany / deleteMany / bare UPDATE·DELETE / UUID-PK + composite-PK INSERT
+// RETURNING — the SAME batch/write bundles the corpus ships, executed live on PG + MySQL through the
+// TS runtime's tx path (`renderTxStatement`). MySQL has no native RETURNING, so an INSERT…RETURNING
+// is emulated PK-aware (strip → INSERT → re-select by the REAL PK via the `/*scp:pk=…*/` hint), and a
+// non-INSERT RETURNING returns [] — the SAME contract the four non-TS runtimes implement. Dedicated
+// `wc_*` tables keep this isolated from the seed above.
+
+const WC_POSTS = 'scp_wc_posts';
+const WC_DOCS = 'scp_wc_docs';
+const WC_LINES = 'scp_wc_lines';
+const WC_UUID = '44444444-4444-4444-4444-444444444444';
+
+class WcMutations extends SemanticBehavior {
+  Rename($: In<{ id: number; title: string }>) {
+    return L.Update({ table: WC_POSTS, 'set.title': $.title, where: [whereEq($.id, $.id)] });
+  }
+  Remove($: In<{ id: number }>) {
+    return L.Delete({ table: WC_POSTS, where: [whereEq($.id, $.id)] });
+  }
+  CreateDoc($: In<{ doc_id: string; title: string }>) {
+    return L.Insert({ table: WC_DOCS, 'values.doc_id': $.doc_id, 'values.title': $.title, returning: 'doc_id, title', pk: 'doc_id' });
+  }
+  CreateLine($: In<{ order_id: number; line_no: number; sku: string }>) {
+    return L.Insert({
+      table: WC_LINES,
+      'values.order_id': $.order_id,
+      'values.line_no': $.line_no,
+      'values.sku': $.sku,
+      returning: 'order_id, line_no, sku',
+      pk: 'order_id,line_no',
+    });
+  }
+}
+
+/** A minimal per-dialect live client seam (parameterized query → rows / affected count). */
+interface LiveClient {
+  query(sql: string, params: unknown[]): Promise<{ rows: Row[]; affected: number; insertId: number }>;
+  begin(): Promise<void>;
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
+}
+
+function pgClient(pool: Pool): LiveClient {
+  return {
+    async query(sql, params) {
+      const res = await pool.query(sql, params);
+      return { rows: (res.rows ?? []) as Row[], affected: res.rowCount ?? 0, insertId: 0 };
+    },
+    begin: async () => void (await pool.query('BEGIN')),
+    commit: async () => void (await pool.query('COMMIT')),
+    rollback: async () => void (await pool.query('ROLLBACK')),
+  };
+}
+
+function myClient(conn: mysql.Connection): LiveClient {
+  return {
+    async query(sql, params) {
+      const [r] = await conn.query(sql, params);
+      if (Array.isArray(r)) return { rows: r as Row[], affected: (r as Row[]).length, insertId: 0 };
+      const h = r as mysql.ResultSetHeader;
+      return { rows: [], affected: h.affectedRows ?? 0, insertId: h.insertId ?? 0 };
+    },
+    begin: async () => void (await conn.beginTransaction()),
+    commit: async () => void (await conn.commit()),
+    rollback: async () => void (await conn.rollback()),
+  };
+}
+
+/** Parse the ` /*scp:pk=cols;ai=col*​/` hint (mirrors the 4 runtime emulations). */
+function parsePkHint(sql: string): { cols: string[]; autoInc: string } | null {
+  const m = /\/\*scp:pk=([^;*]*);ai=([^*]*)\*\//i.exec(sql);
+  if (!m) return null;
+  return { cols: m[1].split(',').map((c) => c.trim()).filter(Boolean), autoInc: m[2].trim() };
+}
+
+/**
+ * Execute a tx/batch bundle live through the TS runtime's render + a per-dialect client, with the
+ * PK-aware MySQL RETURNING emulation. Returns the collected body RETURNING rows (batch "all created
+ * rows" / single entity). This is the TS twin of the 4 runtimes' execute_transaction_bundle.
+ */
+async function execTxLive(bundle: SqlBundle, input: Record<string, unknown>, client: LiveClient, isMysql: boolean): Promise<Row[][]> {
+  const plan = bundle.transaction!;
+  const scope: Record<string, unknown> = { ...input };
+  const returned: Row[][] = [];
+  await client.begin();
+  try {
+    for (const stmt of plan.statements) {
+      const r = renderTxStatement(stmt.op, scope as never, bundle.dialect);
+      const params = r.params.map(toPlain);
+      const hasReturn = /^\s*select\b/i.test(r.sql) || /\breturning\b/i.test(r.sql);
+      let rows: Row[] = [];
+      if (isMysql && /\breturning\b/i.test(r.sql)) {
+        // MySQL RETURNING emulation (PK-aware): strip RETURNING (+ hint), run, re-select by real PK.
+        const retMatch = /\s+RETURNING\s+(.+?)\s*$/is.exec(r.sql)!;
+        const cols = stripMysqlPkHint(retMatch[1]).trim();
+        const writeSql = stripMysqlPkHint(r.sql.slice(0, retMatch.index));
+        const pk = parsePkHint(r.sql);
+        const isInsert = /^\s*INSERT\b/i.test(writeSql);
+        const res = await client.query(writeSql, params);
+        if (!isInsert) {
+          rows = []; // non-INSERT RETURNING: no rows (v1 parity)
+        } else if (pk === null) {
+          rows = (await client.query(`SELECT ${cols} FROM ${insertTable(writeSql)} WHERE id = ?`, [res.insertId])).rows;
+        } else if (pk.autoInc && pk.cols.length === 1 && pk.cols[0] === pk.autoInc) {
+          rows = (await client.query(`SELECT ${cols} FROM ${insertTable(writeSql)} WHERE ${pk.autoInc} >= ? AND ${pk.autoInc} < ?`, [res.insertId, res.insertId + Math.max(1, res.affected)])).rows;
+        } else {
+          const insCols = insertCols(writeSql);
+          const where = pk.cols.map((c) => `${c} = ?`).join(' AND ');
+          const vals = pk.cols.map((c) => params[insCols.indexOf(c)]);
+          rows = (await client.query(`SELECT ${cols} FROM ${insertTable(writeSql)} WHERE ${where}`, vals)).rows;
+        }
+      } else {
+        const res = await client.query(r.sql, params);
+        rows = hasReturn ? res.rows : [];
+      }
+      if (stmt.role === 'body' && rows.length > 0) returned.push(rows);
+      if (stmt.id === plan.entityFrom && rows.length > 0) scope.__entity = rows[0];
+      if (stmt.binds !== undefined && rows.length > 0) scope[stmt.binds] = rows[0];
+    }
+    await client.commit();
+  } catch (e) {
+    await client.rollback();
+    throw e;
+  }
+  return returned;
+}
+
+function insertTable(sql: string): string {
+  return /INSERT\s+(?:IGNORE\s+)?INTO\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(sql)![1];
+}
+function insertCols(sql: string): string[] {
+  const m = /INSERT\s+(?:IGNORE\s+)?INTO\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)/i.exec(sql);
+  return m ? m[1].split(',').map((c) => c.trim()) : [];
+}
+
+describe('WS#47 write-path completeness — batch + bare + PK RETURNING execute live (TS leg, PG + MySQL)', () => {
+  const mut = () => publishBehaviors(WcMutations);
+
+  async function setupPg(): Promise<void> {
+    await pgPool!.query(`DROP TABLE IF EXISTS ${WC_POSTS}`);
+    await pgPool!.query(`DROP TABLE IF EXISTS ${WC_DOCS}`);
+    await pgPool!.query(`DROP TABLE IF EXISTS ${WC_LINES}`);
+    await pgPool!.query(`CREATE TABLE ${WC_POSTS} (id SERIAL PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, subtitle TEXT)`);
+    await pgPool!.query(`CREATE TABLE ${WC_DOCS} (doc_id UUID PRIMARY KEY, title TEXT NOT NULL)`);
+    await pgPool!.query(`CREATE TABLE ${WC_LINES} (order_id INTEGER NOT NULL, line_no INTEGER NOT NULL, sku TEXT NOT NULL, PRIMARY KEY (order_id, line_no))`);
+  }
+  async function setupMy(): Promise<void> {
+    await myConn!.query(`DROP TABLE IF EXISTS ${WC_POSTS}`);
+    await myConn!.query(`DROP TABLE IF EXISTS ${WC_DOCS}`);
+    await myConn!.query(`DROP TABLE IF EXISTS ${WC_LINES}`);
+    await myConn!.query(`CREATE TABLE ${WC_POSTS} (id INT AUTO_INCREMENT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, subtitle VARCHAR(255))`);
+    await myConn!.query(`CREATE TABLE ${WC_DOCS} (doc_id CHAR(36) PRIMARY KEY, title VARCHAR(255) NOT NULL)`);
+    await myConn!.query(`CREATE TABLE ${WC_LINES} (order_id INT NOT NULL, line_no INT NOT NULL, sku VARCHAR(255) NOT NULL, PRIMARY KEY (order_id, line_no))`);
+  }
+
+  it('createMany (homogeneous, RETURNING) + updateMany + deleteMany execute on PG and MySQL', async () => {
+    const records = [
+      { author_id: 7, title: 'B1' },
+      { author_id: 7, title: 'B2' },
+      { author_id: 8, title: 'B3' },
+    ];
+    const cmOpts = { tableName: WC_POSTS, records, rawRecords: records, returning: 'id, author_id, title', pk: { columns: ['id'], autoInc: 'id' } };
+
+    // ── PG ──
+    await setupPg();
+    const cmPg = await execTxLive(compileCreateManyBundle('CM', cmOpts, 'postgres'), {}, pgClient(pgPool!), false);
+    expect(cmPg.flat().map((r) => r.title).sort()).toEqual(['B1', 'B2', 'B3']);
+    const umPg = compileUpdateManyBundle('UM', { tableName: WC_POSTS, keyColumns: ['id'], updateColumns: ['title'], records: [{ id: 1, title: 'B1x' }, { id: 3, title: 'B3x' }], rawRecords: [{ id: 1, title: 'B1x' }, { id: 3, title: 'B3x' }] }, 'postgres');
+    await execTxLive(umPg, {}, pgClient(pgPool!), false);
+    const afterUmPg = await pgQuery(pgPool!, `SELECT id, title FROM ${WC_POSTS} ORDER BY id`, []);
+    expect(afterUmPg.map((r) => r.title)).toEqual(['B1x', 'B2', 'B3x']);
+    await execTxLive(compileDeleteManyBundle('DM', { tableName: WC_POSTS, keyColumns: ['id'], keys: [{ id: 1 }, { id: 3 }] }, 'postgres'), {}, pgClient(pgPool!), false);
+    const afterDmPg = await pgQuery(pgPool!, `SELECT id FROM ${WC_POSTS} ORDER BY id`, []);
+    expect(afterDmPg.map((r) => Number(r.id))).toEqual([2]);
+
+    // ── MySQL ──
+    await setupMy();
+    const cmMy = await execTxLive(compileCreateManyBundle('CM', cmOpts, 'mysql'), {}, myClient(myConn!), true);
+    expect(cmMy.flat().map((r) => r.title).sort()).toEqual(['B1', 'B2', 'B3']); // multi-row RETURNING range re-select
+    const umMy = compileUpdateManyBundle('UM', { tableName: WC_POSTS, keyColumns: ['id'], updateColumns: ['title'], records: [{ id: 1, title: 'B1x' }, { id: 3, title: 'B3x' }] }, 'mysql');
+    await execTxLive(umMy, {}, myClient(myConn!), true);
+    const afterUmMy = await myQuery(myConn!, `SELECT id, title FROM ${WC_POSTS} ORDER BY id`, []);
+    expect(afterUmMy.map((r) => r.title)).toEqual(['B1x', 'B2', 'B3x']);
+    await execTxLive(compileDeleteManyBundle('DM', { tableName: WC_POSTS, keyColumns: ['id'], keys: [{ id: 1 }, { id: 3 }] }, 'mysql'), {}, myClient(myConn!), true);
+    const afterDmMy = await myQuery(myConn!, `SELECT id FROM ${WC_POSTS} ORDER BY id`, []);
+    expect(afterDmMy.map((r) => Number(r.id))).toEqual([2]);
+  });
+
+  it('bare UPDATE + bare DELETE execute on PG and MySQL', async () => {
+    const contract = mut();
+    const upd = { update: { effects: {} } };
+    const rem = { remove: { effects: {} } };
+
+    await setupPg();
+    await pgPool!.query(`INSERT INTO ${WC_POSTS} (id, author_id, title) VALUES (1,7,'One'),(2,7,'Two')`);
+    await execTxLive(compileWriteBundle(contract, 'Rename', upd, 'update', 'postgres'), { id: 2, title: 'Two-x' }, pgClient(pgPool!), false);
+    expect((await pgQuery(pgPool!, `SELECT title FROM ${WC_POSTS} WHERE id=2`, []))[0].title).toBe('Two-x');
+    await execTxLive(compileWriteBundle(contract, 'Remove', rem, 'remove', 'postgres'), { id: 1 }, pgClient(pgPool!), false);
+    expect((await pgQuery(pgPool!, `SELECT id FROM ${WC_POSTS} ORDER BY id`, [])).map((r) => Number(r.id))).toEqual([2]);
+
+    await setupMy();
+    await myConn!.query(`INSERT INTO ${WC_POSTS} (id, author_id, title) VALUES (1,7,'One'),(2,7,'Two')`);
+    await execTxLive(compileWriteBundle(contract, 'Rename', upd, 'update', 'mysql'), { id: 2, title: 'Two-x' }, myClient(myConn!), true);
+    expect((await myQuery(myConn!, `SELECT title FROM ${WC_POSTS} WHERE id=2`, []))[0].title).toBe('Two-x');
+    await execTxLive(compileWriteBundle(contract, 'Remove', rem, 'remove', 'mysql'), { id: 1 }, myClient(myConn!), true);
+    expect((await myQuery(myConn!, `SELECT id FROM ${WC_POSTS} ORDER BY id`, [])).map((r) => Number(r.id))).toEqual([2]);
+  });
+
+  it('UUID-PK + composite-PK INSERT RETURNING: MySQL emul re-selects by the REAL PK (#4)', async () => {
+    const contract = mut();
+    const cr = { create: { effects: {} } };
+
+    // ── UUID PK ──
+    await setupPg();
+    const docPg = await execTxLive(compileWriteBundle(contract, 'CreateDoc', cr, 'create', 'postgres'), { doc_id: WC_UUID, title: 'Doc' }, pgClient(pgPool!), false);
+    expect(String(docPg[0][0].doc_id)).toBe(WC_UUID);
+    await setupMy();
+    const docMy = await execTxLive(compileWriteBundle(contract, 'CreateDoc', cr, 'create', 'mysql'), { doc_id: WC_UUID, title: 'Doc' }, myClient(myConn!), true);
+    expect(String(docMy[0][0].doc_id)).toBe(WC_UUID); // re-selected by doc_id, NOT id
+    expect(docMy[0][0].title).toBe('Doc');
+
+    // ── Composite PK ──
+    await setupPg();
+    const linePg = await execTxLive(compileWriteBundle(contract, 'CreateLine', cr, 'create', 'postgres'), { order_id: 10, line_no: 2, sku: 'SKU-2' }, pgClient(pgPool!), false);
+    expect(linePg[0][0]).toMatchObject({ order_id: 10, line_no: 2, sku: 'SKU-2' });
+    await setupMy();
+    const lineMy = await execTxLive(compileWriteBundle(contract, 'CreateLine', cr, 'create', 'mysql'), { order_id: 10, line_no: 2, sku: 'SKU-2' }, myClient(myConn!), true);
+    expect(lineMy[0][0]).toMatchObject({ order_id: 10, line_no: 2, sku: 'SKU-2' }); // re-selected by (order_id, line_no)
+
+    // cleanup
+    await pgPool!.query(`DROP TABLE IF EXISTS ${WC_POSTS}`);
+    await pgPool!.query(`DROP TABLE IF EXISTS ${WC_DOCS}`);
+    await pgPool!.query(`DROP TABLE IF EXISTS ${WC_LINES}`);
+    await myConn!.query(`DROP TABLE IF EXISTS ${WC_POSTS}`);
+    await myConn!.query(`DROP TABLE IF EXISTS ${WC_DOCS}`);
+    await myConn!.query(`DROP TABLE IF EXISTS ${WC_LINES}`);
   });
 });
