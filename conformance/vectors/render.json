@@ -1,76 +1,575 @@
 {
   "suite": "render",
-  "corpusVersion": 1,
-  "note": "CRUD × 3 dialects × SKIP/IN/empty-WHERE edge cases — renderOperation golden (byte-true).",
+  "corpusVersion": 2,
+  "note": "READ primaries + WRITE statements × 3 dialects × SKIP/IN edge cases — static makeSQL render golden (byte-true to the original builders).",
   "vectors": [
     {
-      "name": "select eq+IN",
+      "name": "Feed: status present + limit",
       "kind": "render",
       "dialect": "sqlite",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id, author_id, title FROM posts{where} ORDER BY id ASC",
-        "where": {
-          "connector": "AND",
-          "fragments": [
+      "readGraph": {
+        "dialect": "sqlite",
+        "name": "Feed",
+        "ir": {
+          "irVersion": 1,
+          "exprVersion": 2,
+          "components": [
             {
-              "always": true,
+              "body": [
+                {
+                  "component": "__makeSqlNode",
+                  "id": "n0",
+                  "ports": {
+                    "__scope": {
+                      "obj": {
+                        "author_id": {
+                          "ref": [
+                            "author_id"
+                          ]
+                        },
+                        "status": {
+                          "ref": [
+                            "status"
+                          ]
+                        },
+                        "since": {
+                          "ref": [
+                            "since"
+                          ]
+                        },
+                        "limit": {
+                          "ref": [
+                            "limit"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "id": "n1",
+                  "map": {
+                    "as": "$e0",
+                    "component": "__makeSqlNode",
+                    "over": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "parent": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "$e0": {
+                            "ref": [
+                              "$e0"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ],
+              "inputPorts": {
+                "author_id": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "created_at": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "limit": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "since": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "status": {
+                  "required": true,
+                  "type": "unknown"
+                }
+              },
+              "name": "Feed",
+              "output": {
+                "obj": {
+                  "authors": {
+                    "ref": [
+                      "n1"
+                    ]
+                  },
+                  "posts": {
+                    "ref": [
+                      "n0"
+                    ]
+                  }
+                }
+              },
+              "plan": {
+                "concurrency": 16,
+                "groups": [
+                  [
+                    0
+                  ],
+                  [
+                    1
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "statementsById": {
+          "n0": [
+            {
+              "sql": "SELECT id, author_id, title, status FROM posts",
+              "params": []
+            },
+            {
               "sql": "author_id = ?",
               "params": [
                 {
                   "ref": [
-                    "authorId"
-                  ]
-                }
-              ]
-            },
-            {
-              "always": true,
-              "sql": "id IN (?)",
-              "params": [
-                {
-                  "ref": [
-                    "ids"
+                    "author_id"
                   ]
                 }
               ],
-              "expand": 0
+              "whereFragment": true
+            },
+            {
+              "sql": "status = ?",
+              "params": [
+                {
+                  "ref": [
+                    "status"
+                  ]
+                }
+              ],
+              "whereFragment": true,
+              "skip": {
+                "not": [
+                  {
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "sql": "created_at >= ?",
+              "params": [
+                {
+                  "ref": [
+                    "since"
+                  ]
+                }
+              ],
+              "whereFragment": true
+            },
+            {
+              "sql": " ORDER BY id ASC",
+              "params": []
+            },
+            {
+              "sql": " LIMIT ?",
+              "params": [
+                {
+                  "coalesce": [
+                    {
+                      "refOpt": [
+                        "limit"
+                      ]
+                    },
+                    20
+                  ]
+                }
+              ]
+            }
+          ],
+          "n1": [
+            {
+              "sql": "SELECT id, name FROM users",
+              "params": []
+            },
+            {
+              "sql": "id = ?",
+              "params": [
+                {
+                  "ref": [
+                    "$e0",
+                    "author_id"
+                  ]
+                }
+              ],
+              "whereFragment": true
             }
           ]
         },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
+        "optionalHeads": [
+          "status",
+          "limit"
+        ]
       },
       "input": {
-        "authorId": 7,
+        "author_id": 7,
+        "status": "live",
+        "since": "2026-01-01",
+        "created_at": "created_at",
+        "limit": 5
+      },
+      "expectedSql": "SELECT id, author_id, title, status FROM posts WHERE author_id = ? AND status = ? AND created_at >= ? ORDER BY id ASC LIMIT ?",
+      "expectedParams": [
+        7,
+        "live",
+        "2026-01-01",
+        5
+      ]
+    },
+    {
+      "name": "Feed: status null → SKIP drop, coalesce default limit",
+      "kind": "render",
+      "dialect": "sqlite",
+      "readGraph": {
+        "dialect": "sqlite",
+        "name": "Feed",
+        "ir": {
+          "irVersion": 1,
+          "exprVersion": 2,
+          "components": [
+            {
+              "body": [
+                {
+                  "component": "__makeSqlNode",
+                  "id": "n0",
+                  "ports": {
+                    "__scope": {
+                      "obj": {
+                        "author_id": {
+                          "ref": [
+                            "author_id"
+                          ]
+                        },
+                        "status": {
+                          "ref": [
+                            "status"
+                          ]
+                        },
+                        "since": {
+                          "ref": [
+                            "since"
+                          ]
+                        },
+                        "limit": {
+                          "ref": [
+                            "limit"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "id": "n1",
+                  "map": {
+                    "as": "$e0",
+                    "component": "__makeSqlNode",
+                    "over": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "parent": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "$e0": {
+                            "ref": [
+                              "$e0"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ],
+              "inputPorts": {
+                "author_id": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "created_at": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "limit": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "since": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "status": {
+                  "required": true,
+                  "type": "unknown"
+                }
+              },
+              "name": "Feed",
+              "output": {
+                "obj": {
+                  "authors": {
+                    "ref": [
+                      "n1"
+                    ]
+                  },
+                  "posts": {
+                    "ref": [
+                      "n0"
+                    ]
+                  }
+                }
+              },
+              "plan": {
+                "concurrency": 16,
+                "groups": [
+                  [
+                    0
+                  ],
+                  [
+                    1
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "statementsById": {
+          "n0": [
+            {
+              "sql": "SELECT id, author_id, title, status FROM posts",
+              "params": []
+            },
+            {
+              "sql": "author_id = ?",
+              "params": [
+                {
+                  "ref": [
+                    "author_id"
+                  ]
+                }
+              ],
+              "whereFragment": true
+            },
+            {
+              "sql": "status = ?",
+              "params": [
+                {
+                  "ref": [
+                    "status"
+                  ]
+                }
+              ],
+              "whereFragment": true,
+              "skip": {
+                "not": [
+                  {
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "sql": "created_at >= ?",
+              "params": [
+                {
+                  "ref": [
+                    "since"
+                  ]
+                }
+              ],
+              "whereFragment": true
+            },
+            {
+              "sql": " ORDER BY id ASC",
+              "params": []
+            },
+            {
+              "sql": " LIMIT ?",
+              "params": [
+                {
+                  "coalesce": [
+                    {
+                      "refOpt": [
+                        "limit"
+                      ]
+                    },
+                    20
+                  ]
+                }
+              ]
+            }
+          ],
+          "n1": [
+            {
+              "sql": "SELECT id, name FROM users",
+              "params": []
+            },
+            {
+              "sql": "id = ?",
+              "params": [
+                {
+                  "ref": [
+                    "$e0",
+                    "author_id"
+                  ]
+                }
+              ],
+              "whereFragment": true
+            }
+          ]
+        },
+        "optionalHeads": [
+          "status",
+          "limit"
+        ]
+      },
+      "input": {
+        "author_id": 7,
+        "status": null,
+        "since": "2026-01-01",
+        "created_at": "created_at",
+        "limit": null
+      },
+      "expectedSql": "SELECT id, author_id, title, status FROM posts WHERE author_id = ? AND created_at >= ? ORDER BY id ASC LIMIT ?",
+      "expectedParams": [
+        7,
+        "2026-01-01",
+        20
+      ]
+    },
+    {
+      "name": "ByIds: IN-list single-JSON param",
+      "kind": "render",
+      "dialect": "sqlite",
+      "readGraph": {
+        "dialect": "sqlite",
+        "name": "ByIds",
+        "ir": {
+          "irVersion": 1,
+          "exprVersion": 2,
+          "components": [
+            {
+              "body": [
+                {
+                  "component": "__makeSqlNode",
+                  "id": "n0",
+                  "ports": {
+                    "__scope": {
+                      "obj": {
+                        "ids": {
+                          "ref": [
+                            "ids"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              ],
+              "inputPorts": {
+                "@in": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "ids": {
+                  "required": true,
+                  "type": "unknown"
+                }
+              },
+              "name": "ByIds",
+              "output": {
+                "ref": [
+                  "n0"
+                ]
+              },
+              "plan": {
+                "concurrency": 16,
+                "groups": [
+                  [
+                    0
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "statementsById": {
+          "n0": [
+            {
+              "sql": "SELECT id, title FROM posts",
+              "params": []
+            },
+            {
+              "sql": "id IN (SELECT value FROM json_each(?))",
+              "params": [
+                {
+                  "__jsonArray": {
+                    "ref": [
+                      "ids"
+                    ]
+                  },
+                  "dialect": "sqlite"
+                }
+              ],
+              "whereFragment": true
+            },
+            {
+              "sql": " ORDER BY id ASC",
+              "params": []
+            }
+          ]
+        },
+        "optionalHeads": []
+      },
+      "input": {
         "ids": [
           1,
           2,
           3
         ]
       },
-      "expectedSql": "SELECT id, author_id, title FROM posts WHERE author_id = ? AND id IN (?, ?, ?) ORDER BY id ASC",
+      "expectedSql": "SELECT id, title FROM posts WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
       "expectedParams": [
-        7,
-        1,
-        2,
-        3
+        "[1,2,3]"
       ]
     },
     {
-      "name": "insert +RETURNING",
-      "kind": "render",
+      "name": "Create: INSERT + RETURNING (canonical cols)",
+      "kind": "write-render",
       "dialect": "sqlite",
-      "operation": {
-        "component": "Insert",
-        "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, title",
-        "where": null,
+      "statement": {
+        "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
         "params": [
           {
             "ref": [
-              "authorId"
+              "author_id"
             ]
           },
           {
@@ -78,219 +577,456 @@
               "title"
             ]
           }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
+        ]
       },
       "input": {
-        "authorId": 7,
-        "title": "Hello"
+        "author_id": 7,
+        "title": "Hello",
+        "request_id": "r"
       },
-      "expectedSql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, title",
+      "expectedSql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
       "expectedParams": [
-        7,
-        "Hello"
+        {
+          "ref": [
+            "author_id"
+          ]
+        },
+        {
+          "ref": [
+            "title"
+          ]
+        }
       ]
     },
     {
-      "name": "update SET+WHERE",
-      "kind": "render",
+      "name": "Rename: UPDATE + WHERE + RETURNING",
+      "kind": "write-render",
       "dialect": "sqlite",
-      "operation": {
-        "component": "Update",
-        "sql": "UPDATE users SET post_count = ?{where} RETURNING id, post_count",
-        "where": {
-          "connector": "AND",
-          "fragments": [
+      "statement": {
+        "sql": "UPDATE posts SET title = ? WHERE id = ? RETURNING id, title",
+        "params": [
+          {
+            "ref": [
+              "title"
+            ]
+          },
+          {
+            "ref": [
+              "id"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "id": 1,
+        "title": "Renamed"
+      },
+      "expectedSql": "UPDATE posts SET title = ? WHERE id = ? RETURNING id, title",
+      "expectedParams": [
+        {
+          "ref": [
+            "title"
+          ]
+        },
+        {
+          "ref": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Remove: DELETE + WHERE + RETURNING",
+      "kind": "write-render",
+      "dialect": "sqlite",
+      "statement": {
+        "sql": "DELETE FROM posts WHERE id = ? RETURNING id",
+        "params": [
+          {
+            "ref": [
+              "id"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "id": 1
+      },
+      "expectedSql": "DELETE FROM posts WHERE id = ? RETURNING id",
+      "expectedParams": [
+        {
+          "ref": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Feed: status present + limit",
+      "kind": "render",
+      "dialect": "postgres",
+      "readGraph": {
+        "dialect": "postgres",
+        "name": "Feed",
+        "ir": {
+          "irVersion": 1,
+          "exprVersion": 2,
+          "components": [
             {
-              "always": true,
+              "body": [
+                {
+                  "component": "__makeSqlNode",
+                  "id": "n0",
+                  "ports": {
+                    "__scope": {
+                      "obj": {
+                        "author_id": {
+                          "ref": [
+                            "author_id"
+                          ]
+                        },
+                        "status": {
+                          "ref": [
+                            "status"
+                          ]
+                        },
+                        "since": {
+                          "ref": [
+                            "since"
+                          ]
+                        },
+                        "limit": {
+                          "ref": [
+                            "limit"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "id": "n1",
+                  "map": {
+                    "as": "$e0",
+                    "component": "__makeSqlNode",
+                    "over": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "parent": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "$e0": {
+                            "ref": [
+                              "$e0"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ],
+              "inputPorts": {
+                "author_id": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "created_at": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "limit": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "since": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "status": {
+                  "required": true,
+                  "type": "unknown"
+                }
+              },
+              "name": "Feed",
+              "output": {
+                "obj": {
+                  "authors": {
+                    "ref": [
+                      "n1"
+                    ]
+                  },
+                  "posts": {
+                    "ref": [
+                      "n0"
+                    ]
+                  }
+                }
+              },
+              "plan": {
+                "concurrency": 16,
+                "groups": [
+                  [
+                    0
+                  ],
+                  [
+                    1
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "statementsById": {
+          "n0": [
+            {
+              "sql": "SELECT id, author_id, title, status FROM posts",
+              "params": []
+            },
+            {
+              "sql": "author_id = ?",
+              "params": [
+                {
+                  "ref": [
+                    "author_id"
+                  ]
+                }
+              ],
+              "whereFragment": true
+            },
+            {
+              "sql": "status = ?",
+              "params": [
+                {
+                  "ref": [
+                    "status"
+                  ]
+                }
+              ],
+              "whereFragment": true,
+              "skip": {
+                "not": [
+                  {
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "sql": "created_at >= ?",
+              "params": [
+                {
+                  "ref": [
+                    "since"
+                  ]
+                }
+              ],
+              "whereFragment": true
+            },
+            {
+              "sql": " ORDER BY id ASC",
+              "params": []
+            },
+            {
+              "sql": " LIMIT ?",
+              "params": [
+                {
+                  "coalesce": [
+                    {
+                      "refOpt": [
+                        "limit"
+                      ]
+                    },
+                    20
+                  ]
+                }
+              ]
+            }
+          ],
+          "n1": [
+            {
+              "sql": "SELECT id, name FROM users",
+              "params": []
+            },
+            {
               "sql": "id = ?",
               "params": [
                 {
                   "ref": [
-                    "id"
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        "params": [
-          {
-            "add": [
-              {
-                "ref": [
-                  "cur"
-                ]
-              },
-              1
-            ]
-          }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "cur": {
-          "$bigint": "4"
-        },
-        "id": 7
-      },
-      "expectedSql": "UPDATE users SET post_count = ? WHERE id = ? RETURNING id, post_count",
-      "expectedParams": [
-        {
-          "$bigint": "5"
-        },
-        7
-      ]
-    },
-    {
-      "name": "delete eq+IN",
-      "kind": "render",
-      "dialect": "sqlite",
-      "operation": {
-        "component": "Delete",
-        "sql": "DELETE FROM posts{where} RETURNING id",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "author_id = ?",
-              "params": [
-                {
-                  "ref": [
-                    "authorId"
-                  ]
-                }
-              ]
-            },
-            {
-              "always": true,
-              "sql": "id IN (?)",
-              "params": [
-                {
-                  "ref": [
-                    "ids"
+                    "$e0",
+                    "author_id"
                   ]
                 }
               ],
-              "expand": 0
+              "whereFragment": true
             }
           ]
         },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "authorId": 7,
-        "ids": [
-          1,
-          2
+        "optionalHeads": [
+          "status",
+          "limit"
         ]
       },
-      "expectedSql": "DELETE FROM posts WHERE author_id = ? AND id IN (?, ?) RETURNING id",
-      "expectedParams": [
-        7,
-        1,
-        2
-      ]
-    },
-    {
-      "name": "skip present (status='live', limit=5)",
-      "kind": "render",
-      "dialect": "sqlite",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id, status FROM posts{where} LIMIT ?",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "author_id = ?",
-              "params": [
-                {
-                  "ref": [
-                    "authorId"
-                  ]
-                }
-              ]
-            },
-            {
-              "sql": "status = ?",
-              "params": [
-                {
-                  "ref": [
-                    "status"
-                  ]
-                }
-              ],
-              "when": {
-                "ne": [
-                  {
-                    "refOpt": [
-                      "status"
-                    ]
-                  },
-                  null
-                ]
-              }
-            }
-          ]
-        },
-        "params": [
-          {
-            "coalesce": [
-              {
-                "refOpt": [
-                  "limit"
-                ]
-              },
-              20
-            ]
-          }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
-      },
       "input": {
-        "authorId": 7,
+        "author_id": 7,
         "status": "live",
+        "since": "2026-01-01",
+        "created_at": "created_at",
         "limit": 5
       },
-      "expectedSql": "SELECT id, status FROM posts WHERE author_id = ? AND status = ? LIMIT ?",
+      "expectedSql": "SELECT id, author_id, title, status FROM posts WHERE author_id = $1 AND status = $2 AND created_at >= $3 ORDER BY id ASC LIMIT $4",
       "expectedParams": [
         7,
         "live",
+        "2026-01-01",
         5
       ]
     },
     {
-      "name": "skip null (status=null → drop, coalesce default limit)",
+      "name": "Feed: status null → SKIP drop, coalesce default limit",
       "kind": "render",
-      "dialect": "sqlite",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id, status FROM posts{where} LIMIT ?",
-        "where": {
-          "connector": "AND",
-          "fragments": [
+      "dialect": "postgres",
+      "readGraph": {
+        "dialect": "postgres",
+        "name": "Feed",
+        "ir": {
+          "irVersion": 1,
+          "exprVersion": 2,
+          "components": [
             {
-              "always": true,
+              "body": [
+                {
+                  "component": "__makeSqlNode",
+                  "id": "n0",
+                  "ports": {
+                    "__scope": {
+                      "obj": {
+                        "author_id": {
+                          "ref": [
+                            "author_id"
+                          ]
+                        },
+                        "status": {
+                          "ref": [
+                            "status"
+                          ]
+                        },
+                        "since": {
+                          "ref": [
+                            "since"
+                          ]
+                        },
+                        "limit": {
+                          "ref": [
+                            "limit"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "id": "n1",
+                  "map": {
+                    "as": "$e0",
+                    "component": "__makeSqlNode",
+                    "over": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "parent": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "$e0": {
+                            "ref": [
+                              "$e0"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ],
+              "inputPorts": {
+                "author_id": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "created_at": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "limit": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "since": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "status": {
+                  "required": true,
+                  "type": "unknown"
+                }
+              },
+              "name": "Feed",
+              "output": {
+                "obj": {
+                  "authors": {
+                    "ref": [
+                      "n1"
+                    ]
+                  },
+                  "posts": {
+                    "ref": [
+                      "n0"
+                    ]
+                  }
+                }
+              },
+              "plan": {
+                "concurrency": 16,
+                "groups": [
+                  [
+                    0
+                  ],
+                  [
+                    1
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "statementsById": {
+          "n0": [
+            {
+              "sql": "SELECT id, author_id, title, status FROM posts",
+              "params": []
+            },
+            {
               "sql": "author_id = ?",
               "params": [
                 {
                   "ref": [
-                    "authorId"
+                    "author_id"
                   ]
                 }
-              ]
+              ],
+              "whereFragment": true
             },
             {
               "sql": "status = ?",
@@ -301,282 +1037,201 @@
                   ]
                 }
               ],
-              "when": {
-                "ne": [
+              "whereFragment": true,
+              "skip": {
+                "not": [
                   {
-                    "refOpt": [
-                      "status"
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
                     ]
-                  },
-                  null
+                  }
                 ]
               }
+            },
+            {
+              "sql": "created_at >= ?",
+              "params": [
+                {
+                  "ref": [
+                    "since"
+                  ]
+                }
+              ],
+              "whereFragment": true
+            },
+            {
+              "sql": " ORDER BY id ASC",
+              "params": []
+            },
+            {
+              "sql": " LIMIT ?",
+              "params": [
+                {
+                  "coalesce": [
+                    {
+                      "refOpt": [
+                        "limit"
+                      ]
+                    },
+                    20
+                  ]
+                }
+              ]
+            }
+          ],
+          "n1": [
+            {
+              "sql": "SELECT id, name FROM users",
+              "params": []
+            },
+            {
+              "sql": "id = ?",
+              "params": [
+                {
+                  "ref": [
+                    "$e0",
+                    "author_id"
+                  ]
+                }
+              ],
+              "whereFragment": true
             }
           ]
         },
-        "params": [
-          {
-            "coalesce": [
-              {
-                "refOpt": [
-                  "limit"
-                ]
-              },
-              20
-            ]
-          }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
+        "optionalHeads": [
+          "status",
+          "limit"
+        ]
       },
       "input": {
-        "authorId": 7,
+        "author_id": 7,
         "status": null,
+        "since": "2026-01-01",
+        "created_at": "created_at",
         "limit": null
       },
-      "expectedSql": "SELECT id, status FROM posts WHERE author_id = ? LIMIT ?",
+      "expectedSql": "SELECT id, author_id, title, status FROM posts WHERE author_id = $1 AND created_at >= $2 ORDER BY id ASC LIMIT $3",
       "expectedParams": [
         7,
-        {
-          "$bigint": "20"
-        }
+        "2026-01-01",
+        20
       ]
     },
     {
-      "name": "empty-WHERE degeneration (status=null → whole WHERE collapses)",
-      "kind": "render",
-      "dialect": "sqlite",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "sql": "status = ?",
-              "params": [
-                {
-                  "ref": [
-                    "status"
-                  ]
-                }
-              ],
-              "when": {
-                "ne": [
-                  {
-                    "refOpt": [
-                      "status"
-                    ]
-                  },
-                  null
-                ]
-              }
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "status": null
-      },
-      "expectedSql": "SELECT id FROM posts",
-      "expectedParams": []
-    },
-    {
-      "name": "empty-WHERE present (status='live')",
-      "kind": "render",
-      "dialect": "sqlite",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "sql": "status = ?",
-              "params": [
-                {
-                  "ref": [
-                    "status"
-                  ]
-                }
-              ],
-              "when": {
-                "ne": [
-                  {
-                    "refOpt": [
-                      "status"
-                    ]
-                  },
-                  null
-                ]
-              }
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "status": "live"
-      },
-      "expectedSql": "SELECT id FROM posts WHERE status = ?",
-      "expectedParams": [
-        "live"
-      ]
-    },
-    {
-      "name": "IN-list N=3",
-      "kind": "render",
-      "dialect": "sqlite",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "id IN (?)",
-              "params": [
-                {
-                  "ref": [
-                    "ids"
-                  ]
-                }
-              ],
-              "expand": 0
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "ids": [
-          1,
-          2,
-          3
-        ]
-      },
-      "expectedSql": "SELECT id FROM posts WHERE id IN (?, ?, ?)",
-      "expectedParams": [
-        1,
-        2,
-        3
-      ]
-    },
-    {
-      "name": "IN-list empty → 1 = 0",
-      "kind": "render",
-      "dialect": "sqlite",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "id IN (?)",
-              "params": [
-                {
-                  "ref": [
-                    "ids"
-                  ]
-                }
-              ],
-              "expand": 0
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "ids": []
-      },
-      "expectedSql": "SELECT id FROM posts WHERE 1 = 0",
-      "expectedParams": []
-    },
-    {
-      "name": "select eq+IN",
+      "name": "ByIds: IN-list single-JSON param",
       "kind": "render",
       "dialect": "postgres",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id, author_id, title FROM posts{where} ORDER BY id ASC",
-        "where": {
-          "connector": "AND",
-          "fragments": [
+      "readGraph": {
+        "dialect": "postgres",
+        "name": "ByIds",
+        "ir": {
+          "irVersion": 1,
+          "exprVersion": 2,
+          "components": [
             {
-              "always": true,
-              "sql": "author_id = ?",
-              "params": [
+              "body": [
                 {
-                  "ref": [
-                    "authorId"
-                  ]
+                  "component": "__makeSqlNode",
+                  "id": "n0",
+                  "ports": {
+                    "__scope": {
+                      "obj": {
+                        "ids": {
+                          "ref": [
+                            "ids"
+                          ]
+                        }
+                      }
+                    }
+                  }
                 }
-              ]
+              ],
+              "inputPorts": {
+                "@in": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "ids": {
+                  "required": true,
+                  "type": "unknown"
+                }
+              },
+              "name": "ByIds",
+              "output": {
+                "ref": [
+                  "n0"
+                ]
+              },
+              "plan": {
+                "concurrency": 16,
+                "groups": [
+                  [
+                    0
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "statementsById": {
+          "n0": [
+            {
+              "sql": "SELECT id, title FROM posts",
+              "params": []
             },
             {
-              "always": true,
-              "sql": "id IN (?)",
+              "sql": "id = ANY(?)",
               "params": [
                 {
-                  "ref": [
-                    "ids"
-                  ]
+                  "__jsonArray": {
+                    "ref": [
+                      "ids"
+                    ]
+                  },
+                  "dialect": "postgres"
                 }
               ],
-              "expand": 0
+              "whereFragment": true
+            },
+            {
+              "sql": " ORDER BY id ASC",
+              "params": []
             }
           ]
         },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
+        "optionalHeads": []
       },
       "input": {
-        "authorId": 7,
         "ids": [
           1,
           2,
           3
         ]
       },
-      "expectedSql": "SELECT id, author_id, title FROM posts WHERE author_id = $1 AND id IN ($2, $3, $4) ORDER BY id ASC",
+      "expectedSql": "SELECT id, title FROM posts WHERE id = ANY($1) ORDER BY id ASC",
       "expectedParams": [
-        7,
-        1,
-        2,
-        3
+        [
+          1,
+          2,
+          3
+        ]
       ]
     },
     {
-      "name": "insert +RETURNING",
-      "kind": "render",
+      "name": "Create: INSERT + RETURNING (canonical cols)",
+      "kind": "write-render",
       "dialect": "postgres",
-      "operation": {
-        "component": "Insert",
-        "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, title",
-        "where": null,
+      "statement": {
+        "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
         "params": [
           {
             "ref": [
-              "authorId"
+              "author_id"
             ]
           },
           {
@@ -584,219 +1239,456 @@
               "title"
             ]
           }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
+        ]
       },
       "input": {
-        "authorId": 7,
-        "title": "Hello"
+        "author_id": 7,
+        "title": "Hello",
+        "request_id": "r"
       },
-      "expectedSql": "INSERT INTO posts (author_id, title) VALUES ($1, $2) RETURNING id, title",
+      "expectedSql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
       "expectedParams": [
-        7,
-        "Hello"
+        {
+          "ref": [
+            "author_id"
+          ]
+        },
+        {
+          "ref": [
+            "title"
+          ]
+        }
       ]
     },
     {
-      "name": "update SET+WHERE",
-      "kind": "render",
+      "name": "Rename: UPDATE + WHERE + RETURNING",
+      "kind": "write-render",
       "dialect": "postgres",
-      "operation": {
-        "component": "Update",
-        "sql": "UPDATE users SET post_count = ?{where} RETURNING id, post_count",
-        "where": {
-          "connector": "AND",
-          "fragments": [
+      "statement": {
+        "sql": "UPDATE posts SET title = ? WHERE id = ? RETURNING id, title",
+        "params": [
+          {
+            "ref": [
+              "title"
+            ]
+          },
+          {
+            "ref": [
+              "id"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "id": 1,
+        "title": "Renamed"
+      },
+      "expectedSql": "UPDATE posts SET title = ? WHERE id = ? RETURNING id, title",
+      "expectedParams": [
+        {
+          "ref": [
+            "title"
+          ]
+        },
+        {
+          "ref": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Remove: DELETE + WHERE + RETURNING",
+      "kind": "write-render",
+      "dialect": "postgres",
+      "statement": {
+        "sql": "DELETE FROM posts WHERE id = ? RETURNING id",
+        "params": [
+          {
+            "ref": [
+              "id"
+            ]
+          }
+        ]
+      },
+      "input": {
+        "id": 1
+      },
+      "expectedSql": "DELETE FROM posts WHERE id = ? RETURNING id",
+      "expectedParams": [
+        {
+          "ref": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Feed: status present + limit",
+      "kind": "render",
+      "dialect": "mysql",
+      "readGraph": {
+        "dialect": "mysql",
+        "name": "Feed",
+        "ir": {
+          "irVersion": 1,
+          "exprVersion": 2,
+          "components": [
             {
-              "always": true,
+              "body": [
+                {
+                  "component": "__makeSqlNode",
+                  "id": "n0",
+                  "ports": {
+                    "__scope": {
+                      "obj": {
+                        "author_id": {
+                          "ref": [
+                            "author_id"
+                          ]
+                        },
+                        "status": {
+                          "ref": [
+                            "status"
+                          ]
+                        },
+                        "since": {
+                          "ref": [
+                            "since"
+                          ]
+                        },
+                        "limit": {
+                          "ref": [
+                            "limit"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "id": "n1",
+                  "map": {
+                    "as": "$e0",
+                    "component": "__makeSqlNode",
+                    "over": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "parent": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "$e0": {
+                            "ref": [
+                              "$e0"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ],
+              "inputPorts": {
+                "author_id": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "created_at": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "limit": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "since": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "status": {
+                  "required": true,
+                  "type": "unknown"
+                }
+              },
+              "name": "Feed",
+              "output": {
+                "obj": {
+                  "authors": {
+                    "ref": [
+                      "n1"
+                    ]
+                  },
+                  "posts": {
+                    "ref": [
+                      "n0"
+                    ]
+                  }
+                }
+              },
+              "plan": {
+                "concurrency": 16,
+                "groups": [
+                  [
+                    0
+                  ],
+                  [
+                    1
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "statementsById": {
+          "n0": [
+            {
+              "sql": "SELECT id, author_id, title, status FROM posts",
+              "params": []
+            },
+            {
+              "sql": "author_id = ?",
+              "params": [
+                {
+                  "ref": [
+                    "author_id"
+                  ]
+                }
+              ],
+              "whereFragment": true
+            },
+            {
+              "sql": "status = ?",
+              "params": [
+                {
+                  "ref": [
+                    "status"
+                  ]
+                }
+              ],
+              "whereFragment": true,
+              "skip": {
+                "not": [
+                  {
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "sql": "created_at >= ?",
+              "params": [
+                {
+                  "ref": [
+                    "since"
+                  ]
+                }
+              ],
+              "whereFragment": true
+            },
+            {
+              "sql": " ORDER BY id ASC",
+              "params": []
+            },
+            {
+              "sql": " LIMIT ?",
+              "params": [
+                {
+                  "coalesce": [
+                    {
+                      "refOpt": [
+                        "limit"
+                      ]
+                    },
+                    20
+                  ]
+                }
+              ]
+            }
+          ],
+          "n1": [
+            {
+              "sql": "SELECT id, name FROM users",
+              "params": []
+            },
+            {
               "sql": "id = ?",
               "params": [
                 {
                   "ref": [
-                    "id"
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        "params": [
-          {
-            "add": [
-              {
-                "ref": [
-                  "cur"
-                ]
-              },
-              1
-            ]
-          }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "cur": {
-          "$bigint": "4"
-        },
-        "id": 7
-      },
-      "expectedSql": "UPDATE users SET post_count = $1 WHERE id = $2 RETURNING id, post_count",
-      "expectedParams": [
-        {
-          "$bigint": "5"
-        },
-        7
-      ]
-    },
-    {
-      "name": "delete eq+IN",
-      "kind": "render",
-      "dialect": "postgres",
-      "operation": {
-        "component": "Delete",
-        "sql": "DELETE FROM posts{where} RETURNING id",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "author_id = ?",
-              "params": [
-                {
-                  "ref": [
-                    "authorId"
-                  ]
-                }
-              ]
-            },
-            {
-              "always": true,
-              "sql": "id IN (?)",
-              "params": [
-                {
-                  "ref": [
-                    "ids"
+                    "$e0",
+                    "author_id"
                   ]
                 }
               ],
-              "expand": 0
+              "whereFragment": true
             }
           ]
         },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "authorId": 7,
-        "ids": [
-          1,
-          2
+        "optionalHeads": [
+          "status",
+          "limit"
         ]
       },
-      "expectedSql": "DELETE FROM posts WHERE author_id = $1 AND id IN ($2, $3) RETURNING id",
-      "expectedParams": [
-        7,
-        1,
-        2
-      ]
-    },
-    {
-      "name": "skip present (status='live', limit=5)",
-      "kind": "render",
-      "dialect": "postgres",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id, status FROM posts{where} LIMIT ?",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "author_id = ?",
-              "params": [
-                {
-                  "ref": [
-                    "authorId"
-                  ]
-                }
-              ]
-            },
-            {
-              "sql": "status = ?",
-              "params": [
-                {
-                  "ref": [
-                    "status"
-                  ]
-                }
-              ],
-              "when": {
-                "ne": [
-                  {
-                    "refOpt": [
-                      "status"
-                    ]
-                  },
-                  null
-                ]
-              }
-            }
-          ]
-        },
-        "params": [
-          {
-            "coalesce": [
-              {
-                "refOpt": [
-                  "limit"
-                ]
-              },
-              20
-            ]
-          }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
-      },
       "input": {
-        "authorId": 7,
+        "author_id": 7,
         "status": "live",
+        "since": "2026-01-01",
+        "created_at": "created_at",
         "limit": 5
       },
-      "expectedSql": "SELECT id, status FROM posts WHERE author_id = $1 AND status = $2 LIMIT $3",
+      "expectedSql": "SELECT id, author_id, title, status FROM posts WHERE author_id = ? AND status = ? AND created_at >= ? ORDER BY id ASC LIMIT ?",
       "expectedParams": [
         7,
         "live",
+        "2026-01-01",
         5
       ]
     },
     {
-      "name": "skip null (status=null → drop, coalesce default limit)",
+      "name": "Feed: status null → SKIP drop, coalesce default limit",
       "kind": "render",
-      "dialect": "postgres",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id, status FROM posts{where} LIMIT ?",
-        "where": {
-          "connector": "AND",
-          "fragments": [
+      "dialect": "mysql",
+      "readGraph": {
+        "dialect": "mysql",
+        "name": "Feed",
+        "ir": {
+          "irVersion": 1,
+          "exprVersion": 2,
+          "components": [
             {
-              "always": true,
+              "body": [
+                {
+                  "component": "__makeSqlNode",
+                  "id": "n0",
+                  "ports": {
+                    "__scope": {
+                      "obj": {
+                        "author_id": {
+                          "ref": [
+                            "author_id"
+                          ]
+                        },
+                        "status": {
+                          "ref": [
+                            "status"
+                          ]
+                        },
+                        "since": {
+                          "ref": [
+                            "since"
+                          ]
+                        },
+                        "limit": {
+                          "ref": [
+                            "limit"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "id": "n1",
+                  "map": {
+                    "as": "$e0",
+                    "component": "__makeSqlNode",
+                    "over": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "parent": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "$e0": {
+                            "ref": [
+                              "$e0"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ],
+              "inputPorts": {
+                "author_id": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "created_at": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "limit": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "since": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "status": {
+                  "required": true,
+                  "type": "unknown"
+                }
+              },
+              "name": "Feed",
+              "output": {
+                "obj": {
+                  "authors": {
+                    "ref": [
+                      "n1"
+                    ]
+                  },
+                  "posts": {
+                    "ref": [
+                      "n0"
+                    ]
+                  }
+                }
+              },
+              "plan": {
+                "concurrency": 16,
+                "groups": [
+                  [
+                    0
+                  ],
+                  [
+                    1
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "statementsById": {
+          "n0": [
+            {
+              "sql": "SELECT id, author_id, title, status FROM posts",
+              "params": []
+            },
+            {
               "sql": "author_id = ?",
               "params": [
                 {
                   "ref": [
-                    "authorId"
+                    "author_id"
                   ]
                 }
-              ]
+              ],
+              "whereFragment": true
             },
             {
               "sql": "status = ?",
@@ -807,282 +1699,197 @@
                   ]
                 }
               ],
-              "when": {
-                "ne": [
+              "whereFragment": true,
+              "skip": {
+                "not": [
                   {
-                    "refOpt": [
-                      "status"
+                    "ne": [
+                      {
+                        "refOpt": [
+                          "status"
+                        ]
+                      },
+                      null
                     ]
-                  },
-                  null
+                  }
                 ]
               }
+            },
+            {
+              "sql": "created_at >= ?",
+              "params": [
+                {
+                  "ref": [
+                    "since"
+                  ]
+                }
+              ],
+              "whereFragment": true
+            },
+            {
+              "sql": " ORDER BY id ASC",
+              "params": []
+            },
+            {
+              "sql": " LIMIT ?",
+              "params": [
+                {
+                  "coalesce": [
+                    {
+                      "refOpt": [
+                        "limit"
+                      ]
+                    },
+                    20
+                  ]
+                }
+              ]
+            }
+          ],
+          "n1": [
+            {
+              "sql": "SELECT id, name FROM users",
+              "params": []
+            },
+            {
+              "sql": "id = ?",
+              "params": [
+                {
+                  "ref": [
+                    "$e0",
+                    "author_id"
+                  ]
+                }
+              ],
+              "whereFragment": true
             }
           ]
         },
-        "params": [
-          {
-            "coalesce": [
-              {
-                "refOpt": [
-                  "limit"
-                ]
-              },
-              20
-            ]
-          }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
+        "optionalHeads": [
+          "status",
+          "limit"
+        ]
       },
       "input": {
-        "authorId": 7,
+        "author_id": 7,
         "status": null,
+        "since": "2026-01-01",
+        "created_at": "created_at",
         "limit": null
       },
-      "expectedSql": "SELECT id, status FROM posts WHERE author_id = $1 LIMIT $2",
+      "expectedSql": "SELECT id, author_id, title, status FROM posts WHERE author_id = ? AND created_at >= ? ORDER BY id ASC LIMIT ?",
       "expectedParams": [
         7,
-        {
-          "$bigint": "20"
-        }
+        "2026-01-01",
+        20
       ]
     },
     {
-      "name": "empty-WHERE degeneration (status=null → whole WHERE collapses)",
-      "kind": "render",
-      "dialect": "postgres",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "sql": "status = ?",
-              "params": [
-                {
-                  "ref": [
-                    "status"
-                  ]
-                }
-              ],
-              "when": {
-                "ne": [
-                  {
-                    "refOpt": [
-                      "status"
-                    ]
-                  },
-                  null
-                ]
-              }
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "status": null
-      },
-      "expectedSql": "SELECT id FROM posts",
-      "expectedParams": []
-    },
-    {
-      "name": "empty-WHERE present (status='live')",
-      "kind": "render",
-      "dialect": "postgres",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "sql": "status = ?",
-              "params": [
-                {
-                  "ref": [
-                    "status"
-                  ]
-                }
-              ],
-              "when": {
-                "ne": [
-                  {
-                    "refOpt": [
-                      "status"
-                    ]
-                  },
-                  null
-                ]
-              }
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "status": "live"
-      },
-      "expectedSql": "SELECT id FROM posts WHERE status = $1",
-      "expectedParams": [
-        "live"
-      ]
-    },
-    {
-      "name": "IN-list N=3",
-      "kind": "render",
-      "dialect": "postgres",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "id IN (?)",
-              "params": [
-                {
-                  "ref": [
-                    "ids"
-                  ]
-                }
-              ],
-              "expand": 0
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "ids": [
-          1,
-          2,
-          3
-        ]
-      },
-      "expectedSql": "SELECT id FROM posts WHERE id IN ($1, $2, $3)",
-      "expectedParams": [
-        1,
-        2,
-        3
-      ]
-    },
-    {
-      "name": "IN-list empty → 1 = 0",
-      "kind": "render",
-      "dialect": "postgres",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "id IN (?)",
-              "params": [
-                {
-                  "ref": [
-                    "ids"
-                  ]
-                }
-              ],
-              "expand": 0
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "ids": []
-      },
-      "expectedSql": "SELECT id FROM posts WHERE 1 = 0",
-      "expectedParams": []
-    },
-    {
-      "name": "select eq+IN",
+      "name": "ByIds: IN-list single-JSON param",
       "kind": "render",
       "dialect": "mysql",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id, author_id, title FROM posts{where} ORDER BY id ASC",
-        "where": {
-          "connector": "AND",
-          "fragments": [
+      "readGraph": {
+        "dialect": "mysql",
+        "name": "ByIds",
+        "ir": {
+          "irVersion": 1,
+          "exprVersion": 2,
+          "components": [
             {
-              "always": true,
-              "sql": "author_id = ?",
-              "params": [
+              "body": [
                 {
-                  "ref": [
-                    "authorId"
-                  ]
+                  "component": "__makeSqlNode",
+                  "id": "n0",
+                  "ports": {
+                    "__scope": {
+                      "obj": {
+                        "ids": {
+                          "ref": [
+                            "ids"
+                          ]
+                        }
+                      }
+                    }
+                  }
                 }
-              ]
+              ],
+              "inputPorts": {
+                "@in": {
+                  "required": true,
+                  "type": "unknown"
+                },
+                "ids": {
+                  "required": true,
+                  "type": "unknown"
+                }
+              },
+              "name": "ByIds",
+              "output": {
+                "ref": [
+                  "n0"
+                ]
+              },
+              "plan": {
+                "concurrency": 16,
+                "groups": [
+                  [
+                    0
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "statementsById": {
+          "n0": [
+            {
+              "sql": "SELECT id, title FROM posts",
+              "params": []
             },
             {
-              "always": true,
-              "sql": "id IN (?)",
+              "sql": "id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
               "params": [
                 {
-                  "ref": [
-                    "ids"
-                  ]
+                  "__jsonArray": {
+                    "ref": [
+                      "ids"
+                    ]
+                  },
+                  "dialect": "mysql"
                 }
               ],
-              "expand": 0
+              "whereFragment": true
+            },
+            {
+              "sql": " ORDER BY id ASC",
+              "params": []
             }
           ]
         },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
+        "optionalHeads": []
       },
       "input": {
-        "authorId": 7,
         "ids": [
           1,
           2,
           3
         ]
       },
-      "expectedSql": "SELECT id, author_id, title FROM posts WHERE author_id = ? AND id IN (?, ?, ?) ORDER BY id ASC",
+      "expectedSql": "SELECT id, title FROM posts WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
       "expectedParams": [
-        7,
-        1,
-        2,
-        3
+        "[1,2,3]"
       ]
     },
     {
-      "name": "insert +RETURNING",
-      "kind": "render",
+      "name": "Create: INSERT + RETURNING (canonical cols)",
+      "kind": "write-render",
       "dialect": "mysql",
-      "operation": {
-        "component": "Insert",
-        "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, title",
-        "where": null,
+      "statement": {
+        "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
         "params": [
           {
             "ref": [
-              "authorId"
+              "author_id"
             ]
           },
           {
@@ -1090,436 +1897,89 @@
               "title"
             ]
           }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "authorId": 7,
-        "title": "Hello"
-      },
-      "expectedSql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, title",
-      "expectedParams": [
-        7,
-        "Hello"
-      ]
-    },
-    {
-      "name": "update SET+WHERE",
-      "kind": "render",
-      "dialect": "mysql",
-      "operation": {
-        "component": "Update",
-        "sql": "UPDATE users SET post_count = ?{where} RETURNING id, post_count",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "id = ?",
-              "params": [
-                {
-                  "ref": [
-                    "id"
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        "params": [
-          {
-            "add": [
-              {
-                "ref": [
-                  "cur"
-                ]
-              },
-              1
-            ]
-          }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "cur": {
-          "$bigint": "4"
-        },
-        "id": 7
-      },
-      "expectedSql": "UPDATE users SET post_count = ? WHERE id = ? RETURNING id, post_count",
-      "expectedParams": [
-        {
-          "$bigint": "5"
-        },
-        7
-      ]
-    },
-    {
-      "name": "delete eq+IN",
-      "kind": "render",
-      "dialect": "mysql",
-      "operation": {
-        "component": "Delete",
-        "sql": "DELETE FROM posts{where} RETURNING id",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "author_id = ?",
-              "params": [
-                {
-                  "ref": [
-                    "authorId"
-                  ]
-                }
-              ]
-            },
-            {
-              "always": true,
-              "sql": "id IN (?)",
-              "params": [
-                {
-                  "ref": [
-                    "ids"
-                  ]
-                }
-              ],
-              "expand": 0
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "authorId": 7,
-        "ids": [
-          1,
-          2
         ]
       },
-      "expectedSql": "DELETE FROM posts WHERE author_id = ? AND id IN (?, ?) RETURNING id",
-      "expectedParams": [
-        7,
-        1,
-        2
-      ]
-    },
-    {
-      "name": "skip present (status='live', limit=5)",
-      "kind": "render",
-      "dialect": "mysql",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id, status FROM posts{where} LIMIT ?",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "author_id = ?",
-              "params": [
-                {
-                  "ref": [
-                    "authorId"
-                  ]
-                }
-              ]
-            },
-            {
-              "sql": "status = ?",
-              "params": [
-                {
-                  "ref": [
-                    "status"
-                  ]
-                }
-              ],
-              "when": {
-                "ne": [
-                  {
-                    "refOpt": [
-                      "status"
-                    ]
-                  },
-                  null
-                ]
-              }
-            }
-          ]
-        },
-        "params": [
-          {
-            "coalesce": [
-              {
-                "refOpt": [
-                  "limit"
-                ]
-              },
-              20
-            ]
-          }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
-      },
       "input": {
-        "authorId": 7,
-        "status": "live",
-        "limit": 5
+        "author_id": 7,
+        "title": "Hello",
+        "request_id": "r"
       },
-      "expectedSql": "SELECT id, status FROM posts WHERE author_id = ? AND status = ? LIMIT ?",
+      "expectedSql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
       "expectedParams": [
-        7,
-        "live",
-        5
-      ]
-    },
-    {
-      "name": "skip null (status=null → drop, coalesce default limit)",
-      "kind": "render",
-      "dialect": "mysql",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id, status FROM posts{where} LIMIT ?",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "author_id = ?",
-              "params": [
-                {
-                  "ref": [
-                    "authorId"
-                  ]
-                }
-              ]
-            },
-            {
-              "sql": "status = ?",
-              "params": [
-                {
-                  "ref": [
-                    "status"
-                  ]
-                }
-              ],
-              "when": {
-                "ne": [
-                  {
-                    "refOpt": [
-                      "status"
-                    ]
-                  },
-                  null
-                ]
-              }
-            }
-          ]
-        },
-        "params": [
-          {
-            "coalesce": [
-              {
-                "refOpt": [
-                  "limit"
-                ]
-              },
-              20
-            ]
-          }
-        ],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "authorId": 7,
-        "status": null,
-        "limit": null
-      },
-      "expectedSql": "SELECT id, status FROM posts WHERE author_id = ? LIMIT ?",
-      "expectedParams": [
-        7,
         {
-          "$bigint": "20"
+          "ref": [
+            "author_id"
+          ]
+        },
+        {
+          "ref": [
+            "title"
+          ]
         }
       ]
     },
     {
-      "name": "empty-WHERE degeneration (status=null → whole WHERE collapses)",
-      "kind": "render",
+      "name": "Rename: UPDATE + WHERE + RETURNING",
+      "kind": "write-render",
       "dialect": "mysql",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "sql": "status = ?",
-              "params": [
-                {
-                  "ref": [
-                    "status"
-                  ]
-                }
-              ],
-              "when": {
-                "ne": [
-                  {
-                    "refOpt": [
-                      "status"
-                    ]
-                  },
-                  null
-                ]
-              }
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "status": null
-      },
-      "expectedSql": "SELECT id FROM posts",
-      "expectedParams": []
-    },
-    {
-      "name": "empty-WHERE present (status='live')",
-      "kind": "render",
-      "dialect": "mysql",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "sql": "status = ?",
-              "params": [
-                {
-                  "ref": [
-                    "status"
-                  ]
-                }
-              ],
-              "when": {
-                "ne": [
-                  {
-                    "refOpt": [
-                      "status"
-                    ]
-                  },
-                  null
-                ]
-              }
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "status": "live"
-      },
-      "expectedSql": "SELECT id FROM posts WHERE status = ?",
-      "expectedParams": [
-        "live"
-      ]
-    },
-    {
-      "name": "IN-list N=3",
-      "kind": "render",
-      "dialect": "mysql",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "id IN (?)",
-              "params": [
-                {
-                  "ref": [
-                    "ids"
-                  ]
-                }
-              ],
-              "expand": 0
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
-      },
-      "input": {
-        "ids": [
-          1,
-          2,
-          3
+      "statement": {
+        "sql": "UPDATE posts SET title = ? WHERE id = ? RETURNING id, title",
+        "params": [
+          {
+            "ref": [
+              "title"
+            ]
+          },
+          {
+            "ref": [
+              "id"
+            ]
+          }
         ]
       },
-      "expectedSql": "SELECT id FROM posts WHERE id IN (?, ?, ?)",
+      "input": {
+        "id": 1,
+        "title": "Renamed"
+      },
+      "expectedSql": "UPDATE posts SET title = ? WHERE id = ? RETURNING id, title",
       "expectedParams": [
-        1,
-        2,
-        3
+        {
+          "ref": [
+            "title"
+          ]
+        },
+        {
+          "ref": [
+            "id"
+          ]
+        }
       ]
     },
     {
-      "name": "IN-list empty → 1 = 0",
-      "kind": "render",
+      "name": "Remove: DELETE + WHERE + RETURNING",
+      "kind": "write-render",
       "dialect": "mysql",
-      "operation": {
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {
-          "connector": "AND",
-          "fragments": [
-            {
-              "always": true,
-              "sql": "id IN (?)",
-              "params": [
-                {
-                  "ref": [
-                    "ids"
-                  ]
-                }
-              ],
-              "expand": 0
-            }
-          ]
-        },
-        "params": [],
-        "assembly": {
-          "shape": "items"
-        }
+      "statement": {
+        "sql": "DELETE FROM posts WHERE id = ? RETURNING id",
+        "params": [
+          {
+            "ref": [
+              "id"
+            ]
+          }
+        ]
       },
       "input": {
-        "ids": []
+        "id": 1
       },
-      "expectedSql": "SELECT id FROM posts WHERE 1 = 0",
-      "expectedParams": []
+      "expectedSql": "DELETE FROM posts WHERE id = ? RETURNING id",
+      "expectedParams": [
+        {
+          "ref": [
+            "id"
+          ]
+        }
+      ]
     }
   ]
 }

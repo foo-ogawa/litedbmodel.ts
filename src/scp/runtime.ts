@@ -1,324 +1,64 @@
 /**
- * litedbmodel v2 SCP — the thin TS runtime (WS3, #23; spec §3 / §10 / §11).
+ * litedbmodel v2 SCP — the thin TS runtime on the STATIC makeSQL bundle (WS3, #23; makeSQL
+ * flip, epic #43/#45 Phase B; spec §3 / §10 / §11).
  *
- * Consumes bc's runtime-core (`runBehavior` = plan stage execution + map/wire/skip
- * propagation + Φ output assembly) and adds ONLY the SQL-backend concerns (spec §11):
- * Backend-Compile bridge (WS1↔WS3), per-Catalog Handlers (render → driver execute →
- * row→model assembly), and Error Mapping. It re-implements NO generic execution.
+ * makeSQL is the SOLE SCP compile/execute path. A behavior method compiles (SYMBOLICALLY — no
+ * concrete input) to a {@link SqlBundle}:
+ *   - a READ bundle carries a {@link ReadGraph} — the surrogate bc `ComponentGraphIR` (each SQL
+ *     node → a `makeSQL` node) + per-node static statement templates. bc `runBehavior` drives
+ *     map iteration / wire binding / Φ output; the makeSQL handler renders each node's statements
+ *     (value-specs + skip evaluated per-input) and executes real SQL ("bc composes, makeSQL
+ *     executes"). Read-relation batch ops ride the bundle too.
+ *   - a WRITE bundle carries a single `makeSQL` statement (the base write) + the derived gate-first
+ *     {@link TransactionPlan} for a Command with write-time relations.
  *
- * ## Execution pipeline (spec §3)
- *
- *   validate → fragment select (SKIP) → array expand → Expression eval → bind → SQL execute
- *   → assembly
- *
- * bc's `runBehavior` owns the orchestration (which node runs when, map iteration, wire
- * binding, output merge). But the SQL-structural ports (`where` fragment tree, `limit`, …)
- * MUST NOT go through bc's generic port evaluation — a `where` `{arr:[…]}` of comparison
- * Expressions would evaluate to bare booleans (losing the SQL structure), and a SKIP guard
- * over an ABSENT optional input would fail-closed with `UNKNOWN_BINDING`. So the runtime:
- *
- *  1. Backend-Compiles every SQL node up front ({@link import('./bridge').compileNode}) to a
- *     WS1 `CompiledOperation` (SQL text + fragment tree + closed-set param slots).
- *  2. Rewrites the IR into a SURROGATE graph: each SQL node keeps its `id` / wiring / `map`
- *     shape, but its ports collapse to ONE synthetic `__scope` port — a bc `{obj:…}` that
- *     re-exports every binding head the op references (`input` names, wire node ids, the
- *     `map` element `as`). bc evaluates `__scope` in ITS scope (so `input`, sibling results
- *     and the map element all resolve through bc's own machinery) and hands the plain scope
- *     to the handler. No SQL-structural port is ever evaluated by bc.
- *  3. Each handler renders its pre-compiled op against `ports.__scope` via WS1's normative
- *     {@link renderOperation} (fragment select + array expand + Expression eval), binds the
- *     params through the driver, executes REAL SQL, and returns the row list (assembly).
+ * The reduced spine (`CompiledOperation` + `FragmentTree` + `renderOperation`) is RETIRED — this
+ * module carries no reduced IR. Reads execute via {@link import('./makesql/static-bundle')} (bc
+ * `runBehavior` + makeSQL handler); writes via {@link import('./makesql/tx')} (gate-first tx-DAG).
  *
  * ## Input normalization (SSoT — defaults live in the schema, not code)
  *
- * An OPTIONAL Input Port that the caller omits is normalized to `null` (present-as-null) so
- * a SKIP guard `{ne:[{refOpt:[port]}, null]}` evaluates to `false` and drops its fragment —
- * absent-key SKIP via `refOpt`. This is driven by the component's `inputPorts` schema
- * (`required !== true` ⇒ optional), NOT an ad-hoc `?? null` in engine code: the schema is
- * the single source of truth for which ports are optional.
+ * An OPTIONAL input head the caller omits is normalized to `null` (present-as-null) so a SKIP
+ * presence expression drops its fragment (absent-key SKIP). "Optional" comes from the bundle's
+ * `optionalHeads` (schema-optional + SKIP-guarded + every `refOpt` head) — the SSoT.
  */
 
+import { type Scope, type Value } from 'behavior-contracts';
+import type { BehaviorModelContract, Component } from './authoring';
+import { SqlFailure } from './errors';
 import {
-  runBehavior,
-  type Component,
-  type ComponentGraphIR,
-  type Handlers,
-  type HandlerCtx,
-  type Scope,
-  type Value,
-  type ExecOutcome,
-} from 'behavior-contracts';
-import type { BehaviorModelContract } from './authoring';
-import { compileComponentNodes } from './bridge';
-import { renderOperation } from './render';
-import type { CompiledOperation, ExprNode, Fragment, FragmentTree } from './ir';
-import { mapSqliteError, SqlFailure } from './errors';
-import { compileRelationOp, runRelationOp, distributeToParent, type RelationDecl, type RelationOp, type RelationDriver } from './relation';
+  compileRelationOp,
+  type RelationDecl,
+  type RelationOp,
+} from './relation';
 import { buildResultSet, type ReadOptions } from './typed-object';
-import { compileNode } from './bridge';
-import { deriveTransactionPlan, type BaseWrite, type TransactionPlan } from './write-plan';
-import { executeTransaction, type TransactionResult } from './write-runtime';
-import { lifecycleFor, type EntityWritesDefinition, type LifecycleContract, type WriteLifecyclePhase } from './writes';
-import { dialectFor, type Dialect, type DialectName } from './dialect';
+import type { DialectName } from './dialect';
+import {
+  compileReadGraph,
+  executeReadGraph,
+  executeStaticWrite,
+  type ReadGraph,
+  type StaticBundle,
+  type StaticStatement,
+  type SqliteDb as StaticSqliteDb,
+} from './makesql/static-bundle';
+import {
+  compileWriteNode,
+  deriveTransactionPlan,
+  executeTransaction,
+  type BaseWrite,
+  type TransactionPlan,
+  type TransactionResult,
+} from './makesql/tx';
+import {
+  lifecycleFor,
+  type EntityWritesDefinition,
+  type LifecycleContract,
+  type WriteLifecyclePhase,
+} from './writes';
 
-/** The synthetic port that carries a SQL node's render scope (see module doc). */
-const SCOPE_PORT = '__scope';
-
-/**
- * The minimal synchronous SQLite driver surface the runtime needs (better-sqlite3
- * `Database`). `all` returns the row list of a SELECT / RETURNING statement; `run` executes
- * a non-returning write and reports `changes` + `lastInsertRowid`. In-process, synchronous
- * — the sanctioned in-proc substitute for a docker integration DB (#23 AC).
- */
-export interface SqliteDb {
-  prepare(sql: string): {
-    all(...params: unknown[]): unknown[];
-    run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
-    reader?: boolean;
-  };
-}
-
-// ── Value normalization at the SQL boundary ───────────────────────────────────
-
-/**
- * bc evaluates integers to `bigint`. Convert a rendered param to a driver-bindable value:
- * a safe-range `bigint` → JS `number` (v1 uses numbers; keeps result parity), an
- * out-of-safe-range `bigint` stays `bigint` (better-sqlite3 binds it losslessly). Arrays /
- * objects are IN-list elements / already-flat scalars; strings / booleans / null pass
- * through. This mirrors graphddb's `toPlain` boundary conversion.
- */
-function toDriverParam(v: Value): unknown {
-  if (typeof v === 'bigint') {
-    if (v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(v);
-    return v; // better-sqlite3 binds a BigInt losslessly for i64-range values
-  }
-  return v;
-}
-
-// ── Ref-head collection (build the surrogate `__scope` port) ──────────────────
-
-/** Collect every ref/refOpt path HEAD used inside an Expression IR node. */
-function collectHeads(node: unknown, heads: Set<string>): void {
-  if (node === null || typeof node !== 'object') return;
-  if (Array.isArray(node)) {
-    for (const el of node) collectHeads(el, heads);
-    return;
-  }
-  const keys = Object.keys(node);
-  if (keys.length === 1 && (keys[0] === 'ref' || keys[0] === 'refOpt')) {
-    const path = (node as Record<string, unknown>)[keys[0]];
-    if (Array.isArray(path) && typeof path[0] === 'string') heads.add(path[0]);
-    return;
-  }
-  for (const k of keys) collectHeads((node as Record<string, unknown>)[k], heads);
-}
-
-/**
- * Collect every path HEAD accessed via `refOpt` in an Expression IR node. A `refOpt` head
- * is OPTIONAL by construction — the author reached for `opt(…)` / `refOpt` precisely because
- * the binding may be absent (a `coalesce`-defaulted LIMIT, a SKIP presence guard). It is
- * therefore normalized to present-as-null (SSoT: the `refOpt` is the optionality
- * declaration, not an ad-hoc code default).
- */
-function collectRefOptHeads(node: unknown, heads: Set<string>): void {
-  if (node === null || typeof node !== 'object') return;
-  if (Array.isArray(node)) {
-    for (const el of node) collectRefOptHeads(el, heads);
-    return;
-  }
-  const keys = Object.keys(node);
-  if (keys.length === 1 && keys[0] === 'refOpt') {
-    const path = (node as Record<string, unknown>).refOpt;
-    if (Array.isArray(path) && typeof path[0] === 'string') heads.add(path[0] as string);
-    return;
-  }
-  for (const k of keys) collectRefOptHeads((node as Record<string, unknown>)[k], heads);
-}
-
-/** Collect ref heads from a whole fragment tree (its `when` guards + param slots). */
-function collectFragmentHeads(node: Fragment | FragmentTree, heads: Set<string>): void {
-  if ('connector' in node) {
-    for (const f of node.fragments) collectFragmentHeads(f, heads);
-    return;
-  }
-  if (node.when !== undefined) collectHeads(node.when, heads);
-  for (const p of node.params) collectHeads(p as ExprNode, heads);
-}
-
-/** Every binding head a compiled op references (static params + fragment tree). */
-function operationHeads(op: CompiledOperation): Set<string> {
-  const heads = new Set<string>();
-  for (const p of op.params) collectHeads(p as ExprNode, heads);
-  if (op.where !== null) collectFragmentHeads(op.where, heads);
-  return heads;
-}
-
-/**
- * Collect the binding heads that live UNDER a SKIP guard: every head in a `when`-guarded
- * fragment's guard OR its params. A SKIP guard is the structural declaration that its
- * driving input is OPTIONAL (spec §7: `cond ? [...] : SKIP`) — so an absent such head is
- * normalized to null (present-as-null), letting `refOpt` drop the fragment. This is
- * schema/structure-driven, not an ad-hoc code default: the SKIP fragment IS the SSoT that
- * the input is optional.
- */
-function skipGuardedHeads(node: Fragment | FragmentTree, heads: Set<string>): void {
-  if ('connector' in node) {
-    for (const f of node.fragments) skipGuardedHeads(f, heads);
-    return;
-  }
-  if (node.when !== undefined) {
-    collectHeads(node.when, heads);
-    for (const p of node.params) collectHeads(p as ExprNode, heads);
-  }
-}
-
-/** Collect every `refOpt` head across a compiled op (static params + fragment tree). */
-function operationRefOptHeads(op: CompiledOperation, heads: Set<string>): void {
-  for (const p of op.params) collectRefOptHeads(p as ExprNode, heads);
-  if (op.where !== null) collectFragmentRefOptHeads(op.where, heads);
-}
-
-/** Collect `refOpt` heads from a whole fragment tree (guards + param slots). */
-function collectFragmentRefOptHeads(node: Fragment | FragmentTree, heads: Set<string>): void {
-  if ('connector' in node) {
-    for (const f of node.fragments) collectFragmentRefOptHeads(f, heads);
-    return;
-  }
-  if (node.when !== undefined) collectRefOptHeads(node.when, heads);
-  for (const p of node.params) collectRefOptHeads(p as ExprNode, heads);
-}
-
-/**
- * All OPTIONAL heads across a set of compiled ops: the SKIP-guarded heads (a `when`-guarded
- * fragment declares its driving input optional) plus every `refOpt`-accessed head (the
- * author declared it optional via `opt(…)`). These are normalized to present-as-null so
- * `refOpt` drops/defaults cleanly instead of failing on an absent head.
- */
-function optionalHeadsOf(compiled: Record<string, CompiledOperation>): Set<string> {
-  const heads = new Set<string>();
-  for (const op of Object.values(compiled)) {
-    if (op.where !== null) skipGuardedHeads(op.where, heads);
-    operationRefOptHeads(op, heads);
-  }
-  return heads;
-}
-
-/**
- * Build the surrogate `__scope` port for a SQL node: a bc `{obj:{…}}` re-exporting each
- * referenced head as `{ref:[head]}`. Excludes the IN-sentinel head (`@in` is a column
- * marker, never a real binding). bc evaluates this in its own scope, so `input` names,
- * wire node ids, and the `map` element `as` all resolve; the handler then renders the op
- * against the resulting plain scope. A head that is genuinely absent surfaces as bc's
- * `UNKNOWN_BINDING` — the runtime pre-normalizes OPTIONAL input heads to null so only a
- * real wiring bug reaches that fail-closed path.
- */
-function scopePort(op: CompiledOperation): unknown {
-  const obj: Record<string, unknown> = {};
-  for (const head of operationHeads(op)) {
-    if (head === '@in') continue; // IN-list sentinel column marker, not a binding
-    obj[head] = { ref: [head] };
-  }
-  return { obj };
-}
-
-/** Rewrite one body node to its surrogate (SQL nodes → single `__scope` port). */
-function surrogateNode(node: Component['body'][number], compiled: Record<string, CompiledOperation>): Component['body'][number] {
-  if ('cond' in node) return node; // pure Expression — bc evaluates it unchanged
-  if ('map' in node) {
-    const op = compiled[node.id];
-    if (op === undefined) return node;
-    return { ...node, map: { ...node.map, ports: { [SCOPE_PORT]: scopePort(op) } } };
-  }
-  const op = compiled[node.id];
-  if (op === undefined) return node;
-  return { ...node, ports: { [SCOPE_PORT]: scopePort(op) } };
-}
-
-/** Rewrite a whole component to its surrogate graph (structure + wiring preserved). */
-function surrogateComponent(component: Component, compiled: Record<string, CompiledOperation>): Component {
-  return { ...component, body: component.body.map((n) => surrogateNode(n, compiled)) };
-}
-
-// ── Handlers (render → execute → assembly) ────────────────────────────────────
-
-/**
- * Execute one rendered SQL statement against the driver and return the row list (assembly).
- * A SELECT / RETURNING statement returns its rows; a non-returning write returns a
- * single-row summary `[{ changes, lastInsertRowid }]` (the RETURNING-less write shape). A
- * driver error is mapped ({@link mapSqliteError}) and returned as bc `{ error }` so the
- * node's Policy Kind governs propagation.
- */
-function executeRendered(db: SqliteDb, op: CompiledOperation, scope: Scope, dialect: Dialect): ExecOutcome {
-  const rendered = renderOperation(op, scope, dialect);
-  const params = rendered.params.map(toDriverParam);
-  let stmt: ReturnType<SqliteDb['prepare']>;
-  try {
-    stmt = db.prepare(rendered.sql);
-  } catch (e) {
-    return { error: mapSqliteError(e).message };
-  }
-  const hasReturn = op.component === 'Select' || /\breturning\b/i.test(rendered.sql);
-  try {
-    if (hasReturn) {
-      const rows = stmt.all(...params) as Record<string, unknown>[];
-      return { ok: rows as unknown as Value };
-    }
-    const info = stmt.run(...params);
-    return {
-      ok: [{ changes: info.changes, lastInsertRowid: toDriverParam(BigInt(info.lastInsertRowid)) }] as unknown as Value,
-    };
-  } catch (e) {
-    return { error: mapSqliteError(e).message };
-  }
-}
-
-/**
- * Build the SQL handler registry: one handler per SQL Catalog name (spec §11 item 4).
- *
- * Exported so the mode-3 codegen path (WS7f) binds the IDENTICAL SQL handlers into bc's
- * generated `bind(handlers)` accessor — the generated module bakes the surrogate IR literal and
- * calls the SAME `runBehavior`, so pairing it with THIS handler builder makes the codegen output
- * byte-identical to {@link executeBundle} by construction (not a parallel reimplementation).
- */
-export function buildHandlers(db: SqliteDb, compiled: Record<string, CompiledOperation>, dialect: Dialect): Handlers {
-  const handle = (ports: Record<string, Value>, ctx: HandlerCtx): ExecOutcome => {
-    const op = compiled[ctx.nodeId];
-    if (op === undefined) {
-      return { error: `scp runtime: no compiled operation for node '${ctx.nodeId}' (${ctx.component})` };
-    }
-    const scope = ports[SCOPE_PORT];
-    if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) {
-      return { error: `scp runtime: node '${ctx.nodeId}' surrogate scope did not evaluate to an object` };
-    }
-    return executeRendered(db, op, scope as Scope, dialect);
-  };
-  // One binding per SQL CRUD Catalog name (all share the render→execute handler; the
-  // pre-compiled op keyed by nodeId already encodes the per-node operation).
-  return { Select: handle, Insert: handle, Update: handle, Delete: handle };
-}
-
-// ── Input normalization (schema-driven — SSoT) ────────────────────────────────
-
-/**
- * Normalize the caller input to `null` (present-as-null) for every OPTIONAL binding the
- * caller omitted, so a SKIP guard using `refOpt` evaluates to `false` and drops its
- * fragment (absent-key SKIP). "Optional" is determined from the SSoT, NOT an ad-hoc code
- * default — a head is optional iff EITHER (a) the component's Input Port schema marks the
- * port `required !== true`, OR (b) the head is SKIP-guarded in a compiled fragment (the
- * SKIP fragment declares its driving input optional — spec §7). A REQUIRED, non-SKIP head
- * that is missing is left absent so a real wiring bug surfaces loudly as bc's
- * `UNKNOWN_BINDING` rather than being silently defaulted.
- */
-export function normalizeInput(component: Component, optionalHeads: Set<string>, input: Scope): Scope {
-  const out: Scope = { ...input };
-  for (const [port, schema] of Object.entries(component.inputPorts)) {
-    if (schema.required !== true && !(port in out)) out[port] = null;
-  }
-  for (const head of optionalHeads) {
-    if (!(head in out)) out[head] = null;
-  }
-  return out;
-}
+/** The minimal synchronous SQLite driver surface the runtime needs (better-sqlite3 `Database`). */
+export type SqliteDb = StaticSqliteDb;
 
 // ── Public runtime entrypoint ─────────────────────────────────────────────────
 
@@ -328,85 +68,68 @@ export interface ExecuteOptions {
   readonly db: SqliteDb;
   /** The behavior method (component) name to run (default: the first component). */
   readonly entry?: string;
-  /**
-   * The model's read-relation declarations (spec §4/§5). Compiled ONCE into the bundle's
-   * relation ops so the typed-object read surface ({@link read}) can batch-resolve both
-   * declarative-select and lazy relations via the SAME compiled op.
-   */
+  /** The model's read-relation declarations (spec §4/§5), compiled ONCE into the bundle. */
   readonly relations?: readonly RelationDecl[];
-  /**
-   * The target SQL dialect (spec §4/§10). Defaults to `'sqlite'` (the in-process runtime seam
-   * is synchronous SQLite). A `'postgres'`/`'mysql'` bundle is Backend-Compiled dialect-tagged
-   * for the dialect golden + a language runtime; the `?`→`$N` (PG) conversion is applied at
-   * render time. The SSoT dialect strategy governs every dialect divergence.
-   */
+  /** The target SQL dialect (spec §4/§10). Defaults to `'sqlite'` (the in-process runtime seam). */
   readonly dialect?: DialectName;
 }
 
-// ── Backend-Compiled bundle (§8 published artifact — the WS7 multi-language target) ──
+// ── The STATIC makeSQL bundle (§8 published artifact — the WS7 multi-language target) ──
 
 /**
- * The Backend-Compiled bundle of ONE behavior method (spec §8): the fully compiled SQL IR a
- * thin per-language runtime (bc runtime-core + a SQL handler) can execute WITHOUT
- * re-implementing litedbmodel's Backend-Compile. It is pure serializable JSON:
+ * The compiled bundle of ONE behavior method (spec §8) — pure serializable JSON a thin
+ * per-language runtime (bc + a SQL handler) can execute WITHOUT re-implementing litedbmodel's
+ * compile.
  *
- *  - `component` — the bc component's WIRING ONLY (body node ids / parent / map `over`+`as` /
- *    `cond` / output / plan / inputPorts). The catalog nodes' original Expression-IR ports
- *    are replaced by the surrogate `__scope` port so a consumer runtime feeds bc's
- *    `runBehavior` the plan/map/wire orchestration with NO SQL-structural port to mis-evaluate.
- *  - `operations` — `nodeId → CompiledOperation` (§8: `sql` with the `{where}` splice,
- *    `where` fragment tree with existence rules, `params` static slots, `assembly`). Param
- *    slots stay as Expression IR (`{coalesce:[…]}`, `{ref:[…]}`) so bc runtime-core owns
- *    value/SKIP evaluation per language (they are NOT pre-evaluated to literals).
- *  - `optionalHeads` — the input heads normalized to present-as-null (absent-key SKIP), so a
- *    consumer runtime reproduces the same normalization from the bundle (not from TS state).
+ *  - READ (`readGraph` present): the surrogate `ComponentGraphIR` + per-node makeSQL statement
+ *    templates; bc `runBehavior` owns orchestration, the makeSQL handler renders + executes.
+ *  - WRITE (`statement` present): the single base-write makeSQL template; for a Command with
+ *    write-time relations, `transaction` carries the derived gate-first plan.
+ *  - `relations` — STATIC read-relation batch ops (spec §8 relation ops), keyed by name.
  *
- * `dialect` is the target SQL dialect (`'sqlite'`/`'postgres'`/`'mysql'`); the dialect axis is
- * compiled ONCE, TS-side (spec §10). A PG bundle's `operations[*].sql` still carries `?`
- * placeholders — the `?`→`$N` conversion is the render-time final one-pass, so the bundle stays
- * uniform and dialect-tagged.
+ * `dialect` is the target SQL dialect (compiled ONCE, TS-side); a PG bundle's `?`→`$N` conversion
+ * is the render-time final pass, so the bundle stays uniform and dialect-tagged.
  */
 export interface SqlBundle {
-  readonly irVersion: number;
-  readonly exprVersion: number;
   readonly dialect: DialectName;
-  /** The surrogate component (wiring/plan/output only; catalog ports → `__scope`). */
-  readonly component: Component;
-  /** Backend-Compiled SQL IR per catalog node id (§8 shape). */
-  readonly operations: Record<string, CompiledOperation>;
+  /** The behavior (component) name. */
+  readonly name: string;
+  /** READ bundles: the portable read graph (surrogate IR + per-node makeSQL statements). */
+  readonly readGraph?: ReadGraph;
+  /** WRITE bundles: the single base-write makeSQL statement template. */
+  readonly statement?: StaticStatement;
   /** Optional input heads normalized to present-as-null (absent-key SKIP). */
-  readonly optionalHeads: string[];
-  /**
-   * Pre-compiled read-relation batch ops (spec §8 `relation ops`), keyed by relation name.
-   * Derived ONCE (TS-side) from the model relation declarations, dialect-aware (SQLite).
-   * Pure JSON (each op's `query` is a {@link CompiledOperation}) so a thin per-language
-   * runtime gets the relation batch SQL for free (WS7). BOTH read surfaces (declarative
-   * select + lazy) resolve through these ops — the identical compiled op.
-   */
+  readonly optionalHeads: readonly string[];
+  /** Pre-compiled STATIC read-relation batch ops, keyed by relation name (pure JSON). */
   readonly relations: Record<string, RelationOp>;
-  /**
-   * The derived write-time-relations transaction plan (spec §6 / §8 `transaction plan`), present
-   * ONLY for a Command bundle whose base write declares an `onWrite` lifecycle. Pure JSON:
-   * ordered statements + gate-first rules + `$.entity` exposure. A WS7 runtime executes the SAME
-   * plan via {@link executeTransactionBundle} (bc-core render + a SQL handler + BEGIN/COMMIT) —
-   * no re-derivation per language (spec §6). Absent for read bundles and for Command bundles with
-   * no write-time relations (those run through the ordinary {@link executeBundle} path).
-   */
+  /** The derived write-time-relations transaction plan (present ONLY for a write Command bundle). */
   readonly transaction?: TransactionPlan;
 }
 
+/** The primary catalog node of a component (the first non-cond, non-map body node). */
+function primaryNodeOf(component: Component): Component['body'][number] | undefined {
+  for (const n of component.body) {
+    if ('cond' in n) continue;
+    if ('map' in n) continue;
+    return n;
+  }
+  return undefined;
+}
+
+/** Is a component's primary catalog node a write (Insert/Update/Delete)? */
+function isWriteComponent(component: Component): boolean {
+  const p = primaryNodeOf(component);
+  if (p === undefined || 'map' in p) return false;
+  const c = (p as { component: string }).component;
+  return c === 'Insert' || c === 'Update' || c === 'Delete';
+}
+
 /**
- * Execute a published behavior contract (WS2 {@link BehaviorModelContract}) end-to-end:
- * Backend-Compile every SQL node → surrogate IR → bc `runBehavior` (plan / map / wire /
- * output) with SQL handlers → REAL SQLite execution → assembled Φ output.
+ * Execute a published behavior contract (WS2 {@link BehaviorModelContract}) end-to-end via the
+ * static makeSQL bundle. Returns the component's output (a read Φ output / row list, or a write's
+ * RETURNING rows / `[{changes, lastInsertRowid}]` summary).
  *
- * This is α's vertical slice: authoring → IR → Backend-Compile → thin runtime → real
- * SQLite → assembly. The returned Value is the component's `output` (Φ merge) with each SQL
- * node's slot filled by its executed row list.
- *
- * @throws {SqlFailure} a mapped driver failure re-surfaced at the boundary (a `fail`-policy
- *   node re-throws through `runPlan` as `OP_FAILED`; the runtime unwraps it back to the
- *   structured {@link SqlFailure} so the caller sees `kind` / `policy` / `sqliteCode`).
+ * @throws {SqlFailure} a mapped driver failure re-surfaced at the boundary.
  */
 export function executeBehavior(
   contract: BehaviorModelContract,
@@ -417,12 +140,9 @@ export function executeBehavior(
 }
 
 /**
- * Backend-Compile ONE behavior method of a contract into the serializable {@link SqlBundle}
- * (spec §8) — the published multi-language artifact. This runs the WS1↔WS3 bridge and the
- * surrogate rewrite ONCE, on the TS side (spec §10: the dialect axis is compiled once), and
- * emits pure JSON: no TS runtime state is captured, so `JSON.stringify(bundle)` round-trips
- * losslessly and a thin per-language runtime can execute it with bc runtime-core + a SQL
- * handler alone (proven by the bundle round-trip test).
+ * Compile ONE behavior method into the serializable STATIC {@link SqlBundle} (spec §8) — the
+ * published multi-language artifact. SYMBOLIC (no concrete input). A read method compiles to a
+ * {@link ReadGraph}; a single-write method to a `makeSQL` statement. Pure JSON throughout.
  */
 export function compileBundle(
   contract: BehaviorModelContract,
@@ -430,75 +150,69 @@ export function compileBundle(
   relations: readonly RelationDecl[] = [],
   dialectName: DialectName = 'sqlite',
 ): SqlBundle {
-  const dialect = dialectFor(dialectName);
-  const component = entry
-    ? contract.components.find((c) => c.name === entry)
-    : contract.components[0];
-  if (component === undefined) {
-    throw new Error(`scp runtime: entry component '${entry ?? '<first>'}' not found in contract`);
-  }
-  const operations: Record<string, CompiledOperation> = {};
-  for (const [id, op] of compileComponentNodes(component, dialect)) operations[id] = op;
-  const surrogate = surrogateComponent(component, operations);
-  // Backend-Compile every relation declaration ONCE into a pure-JSON relation op (spec §8),
-  // dialect-aware (the relation batch SELECTs carry no dialect-divergent text today, but the
-  // decl is compiled through the SAME dialect-parameterized path for uniformity/WS7).
+  const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
+  if (component === undefined) throw new Error(`scp runtime: entry component '${entry ?? '<first>'}' not found in contract`);
+
   const relationOps: Record<string, RelationOp> = {};
   for (const decl of relations) {
     if (relationOps[decl.name] !== undefined) {
       throw new Error(`scp runtime: duplicate relation declaration '${decl.name}'`);
     }
-    relationOps[decl.name] = compileRelationOp(decl);
+    relationOps[decl.name] = compileRelationOp({ ...decl, dialect: decl.dialect ?? dialectName });
   }
+
+  if (isWriteComponent(component)) {
+    const writeNode = primaryNodeOf(component)!;
+    const op = compileWriteNode(writeNode as never);
+    return {
+      dialect: dialectName,
+      name: component.name,
+      statement: { sql: op.sql, params: op.params },
+      optionalHeads: [],
+      relations: relationOps,
+    };
+  }
+
+  const readGraph = compileReadGraph(contract, dialectName, entry);
   return {
-    irVersion: contract.ir.irVersion,
-    exprVersion: contract.ir.exprVersion,
     dialect: dialectName,
-    component: surrogate,
-    operations,
-    optionalHeads: [...optionalHeadsOf(operations)],
+    name: readGraph.name,
+    readGraph,
+    optionalHeads: readGraph.optionalHeads,
     relations: relationOps,
   };
 }
 
 /**
- * Execute a {@link SqlBundle} (the §8 published artifact) end-to-end: feed bc `runBehavior`
- * the bundle's surrogate component (plan / map / wire / output orchestration) with SQL
- * handlers that render the bundle's `CompiledOperation`s and run REAL SQLite. This is the
- * SAME code path a thin per-language runtime follows — it consumes ONLY the serialized
- * bundle + bc runtime-core, never re-running litedbmodel's Backend-Compile. The bundle
- * round-trip test parses this from JSON (no TS state) to prove self-sufficiency (WS7).
+ * Execute a {@link SqlBundle} (the §8 published artifact) end-to-end via the static makeSQL
+ * runtime + REAL SQLite. Read bundles run the read graph via bc `runBehavior`; single-statement
+ * write bundles run the write (RETURNING rows / summary). The SAME code path a thin per-language
+ * runtime follows — it consumes ONLY the serialized bundle + bc, never re-running the compile.
  *
  * @throws {SqlFailure} a mapped driver failure re-surfaced at the boundary.
  */
 export function executeBundle(bundle: SqlBundle, input: Scope, options: ExecuteOptions): Value {
-  const surrogate = bundle.component;
-  const ir: ComponentGraphIR = {
-    irVersion: bundle.irVersion as 1,
-    exprVersion: bundle.exprVersion,
-    components: [surrogate],
-  };
-  const handlers = buildHandlers(options.db, bundle.operations, dialectFor(bundle.dialect));
-  const optionalHeads = new Set(bundle.optionalHeads);
-  const normalized = normalizeInput(surrogate, optionalHeads, input);
-
-  try {
-    return runBehavior(ir, handlers, normalized, surrogate.name);
-  } catch (e) {
-    // A `fail`-policy node's `{error}` re-throws through runPlan as `OP_FAILED` carrying the
-    // mapped-failure message. Re-surface the structured SqlFailure from the message-embedded
-    // code if present; otherwise re-throw verbatim.
-    throw reErrorToSqlFailure(e);
+  if (bundle.statement !== undefined && bundle.transaction === undefined) {
+    const view: StaticBundle = {
+      dialect: bundle.dialect,
+      name: bundle.name,
+      statements: [bundle.statement],
+      optionalHeads: bundle.optionalHeads,
+    };
+    return executeStaticWrite(view, input, options.db) as unknown as Value;
   }
+  if (bundle.readGraph === undefined) {
+    throw new Error(`scp runtime: bundle '${bundle.name}' carries neither a read graph nor a write statement`);
+  }
+  return executeReadGraph(bundle.readGraph, input, options.db);
 }
 
 // ── Write-time relations: Command bundle + 1-tx execution (WS5, #25 — spec §6) ──
 
 /**
  * Find the single base-write catalog node (`Insert`/`Update`/`Delete`) of a Command component.
- * WS5 initial scope is a single-statement Command (spec §6/§13): exactly one write node whose
- * `onWrite` lifecycle the transaction plan wraps. More than one write node ⇒ the multi-write DAG
- * derivation deferred to WS8 (rejected loudly, never half-built).
+ * WS5 initial scope is a single-statement Command (spec §6/§13). More than one write node ⇒ the
+ * multi-write DAG derivation (WS8, rejected loudly here).
  */
 function baseWriteNodeOf(component: Component): Component['body'][number] {
   const writes = component.body.filter(
@@ -517,15 +231,11 @@ function baseWriteNodeOf(component: Component): Component['body'][number] {
 }
 
 /**
- * Backend-Compile a Command method + its `entityWrites` save contract into a {@link SqlBundle}
- * that carries the derived, gate-first write-time-relations {@link TransactionPlan} (spec §6/§8).
- * The base write op is Backend-Compiled ONCE (the same {@link compileNode} bridge), and
- * {@link deriveTransactionPlan} lowers the lifecycle's §6 effect arrays around it into the ordered
- * statement list. The whole plan is pure JSON (it round-trips inside the bundle), so a WS7 runtime
- * honors the SAME plan via {@link executeTransactionBundle} — no re-derivation.
- *
- * @throws if the method is not a Command, the phase lifecycle is not declared, the scope is not a
- *   single base write, or a `$.entity.*` reference lacks a RETURNING body (all fail-closed).
+ * Compile a Command method + its `entityWrites` save contract into a {@link SqlBundle} carrying
+ * the derived, gate-first write-time-relations {@link TransactionPlan} (spec §6/§8). The base
+ * write op is compiled ONCE (the SAME `compileWriteNode` — complete tuned SQL + deferred
+ * Expression-IR params); {@link deriveTransactionPlan} lowers the lifecycle's §6 effect arrays
+ * around it into the ordered statement list. Pure JSON; a WS7 runtime honors the SAME plan.
  */
 export function compileWriteBundle(
   contract: BehaviorModelContract,
@@ -534,32 +244,22 @@ export function compileWriteBundle(
   phase: WriteLifecyclePhase,
   dialectName: DialectName = 'sqlite',
 ): SqlBundle {
-  const dialect = dialectFor(dialectName);
   const component = contract.components.find((c) => c.name === entry);
-  if (component === undefined) {
-    throw new Error(`scp write: entry component '${entry}' not found in contract`);
-  }
+  if (component === undefined) throw new Error(`scp write: entry component '${entry}' not found in contract`);
   const lifecycle = lifecycleFor(writes, phase);
   if (lifecycle === undefined) {
     throw new Error(`scp write: the '${phase}' lifecycle is not declared in the entityWrites save contract`);
   }
   const writeNode = baseWriteNodeOf(component);
-  const baseOp = compileNode(writeNode as never, dialect);
-  const base: BaseWrite = { op: baseOp, label: `${baseOp.component} ${(writeNode as { component: string }).component}` };
-  const plan = deriveTransactionPlan(phase, [base], lifecycle, dialect);
+  const baseOp = compileWriteNode(writeNode as never);
+  const base: BaseWrite = { op: baseOp, label: `${(writeNode as { component: string }).component}` };
+  const plan = deriveTransactionPlan(phase, [base], lifecycle, dialectName);
 
-  // The bundle still carries the surrogate component/operations for structural parity with a read
-  // bundle (WS7 uniformity), but the write path executes via the transaction plan, not runBehavior.
-  const operations: Record<string, CompiledOperation> = {};
-  for (const [id, op] of compileComponentNodes(component, dialect)) operations[id] = op;
-  const surrogate = surrogateComponent(component, operations);
   return {
-    irVersion: contract.ir.irVersion,
-    exprVersion: contract.ir.exprVersion,
     dialect: dialectName,
-    component: surrogate,
-    operations,
-    optionalHeads: [...optionalHeadsOf(operations)],
+    name: component.name,
+    statement: { sql: baseOp.sql, params: baseOp.params },
+    optionalHeads: [],
     relations: {},
     transaction: plan,
   };
@@ -571,26 +271,17 @@ export function compileWriteBundle(
  * `effects`. A later member references an earlier member's RETURNING row via `$.ref.<name>.<field>`.
  */
 export interface CompositeWriteEntry {
-  /** The Command method whose sole base-write node is this member's body. */
   readonly entry: string;
-  /** The member's stable name (downstream members address its row as `$.ref.<name>.<field>`). */
   readonly name: string;
-  /** The member's write-time-relations lifecycle for this phase (its gates/derive/edges/emits). */
   readonly lifecycle: LifecycleContract;
 }
 
 /**
- * Backend-Compile a COMPOSITE (multi-write) Command into a {@link SqlBundle} carrying ONE derived,
- * gate-first, TOPOLOGICALLY-ORDERED transaction plan (spec §6 nested write / §14 "write-time tx DAG
- * 導出"). Each {@link CompositeWriteEntry} contributes a named base write + its effects; a later
- * member depends on an earlier via `$.ref.<name>.*` (e.g. a child INSERT keyed by the parent's
- * RETURNING id). {@link deriveTransactionPlan} builds the data-dependency graph + gate-first
- * constraint and derives the correct ordered plan (deterministic, stable tie-break; a cycle or
- * dangling ref is ESCALATED). The plan is pure JSON — the 5 language runtimes execute it verbatim
- * (they already bind each statement's `binds` row into scope for downstream `$.ref` resolution).
- *
- * @throws if an entry is missing/not a single-write node, or the DAG cannot be derived (cycle /
- *   dangling `$.ref` / missing RETURNING on a referenced write) — all fail-closed.
+ * Compile a COMPOSITE (multi-write) Command into a {@link SqlBundle} carrying ONE derived,
+ * gate-first, TOPOLOGICALLY-ORDERED transaction plan (spec §6 nested write / §14). Each entry
+ * contributes a named base write + its effects; a later member depends on an earlier via
+ * `$.ref.<name>.*`. {@link deriveTransactionPlan} builds the DAG + gate-first constraint and
+ * derives the ordered plan; a cycle / dangling ref is ESCALATED. Pure JSON.
  */
 export function compileCompositeWriteBundle(
   contract: BehaviorModelContract,
@@ -601,30 +292,25 @@ export function compileCompositeWriteBundle(
   if (entries.length < 2) {
     throw new Error('scp write: a composite write bundle needs at least 2 named write members (use compileWriteBundle for a single write).');
   }
-  const dialect = dialectFor(dialectName);
   const bases: BaseWrite[] = [];
-  const operations: Record<string, CompiledOperation> = {};
-  let firstComponent: Component | undefined;
+  let firstBaseOp: { sql: string; params: readonly unknown[] } | undefined;
+  let firstName = '';
   for (const e of entries) {
     const component = contract.components.find((c) => c.name === e.entry);
     if (component === undefined) throw new Error(`scp write: entry component '${e.entry}' not found in contract`);
-    if (firstComponent === undefined) firstComponent = component;
+    if (firstBaseOp === undefined) firstName = component.name;
     const writeNode = baseWriteNodeOf(component);
-    const baseOp = compileNode(writeNode as never, dialect);
+    const baseOp = compileWriteNode(writeNode as never);
+    if (firstBaseOp === undefined) firstBaseOp = baseOp;
     bases.push({ op: baseOp, label: `${(writeNode as { component: string }).component} ${e.name}`, name: e.name, effects: e.lifecycle.effects });
-    for (const [id, op] of compileComponentNodes(component, dialect)) operations[`${e.name}.${id}`] = op;
   }
-  // The lifecycle arg is unused in composite scope (each base carries its own effects); pass empty.
-  const plan = deriveTransactionPlan(phase, bases, { effects: {} }, dialect);
+  const plan = deriveTransactionPlan(phase, bases, { effects: {} }, dialectName);
 
-  const surrogate = surrogateComponent(firstComponent!, operations);
   return {
-    irVersion: contract.ir.irVersion,
-    exprVersion: contract.ir.exprVersion,
     dialect: dialectName,
-    component: surrogate,
-    operations,
-    optionalHeads: [...optionalHeadsOf(operations)],
+    name: firstName,
+    statement: { sql: firstBaseOp!.sql, params: firstBaseOp!.params },
+    optionalHeads: [],
     relations: {},
     transaction: plan,
   };
@@ -632,8 +318,7 @@ export function compileCompositeWriteBundle(
 
 /**
  * Execute a COMPOSITE (multi-write) Command end-to-end as ONE real SQLite transaction with gate-
- * first short-circuit + DAG-ordered statements (spec §6 / §14): Backend-Compile the members into a
- * bundle with the derived tx-DAG plan, then run {@link executeTransactionBundle}.
+ * first short-circuit + DAG-ordered statements (spec §6 / §14).
  */
 export function executeCompositeCommand(
   contract: BehaviorModelContract,
@@ -648,9 +333,8 @@ export function executeCompositeCommand(
 
 /**
  * Execute a Command end-to-end as ONE real SQLite transaction with gate-first short-circuit
- * (spec §6): Backend-Compile the Command + its save contract into a {@link SqlBundle} with a
- * transaction plan, then run {@link executeTransactionBundle}. This is the v2 public write path
- * ("write-time relations が自動導出 → 1 tx", spec §2.3).
+ * (spec §6): compile the Command + its save contract into a {@link SqlBundle} with a transaction
+ * plan, then run {@link executeTransactionBundle}. The v2 public write path.
  *
  * @throws {SqlFailure} a mapped driver failure (the transaction ROLLBACKs first).
  */
@@ -667,19 +351,16 @@ export function executeCommand(
 
 /**
  * Execute a {@link SqlBundle}'s derived transaction plan (spec §6/§8) as ONE real SQLite
- * transaction. This is the SAME code path a thin per-language runtime follows: it consumes ONLY
- * the serialized {@link TransactionPlan} (pure JSON) + the render pipeline + a SQL driver, never
- * re-deriving the plan. The bundle round-trip test parses this from JSON (no TS state) to prove
- * WS7 self-sufficiency.
+ * transaction. The SAME code path a thin per-language runtime follows: it consumes ONLY the
+ * serialized {@link TransactionPlan} (pure JSON) + a SQL driver, never re-deriving the plan.
  *
- * @throws if the bundle carries no transaction plan (it is not a write-time-relations Command
- *   bundle), or {@link SqlFailure} on a mapped driver failure.
+ * @throws if the bundle carries no transaction plan, or {@link SqlFailure} on a driver failure.
  */
 export function executeTransactionBundle(bundle: SqlBundle, input: Scope, options: ExecuteOptions): TransactionResult {
   if (bundle.transaction === undefined) {
     throw new Error('scp write: this bundle carries no transaction plan (not a write-time-relations Command bundle)');
   }
-  return executeTransaction(options.db, bundle.transaction, input, dialectFor(bundle.dialect));
+  return executeTransaction(options.db, bundle.transaction, input, bundle.dialect);
 }
 
 // ── typed-object read surface (WS4, #24 — result + Read relations) ────────────
@@ -688,29 +369,20 @@ export function executeTransactionBundle(bundle: SqlBundle, input: Scope, option
 export interface ReadRuntimeOptions<R = Record<string, unknown>> extends ExecuteOptions, ReadOptions<R> {}
 
 /**
- * The v2 typed-object read surface (spec §4/§5/§12): run a read behavior whose output is a
- * row list (a Select), then wrap each raw row in a plain TYPED-OBJECT (own props = data only,
- * NOT a DBModel instance) with read relations attached.
+ * The v2 typed-object read surface (spec §4/§5/§12): run a read behavior whose output is a row
+ * list (a Select), then wrap each raw row in a plain TYPED-OBJECT with read relations attached.
+ * A relation named in `options.with` is declaratively batch-prefetched; every other declared
+ * relation is lazy (a prototype getter firing the SAME compiled op over the sibling set). Both
+ * surfaces share the ONE compiled relation op in the bundle.
  *
- * - A relation named in `options.with` is DECLARATIVELY selected: batch-prefetched ONCE over
- *   the whole page (staged, no N+1) and attached as an OWN prop.
- * - Every OTHER declared relation is LAZY: a prototype getter that, on `await result.author`,
- *   fires the SAME compiled relation op over the sibling set (batched — still no N+1).
- * - `options.hydrate` recovers host objects (`(raw) => new Domain(raw)`) — the consumer-side
- *   method-UX recovery. It stays in the runtime and never enters the bundle.
- *
- * Both surfaces share the ONE compiled relation op in the bundle (spec §5). The base row list
- * is produced by the SAME {@link executeBundle} path (bc runtime-core + SQL handlers), so the
- * read query itself is fully IR-driven; relations are the runtime's staged-batch concern.
- *
- * @throws if the behavior output is not a row list (the typed-object surface is for reads).
+ * @throws if the behavior output is not a row list (the typed-object read surface is for reads).
  */
 export function read<R = Record<string, unknown>>(
   contract: BehaviorModelContract,
   input: Scope,
   options: ReadRuntimeOptions<R>,
 ): R[] {
-  return readBundle(compileBundle(contract, options.entry, options.relations), input, options);
+  return readBundle(compileBundle(contract, options.entry, options.relations, options.dialect), input, options);
 }
 
 /** {@link read} against an already-compiled {@link SqlBundle} (the published §8 artifact). */
@@ -732,93 +404,6 @@ export function readBundle<R = Record<string, unknown>>(
     ...(options.hydrate !== undefined ? { hydrate: options.hydrate } : {}),
   };
   return buildResultSet<R>(rawRows, bundle.relations, options.db, readOpts);
-}
-
-// ── Staged-batch relation resolution THROUGH bc's plan (spec §5) ──────────────
-
-/** The synthetic catalog name of a batched-relation map node (runtime-internal, not authored). */
-const RELATION_BATCH_COMPONENT = '__RelationBatch';
-/** The port a batched-relation map element evaluates to: the parent's batch-key value. */
-const RELATION_KEY_PORT = '__key';
-
-/**
- * Resolve ONE relation for a page of parent rows by driving bc's PLAN mechanism (spec §5:
- * `deriveExecutionPlan` — result path → stage groups + concurrency). This is the staged-batch
- * path: it builds a bc component with a single `map.batched` node over the parent rows and
- * runs it through {@link runBehavior} (the SAME multi-language execution core WS7 languages
- * use). Because the map is `batched`, bc evaluates every parent's key port and invokes the
- * relation handler EXACTLY ONCE with `{items:[…]}` — so the relation op fires ONE batched
- * query for the whole page (structurally no N+1, enforced by bc's batch contract). The
- * handler runs the IDENTICAL compiled {@link RelationOp} the declarative-select and lazy
- * surfaces use, and `into` attaches each parent's resolved child(ren).
- *
- * Returns the parent rows augmented with the relation under `op.name` (per cardinality).
- */
-export function resolveRelationViaPlan(
-  op: RelationOp,
-  parents: readonly Record<string, unknown>[],
-  db: RelationDriver,
-): Record<string, unknown>[] {
-  // One batched map node over the parent list. Each element evaluates its batch-key port
-  // (`{ref:[<elemAs>, parentKey]}`); the batched handler receives all keys at once.
-  const elemAs = '$p';
-  const node: Component['body'][number] = {
-    id: 'rel',
-    map: {
-      over: { ref: ['__parents'] },
-      as: elemAs,
-      component: RELATION_BATCH_COMPONENT,
-      ports: { [RELATION_KEY_PORT]: { ref: [elemAs, op.parentKey] } },
-      into: op.name,
-      batched: true,
-    },
-  } as Component['body'][number];
-  const component: Component = {
-    name: '__resolveRelation',
-    inputPorts: { __parents: { required: true } },
-    body: [node],
-    output: { ref: ['rel'] },
-  } as unknown as Component;
-  const ir: ComponentGraphIR = {
-    irVersion: 1,
-    exprVersion: 1,
-    components: [component],
-  } as ComponentGraphIR;
-
-  // The batched-relation handler: bc calls it ONCE with every parent's evaluated key port.
-  // It runs the relation op's batch query a SINGLE time and returns per-parent results aligned
-  // to `items` (bc's MAP_BATCH_RESULT_MISMATCH enforces the 1:1 alignment).
-  const handlers: Handlers = {
-    [RELATION_BATCH_COMPONENT]: (portsOrItems: Record<string, Value>): ExecOutcome => {
-      const items = (portsOrItems as { items?: unknown }).items;
-      if (!Array.isArray(items)) {
-        return { error: `${RELATION_BATCH_COMPONENT}: expected a batched {items:[…]} invocation` };
-      }
-      // Reconstruct the parent-key-bearing rows from the evaluated key ports, run the op ONCE.
-      const keyRows = items.map((it) => ({ [op.parentKey]: (it as Record<string, unknown>)[RELATION_KEY_PORT] }));
-      const { batch } = runRelationOp(op, keyRows, db);
-      const aligned = keyRows.map((r) => distributeToParent(op, r, batch) as Value);
-      return { ok: aligned as unknown as Value };
-    },
-  };
-
-  const out = runBehavior(ir, handlers, { __parents: parents as unknown as Value }, '__resolveRelation');
-  return out as unknown as Record<string, unknown>[];
-}
-
-/**
- * If a `runPlan` `OP_FAILED` carries a mapped-failure message, re-surface the structured
- * {@link SqlFailure} (the message embeds the original SQLite code). Non-driver errors are
- * re-thrown verbatim.
- */
-function reErrorToSqlFailure(e: unknown): unknown {
-  const message = e instanceof Error ? e.message : String(e);
-  const m = /(SQLITE_[A-Z_]+)/.exec(message);
-  if (m) {
-    // Reconstruct a minimal driver-error shape and re-map to preserve kind/policy/code.
-    return mapSqliteError({ code: m[1], message });
-  }
-  return e;
 }
 
 export { SqlFailure };

@@ -23,9 +23,7 @@ import {
   SemanticBehavior,
   components,
   publishBehaviors,
-  compileEager,
   executeBehavior,
-  compileNode,
   mapSqliteError,
   SqlFailure,
   whereEq,
@@ -312,46 +310,3 @@ describe('WS3 runtime — Error Mapping (driver error → SCP Failure)', () => {
 });
 
 // ── Backend-Compile bridge (real IR → CompiledOperation) ──────────────────────────
-
-describe('WS3 bridge — real bc ComponentGraphIR port shape → WS1 CompiledOperation', () => {
-  it('bridges a Select node (arr where + SKIP cond collapse) to the golden fragment tree', () => {
-    const q = publishBehaviors(PostQueries);
-    const search = q.methods.Search.component;
-    const node = search.body.find((n) => 'component' in n && n.component === 'Select');
-    const op = compileNode(node as never);
-    expect(op.component).toBe('Select');
-    // The SKIP-optional `cond` member collapsed to a `when`-guarded fragment (not an opcode).
-    expect(op.sql).toBe('SELECT id, author_id, title, status FROM posts{where} ORDER BY id ASC LIMIT ?');
-    expect(op.where).not.toBeNull();
-    const frags = op.where!.fragments as Array<{ always?: true; when?: unknown; sql: string }>;
-    expect(frags[0].sql).toBe('author_id = ?');
-    expect(frags[0].always).toBe(true);
-    expect(frags[1].sql).toBe('status = ?');
-    expect(frags[1].always).toBeUndefined();
-    expect(frags[1].when).toEqual({ ne: [{ refOpt: ['status'] }, null] });
-    expect(frags[2].sql).toBe('created_at >= ?');
-  });
-
-  it('bridges an IN-list Select via the IN sentinel column', () => {
-    const q = publishBehaviors(PostQueries);
-    const node = q.methods.ByIds.component.body.find((n) => 'component' in n && n.component === 'Select');
-    const op = compileNode(node as never);
-    const frag = op.where!.fragments[0] as { sql: string; expand?: number };
-    expect(frag.sql).toBe('id IN (?)');
-    expect(frag.expand).toBe(0);
-  });
-
-  it('the eager path and the declaration path bridge to the same SQL text', () => {
-    const decl = publishBehaviors(PostQueries);
-    const eager = compileEager('ByIds', ($: Recorded, l) =>
-      l.Select({ table: 'posts', select: ['id', 'title'], where: [whereIn(inColumn($, 'id'), $.ids)], order: 'id ASC' }),
-    );
-    const declOp = compileNode(
-      decl.methods.ByIds.component.body.find((n) => 'component' in n && n.component === 'Select') as never,
-    );
-    const eagerOp = compileNode(
-      eager.methods.ByIds.component.body.find((n) => 'component' in n && n.component === 'Select') as never,
-    );
-    expect(eagerOp.sql).toBe(declOp.sql);
-  });
-});

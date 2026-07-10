@@ -142,3 +142,22 @@ describe('static-symbolic makeSQL bundle — Select read parity (real SQLite)', 
     expect(rows).toEqual([]);
   });
 });
+
+describe('static bundle — pure JSON + dialect-tagged (WS6/WS7 portability)', () => {
+  it('compiles for every dialect; the bundle round-trips through JSON losslessly', () => {
+    for (const dialect of ['sqlite', 'postgres', 'mysql'] as const) {
+      const bundle = compileStaticBundle(contract, dialect, 'Search');
+      expect(bundle.dialect).toBe(dialect);
+      // Pure JSON: JSON.parse(JSON.stringify(bundle)) is deep-equal (no functions/TS state).
+      expect(JSON.parse(JSON.stringify(bundle))).toEqual(bundle);
+    }
+  });
+
+  it('the SQLite bundle executes on the in-process seam (the runnable dialect)', () => {
+    const dbA = freshDb();
+    const sqlite = compileStaticBundle(contract, 'sqlite', 'Search');
+    const rows = executeStaticBundle(sqlite, { author_id: 7, status: 'live', since: '2026-01-01' }, dbA);
+    dbA.close();
+    expect(rows).toEqual([{ id: 1, author_id: 7, title: 'Hello', status: 'live' }]);
+  });
+});

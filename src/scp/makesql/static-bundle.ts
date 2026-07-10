@@ -46,7 +46,7 @@ import {
   type ExecOutcome,
 } from 'behavior-contracts';
 import type { Component, ComponentRefNode, MapNode, BehaviorModelContract } from '../authoring';
-import { IN_SENTINEL } from '../bridge';
+import { IN_SENTINEL } from './tx';
 import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
 import { renderPlaceholders, type Dialect } from './handler';
 import { compileWriteNode } from './tx';
@@ -626,35 +626,45 @@ function compileNodeStatements(node: RefLike, dialect: Dialect): StaticStatement
 }
 
 /**
- * Execute a READ behavior method whose output may be a Φ-merge of SQL nodes (including relation
- * `.map` nodes) via bc `runBehavior` + a makeSQL handler. Each SQL body node is rewritten to a
- * `makeSQL` node with one `__scope` port; bc drives map iteration / wire binding / Φ output; the
- * handler renders each node's static statements against the evaluated scope and runs REAL SQLite.
- * This is the design's "bc composes, makeSQL executes". Returns the component's Φ output.
+ * The compiled, portable READ graph of a behavior method: the surrogate bc `ComponentGraphIR`
+ * (each SQL node → a `makeSQL` node with one `__scope` port; wiring / map / Φ output preserved)
+ * plus the per-node static statement templates and the optional heads. Pure JSON —
+ * `JSON.stringify` round-trips, so a per-language runtime executes it with bc + a SQL driver.
  */
-export function executeReadBehavior(
+export interface ReadGraph {
+  readonly dialect: Dialect;
+  readonly name: string;
+  /** The surrogate bc IR (catalog nodes → `makeSQL` `__scope`-port nodes). */
+  readonly ir: ComponentGraphIR;
+  /** Per-node static `makeSQL` statement templates, keyed by body node id. */
+  readonly statementsById: Record<string, readonly StaticStatement[]>;
+  /** Input heads normalized to present-as-null (absent-key SKIP; SSoT-driven). */
+  readonly optionalHeads: readonly string[];
+}
+
+/**
+ * Compile a READ behavior method into a portable {@link ReadGraph}: rewrite each authored SQL
+ * body node to a `makeSQL` node carrying a synthetic `__scope` port (bc evaluates it in-scope),
+ * and compile each node's static statements ONCE. SYMBOLIC — no concrete input. bc will own map
+ * iteration / wire binding / Φ output at execute time; the handler renders each node's statements.
+ */
+export function compileReadGraph(
   contract: BehaviorModelContract,
-  input: Scope,
   dialect: Dialect,
-  db: SqliteDb,
   entry?: string,
-): Value {
+): ReadGraph {
   const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
   if (component === undefined) throw new Error(`static-bundle: entry component '${entry ?? '<first>'}' not found in contract`);
 
-  // Compile each SQL node's static statements ONCE, keyed by node id.
-  const statementsById = new Map<string, StaticStatement[]>();
-  const optional = optionalHeadsOfComponent(component, dialect);
+  const statementsById: Record<string, readonly StaticStatement[]> = {};
   for (const n of component.body) {
     if ('cond' in n) continue;
-    statementsById.set(n.id, compileNodeStatements(n as RefLike, dialect));
+    statementsById[n.id] = compileNodeStatements(n as RefLike, dialect);
   }
 
-  // Rewrite the component body: each SQL node keeps its id / wiring / map shape but its ports
-  // collapse to the synthetic `__scope` port (bc evaluates it in-scope; handler renders the node).
   const surrogateBody = component.body.map((n) => {
     if ('cond' in n) return n;
-    const stmts = statementsById.get(n.id)!;
+    const stmts = statementsById[n.id];
     if ('map' in n) {
       return { ...n, map: { ...n.map, component: NODE_COMPONENT, ports: { [SCOPE_PORT]: scopePort(stmts) } } };
     }
@@ -663,15 +673,30 @@ export function executeReadBehavior(
   const surrogate = { ...component, body: surrogateBody } as unknown as BcComponent;
   const ir: ComponentGraphIR = { irVersion: 1, exprVersion: 2, components: [surrogate] };
 
-  // The makeSQL handler: render this node's static statements against the evaluated `__scope`.
+  return {
+    dialect,
+    name: component.name,
+    ir,
+    statementsById,
+    optionalHeads: [...optionalHeadsOfComponent(component, dialect)],
+  };
+}
+
+/**
+ * Execute a compiled {@link ReadGraph} via bc `runBehavior` + a makeSQL handler: bc drives map
+ * iteration / wire binding / Φ output; the handler renders each node's static statements against
+ * the evaluated `__scope` and runs REAL SQLite. Returns the component's Φ output. This is the
+ * design's "bc composes, makeSQL executes" — the SAME path a per-language runtime follows.
+ */
+export function executeReadGraph(graph: ReadGraph, input: Scope, db: SqliteDb): Value {
   const handle = (ports: Record<string, Value>, ctx: HandlerCtx): ExecOutcome => {
-    const stmts = statementsById.get(ctx.nodeId);
+    const stmts = graph.statementsById[ctx.nodeId];
     if (stmts === undefined) return { error: `static-bundle: no statements for node '${ctx.nodeId}'` };
     const scope = ports[SCOPE_PORT];
     if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) {
       return { error: `static-bundle: node '${ctx.nodeId}' surrogate scope did not evaluate to an object` };
     }
-    const { sql, params } = renderStatements(stmts, dialect, scope as Scope);
+    const { sql, params } = renderStatements(stmts, graph.dialect, scope as Scope);
     try {
       const rows = db.prepare(sql).all(...params) as Record<string, unknown>[];
       return { ok: rows as unknown as Value };
@@ -682,13 +707,45 @@ export function executeReadBehavior(
   const handlers: Handlers = { [NODE_COMPONENT]: handle };
 
   const normalized: Scope = { ...input };
-  for (const head of optional) if (!(head in normalized)) normalized[head] = null;
+  for (const head of graph.optionalHeads) if (!(head in normalized)) normalized[head] = null;
 
   try {
-    return runBehavior(ir, handlers, normalized, surrogate.name);
+    return runBehavior(graph.ir, handlers, normalized, graph.name);
   } catch (e) {
     throw reErrorToSqlFailure(e);
   }
+}
+
+/**
+ * Convenience: compile + execute a READ behavior method whose output may be a Φ-merge of SQL
+ * nodes (including relation `.map` nodes). Equivalent to `executeReadGraph(compileReadGraph(...))`.
+ */
+export function executeReadBehavior(
+  contract: BehaviorModelContract,
+  input: Scope,
+  dialect: Dialect,
+  db: SqliteDb,
+  entry?: string,
+): Value {
+  return executeReadGraph(compileReadGraph(contract, dialect, entry), input, db);
+}
+
+/**
+ * Render the PRIMARY read node's statements of a {@link ReadGraph} against an input scope to its
+ * dialect SQL text + bound params (the render axis for conformance golden). The primary node is
+ * the first non-map body node (the root SELECT the relations map over). Optional heads are
+ * normalized to present-as-null first (absent-key SKIP), so an omitted optional head renders the
+ * SAME text a runtime would produce.
+ */
+export function renderReadPrimary(graph: ReadGraph, input: Scope): { sql: string; params: unknown[] } {
+  const ids = Object.keys(graph.statementsById);
+  // The primary node is the first body node in the surrogate IR order (map nodes reference it).
+  const bodyIds = graph.ir.components[0].body.map((n) => n.id).filter((id) => ids.includes(id));
+  const primaryId = bodyIds[0];
+  if (primaryId === undefined) throw new Error('static-bundle: read graph has no primary node to render');
+  const scope: Scope = { ...input };
+  for (const head of graph.optionalHeads) if (!(head in scope)) scope[head] = null;
+  return renderStatements(graph.statementsById[primaryId], graph.dialect, scope);
 }
 
 /** Optional heads across ALL SQL nodes of a component (schema + SKIP-guard + refOpt). */

@@ -39,8 +39,8 @@ import {
   executeTransactionBundle,
   executeTransaction,
   countingDriver,
-  renderOperation,
-  compileNode,
+  renderTxStatement,
+  compileWriteNode,
   whereEq,
   SqlFailure,
   type In,
@@ -166,7 +166,7 @@ describe('WS5 — create derives to ONE gate-first transaction (golden SQL + rea
       request_id: 'r-123',
       __entity: { id: 3, author_id: 7, title: 'Hello' },
     };
-    const rendered = bundle.transaction!.statements.map((s) => renderOperation(s.op, scope).sql);
+    const rendered = bundle.transaction!.statements.map((s) => renderTxStatement(s.op, scope).sql);
     expect(rendered).toEqual(GOLDEN_CREATE_SQL);
 
     // Deterministic derivation: recompiling yields a byte-identical plan (statement ids + SQL).
@@ -370,8 +370,8 @@ describe('WS5 — remove lifecycle (base Delete + cascade counter −1, one tx)'
     const bundle = compileWriteBundle(contract, 'Remove', postWrites, 'remove');
     expect(bundle.transaction!.statements.map((s) => s.role)).toEqual(['body', 'derive']);
     // The rendered body Delete is byte-identical to v1's DELETE shape (WHERE id = ?).
-    expect(renderOperation(bundle.transaction!.statements[0].op, { id: 50 }).sql).toBe('DELETE FROM posts WHERE id = ? RETURNING id');
-    expect(renderOperation(bundle.transaction!.statements[1].op, { author_id: 7 }).sql).toBe('UPDATE users SET post_count = post_count + ? WHERE id = ?');
+    expect(renderTxStatement(bundle.transaction!.statements[0].op, { id: 50 }).sql).toBe('DELETE FROM posts WHERE id = ? RETURNING id');
+    expect(renderTxStatement(bundle.transaction!.statements[1].op, { author_id: 7 }).sql).toBe('UPDATE users SET post_count = post_count + ? WHERE id = ?');
   });
 });
 
@@ -469,8 +469,8 @@ describe('WS5 — fail-closed derivation guards (no bodging, no silent defaults)
     // Two INDEPENDENT write nodes in one Command → WS8a derives them into one ordered tx plan
     // (the WS5 "deferred to WS8" loud-reject is now genuinely implemented, not rejected).
     const plan = deriveTransactionPlan('create', [
-      { op: compileNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] } } } as never), label: 'a', name: 'a', effects: {} },
-      { op: compileNode({ id: 'b', component: 'Insert', ports: { table: 'tags', 'values.label': { ref: ['label'] } } } as never), label: 'b', name: 'b', effects: {} },
+      { op: compileWriteNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] } } } as never), label: 'a', name: 'a', effects: {} },
+      { op: compileWriteNode({ id: 'b', component: 'Insert', ports: { table: 'tags', 'values.label': { ref: ['label'] } } } as never), label: 'b', name: 'b', effects: {} },
     ], { effects: {} });
     // Both bodies present, ordered deterministically by declaration seq (a before b), no gates.
     expect(plan.statements.map((s) => s.role)).toEqual(['body', 'body']);
@@ -515,7 +515,7 @@ describe('WS5 — executeTransaction runs a hand-derived plan against real SQLit
       'create',
       [
         {
-          op: compileNode({
+          op: compileWriteNode({
             id: 'ins',
             component: 'Insert',
             ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id' },

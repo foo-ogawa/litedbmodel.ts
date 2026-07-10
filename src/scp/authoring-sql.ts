@@ -23,7 +23,7 @@
  */
 
 import { eq, ne, lt, le, gt, ge, type Recorded } from 'behavior-contracts';
-import { IN_SENTINEL } from './bridge';
+import { IN_SENTINEL } from './makesql';
 
 /** A recorded `$`-reference (column or value) or a literal value usable in a builder. */
 type Operand = Recorded | unknown;

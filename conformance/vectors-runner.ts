@@ -3,7 +3,7 @@
  *
  * Mirrors graphddb's `conformance/vectors-runner.ts`: it loads the FROZEN vector corpus
  * (`conformance/vectors/*.json`) and runs each vector through the litedbmodel SCP runtime it
- * CONSUMES — the BUILT published artifact `dist/scp/index.mjs` (`renderOperation` /
+ * CONSUMES — the BUILT published artifact `dist/scp/index.mjs` (`renderReadPrimary` /
  * `executeBundle` / `executeTransactionBundle` / `dialectFor`), NOT the raw source — so it
  * proves the exact package a consumer ships on reproduces the corpus byte-for-byte. It emits a
  * MACHINE-READABLE JSON summary as its LAST stdout line so the cross-language orchestrator
@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
-  renderOperation,
+  renderReadPrimary,
   dialectFor,
   executeBundle,
   executeTransactionBundle,
@@ -35,7 +35,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const VECTORS_DIR = process.env.LITEDBMODEL_VECTORS ?? join(HERE, 'vectors');
 
 /** The corpus schema version this runner supports (pin — bumped on additive refreeze). */
-const SUPPORTED_CORPUS_VERSION = 1;
+const SUPPORTED_CORPUS_VERSION = 2;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -90,7 +90,7 @@ function line(ok: boolean, name: string, detail?: string): void {
 function runVector(v: Json): { ok: boolean; detail?: string } {
   try {
     if (v.kind === 'render') {
-      const r = renderOperation(v.operation, decodeValue(v.input) as never, dialectFor(v.dialect));
+      const r = renderReadPrimary(v.readGraph, decodeValue(v.input) as never);
       const sqlOk = r.sql === v.expectedSql;
       const paramsOk = eq(r.params.map(encodeValue), v.expectedParams);
       if (sqlOk && paramsOk) return { ok: true };
@@ -98,6 +98,11 @@ function runVector(v: Json): { ok: boolean; detail?: string } {
       if (!sqlOk) parts.push(`sql ${JSON.stringify(r.sql)} != ${JSON.stringify(v.expectedSql)}`);
       if (!paramsOk) parts.push(`params mismatch`);
       return { ok: false, detail: parts.join('; ') };
+    }
+    if (v.kind === 'write-render') {
+      const sqlOk = v.statement.sql === v.expectedSql;
+      const paramsOk = eq(v.statement.params.map(encodeValue), v.expectedParams);
+      return { ok: sqlOk && paramsOk, detail: sqlOk && paramsOk ? undefined : `write-render mismatch` };
     }
     if (v.kind === 'exec') {
       const db = seedDb(v.schema);

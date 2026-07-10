@@ -10,7 +10,9 @@
  */
 
 import { assertPortable, FORBIDDEN_OBJECT_KEY, PORTABLE_EXPR_OPERATORS, PortabilityError, type Component, type ComponentGraphIR } from 'behavior-contracts';
-import type { CompiledOperation, ExprNode, Fragment, FragmentTree } from './ir';
+
+/** A bc Expression IR node (closed operator set). Structural alias — a JSON expression tree. */
+export type ExprNode = unknown;
 
 /**
  * Assert one Expression IR node is portable: no residue (functions/Date/…) and every
@@ -71,25 +73,6 @@ function walkExpr(node: unknown, path: string): void {
   // value structurally so nested operator nodes are still checked (assertPortable above has
   // already rejected any function/Date/Promise residue across the whole subtree).
   for (const k of keys) walkExpr((node as Record<string, unknown>)[k], `${path}.${k}`);
-}
-
-/** Assert a fragment (and its slots + `when`) emits only portable Expression IR. */
-function assertFragmentPortable(node: Fragment | FragmentTree, path: string): void {
-  if ('connector' in node) {
-    node.fragments.forEach((f, i) => assertFragmentPortable(f, `${path}.fragments[${i}]`));
-    return;
-  }
-  if (node.when !== undefined) assertExprPortable(node.when, `${path}.when`);
-  node.params.forEach((p, i) => assertExprPortable(p, `${path}.params[${i}]`));
-}
-
-/**
- * Assert a whole compiled operation emits only portable Expression IR (static params +
- * fragment tree). Throws {@link PortabilityError} on the first non-portable construct.
- */
-export function assertOperationPortable(op: CompiledOperation): void {
-  op.params.forEach((p, i) => assertExprPortable(p, `$.params[${i}]`));
-  if (op.where !== null) assertFragmentPortable(op.where, '$.where');
 }
 
 // ── Authoring→IR lower guard (WS2, #22 — auto-applied on the single compile path) ─────

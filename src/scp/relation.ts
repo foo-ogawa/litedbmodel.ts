@@ -1,65 +1,44 @@
 /**
- * ⚠️ SUPERSEDED for PostgreSQL by the fragment model (`src/scp/fragment/`, epic #43).
+ * litedbmodel v2 SCP — Read relations: pre-compiled batch op + staged batch resolution (WS4,
+ * #24; makeSQL re-expression, epic #43/#45 Phase B).
  *
- * The `RelationOp` "kinds" + `FragmentTree` + reduced `targetKey IN (?)` +
- * `ROW_NUMBER()`-for-ALL-dialects (including PG) forms in THIS file are the retired
- * SQLite-first regression the #43 reset throws away: they model SQL structure as an
- * abstract IR and cannot express the tuned PG SQL (`= ANY(?::type[])`,
- * `CROSS JOIN LATERAL`, `UNNEST` composite, cast). The PG-anchored relation batch SQL
- * is now compiled byte-identical to the ORIGINAL `LazyRelation` by
- * `src/scp/fragment/compile-pg.ts` (`compileBelongsTo` / `compileHasManyLimited` /
- * `compileHasManyAny`) and assembled by `src/scp/fragment/assemble.ts`. Do NOT use the
- * `IN (?)` / ROW_NUMBER-for-PG forms below for the PG slice. This module remains only
- * for the not-yet-migrated legacy SQLite path and will be removed as #43 extends.
+ * Relations are NOT SQL JOINs by default (spec §5). They are the staged-batch
+ * query-composition + object-assembly shape v1's `LazyRelation` uses: collect the parent key
+ * set of a result page, run ONE batched child SELECT keyed by the deduped parent keys, then
+ * distribute the child rows back to their parents. One batched query per relation edge, NEVER
+ * one-per-parent (no N+1).
  *
- * ── (original doc) ──
- * litedbmodel v2 SCP — Relation ops (Read) + staged batch resolution (WS4, #24).
+ * ## The relation op is a STATIC makeSQL artifact (design #45)
  *
- * Relations are NOT SQL JOINs by default (spec §5). They are the same
- * staged-batch query-composition + object-assembly shape graphddb and v1 `LazyRelation`
- * use: collect the parent key set of a result page, run ONE batched child SELECT
- * (`fk IN (…)` / per-parent-limited `ROW_NUMBER()` window), then distribute the child rows
- * back to their parents. This makes a relation load structurally bounded — one batched
- * query per relation edge, NEVER one-per-parent (no N+1).
+ * A {@link RelationOp} is compiled ONCE from a model {@link RelationDecl} into a STATIC
+ * `makeSQL` batch SELECT via the makeSQL relation builders (`./makesql/compile-relation`) —
+ * byte-identical to the ORIGINAL `LazyRelation` SQL for PostgreSQL (`= ANY(?::type[])`,
+ * `CROSS JOIN LATERAL`, `UNNEST`), and the single-JSON-param server-side form for MySQL/SQLite
+ * (`json_each` / `JSON_TABLE`). The deduped key array binds as ONE param with STATIC text (no
+ * placeholder-count expansion), so `op.sql` is fixed and value-independent — pure JSON, lands
+ * in the bundle, a per-language runtime executes it directly. The REDUCED
+ * `CompiledOperation`/`renderOperation`/`IN (?)`-expansion forms are GONE.
  *
- * ## The relation op is a pre-compiled artifact (spec §8)
+ * ## ONE relation op, TWO surfaces (spec §5)
  *
- * A {@link RelationOp} is compiled ONCE from a model {@link RelationDecl}, dialect-aware
- * (SQLite for α), into the SAME {@link CompiledOperation} shape WS1 already emits for a
- * Select — so it renders through the SAME normative {@link renderOperation} (fragment tree
- * + IN-list `(?, ?, …)` expansion, spec §5). It carries NO functions and lands in the §8
- * bundle (`SqlBundle.relations`) as pure JSON, so a thin per-language runtime (WS7) gets
- * the relation batch SQL for free. The v1 `LazyRelation` batch-SQL assets (IN-list, the
- * `ROW_NUMBER() OVER (PARTITION BY … )` per-parent limit) are reused here as the compiled
- * content, not re-invented.
- *
- * ## ONE relation op, TWO surfaces (spec §5 / feasibility §9)
- *
- * Both read surfaces trigger the IDENTICAL compiled {@link RelationOp} via
- * {@link runRelationOp} — there is exactly one batch-execution code path:
- *
- *   - **Declarative select** (`with: { author: true }`): the planner resolves sibling
- *     relations eagerly, dedups the parent key set, prefetch-optimized (staged batch).
- *   - **Lazy** (`await post.author`): a prototype getter + a non-enumerable Symbol batch
- *     context (graphddb's `GRAPHDDB_KEY` technique) fires the SAME op at access time over
- *     the whole sibling set (batch, so still no N+1 — it just can't prefetch).
- *
- * `runRelationOp` renders `op.query` once for the deduped parent key set and returns the
- * child rows grouped by parent key. Both surfaces call it; a test asserts they resolve via
- * the same compiled op (same SQL text), not two parallel code paths.
+ * Both read surfaces trigger the IDENTICAL compiled op via {@link runRelationOp}:
+ *   - **Declarative select** (`with: { author: true }`): batch-prefetched over the page.
+ *   - **Lazy** (`await post.author`): a prototype getter fires the SAME op over the sibling set.
  */
 
-import { renderOperation, type RenderedSql } from './render';
-import type { CompiledOperation, ExprNode, Fragment, FragmentTree } from './ir';
-import { WHERE_SLOT } from './ir';
+import { assembleMakeSQL, type MakeSQL } from './makesql/makesql';
+import { renderPlaceholders, type Dialect } from './makesql/handler';
+import {
+  compileSingleKeyUnlimited,
+  compileSingleKeyLimited,
+} from './makesql/compile-relation';
 
 /** A read relation cardinality (v1 parity). `belongsTo`/`hasOne` are single; `hasMany` many. */
 export type RelationKind = 'belongsTo' | 'hasMany' | 'hasOne';
 
 /**
  * A model's read-relation declaration (the authored/decorated relation metadata, spec §4).
- * This is the litedbmodel-consumer input the relation compiler lowers to a {@link RelationOp}.
- * It mirrors v1's `@belongsTo`/`@hasMany`/`@hasOne` config (source/target key + optional
+ * Mirrors v1's `@belongsTo`/`@hasMany`/`@hasOne` config (source/target key + optional
  * per-parent order/limit), reduced to the fields the batch SQL needs.
  */
 export interface RelationDecl {
@@ -71,31 +50,22 @@ export interface RelationDecl {
   readonly targetTable: string;
   /** Child columns to project (the child typed-object own props). */
   readonly select: readonly string[];
-  /**
-   * The PARENT column whose value is the batch key (e.g. `belongsTo` → the parent FK
-   * `author_id`; `hasMany`/`hasOne` → the parent PK `id`).
-   */
+  /** The PARENT column whose value is the batch key. */
   readonly parentKey: string;
-  /**
-   * The CHILD column matched against the parent key (e.g. `belongsTo` → child PK `id`;
-   * `hasMany`/`hasOne` → child FK `post_id`).
-   */
+  /** The CHILD column matched against the parent key. */
   readonly targetKey: string;
-  /** Optional per-parent ORDER BY body (dialect-neutral text, e.g. `"created_at DESC"`). */
+  /** Optional per-parent ORDER BY body (dialect-neutral text). */
   readonly order?: string;
-  /**
-   * Optional per-parent row limit (`hasMany` only). When set, the batch query uses a
-   * `ROW_NUMBER() OVER (PARTITION BY <targetKey> ORDER BY <order>)` window so each parent
-   * gets at most `limit` children in ONE query (v1's SQLite `batchLoadWithRowNumber`).
-   */
+  /** Optional per-parent row limit (`hasMany` only). */
   readonly limit?: number;
+  /** The target SQL dialect the batch SELECT is compiled for (default `'sqlite'`). */
+  readonly dialect?: Dialect;
 }
 
 /**
- * A pre-compiled relation batch op (spec §8 `relation ops`). Pure JSON — it carries the
- * compiled batch SELECT ({@link CompiledOperation}, rendered by {@link renderOperation})
- * plus the grouping metadata the runtime needs to distribute child rows to parents. No
- * functions, so it round-trips through `JSON.stringify` inside the bundle.
+ * A pre-compiled relation batch op (spec §8). Pure JSON — it carries the STATIC batch SELECT
+ * `sql` (makeSQL text with ONE `?` for the deduped-key array param) plus the grouping metadata
+ * the runtime needs to distribute child rows to parents. No functions, no reduced IR.
  */
 export interface RelationOp {
   readonly name: string;
@@ -104,104 +74,74 @@ export interface RelationOp {
   readonly parentKey: string;
   /** Child column the batch groups rows by (matches the parent key). */
   readonly targetKey: string;
+  /** The target SQL dialect the batch SELECT text is compiled for. */
+  readonly dialect: Dialect;
   /**
-   * The batched child SELECT as a {@link CompiledOperation}. Its WHERE is a single IN-list
-   * fragment `targetKey IN (?)` whose one slot binds the deduped parent-key array and
-   * expands to `(?, ?, …)` at render time (spec §5). A `limit` decl compiles to a
-   * `ROW_NUMBER()` window CTE instead (per-parent limit).
+   * The batched child SELECT as STATIC makeSQL text: ONE `?` binds the deduped parent-key set
+   * (PG `= ANY(?::t[])` / MySQL·SQLite single-JSON `json_each`/`JSON_TABLE`). Value-independent.
    */
-  readonly query: CompiledOperation;
+  readonly sql: string;
 }
 
 /** The reserved input head the relation batch query binds its deduped key array to. */
 export const RELATION_KEYS_HEAD = '__keys';
 
 /**
- * Compile ONE {@link RelationDecl} into a {@link RelationOp} for SQLite (α dialect). The
- * batch query selects the child rows whose {@link RelationDecl.targetKey} is in the deduped
- * parent-key set. Reuses the existing IN-list fragment + `renderOperation` expansion (no new
- * SQL machinery). A `hasMany` with `limit` compiles to the v1 `ROW_NUMBER()` window form so
- * the per-parent cap holds in a single batched statement.
+ * Compile ONE {@link RelationDecl} into a STATIC {@link RelationOp} via the makeSQL relation
+ * builders. The batch query selects the child rows whose {@link RelationDecl.targetKey} is in
+ * the deduped parent-key set. PG stays byte-identical to v1's `LazyRelation`; MySQL/SQLite use
+ * the single-JSON-param server-side form. A `hasMany` with `limit` compiles to the per-parent
+ * LATERAL (PG) / ROW_NUMBER (MySQL·SQLite) form. The SQL text is FIXED (the array binds as one
+ * param regardless of length), so it needs no per-input recompile.
  */
 export function compileRelationOp(decl: RelationDecl): RelationOp {
   if (decl.kind !== 'hasMany' && decl.limit !== undefined) {
     throw new Error(`relation '${decl.name}': a per-parent 'limit' is only valid for hasMany (got ${decl.kind})`);
   }
-  const query = decl.limit !== undefined ? compileLimitedBatch(decl) : compilePlainBatch(decl);
+  if (decl.limit !== undefined && (!Number.isInteger(decl.limit) || decl.limit < 0)) {
+    throw new Error(`relation '${decl.name}': per-parent limit must be a non-negative integer (got ${String(decl.limit)})`);
+  }
+  if (decl.limit !== undefined && decl.order === undefined) {
+    throw new Error(
+      `relation '${decl.name}': a per-parent 'limit' requires an explicit 'order' (the per-parent window needs a deterministic ordering to decide which ${decl.limit} rows each parent keeps)`,
+    );
+  }
+  const dialect: Dialect = decl.dialect ?? 'sqlite';
+  const sql = compiledBatchSql(decl, dialect);
   return {
     name: decl.name,
     kind: decl.kind,
     parentKey: decl.parentKey,
     targetKey: decl.targetKey,
-    query,
+    dialect,
+    sql,
   };
-}
-
-/** The IN-list membership slot binding the deduped key array (`{ref:[RELATION_KEYS_HEAD]}`). */
-function keysRef(): ExprNode {
-  return { ref: [RELATION_KEYS_HEAD] } as ExprNode;
 }
 
 /**
- * Plain batch (`belongsTo`/`hasOne`/unlimited `hasMany`):
- *   `SELECT <cols> FROM <target>{where}[ ORDER BY <o>]` with `{where}` = `targetKey IN (?)`.
- * The `(?)` expands to one `?` per deduped key at render time (dynamic-expansion spec §5).
+ * Compile the STATIC batch SELECT text: the makeSQL relation builder emits complete tuned SQL
+ * whose deduped-key array is ONE param. We compile against a single placeholder key array so
+ * the text is fixed; the runtime re-binds the real deduped keys against the SAME text (the
+ * single-JSON / `= ANY` forms are length-independent, so the text is stable).
  */
-function compilePlainBatch(decl: RelationDecl): CompiledOperation {
-  const cols = decl.select.join(', ');
-  const inFragment: Fragment = {
-    always: true,
-    sql: `${decl.targetKey} IN (?)`,
-    params: [keysRef()],
-    expand: 0,
+function compiledBatchSql(decl: RelationDecl, dialect: Dialect): string {
+  // A one-element placeholder key set fixes the SQL text (single-JSON-param / `= ANY` forms are
+  // value-length-independent). The concrete keys are bound at execute time.
+  const placeholderKeys: unknown[] = [null];
+  const base = {
+    dialect,
+    tableName: decl.targetTable,
+    select: decl.select.join(', '),
+    order: decl.order,
+    targetKey: decl.targetKey,
+    values: placeholderKeys,
   };
-  const where: FragmentTree = { connector: 'AND', fragments: [inFragment] };
-  let sql = `SELECT ${cols} FROM ${decl.targetTable}${WHERE_SLOT}`;
-  if (decl.order !== undefined) sql += ` ORDER BY ${decl.order}`;
-  return { component: 'Select', sql, where, params: [], assembly: { shape: 'items' } };
-}
-
-/**
- * Per-parent-limited `hasMany` batch — v1's SQLite `ROW_NUMBER()` window form:
- *
- *   WITH ranked AS (
- *     SELECT <cols>, ROW_NUMBER() OVER (PARTITION BY <targetKey> ORDER BY <order>) AS _rn
- *     FROM <target>{where}                         -- {where} = targetKey IN (?)
- *   )
- *   SELECT <cols> FROM ranked WHERE _rn <= <limit>
- *
- * The `{where}` splice keeps the IN-list expansion (spec §5). `_rn` is a synthetic window
- * column dropped from the final projection, so the child typed-object own props stay exactly
- * `select`. `limit` is inlined as a literal integer (a compiled per-parent cap from the decl,
- * NOT a runtime-bound value — the decl is the SSoT), mirroring v1's `_rn <= ${limit}`.
- */
-function compileLimitedBatch(decl: RelationDecl): CompiledOperation {
-  const cols = decl.select.join(', ');
-  const limit = decl.limit!;
-  if (!Number.isInteger(limit) || limit < 0) {
-    throw new Error(`relation '${decl.name}': per-parent limit must be a non-negative integer (got ${String(limit)})`);
-  }
-  // A per-parent limit REQUIRES a deterministic ORDER BY (the window decides WHICH `limit`
-  // rows each parent keeps). Absent order = fail-closed authoring error, NOT a silent default
-  // — the relation declaration is the SSoT for the per-parent ordering.
-  if (decl.order === undefined) {
-    throw new Error(
-      `relation '${decl.name}': a per-parent 'limit' requires an explicit 'order' (the ROW_NUMBER() window needs a deterministic ordering to decide which ${limit} rows each parent keeps)`,
-    );
-  }
-  const order = decl.order;
-  const inFragment: Fragment = {
-    always: true,
-    sql: `${decl.targetKey} IN (?)`,
-    params: [keysRef()],
-    expand: 0,
-  };
-  const where: FragmentTree = { connector: 'AND', fragments: [inFragment] };
-  const sql =
-    `WITH ranked AS (SELECT ${cols}, ROW_NUMBER() OVER (PARTITION BY ${decl.targetKey} ORDER BY ${order}) AS _rn ` +
-    `FROM ${decl.targetTable}${WHERE_SLOT}) ` +
-    `SELECT ${cols} FROM ranked WHERE _rn <= ${limit}`;
-  return { component: 'Select', sql, where, params: [], assembly: { shape: 'items' } };
+  const node: MakeSQL =
+    decl.limit !== undefined
+      ? compileSingleKeyLimited({ ...base, limit: decl.limit })
+      : compileSingleKeyUnlimited(base);
+  // The builder emits the SQL with ONE `?` (the whole key array). Assemble to the flat text.
+  return assembleMakeSQL(node).sql;
 }
 
 // ── Batch execution (the SINGLE code path both read surfaces share) ────────────
@@ -215,15 +155,23 @@ export interface RelationDriver {
 export type RelationBatch = Map<string, Record<string, unknown>[]>;
 
 /**
- * Run ONE {@link RelationOp} for a set of parent rows: dedup the parent keys, render + execute
- * the batched child SELECT ONCE (real SQLite), and group the child rows by their target key.
- * This is the single batch primitive BOTH the declarative-select and the lazy surface invoke —
- * proving the "same relation op" invariant structurally (there is no second path).
+ * Bind the deduped key set to the batch op's single array param per dialect: PG binds the array
+ * verbatim (`= ANY(?::t[])`); MySQL/SQLite bind the JSON-encoded array string (server-side
+ * `json_each`/`JSON_TABLE` expansion). This is the ONE param the static batch `sql` expects.
+ */
+function bindKeys(op: RelationOp, keys: unknown[]): unknown {
+  if (op.dialect === 'postgres') return keys;
+  return JSON.stringify(keys);
+}
+
+/**
+ * Run ONE {@link RelationOp} for a set of parent rows: dedup the parent keys, render the STATIC
+ * batch SELECT once (dialect placeholder form) and execute it with the deduped keys bound as the
+ * SINGLE array param, then group the child rows by their target key. The single batch primitive
+ * BOTH the declarative-select and the lazy surface invoke.
  *
- * Returns `{ sql, keys, batch }`: the rendered SQL (so a caller can assert both surfaces
- * produced the same text), the deduped keys bound, and the grouping. When there are no
- * non-null parent keys the query is NOT issued (an empty batch, matching v1) — this is not a
- * fallback default, it is the correct empty-set behavior (an IN over no keys selects nothing).
+ * Returns `{ sql, keys, batch }`. An empty key set issues NO query (the correct empty-set
+ * behavior — the `json_each`/`= ANY` over no keys selects nothing), matching v1.
  */
 export function runRelationOp(
   op: RelationOp,
@@ -232,22 +180,16 @@ export function runRelationOp(
 ): { sql: string; keys: unknown[]; batch: RelationBatch } {
   const keys = dedupeKeys(parents, op.parentKey);
   const batch: RelationBatch = new Map();
-  if (keys.length === 0) {
-    // No parent keys → no batched query issued, empty grouping. Still render the SQL (for
-    // the same-op assertion) against the empty key set so the IN-list `1 = 0` degeneration
-    // is observable, but do not touch the driver.
-    const rendered = renderOperation(op.query, { [RELATION_KEYS_HEAD]: [] } as never);
-    return { sql: rendered.sql, keys, batch };
-  }
-  const rendered: RenderedSql = renderOperation(op.query, { [RELATION_KEYS_HEAD]: keys } as never);
-  const rows = db.prepare(rendered.sql).all(...rendered.params) as Record<string, unknown>[];
+  const sql = renderPlaceholders(op.sql, op.dialect);
+  if (keys.length === 0) return { sql, keys, batch };
+  const rows = db.prepare(sql).all(bindKeys(op, keys)) as Record<string, unknown>[];
   for (const row of rows) {
     const k = String(row[op.targetKey]);
     const list = batch.get(k);
     if (list === undefined) batch.set(k, [row]);
     else list.push(row);
   }
-  return { sql: rendered.sql, keys, batch };
+  return { sql, keys, batch };
 }
 
 /** The deduped, non-null parent-key values (insertion order preserved — deterministic). */
@@ -268,8 +210,7 @@ function dedupeKeys(parents: readonly Record<string, unknown>[], parentKey: stri
 /**
  * Distribute a resolved {@link RelationBatch} onto ONE parent per the relation cardinality:
  * `hasMany` → the child list (`[]` when none); `belongsTo`/`hasOne` → the single child (or
- * `null`). `null`/`undefined` is the correct absence value (an unresolved single relation),
- * NOT an ad-hoc default — it is the declared cardinality's empty representation.
+ * `null`). `null`/`[]` is the declared cardinality's empty representation, not an ad-hoc default.
  */
 export function distributeToParent(
   op: RelationOp,

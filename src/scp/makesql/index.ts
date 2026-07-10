@@ -123,5 +123,8 @@ export {
   executeStaticBundle,
   executeStaticWrite,
   executeReadBehavior,
+  compileReadGraph,
+  executeReadGraph,
+  renderReadPrimary,
 } from './static-bundle';
-export type { StaticBundle, StaticStatement, ValueSpec } from './static-bundle';
+export type { StaticBundle, StaticStatement, ValueSpec, ReadGraph } from './static-bundle';

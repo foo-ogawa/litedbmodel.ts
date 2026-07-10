@@ -67,6 +67,9 @@ export {
   executeStaticBundle,
   executeStaticWrite,
   executeReadBehavior,
+  compileReadGraph,
+  executeReadGraph,
+  renderReadPrimary,
 } from './makesql';
 export type {
   MakeSQL,
@@ -82,6 +85,7 @@ export type {
   StaticBundle,
   StaticStatement,
   ValueSpec,
+  ReadGraph,
 } from './makesql';
 
 // Catalog (spec §11 item 1)
@@ -96,51 +100,17 @@ export {
 } from './catalog';
 export type { CatalogName, ContractEffect } from './catalog';
 
-// SQL IR shapes (spec §8)
-export { WHERE_SLOT } from './ir';
-export type {
-  ExprNode,
-  Fragment,
-  FragmentTree,
-  AssemblySpec,
-  CompiledOperation,
-} from './ir';
-
-// SQLite Backend Compile (spec §11 item 3)
-export {
-  compileSelect,
-  compileInsert,
-  compileUpdate,
-  compileDelete,
-} from './compile-sqlite';
-export type {
-  Ref,
-  Condition,
-  SelectDesc,
-  InsertDesc,
-  UpdateDesc,
-  DeleteDesc,
-} from './compile-sqlite';
-
-// Dynamic-expansion render (normative reference for byte-identical output)
-export { renderOperation } from './render';
-export type { RenderedSql } from './render';
-
 // Dialect strategy table (WS6, #26 — the SSoT for PG/MySQL/SQLite SQL divergences + `?`→`$N`).
 export { dialectFor, toDollarPlaceholders, SQLITE, POSTGRES, MYSQL } from './dialect';
-export type { Dialect, DialectName, ConflictAction } from './dialect';
-
-// Dialect-parameterized Backend Compile (WS6, #26 — shared IR→structure, per-dialect SQL text).
-export { compileInsertFor } from './compile-dialect';
-export type { InsertShape } from './compile-dialect';
+export type { Dialect, DialectName } from './dialect';
 
 // Portability guard (closed Expression IR set only)
 export {
   assertExprPortable,
-  assertOperationPortable,
   assertComponentPortable,
   assertComponentGraphPortable,
 } from './guard';
+export type { ExprNode } from './guard';
 
 // Authoring Parse (spec §2.4 / §7 / §9) — SemanticBehavior declaration + eager public-API
 // path → one internal Component-graph IR.
@@ -160,9 +130,6 @@ export type {
   MapNode,
   ComponentRefNode,
 } from './authoring';
-
-// Backend-Compile bridge (WS1↔WS3): real bc ComponentGraphIR port shape → WS1 CompiledOperation.
-export { compileNode, compileComponentNodes, IN_SENTINEL } from './bridge';
 
 // SQL WHERE authoring helpers (closed-set encodings the bridge decodes).
 export {
@@ -184,7 +151,7 @@ export type { SqlFailureKind } from './errors';
 // Thin TS runtime (spec §3 / §10 / §11): validate → SKIP → expand → eval → bind → execute → assembly.
 // `compileBundle` emits the §8 published artifact (Backend-Compiled once, TS-side);
 // `executeBundle` runs that artifact via bc runtime-core alone (the multi-language target).
-export { executeBehavior, compileBundle, executeBundle, read, readBundle, resolveRelationViaPlan } from './runtime';
+export { executeBehavior, compileBundle, executeBundle, read, readBundle } from './runtime';
 export type { SqliteDb, ExecuteOptions, SqlBundle, ReadRuntimeOptions } from './runtime';
 
 // Write-time relations (WS5, #25 — spec §6): entityWrites/edgeWrites declaration vocabulary,
@@ -213,18 +180,19 @@ export type {
   WriteRecorder,
 } from './writes';
 
-export { deriveTransactionPlan } from './write-plan';
+export { deriveTransactionPlan, executeTransaction, countingDriver, renderTxStatement, compileWriteNode } from './makesql';
 export type {
+  TxExpr,
+  TxOp,
   StatementRole,
   GateRule,
   TxStatement,
   TransactionPlan,
   IdempotentHitPolicy,
   BaseWrite,
-} from './write-plan';
-
-export { executeTransaction, countingDriver } from './write-runtime';
-export type { TransactionResult, ShortCircuitReason } from './write-runtime';
+  TransactionResult,
+  ShortCircuitReason,
+} from './makesql';
 
 // The Command bundle + 1-tx execution surface (WS5 — the write path of §2.3 / §6).
 export { compileWriteBundle, executeCommand, executeTransactionBundle } from './runtime';
@@ -233,10 +201,6 @@ export { compileWriteBundle, executeCommand, executeTransactionBundle } from './
 // several named base writes with data dependencies → ONE topologically-ordered gate-first tx plan.
 export { compileCompositeWriteBundle, executeCompositeCommand } from './runtime';
 export type { CompositeWriteEntry } from './runtime';
-
-// Reusable handler/normalization seams (WS3) — exported so the mode-3 codegen path binds the
-// IDENTICAL SQL handlers into bc's generated `bind()` (byte-identity by construction).
-export { buildHandlers, normalizeInput } from './runtime';
 
 // Mode-3 codegen (WS7f, #35 — spec §9 exec-mode 3): supply the litedbmodel SQL catalog to bc's
 // shared generator; emit per-language source (IR baked as a native literal) + the SQL catalog

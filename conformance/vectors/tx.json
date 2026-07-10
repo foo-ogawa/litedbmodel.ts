@@ -1,85 +1,29 @@
 {
   "suite": "tx",
-  "corpusVersion": 1,
-  "note": "Write-time-relations gate-first transaction bundles: commit + gate short-circuit.",
+  "corpusVersion": 2,
+  "note": "Write-time-relations gate-first transaction bundles: commit + gate short-circuit + composite tx-DAG.",
   "vectors": [
     {
       "name": "create: gate-first tx commits (author exists, unique, idempotent)",
       "kind": "tx",
       "dialect": "sqlite",
       "bundle": {
-        "irVersion": 1,
-        "exprVersion": 2,
         "dialect": "sqlite",
-        "component": {
-          "body": [
+        "name": "Create",
+        "statement": {
+          "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+          "params": [
             {
-              "component": "Insert",
-              "id": "n0",
-              "ports": {
-                "__scope": {
-                  "obj": {
-                    "author_id": {
-                      "ref": [
-                        "author_id"
-                      ]
-                    },
-                    "title": {
-                      "ref": [
-                        "title"
-                      ]
-                    }
-                  }
-                }
-              }
-            }
-          ],
-          "inputPorts": {
-            "author_id": {
-              "required": true,
-              "type": "unknown"
-            },
-            "title": {
-              "required": true,
-              "type": "unknown"
-            }
-          },
-          "name": "Create",
-          "output": {
-            "ref": [
-              "n0"
-            ]
-          },
-          "plan": {
-            "concurrency": 16,
-            "groups": [
-              [
-                0
+              "ref": [
+                "author_id"
               ]
-            ]
-          }
-        },
-        "operations": {
-          "n0": {
-            "component": "Insert",
-            "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
-            "where": null,
-            "params": [
-              {
-                "ref": [
-                  "author_id"
-                ]
-              },
-              {
-                "ref": [
-                  "title"
-                ]
-              }
-            ],
-            "assembly": {
-              "shape": "items"
+            },
+            {
+              "ref": [
+                "title"
+              ]
             }
-          }
+          ]
         },
         "optionalHeads": [],
         "relations": {},
@@ -91,19 +35,14 @@
               "id": "tx_requires_0",
               "role": "gate:requires",
               "op": {
-                "component": "Select",
                 "sql": "SELECT 1 FROM users WHERE id = ?",
-                "where": null,
                 "params": [
                   {
                     "ref": [
                       "author_id"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "gate": "existsElseRollback",
               "label": "requires users"
@@ -112,19 +51,14 @@
               "id": "tx_idem_1",
               "role": "gate:idempotency",
               "op": {
-                "component": "Insert",
                 "sql": "INSERT INTO idem (token) VALUES (?) ON CONFLICT DO NOTHING",
-                "where": null,
                 "params": [
                   {
                     "ref": [
                       "request_id"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "gate": "insertedElseNoop",
               "label": "idempotency idem"
@@ -133,9 +67,7 @@
               "id": "tx_unique_2",
               "role": "gate:unique",
               "op": {
-                "component": "Insert",
                 "sql": "INSERT INTO uniq (name, s0, f0) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-                "where": null,
                 "params": [
                   "title_per_author",
                   {
@@ -148,10 +80,7 @@
                       "title"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "gate": "insertedElseRollback",
               "label": "unique title_per_author"
@@ -160,9 +89,7 @@
               "id": "tx_body_3",
               "role": "body",
               "op": {
-                "component": "Insert",
                 "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
-                "where": null,
                 "params": [
                   {
                     "ref": [
@@ -174,41 +101,23 @@
                       "title"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
-              "label": "Insert Insert"
+              "label": "Insert"
             },
             {
               "id": "tx_derive_4",
               "role": "derive",
               "op": {
-                "component": "Update",
-                "sql": "UPDATE users SET post_count = post_count + ?{where}",
-                "where": {
-                  "connector": "AND",
-                  "fragments": [
-                    {
-                      "always": true,
-                      "sql": "id = ?",
-                      "params": [
-                        {
-                          "ref": [
-                            "author_id"
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
+                "sql": "UPDATE users SET post_count = post_count + ? WHERE id = ?",
                 "params": [
-                  1
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                  1,
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ]
               },
               "label": "derive users.post_count"
             },
@@ -216,9 +125,7 @@
               "id": "tx_emit_5",
               "role": "emit",
               "op": {
-                "component": "Insert",
                 "sql": "INSERT INTO outbox (type, payload) VALUES (?, ?)",
-                "where": null,
                 "params": [
                   "PostCreated",
                   {
@@ -236,10 +143,7 @@
                       }
                     }
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "label": "emit PostCreated"
             }
@@ -317,78 +221,22 @@
       "kind": "tx",
       "dialect": "sqlite",
       "bundle": {
-        "irVersion": 1,
-        "exprVersion": 2,
         "dialect": "sqlite",
-        "component": {
-          "body": [
+        "name": "Create",
+        "statement": {
+          "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+          "params": [
             {
-              "component": "Insert",
-              "id": "n0",
-              "ports": {
-                "__scope": {
-                  "obj": {
-                    "author_id": {
-                      "ref": [
-                        "author_id"
-                      ]
-                    },
-                    "title": {
-                      "ref": [
-                        "title"
-                      ]
-                    }
-                  }
-                }
-              }
-            }
-          ],
-          "inputPorts": {
-            "author_id": {
-              "required": true,
-              "type": "unknown"
-            },
-            "title": {
-              "required": true,
-              "type": "unknown"
-            }
-          },
-          "name": "Create",
-          "output": {
-            "ref": [
-              "n0"
-            ]
-          },
-          "plan": {
-            "concurrency": 16,
-            "groups": [
-              [
-                0
+              "ref": [
+                "author_id"
               ]
-            ]
-          }
-        },
-        "operations": {
-          "n0": {
-            "component": "Insert",
-            "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
-            "where": null,
-            "params": [
-              {
-                "ref": [
-                  "author_id"
-                ]
-              },
-              {
-                "ref": [
-                  "title"
-                ]
-              }
-            ],
-            "assembly": {
-              "shape": "items"
+            },
+            {
+              "ref": [
+                "title"
+              ]
             }
-          }
+          ]
         },
         "optionalHeads": [],
         "relations": {},
@@ -400,19 +248,14 @@
               "id": "tx_requires_0",
               "role": "gate:requires",
               "op": {
-                "component": "Select",
                 "sql": "SELECT 1 FROM users WHERE id = ?",
-                "where": null,
                 "params": [
                   {
                     "ref": [
                       "author_id"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "gate": "existsElseRollback",
               "label": "requires users"
@@ -421,19 +264,14 @@
               "id": "tx_idem_1",
               "role": "gate:idempotency",
               "op": {
-                "component": "Insert",
                 "sql": "INSERT INTO idem (token) VALUES (?) ON CONFLICT DO NOTHING",
-                "where": null,
                 "params": [
                   {
                     "ref": [
                       "request_id"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "gate": "insertedElseNoop",
               "label": "idempotency idem"
@@ -442,9 +280,7 @@
               "id": "tx_unique_2",
               "role": "gate:unique",
               "op": {
-                "component": "Insert",
                 "sql": "INSERT INTO uniq (name, s0, f0) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-                "where": null,
                 "params": [
                   "title_per_author",
                   {
@@ -457,10 +293,7 @@
                       "title"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "gate": "insertedElseRollback",
               "label": "unique title_per_author"
@@ -469,9 +302,7 @@
               "id": "tx_body_3",
               "role": "body",
               "op": {
-                "component": "Insert",
                 "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
-                "where": null,
                 "params": [
                   {
                     "ref": [
@@ -483,41 +314,23 @@
                       "title"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
-              "label": "Insert Insert"
+              "label": "Insert"
             },
             {
               "id": "tx_derive_4",
               "role": "derive",
               "op": {
-                "component": "Update",
-                "sql": "UPDATE users SET post_count = post_count + ?{where}",
-                "where": {
-                  "connector": "AND",
-                  "fragments": [
-                    {
-                      "always": true,
-                      "sql": "id = ?",
-                      "params": [
-                        {
-                          "ref": [
-                            "author_id"
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
+                "sql": "UPDATE users SET post_count = post_count + ? WHERE id = ?",
                 "params": [
-                  1
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                  1,
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ]
               },
               "label": "derive users.post_count"
             },
@@ -525,9 +338,7 @@
               "id": "tx_emit_5",
               "role": "emit",
               "op": {
-                "component": "Insert",
                 "sql": "INSERT INTO outbox (type, payload) VALUES (?, ?)",
-                "where": null,
                 "params": [
                   "PostCreated",
                   {
@@ -545,10 +356,7 @@
                       }
                     }
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "label": "emit PostCreated"
             }
@@ -610,96 +418,22 @@
       "kind": "tx",
       "dialect": "sqlite",
       "bundle": {
-        "irVersion": 1,
-        "exprVersion": 2,
         "dialect": "sqlite",
-        "component": {
-          "body": [
+        "name": "CreatePost",
+        "statement": {
+          "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+          "params": [
             {
-              "component": "Insert",
-              "id": "n0",
-              "ports": {
-                "returning": "id, author_id, title",
-                "table": "posts",
-                "values.author_id": {
-                  "ref": [
-                    "author_id"
-                  ]
-                },
-                "values.title": {
-                  "ref": [
-                    "title"
-                  ]
-                }
-              }
-            }
-          ],
-          "inputPorts": {
-            "author_id": {
-              "required": true,
-              "type": "unknown"
-            },
-            "title": {
-              "required": true,
-              "type": "unknown"
-            }
-          },
-          "name": "CreatePost",
-          "output": {
-            "ref": [
-              "n0"
-            ]
-          },
-          "plan": {
-            "concurrency": 16,
-            "groups": [
-              [
-                0
+              "ref": [
+                "author_id"
               ]
-            ]
-          }
-        },
-        "operations": {
-          "post.n0": {
-            "component": "Insert",
-            "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
-            "where": null,
-            "params": [
-              {
-                "ref": [
-                  "author_id"
-                ]
-              },
-              {
-                "ref": [
-                  "title"
-                ]
-              }
-            ],
-            "assembly": {
-              "shape": "items"
+            },
+            {
+              "ref": [
+                "title"
+              ]
             }
-          },
-          "comment.n0": {
-            "component": "Insert",
-            "sql": "INSERT INTO comments (body, post_id) VALUES (?, ?) RETURNING id, post_id, body",
-            "where": null,
-            "params": [
-              {
-                "ref": [
-                  "body"
-                ]
-              },
-              {
-                "ref": [
-                  "body"
-                ]
-              }
-            ],
-            "assembly": {
-              "shape": "items"
-            }
-          }
+          ]
         },
         "optionalHeads": [],
         "relations": {},
@@ -711,19 +445,14 @@
               "id": "tx_requires_0",
               "role": "gate:requires",
               "op": {
-                "component": "Select",
                 "sql": "SELECT 1 FROM users WHERE id = ?",
-                "where": null,
                 "params": [
                   {
                     "ref": [
                       "author_id"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "gate": "existsElseRollback",
               "label": "requires users"
@@ -732,9 +461,7 @@
               "id": "tx_body_1",
               "role": "body",
               "op": {
-                "component": "Insert",
                 "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
-                "where": null,
                 "params": [
                   {
                     "ref": [
@@ -746,10 +473,7 @@
                       "title"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "label": "Insert post",
               "binds": "post"
@@ -758,30 +482,15 @@
               "id": "tx_derive_2",
               "role": "derive",
               "op": {
-                "component": "Update",
-                "sql": "UPDATE users SET post_count = post_count + ?{where}",
-                "where": {
-                  "connector": "AND",
-                  "fragments": [
-                    {
-                      "always": true,
-                      "sql": "id = ?",
-                      "params": [
-                        {
-                          "ref": [
-                            "author_id"
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
+                "sql": "UPDATE users SET post_count = post_count + ? WHERE id = ?",
                 "params": [
-                  1
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                  1,
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ]
               },
               "label": "derive users.post_count"
             },
@@ -789,25 +498,20 @@
               "id": "tx_body_3",
               "role": "body",
               "op": {
-                "component": "Insert",
-                "sql": "INSERT INTO comments (post_id, body) VALUES (?, ?) RETURNING id, post_id, body",
-                "where": null,
+                "sql": "INSERT INTO comments (body, post_id) VALUES (?, ?) RETURNING id, post_id, body",
                 "params": [
+                  {
+                    "ref": [
+                      "body"
+                    ]
+                  },
                   {
                     "ref": [
                       "post",
                       "id"
                     ]
-                  },
-                  {
-                    "ref": [
-                      "body"
-                    ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "label": "Insert comment",
               "binds": "comment"
@@ -874,96 +578,22 @@
       "kind": "tx",
       "dialect": "sqlite",
       "bundle": {
-        "irVersion": 1,
-        "exprVersion": 2,
         "dialect": "sqlite",
-        "component": {
-          "body": [
+        "name": "CreatePost",
+        "statement": {
+          "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+          "params": [
             {
-              "component": "Insert",
-              "id": "n0",
-              "ports": {
-                "returning": "id, author_id, title",
-                "table": "posts",
-                "values.author_id": {
-                  "ref": [
-                    "author_id"
-                  ]
-                },
-                "values.title": {
-                  "ref": [
-                    "title"
-                  ]
-                }
-              }
-            }
-          ],
-          "inputPorts": {
-            "author_id": {
-              "required": true,
-              "type": "unknown"
-            },
-            "title": {
-              "required": true,
-              "type": "unknown"
-            }
-          },
-          "name": "CreatePost",
-          "output": {
-            "ref": [
-              "n0"
-            ]
-          },
-          "plan": {
-            "concurrency": 16,
-            "groups": [
-              [
-                0
+              "ref": [
+                "author_id"
               ]
-            ]
-          }
-        },
-        "operations": {
-          "post.n0": {
-            "component": "Insert",
-            "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
-            "where": null,
-            "params": [
-              {
-                "ref": [
-                  "author_id"
-                ]
-              },
-              {
-                "ref": [
-                  "title"
-                ]
-              }
-            ],
-            "assembly": {
-              "shape": "items"
+            },
+            {
+              "ref": [
+                "title"
+              ]
             }
-          },
-          "comment.n0": {
-            "component": "Insert",
-            "sql": "INSERT INTO comments (body, post_id) VALUES (?, ?) RETURNING id, post_id, body",
-            "where": null,
-            "params": [
-              {
-                "ref": [
-                  "body"
-                ]
-              },
-              {
-                "ref": [
-                  "body"
-                ]
-              }
-            ],
-            "assembly": {
-              "shape": "items"
-            }
-          }
+          ]
         },
         "optionalHeads": [],
         "relations": {},
@@ -975,19 +605,14 @@
               "id": "tx_requires_0",
               "role": "gate:requires",
               "op": {
-                "component": "Select",
                 "sql": "SELECT 1 FROM users WHERE id = ?",
-                "where": null,
                 "params": [
                   {
                     "ref": [
                       "author_id"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "gate": "existsElseRollback",
               "label": "requires users"
@@ -996,9 +621,7 @@
               "id": "tx_body_1",
               "role": "body",
               "op": {
-                "component": "Insert",
                 "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
-                "where": null,
                 "params": [
                   {
                     "ref": [
@@ -1010,10 +633,7 @@
                       "title"
                     ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "label": "Insert post",
               "binds": "post"
@@ -1022,30 +642,15 @@
               "id": "tx_derive_2",
               "role": "derive",
               "op": {
-                "component": "Update",
-                "sql": "UPDATE users SET post_count = post_count + ?{where}",
-                "where": {
-                  "connector": "AND",
-                  "fragments": [
-                    {
-                      "always": true,
-                      "sql": "id = ?",
-                      "params": [
-                        {
-                          "ref": [
-                            "author_id"
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
+                "sql": "UPDATE users SET post_count = post_count + ? WHERE id = ?",
                 "params": [
-                  1
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                  1,
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ]
               },
               "label": "derive users.post_count"
             },
@@ -1053,25 +658,20 @@
               "id": "tx_body_3",
               "role": "body",
               "op": {
-                "component": "Insert",
-                "sql": "INSERT INTO comments (post_id, body) VALUES (?, ?) RETURNING id, post_id, body",
-                "where": null,
+                "sql": "INSERT INTO comments (body, post_id) VALUES (?, ?) RETURNING id, post_id, body",
                 "params": [
+                  {
+                    "ref": [
+                      "body"
+                    ]
+                  },
                   {
                     "ref": [
                       "post",
                       "id"
                     ]
-                  },
-                  {
-                    "ref": [
-                      "body"
-                    ]
                   }
-                ],
-                "assembly": {
-                  "shape": "items"
-                }
+                ]
               },
               "label": "Insert comment",
               "binds": "comment"

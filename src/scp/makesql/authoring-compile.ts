@@ -36,7 +36,7 @@
 import { evaluateExpression, type Scope, type Value } from 'behavior-contracts';
 import type { Component, ComponentRefNode, MapNode } from '../authoring';
 import type { BehaviorModelContract } from '../authoring';
-import { IN_SENTINEL } from '../bridge';
+import { IN_SENTINEL } from './tx';
 import type { ConditionObject, ConditionValue } from '../../DBConditions';
 import type { MakeSQL } from './makesql';
 import { assembleMakeSQL } from './makesql';

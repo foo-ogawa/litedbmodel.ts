@@ -1,7 +1,7 @@
 {
   "suite": "dialect",
-  "corpusVersion": 1,
-  "note": "Dialect primitive orderByNulls (WS6-flagged untested): PG/SQLite native NULLS, MySQL IS NULL emulation.",
+  "corpusVersion": 2,
+  "note": "Dialect primitive orderByNulls: PG/SQLite native NULLS, MySQL IS NULL emulation.",
   "vectors": [
     {
       "name": "orderByNulls sqlite ASC NULLS FIRST",
