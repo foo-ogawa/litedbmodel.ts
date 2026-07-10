@@ -90,8 +90,14 @@ const TX_VECTORS = loadTxVectors();
 
 describe('WS7f codegen — bc shared generator capability', () => {
   it('bc registers all 5 emitters (typescript/python/go/rust/php) — Go IS supported (bc#13 SP2)', () => {
-    expect([...REGISTERED].sort()).toEqual(['go', 'php', 'python', 'rust', 'typescript']);
-    expect([...CODEGEN_LANGUAGES].sort()).toEqual([...REGISTERED].sort());
+    // bc registers the 5 base language emitters PLUS per-language strategy variants
+    // (`*-straightline` / `*-typed`); assert every language litedbmodel targets is
+    // registered (subset), not exact set-equality — bc owns the variant list and adds to it.
+    const base = ['go', 'php', 'python', 'rust', 'typescript'];
+    const registered = new Set(REGISTERED);
+    expect(base.every((l) => registered.has(l))).toBe(true);
+    expect([...CODEGEN_LANGUAGES].sort()).toEqual(base);
+    expect([...CODEGEN_LANGUAGES].every((l) => registered.has(l))).toBe(true);
   });
 
   it('rejects an unsupported language loudly (fail-closed; escalate-to-bc message)', () => {
