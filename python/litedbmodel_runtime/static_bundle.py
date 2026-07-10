@@ -151,8 +151,19 @@ def _eval_spec(spec: Any, scope: Mapping[str, Any], dialect_name: str) -> Any:
             raise ValueError("static-bundle: IN-list value-spec did not evaluate to an array")
         if spec.get("dialect") == "postgres":
             return [_to_driver_param(e) for e in arr]
+        # MySQL/SQLite single-JSON IN-list param. A BOOLEAN element is encoded as `1`/`0` for MySQL
+        # (NOT JSON `true`/`false`): MySQL's `JSON_UNQUOTE(v)` yields the STRING `'true'`, which
+        # coerces to `0` against a TINYINT(1) — a silent mismatch. `1`/`0` is what v1's `col IN (?)`
+        # bound. SQLite's `json_each` coerces JSON booleans natively, so it keeps the plain form.
+        is_mysql = spec.get("dialect") == "mysql"
+
+        def _elem(e: Any) -> Any:
+            if is_mysql and isinstance(e, bool):
+                return 1 if e else 0
+            return _to_driver_param(e)
+
         # Compact separators to match the TS JSON.stringify byte form (`[1,2]`, no spaces).
-        return json.dumps([_to_driver_param(e) for e in arr], separators=(",", ":"), ensure_ascii=False)
+        return json.dumps([_elem(e) for e in arr], separators=(",", ":"), ensure_ascii=False)
     return _to_driver_param(evaluate_expression(spec, scope))
 
 

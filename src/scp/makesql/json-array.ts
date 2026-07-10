@@ -60,14 +60,18 @@ export type JsonArrayDialect = 'mysql' | 'sqlite';
  * MySQL 8 + SQLite in `test/scp/json-array-parity.test.ts`.
  */
 export function inListJson(dialect: JsonArrayDialect, col: string, values: unknown[]): { sql: string; param: string } {
-  const param = JSON.stringify(values);
   if (dialect === 'mysql') {
     return {
       sql: `${col} IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)`,
-      param,
+      // A BOOLEAN element serializes to `1`/`0` in the MySQL JSON param (NOT JSON `true`/`false`):
+      // `JSON_UNQUOTE(v)` on JSON `true` yields the STRING `'true'`, which MySQL coerces to `0`
+      // against a TINYINT(1) — silently mismatching. `1`/`0` is exactly what v1's `col IN (?)`
+      // bound (the mysql2 driver sends a JS bool as `1`/`0`), so this keeps v1 RESULT parity. SQL
+      // text + PG are untouched; SQLite's `json_each` coerces JSON booleans natively (no change).
+      param: JSON.stringify(values.map((v) => (typeof v === 'boolean' ? (v ? 1 : 0) : v))),
     };
   }
-  return { sql: `${col} IN (SELECT value FROM json_each(?))`, param };
+  return { sql: `${col} IN (SELECT value FROM json_each(?))`, param: JSON.stringify(values) };
 }
 
 /**

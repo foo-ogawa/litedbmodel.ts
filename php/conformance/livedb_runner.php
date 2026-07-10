@@ -92,7 +92,7 @@ function inputToScope(mixed $decoded): array
 }
 
 // The tables the corpus touches (drop dependents first).
-const ALL_TABLES = ['post_tags', 'order_lines', 'comments', 'posts', 'tags', 'docs', 'users', 'idem', 'uniq', 'outbox'];
+const ALL_TABLES = ['post_tags', 'order_lines', 'comments', 'posts', 'tags', 'docs', 'typed', 'users', 'idem', 'uniq', 'outbox'];
 
 function resetPg(PDO $db, array $schema): void
 {

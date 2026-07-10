@@ -138,8 +138,19 @@ fn eval_spec(spec: &J, scope: &Scope) -> Result<Value, String> {
         if spec_dialect == "postgres" {
             return Ok(Value::Arr(arr)); // bound as ONE text[] param
         }
-        // Single JSON param — compact form matching the TS JSON.stringify byte shape.
-        let encoded = J::Array(arr.iter().map(encode_value).collect());
+        // MySQL/SQLite single-JSON IN-list param. A BOOLEAN element is encoded as `1`/`0` for MySQL
+        // (NOT JSON `true`/`false`): MySQL's `JSON_UNQUOTE(v)` yields the STRING `'true'`, which
+        // coerces to `0` against a TINYINT(1) — a silent mismatch. `1`/`0` is what v1's `col IN (?)`
+        // bound. SQLite's `json_each` coerces JSON booleans natively, so it keeps the plain form.
+        let is_mysql = spec_dialect == "mysql";
+        let encoded = J::Array(
+            arr.iter()
+                .map(|e| match e {
+                    Value::Bool(b) if is_mysql => J::from(if *b { 1 } else { 0 }),
+                    _ => encode_value(e),
+                })
+                .collect(),
+        );
         return Ok(Value::Str(compact_json(&encoded)));
     }
     evaluate_expression(spec, scope).map_err(|e| e.message)

@@ -527,7 +527,14 @@ function evalSpec(spec: ValueSpec, scope: Scope): unknown {
     const arr = evaluateExpression(marker.__jsonArray, scope);
     if (!Array.isArray(arr)) throw new Error('static-bundle: IN-list value-spec did not evaluate to an array');
     if (marker.dialect === 'postgres') return arr.map((e) => toDriverParam(e as Value));
-    return JSON.stringify((arr as Value[]).map((e) => toDriverParam(e)));
+    // MySQL/SQLite single-JSON IN-list param. A BOOLEAN element is encoded as `1`/`0` for MySQL
+    // (NOT JSON `true`/`false`): MySQL's `JSON_UNQUOTE(v)` yields the STRING `'true'`, which coerces
+    // to `0` against a TINYINT(1) — a silent mismatch. `1`/`0` is exactly what v1's `col IN (?)`
+    // bound (mysql2 sends a JS bool as `1`/`0`), preserving v1 RESULT parity. SQLite's `json_each`
+    // coerces JSON booleans natively, so it keeps the plain form.
+    const encodeElem = (e: Value): unknown =>
+      marker.dialect === 'mysql' && typeof e === 'boolean' ? (e ? 1 : 0) : toDriverParam(e);
+    return JSON.stringify((arr as Value[]).map(encodeElem));
   }
   return toDriverParam(evaluateExpression(spec, scope));
 }

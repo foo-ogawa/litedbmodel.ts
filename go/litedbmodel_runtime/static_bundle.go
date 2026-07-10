@@ -206,6 +206,21 @@ func evalSpec(spec bc.JNode, scope *bc.Obj, dialectName string) (bc.Value, error
 			if specDialect == "postgres" {
 				return narrowed, nil // bound as ONE text[] param
 			}
+			// MySQL/SQLite single-JSON IN-list param. A BOOLEAN element is encoded as `1`/`0` for
+			// MySQL (NOT JSON `true`/`false`): MySQL's `JSON_UNQUOTE(v)` yields the STRING `'true'`,
+			// which coerces to `0` against a TINYINT(1) — a silent mismatch. `1`/`0` is what v1's
+			// `col IN (?)` bound. SQLite's `json_each` coerces JSON booleans natively (plain form).
+			if specDialect == "mysql" {
+				for i, e := range narrowed {
+					if b, ok := e.(bool); ok {
+						if b {
+							narrowed[i] = int64(1)
+						} else {
+							narrowed[i] = int64(0)
+						}
+					}
+				}
+			}
 			return jsStringify(narrowed), nil // single JSON param (server-side expansion)
 		}
 	}

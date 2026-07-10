@@ -112,7 +112,7 @@ def _encode(v: Any) -> Any:
 # ── per-dialect table lifecycle ────────────────────────────────────────────────
 
 # The tables the corpus touches (drop order respects FK dependents-first).
-_ALL_TABLES = ["post_tags", "order_lines", "comments", "posts", "tags", "docs", "users", "idem", "uniq", "outbox"]
+_ALL_TABLES = ["post_tags", "order_lines", "comments", "posts", "tags", "docs", "typed", "users", "idem", "uniq", "outbox"]
 
 
 def _reset_pg(driver: "PostgresDriver", schema: List[str]) -> None:

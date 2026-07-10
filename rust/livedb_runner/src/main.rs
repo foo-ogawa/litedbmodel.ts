@@ -35,6 +35,7 @@ const ALL_TABLES: &[&str] = &[
     "posts",
     "tags",
     "docs",
+    "typed",
     "users",
     "idem",
     "uniq",

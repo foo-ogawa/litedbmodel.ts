@@ -30,10 +30,16 @@ rusqlite = { workspace = true }
 # parallel DB I/O. Feature-gated so the default conformance build (SQLite bar via rusqlite) pulls
 # none of these; the livedb_runner binary enables `--features livedb`.
 tokio-postgres = { version = "0.7", optional = true, features = ["with-chrono-0_4"] }
+# NUMERIC / DECIMAL array-element binding for the no-cast `= ANY($1)` IN-list (#46 item 4): PG
+# infers `numeric[]` from the column and expects each element in NUMERIC binary — a bare f64 into a
+# numeric slot fails ("db error"). `rust_decimal` with the tokio-postgres integration encodes the
+# exact NUMERIC binary; `chrono` (already via tokio-postgres with-chrono-0_4) covers timestamp[].
+rust_decimal = { version = "1", optional = true, features = ["db-tokio-postgres"] }
+chrono = { version = "0.4", optional = true, default-features = false }
 deadpool-postgres = { version = "0.14", optional = true, features = ["rt_tokio_1"] }
 sqlx = { version = "0.8", optional = true, default-features = false, features = ["runtime-tokio", "mysql", "sqlite"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "sync", "macros"] }
 futures-util = { version = "0.3", optional = true }
 
 [features]
-livedb = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:sqlx", "dep:tokio", "dep:futures-util"]
+livedb = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:sqlx", "dep:tokio", "dep:futures-util", "dep:rust_decimal", "dep:chrono"]

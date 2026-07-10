@@ -118,6 +118,31 @@ class Blog extends SemanticBehavior {
     return L.Select({ table: 'docs', select: ['doc_id', 'title'], where: [whereIn(inColumn($, 'doc_id'), $.ids)], order: 'doc_id ASC' });
   }
 
+  // #46 all PG element types: an IN-list on a BIGINT / TEXT / BOOL / TIMESTAMP / NUMERIC column →
+  // authored `col = ANY($1)` (no cast); PG infers the array element type from the column context.
+  // Each selects the STABLE text `label` (not the typed key) so the assembled result is
+  // dialect-invariant — the vector proves the ARRAY BINDING of that element type in every driver.
+  /** #46: IN-list on a BIGINT column → `big = ANY($1)`; PG infers bigint[]. */
+  ByBig($: In<{ keys: number[] }>) {
+    return L.Select({ table: 'typed', select: ['label'], where: [whereIn(inColumn($, 'big'), $.keys)], order: 'label ASC' });
+  }
+  /** #46: IN-list on a TEXT column → `txt = ANY($1)`; PG infers text[]. */
+  ByTxt($: In<{ keys: string[] }>) {
+    return L.Select({ table: 'typed', select: ['label'], where: [whereIn(inColumn($, 'txt'), $.keys)], order: 'label ASC' });
+  }
+  /** #46: IN-list on a BOOL column → `flag = ANY($1)`; PG infers boolean[]. */
+  ByFlag($: In<{ keys: boolean[] }>) {
+    return L.Select({ table: 'typed', select: ['label'], where: [whereIn(inColumn($, 'flag'), $.keys)], order: 'label ASC' });
+  }
+  /** #46: IN-list on a TIMESTAMP column → `ts = ANY($1)`; PG infers timestamp[]. */
+  ByTs($: In<{ keys: string[] }>) {
+    return L.Select({ table: 'typed', select: ['label'], where: [whereIn(inColumn($, 'ts'), $.keys)], order: 'label ASC' });
+  }
+  /** #46: IN-list on a NUMERIC column → `amt = ANY($1)`; PG infers numeric[]. */
+  ByAmt($: In<{ keys: number[] }>) {
+    return L.Select({ table: 'typed', select: ['label'], where: [whereIn(inColumn($, 'amt'), $.keys)], order: 'label ASC' });
+  }
+
   /**
    * A PLAIN posts row list (a Select), the parent page for read-RELATION EXECUTION vectors (#43).
    * Unlike `Feed` (whose output is a `{posts, authors}` Φ shape), this returns a bare row list, so
@@ -230,6 +255,35 @@ const INLIST_SCHEMA_SQLITE: readonly string[] = [
   `INSERT INTO docs VALUES ('${DOC_UUIDS[0]}', 'Doc A')`,
   `INSERT INTO docs VALUES ('${DOC_UUIDS[1]}', 'Doc B')`,
   `INSERT INTO docs VALUES ('${DOC_UUIDS[2]}', 'Doc C')`,
+];
+
+// The all-element-types IN-list read schema (#46, item 4). A single `typed` table carries a
+// BIGINT / TEXT / BOOL / TIMESTAMP / NUMERIC key column each; every vector filters on ONE of them
+// via `col = ANY($1)` and SELECTs only the STABLE text `label`, so the assembled result is
+// dialect-invariant (isolating the ARRAY-BINDING of each element type from result-normalization).
+// Timestamp literals are the canonical `YYYY-MM-DD HH:MM:SS` form all three dialects round-trip.
+const TYPED_BIG = [5000000001, 5000000002, 5000000003] as const; // > int32 → forces bigint column
+const TYPED_TS = ['2026-01-01 00:00:00', '2026-02-01 00:00:00', '2026-03-01 00:00:00'] as const;
+const TYPED_ROWS_SQLITE: readonly string[] = [
+  `INSERT INTO typed VALUES (${TYPED_BIG[0]}, 'alpha', 1, '${TYPED_TS[0]}', 10.50, 'A')`,
+  `INSERT INTO typed VALUES (${TYPED_BIG[1]}, 'beta', 0, '${TYPED_TS[1]}', 20.25, 'B')`,
+  `INSERT INTO typed VALUES (${TYPED_BIG[2]}, 'gamma', 1, '${TYPED_TS[2]}', 30.75, 'C')`,
+];
+const TYPED_SCHEMA_SQLITE: readonly string[] = [
+  `CREATE TABLE typed (big INTEGER PRIMARY KEY, txt TEXT NOT NULL, flag INTEGER NOT NULL, ts TEXT NOT NULL, amt REAL NOT NULL, label TEXT NOT NULL)`,
+  ...TYPED_ROWS_SQLITE,
+];
+const TYPED_SCHEMA_PG: readonly string[] = [
+  `CREATE TABLE typed (big BIGINT PRIMARY KEY, txt TEXT NOT NULL, flag BOOLEAN NOT NULL, ts TIMESTAMP NOT NULL, amt NUMERIC(10,2) NOT NULL, label TEXT NOT NULL)`,
+  `INSERT INTO typed VALUES (${TYPED_BIG[0]}, 'alpha', TRUE,  '${TYPED_TS[0]}', 10.50, 'A')`,
+  `INSERT INTO typed VALUES (${TYPED_BIG[1]}, 'beta',  FALSE, '${TYPED_TS[1]}', 20.25, 'B')`,
+  `INSERT INTO typed VALUES (${TYPED_BIG[2]}, 'gamma', TRUE,  '${TYPED_TS[2]}', 30.75, 'C')`,
+];
+const TYPED_SCHEMA_MYSQL: readonly string[] = [
+  `CREATE TABLE typed (big BIGINT PRIMARY KEY, txt VARCHAR(255) NOT NULL, flag TINYINT(1) NOT NULL, ts DATETIME NOT NULL, amt DECIMAL(10,2) NOT NULL, label VARCHAR(255) NOT NULL)`,
+  `INSERT INTO typed VALUES (${TYPED_BIG[0]}, 'alpha', 1, '${TYPED_TS[0]}', 10.50, 'A')`,
+  `INSERT INTO typed VALUES (${TYPED_BIG[1]}, 'beta',  0, '${TYPED_TS[1]}', 20.25, 'B')`,
+  `INSERT INTO typed VALUES (${TYPED_BIG[2]}, 'gamma', 1, '${TYPED_TS[2]}', 30.75, 'C')`,
 ];
 
 const WRITE_SCHEMA_SQLITE: readonly string[] = [
@@ -724,6 +778,54 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
       schemaSqlite: INLIST_SCHEMA_SQLITE,
       schemaPg: INLIST_SCHEMA_PG,
       schemaMysql: INLIST_SCHEMA_MYSQL,
+    },
+    // #46 item 4 — ALL PG element types bind live through `col = ANY($1)` (no cast) in EVERY
+    // driver: bigint / text / bool / timestamp / numeric. Each selects the stable text `label`, so
+    // the reference is dialect-invariant; the vector proves the array binding of that element type.
+    {
+      name: 'ByBig: BIGINT IN-list → = ANY($1) PG infers bigint[] [#46]',
+      entry: 'ByBig',
+      input: { keys: [TYPED_BIG[0], TYPED_BIG[2]] },
+      relations: [],
+      schemaSqlite: TYPED_SCHEMA_SQLITE,
+      schemaPg: TYPED_SCHEMA_PG,
+      schemaMysql: TYPED_SCHEMA_MYSQL,
+    },
+    {
+      name: 'ByTxt: TEXT IN-list → = ANY($1) PG infers text[] [#46]',
+      entry: 'ByTxt',
+      input: { keys: ['alpha', 'gamma'] },
+      relations: [],
+      schemaSqlite: TYPED_SCHEMA_SQLITE,
+      schemaPg: TYPED_SCHEMA_PG,
+      schemaMysql: TYPED_SCHEMA_MYSQL,
+    },
+    {
+      name: 'ByFlag: BOOL IN-list → = ANY($1) PG infers boolean[] [#46]',
+      entry: 'ByFlag',
+      input: { keys: [true] },
+      relations: [],
+      schemaSqlite: TYPED_SCHEMA_SQLITE,
+      schemaPg: TYPED_SCHEMA_PG,
+      schemaMysql: TYPED_SCHEMA_MYSQL,
+    },
+    {
+      name: 'ByTs: TIMESTAMP IN-list → = ANY($1) PG infers timestamp[] [#46]',
+      entry: 'ByTs',
+      input: { keys: [TYPED_TS[0], TYPED_TS[2]] },
+      relations: [],
+      schemaSqlite: TYPED_SCHEMA_SQLITE,
+      schemaPg: TYPED_SCHEMA_PG,
+      schemaMysql: TYPED_SCHEMA_MYSQL,
+    },
+    {
+      name: 'ByAmt: NUMERIC IN-list → = ANY($1) PG infers numeric[] [#46]',
+      entry: 'ByAmt',
+      input: { keys: [10.5, 30.75] },
+      relations: [],
+      schemaSqlite: TYPED_SCHEMA_SQLITE,
+      schemaPg: TYPED_SCHEMA_PG,
+      schemaMysql: TYPED_SCHEMA_MYSQL,
     },
   ];
 

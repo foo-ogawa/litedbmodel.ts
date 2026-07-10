@@ -2250,6 +2250,1015 @@
       ]
     },
     {
+      "name": "ByBig: BIGINT IN-list → = ANY($1) PG infers bigint[] [#46]",
+      "kind": "exec",
+      "input": {
+        "keys": [
+          5000000001,
+          5000000003
+        ]
+      },
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "ByBig",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "ByBig",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "keys": {
+                            "ref": [
+                              "keys"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "keys": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ByBig",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT label FROM typed",
+                "params": []
+              },
+              {
+                "sql": "big = ANY(?)",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "keys"
+                      ]
+                    },
+                    "dialect": "postgres"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY label ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "ByBig",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "ByBig",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "keys": {
+                            "ref": [
+                              "keys"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "keys": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ByBig",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT label FROM typed",
+                "params": []
+              },
+              {
+                "sql": "big IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "keys"
+                      ]
+                    },
+                    "dialect": "mysql"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY label ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "schemaPg": [
+        "CREATE TABLE typed (big BIGINT PRIMARY KEY, txt TEXT NOT NULL, flag BOOLEAN NOT NULL, ts TIMESTAMP NOT NULL, amt NUMERIC(10,2) NOT NULL, label TEXT NOT NULL)",
+        "INSERT INTO typed VALUES (5000000001, 'alpha', TRUE,  '2026-01-01 00:00:00', 10.50, 'A')",
+        "INSERT INTO typed VALUES (5000000002, 'beta',  FALSE, '2026-02-01 00:00:00', 20.25, 'B')",
+        "INSERT INTO typed VALUES (5000000003, 'gamma', TRUE,  '2026-03-01 00:00:00', 30.75, 'C')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE typed (big BIGINT PRIMARY KEY, txt VARCHAR(255) NOT NULL, flag TINYINT(1) NOT NULL, ts DATETIME NOT NULL, amt DECIMAL(10,2) NOT NULL, label VARCHAR(255) NOT NULL)",
+        "INSERT INTO typed VALUES (5000000001, 'alpha', 1, '2026-01-01 00:00:00', 10.50, 'A')",
+        "INSERT INTO typed VALUES (5000000002, 'beta',  0, '2026-02-01 00:00:00', 20.25, 'B')",
+        "INSERT INTO typed VALUES (5000000003, 'gamma', 1, '2026-03-01 00:00:00', 30.75, 'C')"
+      ],
+      "expectedResult": [
+        {
+          "label": "A"
+        },
+        {
+          "label": "C"
+        }
+      ]
+    },
+    {
+      "name": "ByTxt: TEXT IN-list → = ANY($1) PG infers text[] [#46]",
+      "kind": "exec",
+      "input": {
+        "keys": [
+          "alpha",
+          "gamma"
+        ]
+      },
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "ByTxt",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "ByTxt",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "keys": {
+                            "ref": [
+                              "keys"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "keys": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ByTxt",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT label FROM typed",
+                "params": []
+              },
+              {
+                "sql": "txt = ANY(?)",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "keys"
+                      ]
+                    },
+                    "dialect": "postgres"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY label ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "ByTxt",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "ByTxt",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "keys": {
+                            "ref": [
+                              "keys"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "keys": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ByTxt",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT label FROM typed",
+                "params": []
+              },
+              {
+                "sql": "txt IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "keys"
+                      ]
+                    },
+                    "dialect": "mysql"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY label ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "schemaPg": [
+        "CREATE TABLE typed (big BIGINT PRIMARY KEY, txt TEXT NOT NULL, flag BOOLEAN NOT NULL, ts TIMESTAMP NOT NULL, amt NUMERIC(10,2) NOT NULL, label TEXT NOT NULL)",
+        "INSERT INTO typed VALUES (5000000001, 'alpha', TRUE,  '2026-01-01 00:00:00', 10.50, 'A')",
+        "INSERT INTO typed VALUES (5000000002, 'beta',  FALSE, '2026-02-01 00:00:00', 20.25, 'B')",
+        "INSERT INTO typed VALUES (5000000003, 'gamma', TRUE,  '2026-03-01 00:00:00', 30.75, 'C')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE typed (big BIGINT PRIMARY KEY, txt VARCHAR(255) NOT NULL, flag TINYINT(1) NOT NULL, ts DATETIME NOT NULL, amt DECIMAL(10,2) NOT NULL, label VARCHAR(255) NOT NULL)",
+        "INSERT INTO typed VALUES (5000000001, 'alpha', 1, '2026-01-01 00:00:00', 10.50, 'A')",
+        "INSERT INTO typed VALUES (5000000002, 'beta',  0, '2026-02-01 00:00:00', 20.25, 'B')",
+        "INSERT INTO typed VALUES (5000000003, 'gamma', 1, '2026-03-01 00:00:00', 30.75, 'C')"
+      ],
+      "expectedResult": [
+        {
+          "label": "A"
+        },
+        {
+          "label": "C"
+        }
+      ]
+    },
+    {
+      "name": "ByFlag: BOOL IN-list → = ANY($1) PG infers boolean[] [#46]",
+      "kind": "exec",
+      "input": {
+        "keys": [
+          true
+        ]
+      },
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "ByFlag",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "ByFlag",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "keys": {
+                            "ref": [
+                              "keys"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "keys": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ByFlag",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT label FROM typed",
+                "params": []
+              },
+              {
+                "sql": "flag = ANY(?)",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "keys"
+                      ]
+                    },
+                    "dialect": "postgres"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY label ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "ByFlag",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "ByFlag",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "keys": {
+                            "ref": [
+                              "keys"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "keys": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ByFlag",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT label FROM typed",
+                "params": []
+              },
+              {
+                "sql": "flag IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "keys"
+                      ]
+                    },
+                    "dialect": "mysql"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY label ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "schemaPg": [
+        "CREATE TABLE typed (big BIGINT PRIMARY KEY, txt TEXT NOT NULL, flag BOOLEAN NOT NULL, ts TIMESTAMP NOT NULL, amt NUMERIC(10,2) NOT NULL, label TEXT NOT NULL)",
+        "INSERT INTO typed VALUES (5000000001, 'alpha', TRUE,  '2026-01-01 00:00:00', 10.50, 'A')",
+        "INSERT INTO typed VALUES (5000000002, 'beta',  FALSE, '2026-02-01 00:00:00', 20.25, 'B')",
+        "INSERT INTO typed VALUES (5000000003, 'gamma', TRUE,  '2026-03-01 00:00:00', 30.75, 'C')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE typed (big BIGINT PRIMARY KEY, txt VARCHAR(255) NOT NULL, flag TINYINT(1) NOT NULL, ts DATETIME NOT NULL, amt DECIMAL(10,2) NOT NULL, label VARCHAR(255) NOT NULL)",
+        "INSERT INTO typed VALUES (5000000001, 'alpha', 1, '2026-01-01 00:00:00', 10.50, 'A')",
+        "INSERT INTO typed VALUES (5000000002, 'beta',  0, '2026-02-01 00:00:00', 20.25, 'B')",
+        "INSERT INTO typed VALUES (5000000003, 'gamma', 1, '2026-03-01 00:00:00', 30.75, 'C')"
+      ],
+      "expectedResult": [
+        {
+          "label": "A"
+        },
+        {
+          "label": "C"
+        }
+      ]
+    },
+    {
+      "name": "ByTs: TIMESTAMP IN-list → = ANY($1) PG infers timestamp[] [#46]",
+      "kind": "exec",
+      "input": {
+        "keys": [
+          "2026-01-01 00:00:00",
+          "2026-03-01 00:00:00"
+        ]
+      },
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "ByTs",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "ByTs",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "keys": {
+                            "ref": [
+                              "keys"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "keys": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ByTs",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT label FROM typed",
+                "params": []
+              },
+              {
+                "sql": "ts = ANY(?)",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "keys"
+                      ]
+                    },
+                    "dialect": "postgres"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY label ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "ByTs",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "ByTs",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "keys": {
+                            "ref": [
+                              "keys"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "keys": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ByTs",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT label FROM typed",
+                "params": []
+              },
+              {
+                "sql": "ts IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "keys"
+                      ]
+                    },
+                    "dialect": "mysql"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY label ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "schemaPg": [
+        "CREATE TABLE typed (big BIGINT PRIMARY KEY, txt TEXT NOT NULL, flag BOOLEAN NOT NULL, ts TIMESTAMP NOT NULL, amt NUMERIC(10,2) NOT NULL, label TEXT NOT NULL)",
+        "INSERT INTO typed VALUES (5000000001, 'alpha', TRUE,  '2026-01-01 00:00:00', 10.50, 'A')",
+        "INSERT INTO typed VALUES (5000000002, 'beta',  FALSE, '2026-02-01 00:00:00', 20.25, 'B')",
+        "INSERT INTO typed VALUES (5000000003, 'gamma', TRUE,  '2026-03-01 00:00:00', 30.75, 'C')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE typed (big BIGINT PRIMARY KEY, txt VARCHAR(255) NOT NULL, flag TINYINT(1) NOT NULL, ts DATETIME NOT NULL, amt DECIMAL(10,2) NOT NULL, label VARCHAR(255) NOT NULL)",
+        "INSERT INTO typed VALUES (5000000001, 'alpha', 1, '2026-01-01 00:00:00', 10.50, 'A')",
+        "INSERT INTO typed VALUES (5000000002, 'beta',  0, '2026-02-01 00:00:00', 20.25, 'B')",
+        "INSERT INTO typed VALUES (5000000003, 'gamma', 1, '2026-03-01 00:00:00', 30.75, 'C')"
+      ],
+      "expectedResult": [
+        {
+          "label": "A"
+        },
+        {
+          "label": "C"
+        }
+      ]
+    },
+    {
+      "name": "ByAmt: NUMERIC IN-list → = ANY($1) PG infers numeric[] [#46]",
+      "kind": "exec",
+      "input": {
+        "keys": [
+          10.5,
+          30.75
+        ]
+      },
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "ByAmt",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "ByAmt",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "keys": {
+                            "ref": [
+                              "keys"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "keys": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ByAmt",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT label FROM typed",
+                "params": []
+              },
+              {
+                "sql": "amt = ANY(?)",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "keys"
+                      ]
+                    },
+                    "dialect": "postgres"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY label ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "ByAmt",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "ByAmt",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "keys": {
+                            "ref": [
+                              "keys"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "keys": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ByAmt",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT label FROM typed",
+                "params": []
+              },
+              {
+                "sql": "amt IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "keys"
+                      ]
+                    },
+                    "dialect": "mysql"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY label ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "schemaPg": [
+        "CREATE TABLE typed (big BIGINT PRIMARY KEY, txt TEXT NOT NULL, flag BOOLEAN NOT NULL, ts TIMESTAMP NOT NULL, amt NUMERIC(10,2) NOT NULL, label TEXT NOT NULL)",
+        "INSERT INTO typed VALUES (5000000001, 'alpha', TRUE,  '2026-01-01 00:00:00', 10.50, 'A')",
+        "INSERT INTO typed VALUES (5000000002, 'beta',  FALSE, '2026-02-01 00:00:00', 20.25, 'B')",
+        "INSERT INTO typed VALUES (5000000003, 'gamma', TRUE,  '2026-03-01 00:00:00', 30.75, 'C')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE typed (big BIGINT PRIMARY KEY, txt VARCHAR(255) NOT NULL, flag TINYINT(1) NOT NULL, ts DATETIME NOT NULL, amt DECIMAL(10,2) NOT NULL, label VARCHAR(255) NOT NULL)",
+        "INSERT INTO typed VALUES (5000000001, 'alpha', 1, '2026-01-01 00:00:00', 10.50, 'A')",
+        "INSERT INTO typed VALUES (5000000002, 'beta',  0, '2026-02-01 00:00:00', 20.25, 'B')",
+        "INSERT INTO typed VALUES (5000000003, 'gamma', 1, '2026-03-01 00:00:00', 30.75, 'C')"
+      ],
+      "expectedResult": [
+        {
+          "label": "A"
+        },
+        {
+          "label": "C"
+        }
+      ]
+    },
+    {
       "name": "Posts: belongsTo author hydrated onto each parent [#43]",
       "kind": "read",
       "input": {

@@ -87,6 +87,11 @@ const L = components();
 // path and the same v1 builders/DBConditions — only the table identifiers change.
 const T_POSTS = 'scp_posts';
 const T_USERS = 'scp_users';
+// #46 item 4: a `typed` table with a BIGINT / TEXT / BOOL / TIMESTAMP / NUMERIC key column each, for
+// the all-element-types no-cast `= ANY($1)` IN-list live coverage on real PG + MySQL (TS leg).
+const T_TYPED = 'scp_typed';
+const TYPED_BIG_TS = [5000000001, 5000000002, 5000000003] as const;
+const TYPED_TS_TS = ['2026-01-01 00:00:00', '2026-02-01 00:00:00', '2026-03-01 00:00:00'] as const;
 // Fixed UUIDs for the #46 uuid IN-list coverage (posts 1/2/3).
 const POST_GUIDS = [
   '11111111-1111-1111-1111-111111111111',
@@ -124,6 +129,25 @@ class PostQueries extends SemanticBehavior {
       where: [whereIn(inColumn($, 'guid'), $.guids)],
       order: 'id ASC',
     });
+  }
+
+  // #46 item 4: no-cast `= ANY($1)` IN-list on each PG element type — bigint / text / bool /
+  // timestamp / numeric. Each selects the stable text `label` so the assertion is dialect-invariant;
+  // PG infers the array element type from the column, MySQL uses the single-JSON form.
+  ByBig($: In<{ keys: number[] }>) {
+    return L.Select({ table: T_TYPED, select: ['label'], where: [whereIn(inColumn($, 'big'), $.keys)], order: 'label ASC' });
+  }
+  ByTxt($: In<{ keys: string[] }>) {
+    return L.Select({ table: T_TYPED, select: ['label'], where: [whereIn(inColumn($, 'txt'), $.keys)], order: 'label ASC' });
+  }
+  ByFlag($: In<{ keys: boolean[] }>) {
+    return L.Select({ table: T_TYPED, select: ['label'], where: [whereIn(inColumn($, 'flag'), $.keys)], order: 'label ASC' });
+  }
+  ByTs($: In<{ keys: string[] }>) {
+    return L.Select({ table: T_TYPED, select: ['label'], where: [whereIn(inColumn($, 'ts'), $.keys)], order: 'label ASC' });
+  }
+  ByAmt($: In<{ keys: number[] }>) {
+    return L.Select({ table: T_TYPED, select: ['label'], where: [whereIn(inColumn($, 'amt'), $.keys)], order: 'label ASC' });
   }
 }
 
@@ -228,6 +252,17 @@ beforeAll(async () => {
       (2, 1, 'Second Post', 'Another post', 0, '${POST_GUIDS[1]}'),
       (3, 2, 'Bob''s Post', 'Content here', 50, '${POST_GUIDS[2]}')`);
     await pgPool.query(`SELECT setval('${T_POSTS}_id_seq', 3)`);
+    // #46 item 4: the typed IN-list table (bigint/text/bool/timestamp/numeric key columns).
+    await pgPool.query(`DROP TABLE IF EXISTS ${T_TYPED} CASCADE`);
+    await pgPool.query(`
+      CREATE TABLE ${T_TYPED} (
+        big BIGINT PRIMARY KEY, txt TEXT NOT NULL, flag BOOLEAN NOT NULL,
+        ts TIMESTAMP NOT NULL, amt NUMERIC(10,2) NOT NULL, label TEXT NOT NULL
+      )`);
+    await pgPool.query(`INSERT INTO ${T_TYPED} VALUES
+      (${TYPED_BIG_TS[0]}, 'alpha', TRUE,  '${TYPED_TS_TS[0]}', 10.50, 'A'),
+      (${TYPED_BIG_TS[1]}, 'beta',  FALSE, '${TYPED_TS_TS[1]}', 20.25, 'B'),
+      (${TYPED_BIG_TS[2]}, 'gamma', TRUE,  '${TYPED_TS_TS[2]}', 30.75, 'C')`);
   } catch (e) {
     throw new Error(`Postgres is required for WS6 integration but is not reachable at ${PG.host}:${PG.port} — ${(e as Error).message}`);
   }
@@ -256,6 +291,17 @@ beforeAll(async () => {
       (1, 1, 'First Post', 'Hello World!', 100),
       (2, 1, 'Second Post', 'Another post', 0),
       (3, 2, 'Bob''s Post', 'Content here', 50)`);
+    // #46 item 4: the typed IN-list table (MySQL types; flag as TINYINT(1), ts DATETIME, amt DECIMAL).
+    await myConn.query(`DROP TABLE IF EXISTS ${T_TYPED}`);
+    await myConn.query(`
+      CREATE TABLE ${T_TYPED} (
+        big BIGINT PRIMARY KEY, txt VARCHAR(255) NOT NULL, flag TINYINT(1) NOT NULL,
+        ts DATETIME NOT NULL, amt DECIMAL(10,2) NOT NULL, label VARCHAR(255) NOT NULL
+      )`);
+    await myConn.query(`INSERT INTO ${T_TYPED} VALUES
+      (${TYPED_BIG_TS[0]}, 'alpha', 1, '${TYPED_TS_TS[0]}', 10.50, 'A'),
+      (${TYPED_BIG_TS[1]}, 'beta',  0, '${TYPED_TS_TS[1]}', 20.25, 'B'),
+      (${TYPED_BIG_TS[2]}, 'gamma', 1, '${TYPED_TS_TS[2]}', 30.75, 'C')`);
   } catch (e) {
     throw new Error(`MySQL is required for WS6 integration but is not reachable at ${MY.host}:${MY.port} — ${(e as Error).message}`);
   }
@@ -265,6 +311,7 @@ afterAll(async () => {
   // Tear down our isolated tables so no residue leaks to other files/runs.
   try {
     if (pgPool) {
+      await pgPool.query(`DROP TABLE IF EXISTS ${T_TYPED} CASCADE`);
       await pgPool.query(`DROP TABLE IF EXISTS ${T_POSTS} CASCADE`);
       await pgPool.query(`DROP TABLE IF EXISTS ${T_USERS} CASCADE`);
     }
@@ -273,6 +320,7 @@ afterAll(async () => {
   }
   try {
     if (myConn) {
+      await myConn.query(`DROP TABLE IF EXISTS ${T_TYPED}`);
       await myConn.query(`DROP TABLE IF EXISTS ${T_POSTS}`);
       await myConn.query(`DROP TABLE IF EXISTS ${T_USERS}`);
     }
@@ -375,6 +423,30 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     })) as unknown as Row[];
     expect(scpRows).toEqual([]);
   });
+
+  // #46 item 4 — every PG element type binds live through the no-cast `= ANY($1)` IN-list. Each
+  // case selects the stable `label`, so `[A,C]` is the dialect-invariant expected result; the test
+  // proves the ARRAY BINDING of bigint / text / bool / timestamp / numeric through `pg`.
+  const pgTypeCases: { entry: string; keys: unknown[]; col: string }[] = [
+    { entry: 'ByBig', keys: [TYPED_BIG_TS[0], TYPED_BIG_TS[2]], col: 'big' },
+    { entry: 'ByTxt', keys: ['alpha', 'gamma'], col: 'txt' },
+    { entry: 'ByFlag', keys: [true], col: 'flag' },
+    { entry: 'ByTs', keys: [TYPED_TS_TS[0], TYPED_TS_TS[2]], col: 'ts' },
+    { entry: 'ByAmt', keys: [10.5, 30.75], col: 'amt' },
+  ];
+  for (const c of pgTypeCases) {
+    it(`SELECT IN-list on a ${c.col} column: no-cast \`= ANY($1)\` binds live — #46 item 4`, async () => {
+      const bundle = compileBundle(contract, c.entry, [], 'postgres');
+      const rendered = renderReadPrimary(bundle.readGraph!, { keys: c.keys } as never);
+      expect(rendered.sql).toBe(`SELECT label FROM ${T_TYPED} WHERE ${c.col} = ANY($1) ORDER BY label ASC`);
+      const scpRows = (await executeBundleAsync(bundle, { keys: c.keys } as never, {
+        exec: pgPoolExecutor(pgPool!),
+        entry: c.entry,
+        dialect: 'postgres',
+      })) as unknown as Row[];
+      expect(scpRows.map((r) => String(r.label))).toEqual(['A', 'C']);
+    });
+  }
 
   it('INSERT + RETURNING: SCP persists + returns; parity with v1 postgresSqlBuilder', async () => {
     const wc = publishBehaviors(PostWrites);
@@ -521,6 +593,28 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
     })) as unknown as Row[];
     expect(scpRows.map((r) => Number(r.id))).toEqual([1, 3]);
   });
+
+  // #46 item 4 — every element type binds live through the single-JSON MySQL IN-list form. The
+  // BOOLEAN element is encoded `1`/`0` in the JSON param (MySQL's JSON_UNQUOTE would stringify a
+  // JSON `true` to `'true'` → coerce to 0 against TINYINT). Each selects the stable `label` → [A,C].
+  const myTypeCases: { entry: string; keys: unknown[] }[] = [
+    { entry: 'ByBig', keys: [TYPED_BIG_TS[0], TYPED_BIG_TS[2]] },
+    { entry: 'ByTxt', keys: ['alpha', 'gamma'] },
+    { entry: 'ByFlag', keys: [true] },
+    { entry: 'ByTs', keys: [TYPED_TS_TS[0], TYPED_TS_TS[2]] },
+    { entry: 'ByAmt', keys: [10.5, 30.75] },
+  ];
+  for (const c of myTypeCases) {
+    it(`SELECT IN-list ${c.entry}: single-JSON form binds live on MySQL — #46 item 4`, async () => {
+      const bundle = compileBundle(contract, c.entry, [], 'mysql');
+      const scpRows = (await executeBundleAsync(bundle, { keys: c.keys } as never, {
+        exec: mysqlPoolExecutor(myConn! as never),
+        entry: c.entry,
+        dialect: 'mysql',
+      })) as unknown as Row[];
+      expect(scpRows.map((r) => String(r.label))).toEqual(['A', 'C']);
+    });
+  }
 
   it('INSERT: SCP persists (MySQL keeps `?`, RETURNING stripped by re-select) + parity with v1', async () => {
     const wc = publishBehaviors(PostWrites);

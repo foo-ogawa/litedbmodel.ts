@@ -146,8 +146,17 @@ final class StaticBundle
                 if ($specDialect === 'postgres') {
                     return array_values($arr); // bound as ONE text[] param
                 }
+                // MySQL/SQLite single-JSON IN-list param. A BOOLEAN element is encoded as `1`/`0`
+                // for MySQL (NOT JSON `true`/`false`): MySQL's `JSON_UNQUOTE(v)` yields the STRING
+                // `'true'`, which coerces to `0` against a TINYINT(1) — a silent mismatch. `1`/`0`
+                // is what v1's `col IN (?)` bound. SQLite's `json_each` coerces JSON booleans
+                // natively, so it keeps the plain form.
+                $elems = array_values($arr);
+                if ($specDialect === 'mysql') {
+                    $elems = array_map(fn ($e) => is_bool($e) ? ($e ? 1 : 0) : $e, $elems);
+                }
                 // Single JSON param — compact form matching the TS JSON.stringify byte shape.
-                return json_encode(array_values($arr), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                return json_encode($elems, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
             }
         }
         return ExprEval::evaluate($spec, $scope);

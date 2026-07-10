@@ -182,6 +182,18 @@ impl ToSql for PgParam {
             },
             PgParam::Float(f) => match *ty {
                 PgType::FLOAT4 => (*f as f32).to_sql(ty, out),
+                // A `numeric` target (`= ANY($1)` over a NUMERIC/DECIMAL column, #46 item 4): PG
+                // infers `numeric[]` and expects each element in NUMERIC binary — a bare f64 into a
+                // numeric slot fails ("db error"). Encode the exact NUMERIC via rust_decimal.
+                PgType::NUMERIC => {
+                    let d = rust_decimal::Decimal::try_from(*f).map_err(
+                        |e| -> Box<dyn std::error::Error + Sync + Send> {
+                            format!("scp pg driver: numeric param {f} not representable: {e}")
+                                .into()
+                        },
+                    )?;
+                    d.to_sql(ty, out)
+                }
                 _ => f.to_sql(ty, out),
             },
             // A UUID column/element: PG's binary protocol expects the 16-byte form, and
@@ -196,6 +208,29 @@ impl ToSql for PgParam {
                 )?;
                 out.extend_from_slice(&bytes);
                 Ok(tokio_postgres::types::IsNull::No)
+            }
+            // A timestamp/date target (`= ANY($1)` over a TIMESTAMP/DATE column, #46 item 4): PG
+            // infers `timestamp[]` and expects TIMESTAMP binary — `String::to_sql` only accepts text
+            // types and fails. Parse the canonical `YYYY-MM-DD[ HH:MM:SS]` text via chrono and bind
+            // the native temporal (tokio-postgres with-chrono-0_4 encodes the binary form).
+            PgParam::Str(s) if matches!(*ty, PgType::TIMESTAMP | PgType::TIMESTAMPTZ) => {
+                let dt = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                    .or_else(|_| {
+                        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                            .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+                    })
+                    .map_err(|e| -> Box<dyn std::error::Error + Sync + Send> {
+                        format!("scp pg driver: malformed timestamp text {s:?}: {e}").into()
+                    })?;
+                dt.to_sql(ty, out)
+            }
+            PgParam::Str(s) if *ty == PgType::DATE => {
+                let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(
+                    |e| -> Box<dyn std::error::Error + Sync + Send> {
+                        format!("scp pg driver: malformed date text {s:?}: {e}").into()
+                    },
+                )?;
+                d.to_sql(ty, out)
             }
             PgParam::Str(s) => s.to_sql(ty, out),
             // A `= ANY($1)` / `= ANY($1::T[])` array param: `ty` is the ARRAY type PG inferred from
