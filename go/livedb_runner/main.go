@@ -36,7 +36,7 @@ const (
 )
 
 // tables the corpus touches (drop dependents first).
-var allTables = []string{"post_tags", "posts", "tags", "docs", "users", "idem", "uniq", "outbox"}
+var allTables = []string{"post_tags", "comments", "posts", "tags", "docs", "users", "idem", "uniq", "outbox"}
 
 func corpusPath() string {
 	if p := os.Getenv("LITEDBMODEL_LIVEDB_VECTORS"); p != "" {
@@ -220,6 +220,46 @@ func runExec(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj) (bool, string) {
 	return false, fmt.Sprintf("result %s != %s", got, want)
 }
 
+// runRead executes a read-RELATION EXECUTION vector: run the parent read + batch-load/hydrate the
+// `with` relations, compare to the PER-DIALECT golden (expectedKey = expectedResultPg /
+// expectedResultMysql — a limited hasMany's `_rn` window column is present on MySQL but projected
+// away by PG's LATERAL form).
+func runRead(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj, expectedKey string) (bool, string) {
+	bundle, err := rt.BundleFromJObj(bundleObj)
+	if err != nil {
+		return false, "bundle parse: " + err.Error()
+	}
+	relN, _ := bundleObj.Get("relations")
+	rel, ok := relN.(*bc.JObj)
+	if !ok {
+		return false, "bundle.relations is not an object"
+	}
+	scope, err := inputScope(mustGet(v, "input"))
+	if err != nil {
+		return false, "input decode: " + err.Error()
+	}
+	var withNames []string
+	if wN, ok := v.Get("with"); ok {
+		if arr, ok := wN.([]bc.JNode); ok {
+			for _, e := range arr {
+				if s, ok := e.(string); ok {
+					withNames = append(withNames, s)
+				}
+			}
+		}
+	}
+	result, err := rt.ReadBundle(bundle, rel, scope, db, withNames)
+	if err != nil {
+		return false, "read threw: " + err.Error()
+	}
+	got := rt.EncodeConformanceJSON(result)
+	want := canonicalJSON(mustGet(v, expectedKey))
+	if got == want {
+		return true, ""
+	}
+	return false, fmt.Sprintf("result %s != %s", got, want)
+}
+
 func runTx(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj) (bool, string) {
 	bundle, err := rt.BundleFromJObj(bundleObj)
 	if err != nil {
@@ -259,7 +299,7 @@ func runTx(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj) (bool, string) {
 
 type tally struct{ Pass, Fail int }
 
-func runDialectLeg(name string, db *sql.DB, mysql bool, vectors []*bc.JObj, bundleKey, schemaKey string) tally {
+func runDialectLeg(name string, db *sql.DB, mysql bool, vectors []*bc.JObj, bundleKey, schemaKey, readExpectedKey string) tally {
 	var t tally
 	fmt.Fprintf(os.Stderr, "\nlivedb-%s — %d vectors (real %s)\n", name, len(vectors), name)
 	for _, v := range vectors {
@@ -279,6 +319,8 @@ func runDialectLeg(name string, db *sql.DB, mysql bool, vectors []*bc.JObj, bund
 		switch getStr(v, "kind") {
 		case "exec":
 			ok2, detail = runExec(db, bundleObj, v)
+		case "read":
+			ok2, detail = runRead(db, bundleObj, v, readExpectedKey)
 		case "tx":
 			ok2, detail = runTx(db, bundleObj, v)
 		default:
@@ -377,8 +419,8 @@ func main() {
 	}
 	defer my.Close()
 
-	pgT := runDialectLeg("pg", pg, false, vectors, "bundlePg", "schemaPg")
-	myT := runDialectLeg("mysql", my, true, vectors, "bundleMysql", "schemaMysql")
+	pgT := runDialectLeg("pg", pg, false, vectors, "bundlePg", "schemaPg", "expectedResultPg")
+	myT := runDialectLeg("mysql", my, true, vectors, "bundleMysql", "schemaMysql", "expectedResultMysql")
 
 	totalPass := pgT.Pass + myT.Pass
 	totalFail := pgT.Fail + myT.Fail
