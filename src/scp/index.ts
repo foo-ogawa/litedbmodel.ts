@@ -159,6 +159,11 @@ export type { SqlFailureKind } from './errors';
 export { executeBehavior, compileBundle, executeBundle, read, readBundle } from './runtime';
 export type { SqliteDb, ExecuteOptions, SqlBundle, ReadRuntimeOptions } from './runtime';
 
+// The ASYNC PG / MySQL production read execution model (#40): bc `runBehaviorAsync` fans out
+// independent sibling read nodes in bounded parallel against a pooled async executor.
+export { executeBundleAsync, executeBehaviorAsync } from './runtime';
+export type { AsyncExecuteOptions } from './runtime';
+
 // Write-time relations (WS5, #25 — spec §6): entityWrites/edgeWrites declaration vocabulary,
 // the gate-first transaction-plan derivation, and the 1-tx real-SQLite runtime.
 export {

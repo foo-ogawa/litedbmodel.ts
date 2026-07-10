@@ -41,11 +41,12 @@ pub use errors::{map_sqlite_error, re_error_to_sql_failure, SqlFailure};
 #[cfg(feature = "livedb")]
 pub use livedb::{MysqlDriver, PostgresDriver};
 pub use runtime::{
-    execute_bundle, execute_transaction_bundle, order_by_nulls, render_read_primary_bundle,
-    ENTITY_ROOT,
+    execute_bundle, execute_bundle_pooled, execute_transaction_bundle, order_by_nulls,
+    render_read_primary_bundle, ENTITY_ROOT,
 };
 pub use static_bundle::{
-    dispatch_read_nodes_parallel, execute_read_graph, render_placeholders, render_read_primary,
-    render_statements, render_tx_op, RenderedSql, NODE_COMPONENT, SCOPE_PORT,
+    dispatch_read_nodes_parallel, execute_read_graph, execute_read_graph_pooled,
+    render_placeholders, render_read_primary, render_statements, render_tx_op, RenderedSql,
+    NODE_COMPONENT, SCOPE_PORT,
 };
 pub use value::{decode_scope, decode_value, encode_value, Scope};

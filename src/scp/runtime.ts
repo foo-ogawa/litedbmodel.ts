@@ -36,11 +36,13 @@ import type { DialectName } from './dialect';
 import {
   compileReadGraph,
   executeReadGraph,
+  executeReadGraphAsync,
   executeStaticWrite,
   type ReadGraph,
   type StaticBundle,
   type StaticStatement,
   type SqliteDb as StaticSqliteDb,
+  type SqlExecutorAsync,
 } from './makesql/static-bundle';
 import {
   compileWriteNode,
@@ -205,6 +207,76 @@ export function executeBundle(bundle: SqlBundle, input: Scope, options: ExecuteO
     throw new Error(`scp runtime: bundle '${bundle.name}' carries neither a read graph nor a write statement`);
   }
   return executeReadGraph(bundle.readGraph, input, options.db);
+}
+
+// ── Async read execution model — the PRODUCTION PG / MySQL read path (#40) ──────
+//
+// The sync `executeBundle` above rides the in-proc better-sqlite3 conformance path
+// (`executeReadGraph` → bc `runBehavior`, SERIAL). The LIVE PG / MySQL execution model is
+// ASYNC + pooled: `executeReadGraphAsync` → bc `runBehaviorAsync`, whose `runPlanAsync` stage
+// dispatches the INDEPENDENT sibling read nodes of a plan stage in bounded parallel (bc#23,
+// bounded by the plan's `concurrency`, default 16). Against a pooled async executor (built by
+// `pgPoolExecutor` / `mysqlPoolExecutor`, each `exec` resolving on its own pooled connection),
+// that becomes REAL parallel read-relation DB I/O — the same production fan-out the Go
+// (`*sql.DB` pool + goroutine-parallel `RunPlan`) and Python (`ThreadPoolExecutor` `run_plan` +
+// pooled driver) read paths already have. The result is deterministic (bc commits stage
+// outcomes in declaration order), so it is byte-identical to the serial `executeBundle` output;
+// only the wall-clock changes. Writes are UNCHANGED — the write-tx path stays sync + serial.
+
+/** Async execute options: the pooled async SQL executor + the entry component (method) to run. */
+export interface AsyncExecuteOptions {
+  /** The pooled async SQL executor (build via `pgPoolExecutor` / `mysqlPoolExecutor`). */
+  readonly exec: SqlExecutorAsync;
+  /** The behavior method (component) name to run (default: the first component). */
+  readonly entry?: string;
+  /** The model's read-relation declarations (spec §4/§5), compiled ONCE into the bundle. */
+  readonly relations?: readonly RelationDecl[];
+  /** The target SQL dialect (spec §4/§10). For the live async path this is `'postgres'`/`'mysql'`. */
+  readonly dialect?: DialectName;
+}
+
+/**
+ * Execute a READ {@link SqlBundle} end-to-end via the ASYNC PG / MySQL execution model (#40): bc
+ * `runBehaviorAsync` drives map iteration / wire binding / Φ output and dispatches independent
+ * sibling read nodes in bounded parallel against the pooled async executor. This is the PRODUCTION
+ * live-DB read entry point — the async twin of {@link executeBundle} for read bundles.
+ *
+ * Byte-identical composition (SAME IR, SAME per-node SQL text + params, SAME Φ output) to the
+ * serial `executeBundle`; concurrency changes only the wall-clock. A single-relation (zero-sibling)
+ * read graph runs exactly one query, so it is identical to the serial path either way.
+ *
+ * A single-statement WRITE bundle is NOT accepted here — the write-tx path stays sync + serial
+ * (`executeBundle` / `executeTransactionBundle`); this async path is READ-only.
+ *
+ * @throws {SqlFailure} a mapped driver failure re-surfaced at the boundary.
+ */
+export async function executeBundleAsync(
+  bundle: SqlBundle,
+  input: Scope,
+  options: AsyncExecuteOptions,
+): Promise<Value> {
+  if (bundle.readGraph === undefined) {
+    throw new Error(
+      `scp runtime: executeBundleAsync requires a READ bundle ('${bundle.name}' carries no read graph); ` +
+        `the write-tx path stays synchronous + serial (use executeBundle / executeTransactionBundle).`,
+    );
+  }
+  return executeReadGraphAsync(bundle.readGraph, input, options.exec);
+}
+
+/**
+ * Compile + execute a READ behavior method via the ASYNC PG / MySQL execution model (#40). The
+ * async twin of {@link executeBehavior} for reads: compile the contract to a {@link SqlBundle}
+ * (SYMBOLIC), then run its read graph through {@link executeBundleAsync}.
+ *
+ * @throws {SqlFailure} a mapped driver failure re-surfaced at the boundary.
+ */
+export async function executeBehaviorAsync(
+  contract: BehaviorModelContract,
+  input: Scope,
+  options: AsyncExecuteOptions,
+): Promise<Value> {
+  return executeBundleAsync(compileBundle(contract, options.entry, options.relations, options.dialect), input, options);
 }
 
 // ── Write-time relations: Command bundle + 1-tx execution (WS5, #25 — spec §6) ──

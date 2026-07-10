@@ -302,7 +302,7 @@ struct ReadGraphHandlers<'a> {
 /// Render one read node's static statements against `scope` and execute them on `driver`.
 ///
 /// The ONE render→execute step behind a `__makeSqlNode`. Shared by the serial handler
-/// ([`ReadGraphHandlers`]) and the parallel dispatch path ([`execute_read_graph_parallel`]) so both
+/// ([`ReadGraphHandlers`]) and the parallel dispatch path ([`dispatch_read_nodes_parallel`]) so both
 /// produce byte-identical SQL + params — the parallel path only changes WHICH thread runs this, not
 /// WHAT it runs. Takes `driver` by `&dyn Driver` so a `Sync` pooled driver can service concurrent
 /// calls (each acquiring its own pooled connection).
@@ -397,6 +397,337 @@ pub fn execute_read_graph(
     };
     run_behavior(ir, &mut handlers, &normalized, name)
         .map_err(|e| re_error_to_sql_failure(&e.to_string()))
+}
+
+// ── PRODUCTION live/pooled read execution with executor-layer sibling fan-out (#40) ─
+//
+// `execute_read_graph` above rides bc's SERIAL `run_behavior` (the SQLite conformance path — the
+// published bc Rust crate has no async/parallel `run_behavior`, unlike TS `runBehaviorAsync` or
+// the Go/Python bc cores whose `run_plan` parallelizes stage members natively). To give the LIVE
+// PG/MySQL path the SAME production fan-out its siblings have, `execute_read_graph_pooled` re-drives
+// the read-graph orchestration in the EXECUTOR layer over a `Sync` pooled driver: each plan stage is
+// dispatched through bc `run_plan_parallel` (the `dispatch_read_nodes_parallel` seam), so a stage of
+// INDEPENDENT sibling read nodes runs on scoped worker threads — each checking out its own pooled
+// connection — bounded by the plan's `concurrency` (default 16). `run_plan_parallel` COMMITS stage
+// outcomes in ascending declaration order, so the assembled Φ output is byte-identical to the serial
+// path regardless of which sibling query finishes first (determinism is not a function of completion
+// order). A graph with no parallelizable stage (every plan stage ≤ 1 member — the single-relation /
+// conformance shape), `concurrency <= 1`, or any node shape this executor does not reproduce exactly
+// falls back to the SERIAL `run_behavior` path UNCHANGED, so those reads are bit-for-bit as before.
+
+/// Execute a compiled ReadGraph on a `Sync` (pooled) driver, dispatching INDEPENDENT sibling read
+/// nodes of a plan stage CONCURRENTLY (bc `run_plan_parallel`, capped at the plan `concurrency`).
+///
+/// The production live PG/MySQL read entry point (#40). A single-relation / zero-sibling read graph
+/// (or `concurrency <= 1`, or an unsupported node shape) transparently falls back to the SERIAL
+/// [`execute_read_graph`], so it behaves EXACTLY as before. The Φ output is byte-identical to the
+/// serial path either way — parallelism changes only the wall-clock, never the result.
+pub fn execute_read_graph_pooled(
+    graph: &J,
+    input: &Scope,
+    driver: &(dyn Driver + Sync),
+) -> Result<Value, SqlFailure> {
+    let ir = graph
+        .get("ir")
+        .ok_or_else(|| plain_failure("scp runtime: readGraph has no ir"))?;
+    let dialect = graph
+        .get("dialect")
+        .and_then(|d| d.as_str())
+        .unwrap_or("")
+        .to_string();
+    let name = graph.get("name").and_then(|n| n.as_str());
+    let normalized = normalize_read_graph_input(graph, input);
+
+    let comp = match component_for(ir, name) {
+        Some(c) => c,
+        None => return execute_read_graph(graph, input, driver), // serial fallback (fail there)
+    };
+
+    // Only take the parallel orchestration when the plan actually has a fan-out stage AND every
+    // body node is a shape this executor reproduces bit-for-bit; otherwise the serial bc path.
+    if !plan_has_parallel_stage(comp) || !orchestrator_supports(comp) {
+        return execute_read_graph(graph, input, driver);
+    }
+
+    orchestrate_read_graph(graph, comp, &normalized, &dialect, driver)
+}
+
+/// The entry component (`name`, else the first) of a surrogate IR.
+fn component_for<'a>(ir: &'a J, name: Option<&str>) -> Option<&'a J> {
+    let comps = ir.get("components").and_then(|c| c.as_array())?;
+    match name {
+        Some(n) => comps
+            .iter()
+            .find(|c| c.get("name").and_then(|x| x.as_str()) == Some(n)),
+        None => comps.first(),
+    }
+}
+
+/// Does the component's plan carry a stage with ≥ 2 members AND `concurrency > 1`? (The only shape
+/// where parallel dispatch can change the wall-clock; anything else is the serial fallback.)
+fn plan_has_parallel_stage(comp: &J) -> bool {
+    let plan = match comp.get("plan").filter(|p| !p.is_null()) {
+        Some(p) => p,
+        None => return false,
+    };
+    let concurrency = plan
+        .get("concurrency")
+        .and_then(|c| c.as_i64())
+        .unwrap_or(1);
+    if concurrency <= 1 {
+        return false;
+    }
+    plan.get("groups")
+        .and_then(|g| g.as_array())
+        .map(|groups| {
+            groups
+                .iter()
+                .any(|st| st.as_array().map(|m| m.len() >= 2).unwrap_or(false))
+        })
+        .unwrap_or(false)
+}
+
+/// Is every body node a shape [`orchestrate_read_graph`] reproduces byte-identically to bc? We
+/// support `cond`, `componentRef`, and a SIMPLE `map` (`over` + `as`, no `when`/`into`/`batched`);
+/// anything richer routes to the serial `run_behavior` fallback so its result is guaranteed exact.
+fn orchestrator_supports(comp: &J) -> bool {
+    let body = match comp.get("body").and_then(|b| b.as_array()) {
+        Some(b) => b,
+        None => return false,
+    };
+    body.iter().all(|n| {
+        if n.get("cond").is_some() {
+            return true;
+        }
+        if let Some(m) = n.get("map") {
+            // A simple map only: no per-element guard / zip / batch (none appear in read graphs;
+            // if one ever does, the serial fallback still executes it correctly).
+            return m.get("when").is_none()
+                && m.get("into").is_none()
+                && m.get("batched").is_none();
+        }
+        n.get("component").is_some()
+    })
+}
+
+/// Executor-layer read-graph orchestration mirroring bc `run_behavior`, but dispatching each plan
+/// stage through [`run_plan_parallel`] so a stage of independent siblings runs concurrently on the
+/// `Sync` pooled driver. Stages run sequentially (a later stage sees the committed prior-stage
+/// results); WITHIN a stage the members are independent (no intra-stage data edge), so parallel
+/// execution over a read-only shared scope is deterministic — `run_plan_parallel` commits in
+/// declaration order, so the result equals the serial path byte-for-byte.
+fn orchestrate_read_graph(
+    graph: &J,
+    comp: &J,
+    input: &Scope,
+    dialect: &str,
+    driver: &(dyn Driver + Sync),
+) -> Result<Value, SqlFailure> {
+    let body = comp
+        .get("body")
+        .and_then(|b| b.as_array())
+        .ok_or_else(|| plain_failure("scp runtime: read graph component has no body"))?;
+    let output = comp.get("output").cloned().unwrap_or(J::Null);
+    let plan = comp.get("plan").filter(|p| !p.is_null());
+    let concurrency = plan
+        .and_then(|p| p.get("concurrency"))
+        .and_then(|c| c.as_i64())
+        .unwrap_or(1);
+    let stages: Vec<Vec<usize>> = match plan
+        .and_then(|p| p.get("groups"))
+        .and_then(|g| g.as_array())
+    {
+        Some(groups) => groups
+            .iter()
+            .map(|st| {
+                st.as_array()
+                    .map(|m| {
+                        m.iter()
+                            .filter_map(|i| i.as_u64().map(|x| x as usize))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect(),
+        None => (0..body.len()).map(|i| vec![i]).collect(),
+    };
+
+    // Committed results accumulate across stages (a later map's `over` refs an earlier node).
+    let mut results: Vec<(String, Value)> = Vec::new();
+
+    for stage in &stages {
+        let mut ordered = stage.clone();
+        ordered.sort_unstable();
+
+        // Read-only scope shared by every sibling in this stage: input + prior-stage results.
+        let base: Scope = {
+            let mut s = input.clone();
+            s.extend(results.iter().cloned());
+            s
+        };
+
+        // One OpSpec per stage member; a flat independent stage (siblings carry no parent inside
+        // the stage — read-graph relation nodes depend only on the PRIOR stage's primary).
+        let ops: Vec<OpSpec> = ordered
+            .iter()
+            .map(|&i| OpSpec {
+                id: body[i]
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                parent: None,
+                bind_field: None,
+                relation_kind: None,
+                policy: None,
+            })
+            .collect();
+        let plan_spec = ExecutionPlanSpec {
+            groups: vec![(0..ordered.len()).collect()],
+            concurrency,
+        };
+
+        let exec = |op: &OpSpec, _bound: Option<&Value>| -> ExecOutcome {
+            let idx = match body
+                .iter()
+                .position(|n| n.get("id").and_then(|v| v.as_str()) == Some(op.id.as_str()))
+            {
+                Some(i) => i,
+                None => {
+                    return ExecOutcome::Error(format!("orchestrate: unknown node '{}'", op.id))
+                }
+            };
+            exec_read_node(driver, graph, dialect, &body[idx], &base)
+        };
+
+        let run = match run_plan_parallel(Some(&plan_spec), &ops, exec) {
+            Ok(r) => r,
+            Err(e) => return Err(plain_failure(&format!("orchestrate: {}", e.message))),
+        };
+
+        // Commit this stage's outcomes into `results` in ascending body order (deterministic).
+        let tree = run.final_tree();
+        let mut committed: Vec<(usize, String, Value)> = Vec::new();
+        for (id, v) in &tree {
+            if let Some(idx) = body
+                .iter()
+                .position(|n| n.get("id").and_then(|x| x.as_str()) == Some(id.as_str()))
+            {
+                committed.push((idx, id.clone(), v.clone()));
+            }
+        }
+        committed.sort_by_key(|(idx, _, _)| *idx);
+        for (_, id, v) in committed {
+            results.push((id, v));
+        }
+    }
+
+    // Φ output: evaluate the component `output` against input + all committed node results.
+    let scope: Scope = {
+        let mut s = input.clone();
+        s.extend(results.iter().cloned());
+        s
+    };
+    evaluate_expression(&output, &scope).map_err(|e| re_error_to_sql_failure(&e.message))
+}
+
+/// Compute ONE read-graph body node's value against `base` scope, mirroring bc `run_behavior`:
+/// a `cond` evaluates its `{cond:[if,then,else]}`; a `componentRef` renders + executes its
+/// `__scope`-port statements; a simple `map` iterates `over`, rendering + executing per element
+/// under the `as` binding, and collects the per-element rows in order (byte-identical to bc).
+fn exec_read_node(
+    driver: &(dyn Driver + Sync),
+    graph: &J,
+    dialect: &str,
+    node: &J,
+    base: &Scope,
+) -> ExecOutcome {
+    if let Some(c) = node.get("cond") {
+        let cond_expr = serde_json::json!({ "cond": [c.get("if"), c.get("then"), c.get("else")] });
+        return match evaluate_expression(&cond_expr, base) {
+            Ok(v) => ExecOutcome::Ok(v),
+            Err(e) => ExecOutcome::Error(e.message),
+        };
+    }
+
+    let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
+
+    if let Some(m) = node.get("map") {
+        let over = match evaluate_expression(m.get("over").unwrap_or(&J::Null), base) {
+            Ok(v) => v,
+            Err(e) => return ExecOutcome::Error(e.message),
+        };
+        let arr = match over {
+            Value::Arr(a) => a,
+            _ => return ExecOutcome::Error(format!("map '{node_id}': 'over' is not an array")),
+        };
+        let as_name = m.get("as").and_then(|v| v.as_str()).unwrap_or("$");
+        let ports_j = m
+            .get("ports")
+            .cloned()
+            .unwrap_or(J::Object(Default::default()));
+        let mut out: Vec<Value> = Vec::with_capacity(arr.len());
+        for el in &arr {
+            let mut scope = base.clone();
+            scope.push((as_name.to_string(), el.clone()));
+            match render_node_ports(driver, graph, dialect, node_id, &ports_j, &scope) {
+                Ok(v) => out.push(v),
+                Err(e) => return ExecOutcome::Error(e),
+            }
+        }
+        return ExecOutcome::Ok(Value::Arr(out));
+    }
+
+    // componentRef: evaluate the `__scope` port in `base`, then render + execute.
+    let ports_j = node
+        .get("ports")
+        .cloned()
+        .unwrap_or(J::Object(Default::default()));
+    match render_node_ports(driver, graph, dialect, node_id, &ports_j, base) {
+        Ok(v) => ExecOutcome::Ok(v),
+        Err(e) => ExecOutcome::Error(e),
+    }
+}
+
+/// Evaluate a makeSQL node's ports (the surrogate `__scope`) against `scope`, then render + execute
+/// its static statements — the SAME render→execute the serial handler runs, so SQL + params match.
+fn render_node_ports(
+    driver: &(dyn Driver + Sync),
+    graph: &J,
+    dialect: &str,
+    node_id: &str,
+    ports_j: &J,
+    scope: &Scope,
+) -> Result<Value, String> {
+    let ports = eval_ports(ports_j, scope)?;
+    let node_scope = match ports.iter().find(|(k, _)| k == SCOPE_PORT).map(|(_, v)| v) {
+        Some(Value::Obj(pairs)) => pairs.clone(),
+        _ => {
+            return Err(format!(
+                "static-bundle: node '{node_id}' surrogate scope did not evaluate to an object"
+            ))
+        }
+    };
+    match render_and_execute_node(driver, graph, dialect, node_id, &node_scope) {
+        ExecOutcome::Ok(v) => Ok(v),
+        ExecOutcome::Error(e) => Err(e),
+    }
+}
+
+/// Evaluate a bc `{obj:{…}}` (or any Expression) ports node to a flat `[(port, Value)]` (mirrors
+/// bc `eval_ports`): each port value is a deferred Expression IR resolved against `scope`.
+fn eval_ports(ports: &J, scope: &Scope) -> Result<Vec<(String, Value)>, String> {
+    let obj = ports
+        .as_object()
+        .ok_or_else(|| "static-bundle: node ports must be an object".to_string())?;
+    let mut out = Vec::with_capacity(obj.len());
+    for (k, v) in obj {
+        out.push((
+            k.clone(),
+            evaluate_expression(v, scope).map_err(|e| e.message)?,
+        ));
+    }
+    Ok(out)
 }
 
 // ── Parallel read-relation dispatch (executor-layer fan-out; #40) ──────────────

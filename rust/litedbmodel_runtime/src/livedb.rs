@@ -18,7 +18,7 @@
 //! pool is `Clone`-cheap and internally synchronized, the driver is `Send + Sync`: DISTINCT threads
 //! calling `all()` concurrently each check out a DISTINCT pooled connection, so the plan's
 //! `concurrency` (default 16) becomes REAL parallel DB I/O when the executor dispatches independent
-//! sibling relations in parallel (`static_bundle::execute_read_graph_parallel`).
+//! sibling relations in parallel (`static_bundle::dispatch_read_nodes_parallel`).
 //!
 //! ## Write-tx stays SERIAL on ONE pinned connection
 //!

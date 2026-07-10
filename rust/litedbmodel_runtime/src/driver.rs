@@ -16,7 +16,7 @@
 //! synchronized), so the facade's `all()`/`run()` block-on the pooled future while DISTINCT threads
 //! checking out DISTINCT pooled connections run REAL parallel DB I/O. That is what lets the plan's
 //! `concurrency` (default 16) become concurrent sibling-relation dispatch at the executor layer
-//! (`static_bundle::execute_read_graph_parallel`) without changing the IR, the dialect SQL text, or
+//! (`static_bundle::dispatch_read_nodes_parallel`) without changing the IR, the dialect SQL text, or
 //! the trait: the seam is dialect- and execution-model-agnostic. The runtime only ever binds
 //! already-rendered scalar params (a bc [`Value`] → the driver's native param type).
 

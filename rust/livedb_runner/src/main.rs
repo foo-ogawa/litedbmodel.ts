@@ -19,7 +19,7 @@ use std::process::ExitCode;
 
 use litedbmodel_runtime::livedb::{MysqlDriver, PostgresDriver};
 use litedbmodel_runtime::value::encode_value;
-use litedbmodel_runtime::{execute_bundle, execute_transaction_bundle, Driver};
+use litedbmodel_runtime::{execute_bundle_pooled, execute_transaction_bundle, Driver};
 use serde_json::{json, Value as J};
 
 const SUPPORTED_CORPUS_VERSION: i64 = 1;
@@ -143,9 +143,12 @@ fn reset_mysql(my: &MysqlDriver, schema: &[String]) -> Result<(), String> {
 
 // ── per-vector runs (driver is the live Driver trait object) ───────────────────
 
-fn run_exec(driver: &dyn Driver, bundle: &J, v: &J) -> Result<(), String> {
+fn run_exec(driver: &(dyn Driver + Sync), bundle: &J, v: &J) -> Result<(), String> {
     let input = numeric_canon(&v["input"]);
-    let result = execute_bundle(bundle, &input, driver)
+    // The PRODUCTION live PG/MySQL read path: the pooled executor fans out independent sibling read
+    // nodes of a plan stage concurrently (capped at the plan concurrency); a single-relation read
+    // graph runs serially, byte-identical to `execute_bundle` (#40).
+    let result = execute_bundle_pooled(bundle, &input, driver)
         .map_err(|e| format!("execute threw: {}", e.message))?;
     let got = encode_value(&result);
     if eq(&got, &v["expectedResult"]) {
@@ -155,7 +158,7 @@ fn run_exec(driver: &dyn Driver, bundle: &J, v: &J) -> Result<(), String> {
     }
 }
 
-fn run_tx(driver: &dyn Driver, bundle: &J, v: &J) -> Result<(), String> {
+fn run_tx(driver: &(dyn Driver + Sync), bundle: &J, v: &J) -> Result<(), String> {
     let input = numeric_canon(&v["input"]);
     let result = execute_transaction_bundle(bundle, &input, driver)
         .map_err(|e| format!("tx threw: {}", e.message))?;
@@ -186,7 +189,7 @@ struct Tally {
 
 fn run_dialect_leg(
     name: &str,
-    driver: &dyn Driver,
+    driver: &(dyn Driver + Sync),
     reset: &mut dyn FnMut(&[String]) -> Result<(), String>,
     vectors: &[J],
     bundle_key: &str,

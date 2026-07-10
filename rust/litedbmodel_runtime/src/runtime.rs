@@ -25,7 +25,8 @@ use crate::dialect::dialect_for;
 use crate::driver::Driver;
 use crate::errors::{re_error_to_sql_failure, SqlFailure};
 use crate::static_bundle::{
-    execute_read_graph, render_read_primary, render_tx_op, to_driver_param,
+    execute_read_graph, execute_read_graph_pooled, render_read_primary, render_tx_op,
+    to_driver_param,
 };
 use crate::value::{decode_scope, encode_value, Scope};
 
@@ -75,6 +76,31 @@ pub fn execute_bundle(bundle: &J, input: &J, driver: &dyn Driver) -> Result<Valu
     })?;
     let input_scope = decode_scope(input).map_err(|e| plain_failure(&e))?;
     execute_read_graph(read_graph, &input_scope, driver)
+}
+
+/// Execute a §8 read SqlBundle on a `Sync` (pooled) driver — the PRODUCTION live PG/MySQL read
+/// path (#40). Identical to [`execute_bundle`] except the read graph runs through
+/// [`execute_read_graph_pooled`], which dispatches INDEPENDENT sibling read nodes of a plan stage
+/// CONCURRENTLY (each on its own pooled connection), capped at the plan `concurrency` (default 16).
+///
+/// The Φ output is byte-identical to the serial [`execute_bundle`] — parallelism changes only the
+/// wall-clock. A single-relation / zero-sibling read graph (or `concurrency <= 1`) transparently
+/// runs serially, exactly as before. Writes are UNCHANGED (`execute_transaction_bundle` stays
+/// serial on one pinned connection — this path is READ-only).
+pub fn execute_bundle_pooled(
+    bundle: &J,
+    input: &J,
+    driver: &(dyn Driver + Sync),
+) -> Result<Value, SqlFailure> {
+    let read_graph = bundle.get("readGraph").filter(|g| !g.is_null()).ok_or_else(|| {
+        let name = bundle.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        plain_failure(&format!(
+            "scp runtime: execute_bundle_pooled requires a read bundle ('{name}' carries no read graph; \
+             the write-tx path stays serial via execute_transaction_bundle)"
+        ))
+    })?;
+    let input_scope = decode_scope(input).map_err(|e| plain_failure(&e))?;
+    execute_read_graph_pooled(read_graph, &input_scope, driver)
 }
 
 // ── Write-time relations: gate-first transaction (spec §6 — port of tx.ts) ──────
