@@ -30,8 +30,11 @@ export type Dialect = 'postgres' | 'mysql' | 'sqlite';
  *   `src/drivers/postgres.ts` `convertPlaceholders`).
  * - MySQL / SQLite: `?` unchanged.
  *
- * (Driver-side array expansion — MySQL/SQLite `IN (?, …)` / multi-VALUES — happens in
- * the executor before/around this, per the locked model; PG binds arrays directly.)
+ * There is NO array placeholder-count-expansion for ANY dialect (epic #43/#45): every
+ * array/batch surface now binds the whole array/rows as ONE param against STATIC SQL
+ * text — PG via `= ANY(?::t[])` / `UNNEST`, MySQL/SQLite via a single JSON param expanded
+ * server-side (`MEMBER OF` / `JSON_TABLE` / `json_each`; see `json-array.ts`/`json-batch.ts`).
+ * So `renderPlaceholders` is a pure `?`→`$N` mapping with a fixed placeholder count.
  */
 export function renderPlaceholders(sql: string, dialect: Dialect): string {
   if (dialect !== 'postgres') return sql;

@@ -13,11 +13,12 @@
  * Param order matches the original exactly: CTE params → JOIN params → WHERE params.
  */
 
-import { DBConditions, type ConditionObject } from '../../DBConditions';
+import type { ConditionObject } from '../../DBConditions';
 import { orderToString } from '../../Column';
 import type { OrderSpec } from '../../Column';
 import type { MakeSQL } from './makesql';
 import { formatterFor } from './compile';
+import { conditionsFor } from './json-array';
 import type { Dialect } from './handler';
 
 /** SELECT descriptor — mirrors the fields `_buildSelectSQL` reads from `SelectOptions`. */
@@ -51,7 +52,7 @@ export function compileSelect(desc: SelectDesc): MakeSQL {
   if (desc.cte?.params && desc.cte.params.length > 0) params.push(...desc.cte.params);
   if (desc.joinParams && desc.joinParams.length > 0) params.push(...desc.joinParams);
 
-  const whereClause = new DBConditions(desc.conditions ?? {}).compile(params, formatter);
+  const whereClause = conditionsFor(desc.conditions ?? {}, desc.dialect).compile(params, formatter);
 
   let sql = '';
   if (desc.cte) sql = `WITH ${desc.cte.name} AS (${desc.cte.sql}) `;

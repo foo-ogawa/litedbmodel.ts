@@ -83,17 +83,33 @@ describe('A. WHERE — makeSQL byte-matches DBConditions (all constructs)', () =
     ['empty AND → drop', {}],
   ];
 
+  // The single-column plain-array IN-list is the ONE construct that INTENTIONALLY
+  // deviates from v1 on MySQL/SQLite (epic #43/#45): v1's `col IN (?, ?, ?)` becomes the
+  // single-JSON-param server-side-expansion form. PG is unchanged. Every OTHER construct
+  // (incl. empty-IN → `1 = 0`, cast-array-IN, tuple-IN, custom-op arrays) stays v1
+  // byte-match on all three dialects. The NEW form is a frozen literal target here; its
+  // RESULT PARITY with v1 is proven on real MySQL 8 + SQLite in json-array-parity.test.ts.
+  const IN_LIST_JSON: Record<'mysql' | 'sqlite', Rendered> = {
+    mysql: { sql: 'id MEMBER OF (CAST(? AS JSON))', params: ['[1,2,3]'] },
+    sqlite: { sql: 'id IN (SELECT value FROM json_each(?))', params: ['[1,2,3]'] },
+  };
+
   for (const dialect of dialects) {
     for (const [name, cond] of constructs) {
       it(`[${dialect}] ${name}`, () => {
+        const got = render(compileWhere(cond, dialect), dialect);
+        if (name === 'IN list' && dialect !== 'postgres') {
+          // NEW JSON form (deviation OVER v1) — frozen literal target.
+          const golden = IN_LIST_JSON[dialect];
+          expect(got.sql).toBe(golden.sql);
+          expect(got.params).toEqual(golden.params);
+          return;
+        }
+        // All other constructs (and all of PG): byte-match to v1 DBConditions output.
         const params: unknown[] = [];
         const formatter = dialect === 'postgres' ? pgFmt : (ph: string) => ph;
         const goldenSql = new DBConditions(cond).compile(params, formatter);
-        const golden: Rendered = {
-          sql: renderPlaceholders(goldenSql, dialect),
-          params,
-        };
-        const got = render(compileWhere(cond, dialect), dialect);
+        const golden: Rendered = { sql: renderPlaceholders(goldenSql, dialect), params };
         expect(got.sql).toBe(golden.sql);
         expect(got.params).toEqual(golden.params);
       });
@@ -257,99 +273,166 @@ function renderComponents(components: MakeSQL[], dialect: Dialect): Rendered[] {
   return components.map((c) => render(c, dialect));
 }
 
+// ---------------------------------------------------------------------------
+// NEW JSON-form golden (MySQL/SQLite) — the INTENTIONAL deviation from v1's
+// N-placeholder multi-VALUES (epic #43/#45). This is an INDEPENDENT generator (it does
+// NOT call the v2 compile) so the golden is a real target: a group's rows go as ONE JSON
+// array-of-objects param, expanded server-side (MySQL JSON_TABLE / SQLite json_each).
+// RESULT PARITY with v1's multi-VALUES is proven on real DBs in json-array-parity.test.ts.
+// ---------------------------------------------------------------------------
+
+/** Infer the MySQL JSON_TABLE COLUMNS type + SELECT expr for a column (golden mirror). */
+function jtColType(col: string, rows: Record<string, unknown>[]): { t: string; sel: (r: string) => string } {
+  let sample: unknown;
+  for (const r of rows) {
+    const v = r[col];
+    if (v !== null && v !== undefined) { sample = v; break; }
+  }
+  if (typeof sample === 'boolean' || typeof sample === 'bigint') return { t: 'BIGINT', sel: (r) => r };
+  if (typeof sample === 'number') return Number.isInteger(sample) ? { t: 'BIGINT', sel: (r) => r } : { t: 'DECIMAL(65,30)', sel: (r) => r };
+  if (sample !== null && typeof sample === 'object') return { t: 'JSON', sel: (r) => r };
+  return { t: 'JSON', sel: (r) => `JSON_UNQUOTE(${r})` };
+}
+
+/** Serialize a group's rows to the ONE JSON param string (undefined → null, cols only). */
+function groupJson(rows: Record<string, unknown>[], cols: string[]): string {
+  return JSON.stringify(rows.map((r) => {
+    const o: Record<string, unknown> = {};
+    for (const c of cols) o[c] = r[c] === undefined ? null : r[c];
+    return o;
+  }));
+}
+
+/** Expected NEW JSON-form INSERT statement for one homogeneous group. */
+function goldenInsertJson(
+  dialect: 'mysql' | 'sqlite',
+  tableName: string,
+  cols: string[],
+  rows: Record<string, unknown>[],
+  opts: { onConflict?: string[]; onConflictIgnore?: boolean; onConflictUpdate?: 'all' | string[]; returning?: string } = {}
+): Rendered {
+  const param = groupJson(rows, cols);
+  let source: string;
+  if (dialect === 'mysql') {
+    const jt = cols.map((c) => `${c} ${jtColType(c, rows).t} PATH '$.${c}'`).join(', ');
+    const sel = cols.map((c) => jtColType(c, rows).sel(`jt.${c}`)).join(', ');
+    source = `SELECT ${sel} FROM JSON_TABLE(?, '$[*]' COLUMNS(${jt})) jt`;
+  } else {
+    source = `SELECT ${cols.map((c) => `json_extract(value, '$.${c}')`).join(', ')} FROM json_each(?)`;
+  }
+  let sql: string;
+  const list = `${tableName} (${cols.join(', ')})`;
+  if (opts.onConflict && opts.onConflictIgnore) {
+    sql = dialect === 'mysql' ? `INSERT IGNORE INTO ${list} ${source}` : `INSERT OR IGNORE INTO ${list} ${source}`;
+  } else if (opts.onConflict && opts.onConflictUpdate) {
+    const upd = opts.onConflictUpdate === 'all' ? cols : opts.onConflictUpdate;
+    sql = dialect === 'mysql'
+      ? `INSERT INTO ${list} ${source} ON DUPLICATE KEY UPDATE ${upd.map((c) => `${c} = VALUES(${c})`).join(', ')}`
+      : `INSERT INTO ${list} ${source} ON CONFLICT (${opts.onConflict.join(', ')}) DO UPDATE SET ${upd.map((c) => `${c} = excluded.${c}`).join(', ')}`;
+  } else {
+    sql = `INSERT INTO ${list} ${source}`;
+  }
+  if (opts.returning) sql += ` RETURNING ${opts.returning}`;
+  return { sql, params: [param] };
+}
+
 describe('B. INSERT single & batch — makeSQL byte-matches REAL DBModel._insert (captured)', () => {
   for (const dialect of dialects) {
+    // PG golden = REAL `_insert` (UNNEST, byte-match v1). MySQL/SQLite golden = the NEW
+    // single-JSON-param form (independent `goldenInsertJson`, deviation OVER v1).
+    const isPg = dialect === 'postgres';
+    const jd = dialect as 'mysql' | 'sqlite';
+
     it(`[${dialect}] single INSERT`, async () => {
       const records = [{ id: 1, name: 'a' }];
-      const golden = await captureInsert(dialect, records, { returning: 'id' });
       const got = renderComponents(compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records, returning: 'id' }), dialect);
+      const golden = isPg
+        ? await captureInsert(dialect, records, { returning: 'id' })
+        : [goldenInsertJson(jd, 'users', ['id', 'name'], records, { returning: 'id' })];
       expect(got.length).toBe(golden.length);
       expect(got).toEqual(golden);
     });
 
     it(`[${dialect}] homogeneous batch INSERT (single grouped statement)`, async () => {
       const records = [{ id: 1, name: 'a' }, { id: 2, name: 'b' }];
-      const golden = await captureInsert(dialect, records, { returning: 'id' });
       const got = renderComponents(compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records, returning: 'id' }), dialect);
-      // Homogeneous → exactly ONE INSERT component.
+      const golden = isPg
+        ? await captureInsert(dialect, records, { returning: 'id' })
+        : [goldenInsertJson(jd, 'users', ['id', 'name'], records, { returning: 'id' })];
+      // Homogeneous → exactly ONE INSERT component (still ONE param for MySQL/SQLite).
       expect(golden.length).toBe(1);
       expect(got.length).toBe(1);
+      if (!isPg) expect(got[0].params.length).toBe(1); // single JSON param, no N-explosion
       expect(got).toEqual(golden);
     });
 
     it(`[${dialect}] upsert: createMany + ON CONFLICT DO UPDATE (all)`, async () => {
       const records = [{ id: 1, name: 'a' }, { id: 2, name: 'b' }];
-      const opts = { onConflict: ['id'], onConflictUpdate: 'all', returning: 'id' };
-      const golden = await captureInsert(dialect, records, opts);
+      const opts = { onConflict: ['id'], onConflictUpdate: 'all' as const, returning: 'id' };
       const got = renderComponents(
-        compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records, onConflict: ['id'], onConflictUpdate: 'all', returning: 'id' }),
+        compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records, ...opts }),
         dialect
       );
+      const golden = isPg
+        ? await captureInsert(dialect, records, opts)
+        : [goldenInsertJson(jd, 'users', ['id', 'name'], records, opts)];
       expect(got.length).toBe(golden.length);
       expect(got).toEqual(golden);
     });
 
-    it(`[${dialect}] HETEROGENEOUS createMany → MULTIPLE grouped INSERT components (byte-match real _insert)`, async () => {
+    it(`[${dialect}] HETEROGENEOUS createMany → MULTIPLE grouped INSERT components`, async () => {
       // Rows with DIFFERENT column subsets: {id,name}, {id,name,age}, {id,name}.
-      // Production `_insert` groups by sorted-column-set pattern and emits ONE INSERT
-      // per group → 2 statements ({id,name} batch, then {age,id,name} single).
+      // Grouping by sorted-column-set pattern → 2 statements ({id,name} batch, then
+      // {age,id,name} single). Kept identical to v1's grouping on ALL dialects; only the
+      // per-group VALUES text differs (MySQL/SQLite → single JSON param).
       const records = [
         { id: 1, name: 'a' },
         { id: 2, name: 'b', age: 20 },
         { id: 3, name: 'c' },
       ];
-      const golden = await captureInsert(dialect, records, { returning: 'id' });
       const components = compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records, returning: 'id' });
       const got = renderComponents(components, dialect);
-
-      // The gap this fixes: a heterogeneous createMany is a COMPOSITION of >1 makeSQL
-      // INSERT components — NOT one statement. Production `_insert` executes each group
-      // as its OWN statement (its own `execute` call, its own placeholder numbering), so
-      // the composition here is the ORDERED LIST of components, each rendered on its own.
+      const golden = isPg
+        ? await captureInsert(dialect, records, { returning: 'id' })
+        : [
+            goldenInsertJson(jd, 'users', ['id', 'name'], [records[0], records[2]], { returning: 'id' }),
+            goldenInsertJson(jd, 'users', ['age', 'id', 'name'], [records[1]], { returning: 'id' }),
+          ];
       expect(golden.length).toBe(2);
       expect(components.length).toBe(2);
-      // Per-statement byte-match: same grouping, same SQL, same params/order.
       expect(got).toEqual(golden);
-
-      // Grouping is exactly _insert's: first-seen {id,name} batch (UNNEST on PG /
-      // multi-VALUES on MySQL·SQLite), then the {age,id,name} single-row group.
+      // Grouping (same on all dialects): first-seen {id,name}, then {age,id,name}.
       expect(components[0].sql).toContain('(id, name)');
       expect(components[1].sql).toContain('(age, id, name)');
-
-      // Each component individually assembles to the exact captured statement (the
-      // makeSQL assembly core, independent of the dialect placeholder pass).
-      components.forEach((c, i) => {
-        const asm = assembleMakeSQL(c);
-        expect(asm.params).toEqual(golden[i].params);
-      });
+      if (!isPg) {
+        // Each group is ONE JSON param — no per-row placeholder explosion.
+        got.forEach((g) => expect(g.params.length).toBe(1));
+      }
     });
 
-    it(`[${dialect}] HETEROGENEOUS via DEFAULT/undefined omission → split by column-presence (byte-match real _insert)`, async () => {
-      // A column applied by DB DEFAULT is expressed by OMITTING it from the row's
-      // column set (never a `DEFAULT` literal — PG UNNEST binds arrays and cannot carry
-      // DEFAULT; see `DBModel._insert:929` "batch INSERT without DEFAULT keyword").
-      // `_insert` drops a column when its value is `undefined` OR a
-      // `DBImmediateValue('DEFAULT')` (`:943` single / `:961` batch), so these rows fall
-      // into a DIFFERENT column-set pattern → a separate grouped INSERT (a separate
-      // UNNEST on PG). No `DEFAULT` text appears anywhere.
+    it(`[${dialect}] HETEROGENEOUS via DEFAULT/undefined omission → split by column-presence`, async () => {
+      // A DB-DEFAULT column is expressed by OMITTING it from the row's column set (never
+      // a `DEFAULT` literal). `_insert` drops a column when its value is `undefined` OR a
+      // `DBImmediateValue('DEFAULT')`, so these rows fall into a DIFFERENT column-set
+      // pattern → a separate grouped statement. No `DEFAULT` text appears anywhere.
       const records = [
         { id: 1, name: 'a', age: 10 },
         { id: 2, name: 'b', age: new DBImmediateValue('DEFAULT') },
         { id: 3, name: 'c', age: undefined },
         { id: 4, name: 'd', age: 40 },
       ];
-      const golden = await captureInsert(dialect, records, { returning: 'id' });
       const components = compileInsertMany(dialect, { tableName: 'users', records, rawRecords: records, returning: 'id' });
       const got = renderComponents(components, dialect);
-
-      // Two groups: first-seen {age,id,name} (rows 1,4) then {id,name} (rows 2,3 —
-      // `age` omitted). MULTIPLE INSERT components, split by column presence.
+      const golden = isPg
+        ? await captureInsert(dialect, records, { returning: 'id' })
+        : [
+            goldenInsertJson(jd, 'users', ['age', 'id', 'name'], [records[0], records[3]], { returning: 'id' }),
+            goldenInsertJson(jd, 'users', ['id', 'name'], [{ id: 2, name: 'b' }, { id: 3, name: 'c' }], { returning: 'id' }),
+          ];
       expect(golden.length).toBe(2);
       expect(components.length).toBe(2);
       expect(got).toEqual(golden);
-
-      // No DEFAULT literal is ever emitted; the `age` column simply disappears from
-      // group 2 (both its text and its UNNEST/VALUES slot).
+      // No DEFAULT literal; `age` simply disappears from group 2.
       expect(components[0].sql).toContain('(age, id, name)');
       expect(components[1].sql).toContain('(id, name)');
       expect(components[1].sql).not.toContain('age');
@@ -394,12 +477,40 @@ describe('B. batch UPDATE (+SKIP-column) — makeSQL byte-matches dialect builde
     skipMap: new Map([[1, new Set(['age'])]]),
     returning: 'id',
   };
+  // NEW JSON-form goldens (frozen literals) for MySQL/SQLite — deviation OVER v1's
+  // VALUES-ROW-join (MySQL) / CASE-WHEN (SQLite). SKIP-column logic preserved. RESULT
+  // PARITY with v1 proven on real DBs in json-array-parity.test.ts.
+  const skipJson = JSON.stringify([
+    { id: 1, name: 'a', age: 10, _skip_age: 0 },
+    { id: 2, name: 'b', age: 20, _skip_age: 1 },
+  ]);
+  const mysqlUpdGolden: Rendered = {
+    sql:
+      "UPDATE users AS u JOIN JSON_TABLE(?, '$[*]' COLUMNS(" +
+      "id BIGINT PATH '$.id', name JSON PATH '$.name', age BIGINT PATH '$.age', " +
+      "_skip_age BIGINT PATH '$._skip_age')) AS v ON u.id = v.id " +
+      'SET u.name = JSON_UNQUOTE(v.name), u.age = IF(v._skip_age, u.age, v.age) RETURNING id',
+    params: [skipJson],
+  };
+  const sqliteUpdGolden: Rendered = {
+    sql:
+      "UPDATE users SET " +
+      "name = (SELECT json_extract(je.value, '$.name') FROM json_each(?) je WHERE json_extract(je.value, '$.id') = users.id LIMIT 1), " +
+      "age = (SELECT CASE WHEN json_extract(je.value, '$._skip_age') THEN users.age ELSE json_extract(je.value, '$.age') END FROM json_each(?) je WHERE json_extract(je.value, '$.id') = users.id LIMIT 1) " +
+      "WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?)) RETURNING id",
+    params: [skipJson, skipJson, skipJson],
+  };
+
   for (const dialect of dialects) {
     it(`[${dialect}] batch UPDATE + SKIP`, () => {
-      const golden = builderOf[dialect].buildUpdateMany(opts as any);
       const got = render(compileUpdateMany(dialect, opts as any), dialect);
-      expect(got.sql).toBe(renderPlaceholders(golden.sql, dialect));
-      expect(got.params).toEqual(golden.params);
+      if (dialect === 'postgres') {
+        const golden = builderOf[dialect].buildUpdateMany(opts as any);
+        expect(got.sql).toBe(renderPlaceholders(golden.sql, dialect));
+        expect(got.params).toEqual(golden.params);
+      } else {
+        expect(got).toEqual(dialect === 'mysql' ? mysqlUpdGolden : sqliteUpdGolden);
+      }
     });
   }
 });
@@ -431,16 +542,23 @@ describe('B. single UPDATE / DELETE — makeSQL byte-matches original _update/_d
       expect(got.sql).toBe(golden.sql);
       expect(got.params).toEqual(golden.params);
     });
-    it(`[${dialect}] single DELETE`, () => {
+    it(`[${dialect}] single DELETE (IN-list)`, () => {
       const conditions = { id: [1, 2, 3] };
-      const params: unknown[] = [];
-      const formatter = dialect === 'postgres' ? pgFmt : undefined;
-      const where = new DBConditions(conditions).compile(params, formatter);
-      const goldenSql = `DELETE FROM users WHERE ${where}`;
-      const golden = { sql: renderPlaceholders(goldenSql, dialect), params };
       const got = render(compileDelete({ dialect, tableName: 'users', conditions }), dialect);
-      expect(got.sql).toBe(golden.sql);
-      expect(got.params).toEqual(golden.params);
+      if (dialect === 'postgres') {
+        // PG: unchanged v1 IN (?, ?, ?).
+        const params: unknown[] = [];
+        const where = new DBConditions(conditions).compile(params, pgFmt);
+        const golden = { sql: renderPlaceholders(`DELETE FROM users WHERE ${where}`, dialect), params };
+        expect(got.sql).toBe(golden.sql);
+        expect(got.params).toEqual(golden.params);
+      } else {
+        // MySQL/SQLite: NEW single-JSON-param IN-list form.
+        const golden = dialect === 'mysql'
+          ? { sql: 'DELETE FROM users WHERE id MEMBER OF (CAST(? AS JSON))', params: ['[1,2,3]'] }
+          : { sql: 'DELETE FROM users WHERE id IN (SELECT value FROM json_each(?))', params: ['[1,2,3]'] };
+        expect(got).toEqual(golden);
+      }
     });
   }
   it('DELETE without WHERE throws (v1 anchor)', () => {
@@ -533,6 +651,29 @@ describe('C. Relations — makeSQL byte-matches LazyRelation (all shapes, all di
     return { sql: renderPlaceholders(captures[0].sql, driver), params: captures[0].params };
   }
 
+  // Rewrite a captured v1 single-key relation golden (`key IN (?, …)` with N element
+  // params) into the NEW single-JSON-param form (epic #43/#45). Only the single-column
+  // IN-list is rewritten; composite tuple-IN is unchanged (kept v1 on all dialects).
+  // This mirrors exactly what `conditionsFor` does, so the golden stays an INDEPENDENT
+  // target derived from the v1 capture rather than from the v2 compile.
+  function jsonifyRelation(v1: Rendered, dialect: 'mysql' | 'sqlite', col: string, values: unknown[]): Rendered {
+    const nPlaceholders = `${col} IN (${values.map(() => '?').join(', ')})`;
+    const jsonForm =
+      dialect === 'mysql' ? `${col} MEMBER OF (CAST(? AS JSON))` : `${col} IN (SELECT value FROM json_each(?))`;
+    expect(v1.sql).toContain(nPlaceholders); // guard: the v1 capture really had the N-form
+    const sql = v1.sql.replace(nPlaceholders, jsonForm);
+    // The N element params (wherever the IN-list sits in the param stream) collapse to
+    // ONE JSON string param, in the same position. Locate the contiguous `values` run.
+    const p = v1.params;
+    let at = -1;
+    for (let i = 0; i + values.length <= p.length; i++) {
+      if (values.every((v, k) => p[i + k] === v)) { at = i; break; }
+    }
+    expect(at).toBeGreaterThanOrEqual(0);
+    const params = [...p.slice(0, at), JSON.stringify(values), ...p.slice(at + values.length)];
+    return { sql, params };
+  }
+
   for (const dialect of dialects) {
     it(`[${dialect}] single-key belongsTo unlimited`, async () => {
       const { captures, Post, User } = makeModels(dialect);
@@ -553,8 +694,9 @@ describe('C. Relations — makeSQL byte-matches LazyRelation (all shapes, all di
         compileSingleKeyUnlimited({ dialect, tableName: 'users', targetKey: 'id', values: [10, 11] }),
         dialect
       );
-      expect(got.sql).toBe(golden.sql);
-      expect(got.params).toEqual(golden.params);
+      const expected = dialect === 'postgres' ? golden : jsonifyRelation(golden, dialect, 'id', [10, 11]);
+      expect(got.sql).toBe(expected.sql);
+      expect(got.params).toEqual(expected.params);
     });
 
     it(`[${dialect}] single-key hasMany unlimited + ORDER + where-filter`, async () => {
@@ -586,8 +728,9 @@ describe('C. Relations — makeSQL byte-matches LazyRelation (all shapes, all di
         }),
         dialect
       );
-      expect(got.sql).toBe(golden.sql);
-      expect(got.params).toEqual(golden.params);
+      const expected = dialect === 'postgres' ? golden : jsonifyRelation(golden, dialect, 'post_id', [1, 2]);
+      expect(got.sql).toBe(expected.sql);
+      expect(got.params).toEqual(expected.params);
     });
 
     it(`[${dialect}] single-key hasMany + per-parent LIMIT`, async () => {
@@ -612,8 +755,9 @@ describe('C. Relations — makeSQL byte-matches LazyRelation (all shapes, all di
         }),
         dialect
       );
-      expect(got.sql).toBe(golden.sql);
-      expect(got.params).toEqual(golden.params);
+      const expected = dialect === 'postgres' ? golden : jsonifyRelation(golden, dialect, 'post_id', [1, 2]);
+      expect(got.sql).toBe(expected.sql);
+      expect(got.params).toEqual(expected.params);
     });
 
     it(`[${dialect}] composite-key hasMany unlimited`, async () => {

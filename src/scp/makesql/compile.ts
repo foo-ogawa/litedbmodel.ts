@@ -10,17 +10,19 @@
  * `makeSQL` port bundles (`{ sql, params, skip? }`) — SQL structure (`= ANY`,
  * `CROSS JOIN LATERAL`, `UNNEST`, cast, subquery, batch shapes) is TEXT inside `sql`.
  *
- * The three dialects share this compile: PG compiled text is the anchor; MySQL/SQLite
- * text comes from the respective original dialect builder. Array-param placeholder
- * expansion (MySQL/SQLite `IN (?, …)` / multi-VALUES / CASE-WHEN) is the DRIVER's job
- * for arrays bound as one param — but the original MySQL/SQLite builders already emit
- * expanded `IN (?, ?, …)` text with one param per element, so the bundle carries that
- * text verbatim.
+ * The three dialects share this compile: PG compiled text is the anchor and stays
+ * byte-identical to v1 (`= ANY(?::t[])` / `UNNEST` / LATERAL). MySQL/SQLite array &
+ * batch surfaces INTENTIONALLY DEVIATE from v1 (epic #43/#45): instead of v1's
+ * N-placeholder `IN (?, …)` / multi-VALUES / `VALUES ROW` / `CASE WHEN`, they now emit a
+ * SINGLE JSON param expanded server-side (`MEMBER OF` / `JSON_TABLE` / `json_each`; see
+ * `json-array.ts` / `json-batch.ts`). Result parity with v1 is proven on real MySQL 8 +
+ * SQLite (`test/scp/json-array-parity.test.ts`). Everything else stays v1 byte-match.
  */
 
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import type { SqlCastFormatter } from '../../DBValues';
 import type { MakeSQL } from './makesql';
+import { conditionsFor } from './json-array';
 import type { Dialect } from './handler';
 
 // ============================================================================
@@ -62,7 +64,7 @@ export function formatterFor(dialect: Dialect): SqlCastFormatter {
 export function compileWhere(conditions: ConditionObject, dialect: Dialect): MakeSQL {
   const params: unknown[] = [];
   const formatter = formatterFor(dialect);
-  const core = new DBConditions(conditions).compile(params, formatter);
+  const core = conditionsFor(conditions, dialect).compile(params, formatter);
   return { sql: core, params };
 }
 

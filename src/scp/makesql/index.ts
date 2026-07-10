@@ -66,5 +66,17 @@ export {
 } from './compile-relation';
 export type { RelationCompileBase } from './compile-relation';
 
+// Single-JSON-param array/batch forms for MySQL 8 + SQLite (epic #43/#45) — the
+// intentional deviation from v1's N-placeholder expansion (server-side JSON expansion).
+export { inListJson, JsonArrayConditions, conditionsFor } from './json-array';
+export {
+  mysqlInsertJson,
+  sqliteInsertJson,
+  mysqlUpdateManyJson,
+  sqliteUpdateManyJson,
+  mysqlJsonTableColumn,
+  rowsHaveDbToken,
+} from './json-batch';
+
 // bc IR wiring (a query rides runBehavior as a makeSQL component).
 export { makeSqlComponentIR, makeSqlInput } from './ir';

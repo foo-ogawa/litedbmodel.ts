@@ -18,8 +18,10 @@
  *   concatenate. There is NO relation-op / operator / "kind" for SQL structure.
  * - `= ANY`, `CROSS JOIN LATERAL`, `UNNEST`, cast, subquery, batch shapes are ALL
  *   TEXT inside `sql`. Never modeled.
- * - Array-param placeholder expansion is DRIVER-side (MySQL/SQLite `IN (?, …)`);
- *   PostgreSQL binds arrays directly (`= ANY(?::t[])`) so its text is static.
+ * - An array/rows param binds as ONE value with STATIC text on EVERY dialect
+ *   (epic #43/#45): PostgreSQL `= ANY(?::t[])` / `UNNEST`, MySQL/SQLite a single JSON
+ *   param expanded server-side (`MEMBER OF` / `JSON_TABLE` / `json_each`). There is no
+ *   array placeholder-count-expansion anywhere anymore.
  *
  * litedbmodel supplies (spec §11): the `makeSQL` catalog entry, its **handler**
  * (bind params → execute SQL), and the **compile** step that emits the tuned dialect

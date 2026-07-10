@@ -24,10 +24,18 @@ import type {
   UpdateManyBuildOptions,
   FindByPkeysOptions,
 } from '../../drivers/types';
-import { DBConditions, type ConditionObject } from '../../DBConditions';
+import type { ConditionObject } from '../../DBConditions';
 import { DBToken, DBImmediateValue, type SqlCastFormatter } from '../../DBValues';
 import type { MakeSQL } from './makesql';
 import { formatterFor } from './compile';
+import { conditionsFor } from './json-array';
+import {
+  mysqlInsertJson,
+  sqliteInsertJson,
+  mysqlUpdateManyJson,
+  sqliteUpdateManyJson,
+  rowsHaveDbToken,
+} from './json-batch';
 import type { Dialect } from './handler';
 
 /** The original dialect builder for a dialect (the exact object the runtime uses). */
@@ -145,9 +153,19 @@ export function compileInsertMany(dialect: Dialect, options: InsertManyBuildOpti
     }
   }
 
-  // One makeSQL INSERT component per group, via the SAME original buildInsert.
+  // One makeSQL INSERT component per group.
+  //
+  //  - PostgreSQL: UNCHANGED — the original `buildInsert` (UNNEST batch, byte-identical).
+  //  - MySQL/SQLite: the single-JSON-param form (JSON_TABLE / json_each), UNLESS the
+  //    group carries a DBToken value (e.g. `NOW()`) which can't be JSON-encoded — then it
+  //    falls back to the original `buildInsert` multi-VALUES for that group (correctness).
   const components: MakeSQL[] = [];
   for (const { columns, records: groupRecords, rawRecords: groupRawRecords } of grouped.values()) {
+    if (dialect !== 'postgres' && !rowsHaveDbToken(groupRecords, columns)) {
+      const jsonOpts = { tableName, columns, records: groupRecords, onConflict, onConflictIgnore, onConflictUpdate, returning };
+      components.push(dialect === 'mysql' ? mysqlInsertJson(jsonOpts) : sqliteInsertJson(jsonOpts));
+      continue;
+    }
     components.push(
       compileInsert(dialect, {
         tableName,
@@ -177,6 +195,23 @@ export function compileInsertMany(dialect: Dialect, options: InsertManyBuildOpti
  * (PG `CASE WHEN v._skip_c` / MySQL `IF(v._skip_c,…)` / SQLite `WHEN … THEN t.col`).
  */
 export function compileUpdateMany(dialect: Dialect, options: UpdateManyBuildOptions): MakeSQL {
+  // PostgreSQL: UNCHANGED (UNNEST). MySQL/SQLite: single-JSON-param form (JSON_TABLE
+  // join / CASE-over-json_each) with SKIP preserved — unless a DBToken value is present
+  // (can't be JSON-encoded), in which case fall back to the original builder.
+  if (dialect !== 'postgres') {
+    const allCols = [...options.keyColumns, ...options.updateColumns];
+    if (!rowsHaveDbToken(options.records, allCols)) {
+      const jsonOpts = {
+        tableName: options.tableName,
+        keyColumns: options.keyColumns,
+        updateColumns: options.updateColumns,
+        records: options.records,
+        skipMap: options.skipMap,
+        returning: options.returning,
+      };
+      return dialect === 'mysql' ? mysqlUpdateManyJson(jsonOpts) : sqliteUpdateManyJson(jsonOpts);
+    }
+  }
   const { sql, params } = builderFor(dialect).buildUpdateMany(options);
   return { sql, params };
 }
@@ -237,7 +272,7 @@ export function compileUpdateSingle(opts: {
     }
   }
 
-  const whereClause = new DBConditions(opts.conditions).compile(params, formatter);
+  const whereClause = conditionsFor(opts.conditions, opts.dialect).compile(params, formatter);
   if (!whereClause) throw new Error('UPDATE requires conditions');
 
   let sql = `UPDATE ${opts.tableName} SET ${setClauses.join(', ')} WHERE ${whereClause}`;
@@ -263,7 +298,7 @@ export function compileDelete(opts: {
 }): MakeSQL {
   const params: unknown[] = [];
   const formatter = opts.dialect === 'postgres' ? formatterFor(opts.dialect) : undefined;
-  const whereClause = new DBConditions(opts.conditions).compile(params, formatter);
+  const whereClause = conditionsFor(opts.conditions, opts.dialect).compile(params, formatter);
   if (!whereClause) throw new Error('DELETE requires conditions');
 
   let sql = `DELETE FROM ${opts.tableName} WHERE ${whereClause}`;
