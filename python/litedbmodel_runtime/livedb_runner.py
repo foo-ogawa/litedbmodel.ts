@@ -39,6 +39,7 @@ from litedbmodel_runtime import (  # noqa: E402
     PostgresDriver,
     execute_bundle,
     execute_transaction_bundle,
+    read_bundle,
 )
 
 SUPPORTED_CORPUS_VERSION = 2
@@ -111,7 +112,7 @@ def _encode(v: Any) -> Any:
 # ── per-dialect table lifecycle ────────────────────────────────────────────────
 
 # The tables the corpus touches (drop order respects FK dependents-first).
-_ALL_TABLES = ["post_tags", "posts", "tags", "docs", "users", "idem", "uniq", "outbox"]
+_ALL_TABLES = ["post_tags", "comments", "posts", "tags", "docs", "users", "idem", "uniq", "outbox"]
 
 
 def _reset_pg(driver: "PostgresDriver", schema: List[str]) -> None:
@@ -138,6 +139,19 @@ def _run_exec(driver, bundle, vector) -> Dict[str, Any]:
     return {"ok": ok, "detail": None if ok else f"result {json.dumps(result)} != {json.dumps(vector['expectedResult'])}"}
 
 
+def _run_read(driver, bundle, vector, expected_key) -> Dict[str, Any]:
+    """A read-RELATION EXECUTION vector: run the parent read + batch-load/hydrate ``with`` relations.
+
+    The hydrated shape is compared to the PER-DIALECT golden (``expected_key`` = ``expectedResultPg``
+    / ``expectedResultMysql``) — a limited hasMany's ``_rn`` window column is present on MySQL but
+    projected away by PG's LATERAL form (the ONE documented dialect divergence in the batch SQL).
+    """
+    expected = vector[expected_key]
+    result = _encode(read_bundle(bundle, dict(vector["input"]), driver, list(vector["with"])))
+    ok = _eq(result, expected)
+    return {"ok": ok, "detail": None if ok else f"result {json.dumps(result)} != {json.dumps(expected)}"}
+
+
 def _run_tx(driver, bundle, vector) -> Dict[str, Any]:
     result = _encode(execute_transaction_bundle(bundle, dict(vector["input"]), driver))
     result_ok = _eq(result, vector["expectedResult"])
@@ -154,7 +168,7 @@ def _run_tx(driver, bundle, vector) -> Dict[str, Any]:
     return {"ok": ok, "detail": None if ok else "; ".join(detail)}
 
 
-def _run_dialect_leg(dialect: str, driver, reset_fn, corpus, bundle_key, schema_key) -> Dict[str, int]:
+def _run_dialect_leg(dialect: str, driver, reset_fn, corpus, bundle_key, schema_key, read_expected_key) -> Dict[str, int]:
     t = {"pass": 0, "fail": 0}
     sys.stderr.write(f"\nlivedb-{dialect} — {len(corpus['vectors'])} vectors (real {dialect})\n")
     for v in corpus["vectors"]:
@@ -163,6 +177,8 @@ def _run_dialect_leg(dialect: str, driver, reset_fn, corpus, bundle_key, schema_
         try:
             if v["kind"] == "exec":
                 r = _run_exec(driver, bundle, v)
+            elif v["kind"] == "read":
+                r = _run_read(driver, bundle, v, read_expected_key)
             elif v["kind"] == "tx":
                 r = _run_tx(driver, bundle, v)
             else:
@@ -203,8 +219,8 @@ def main() -> int:
         return 3
 
     try:
-        pg_t = _run_dialect_leg("pg", pg, _reset_pg, corpus, "bundlePg", "schemaPg")
-        my_t = _run_dialect_leg("mysql", my, _reset_mysql, corpus, "bundleMysql", "schemaMysql")
+        pg_t = _run_dialect_leg("pg", pg, _reset_pg, corpus, "bundlePg", "schemaPg", "expectedResultPg")
+        my_t = _run_dialect_leg("mysql", my, _reset_mysql, corpus, "bundleMysql", "schemaMysql", "expectedResultMysql")
     finally:
         pg.close()
         my.close()

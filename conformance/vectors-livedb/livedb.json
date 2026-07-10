@@ -1,7 +1,7 @@
 {
   "suite": "livedb",
   "corpusVersion": 2,
-  "note": "Live-DB corpus (v2 makeSQL flip): exec/tx STATIC bundles (readGraph + statementsById / transaction plan) compiled for postgres + mysql, executed against REAL dockerized PG + MySQL by each language runtime; expectedResult/expectedDbState are the byte-true SQLite reference (dialect-invariant §10 promise). Includes #46 IN-list cases (int / empty / uuid) + relation batches so every language binds the no-cast `= ANY($1)` + `= ANY($1::int[])` on live PG.",
+  "note": "Live-DB corpus (v2 makeSQL flip): exec/tx STATIC bundles (readGraph + statementsById / transaction plan) compiled for postgres + mysql, executed against REAL dockerized PG + MySQL by each language runtime; expectedResult/expectedDbState are the byte-true SQLite reference (dialect-invariant §10 promise). Includes #46 IN-list cases (int / empty / uuid) + relation batches so every language binds the no-cast `= ANY($1)` + `= ANY($1::int[])` on live PG. Adds read-RELATION EXECUTION vectors (#43): the parent row list + batch-loaded/hydrated belongsTo/hasMany/hasMany-limit bundle.relations, byte-true to the TS readBundle eager path.",
   "vectors": [
     {
       "name": "Feed: status present + belongsTo/hasMany relations",
@@ -491,6 +491,7 @@
         "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
         "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
         "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
         "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
         "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
         "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
@@ -498,12 +499,16 @@
         "INSERT INTO users VALUES (8, 'Alan')",
         "INSERT INTO tags VALUES (10, 1, 'greeting')",
         "INSERT INTO tags VALUES (11, 1, 'first')",
-        "INSERT INTO tags VALUES (12, 2, 'world')"
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
       ],
       "schemaMysql": [
         "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
         "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
         "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
         "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
         "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
         "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
@@ -511,7 +516,10 @@
         "INSERT INTO users VALUES (8, 'Alan')",
         "INSERT INTO tags VALUES (10, 1, 'greeting')",
         "INSERT INTO tags VALUES (11, 1, 'first')",
-        "INSERT INTO tags VALUES (12, 2, 'world')"
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
       ],
       "expectedResult": {
         "authors": [
@@ -1019,6 +1027,7 @@
         "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
         "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
         "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
         "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
         "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
         "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
@@ -1026,12 +1035,16 @@
         "INSERT INTO users VALUES (8, 'Alan')",
         "INSERT INTO tags VALUES (10, 1, 'greeting')",
         "INSERT INTO tags VALUES (11, 1, 'first')",
-        "INSERT INTO tags VALUES (12, 2, 'world')"
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
       ],
       "schemaMysql": [
         "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
         "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
         "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
         "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
         "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
         "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
@@ -1039,7 +1052,10 @@
         "INSERT INTO users VALUES (8, 'Alan')",
         "INSERT INTO tags VALUES (10, 1, 'greeting')",
         "INSERT INTO tags VALUES (11, 1, 'first')",
-        "INSERT INTO tags VALUES (12, 2, 'world')"
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
       ],
       "expectedResult": {
         "authors": [
@@ -1560,6 +1576,7 @@
         "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
         "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
         "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
         "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
         "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
         "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
@@ -1567,12 +1584,16 @@
         "INSERT INTO users VALUES (8, 'Alan')",
         "INSERT INTO tags VALUES (10, 1, 'greeting')",
         "INSERT INTO tags VALUES (11, 1, 'first')",
-        "INSERT INTO tags VALUES (12, 2, 'world')"
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
       ],
       "schemaMysql": [
         "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
         "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
         "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
         "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
         "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
         "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
@@ -1580,7 +1601,10 @@
         "INSERT INTO users VALUES (8, 'Alan')",
         "INSERT INTO tags VALUES (10, 1, 'greeting')",
         "INSERT INTO tags VALUES (11, 1, 'first')",
-        "INSERT INTO tags VALUES (12, 2, 'world')"
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
       ],
       "expectedResult": {
         "authors": [
@@ -2224,6 +2248,1574 @@
           "title": "Doc C"
         }
       ]
+    },
+    {
+      "name": "Posts: belongsTo author hydrated onto each parent [#43]",
+      "kind": "read",
+      "input": {
+        "author_id": 7
+      },
+      "with": [
+        "author"
+      ],
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "postgres",
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+          },
+          "comments": {
+            "name": "comments",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "postgres",
+            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC"
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "postgres",
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+          }
+        }
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "mysql",
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+          },
+          "comments": {
+            "name": "comments",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "mysql",
+            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC"
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "mysql",
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+          }
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "expectedResultPg": [
+        {
+          "id": 1,
+          "author_id": 7,
+          "title": "Hello",
+          "status": "live",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          }
+        },
+        {
+          "id": 2,
+          "author_id": 7,
+          "title": "World",
+          "status": "draft",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          }
+        }
+      ],
+      "expectedResultMysql": [
+        {
+          "id": 1,
+          "author_id": 7,
+          "title": "Hello",
+          "status": "live",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          }
+        },
+        {
+          "id": 2,
+          "author_id": 7,
+          "title": "World",
+          "status": "draft",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Posts: hasMany comments (unlimited) hydrated as child lists [#43]",
+      "kind": "read",
+      "input": {
+        "author_id": 7
+      },
+      "with": [
+        "comments"
+      ],
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "postgres",
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+          },
+          "comments": {
+            "name": "comments",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "postgres",
+            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC"
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "postgres",
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+          }
+        }
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "mysql",
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+          },
+          "comments": {
+            "name": "comments",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "mysql",
+            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC"
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "mysql",
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+          }
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "expectedResultPg": [
+        {
+          "id": 1,
+          "author_id": 7,
+          "title": "Hello",
+          "status": "live",
+          "comments": [
+            {
+              "id": 100,
+              "post_id": 1,
+              "body": "nice"
+            },
+            {
+              "id": 101,
+              "post_id": 1,
+              "body": "agreed"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "author_id": 7,
+          "title": "World",
+          "status": "draft",
+          "comments": [
+            {
+              "id": 102,
+              "post_id": 2,
+              "body": "hi"
+            }
+          ]
+        }
+      ],
+      "expectedResultMysql": [
+        {
+          "id": 1,
+          "author_id": 7,
+          "title": "Hello",
+          "status": "live",
+          "comments": [
+            {
+              "id": 100,
+              "post_id": 1,
+              "body": "nice"
+            },
+            {
+              "id": 101,
+              "post_id": 1,
+              "body": "agreed"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "author_id": 7,
+          "title": "World",
+          "status": "draft",
+          "comments": [
+            {
+              "id": 102,
+              "post_id": 2,
+              "body": "hi"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Posts: hasMany-limit tags (per-parent cap) hydrated [#43]",
+      "kind": "read",
+      "input": {
+        "author_id": 7
+      },
+      "with": [
+        "tags"
+      ],
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "postgres",
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+          },
+          "comments": {
+            "name": "comments",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "postgres",
+            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC"
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "postgres",
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+          }
+        }
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "mysql",
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+          },
+          "comments": {
+            "name": "comments",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "mysql",
+            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC"
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "mysql",
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+          }
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "expectedResultPg": [
+        {
+          "id": 1,
+          "author_id": 7,
+          "title": "Hello",
+          "status": "live",
+          "tags": [
+            {
+              "id": 10,
+              "post_id": 1,
+              "label": "greeting"
+            },
+            {
+              "id": 11,
+              "post_id": 1,
+              "label": "first"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "author_id": 7,
+          "title": "World",
+          "status": "draft",
+          "tags": [
+            {
+              "id": 12,
+              "post_id": 2,
+              "label": "world"
+            }
+          ]
+        }
+      ],
+      "expectedResultMysql": [
+        {
+          "id": 1,
+          "author_id": 7,
+          "title": "Hello",
+          "status": "live",
+          "tags": [
+            {
+              "id": 10,
+              "post_id": 1,
+              "label": "greeting",
+              "_rn": 1
+            },
+            {
+              "id": 11,
+              "post_id": 1,
+              "label": "first",
+              "_rn": 2
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "author_id": 7,
+          "title": "World",
+          "status": "draft",
+          "tags": [
+            {
+              "id": 12,
+              "post_id": 2,
+              "label": "world",
+              "_rn": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Posts: belongsTo + hasMany + hasMany-limit all hydrated [#43]",
+      "kind": "read",
+      "input": {
+        "author_id": 7
+      },
+      "with": [
+        "author",
+        "comments",
+        "tags"
+      ],
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "postgres",
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+          },
+          "comments": {
+            "name": "comments",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "postgres",
+            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC"
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "postgres",
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+          }
+        }
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "mysql",
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+          },
+          "comments": {
+            "name": "comments",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "mysql",
+            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC"
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "mysql",
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+          }
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "expectedResultPg": [
+        {
+          "id": 1,
+          "author_id": 7,
+          "title": "Hello",
+          "status": "live",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          },
+          "comments": [
+            {
+              "id": 100,
+              "post_id": 1,
+              "body": "nice"
+            },
+            {
+              "id": 101,
+              "post_id": 1,
+              "body": "agreed"
+            }
+          ],
+          "tags": [
+            {
+              "id": 10,
+              "post_id": 1,
+              "label": "greeting"
+            },
+            {
+              "id": 11,
+              "post_id": 1,
+              "label": "first"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "author_id": 7,
+          "title": "World",
+          "status": "draft",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          },
+          "comments": [
+            {
+              "id": 102,
+              "post_id": 2,
+              "body": "hi"
+            }
+          ],
+          "tags": [
+            {
+              "id": 12,
+              "post_id": 2,
+              "label": "world"
+            }
+          ]
+        }
+      ],
+      "expectedResultMysql": [
+        {
+          "id": 1,
+          "author_id": 7,
+          "title": "Hello",
+          "status": "live",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          },
+          "comments": [
+            {
+              "id": 100,
+              "post_id": 1,
+              "body": "nice"
+            },
+            {
+              "id": 101,
+              "post_id": 1,
+              "body": "agreed"
+            }
+          ],
+          "tags": [
+            {
+              "id": 10,
+              "post_id": 1,
+              "label": "greeting",
+              "_rn": 1
+            },
+            {
+              "id": 11,
+              "post_id": 1,
+              "label": "first",
+              "_rn": 2
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "author_id": 7,
+          "title": "World",
+          "status": "draft",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          },
+          "comments": [
+            {
+              "id": 102,
+              "post_id": 2,
+              "body": "hi"
+            }
+          ],
+          "tags": [
+            {
+              "id": 12,
+              "post_id": 2,
+              "label": "world",
+              "_rn": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Posts: empty parent set → relations short-circuit, empty hydration [#43]",
+      "kind": "read",
+      "input": {
+        "author_id": 999
+      },
+      "with": [
+        "author",
+        "comments",
+        "tags"
+      ],
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "postgres",
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+          },
+          "comments": {
+            "name": "comments",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "postgres",
+            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC"
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "postgres",
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+          }
+        }
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "mysql",
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+          },
+          "comments": {
+            "name": "comments",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "mysql",
+            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC"
+          },
+          "tags": {
+            "name": "tags",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "mysql",
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+          }
+        }
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "expectedResultPg": [],
+      "expectedResultMysql": []
     },
     {
       "name": "create: gate-first tx commits (author exists, unique, idempotent)",

@@ -31,6 +31,12 @@ from .runtime import (
     execute_transaction_bundle,
     order_by_nulls,
 )
+from .relation import (
+    dedupe_keys,
+    distribute_to_parent,
+    read_bundle,
+    run_relation_op,
+)
 
 __version__ = "2.0.0"
 
@@ -67,4 +73,9 @@ __all__ = [
     "execute_bundle",
     "execute_transaction_bundle",
     "order_by_nulls",
+    # read-relation batch execution + hydration (#43)
+    "dedupe_keys",
+    "distribute_to_parent",
+    "read_bundle",
+    "run_relation_op",
 ]

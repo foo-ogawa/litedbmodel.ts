@@ -54,6 +54,7 @@ import {
   compileWriteBundle,
   executeBundle,
   executeTransactionBundle,
+  readBundle,
   publishBehaviors,
   components,
   SemanticBehavior,
@@ -112,6 +113,22 @@ class Blog extends SemanticBehavior {
   ByUuids($: In<{ ids: string[] }>) {
     return L.Select({ table: 'docs', select: ['doc_id', 'title'], where: [whereIn(inColumn($, 'doc_id'), $.ids)], order: 'doc_id ASC' });
   }
+
+  /**
+   * A PLAIN posts row list (a Select), the parent page for read-RELATION EXECUTION vectors (#43).
+   * Unlike `Feed` (whose output is a `{posts, authors}` Φ shape), this returns a bare row list, so
+   * the typed-object `readBundle` surface attaches the declaratively-selected `bundle.relations`
+   * (belongsTo `author`, hasMany `comments`, hasMany-limit `tags`) onto each post — the batch-load
+   * + hydrate the non-TS runtimes must now reproduce.
+   */
+  Posts($: In<{ author_id: number }>) {
+    return L.Select({
+      table: 'posts',
+      select: ['id', 'author_id', 'title', 'status'],
+      where: [whereEq($.author_id, $.author_id)],
+      order: 'id ASC',
+    });
+  }
 }
 
 class PostCommands extends SemanticBehavior {
@@ -151,12 +168,34 @@ const blogRelations: readonly RelationDecl[] = [
   },
 ];
 
+/**
+ * The read-relation declarations for the `Posts` parent page (read-RELATION EXECUTION, #43):
+ * belongsTo `author` (single key), hasMany `comments` (UNLIMITED — the plain `= ANY(?)` batch), and
+ * hasMany-limit `tags` (per-parent LATERAL/ROW_NUMBER window). All three ride the single-key
+ * `RelationOp` shape (`bundle.relations`) — the batch-load + hydrate every runtime must reproduce.
+ */
+const postReadRelations: readonly RelationDecl[] = [
+  { name: 'author', kind: 'belongsTo', targetTable: 'users', select: ['id', 'name'], parentKey: 'author_id', targetKey: 'id' },
+  { name: 'comments', kind: 'hasMany', targetTable: 'comments', select: ['id', 'post_id', 'body'], parentKey: 'id', targetKey: 'post_id', order: 'id ASC' },
+  {
+    name: 'tags',
+    kind: 'hasMany',
+    targetTable: 'tags',
+    select: ['id', 'post_id', 'label'],
+    parentKey: 'id',
+    targetKey: 'post_id',
+    order: 'id ASC',
+    limit: 2,
+  },
+];
+
 // ── The SQLite reference schema (from harness.ts) — the reference execution seam ──
 
 const READ_SCHEMA_SQLITE: readonly string[] = [
   `CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)`,
   `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`,
   `CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)`,
+  `CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)`,
   `INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')`,
   `INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')`,
   `INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')`,
@@ -165,6 +204,9 @@ const READ_SCHEMA_SQLITE: readonly string[] = [
   `INSERT INTO tags VALUES (10, 1, 'greeting')`,
   `INSERT INTO tags VALUES (11, 1, 'first')`,
   `INSERT INTO tags VALUES (12, 2, 'world')`,
+  `INSERT INTO comments VALUES (100, 1, 'nice')`,
+  `INSERT INTO comments VALUES (101, 1, 'agreed')`,
+  `INSERT INTO comments VALUES (102, 2, 'hi')`,
 ];
 
 // Fixed UUIDs for the #46 uuid IN-list coverage.
@@ -213,6 +255,7 @@ const READ_SCHEMA_PG: readonly string[] = [
   `CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)`,
   `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`,
   `CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)`,
+  `CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)`,
   `INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')`,
   `INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')`,
   `INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')`,
@@ -221,12 +264,16 @@ const READ_SCHEMA_PG: readonly string[] = [
   `INSERT INTO tags VALUES (10, 1, 'greeting')`,
   `INSERT INTO tags VALUES (11, 1, 'first')`,
   `INSERT INTO tags VALUES (12, 2, 'world')`,
+  `INSERT INTO comments VALUES (100, 1, 'nice')`,
+  `INSERT INTO comments VALUES (101, 1, 'agreed')`,
+  `INSERT INTO comments VALUES (102, 2, 'hi')`,
 ];
 
 const READ_SCHEMA_MYSQL: readonly string[] = [
   `CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)`,
   `CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))`,
   `CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))`,
+  `CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))`,
   `INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')`,
   `INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')`,
   `INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')`,
@@ -235,6 +282,9 @@ const READ_SCHEMA_MYSQL: readonly string[] = [
   `INSERT INTO tags VALUES (10, 1, 'greeting')`,
   `INSERT INTO tags VALUES (11, 1, 'first')`,
   `INSERT INTO tags VALUES (12, 2, 'world')`,
+  `INSERT INTO comments VALUES (100, 1, 'nice')`,
+  `INSERT INTO comments VALUES (101, 1, 'agreed')`,
+  `INSERT INTO comments VALUES (102, 2, 'hi')`,
 ];
 
 // PG: `docs.doc_id` is a REAL `uuid` column (the #46 uuid inference target).
@@ -306,7 +356,38 @@ interface LiveTxVector {
   expectedDbState: { query: string; rows: EncodedValue }[];
 }
 
-type LiveVector = LiveExecVector | LiveTxVector;
+/**
+ * A read-RELATION EXECUTION vector (#43): the parent read returns a bare row list and the runner
+ * must batch-load + hydrate the declaratively-selected `bundle.relations` (`with`) onto each parent
+ * — the belongsTo/hasMany/hasMany-limit batch every language runtime must reproduce. `expectedResult`
+ * is the byte-true SQLite reference captured by the TS `readBundle` typed-object surface (the eager
+ * relation path — the SAME `runRelationOp`/`distributeToParent` the runtimes port).
+ */
+interface LiveReadVector {
+  name: string;
+  kind: 'read';
+  input: EncodedValue;
+  /** The relation names to declaratively select + hydrate onto each parent row (spec §5). */
+  with: readonly string[];
+  bundlePg: SqlBundle;
+  bundleMysql: SqlBundle;
+  schemaPg: readonly string[];
+  schemaMysql: readonly string[];
+  /**
+   * PER-DIALECT expected hydrated result. The hasMany-LIMIT relation SQL diverges by dialect in the
+   * ORIGINAL v1 `LazyRelation` (PG `CROSS JOIN LATERAL` projects the real child columns; MySQL/SQLite
+   * `ROW_NUMBER() OVER` CTE additionally leaks the window column `_rn`). So the hydrated child shape
+   * for a limited hasMany is genuinely dialect-dependent — NOT hand-authored, a documented property
+   * of the compiled batch SQL. `expectedResultMysql` is the byte-true SQLite `readBundle` reference
+   * (identical ROW_NUMBER path); `expectedResultPg` is that reference with the `_rn` window column
+   * dropped from hydrated child rows (mirroring PG's LATERAL `tags.*` projection). belongsTo / plain
+   * hasMany / empty forms are dialect-invariant, so the two goldens coincide there.
+   */
+  expectedResultPg: EncodedValue;
+  expectedResultMysql: EncodedValue;
+}
+
+type LiveVector = LiveExecVector | LiveTxVector | LiveReadVector;
 
 function seedDb(schema: readonly string[]): InstanceType<typeof Database> {
   const db = new Database(':memory:');
@@ -323,6 +404,50 @@ function execReference(bundle: SqlBundle, input: Record<string, unknown>, schema
   const result = executeBundle(bundle, input as never, { db });
   db.close();
   return encodeValue(result);
+}
+
+/**
+ * The reference read+hydrate result — captured by running the TS `readBundle` typed-object surface
+ * (the eager relation path: the primary row list + declaratively-selected `bundle.relations` batch-
+ * loaded + hydrated onto each parent via `runRelationOp`/`distributeToParent`). Byte-true golden-
+ * from-originals: the SAME `LazyRelation`-parity SQL + hydration the runtimes must reproduce.
+ */
+function readReference(
+  bundle: SqlBundle,
+  input: Record<string, unknown>,
+  schema: readonly string[],
+  withNames: readonly string[],
+): { pg: EncodedValue; mysql: EncodedValue } {
+  const db = seedDb(schema);
+  const withSel = Object.fromEntries(withNames.map((n) => [n, true as const]));
+  const result = readBundle(bundle, input as never, { db, with: withSel });
+  db.close();
+  // The SQLite reference == the MySQL live shape (both use the ROW_NUMBER CTE for a limited hasMany,
+  // so both carry the `_rn` window column). PG's LATERAL form projects the real child columns only,
+  // so its golden is the SAME reference with `_rn` dropped from every hydrated child row — the ONE
+  // documented dialect divergence in the compiled relation SQL (never a hand-authored result).
+  const mysql = encodeValue(result);
+  const pg = encodeValue(stripRnFromChildren(clone(result) as unknown[]));
+  return { pg, mysql };
+}
+
+/** Drop the leaked `_rn` window column from every hydrated child row (PG LATERAL parity). */
+function stripRnFromChildren(rows: unknown[]): unknown[] {
+  for (const row of rows) {
+    if (row === null || typeof row !== 'object') continue;
+    for (const [k, v] of Object.entries(row as Record<string, unknown>)) {
+      if (Array.isArray(v)) {
+        for (const child of v) {
+          if (child !== null && typeof child === 'object' && '_rn' in (child as object)) {
+            delete (child as Record<string, unknown>)._rn;
+          }
+        }
+      } else if (v !== null && typeof v === 'object' && '_rn' in (v as object)) {
+        delete (v as Record<string, unknown>)._rn;
+      }
+    }
+  }
+  return rows;
 }
 
 function txReference(
@@ -429,6 +554,45 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
     };
   });
 
+  // ── read-RELATION EXECUTION vectors (#43): batch-load + hydrate bundle.relations onto parents ──
+  interface ReadSpec {
+    name: string;
+    input: Record<string, unknown>;
+    with: readonly string[];
+    relations: readonly RelationDecl[];
+  }
+  const readSpecs: ReadSpec[] = [
+    // belongsTo (single key) alone: each post gets its `author` object (or null).
+    { name: 'Posts: belongsTo author hydrated onto each parent [#43]', input: { author_id: 7 }, with: ['author'], relations: postReadRelations },
+    // hasMany UNLIMITED (plain `= ANY(?)` batch): each post gets its `comments` list ([] when none).
+    { name: 'Posts: hasMany comments (unlimited) hydrated as child lists [#43]', input: { author_id: 7 }, with: ['comments'], relations: postReadRelations },
+    // hasMany with per-parent limit=2 (LATERAL / ROW_NUMBER window): capped `tags` list per post.
+    { name: 'Posts: hasMany-limit tags (per-parent cap) hydrated [#43]', input: { author_id: 7 }, with: ['tags'], relations: postReadRelations },
+    // All three cardinalities at once (independent sibling relations — the #40 parallel fan-out set).
+    { name: 'Posts: belongsTo + hasMany + hasMany-limit all hydrated [#43]', input: { author_id: 7 }, with: ['author', 'comments', 'tags'], relations: postReadRelations },
+    // EMPTY parent set → every relation short-circuits (no query), each parent hydrates empty.
+    { name: 'Posts: empty parent set → relations short-circuit, empty hydration [#43]', input: { author_id: 999 }, with: ['author', 'comments', 'tags'], relations: postReadRelations },
+  ];
+
+  const read: LiveReadVector[] = readSpecs.map((s) => {
+    const pg = compileBundle(blog, 'Posts', s.relations, 'postgres');
+    const mysql = compileBundle(blog, 'Posts', s.relations, 'mysql');
+    const sqlite = compileBundle(blog, 'Posts', s.relations, 'sqlite');
+    const ref = readReference(sqlite, s.input, READ_SCHEMA_SQLITE, s.with);
+    return {
+      name: s.name,
+      kind: 'read',
+      input: encodeValue(s.input),
+      with: s.with,
+      bundlePg: clone(pg),
+      bundleMysql: clone(mysql),
+      schemaPg: READ_SCHEMA_PG,
+      schemaMysql: READ_SCHEMA_MYSQL,
+      expectedResultPg: ref.pg,
+      expectedResultMysql: ref.mysql,
+    };
+  });
+
   const dbAsserts = [
     'SELECT id, author_id, title FROM posts ORDER BY id',
     'SELECT id, post_count FROM users ORDER BY id',
@@ -465,8 +629,10 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
       'transaction plan) compiled for postgres + mysql, executed against REAL dockerized PG + MySQL ' +
       'by each language runtime; expectedResult/expectedDbState are the byte-true SQLite reference ' +
       '(dialect-invariant §10 promise). Includes #46 IN-list cases (int / empty / uuid) + relation ' +
-      'batches so every language binds the no-cast `= ANY($1)` + `= ANY($1::int[])` on live PG.',
-    vectors: [...exec, ...tx],
+      'batches so every language binds the no-cast `= ANY($1)` + `= ANY($1::int[])` on live PG. ' +
+      'Adds read-RELATION EXECUTION vectors (#43): the parent row list + batch-loaded/hydrated ' +
+      'belongsTo/hasMany/hasMany-limit bundle.relations, byte-true to the TS readBundle eager path.',
+    vectors: [...exec, ...read, ...tx],
   };
 }
 
