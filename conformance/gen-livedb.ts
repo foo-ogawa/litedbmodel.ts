@@ -67,6 +67,13 @@ import {
   whereGe,
   whereIn,
   inColumn,
+  whereBetween,
+  whereLike,
+  whereCast,
+  whereImmediate,
+  whereTupleIn,
+  whereInSubquery,
+  whereExists,
   when,
   ne,
   opt,
@@ -150,6 +157,97 @@ class Blog extends SemanticBehavior {
   // author_id ASC`. READ_SCHEMA posts: author 7 → 2, author 8 → 1.
   GroupByAuthor(_$: In<Record<string, never>>) {
     return L.Select({ table: 'posts', select: ['author_id', 'COUNT(*) as n'], group: 'author_id', order: 'author_id ASC' });
+  }
+
+  // ── V0 R2/R3/R4/R5/R6 live constructs (additive authoring surface, all v1-sourced SQL) ────────
+  // Every method SELECTs stable scalar columns and uses only constructs that execute IDENTICALLY on
+  // PG + MySQL + SQLite (the reference), so the assembled result is dialect-invariant. READ_SCHEMA
+  // posts: (1,7,'Hello','live'), (2,7,'World','draft'), (3,8,'Other','live').
+
+  /** R3 BETWEEN: `id BETWEEN ? AND ?` with runtime bounds → posts in [lo,hi]. */
+  IdBetween($: In<{ lo: number; hi: number }>) {
+    return L.Select({ table: 'posts', select: ['id', 'title'], where: [whereBetween($, 'id', $.lo, $.hi)], order: 'id ASC' });
+  }
+  /** R3 LIKE: `title LIKE ?` with a runtime pattern (case-sensitive, portable) → matching posts. */
+  TitleLike($: In<{ pat: string }>) {
+    return L.Select({ table: 'posts', select: ['id', 'title'], where: [whereLike($, 'title', $.pat)], order: 'id ASC' });
+  }
+  /** R3 tuple-IN: `(author_id, id) IN ((7,1),(7,2))` composite membership → posts 1,2. */
+  TupleIn(_$: In<Record<string, never>>) {
+    return L.Select({ table: 'posts', select: ['id', 'title'], where: [whereTupleIn(_$, ['author_id', 'id'], [[7, 1], [7, 2]])], order: 'id ASC' });
+  }
+  /** R3 dbImmediate: `author_id = 7` inline SQL literal (NO bound param) → author-7 posts. */
+  ImmediateEq(_$: In<Record<string, never>>) {
+    return L.Select({ table: 'posts', select: ['id', 'title'], where: [whereImmediate(_$, 'author_id', '7')], order: 'id ASC' });
+  }
+  /** R3 dbCast: `doc_id = ?::uuid` on PG (cast), `doc_id = ?` on MySQL/SQLite → the matching doc. */
+  DocByCast($: In<{ v: string }>) {
+    return L.Select({ table: 'docs', select: ['doc_id', 'title'], where: [whereCast($, 'doc_id', 'uuid', $.v)], order: 'doc_id ASC' });
+  }
+  /** R3 FOR UPDATE: `SELECT … WHERE author_id = ? FOR UPDATE` — the row-lock hint (rows unchanged). */
+  ForUpdate($: In<{ author_id: number }>) {
+    return L.Select({ table: 'posts', select: ['id', 'title'], where: [whereEq($.author_id, $.author_id)], order: 'id ASC', forUpdate: 'true' });
+  }
+  /** FOR-UPDATE reference twin (no lock hint) — SQLite can't parse FOR UPDATE; rows are identical. */
+  ForUpdateRef($: In<{ author_id: number }>) {
+    return L.Select({ table: 'posts', select: ['id', 'title'], where: [whereEq($.author_id, $.author_id)], order: 'id ASC' });
+  }
+  /** R2 IN(subquery): posts whose author_id IN (SELECT id FROM users WHERE name = 'Ada') → author-7. */
+  InSubquery(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [whereInSubquery(_$, 'author_id', { sql: "SELECT id FROM users WHERE name = ?", params: ['Ada'] })],
+      order: 'id ASC',
+    });
+  }
+  /** R2 NOT IN(subquery): posts whose author_id NOT IN (SELECT id FROM users WHERE name = 'Ada'). */
+  NotInSubquery(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [whereInSubquery(_$, 'author_id', { sql: "SELECT id FROM users WHERE name = ?", params: ['Ada'] }, true)],
+      order: 'id ASC',
+    });
+  }
+  /** R2 EXISTS: posts that HAVE a comment (correlated EXISTS on comments.post_id = posts.id). */
+  ExistsComment(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [whereExists(_$, { sql: 'SELECT 1 FROM comments WHERE comments.post_id = posts.id' })],
+      order: 'id ASC',
+    });
+  }
+  /** R2 NOT EXISTS: posts that have NO comment. */
+  NotExistsComment(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [whereExists(_$, { sql: 'SELECT 1 FROM comments WHERE comments.post_id = posts.id' }, true)],
+      order: 'id ASC',
+    });
+  }
+  /** R5 JOIN: posts JOIN users → each post's author name (stable scalar projection). */
+  JoinAuthor(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['posts.id', 'users.name'],
+      join: 'JOIN users ON users.id = posts.author_id',
+      order: 'posts.id ASC',
+    });
+  }
+  /** R4 CTE: WITH live_posts AS (SELECT … WHERE status = 'live') SELECT from it → live posts. */
+  CteLive(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'live_posts', select: ['id', 'title'],
+      cte: { name: 'live_posts', sql: 'SELECT id, title FROM posts WHERE status = ?' }, cteParams: ['live'],
+      order: 'id ASC',
+    });
+  }
+  /** R6 append (HAVING): grouped counts filtered by HAVING COUNT(*) > 1 → only author 7. The
+   *  ORDER BY rides INSIDE the raw `append` tail (v1 `_buildSelectSQL` appends `append` LAST, after
+   *  GROUP BY — so HAVING+ORDER BY must be one trailing clause, not a separate `order` port). */
+  HavingAuthor(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['author_id', 'COUNT(*) as n'],
+      group: 'author_id', append: 'HAVING COUNT(*) > 1 ORDER BY author_id ASC',
+    });
   }
 
   // count() (#47 item 2 — v1 `DBModel._count`): `SELECT COUNT(*) as count FROM posts[ WHERE …]`.
@@ -814,6 +912,15 @@ interface ExecSpec {
   schemaSqlite: readonly string[];
   schemaPg: readonly string[];
   schemaMysql: readonly string[];
+  /**
+   * OPTIONAL SQLite-reference entry override. For `FOR UPDATE` (V0 R3): SQLite does NOT parse the
+   * `FOR UPDATE` row-lock hint (it is a PG/MySQL locking clause, orthogonal to the row RESULT — the
+   * same rows are returned with or without it). So the byte-true reference is captured from an
+   * OTHERWISE-IDENTICAL entry that omits the `forUpdate` port; the PG/MySQL live bundles keep the
+   * real `FOR UPDATE` text and prove it EXECUTES and returns those same rows. The lock hint's
+   * presence is byte-asserted separately in makesql-golden §D.
+   */
+  refEntry?: string;
 }
 
 function buildCorpus(): { suite: string; corpusVersion: number; note: string; vectors: LiveVector[] } {
@@ -967,12 +1074,41 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
       schemaPg: READ_SCHEMA_PG,
       schemaMysql: READ_SCHEMA_MYSQL,
     },
+    // ── V0 R2/R3/R4/R5/R6 live exec vectors (the ADDED authoring surface, live on PG + MySQL) ──
+    // R3 BETWEEN: id in [1,2] → posts 1,2.
+    { name: 'IdBetween: id BETWEEN 1 AND 2 → posts 1,2 [R3]', entry: 'IdBetween', input: { lo: 1, hi: 2 }, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // R3 LIKE: title LIKE 'Wor%' → post 2 ('World'). Case-sensitive pattern (portable across dialects).
+    { name: "TitleLike: title LIKE 'Wor%' → post 2 [R3]", entry: 'TitleLike', input: { pat: 'Wor%' }, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // R3 tuple-IN: (author_id, id) IN ((7,1),(7,2)) → posts 1,2.
+    { name: 'TupleIn: (author_id, id) IN ((7,1),(7,2)) → posts 1,2 [R3]', entry: 'TupleIn', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // R3 dbImmediate: author_id = 7 inline literal → posts 1,2.
+    { name: 'ImmediateEq: author_id = 7 (inline literal, no bind) → posts 1,2 [R3]', entry: 'ImmediateEq', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // R3 dbCast: doc_id = ?::uuid on PG (uuid column), doc_id = ? on MySQL/SQLite (char) → 1 doc.
+    { name: 'DocByCast: doc_id = ?::uuid (PG cast) / = ? (MySQL·SQLite) → 1 doc [R3]', entry: 'DocByCast', input: { v: DOC_UUIDS[1] }, relations: [], schemaSqlite: INLIST_SCHEMA_SQLITE, schemaPg: INLIST_SCHEMA_PG, schemaMysql: INLIST_SCHEMA_MYSQL },
+    // R3 FOR UPDATE: author 7 posts with the row-lock hint (SQLite reference omits FOR UPDATE).
+    { name: 'ForUpdate: SELECT … WHERE author_id = 7 FOR UPDATE (rows unchanged) [R3]', entry: 'ForUpdate', refEntry: 'ForUpdateRef', input: { author_id: 7 }, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // R2 IN(subquery): author_id IN (SELECT id FROM users WHERE name='Ada') → Ada=7 → posts 1,2.
+    { name: 'InSubquery: author_id IN (SELECT id FROM users WHERE name=?) → posts 1,2 [R2]', entry: 'InSubquery', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // R2 NOT IN(subquery): author_id NOT IN (Ada=7) → post 3 (author 8).
+    { name: 'NotInSubquery: author_id NOT IN (SELECT id … name=?) → post 3 [R2]', entry: 'NotInSubquery', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // R2 EXISTS: posts having a comment (comments: post 1 ×2, post 2 ×1) → posts 1,2.
+    { name: 'ExistsComment: EXISTS (correlated comment) → posts 1,2 [R2]', entry: 'ExistsComment', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // R2 NOT EXISTS: posts with no comment → post 3.
+    { name: 'NotExistsComment: NOT EXISTS (no comment) → post 3 [R2]', entry: 'NotExistsComment', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // R5 JOIN: posts JOIN users → {id, name} per post (author names Ada/Ada/Alan).
+    { name: 'JoinAuthor: posts JOIN users ON author → author name per post [R5]', entry: 'JoinAuthor', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // R4 CTE: WITH live_posts AS (WHERE status='live') → live posts 1,3.
+    { name: "CteLive: WITH live_posts AS (status='live') → posts 1,3 [R4]", entry: 'CteLive', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // R6 append (HAVING): GROUP BY author_id HAVING COUNT(*) > 1 → only author 7 (2 posts).
+    { name: 'HavingAuthor: GROUP BY author_id HAVING COUNT(*) > 1 → author 7 [R6]', entry: 'HavingAuthor', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
   ];
 
   const exec: LiveExecVector[] = execSpecs.map((s) => {
     const pg = compileBundle(blog, s.entry, s.relations, 'postgres');
     const mysql = compileBundle(blog, s.entry, s.relations, 'mysql');
-    const sqlite = compileBundle(blog, s.entry, s.relations, 'sqlite');
+    // The SQLite REFERENCE bundle may come from a different entry (e.g. FOR UPDATE → its lock-free
+    // twin, since SQLite can't parse FOR UPDATE and the hint doesn't change the rows).
+    const sqlite = compileBundle(blog, s.refEntry ?? s.entry, s.relations, 'sqlite');
     return {
       name: s.name,
       kind: 'exec',
