@@ -50,6 +50,13 @@ const repoRoot = resolve(scriptDir, '..');
 // litedbmodel's runtime closure (verified: no `Codec::`/`Envelope::`/… call sites in the
 // vendored set) and are intentionally not vendored.
 const VENDORED_FILES = [
+  // Namespace-level shared constants (bc 0.2.3, foo-ogawa/behavior-contracts#… split
+  // FORBIDDEN_OBJECT_KEY out of ExprEval.php into its own file-scope const so ExprEval and
+  // Codec share one SSoT regardless of class-autoload order). ExprEval.php below references
+  // the bare `FORBIDDEN_OBJECT_KEY` constant, which a file-scope const in a PSR-4-only
+  // package would NOT auto-define — so this file is also wired into composer's `files`
+  // autoload (php/composer.json) exactly as upstream bc wires its own.
+  'Constants.php',
   'ExprFailure.php',
   'ExprEval.php',
   'PlanFailure.php',

@@ -15,7 +15,10 @@
     "autoload": {
         "psr-4": {
             "LiteDbModel\\Runtime\\": "src/"
-        }
+        },
+        "files": [
+            "src/BehaviorContracts/Constants.php"
+        ]
     },
     "autoload-dev": {
         "psr-4": {

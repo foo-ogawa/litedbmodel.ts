@@ -20,6 +20,7 @@ declare(strict_types=1);
  */
 
 $root = dirname(__DIR__, 2); // php/conformance -> php -> repo root
+require $root . '/php/src/BehaviorContracts/Constants.php';
 require $root . '/php/src/BehaviorContracts/ExprFailure.php';
 require $root . '/php/src/BehaviorContracts/ExprEval.php';
 require $root . '/php/src/BehaviorContracts/PlanFailure.php';

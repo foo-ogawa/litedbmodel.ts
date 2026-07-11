@@ -40,13 +40,8 @@ declare(strict_types=1);
 
 namespace LiteDbModel\Runtime\BehaviorContracts;
 
-/**
- * 禁止キー（expression-ir.md §2.3/§8）。IR/JSON 由来の任意文字列キーから object を
- * 構築するすべての経路で own key "__proto__" を fail-closed で拒否する。JS では
- * prototype セッタを踏んでキーが消える一方、PHP/Python/Rust/Go は保持するため、
- * 同一 IR が言語間で発散する（prototype pollution 対策）。全言語で FORBIDDEN_KEY。
- */
-const FORBIDDEN_OBJECT_KEY = '__proto__';
+// FORBIDDEN_OBJECT_KEY は Constants.php（composer `files` autoload で常時ロード）に定義。
+// ExprEval / Codec の双方が参照するため、load 順に依存しない位置へ移した（SSoT は 1 か所）。
 
 final class ExprEval
 {

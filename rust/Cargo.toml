@@ -18,6 +18,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # behavior-contracts (crates.io): the shared common core the SCP runtime delegates the CLOSED
 # Expression-IR evaluation to, mirroring the TS reference's npm dependency. Published crate — NO
 # local `path = "../.."` (the no-local-deps gate forbids it).
-behavior-contracts = "0.2.0"
+behavior-contracts = "0.2.3"
 # In-process SQLite for the conformance bar (bundled amalgamation → no system dep).
 rusqlite = { version = "0.32", features = ["bundled"] }
