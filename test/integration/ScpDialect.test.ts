@@ -672,6 +672,25 @@ describe('WS6 integration — Postgres: SCP-compiled SQL executes + parity with 
     expect(t2).toEqual(['r9']); // tenant 2 doc 10 → r9 only
   });
 
+  it('composite hasMany + per-parent LIMIT (tenant_id, doc_id) → revs: STATIC LATERAL caps live on PG (#47 last gap)', async () => {
+    const op: RelationOp = compileRelationOp({
+      name: 'latestRev', kind: 'hasMany', targetTable: T_REVS, select: ['tenant_id', 'doc_id', 'rev'],
+      parentKeys: ['tenant_id', 'doc_id'], targetKeys: ['tenant_id', 'doc_id'], order: 'rev DESC', limit: 1, dialect: 'postgres',
+    });
+    const tuples = [[1, 10], [1, 11], [2, 10]];
+    const { sql, params } = renderCompositeRelation(op, ['tenant_id', 'doc_id'], tuples);
+    // STATIC composite-LIMITED = v1 LATERAL over per-column unnest (length-independent, deferred cast).
+    expect(sql).toContain('unnest($1::int[], $2::int[])');
+    expect(sql).toContain('CROSS JOIN LATERAL');
+    expect(sql).toContain('ORDER BY rev DESC LIMIT 1');
+    const rows = await pgQuery(pgPool!, sql, params);
+    // Each parent keeps exactly its highest rev: (1,10)→r2 [capped from r1,r2], (1,11)→r3, (2,10)→r9.
+    const got = rows
+      .map((r) => `${Number(r.tenant_id)}/${Number(r.doc_id)}=${String(r.rev)}`)
+      .sort();
+    expect(got).toEqual(['1/10=r2', '1/11=r3', '2/10=r9']);
+  });
+
   it('write-tx Command (Insert + derive counter) commits atomically as ONE tx on real PG', async () => {
     const contract = publishBehaviors(CreatePostWithCount);
     const bundle = compileWriteBundle(contract, 'Create', postCountWrites, 'create', 'postgres');
@@ -902,6 +921,24 @@ describe('WS6 integration — MySQL: SCP-compiled SQL executes + parity with v1 
     const t2 = rows.filter((r) => Number(r.tenant_id) === 2).map((r) => String(r.rev)).sort();
     expect(t1).toEqual(['r1', 'r2']);
     expect(t2).toEqual(['r9']);
+  });
+
+  it('composite hasMany + per-parent LIMIT (tenant_id, doc_id) → revs: STATIC ROW_NUMBER caps live on MySQL (#47 last gap)', async () => {
+    const op: RelationOp = compileRelationOp({
+      name: 'latestRev', kind: 'hasMany', targetTable: T_REVS, select: ['tenant_id', 'doc_id', 'rev'],
+      parentKeys: ['tenant_id', 'doc_id'], targetKeys: ['tenant_id', 'doc_id'], order: 'rev DESC', limit: 1, dialect: 'mysql',
+    });
+    const { sql, params } = renderCompositeRelation(op, ['tenant_id', 'doc_id'], [[1, 10], [1, 11], [2, 10]]);
+    // STATIC composite-LIMITED = v1 ROW_NUMBER window + static JSON key-set predicate (no tuple-IN).
+    expect(sql).toContain('ROW_NUMBER() OVER (PARTITION BY tenant_id, doc_id ORDER BY rev DESC)');
+    expect(sql).toContain('JSON_TABLE');
+    expect(sql).not.toContain('IN ((?, ?)');
+    const rows = await myQuery(myConn!, sql, params);
+    const got = rows
+      .map((r) => `${Number(r.tenant_id)}/${Number(r.doc_id)}=${String(r.rev)}`)
+      .sort();
+    // Each parent keeps exactly its highest rev: (1,10)→r2 [capped], (1,11)→r3, (2,10)→r9.
+    expect(got).toEqual(['1/10=r2', '1/11=r3', '2/10=r9']);
   });
 
   it('write-tx Command (Insert + derive counter) commits atomically as ONE tx on real MySQL', async () => {

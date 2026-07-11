@@ -386,5 +386,80 @@ export function compileCompositeKeyLimited(
   });
 }
 
+// ============================================================================
+// Composite-key, per-parent limit — STATIC (length-independent) form (#47 last gap).
+// ============================================================================
+
+/**
+ * The STATIC composite-key per-parent-LIMIT batch form (#47 last completeness gap) — the
+ * length-INDEPENDENT sibling of {@link compileCompositeKeyLimited}, so the compiled `op.sql` is
+ * FIXED (one array param per key column on PG; ONE JSON array-of-tuples param on MySQL/SQLite) and
+ * can be a STATIC bundle op — exactly the property {@link compileSingleKeyLimited} and
+ * {@link compileCompositeKeyStaticUnlimited} already have.
+ *
+ * The per-parent window is IDENTICAL to the single-key-limited path:
+ *   - **PG**: `CROSS JOIN LATERAL` over `unnest(?::t1[], ?::t2[])` — BYTE-identical to v1's
+ *     `batchLoadWithLateralComposite` (the composite LATERAL is already structurally
+ *     length-independent; only the element-type cast was value-derived, and that is DEFERRED (#46)
+ *     to render from the real keys via {@link PG_ARRAY_CAST_TOKEN}). No deviation on PG.
+ *   - **MySQL/SQLite**: the SAME `ROW_NUMBER() OVER (PARTITION BY <keys> ORDER BY <order>)` CTE +
+ *     `_rn <= limit` filter v1's `batchLoadWithRowNumberComposite` emits — but the CTE membership
+ *     WHERE is the STATIC JSON-tuple predicate ({@link compositeJsonMembership}) instead of v1's
+ *     value-dependent `(k1,k2) IN ((?,?),…)`. This is the owner-sanctioned static deviation the
+ *     composite UNLIMITED form ({@link compileCompositeKeyStaticUnlimited}) and the single-key
+ *     IN-list already use: the JSON subquery selects the SAME child rows the tuple-IN would, the
+ *     window partitions/orders identically, so it is RESULT-parity to v1 (proven live). The v1
+ *     literal `(k1,k2) IN ((?,?),…)` byte-form stays proven by the golden
+ *     {@link compileCompositeKeyLimited}.
+ */
+export function compileCompositeKeyStaticLimited(
+  opts: RelationCompileBase & { targetKeys: string[]; limit: number },
+): MakeSQL {
+  const { tableName, targetKeys, limit } = opts;
+  if (opts.dialect === 'postgres') {
+    // PG LATERAL composite — ONE array param per key column (length-independent). Deferred cast
+    // (#46): each element type resolved at render from that column's real key array.
+    const unnestParams = targetKeys
+      .map((k) => `?::${pgArrayCastType([], opts.sqlCastMap?.get(k), opts.deferPgArrayCast)}`)
+      .join(', ');
+    const keyAliases = targetKeys.map((_, i) => `key${i}`).join(', ');
+    const keyConditions = targetKeys
+      .map((key, i) => `${tableName}.${key} = _keys.key${i}`)
+      .join(' AND ');
+    const lateralConditions: ConditionObject = { __raw__: keyConditions, ...opts.conditions };
+    const inner = compileSelect({
+      dialect: opts.dialect,
+      tableName,
+      conditions: lateralConditions,
+      order: opts.order,
+      limit,
+    });
+    const sql =
+      `SELECT ${tableName}.* FROM unnest(${unnestParams}) AS _keys(${keyAliases}) ` +
+      `CROSS JOIN LATERAL (${inner.sql}) ${tableName}`;
+    // One placeholder array PER column fixes the arity (each binds one array param at execute time).
+    return { sql, params: [...targetKeys.map(() => [null]), ...inner.params] };
+  }
+
+  // MySQL/SQLite: the SAME ROW_NUMBER composite CTE + `_rn <= limit` as v1, but with the STATIC
+  // JSON-membership WHERE (one JSON array-of-tuples param) in place of v1's `(k1,k2) IN ((?,?),…)`.
+  const orderBy = opts.order || targetKeys.join(', ');
+  const partitionBy = targetKeys.join(', ');
+  const jsonSubquery = compositeJsonMembership(opts.dialect, tableName, targetKeys);
+  const cteConditions: ConditionObject = { __raw__: [jsonSubquery, [[null]]], ...opts.conditions };
+  const cte = compileSelect({
+    dialect: opts.dialect,
+    tableName,
+    select: `*, ROW_NUMBER() OVER (PARTITION BY ${partitionBy} ORDER BY ${orderBy}) AS _rn`,
+    conditions: cteConditions,
+  });
+  return compileSelect({
+    dialect: opts.dialect,
+    tableName: 'ranked',
+    conditions: { __raw__: `_rn <= ${limit}` },
+    cte: { name: 'ranked', sql: cte.sql, params: cte.params },
+  });
+}
+
 // Silence unused import in builds where DBConditions is only referenced via ConditionObject.
 void DBConditions;

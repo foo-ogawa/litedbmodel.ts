@@ -36,6 +36,7 @@ import {
   compileCompositeKeyUnlimited,
   compileCompositeKeyStaticUnlimited,
   compileCompositeKeyLimited,
+  compileCompositeKeyStaticLimited,
   compileSelectNode,
   resolvePgArrayCast,
   type Dialect,
@@ -1163,6 +1164,95 @@ describe('C. Composite STATIC relation form (#47 item 1) — PG byte-matches v1 
       'postgres',
     ).sql;
     expect(oneKey).not.toBe(twoKey); // fewer key columns → different unnest arity → golden moves
+  });
+});
+
+// ===========================================================================
+// C. Composite STATIC per-parent-LIMIT relation form (#47 LAST completeness gap).
+//
+// The STATIC composite-limited op (compileCompositeKeyStaticLimited) is length-INDEPENDENT so the
+// op.sql is fixed (one array param per key column on PG; ONE JSON array-of-tuples param on
+// MySQL/SQLite). The GOLDEN is the REAL v1 composite-limited builder (compileCompositeKeyLimited,
+// proven above to byte-match LazyRelation's batchLoadWithLateralComposite /
+// batchLoadWithRowNumberComposite on every dialect):
+//   - PG: the static LATERAL form (deferred casts resolved from the same int keys) is
+//     BYTE-IDENTICAL to v1 — the composite LATERAL is already structurally length-independent.
+//   - MySQL/SQLite: the static form keeps v1's EXACT ROW_NUMBER window + `_rn <= limit` filter, and
+//     deviates ONLY in the CTE membership WHERE — the owner-sanctioned static JSON-tuple predicate
+//     (compositeJsonMembership) replacing v1's value-dependent `(k1,k2) IN ((?,?),…)`. Same
+//     RESULT-parity deviation the composite UNLIMITED form and the single-key IN-list already use;
+//     proven live below. The v1 tuple-IN byte-form stays proven by compileCompositeKeyLimited.
+// ===========================================================================
+describe('C. Composite STATIC per-parent-LIMIT relation form (#47 last gap)', () => {
+  const keys = ['tenant_id', 'doc_id'];
+  const sel = 'tenant_id, doc_id, rev';
+
+  it('[postgres] static composite-LIMITED byte-matches the v1 composite LATERAL', () => {
+    // v1 (proven == LazyRelation.batchLoadWithLateralComposite) with concrete int keys.
+    const v1 = render(
+      compileCompositeKeyLimited({
+        dialect: 'postgres', tableName: 'revs', select: sel,
+        targetKeys: keys, tuples: [[1, 10], [1, 11]], limit: 2, order: 'rev ASC',
+      }),
+      'postgres',
+    ).sql;
+    // static (deferred casts) resolved from the SAME per-column int keys → int[], int[].
+    let sql = assembleMakeSQL(compileCompositeKeyStaticLimited({
+      dialect: 'postgres', tableName: 'revs', select: sel,
+      targetKeys: keys, limit: 2, order: 'rev ASC', deferPgArrayCast: true,
+    })).sql;
+    sql = resolvePgArrayCast(sql, [1, 1]); // column 0 keys (int → int[])
+    sql = resolvePgArrayCast(sql, [10, 11]); // column 1 keys (int → int[])
+    expect(renderPlaceholders(sql, 'postgres')).toBe(v1);
+  });
+
+  for (const dialect of ['mysql', 'sqlite'] as const) {
+    it(`[${dialect}] static composite-LIMITED keeps v1's ROW_NUMBER window; deviates only to the static JSON predicate`, () => {
+      const v1 = render(
+        compileCompositeKeyLimited({
+          dialect, tableName: 'revs', select: sel,
+          targetKeys: keys, tuples: [[1, 10], [1, 11]], limit: 2, order: 'rev ASC',
+        }),
+        dialect,
+      );
+      const got = render(
+        compileCompositeKeyStaticLimited({
+          dialect, tableName: 'revs', select: sel,
+          targetKeys: keys, limit: 2, order: 'rev ASC', deferPgArrayCast: true,
+        }),
+        dialect,
+      );
+      // The window + `_rn <= N` shell is v1-IDENTICAL (partition/order/limit/CTE wrap).
+      expect(got.sql).toContain('ROW_NUMBER() OVER (PARTITION BY tenant_id, doc_id ORDER BY rev ASC) AS _rn');
+      expect(got.sql).toContain('SELECT * FROM ranked WHERE _rn <= 2');
+      expect(v1.sql).toContain('ROW_NUMBER() OVER (PARTITION BY tenant_id, doc_id ORDER BY rev ASC) AS _rn');
+      expect(v1.sql).toContain('SELECT * FROM ranked WHERE _rn <= 2');
+      // v1 uses the VALUE-DEPENDENT tuple-IN (grows with tuple count); the static form MUST NOT.
+      expect(v1.sql).toContain('(tenant_id, doc_id) IN ((?, ?), (?, ?))');
+      expect(got.sql).not.toContain('IN ((?, ?)');
+      // The static membership predicate is the SAME one the composite UNLIMITED static form emits
+      // (JSON_TABLE for MySQL / json_each for SQLite) — the sanctioned result-parity deviation.
+      const jsonPred = dialect === 'mysql'
+        ? `(revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)`
+        : `EXISTS (SELECT 1 FROM json_each(?) je WHERE json_extract(je.value, '$[0]') = revs.tenant_id AND json_extract(je.value, '$[1]') = revs.doc_id)`;
+      expect(got.sql).toContain(jsonPred);
+      // The whole key set binds as ONE JSON param (value-length-independent) → static op.
+      expect(got.params).toEqual([[null]]);
+    });
+  }
+
+  // NEGATIVE (golden-from-originals): perturb the v1 composite-limited builder (change the limit) →
+  // the v1 golden moves, so the assertion is pinned to the ORIGINAL text, not a v2 constant.
+  it('negative: perturbing the v1 composite-limited window moves the golden', () => {
+    const limit2 = render(
+      compileCompositeKeyLimited({ dialect: 'postgres', tableName: 'revs', select: sel, targetKeys: keys, tuples: [[1, 10]], limit: 2, order: 'rev ASC' }),
+      'postgres',
+    ).sql;
+    const limit5 = render(
+      compileCompositeKeyLimited({ dialect: 'postgres', tableName: 'revs', select: sel, targetKeys: keys, tuples: [[1, 10]], limit: 5, order: 'rev ASC' }),
+      'postgres',
+    ).sql;
+    expect(limit5).not.toBe(limit2); // a different per-parent LIMIT → the golden moves
   });
 });
 

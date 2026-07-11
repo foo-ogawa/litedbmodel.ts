@@ -32,6 +32,7 @@ import {
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
   compileCompositeKeyStaticUnlimited,
+  compileCompositeKeyStaticLimited,
   resolvePgArrayCast,
 } from './makesql/compile-relation';
 
@@ -141,9 +142,6 @@ export function compileRelationOp(decl: RelationDecl): RelationOp {
   }
   const dialect: Dialect = decl.dialect ?? 'sqlite';
   const composite = isCompositeDecl(decl);
-  if (composite && decl.limit !== undefined) {
-    throw new Error(`relation '${decl.name}': composite-key per-parent 'limit' is not supported yet (#47 item 1 covers unlimited composite belongsTo/hasMany)`);
-  }
   const sql = compiledBatchSql(decl, dialect);
   // CROSS-DB (V0 R1): carry the target connection tag ONLY when set (a same-DB relation stays
   // untagged, so existing bundles are byte-unchanged — the field is additive/optional).
@@ -203,16 +201,22 @@ function isCompositeDecl(decl: RelationDecl): boolean {
  */
 function compiledBatchSql(decl: RelationDecl, dialect: Dialect): string {
   // A COMPOSITE decl compiles to the STATIC composite form (PG: one array param per key column;
-  // MySQL/SQLite: one JSON array-of-tuples param) — length-independent, so the text is fixed.
+  // MySQL/SQLite: one JSON array-of-tuples param) — length-independent, so the text is fixed. A
+  // per-parent `limit` selects the STATIC composite-LIMITED builder (PG LATERAL / MySQL·SQLite
+  // ROW_NUMBER window over the SAME static key-set predicate — #47 last completeness gap).
   if (decl.parentKeys !== undefined) {
-    const node = compileCompositeKeyStaticUnlimited({
+    const compositeBase = {
       dialect,
       tableName: decl.targetTable,
       select: decl.select.join(', '),
       order: decl.order,
       targetKeys: [...(decl.targetKeys as readonly string[])],
       deferPgArrayCast: true,
-    });
+    };
+    const node =
+      decl.limit !== undefined
+        ? compileCompositeKeyStaticLimited({ ...compositeBase, limit: decl.limit })
+        : compileCompositeKeyStaticUnlimited(compositeBase);
     return assembleMakeSQL(node).sql;
   }
   // A one-element placeholder key set fixes the SQL text (single-JSON-param / `= ANY` forms are

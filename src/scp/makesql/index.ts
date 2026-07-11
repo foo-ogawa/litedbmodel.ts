@@ -65,6 +65,7 @@ export {
   compileCompositeKeyUnlimited,
   compileCompositeKeyStaticUnlimited,
   compileCompositeKeyLimited,
+  compileCompositeKeyStaticLimited,
 } from './compile-relation';
 export type { RelationCompileBase } from './compile-relation';
 

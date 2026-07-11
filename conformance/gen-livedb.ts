@@ -408,6 +408,28 @@ const docCompositeRelations: readonly RelationDecl[] = [
   },
 ];
 
+/**
+ * COMPOSITE-key hasMany WITH a per-parent LIMIT (#47 LAST completeness gap). Same (tenant_id,
+ * doc_id) → revs match as `revisions`, but capped to ONE rev per parent by `rev DESC` (each doc
+ * keeps its highest-numbered rev only). Rides the STATIC composite-LIMITED `RelationOp`
+ * (compileCompositeKeyStaticLimited): PG LATERAL over `unnest(?::t[], ?::t[])`; MySQL/SQLite the
+ * ROW_NUMBER composite window over the static JSON key-set predicate. The per-parent cap + the
+ * cross-tenant disambiguation together make this unforgeable — a single-key op or a missing window
+ * would return the wrong rows.
+ */
+const docCompositeLimitRelations: readonly RelationDecl[] = [
+  {
+    name: 'latestRev',
+    kind: 'hasMany',
+    targetTable: 'revs',
+    select: ['tenant_id', 'doc_id', 'rev'],
+    parentKeys: ['tenant_id', 'doc_id'],
+    targetKeys: ['tenant_id', 'doc_id'],
+    order: 'rev DESC',
+    limit: 1,
+  },
+];
+
 // The composite-key read schema (docs2 keyed by (tenant_id, doc_id); users2 by (tenant_id, uid);
 // revs by (tenant_id, doc_id)). Two tenants share the SAME uid/doc_id values, so a composite key is
 // REQUIRED to disambiguate — a single-key relation would cross-hydrate across tenants.
@@ -1249,6 +1271,14 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
     {
       name: 'Docs[tenant 9]: empty composite parent set → relations short-circuit [#47]',
       input: { tenant_id: 9 }, with: ['owner', 'revisions'], relations: docCompositeRelations,
+      entry: 'Docs', schemaSqlite: COMPOSITE_SCHEMA_SQLITE, schemaPg: COMPOSITE_SCHEMA_PG, schemaMysql: COMPOSITE_SCHEMA_MYSQL,
+    },
+    // COMPOSITE hasMany + per-parent LIMIT (#47 LAST gap) — the STATIC composite-LIMITED op. Tenant
+    // 1: doc 10 has revs r1,r2 (capped to r2 by `rev DESC` limit 1), doc 11 has only r3 (kept). The
+    // cap (2→1) AND the cross-tenant (tenant-1-only) scope are both observed per parent.
+    {
+      name: 'Docs[tenant 1]: composite hasMany + per-parent LIMIT (latest rev only) [#47]',
+      input: { tenant_id: 1 }, with: ['latestRev'], relations: docCompositeLimitRelations,
       entry: 'Docs', schemaSqlite: COMPOSITE_SCHEMA_SQLITE, schemaPg: COMPOSITE_SCHEMA_PG, schemaMysql: COMPOSITE_SCHEMA_MYSQL,
     },
   ];

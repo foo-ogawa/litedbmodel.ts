@@ -70,9 +70,10 @@ hand-roll).
 | single-key hasMany unlimited (+order+where) | ✅ P/M/S | ✅ (Posts comments) | **done** |
 | single-key hasMany + per-parent LIMIT (LATERAL / ROW_NUMBER) | ✅ P/M/S | ✅ (Posts tags limit=2; Feed) | **done** |
 | composite-key hasMany unlimited | ✅ P/M/S | ✅ (Docs revisions) | **done** |
-| composite-key hasMany + LIMIT | ✅ P/M/S | ⚠️ live via Docs (unlimited); limited-composite live not in a vector | byte done; composite-limited live is cosmetic gap |
+| composite-key hasMany + LIMIT (STATIC LATERAL / ROW_NUMBER) | ✅ P/M/S (byte + negative; PG byte-identical to v1 LATERAL, M/S sanctioned static JSON-predicate deviation) | ✅ (Docs latestRev limit=1 — livedb vector + TS ScpDialect PG+MySQL) all 5 runtimes | **done (#47 last gap)** |
 | composite-key belongsTo | ✅ (composite unnest) | ✅ (Docs owner) | **done** |
 | composite STATIC unnest form (PG) | ✅ P (byte + negative) | ✅ | **done** |
+| composite STATIC limited form (`compileCompositeKeyStaticLimited`) | ✅ P (byte-identical to v1) / M/S (window byte-identical, JSON key-set predicate) + negative | ✅ all 5 runtimes | **done** |
 | **cross-DB relations (target driver/connection)** | ✅ (SQL = target's dialect, byte-identical) | ✅ ALL 5 runtimes — TS two-DB (SQLite×2); py/php/go/rust live PG↔MySQL cross-DB vector | **done (R1 — per-statement `connection` tag + per-runtime routing; live cross-DB run across all 5 runtimes)** |
 
 ## Matrix — WRITE surface
