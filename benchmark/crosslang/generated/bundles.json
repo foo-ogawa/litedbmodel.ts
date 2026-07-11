@@ -1,0 +1,1273 @@
+{
+  "generatedAt": "2026-07-11T03:17:37.400Z",
+  "corpusVersion": 2,
+  "schema": [
+    "CREATE TABLE users (\n     id INTEGER PRIMARY KEY,\n     name TEXT NOT NULL,\n     post_count INTEGER NOT NULL DEFAULT 0\n   );",
+    "CREATE TABLE posts (\n     id INTEGER PRIMARY KEY,\n     author_id INTEGER NOT NULL,\n     title TEXT NOT NULL,\n     status TEXT,\n     views INTEGER NOT NULL DEFAULT 0,\n     created_at TEXT NOT NULL\n   );",
+    "CREATE TABLE comments (\n     id INTEGER PRIMARY KEY,\n     post_id INTEGER NOT NULL,\n     body TEXT NOT NULL,\n     created_at TEXT NOT NULL\n   );",
+    "CREATE TABLE uniq (name TEXT NOT NULL, s0 TEXT, f0 TEXT);"
+  ],
+  "seed": [
+    "INSERT INTO users (id, name, post_count) VALUES (1, 'user-1', 5)",
+    "INSERT INTO users (id, name, post_count) VALUES (2, 'user-2', 5)",
+    "INSERT INTO users (id, name, post_count) VALUES (3, 'user-3', 5)",
+    "INSERT INTO users (id, name, post_count) VALUES (4, 'user-4', 5)",
+    "INSERT INTO users (id, name, post_count) VALUES (5, 'user-5', 5)",
+    "INSERT INTO users (id, name, post_count) VALUES (6, 'user-6', 5)",
+    "INSERT INTO users (id, name, post_count) VALUES (7, 'user-7', 5)",
+    "INSERT INTO users (id, name, post_count) VALUES (8, 'user-8', 5)",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (1, 1, 'post-1', 'live', 10, '2026-02-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (1, 1, 'comment-1', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (2, 1, 'comment-2', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (3, 1, 'comment-3', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (4, 1, 'comment-4', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (5, 1, 'comment-5', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (2, 1, 'post-2', 'draft', 20, '2026-02-02')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (6, 2, 'comment-6', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (7, 2, 'comment-7', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (8, 2, 'comment-8', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (9, 2, 'comment-9', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (10, 2, 'comment-10', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (3, 1, 'post-3', 'live', 30, '2026-02-03')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (11, 3, 'comment-11', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (12, 3, 'comment-12', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (13, 3, 'comment-13', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (14, 3, 'comment-14', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (15, 3, 'comment-15', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (4, 1, 'post-4', 'live', 40, '2026-02-04')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (16, 4, 'comment-16', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (17, 4, 'comment-17', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (18, 4, 'comment-18', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (19, 4, 'comment-19', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (20, 4, 'comment-20', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (5, 1, 'post-5', 'draft', 50, '2026-02-05')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (21, 5, 'comment-21', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (22, 5, 'comment-22', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (23, 5, 'comment-23', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (24, 5, 'comment-24', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (25, 5, 'comment-25', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (6, 2, 'post-6', 'live', 60, '2026-02-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (26, 6, 'comment-26', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (27, 6, 'comment-27', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (28, 6, 'comment-28', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (29, 6, 'comment-29', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (30, 6, 'comment-30', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (7, 2, 'post-7', 'draft', 70, '2026-02-02')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (31, 7, 'comment-31', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (32, 7, 'comment-32', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (33, 7, 'comment-33', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (34, 7, 'comment-34', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (35, 7, 'comment-35', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (8, 2, 'post-8', 'live', 80, '2026-02-03')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (36, 8, 'comment-36', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (37, 8, 'comment-37', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (38, 8, 'comment-38', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (39, 8, 'comment-39', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (40, 8, 'comment-40', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (9, 2, 'post-9', 'live', 90, '2026-02-04')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (41, 9, 'comment-41', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (42, 9, 'comment-42', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (43, 9, 'comment-43', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (44, 9, 'comment-44', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (45, 9, 'comment-45', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (10, 2, 'post-10', 'draft', 100, '2026-02-05')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (46, 10, 'comment-46', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (47, 10, 'comment-47', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (48, 10, 'comment-48', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (49, 10, 'comment-49', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (50, 10, 'comment-50', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (11, 3, 'post-11', 'live', 110, '2026-02-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (51, 11, 'comment-51', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (52, 11, 'comment-52', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (53, 11, 'comment-53', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (54, 11, 'comment-54', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (55, 11, 'comment-55', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (12, 3, 'post-12', 'draft', 120, '2026-02-02')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (56, 12, 'comment-56', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (57, 12, 'comment-57', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (58, 12, 'comment-58', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (59, 12, 'comment-59', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (60, 12, 'comment-60', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (13, 3, 'post-13', 'live', 130, '2026-02-03')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (61, 13, 'comment-61', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (62, 13, 'comment-62', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (63, 13, 'comment-63', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (64, 13, 'comment-64', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (65, 13, 'comment-65', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (14, 3, 'post-14', 'live', 140, '2026-02-04')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (66, 14, 'comment-66', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (67, 14, 'comment-67', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (68, 14, 'comment-68', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (69, 14, 'comment-69', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (70, 14, 'comment-70', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (15, 3, 'post-15', 'draft', 150, '2026-02-05')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (71, 15, 'comment-71', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (72, 15, 'comment-72', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (73, 15, 'comment-73', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (74, 15, 'comment-74', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (75, 15, 'comment-75', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (16, 4, 'post-16', 'live', 160, '2026-02-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (76, 16, 'comment-76', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (77, 16, 'comment-77', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (78, 16, 'comment-78', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (79, 16, 'comment-79', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (80, 16, 'comment-80', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (17, 4, 'post-17', 'draft', 170, '2026-02-02')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (81, 17, 'comment-81', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (82, 17, 'comment-82', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (83, 17, 'comment-83', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (84, 17, 'comment-84', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (85, 17, 'comment-85', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (18, 4, 'post-18', 'live', 180, '2026-02-03')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (86, 18, 'comment-86', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (87, 18, 'comment-87', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (88, 18, 'comment-88', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (89, 18, 'comment-89', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (90, 18, 'comment-90', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (19, 4, 'post-19', 'live', 190, '2026-02-04')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (91, 19, 'comment-91', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (92, 19, 'comment-92', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (93, 19, 'comment-93', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (94, 19, 'comment-94', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (95, 19, 'comment-95', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (20, 4, 'post-20', 'draft', 200, '2026-02-05')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (96, 20, 'comment-96', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (97, 20, 'comment-97', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (98, 20, 'comment-98', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (99, 20, 'comment-99', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (100, 20, 'comment-100', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (21, 5, 'post-21', 'live', 210, '2026-02-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (101, 21, 'comment-101', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (102, 21, 'comment-102', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (103, 21, 'comment-103', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (104, 21, 'comment-104', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (105, 21, 'comment-105', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (22, 5, 'post-22', 'draft', 220, '2026-02-02')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (106, 22, 'comment-106', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (107, 22, 'comment-107', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (108, 22, 'comment-108', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (109, 22, 'comment-109', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (110, 22, 'comment-110', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (23, 5, 'post-23', 'live', 230, '2026-02-03')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (111, 23, 'comment-111', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (112, 23, 'comment-112', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (113, 23, 'comment-113', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (114, 23, 'comment-114', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (115, 23, 'comment-115', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (24, 5, 'post-24', 'live', 240, '2026-02-04')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (116, 24, 'comment-116', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (117, 24, 'comment-117', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (118, 24, 'comment-118', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (119, 24, 'comment-119', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (120, 24, 'comment-120', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (25, 5, 'post-25', 'draft', 250, '2026-02-05')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (121, 25, 'comment-121', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (122, 25, 'comment-122', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (123, 25, 'comment-123', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (124, 25, 'comment-124', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (125, 25, 'comment-125', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (26, 6, 'post-26', 'live', 260, '2026-02-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (126, 26, 'comment-126', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (127, 26, 'comment-127', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (128, 26, 'comment-128', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (129, 26, 'comment-129', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (130, 26, 'comment-130', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (27, 6, 'post-27', 'draft', 270, '2026-02-02')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (131, 27, 'comment-131', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (132, 27, 'comment-132', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (133, 27, 'comment-133', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (134, 27, 'comment-134', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (135, 27, 'comment-135', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (28, 6, 'post-28', 'live', 280, '2026-02-03')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (136, 28, 'comment-136', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (137, 28, 'comment-137', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (138, 28, 'comment-138', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (139, 28, 'comment-139', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (140, 28, 'comment-140', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (29, 6, 'post-29', 'live', 290, '2026-02-04')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (141, 29, 'comment-141', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (142, 29, 'comment-142', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (143, 29, 'comment-143', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (144, 29, 'comment-144', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (145, 29, 'comment-145', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (30, 6, 'post-30', 'draft', 300, '2026-02-05')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (146, 30, 'comment-146', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (147, 30, 'comment-147', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (148, 30, 'comment-148', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (149, 30, 'comment-149', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (150, 30, 'comment-150', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (31, 7, 'post-31', 'live', 310, '2026-02-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (151, 31, 'comment-151', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (152, 31, 'comment-152', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (153, 31, 'comment-153', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (154, 31, 'comment-154', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (155, 31, 'comment-155', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (32, 7, 'post-32', 'draft', 320, '2026-02-02')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (156, 32, 'comment-156', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (157, 32, 'comment-157', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (158, 32, 'comment-158', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (159, 32, 'comment-159', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (160, 32, 'comment-160', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (33, 7, 'post-33', 'live', 330, '2026-02-03')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (161, 33, 'comment-161', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (162, 33, 'comment-162', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (163, 33, 'comment-163', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (164, 33, 'comment-164', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (165, 33, 'comment-165', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (34, 7, 'post-34', 'live', 340, '2026-02-04')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (166, 34, 'comment-166', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (167, 34, 'comment-167', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (168, 34, 'comment-168', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (169, 34, 'comment-169', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (170, 34, 'comment-170', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (35, 7, 'post-35', 'draft', 350, '2026-02-05')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (171, 35, 'comment-171', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (172, 35, 'comment-172', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (173, 35, 'comment-173', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (174, 35, 'comment-174', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (175, 35, 'comment-175', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (36, 8, 'post-36', 'live', 360, '2026-02-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (176, 36, 'comment-176', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (177, 36, 'comment-177', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (178, 36, 'comment-178', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (179, 36, 'comment-179', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (180, 36, 'comment-180', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (37, 8, 'post-37', 'draft', 370, '2026-02-02')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (181, 37, 'comment-181', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (182, 37, 'comment-182', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (183, 37, 'comment-183', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (184, 37, 'comment-184', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (185, 37, 'comment-185', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (38, 8, 'post-38', 'live', 380, '2026-02-03')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (186, 38, 'comment-186', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (187, 38, 'comment-187', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (188, 38, 'comment-188', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (189, 38, 'comment-189', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (190, 38, 'comment-190', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (39, 8, 'post-39', 'live', 390, '2026-02-04')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (191, 39, 'comment-191', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (192, 39, 'comment-192', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (193, 39, 'comment-193', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (194, 39, 'comment-194', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (195, 39, 'comment-195', '2026-03-01')",
+    "INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (40, 8, 'post-40', 'draft', 400, '2026-02-05')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (196, 40, 'comment-196', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (197, 40, 'comment-197', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (198, 40, 'comment-198', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (199, 40, 'comment-199', '2026-03-01')",
+    "INSERT INTO comments (id, post_id, body, created_at) VALUES (200, 40, 'comment-200', '2026-03-01')"
+  ],
+  "cases": [
+    {
+      "case": "find",
+      "kind": "read",
+      "entry": "Find",
+      "bundle": {
+        "dialect": "sqlite",
+        "name": "Find",
+        "readGraph": {
+          "dialect": "sqlite",
+          "name": "Find",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          },
+                          "status": {
+                            "ref": [
+                              "status"
+                            ]
+                          },
+                          "since": {
+                            "ref": [
+                              "since"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "created_at": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "since": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "status": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Find",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status, views, created_at FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": "status = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "status"
+                    ]
+                  }
+                ],
+                "whereFragment": true,
+                "skip": {
+                  "not": [
+                    {
+                      "ne": [
+                        {
+                          "refOpt": [
+                            "status"
+                          ]
+                        },
+                        null
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "sql": "created_at >= ?",
+                "params": [
+                  {
+                    "ref": [
+                      "since"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": [
+            "status"
+          ]
+        },
+        "optionalHeads": [
+          "status"
+        ],
+        "relations": {}
+      },
+      "input": {
+        "author_id": 1,
+        "status": "live",
+        "since": "2026-02-01"
+      },
+      "fingerprint": "fnv1a64:ab8b1725da0fc202",
+      "expectedQueries": 1,
+      "expectedRows": 3
+    },
+    {
+      "case": "complexWhere",
+      "kind": "read",
+      "entry": "ComplexWhere",
+      "bundle": {
+        "dialect": "sqlite",
+        "name": "ComplexWhere",
+        "readGraph": {
+          "dialect": "sqlite",
+          "name": "ComplexWhere",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          },
+                          "since": {
+                            "ref": [
+                              "since"
+                            ]
+                          },
+                          "titleLike": {
+                            "ref": [
+                              "titleLike"
+                            ]
+                          },
+                          "ids": {
+                            "ref": [
+                              "ids"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "@like": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "created_at": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "ids": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "since": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "titleLike": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ComplexWhere",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status, views FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": "created_at >= ?",
+                "params": [
+                  {
+                    "ref": [
+                      "since"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": "title LIKE ?",
+                "params": [
+                  {
+                    "ref": [
+                      "titleLike"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": "id IN (SELECT value FROM json_each(?))",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "ids"
+                      ]
+                    },
+                    "dialect": "sqlite"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "input": {
+        "author_id": 1,
+        "since": "2026-02-01",
+        "titleLike": "post-%",
+        "ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ]
+      },
+      "fingerprint": "fnv1a64:ead6ce5e6e15d33f",
+      "expectedQueries": 1,
+      "expectedRows": 5
+    },
+    {
+      "case": "inList",
+      "kind": "read",
+      "entry": "ByIds",
+      "bundle": {
+        "dialect": "sqlite",
+        "name": "ByIds",
+        "readGraph": {
+          "dialect": "sqlite",
+          "name": "ByIds",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "ids": {
+                            "ref": [
+                              "ids"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "@in": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "ids": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "ByIds",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, title FROM posts",
+                "params": []
+              },
+              {
+                "sql": "id IN (SELECT value FROM json_each(?))",
+                "params": [
+                  {
+                    "__jsonArray": {
+                      "ref": [
+                        "ids"
+                      ]
+                    },
+                    "dialect": "sqlite"
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "input": {
+        "ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ]
+      },
+      "fingerprint": "fnv1a64:5e989cf7594927a8",
+      "expectedQueries": 1,
+      "expectedRows": 10
+    },
+    {
+      "case": "belongsTo",
+      "kind": "relation",
+      "entry": "Posts",
+      "withRelation": "author",
+      "relation": {
+        "name": "author",
+        "kind": "belongsTo",
+        "targetTable": "users",
+        "select": [
+          "id",
+          "name"
+        ],
+        "parentKey": "author_id",
+        "targetKey": "id",
+        "dialect": "sqlite"
+      },
+      "bundle": {
+        "dialect": "sqlite",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "sqlite",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "sqlite",
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))"
+          }
+        }
+      },
+      "input": {
+        "author_id": 1
+      },
+      "fingerprint": "fnv1a64:73aab41f049301f1",
+      "expectedQueries": 2,
+      "expectedRows": 6
+    },
+    {
+      "case": "hasMany",
+      "kind": "relation",
+      "entry": "Posts",
+      "withRelation": "comments",
+      "relation": {
+        "name": "comments",
+        "kind": "hasMany",
+        "targetTable": "comments",
+        "select": [
+          "id",
+          "post_id",
+          "body"
+        ],
+        "parentKey": "id",
+        "targetKey": "post_id",
+        "dialect": "sqlite"
+      },
+      "bundle": {
+        "dialect": "sqlite",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "sqlite",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "comments": {
+            "name": "comments",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "sqlite",
+            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT value FROM json_each(?))"
+          }
+        }
+      },
+      "input": {
+        "author_id": 1
+      },
+      "fingerprint": "fnv1a64:73aab41f049301f1",
+      "expectedQueries": 2,
+      "expectedRows": 30
+    },
+    {
+      "case": "hasManyLimit",
+      "kind": "relation",
+      "entry": "Posts",
+      "withRelation": "recent",
+      "relation": {
+        "name": "recent",
+        "kind": "hasMany",
+        "targetTable": "comments",
+        "select": [
+          "id",
+          "post_id",
+          "body"
+        ],
+        "parentKey": "id",
+        "targetKey": "post_id",
+        "order": "id DESC",
+        "limit": 3,
+        "dialect": "sqlite"
+      },
+      "bundle": {
+        "dialect": "sqlite",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "sqlite",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "recent": {
+            "name": "recent",
+            "kind": "hasMany",
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "sqlite",
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id DESC) AS _rn FROM comments WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 3"
+          }
+        }
+      },
+      "input": {
+        "author_id": 1
+      },
+      "fingerprint": "fnv1a64:73aab41f049301f1",
+      "expectedQueries": 2,
+      "expectedRows": 20
+    },
+    {
+      "case": "batchInsert",
+      "kind": "batch",
+      "bundle": {
+        "dialect": "sqlite",
+        "name": "BatchInsert",
+        "statement": {
+          "sql": "INSERT INTO posts (author_id, created_at, status, title, views) SELECT json_extract(value, '$.author_id'), json_extract(value, '$.created_at'), json_extract(value, '$.status'), json_extract(value, '$.title'), json_extract(value, '$.views') FROM json_each(?)",
+          "params": [
+            "[{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-0\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-1\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-2\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-3\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-4\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-5\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-6\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-7\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-8\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-9\",\"views\":0}]"
+          ]
+        },
+        "optionalHeads": [],
+        "relations": {},
+        "transaction": {
+          "phase": "create",
+          "entityFrom": null,
+          "statements": [
+            {
+              "id": "tx_body_0",
+              "role": "body",
+              "op": {
+                "sql": "INSERT INTO posts (author_id, created_at, status, title, views) SELECT json_extract(value, '$.author_id'), json_extract(value, '$.created_at'), json_extract(value, '$.status'), json_extract(value, '$.title'), json_extract(value, '$.views') FROM json_each(?)",
+                "params": [
+                  "[{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-0\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-1\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-2\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-3\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-4\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-5\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-6\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-7\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-8\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-9\",\"views\":0}]"
+                ]
+              },
+              "label": "createMany group 0"
+            }
+          ],
+          "onIdempotentHit": "rollback"
+        }
+      },
+      "input": {
+        "rows": [
+          {
+            "author_id": 2,
+            "title": "bulk-0",
+            "status": "live",
+            "views": 0,
+            "created_at": "2026-05-01"
+          },
+          {
+            "author_id": 2,
+            "title": "bulk-1",
+            "status": "live",
+            "views": 0,
+            "created_at": "2026-05-01"
+          },
+          {
+            "author_id": 2,
+            "title": "bulk-2",
+            "status": "live",
+            "views": 0,
+            "created_at": "2026-05-01"
+          },
+          {
+            "author_id": 2,
+            "title": "bulk-3",
+            "status": "live",
+            "views": 0,
+            "created_at": "2026-05-01"
+          },
+          {
+            "author_id": 2,
+            "title": "bulk-4",
+            "status": "live",
+            "views": 0,
+            "created_at": "2026-05-01"
+          },
+          {
+            "author_id": 2,
+            "title": "bulk-5",
+            "status": "live",
+            "views": 0,
+            "created_at": "2026-05-01"
+          },
+          {
+            "author_id": 2,
+            "title": "bulk-6",
+            "status": "live",
+            "views": 0,
+            "created_at": "2026-05-01"
+          },
+          {
+            "author_id": 2,
+            "title": "bulk-7",
+            "status": "live",
+            "views": 0,
+            "created_at": "2026-05-01"
+          },
+          {
+            "author_id": 2,
+            "title": "bulk-8",
+            "status": "live",
+            "views": 0,
+            "created_at": "2026-05-01"
+          },
+          {
+            "author_id": 2,
+            "title": "bulk-9",
+            "status": "live",
+            "views": 0,
+            "created_at": "2026-05-01"
+          }
+        ]
+      },
+      "fingerprint": "fnv1a64:c3101fb11da847e5",
+      "expectedQueries": 1,
+      "expectedRows": 0
+    },
+    {
+      "case": "writeTxGate",
+      "kind": "tx",
+      "bundle": {
+        "dialect": "sqlite",
+        "name": "Create",
+        "statement": {
+          "sql": "INSERT INTO posts (author_id, created_at, title) VALUES (?, ?, ?) RETURNING id, author_id, title",
+          "params": [
+            {
+              "ref": [
+                "author_id"
+              ]
+            },
+            {
+              "ref": [
+                "created_at"
+              ]
+            },
+            {
+              "ref": [
+                "title"
+              ]
+            }
+          ]
+        },
+        "optionalHeads": [],
+        "relations": {},
+        "transaction": {
+          "phase": "create",
+          "entityFrom": "tx_body_2",
+          "statements": [
+            {
+              "id": "tx_requires_0",
+              "role": "gate:requires",
+              "op": {
+                "sql": "SELECT 1 FROM users WHERE id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ]
+              },
+              "gate": "existsElseRollback",
+              "label": "requires users"
+            },
+            {
+              "id": "tx_unique_1",
+              "role": "gate:unique",
+              "op": {
+                "sql": "INSERT INTO uniq (name, s0, f0) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                "params": [
+                  "title_per_author",
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ]
+              },
+              "gate": "insertedElseRollback",
+              "label": "unique title_per_author"
+            },
+            {
+              "id": "tx_body_2",
+              "role": "body",
+              "op": {
+                "sql": "INSERT INTO posts (author_id, created_at, title) VALUES (?, ?, ?) RETURNING id, author_id, title",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "created_at"
+                    ]
+                  },
+                  {
+                    "ref": [
+                      "title"
+                    ]
+                  }
+                ]
+              },
+              "label": "Insert"
+            },
+            {
+              "id": "tx_derive_3",
+              "role": "derive",
+              "op": {
+                "sql": "UPDATE users SET post_count = post_count + ? WHERE id = ?",
+                "params": [
+                  1,
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ]
+              },
+              "label": "derive users.post_count"
+            }
+          ],
+          "onIdempotentHit": "rollback"
+        }
+      },
+      "input": {
+        "author_id": 1,
+        "title": "txn-post",
+        "created_at": "2026-05-01"
+      },
+      "fingerprint": "fnv1a64:9ef9671fecd59dd0",
+      "expectedQueries": 4,
+      "expectedRows": 2
+    }
+  ]
+}
