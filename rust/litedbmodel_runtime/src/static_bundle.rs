@@ -70,18 +70,6 @@ fn assemble_make_sql(node: &MakeSqlNode) -> Result<(String, Vec<Value>), String>
     Ok((sql, params))
 }
 
-/// Concatenate the assembled sql + params of every present node (mirrors TS composeMakeSQL).
-fn compose_make_sql(nodes: &[MakeSqlNode]) -> Result<(String, Vec<Value>), String> {
-    let mut sql = String::new();
-    let mut params: Vec<Value> = Vec::new();
-    for n in nodes {
-        let (s, p) = assemble_make_sql(n)?;
-        sql.push_str(&s);
-        params.extend(p);
-    }
-    Ok((sql, params))
-}
-
 // ── Dialect placeholder render (port of handler.ts renderPlaceholders) ─────────
 
 /// Rewrite `?` → the dialect placeholder form: PG `$N` (quote-aware), MySQL/SQLite keep `?`.
@@ -125,7 +113,7 @@ fn compact_json(v: &J) -> String {
 /// keeps the array as-is (a text[] param); mysql/sqlite JSON-encode it to ONE string param.
 /// Everything else is a plain bc Expression IR value. The target dialect for an IN-list rides the
 /// marker's own `dialect` field (compiled TS-side), so no ambient dialect is threaded here.
-fn eval_spec(spec: &J, scope: &Scope) -> Result<Value, String> {
+fn eval_spec(spec: &J, scope: &[(String, Value)]) -> Result<Value, String> {
     if let Some(inner) = spec.get("__jsonArray") {
         let arr_v = evaluate_expression(inner, scope).map_err(|e| e.message)?;
         let arr = match arr_v {
@@ -212,9 +200,14 @@ pub(crate) fn resolve_pg_array_cast(sql: &str, values: &[Value]) -> String {
 pub fn render_statements(
     statements: &[J],
     dialect_name: &str,
-    scope: &Scope,
+    scope: &[(String, Value)],
 ) -> Result<RenderedSql, String> {
-    let mut nodes: Vec<MakeSqlNode> = Vec::new();
+    // Build the composed SQL directly into ONE buffer (no per-statement String, no MakeSqlNode Vec,
+    // no separate assemble+compose pass). Byte-identical to the prior port; only the allocation
+    // strategy changed. A whereFragment's ` WHERE `/` AND ` connector is written inline; the `?`
+    // arity check is folded into the single append walk.
+    let mut sql = String::new();
+    let mut params: Vec<Value> = Vec::new();
     let mut where_seen = false;
     for stmt in statements {
         if let Some(skip) = stmt.get("skip") {
@@ -225,47 +218,57 @@ pub fn render_statements(
                 }
             }
         }
-        let mut sql_text = stmt
-            .get("sql")
-            .and_then(|s| s.as_str())
-            .unwrap_or("")
-            .to_string();
-        if stmt.get("whereFragment") == Some(&J::Bool(true)) {
-            sql_text = if where_seen {
-                format!(" AND {sql_text}")
-            } else {
-                format!(" WHERE {sql_text}")
-            };
-            where_seen = true;
-        }
-        let mut params: Vec<Value> = Vec::new();
+        let raw = stmt.get("sql").and_then(|s| s.as_str()).unwrap_or("");
+        // Evaluate this statement's params first (a PG array cast is resolved against them below).
+        let stmt_start = params.len();
         if let Some(specs) = stmt.get("params").and_then(|p| p.as_array()) {
             for spec in specs {
                 params.push(eval_spec(spec, scope)?);
             }
         }
-        // Resolve any deferred PG array cast (#46) from the bound array param, left-to-right —
-        // each postgres __jsonArray param resolves exactly one cast token in order.
-        if dialect_name == "postgres" {
-            for p in &params {
+        let n_params = params.len() - stmt_start;
+
+        // whereFragment: prepend the connector to THIS fragment's text.
+        if stmt.get("whereFragment") == Some(&J::Bool(true)) {
+            sql.push_str(if where_seen { " AND " } else { " WHERE " });
+            where_seen = true;
+        }
+
+        // Resolve any deferred PG array cast (#46) from this statement's bound array params, in
+        // order — each postgres __jsonArray param resolves exactly one cast token. Only the raw
+        // (owned) form participates, so materialize lazily when a token is actually present.
+        if dialect_name == "postgres" && raw.contains(PG_ARRAY_CAST_TOKEN) {
+            let mut resolved = raw.to_string();
+            for p in &params[stmt_start..] {
                 if let Value::Arr(arr) = p {
-                    if !sql_text.contains(PG_ARRAY_CAST_TOKEN) {
+                    if !resolved.contains(PG_ARRAY_CAST_TOKEN) {
                         break;
                     }
-                    sql_text = resolve_pg_array_cast(&sql_text, arr);
+                    resolved = resolve_pg_array_cast(&resolved, arr);
                 }
             }
+            append_checked(&mut sql, &resolved, n_params)?;
+        } else {
+            append_checked(&mut sql, raw, n_params)?;
         }
-        nodes.push(MakeSqlNode {
-            sql: sql_text,
-            params,
-        });
     }
-    let (sql, params) = compose_make_sql(&nodes)?;
     Ok(RenderedSql {
         sql: render_placeholders(&sql, dialect_name),
         params,
     })
+}
+
+/// Append `frag` to `sql`, asserting its `?` count equals `n_params` (the assemble arity check,
+/// folded inline). Byte-identical output to the old split/interleave — `?` is preserved verbatim.
+fn append_checked(sql: &mut String, frag: &str, n_params: usize) -> Result<(), String> {
+    let holes = frag.bytes().filter(|&b| b == b'?').count();
+    if holes != n_params {
+        return Err(format!(
+            "makeSQL placeholder/param mismatch: {holes} '?' vs {n_params} params in {frag:?}"
+        ));
+    }
+    sql.push_str(frag);
+    Ok(())
 }
 
 // ── Input normalization (SSoT-driven — mirrors TS normalizeInput) ─────────────
@@ -328,14 +331,15 @@ fn primary_node_id(graph: &J) -> Result<String, String> {
     Err("static-bundle: read graph has no primary node to render".into())
 }
 
-/// The static statement templates for a node id (a JSON array).
-fn statements_for(graph: &J, node_id: &str) -> Vec<J> {
+/// The static statement templates for a node id (a JSON array) — BORROWED from the resident graph
+/// (no per-op deep clone of the template; the runtime only reads it).
+fn statements_for<'a>(graph: &'a J, node_id: &str) -> &'a [J] {
     graph
         .get("statementsById")
         .and_then(|s| s.get(node_id))
         .and_then(|a| a.as_array())
-        .cloned()
-        .unwrap_or_default()
+        .map(|v| v.as_slice())
+        .unwrap_or(&[])
 }
 
 /// Render the PRIMARY read node's statements of a ReadGraph → dialect SQL + params (the render axis
@@ -345,7 +349,7 @@ pub fn render_read_primary(graph: &J, input: &Scope) -> Result<RenderedSql, Stri
     let primary_id = primary_node_id(graph)?;
     let scope = normalize_read_graph_input(graph, input);
     let dialect_name = graph.get("dialect").and_then(|d| d.as_str()).unwrap_or("");
-    render_statements(&statements_for(graph, &primary_id), dialect_name, &scope)
+    render_statements(statements_for(graph, &primary_id), dialect_name, &scope)
 }
 
 // ── ReadGraph execution (port of static-bundle.ts executeReadGraph) ────────────
@@ -382,7 +386,7 @@ fn render_and_execute_node(
     graph: &J,
     dialect: &str,
     node_id: &str,
-    scope: &Scope,
+    scope: &[(String, Value)],
 ) -> ExecOutcome {
     if graph
         .get("statementsById")
@@ -392,7 +396,7 @@ fn render_and_execute_node(
         return ExecOutcome::Error(format!("static-bundle: no statements for node '{node_id}'"));
     }
     let stmts = statements_for(graph, node_id);
-    let rendered = match render_statements(&stmts, dialect, scope) {
+    let rendered = match render_statements(stmts, dialect, scope) {
         Ok(r) => r,
         Err(e) => return ExecOutcome::Error(e),
     };
@@ -405,7 +409,7 @@ fn render_and_execute_node(
 }
 
 impl ReadGraphHandlers<'_> {
-    fn render_and_execute(&self, node_id: &str, scope: &Scope) -> ExecOutcome {
+    fn render_and_execute(&self, node_id: &str, scope: &[(String, Value)]) -> ExecOutcome {
         render_and_execute_node(self.driver, self.graph, &self.dialect, node_id, scope)
     }
 }
@@ -431,14 +435,14 @@ impl ComponentExec for ReadGraphHandlers<'_> {
         _bound: Option<&Value>,
     ) -> Option<ExecOutcome> {
         let scope = match ports.iter().find(|(k, _)| k == SCOPE_PORT).map(|(_, v)| v) {
-            Some(Value::Obj(pairs)) => pairs.clone(),
+            Some(Value::Obj(pairs)) => pairs.as_slice(),
             _ => {
                 return Some(ExecOutcome::Error(format!(
                     "static-bundle: node '{node_id}' surrogate scope did not evaluate to an object"
                 )))
             }
         };
-        Some(self.render_and_execute(node_id, &scope))
+        Some(self.render_and_execute(node_id, scope))
     }
 }
 
@@ -461,13 +465,116 @@ pub fn execute_read_graph(
         .to_string();
     let name = graph.get("name").and_then(|n| n.as_str());
     let normalized = normalize_read_graph_input(graph, input);
+
+    // FAST-PATH: a component that is a SINGLE `componentRef` body node whose Φ output is exactly
+    // `{ref:[<that node>]}` is what every read graph in the corpus is. bc `run_behavior` would, for
+    // this shape, eval the node ports, dispatch exec_ctx once, and return the node's rows verbatim
+    // as the output — but at the cost of cloning the whole body IR, building OpSpecs, and threading
+    // an input.to_vec() base-scope through the plan machinery. We reproduce the SAME result directly
+    // (eval `__scope` ports → render+execute → its rows), byte-identical, skipping that plumbing.
+    // Any other shape (multiple nodes, a map/cond node, a non-trivial output) falls through to the
+    // authoritative bc `run_behavior` path unchanged.
+    if let Some(node) = single_ref_node(ir, name) {
+        if let Some(out) = fast_single_node(driver, graph, &dialect, node, &normalized) {
+            return out;
+        }
+    }
+
+    execute_read_graph_via_bc(graph, ir, dialect, name, &normalized, driver)
+}
+
+/// The authoritative bc `run_behavior` read path (the fast-path's oracle). Exposed `#[doc(hidden)]`
+/// so the behavior-equality test can force the SAME graph through bc and assert the fast-path result
+/// is byte-identical. Production callers use [`execute_read_graph`], which fast-paths first.
+#[doc(hidden)]
+pub fn execute_read_graph_via_bc_for_test(
+    graph: &J,
+    input: &Scope,
+    driver: &dyn Driver,
+) -> Result<Value, SqlFailure> {
+    let ir = graph
+        .get("ir")
+        .ok_or_else(|| plain_failure("scp runtime: readGraph has no ir"))?;
+    let dialect = graph
+        .get("dialect")
+        .and_then(|d| d.as_str())
+        .unwrap_or("")
+        .to_string();
+    let name = graph.get("name").and_then(|n| n.as_str());
+    let normalized = normalize_read_graph_input(graph, input);
+    execute_read_graph_via_bc(graph, ir, dialect, name, &normalized, driver)
+}
+
+/// Drive the read graph through bc `run_behavior` + the makeSQL handler (no fast-path). This is the
+/// correctness oracle: bc owns map iteration / wire binding / Φ output; the handler renders each
+/// node's static statements against the evaluated `__scope` and runs REAL SQL.
+fn execute_read_graph_via_bc(
+    graph: &J,
+    ir: &J,
+    dialect: String,
+    name: Option<&str>,
+    normalized: &Scope,
+    driver: &dyn Driver,
+) -> Result<Value, SqlFailure> {
     let mut handlers = ReadGraphHandlers {
         driver,
         graph,
         dialect,
     };
-    run_behavior(ir, &mut handlers, &normalized, name)
+    run_behavior(ir, &mut handlers, normalized, name)
         .map_err(|e| re_error_to_sql_failure(&e.to_string()))
+}
+
+/// If the entry component is a single `componentRef` body node `X` with `output == {ref:[X]}`,
+/// return that node; else None (route to bc). Matches the corpus read-graph shape.
+fn single_ref_node<'a>(ir: &'a J, name: Option<&str>) -> Option<&'a J> {
+    let comp = component_for(ir, name)?;
+    let body = comp.get("body").and_then(|b| b.as_array())?;
+    if body.len() != 1 {
+        return None;
+    }
+    let node = &body[0];
+    // Only a plain componentRef node (no cond/map — those carry bc semantics we do not shortcut).
+    if node.get("cond").is_some() || node.get("map").is_some() || node.get("component").is_none() {
+        return None;
+    }
+    let node_id = node.get("id").and_then(|v| v.as_str())?;
+    // output must be exactly `{ref:[node_id]}`.
+    let out_ref = comp
+        .get("output")
+        .and_then(|o| o.get("ref"))
+        .and_then(|r| r.as_array())?;
+    if out_ref.len() == 1 && out_ref[0].as_str() == Some(node_id) {
+        Some(node)
+    } else {
+        None
+    }
+}
+
+/// Evaluate the single node's `__scope` ports against `scope`, render + execute its statements, and
+/// return the rows — the byte-identical result bc would produce for `output={ref:[node]}`.
+fn fast_single_node(
+    driver: &dyn Driver,
+    graph: &J,
+    dialect: &str,
+    node: &J,
+    scope: &Scope,
+) -> Option<Result<Value, SqlFailure>> {
+    let node_id = node.get("id").and_then(|v| v.as_str())?;
+    let ports_j = node.get("ports")?;
+    let ports = match eval_ports(ports_j, scope) {
+        Ok(p) => p,
+        Err(e) => return Some(Err(re_error_to_sql_failure(&e))),
+    };
+    let node_scope = match ports.iter().find(|(k, _)| k == SCOPE_PORT).map(|(_, v)| v) {
+        Some(Value::Obj(pairs)) => pairs.as_slice(),
+        // A surrogate scope that is not an object is a wiring bug — defer to bc for its exact error.
+        _ => return None,
+    };
+    match render_and_execute_node(driver, graph, dialect, node_id, node_scope) {
+        ExecOutcome::Ok(v) => Some(Ok(v)),
+        ExecOutcome::Error(e) => Some(Err(re_error_to_sql_failure(&e))),
+    }
 }
 
 // ── PRODUCTION live/pooled read execution with executor-layer sibling fan-out (#40) ─
