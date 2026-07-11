@@ -187,3 +187,30 @@ def test_write_tx_idempotent_duplicate_short_circuits():
         assert driver.prepare("SELECT post_count FROM users WHERE id = 7").all([])[0]["post_count"] == 3
     finally:
         driver.close()
+
+
+# ── M4 (re-audit): an unknown gate rule FAILS CLOSED (never a silent commit) ──
+#
+# Aligned across all 5 runtimes (Python + Rust + TS + Go + PHP): a corrupt / forward-incompatible
+# gate string MUST abort the transaction (raise + ROLLBACK), NOT silently continue and COMMIT.
+def _unknown_gate_bundle():
+    b = _write_bundle()
+    # Tag the requires gate with a bogus rule the runtime does not recognize.
+    b["transaction"]["statements"][0]["gate"] = "someFutureGateRuleThatDoesNotExist"
+    return b
+
+
+def test_write_tx_unknown_gate_fails_closed():
+    driver = SqliteDriver.in_memory(WRITE_SCHEMA)
+    try:
+        raised = False
+        try:
+            execute_transaction_bundle(_unknown_gate_bundle(), {"author_id": 7, "title": "X", "request_id": "req-u"}, driver)
+        except Exception as e:  # noqa: BLE001 — any raise is fail-closed; assert the message survives
+            raised = True
+            assert "unknown gate rule" in str(e)
+        assert raised, "an unknown gate rule must fail closed (raise), not silently commit"
+        # FAIL-CLOSED: nothing committed.
+        assert driver.prepare("SELECT COUNT(*) AS c FROM posts").all([])[0]["c"] == 0
+    finally:
+        driver.close()

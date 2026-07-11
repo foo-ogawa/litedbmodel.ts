@@ -2,6 +2,7 @@ package litedbmodel_runtime
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
@@ -247,6 +248,33 @@ func TestExecuteTransactionGateShortCircuit(t *testing.T) {
 	db.QueryRow(`SELECT post_count FROM users WHERE id = 7`).Scan(&pc)
 	if pc != 2 {
 		t.Errorf("derive must not run on short-circuit: post_count=%d, want 2", pc)
+	}
+}
+
+// M4 (re-audit): an UNKNOWN / forward-incompatible gate rule FAILS CLOSED (aligned with TS +
+// Python + Rust + PHP): the tx returns an error and does NOT commit — a corrupt gate must never
+// be silently skipped into a COMMIT.
+const txBundleUnknownGate = `{"dialect":"sqlite","name":"Create","optionalHeads":[],"relations":{},"transaction":{"phase":"create","entityFrom":"tx_body_1","onIdempotentHit":"rollback","statements":[
+  {"id":"tx_requires_0","role":"gate:requires","gate":"someFutureGateRuleThatDoesNotExist","label":"bogus gate","op":{"sql":"SELECT 1 FROM users WHERE id = ?","params":[{"ref":["author_id"]}]}},
+  {"id":"tx_body_1","role":"body","label":"body","op":{"sql":"INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id","params":[{"ref":["author_id"]},{"ref":["title"]}]}}
+]}}`
+
+func TestExecuteTransactionUnknownGateFailsClosed(t *testing.T) {
+	bundle, _ := ParseBundle([]byte(txBundleUnknownGate))
+	db := seedTx(t)
+	defer db.Close()
+
+	res, err := ExecuteTransactionBundle(bundle, scope("author_id", float64(7), "title", "X"), db)
+	if err == nil {
+		t.Fatalf("an unknown gate rule must fail closed (error), got committed=%v", res.Committed)
+	}
+	if !strings.Contains(err.Error(), "unknown gate rule") {
+		t.Errorf("error should name the unknown gate rule, got: %v", err)
+	}
+	var n int64
+	db.QueryRow(`SELECT COUNT(*) FROM posts`).Scan(&n)
+	if n != 0 {
+		t.Errorf("fail-closed: no commit, but posts has %d rows", n)
 	}
 }
 

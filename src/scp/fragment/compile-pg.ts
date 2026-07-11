@@ -71,7 +71,7 @@ export function compileBelongsTo(opts: {
   sqlCast?: string;
   filters?: OptionalEq[];
 }): Fragment[] {
-  const select = opts.selectColumn ?? '*';
+  const select = opts.selectColumn || '*';
   const pgType = inferPgArrayTypeForCompile(opts.sampleKeys, opts.sqlCast);
   const base: Fragment = {
     sql: `SELECT ${select} FROM ${opts.tableName} WHERE ${opts.tableName}.${opts.targetKey} = ANY(?::${pgType})`,
@@ -102,7 +102,7 @@ export function compileHasManyLimited(opts: {
   sqlCast?: string;
   filters?: OptionalEq[];
 }): Fragment[] {
-  const select = opts.selectColumn ?? '*';
+  const select = opts.selectColumn || '*';
   const pgType = inferPgArrayTypeForCompile(opts.sampleKeys, opts.sqlCast);
   const filterFrags = (opts.filters ?? []).map(compileOptionalEq);
 
@@ -142,7 +142,7 @@ export function compileHasManyAny(opts: {
   sqlCast?: string;
   filters?: OptionalEq[];
 }): Fragment[] {
-  const select = opts.selectColumn ?? '*';
+  const select = opts.selectColumn || '*';
   const pgType = inferPgArrayTypeForCompile(opts.sampleKeys, opts.sqlCast);
   const head: Fragment = {
     sql: `SELECT ${select} FROM ${opts.tableName} WHERE ${opts.tableName}.${opts.targetKey} = ANY(?::${pgType})`,
@@ -175,7 +175,7 @@ export function compileBaseSelect(opts: {
   /** ordered optional equality conditions */
   conditions: OptionalEq[];
 }): Node[] {
-  const select = opts.selectColumn ?? '*';
+  const select = opts.selectColumn || '*';
   const base: Fragment = { sql: `SELECT ${select} FROM ${opts.tableName}`, params: [] };
   const group: WhereGroup = {
     where: opts.conditions.map((c) => {

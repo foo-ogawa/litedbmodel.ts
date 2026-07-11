@@ -33,6 +33,7 @@ import {
 } from './relation';
 import { buildResultSet, type ReadOptions } from './typed-object';
 import type { DialectName } from './dialect';
+import type { FindFilterSource } from './find-filter-guard';
 import {
   compileReadGraph,
   executeReadGraph,
@@ -161,6 +162,7 @@ export function compileBundle(
   entry?: string,
   relations: readonly RelationDecl[] = [],
   dialectName: DialectName = 'sqlite',
+  findFilterModel?: FindFilterSource,
 ): SqlBundle {
   const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
   if (component === undefined) throw new Error(`scp runtime: entry component '${entry ?? '<first>'}' not found in contract`);
@@ -175,7 +177,7 @@ export function compileBundle(
 
   if (isWriteComponent(component)) {
     const writeNode = primaryNodeOf(component)!;
-    const op = compileWriteNode(writeNode as never);
+    const op = compileWriteNode(writeNode as never, dialectName);
     return {
       dialect: dialectName,
       name: component.name,
@@ -185,7 +187,7 @@ export function compileBundle(
     };
   }
 
-  const readGraph = compileReadGraph(contract, dialectName, entry);
+  const readGraph = compileReadGraph(contract, dialectName, entry, findFilterModel);
   return {
     dialect: dialectName,
     name: readGraph.name,
@@ -336,7 +338,7 @@ export function compileWriteBundle(
   // MySQL has no native RETURNING; when the base write is an INSERT…RETURNING carrying a PK
   // descriptor, annotate it with the strip-before-execute PK hint so the mysql emulation re-selects
   // by the REAL PK (not a hardcoded `id`). PG/SQLite keep the op verbatim (native RETURNING).
-  const baseOp = dialectName === 'mysql' ? mysqlPkHint(compileWriteNode(writeNode as never)) : compileWriteNode(writeNode as never);
+  const baseOp = dialectName === 'mysql' ? mysqlPkHint(compileWriteNode(writeNode as never, dialectName)) : compileWriteNode(writeNode as never, dialectName);
   const base: BaseWrite = { op: baseOp, label: `${(writeNode as { component: string }).component}` };
   const plan = deriveTransactionPlan(phase, [base], lifecycle, dialectName);
 
@@ -385,7 +387,7 @@ export function compileCompositeWriteBundle(
     if (component === undefined) throw new Error(`scp write: entry component '${e.entry}' not found in contract`);
     if (firstBaseOp === undefined) firstName = component.name;
     const writeNode = baseWriteNodeOf(component);
-    const baseOp = compileWriteNode(writeNode as never);
+    const baseOp = compileWriteNode(writeNode as never, dialectName);
     if (firstBaseOp === undefined) firstBaseOp = baseOp;
     bases.push({ op: baseOp, label: `${(writeNode as { component: string }).component} ${e.name}`, name: e.name, effects: e.lifecycle.effects });
   }
@@ -444,7 +446,15 @@ export function compileCreateManyBundle(
     return flat;
   });
   const plan = deriveBatchPlan('create', ops);
-  return { dialect: dialectName, name, statement: { sql: ops[0]?.sql ?? '', params: (ops[0]?.params ?? []) as unknown[] }, optionalHeads: [], relations: {}, transaction: plan };
+  // `ops` is never empty here: `deriveBatchPlan` throws on zero ops, and a `createMany` always groups
+  // into >=1 INSERT. Fail LOUDLY rather than emitting an empty `sql` fallback (an empty-ops bundle is a
+  // compile bug, not a default — 'defaults in schema, not code'). The `statement` mirrors the batch plan's
+  // first (group-0) statement, matching the updateMany/deleteMany bundle shape below.
+  const head = ops[0];
+  if (head === undefined) {
+    throw new Error(`scp write: compileCreateManyBundle('${name}') produced no INSERT statements (empty createMany grouping) — an empty-ops batch bundle is a compile bug, not a silent empty-SQL default.`);
+  }
+  return { dialect: dialectName, name, statement: { sql: head.sql, params: head.params as unknown[] }, optionalHeads: [], relations: {}, transaction: plan };
 }
 
 /**

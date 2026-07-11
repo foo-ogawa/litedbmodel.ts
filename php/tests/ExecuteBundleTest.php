@@ -101,6 +101,28 @@ final class ExecuteBundleTest extends TestCase
         $this->assertSame(2, (int) $db->query('SELECT post_count FROM users WHERE id = 7')->fetchColumn());
     }
 
+    public function testTxUnknownGateFailsClosed(): void
+    {
+        // M4 (re-audit): an UNKNOWN / forward-incompatible gate rule FAILS CLOSED (aligned with
+        // TS + Python + Rust + Go): the tx throws and does NOT commit — a corrupt gate must never
+        // be silently skipped into a COMMIT.
+        $v = self::vectors('tx')->vectors[0];
+        $db = self::seed($v->schema);
+        // Tag the FIRST gate statement with a bogus rule the runtime does not recognize.
+        $v->bundle->transaction->statements[0]->gate = 'someFutureGateRuleThatDoesNotExist';
+
+        $threw = false;
+        try {
+            Runtime::executeTransactionBundle($v->bundle, self::scope($v->input), $db);
+        } catch (\Throwable $e) {
+            $threw = true;
+            $this->assertStringContainsString('unknown gate rule', $e->getMessage());
+        }
+        $this->assertTrue($threw, 'an unknown gate rule must fail closed (throw), not silently commit');
+        // FAIL-CLOSED: the transaction rolled back — nothing committed.
+        $this->assertCount(0, $db->query('SELECT id FROM posts')->fetchAll());
+    }
+
     public function testExecuteBundleFromPublishedJsonAlone(): void
     {
         // Prove self-sufficiency: round-trip the bundle through JSON (no PHP object identity) and
