@@ -568,6 +568,9 @@ export function readBundle<R = Record<string, unknown>>(
   const readOpts: ReadOptions<R> = {
     ...(options.with !== undefined ? { with: options.with } : {}),
     ...(options.hydrate !== undefined ? { hydrate: options.hydrate } : {}),
+    // CROSS-DB relations (V0 R1): forward the connection registry so a tagged relation routes to
+    // its target DB. Absent for a single-DB read (every relation runs on the primary `db`).
+    ...(options.connections !== undefined ? { connections: options.connections } : {}),
   };
   return buildResultSet<R>(rawRows, bundle.relations, options.db, readOpts);
 }
