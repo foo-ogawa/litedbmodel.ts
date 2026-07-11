@@ -8923,6 +8923,261 @@
       "expectedResultMysql": []
     },
     {
+      "name": "CROSS-DB: posts (conn A) + belongsTo author routed to users (conn B) [R1]",
+      "kind": "crossdb",
+      "input": {
+        "author_id": 7
+      },
+      "with": [
+        "author"
+      ],
+      "connectionTag": "authors_db",
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "mysql",
+            "connection": "authors_db",
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+          }
+        }
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "Posts",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "Posts",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {
+                          "author_id": {
+                            "ref": [
+                              "author_id"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "author_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "Posts",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT id, author_id, title, status FROM posts",
+                "params": []
+              },
+              {
+                "sql": "author_id = ?",
+                "params": [
+                  {
+                    "ref": [
+                      "author_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {
+          "author": {
+            "name": "author",
+            "kind": "belongsTo",
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "postgres",
+            "connection": "authors_db",
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+          }
+        }
+      },
+      "primarySchemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')"
+      ],
+      "primarySchemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')"
+      ],
+      "secondarySchemaPg": [
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')"
+      ],
+      "secondarySchemaMysql": [
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')"
+      ],
+      "expectedResultPg": [
+        {
+          "id": 1,
+          "author_id": 7,
+          "title": "Hello",
+          "status": "live",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          }
+        },
+        {
+          "id": 2,
+          "author_id": 7,
+          "title": "World",
+          "status": "draft",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          }
+        }
+      ],
+      "expectedResultMysql": [
+        {
+          "id": 1,
+          "author_id": 7,
+          "title": "Hello",
+          "status": "live",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          }
+        },
+        {
+          "id": 2,
+          "author_id": 7,
+          "title": "World",
+          "status": "draft",
+          "author": {
+            "id": 7,
+            "name": "Ada"
+          }
+        }
+      ]
+    },
+    {
       "name": "create: gate-first tx commits (author exists, unique, idempotent)",
       "kind": "tx",
       "input": {

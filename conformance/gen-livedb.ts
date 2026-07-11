@@ -59,6 +59,8 @@ import {
   executeBundle,
   executeTransactionBundle,
   readBundle,
+  buildResultSet,
+  compileRelationOp,
   publishBehaviors,
   components,
   SemanticBehavior,
@@ -828,7 +830,45 @@ interface LiveReadVector {
   expectedResultMysql: EncodedValue;
 }
 
-type LiveVector = LiveExecVector | LiveTxVector | LiveReadVector;
+/**
+ * A CROSS-DB read-RELATION vector (V0 R1): the parent read runs on connection A (the leg's own
+ * primary DB) and a TAGGED relation runs on connection B (the OTHER live DB). This is the ONE
+ * corpus mode where a single bundle spans two databases — v1's `LazyRelation.ts:236` runs a
+ * relation on the TARGET model's driver, which may differ from the parent's.
+ *
+ * The proof is a GENUINE two-database run per leg: the parent table lives ONLY on the primary DB
+ * and the tagged relation's target table lives ONLY on the secondary DB. The relation resolves to
+ * real rows IFF the runner routes the tagged batch to the secondary connection (`connections[tag]`).
+ * Routing it to the primary (the same-DB default) would find NO target table → the author never
+ * hydrates → the golden mismatches. So a green result is unforgeable evidence the tag is honored.
+ *
+ * Per leg the tagged relation SQL is compiled for the SECONDARY dialect (the target's own DB, v1
+ * parity): the pg leg's parent is PG and its tagged relation is MySQL-dialect (routed to `my`); the
+ * mysql leg's parent is MySQL and its tagged relation is PG-dialect (routed to `pg`). `connectionTag`
+ * names the registry key; `secondarySchema*` is the DDL applied on the OTHER connection.
+ */
+interface LiveCrossDbVector {
+  name: string;
+  kind: 'crossdb';
+  input: EncodedValue;
+  /** The relation names to declaratively select + hydrate (the tagged one routes cross-DB). */
+  with: readonly string[];
+  /** The connection-registry key the tagged relation routes to (its target model's DB). */
+  connectionTag: string;
+  bundlePg: SqlBundle;
+  bundleMysql: SqlBundle;
+  /** Parent (connection-A) DDL per leg — the parent table lives ONLY here. */
+  primarySchemaPg: readonly string[];
+  primarySchemaMysql: readonly string[];
+  /** Target (connection-B) DDL per leg — the tagged relation's target table lives ONLY here. */
+  secondarySchemaPg: readonly string[];
+  secondarySchemaMysql: readonly string[];
+  /** The hydrated golden per leg (byte-true to the TS two-DB `buildResultSet` reference). */
+  expectedResultPg: EncodedValue;
+  expectedResultMysql: EncodedValue;
+}
+
+type LiveVector = LiveExecVector | LiveTxVector | LiveReadVector | LiveCrossDbVector;
 
 function seedDb(schema: readonly string[]): InstanceType<typeof Database> {
   const db = new Database(':memory:');
@@ -1184,6 +1224,102 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
       expectedResultMysql: ref.mysql,
     };
   });
+
+  // ── CROSS-DB read-RELATION vector (V0 R1): parent on conn A, tagged relation on conn B ────────
+  //
+  // ONE bundle whose parent `posts` read runs on the leg's PRIMARY DB and whose TAGGED `author`
+  // belongsTo runs on the SECONDARY DB (the target `users` model's own connection — v1
+  // `LazyRelation.ts:236`). The parent table lives ONLY on the primary; the target `users` table
+  // lives ONLY on the secondary. If the runner routed the tagged batch to the primary (the same-DB
+  // default) it would hit a MISSING `users` table (loud error), so a green hydrated result is
+  // unforgeable evidence the `connection` tag routed the statement to conn B end-to-end.
+  //
+  // Per leg the tagged relation SQL is compiled for the SECONDARY dialect (its target's own DB):
+  // the pg leg parent=PG + author routed to `my` (MySQL-dialect batch); the mysql leg parent=MySQL
+  // + author routed to `pg` (PG-dialect batch). The SQL is v1-identical for whichever dialect it
+  // targets — R1 is pure routing, not new SQL.
+  const crossDb: LiveCrossDbVector[] = (() => {
+    const CONN_TAG = 'authors_db';
+    // Parent-side schema (posts ONLY — NO users here, so a mis-route fails loudly).
+    const PARENT_SCHEMA_SQLITE = [
+      `CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)`,
+      `INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')`,
+      `INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')`,
+      `INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')`,
+    ];
+    const PARENT_SCHEMA_PG = PARENT_SCHEMA_SQLITE;
+    const PARENT_SCHEMA_MYSQL = [
+      `CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)`,
+      `INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')`,
+      `INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')`,
+      `INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')`,
+    ];
+    // Target-side schema (users ONLY — the tagged relation's target model, on conn B).
+    const TARGET_SCHEMA_SQLITE = [
+      `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`,
+      `INSERT INTO users VALUES (7, 'Ada')`,
+      `INSERT INTO users VALUES (8, 'Alan')`,
+    ];
+    const TARGET_SCHEMA_PG = TARGET_SCHEMA_SQLITE;
+    const TARGET_SCHEMA_MYSQL = [
+      `CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))`,
+      `INSERT INTO users VALUES (7, 'Ada')`,
+      `INSERT INTO users VALUES (8, 'Alan')`,
+    ];
+
+    // The cross-DB relation decl: belongsTo `author` (target `users`), tagged with the connection.
+    const crossAuthor = (dialect: DialectName): RelationDecl => ({
+      name: 'author', kind: 'belongsTo', targetTable: 'users', select: ['id', 'name'],
+      parentKey: 'author_id', targetKey: 'id', dialect, connection: CONN_TAG,
+    });
+
+    // Compile the parent bundle for `dialect`, then OVERRIDE bundle.relations.author with a tagged
+    // op compiled for the SECONDARY dialect (its target DB). The parent SQL stays the leg dialect;
+    // only the relation batch is compiled+routed for the other DB.
+    const crossBundle = (parentDialect: DialectName, targetDialect: DialectName): SqlBundle => {
+      const b = compileBundle(blog, 'Posts', [], parentDialect);
+      const withRelations = b as { relations: Record<string, unknown> };
+      withRelations.relations = { author: compileRelationOp(crossAuthor(targetDialect)) };
+      return clone(b);
+    };
+
+    // Reference: two SEPARATE SQLite DBs — posts on dbA, users on dbB — routed via `connections`.
+    const dbA = seedDb(PARENT_SCHEMA_SQLITE);
+    const dbB = seedDb(TARGET_SCHEMA_SQLITE);
+    const refBundle = compileBundle(blog, 'Posts', [], 'sqlite');
+    const refOp = compileRelationOp(crossAuthor('sqlite'));
+    const input = { author_id: 7 };
+    // The parent read runs on dbA; buildResultSet routes the tagged `author` to dbB via the registry.
+    const parentRows = executeBundle(refBundle, input as never, { db: dbA }) as unknown as Record<string, unknown>[];
+    const hydrated = buildResultSet(parentRows, { author: refOp }, dbA, {
+      with: { author: true },
+      connections: { [CONN_TAG]: dbB },
+    });
+    dbA.close();
+    dbB.close();
+    const ref = encodeValue(hydrated);
+
+    return [
+      {
+        name: 'CROSS-DB: posts (conn A) + belongsTo author routed to users (conn B) [R1]',
+        kind: 'crossdb',
+        input: encodeValue(input),
+        with: ['author'],
+        connectionTag: CONN_TAG,
+        // pg leg: parent PG on the primary; author routed to `my` → MySQL-dialect batch.
+        bundlePg: crossBundle('postgres', 'mysql'),
+        // mysql leg: parent MySQL on the primary; author routed to `pg` → PG-dialect batch.
+        bundleMysql: crossBundle('mysql', 'postgres'),
+        primarySchemaPg: PARENT_SCHEMA_PG,
+        primarySchemaMysql: PARENT_SCHEMA_MYSQL,
+        // secondary = the OTHER leg's DB, so its DDL is that dialect's target schema.
+        secondarySchemaPg: TARGET_SCHEMA_MYSQL,
+        secondarySchemaMysql: TARGET_SCHEMA_PG,
+        expectedResultPg: ref,
+        expectedResultMysql: ref,
+      },
+    ];
+  })();
 
   const dbAsserts = [
     'SELECT id, author_id, title FROM posts ORDER BY id',
@@ -1555,7 +1691,7 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
       'MySQL emul returns []), tx idempotency/unique/edge/composite-DAG short-circuit + effects, and ' +
       'UUID-PK + composite-PK INSERT RETURNING (MySQL emul re-selects by the REAL PK). All ride the ' +
       'gate-free/gate-first TransactionPlan (kind:tx), byte-true to the SQLite reference.',
-    vectors: [...exec, ...read, ...tx, ...txVariants, ...batch],
+    vectors: [...exec, ...read, ...crossDb, ...tx, ...txVariants, ...batch],
   };
 }
 

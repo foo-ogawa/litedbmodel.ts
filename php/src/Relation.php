@@ -205,17 +205,46 @@ final class Relation
     }
 
     /**
+     * The driver a relation runs against: its tagged cross-DB connection, else the primary $db.
+     * CROSS-DB (V0 R1): a relation whose op carries a `connection` tag (its target model lives in a
+     * DIFFERENT DB — v1 LazyRelation.ts:236) routes to $connections[tag]. Loud failure when the tag
+     * has no registered driver (a real wiring bug — never a silent same-DB fallback that would run
+     * the target's query on the wrong DB). Untagged relations use the primary $db.
+     *
+     * @param array<string,\PDO> $connections
+     */
+    private static function driverForOp(\stdClass $op, \PDO $db, array $connections): \PDO
+    {
+        $tag = $op->connection ?? null;
+        if ($tag === null) {
+            return $db;
+        }
+        if (!isset($connections[$tag])) {
+            throw new \RuntimeException(
+                "cross-DB relation '" . ($op->name ?? '?') . "': no driver registered for connection "
+                . "'{$tag}' (pass it in readBundle connections)"
+            );
+        }
+        return $connections[$tag];
+    }
+
+    /**
      * Run a READ bundle's primary row list, then batch-load + hydrate the selected relations onto
      * each parent (port of the TS readBundle typed-object surface, declarative-select path). The
      * primary read output must be a bare row list; each named relation in $withNames is batch-
      * prefetched ONCE over the whole page (staged, no N+1) via the SAME runRelationOp and attached
      * onto each parent as an own property.
      *
+     * CROSS-DB (V0 R1): a relation op carrying a `connection` tag is batched against
+     * $connections[tag] (its target model's DB) instead of the primary $db; untagged relations
+     * ignore $connections. Pass an empty array for a single-DB read.
+     *
      * @param array<string,mixed> $input
      * @param list<string> $withNames
+     * @param array<string,\PDO> $connections
      * @return list<\stdClass>
      */
-    public static function readBundle(\stdClass $bundle, array $input, \PDO $db, array $withNames): array
+    public static function readBundle(\stdClass $bundle, array $input, \PDO $db, array $withNames, array $connections = []): array
     {
         $out = Runtime::executeBundle($bundle, $input, $db);
         if (!is_array($out) || !array_is_list($out)) {
@@ -232,7 +261,8 @@ final class Relation
                 throw new \RuntimeException("declarative select: relation '{$name}' is not declared on this model");
             }
             $op = $relations->{$name};
-            $batch = self::runRelationOp($op, $rows, $db);
+            $relDb = self::driverForOp($op, $db, $connections);
+            $batch = self::runRelationOp($op, $rows, $relDb);
             foreach ($rows as $o) {
                 $o->{$name} = self::distributeToParent($op, $o, $batch);
             }

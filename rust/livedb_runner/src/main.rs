@@ -187,8 +187,49 @@ fn run_read(
                 .collect()
         })
         .unwrap_or_default();
-    let result = read_bundle_pooled(bundle, &input, driver, &with_names)
+    let empty = std::collections::HashMap::new();
+    let result = read_bundle_pooled(bundle, &input, driver, &with_names, &empty)
         .map_err(|e| format!("read threw: {}", e.message))?;
+    let got = encode_value(&result);
+    if eq(&got, &v[expected_key]) {
+        Ok(())
+    } else {
+        Err(format!("result {got} != {}", v[expected_key]))
+    }
+}
+
+/// A CROSS-DB read-RELATION vector (V0 R1): the parent runs on the PRIMARY driver and a TAGGED
+/// relation on the SECONDARY driver (the target model's own DB). The caller seeds the secondary DB
+/// with its own schema BEFORE this call (the parent DB has NO target table — a mis-route would fail
+/// loudly), then the tagged relation is routed via the `connections` registry. A green hydrated
+/// result is unforgeable proof the `connection` tag routed the batch to the secondary connection.
+fn run_crossdb(
+    driver: &(dyn Driver + Sync),
+    secondary: &(dyn Driver + Sync),
+    bundle: &J,
+    v: &J,
+    expected_key: &str,
+) -> Result<(), String> {
+    let input = numeric_canon(&v["input"]);
+    let with_names: Vec<String> = v
+        .get("with")
+        .and_then(|w| w.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let tag = v
+        .get("connectionTag")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string();
+    let mut connections: std::collections::HashMap<String, &(dyn Driver + Sync)> =
+        std::collections::HashMap::new();
+    connections.insert(tag, secondary);
+    let result = read_bundle_pooled(bundle, &input, driver, &with_names, &connections)
+        .map_err(|e| format!("cross-DB read threw: {}", e.message))?;
     let got = encode_value(&result);
     if eq(&got, &v[expected_key]) {
         Ok(())
@@ -234,10 +275,14 @@ struct Tally {
     fail: i64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_dialect_leg(
     name: &str,
     driver: &(dyn Driver + Sync),
     reset: &mut dyn FnMut(&[String]) -> Result<(), String>,
+    secondary: &(dyn Driver + Sync),
+    secondary_reset: &mut dyn FnMut(&[String]) -> Result<(), String>,
+    secondary_schema_key: &str,
     vectors: &[J],
     bundle_key: &str,
     schema_key: &str,
@@ -247,15 +292,34 @@ fn run_dialect_leg(
     eprintln!("\nlivedb-{name} — {} vectors (real {name})", vectors.len());
     for v in vectors {
         let vname = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-        if let Err(e) = reset(&schema_of(v, schema_key)) {
+        let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        // CROSS-DB vectors carry their OWN primary schema key (the parent DB — NO target table).
+        let primary_schema_key = if kind == "crossdb" {
+            if name == "pg" {
+                "primarySchemaPg"
+            } else {
+                "primarySchemaMysql"
+            }
+        } else {
+            schema_key
+        };
+        if let Err(e) = reset(&schema_of(v, primary_schema_key)) {
             t.fail += 1;
             eprintln!("  XX  {vname}\n      reset: {e}");
             continue;
         }
+        if kind == "crossdb" {
+            if let Err(e) = secondary_reset(&schema_of(v, secondary_schema_key)) {
+                t.fail += 1;
+                eprintln!("  XX  {vname}\n      secondary reset: {e}");
+                continue;
+            }
+        }
         let bundle = &v[bundle_key];
-        let res = match v.get("kind").and_then(|k| k.as_str()).unwrap_or("") {
+        let res = match kind {
             "exec" => run_exec(driver, bundle, v),
             "read" => run_read(driver, bundle, v, read_expected_key),
+            "crossdb" => run_crossdb(driver, secondary, bundle, v, read_expected_key),
             "tx" => run_tx(driver, bundle, v, read_expected_key),
             other => Err(format!("unknown kind {other}")),
         };
@@ -367,12 +431,18 @@ fn main() -> ExitCode {
         }
     };
 
+    // CROSS-DB (V0 R1): each leg's SECONDARY connection is the OTHER live DB (pg leg → my; mysql leg
+    // → pg), reset with the OTHER dialect's reset fn + the vector's per-leg secondary schema.
     let pg_t = {
         let mut reset = |schema: &[String]| reset_pg(&pg, schema);
+        let mut secondary_reset = |schema: &[String]| reset_mysql(&my, schema);
         run_dialect_leg(
             "pg",
             &pg,
             &mut reset,
+            &my,
+            &mut secondary_reset,
+            "secondarySchemaPg",
             &vectors,
             "bundlePg",
             "schemaPg",
@@ -381,10 +451,14 @@ fn main() -> ExitCode {
     };
     let my_t = {
         let mut reset = |schema: &[String]| reset_mysql(&my, schema);
+        let mut secondary_reset = |schema: &[String]| reset_pg(&pg, schema);
         run_dialect_leg(
             "mysql",
             &my,
             &mut reset,
+            &pg,
+            &mut secondary_reset,
+            "secondarySchemaMysql",
             &vectors,
             "bundleMysql",
             "schemaMysql",

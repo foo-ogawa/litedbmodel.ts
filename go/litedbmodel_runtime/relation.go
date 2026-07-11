@@ -43,6 +43,7 @@ type RelationOp struct {
 	ParentKeys []string // composite: ordered parent key columns (nil for single-key)
 	TargetKeys []string // composite: ordered child key columns (nil for single-key)
 	Dialect    string
+	Connection string // CROSS-DB (V0 R1): the target model's connection tag (empty for same-DB)
 	SQL        string
 }
 
@@ -56,6 +57,7 @@ func relationOpFromJObj(o *bc.JObj) RelationOp {
 		ParentKeys: getStrArrJ(o, "parentKeys"),
 		TargetKeys: getStrArrJ(o, "targetKeys"),
 		Dialect:    getStrJ(o, "dialect"),
+		Connection: getStrJ(o, "connection"),
 		SQL:        getStrJ(o, "sql"),
 	}
 }
@@ -279,12 +281,32 @@ func DistributeToParent(op RelationOp, parent *bc.Obj, batch RelationBatch) bc.V
 	return nil
 }
 
+// driverForOp returns the driver a relation runs against: its tagged cross-DB connection, else the
+// primary db. CROSS-DB (V0 R1): a relation whose op carries a `Connection` tag (its target model
+// lives in a DIFFERENT DB — v1 LazyRelation.ts:236) routes to connections[tag]. Loud failure when
+// the tag has no registered driver (a real wiring bug — never a silent same-DB fallback that would
+// run the target's query on the wrong DB). Untagged relations use the primary db.
+func driverForOp(op RelationOp, db SQLDB, connections map[string]SQLDB) (SQLDB, error) {
+	if op.Connection == "" {
+		return db, nil
+	}
+	d, ok := connections[op.Connection]
+	if !ok || d == nil {
+		return nil, fmt.Errorf("cross-DB relation '%s': no driver registered for connection '%s' (pass it in ReadBundle connections)", op.Name, op.Connection)
+	}
+	return d, nil
+}
+
 // ReadBundle runs a READ bundle's primary row list, then batch-loads + hydrates the selected
 // relations onto each parent (port of the TS readBundle typed-object surface, declarative-select
 // path). The primary read output must be a bare row list; each named relation in withNames is
 // batch-prefetched ONCE over the whole page (staged, no N+1) via the SAME RunRelationOp and
 // attached onto each parent as an own key. `relations` is the bundle.relations JObj.
-func ReadBundle(bundle *SqlBundle, relations *bc.JObj, input *bc.Obj, db SQLDB, withNames []string) (bc.Value, error) {
+//
+// CROSS-DB (V0 R1): a relation op carrying a `connection` tag is batched against connections[tag]
+// (its target model's DB) instead of the primary db; untagged relations ignore connections. Pass a
+// nil/empty map for a single-DB read.
+func ReadBundle(bundle *SqlBundle, relations *bc.JObj, input *bc.Obj, db SQLDB, withNames []string, connections map[string]SQLDB) (bc.Value, error) {
 	out, err := ExecuteBundle(bundle, input, db)
 	if err != nil {
 		return nil, err
@@ -303,7 +325,11 @@ func ReadBundle(bundle *SqlBundle, relations *bc.JObj, input *bc.Obj, db SQLDB, 
 			return nil, errRelationNotDeclared(name)
 		}
 		op := relationOpFromJObj(opObj)
-		batch, err := RunRelationOp(op, rows, db)
+		relDB, err := driverForOp(op, db, connections)
+		if err != nil {
+			return nil, err
+		}
+		batch, err := RunRelationOp(op, rows, relDB)
 		if err != nil {
 			return nil, err
 		}

@@ -27,12 +27,15 @@ use crate::static_bundle::{render_placeholders, resolve_pg_array_cast};
 /// One relation batch op read out of `bundle["relations"][name]` (pure JSON). Single-key relations
 /// carry `parent_key`/`target_key`; composite (#47 item 1) carry `parent_keys`/`target_keys`.
 struct RelationOp {
+    name: String,
     kind: String,
     parent_key: String,
     target_key: String,
     parent_keys: Option<Vec<String>>,
     target_keys: Option<Vec<String>>,
     dialect: String,
+    /// CROSS-DB (V0 R1): the target model's connection tag (None for a same-DB relation).
+    connection: Option<String>,
     sql: String,
 }
 
@@ -46,12 +49,17 @@ fn op_from_json(o: &serde_json::Value) -> RelationOp {
         })
     };
     RelationOp {
+        name: s("name"),
         kind: s("kind"),
         parent_key: s("parentKey"),
         target_key: s("targetKey"),
         parent_keys: str_arr("parentKeys"),
         target_keys: str_arr("targetKeys"),
         dialect: s("dialect"),
+        connection: o
+            .get("connection")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         sql: s("sql"),
     }
 }
@@ -271,11 +279,40 @@ fn distribute_to_parent(op: &RelationOp, parent: &Value, batch: &RelationBatch) 
 /// in `with_names` is then batch-prefetched ONCE over the whole page (staged, no N+1) via the SAME
 /// `run_relation_op` and attached onto each parent as an own field — in declaration order, mirroring
 /// the TS `buildResultSet` sequential declarative-select loop.
+/// The driver a relation runs against: its tagged cross-DB connection, else the primary `driver`.
+/// CROSS-DB (V0 R1): a relation whose op carries a `connection` tag (its target model lives in a
+/// DIFFERENT DB — v1 `LazyRelation.ts:236`) routes to `connections[tag]`. Loud failure when the tag
+/// has no registered driver (a real wiring bug — never a silent same-DB fallback that would run the
+/// target's query on the wrong DB). Untagged relations use the primary `driver`.
+fn driver_for_op<'a>(
+    op: &RelationOp,
+    driver: &'a (dyn Driver + Sync),
+    connections: &'a std::collections::HashMap<String, &'a (dyn Driver + Sync)>,
+) -> Result<&'a (dyn Driver + Sync), SqlFailure> {
+    match &op.connection {
+        None => Ok(driver),
+        Some(tag) => connections
+            .get(tag.as_str())
+            .copied()
+            .ok_or_else(|| SqlFailure {
+                kind: "driver_error".into(),
+                policy: "fail".into(),
+                sqlite_code: None,
+                message: format!(
+                    "cross-DB relation '{}': no driver registered for connection '{}' \
+                 (pass it in read_bundle_pooled connections)",
+                    op.name, tag
+                ),
+            }),
+    }
+}
+
 pub fn read_bundle_pooled(
     bundle: &serde_json::Value,
     input: &serde_json::Value,
     driver: &(dyn Driver + Sync),
     with_names: &[String],
+    connections: &std::collections::HashMap<String, &(dyn Driver + Sync)>,
 ) -> Result<Value, SqlFailure> {
     let out = execute_bundle_pooled(bundle, input, driver)?;
     let mut rows = match out {
@@ -304,7 +341,8 @@ pub fn read_bundle_pooled(
                 ),
             })?;
         let op = op_from_json(op_json);
-        let batch = run_relation_op(&op, &rows, driver)?;
+        let rel_driver = driver_for_op(&op, driver, connections)?;
+        let batch = run_relation_op(&op, &rows, rel_driver)?;
         for row in rows.iter_mut() {
             let child = distribute_to_parent(&op, row, &batch);
             if let Value::Obj(pairs) = row {

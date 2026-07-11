@@ -127,11 +127,32 @@ def distribute_to_parent(
     return rows[0] if rows else None
 
 
+def _driver_for_op(op: Mapping[str, Any], driver: Driver, connections: Optional[Mapping[str, Driver]]) -> Driver:
+    """The driver a relation runs against: its tagged cross-DB connection, else the primary ``driver``.
+
+    CROSS-DB (V0 R1): a relation whose op carries a ``connection`` tag (its target model lives in a
+    DIFFERENT DB — v1 ``LazyRelation.ts:236``) routes to ``connections[tag]``. Loud failure when the
+    tag has no registered driver (a real wiring bug — never a silent same-DB fallback that would run
+    the target's query on the wrong DB). Untagged (same-DB) relations use the primary ``driver``.
+    """
+    tag = op.get("connection")
+    if tag is None:
+        return driver
+    d = (connections or {}).get(tag)
+    if d is None:
+        raise ValueError(
+            f"cross-DB relation '{op.get('name')}': no driver registered for connection '{tag}' "
+            "(pass it in read_bundle connections)"
+        )
+    return d
+
+
 def read_bundle(
     bundle: Mapping[str, Any],
     input_scope: Mapping[str, Any],
     driver: Driver,
     with_names: Sequence[str],
+    connections: Optional[Mapping[str, Driver]] = None,
 ) -> List[Dict[str, Any]]:
     """Run a READ bundle's primary row list, then batch-load + hydrate the selected relations.
 
@@ -141,6 +162,10 @@ def read_bundle(
     SAME ``run_relation_op`` and attached onto each parent as an own key. Independent sibling
     relations are naturally free of ordering: the batch is grouped-then-distributed by key, so the
     hydrated result is deterministic regardless of query-completion order (#40 parallel-safe).
+
+    CROSS-DB (V0 R1): a relation op carrying a ``connection`` tag is batched against
+    ``connections[tag]`` (its target model's DB) instead of the primary ``driver``; untagged
+    relations ignore ``connections``. Omit ``connections`` for a single-DB read.
     """
     from .runtime import execute_bundle
 
@@ -157,7 +182,8 @@ def read_bundle(
         op = relations.get(name)
         if op is None:
             raise ValueError(f"declarative select: relation '{name}' is not declared on this model")
-        batch = run_relation_op(op, rows, driver)["batch"]
+        rel_driver = _driver_for_op(op, driver, connections)
+        batch = run_relation_op(op, rows, rel_driver)["batch"]
         for o in rows:
             o[name] = distribute_to_parent(op, o, batch)
     return rows

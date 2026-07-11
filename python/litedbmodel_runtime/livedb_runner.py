@@ -152,6 +152,22 @@ def _run_read(driver, bundle, vector, expected_key) -> Dict[str, Any]:
     return {"ok": ok, "detail": None if ok else f"result {json.dumps(result)} != {json.dumps(expected)}"}
 
 
+def _run_crossdb(driver, secondary, secondary_reset, bundle, vector, expected_key, secondary_schema_key) -> Dict[str, Any]:
+    """A CROSS-DB read-RELATION vector (V0 R1): the parent runs on the PRIMARY driver and a TAGGED
+    relation on the SECONDARY driver (the target model's own DB). Seed the secondary DB with its own
+    schema (the parent DB has NO target table — a mis-route would fail loudly), then route the tagged
+    relation via the ``connections`` registry. A green hydrated result is unforgeable proof the tag
+    routed the batch to the secondary connection.
+    """
+    secondary_reset(secondary, list(vector[secondary_schema_key]))
+    expected = vector[expected_key]
+    result = _encode(
+        read_bundle(bundle, dict(vector["input"]), driver, list(vector["with"]), {vector["connectionTag"]: secondary})
+    )
+    ok = _eq(result, expected)
+    return {"ok": ok, "detail": None if ok else f"result {json.dumps(result)} != {json.dumps(expected)}"}
+
+
 def _run_tx(driver, bundle, vector, tx_expected_key) -> Dict[str, Any]:
     # A write may GENUINELY diverge by dialect (a DELETE…RETURNING returns the deleted row on PG/
     # SQLite but MySQL has no native RETURNING → []); the mysql leg then carries `expectedResultMysql`.
@@ -171,17 +187,21 @@ def _run_tx(driver, bundle, vector, tx_expected_key) -> Dict[str, Any]:
     return {"ok": ok, "detail": None if ok else "; ".join(detail)}
 
 
-def _run_dialect_leg(dialect: str, driver, reset_fn, corpus, bundle_key, schema_key, read_expected_key, tx_expected_key) -> Dict[str, int]:
+def _run_dialect_leg(dialect: str, driver, reset_fn, corpus, bundle_key, schema_key, read_expected_key, tx_expected_key, secondary, secondary_reset, secondary_schema_key) -> Dict[str, int]:
     t = {"pass": 0, "fail": 0}
     sys.stderr.write(f"\nlivedb-{dialect} — {len(corpus['vectors'])} vectors (real {dialect})\n")
     for v in corpus["vectors"]:
-        reset_fn(driver, list(v[schema_key]))
+        # CROSS-DB vectors carry their OWN primary schema key (the parent DB — NO target table).
+        primary_schema_key = ("primarySchemaPg" if dialect == "pg" else "primarySchemaMysql") if v["kind"] == "crossdb" else schema_key
+        reset_fn(driver, list(v[primary_schema_key]))
         bundle = v[bundle_key]
         try:
             if v["kind"] == "exec":
                 r = _run_exec(driver, bundle, v)
             elif v["kind"] == "read":
                 r = _run_read(driver, bundle, v, read_expected_key)
+            elif v["kind"] == "crossdb":
+                r = _run_crossdb(driver, secondary, secondary_reset, bundle, v, read_expected_key, secondary_schema_key)
             elif v["kind"] == "tx":
                 r = _run_tx(driver, bundle, v, tx_expected_key)
             else:
@@ -222,8 +242,10 @@ def main() -> int:
         return 3
 
     try:
-        pg_t = _run_dialect_leg("pg", pg, _reset_pg, corpus, "bundlePg", "schemaPg", "expectedResultPg", "expectedResultPg")
-        my_t = _run_dialect_leg("mysql", my, _reset_mysql, corpus, "bundleMysql", "schemaMysql", "expectedResultMysql", "expectedResultMysql")
+        # CROSS-DB (V0 R1): each leg's SECONDARY connection is the OTHER live DB (pg leg → my; mysql
+        # leg → pg), reset with the OTHER dialect's reset fn + the vector's per-leg secondary schema.
+        pg_t = _run_dialect_leg("pg", pg, _reset_pg, corpus, "bundlePg", "schemaPg", "expectedResultPg", "expectedResultPg", my, _reset_mysql, "secondarySchemaPg")
+        my_t = _run_dialect_leg("mysql", my, _reset_mysql, corpus, "bundleMysql", "schemaMysql", "expectedResultMysql", "expectedResultMysql", pg, _reset_pg, "secondarySchemaMysql")
     finally:
         pg.close()
         my.close()

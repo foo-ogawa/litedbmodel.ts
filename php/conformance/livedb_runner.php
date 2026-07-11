@@ -140,6 +140,26 @@ function runRead(PDO $db, \stdClass $bundle, \stdClass $v, string $expectedKey):
     return $ok ? ['ok' => true] : ['ok' => false, 'detail' => 'result ' . json_encode($result) . ' != ' . json_encode($expected)];
 }
 
+/**
+ * A CROSS-DB read-RELATION vector (V0 R1): the parent runs on the PRIMARY $db and a TAGGED relation
+ * on the SECONDARY $secondary (the target model's own DB). Seed the secondary DB with its own schema
+ * (the parent DB has NO target table — a mis-route would fail loudly), then route the tagged relation
+ * via the `connections` registry. A green hydrated result is unforgeable proof the tag routed the
+ * batch to the secondary connection.
+ *
+ * @return array{ok:bool, detail?:string}
+ */
+function runCrossDb(PDO $db, PDO $secondary, callable $secondaryReset, \stdClass $bundle, \stdClass $v, string $expectedKey, string $secondarySchemaKey): array
+{
+    $secondaryReset($secondary, array_map('strval', (array) $v->{$secondarySchemaKey}));
+    $withNames = array_map('strval', (array) ($v->with ?? []));
+    $connections = [(string) $v->connectionTag => $secondary];
+    $result = Relation::readBundle($bundle, inputToScope($v->input), $db, $withNames, $connections);
+    $expected = $v->{$expectedKey};
+    $ok = valuesEqual($result, $expected);
+    return $ok ? ['ok' => true] : ['ok' => false, 'detail' => 'result ' . json_encode($result) . ' != ' . json_encode($expected)];
+}
+
 /** @return array{ok:bool, detail?:string} */
 function runTx(PDO $db, \stdClass $bundle, \stdClass $v, string $txExpectedKey): array
 {
@@ -168,19 +188,22 @@ function runTx(PDO $db, \stdClass $bundle, \stdClass $v, string $txExpectedKey):
  * @param array<int,\stdClass> $vectors
  * @return array{pass:int, fail:int}
  */
-function runDialectLeg(string $dialect, PDO $db, callable $reset, array $vectors, string $bundleKey, string $schemaKey, string $readExpectedKey): array
+function runDialectLeg(string $dialect, PDO $db, callable $reset, array $vectors, string $bundleKey, string $schemaKey, string $readExpectedKey, PDO $secondary, callable $secondaryReset, string $secondarySchemaKey): array
 {
     $t = ['pass' => 0, 'fail' => 0];
     fwrite(STDERR, "\nlivedb-{$dialect} — " . count($vectors) . " vectors (real {$dialect})\n");
     foreach ($vectors as $v) {
-        $schema = array_map('strval', (array) $v->{$schemaKey});
+        $kind = (string) $v->kind;
+        // CROSS-DB vectors carry their OWN primary schema key (the parent DB — NO target table).
+        $primarySchemaKey = $kind === 'crossdb' ? ($dialect === 'pg' ? 'primarySchemaPg' : 'primarySchemaMysql') : $schemaKey;
+        $schema = array_map('strval', (array) $v->{$primarySchemaKey});
         $reset($db, $schema);
         $bundle = $v->{$bundleKey};
         try {
-            $kind = (string) $v->kind;
             $r = match ($kind) {
                 'exec' => runExec($db, $bundle, $v),
                 'read' => runRead($db, $bundle, $v, $readExpectedKey),
+                'crossdb' => runCrossDb($db, $secondary, $secondaryReset, $bundle, $v, $readExpectedKey, $secondarySchemaKey),
                 'tx' => runTx($db, $bundle, $v, $readExpectedKey),
                 default => ['ok' => false, 'detail' => "unknown kind {$kind}"],
             };
@@ -236,8 +259,10 @@ try {
 }
 
 $vectors = $corpus->vectors;
-$pgT = runDialectLeg('pg', $pg, 'resetPg', $vectors, 'bundlePg', 'schemaPg', 'expectedResultPg');
-$myT = runDialectLeg('mysql', $my, 'resetMysql', $vectors, 'bundleMysql', 'schemaMysql', 'expectedResultMysql');
+// CROSS-DB (V0 R1): each leg's SECONDARY connection is the OTHER live DB (pg leg → my; mysql leg →
+// pg), reset with the OTHER dialect's reset fn + the vector's per-leg secondary schema.
+$pgT = runDialectLeg('pg', $pg, 'resetPg', $vectors, 'bundlePg', 'schemaPg', 'expectedResultPg', $my, 'resetMysql', 'secondarySchemaPg');
+$myT = runDialectLeg('mysql', $my, 'resetMysql', $vectors, 'bundleMysql', 'schemaMysql', 'expectedResultMysql', $pg, 'resetPg', 'secondarySchemaMysql');
 
 $suites = ['livedb-pg' => $pgT, 'livedb-mysql' => $myT];
 $totalPass = $pgT['pass'] + $myT['pass'];

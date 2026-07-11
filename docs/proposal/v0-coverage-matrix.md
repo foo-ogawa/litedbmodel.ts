@@ -73,7 +73,7 @@ hand-roll).
 | composite-key hasMany + LIMIT | ✅ P/M/S | ⚠️ live via Docs (unlimited); limited-composite live not in a vector | byte done; composite-limited live is cosmetic gap |
 | composite-key belongsTo | ✅ (composite unnest) | ✅ (Docs owner) | **done** |
 | composite STATIC unnest form (PG) | ✅ P (byte + negative) | ✅ | **done** |
-| **cross-DB relations (target driver/connection)** | ✅ (SQL = target's dialect, byte-identical) | TS reference ✅ (two-DB routing test); 4-lang live = ESCALATED | **R1 — bundle-shape tag DONE + TS routing; per-language live cross-DB run escalated (see below)** |
+| **cross-DB relations (target driver/connection)** | ✅ (SQL = target's dialect, byte-identical) | ✅ ALL 5 runtimes — TS two-DB (SQLite×2); py/php/go/rust live PG↔MySQL cross-DB vector | **done (R1 — per-statement `connection` tag + per-runtime routing; live cross-DB run across all 5 runtimes)** |
 
 ## Matrix — WRITE surface
 
@@ -105,7 +105,7 @@ per-language LIVE cross-DB run is the one escalation.
 
 | Item | Final state | How |
 |---|---|---|
-| **R1** cross-DB relations | Bundle-shape tag + TS routing DONE; 4-lang live cross-DB run ESCALATED | `RelationDecl.connection?`/`RelationOp.connection?` added (additive, untagged = byte-unchanged); `runRelationOp` already honors per-op `dialect`; TS `readBundle`/`buildResultSet` route by tag (two-DB test proves it). SQL is v1-identical (compiles for the target's own dialect). See escalation below. |
+| **R1** cross-DB relations | **done (byte + live, all 5 runtimes)** | `RelationDecl.connection?`/`RelationOp.connection?` (additive, untagged = byte-unchanged); the relation SQL compiles for the TARGET model's own `dialect` (byte-identical to v1). Each runtime's read path (`read_bundle`/`ReadBundle`/`readBundle`/`read_bundle_pooled`) takes a connection REGISTRY and routes a tagged relation to `registry[tag]` (untagged → primary; loud-fail on a missing tag). Live: a `kind:'crossdb'` corpus vector runs the parent on connection A and the tagged `author` batch on connection B — pg leg parent=PG + author→MySQL, mysql leg parent=MySQL + author→PG (the parent table lives ONLY on A, the target ONLY on B, so a mis-route fails loudly ⇒ a green hydrate is unforgeable). TS reference = two separate SQLite DBs (`cross-db-relation.test.ts`). |
 | **R2** subquery / EXISTS / NOT IN / NOT EXISTS | **done (byte + live PG+MySQL)** | `whereInSubquery`(+NOT) / `whereExists`(+NOT) — subquery as a nested makeSQL Fragment in the param slot. Live: InSubquery/NotInSubquery/ExistsComment/NotExistsComment. |
 | **R3** GROUP BY / FOR UPDATE / BETWEEN / LIKE / tuple-IN / dbCast / dbImmediate | **done (byte + live)** | `group` (already) + new `forUpdate` port + `whereBetween`/`whereLike`/`whereTupleIn`/`whereCast`/`whereImmediate`. Live: GroupByAuthor/ForUpdate/IdBetween/TitleLike/TupleIn/DocByCast/ImmediateEq. ILIKE + dbDynamic(to_tsvector) are byte-done + PG-only-by-nature (see notes in the READ matrix — not live gaps). |
 | **R4** CTE / WITH | **done (byte + live)** | `cte`/`cteParams` ports added; `compileSelect` WITH-wrap is v1-sourced. Live: CteLive. |
@@ -114,24 +114,29 @@ per-language LIVE cross-DB run is the one escalation.
 | **R7** findById/findByPkeys | **done — DELETED** | `compileFindByPkeys` + `FindByPkeysOptions` import + 2 re-exports removed (dead SCP export, redundant with live IN-list/composite-relation reads). v1 `buildFindByPkeys` kept (DBModel.findById). |
 | **R8** FIND_FILTER | **done — no-op with evidence (variant b)** | v1 merges FIND_FILTER into the WHERE `DBConditions` BEFORE compiling (`DBModel.ts:596-604`/`:858-866`); the SCP compile reimplements the WHERE text from explicit `conditions` and never reads FIND_FILTER. `find-filter-noop.test.ts` proves (3 dialects) the merged filter == the authored WHERE byte-for-byte — folded upstream, a genuine no-op for makeSQL. |
 
-### R1 escalation — per-language LIVE cross-DB relation run
+### R1 — per-language LIVE cross-DB relation run (LANDED)
 
-**Landed (additive, byte-proven):** the per-statement `connection` tag on `RelationDecl`/`RelationOp`, threaded
-through `compileRelationOp`/`compileBundle`; the relation SQL compiles for the TARGET model's own `dialect`
-(byte-identical to the v1 PG/MySQL batch); TS `readBundle`/`buildResultSet` route a tagged relation to
-`ReadOptions.connections[tag]` (proven against two genuinely separate SQLite DBs in
-`test/scp/cross-db-relation.test.ts`, with a loud-fail negative for an unregistered tag).
+The escalated 5-runtime change was approved and landed as thin, SQL-independent routing plumbing (no SQL
+touched — the relation SQL is v1-identical, compiled for whichever dialect its target DB speaks):
 
-**Escalated (needs sign-off — a coordinated 5-runtime change beyond thin plumbing):** a LIVE cross-DB vector
-requires (1) a new corpus vector mode where a single bundle's parent executes on connection A and a tagged
-relation on connection B, and (2) each of the 4 language `livedb_runner`s + runtime `ReadBundle` to accept a
-connection REGISTRY and pick the pooled driver by `op.connection` (today each runner runs one whole bundle
-against ONE connection). Concrete proposal: (a) add a `kind:'crossdb'` read vector carrying `bundlePg` with one
-relation tagged `connection:'mysql'` (target on the OTHER live DB), reference captured cross-DB on SQLite×2; (b)
-give each runtime's relation loop a `map[connName]driver` (the runners already open BOTH pg+my in `main()`, so
-no new connection is needed — only routing); (c) route `RunRelationOp(op, parents, registry[op.connection])`.
-This is ~1 thin change × 4 languages + 1 vector, but it is a new execution MODE across all runtimes, so it is
-raised for approval rather than landed unilaterally (invariant #2 / plan R1 escalation clause).
+1. **Corpus mode.** A `kind:'crossdb'` read vector (`conformance/gen-livedb.ts`) whose parent `posts` read runs
+   on the leg's PRIMARY DB and whose tagged `author` belongsTo runs on the SECONDARY (OTHER) live DB. Per leg
+   the tagged relation op is compiled for the SECONDARY dialect: pg leg parent=PG + author→MySQL-dialect batch
+   (routed to `my`); mysql leg parent=MySQL + author→PG-dialect batch (routed to `pg`). The parent table lives
+   ONLY on the primary and the target `users` table ONLY on the secondary, so a mis-route hits a MISSING table
+   (loud error) — a green hydrate is unforgeable proof the tag routed the batch to connection B. The reference
+   is captured on two separate SQLite DBs via the TS `buildResultSet` two-DB path (byte-true, in-generator).
+2. **Per-runtime routing.** Each runtime's read entry point now takes a connection REGISTRY (name→driver) and
+   routes a tagged relation to `registry[op.connection]`, untagged → primary, loud-fail on a missing tag:
+   TS `buildResultSet`/`readBundle` (`connections`), Python `read_bundle(…, connections)`, Go
+   `ReadBundle(…, connections map[string]SQLDB)`, Rust `read_bundle_pooled(…, connections)`, PHP
+   `Relation::readBundle(…, $connections)`. Each `livedb_runner` opens BOTH pools in `main()` already; the
+   crossdb leg resets the secondary DB with the vector's `secondarySchema*` and passes `{tag: otherDriver}`.
+
+**Result:** `conformance:livedb` green on all 4 non-TS runtimes at 53/53 pg + 53/53 mysql INCLUDING the crossdb
+vector on BOTH legs; TS two-DB reference green (`test/scp/cross-db-relation.test.ts`). Untagged relations are
+byte- and behaviour-unchanged (the field is optional/additive; existing 52 relation+exec+tx vectors still
+green). eager path unchanged.
 
 ## Net V0 outcome (final)
 
@@ -140,8 +145,10 @@ raised for approval rather than landed unilaterally (invariant #2 / plan R1 esca
   additive where-primitives + `SELECT_PORTS` ports (plan §2 補足), every construct's SQL still v1-sourced.
   Golden 139→176 (+37 authored-path byte-asserts, incl. a golden-from-originals negative). livedb 39→52 vectors
   (all 4 language legs 52/52 pg + 52/52 mysql).
-- **R1:** bundle-shape `connection` tag + TS routing landed and byte/two-DB-proven; the per-language live
-  cross-DB RUN escalated with a concrete proposal (above).
+- **R1:** DONE. Per-statement `connection` tag + per-runtime connection-registry routing across ALL 5 runtimes;
+  a `kind:'crossdb'` live vector runs the parent on connection A and the tagged relation on connection B — green
+  on live PG↔MySQL in py/php/go/rust (53/53 both legs) + the TS two-DB reference. SQL v1-identical; untagged
+  relations byte/behaviour-unchanged; eager path unchanged.
 - **R7:** dead `compileFindByPkeys` deleted (v1 `buildFindByPkeys` retained).
 - **R8:** FIND_FILTER proven a makeSQL no-op (variant b) with a 3-dialect byte test — not a waive.
 - **Byte-only-by-nature (not gaps):** ILIKE (v1 `ILIKE` keyword is PG-only; errors on MySQL/SQLite) and
