@@ -165,6 +165,12 @@ export {
 export { mapSqliteError, SqlFailure } from './errors';
 export type { SqlFailureKind } from './errors';
 
+// FIND_FILTER fail-closed authoring guard (#47 Finding B / plan R8): a model declaring an
+// implicit per-model scope predicate cannot be SCP-compiled without folding it into the
+// authored WHERE (fail-closed; the SCP compile has no model context to auto-apply it).
+export { assertFindFilterFolded, findFilterKeys, FindFilterLeakError } from './find-filter-guard';
+export type { FindFilterSource } from './find-filter-guard';
+
 // Thin TS runtime (spec §3 / §10 / §11): validate → SKIP → expand → eval → bind → execute → assembly.
 // `compileBundle` emits the §8 published artifact (Backend-Compiled once, TS-side);
 // `executeBundle` runs that artifact via bc runtime-core alone (the multi-language target).

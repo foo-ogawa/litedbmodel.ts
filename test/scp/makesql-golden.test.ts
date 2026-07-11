@@ -561,11 +561,30 @@ describe('B. batch UPDATE (+SKIP-column) — makeSQL byte-matches dialect builde
 
 describe('B. single UPDATE / DELETE — makeSQL byte-matches original _update/_delete text', () => {
   for (const dialect of dialects) {
-    it(`[${dialect}] single UPDATE (per-col cast on PG)`, () => {
+    it(`[${dialect}] single UPDATE SET/WHERE scaffold byte-matches v1 _update (captured)`, async () => {
+      // Golden = the REAL v1 `DBModel._update` statement, CAPTURED from `execute` (drives v1, not
+      // v2-v2). A model with NO column decorators → `serializeRecord` is identity, so the captured
+      // SET/WHERE scaffold is the pure v1 `UPDATE <t> SET … WHERE …[ RETURNING …]` text. Perturbing
+      // the v1 `_update` scaffold string MOVES this golden.
+      const { Model, captures } = makeWriteModel(dialect);
+      captures.length = 0;
+      await (Model as any)._update({ id: 5 }, { name: 'x', age: 3 }, { returning: 'id' });
+      expect(captures.length).toBe(1);
+      const golden = { sql: renderPlaceholders(captures[0].sql, dialect), params: captures[0].params };
+
+      const got = render(
+        compileUpdateSingle({ dialect, tableName: 'users', serializedValues: { name: 'x', age: 3 }, conditions: { id: 5 }, returning: 'id' }),
+        dialect
+      );
+      expect(got.sql).toBe(golden.sql);
+      expect(got.params).toEqual(golden.params);
+    });
+    it(`[${dialect}] single UPDATE per-col cast (PG) — SET cast text v1-sourced`, () => {
+      // The per-column `?::uuid` cast is applied by the SAME dialect formatter v1 `_update` uses
+      // (`_getSqlCastFormatter` → `getSqlCastFormatter(dialect)`), which is byte-identical to
+      // `formatterFor(dialect)` (compile.ts). Assert the compile applies v1's exact cast text.
       const serialized = { name: 'x', id_ext: 'u1' };
-      const conditions = { id: 5 };
       const sqlCastMap = new Map([['id_ext', 'uuid']]);
-      // Golden: reproduce original _update text with the same formatter.
       const params: unknown[] = [];
       const formatter = dialect === 'postgres' ? pgFmt : undefined;
       const setClauses: string[] = [];
@@ -575,29 +594,33 @@ describe('B. single UPDATE / DELETE — makeSQL byte-matches original _update/_d
         if (c && formatter && c !== 'timestamp' && c !== 'date') setClauses.push(`${col} = ${formatter('?', c)}`);
         else setClauses.push(`${col} = ?`);
       }
-      const where = new DBConditions(conditions).compile(params, formatter);
-      const goldenSql = `UPDATE users SET ${setClauses.join(', ')} WHERE ${where} RETURNING id`;
-      const golden = { sql: renderPlaceholders(goldenSql, dialect), params };
-
+      const where = new DBConditions({ id: 5 }).compile(params, formatter);
+      const golden = { sql: renderPlaceholders(`UPDATE users SET ${setClauses.join(', ')} WHERE ${where} RETURNING id`, dialect), params };
       const got = render(
-        compileUpdateSingle({ dialect, tableName: 'users', serializedValues: serialized, conditions, sqlCastMap, returning: 'id' }),
+        compileUpdateSingle({ dialect, tableName: 'users', serializedValues: serialized, conditions: { id: 5 }, sqlCastMap, returning: 'id' }),
         dialect
       );
       expect(got.sql).toBe(golden.sql);
       expect(got.params).toEqual(golden.params);
     });
-    it(`[${dialect}] single DELETE (IN-list)`, () => {
-      const conditions = { id: [1, 2, 3] };
-      const got = render(compileDelete({ dialect, tableName: 'users', conditions }), dialect);
+    it(`[${dialect}] single DELETE scaffold byte-matches v1 _delete (captured)`, async () => {
+      // Golden = the REAL v1 `DBModel._delete` statement, CAPTURED from `execute` (drives v1).
+      const { Model, captures } = makeWriteModel(dialect);
+      captures.length = 0;
+      await (Model as any)._delete({ id: [1, 2, 3] }, {});
+      expect(captures.length).toBe(1);
+      const v1 = { sql: renderPlaceholders(captures[0].sql, dialect), params: captures[0].params };
+      const got = render(compileDelete({ dialect, tableName: 'users', conditions: { id: [1, 2, 3] } }), dialect);
       if (dialect === 'postgres') {
-        // PG: unchanged v1 IN (?, ?, ?).
-        const params: unknown[] = [];
-        const where = new DBConditions(conditions).compile(params, pgFmt);
-        const golden = { sql: renderPlaceholders(`DELETE FROM users WHERE ${where}`, dialect), params };
-        expect(got.sql).toBe(golden.sql);
-        expect(got.params).toEqual(golden.params);
+        // PG: byte-identical to v1 `_delete` (IN (?, ?, ?)).
+        expect(got.sql).toBe(v1.sql);
+        expect(got.params).toEqual(v1.params);
       } else {
-        // MySQL/SQLite: NEW single-JSON-param IN-list form.
+        // MySQL/SQLite: the `DELETE FROM users WHERE <col> ` SCAFFOLD is byte-identical to v1; only the
+        // IN-list is the documented single-JSON-param deviation (result-parity proven on real DBs in
+        // json-array-parity.test.ts). Pin the scaffold prefix to v1, then the JSON-form IN-list.
+        expect(v1.sql).toBe('DELETE FROM users WHERE id IN (?, ?, ?)');
+        expect(got.sql.startsWith('DELETE FROM users WHERE id IN (')).toBe(true);
         const golden = dialect === 'mysql'
           ? { sql: "DELETE FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)", params: ['[1,2,3]'] }
           : { sql: 'DELETE FROM users WHERE id IN (SELECT value FROM json_each(?))', params: ['[1,2,3]'] };
@@ -657,15 +680,84 @@ describe('B. single UPDATE / DELETE — makeSQL byte-matches original _update/_d
   });
 });
 
+// ---------------------------------------------------------------------------
+// v1-PINNED SELECT / write scaffold golden source (#47 Finding A).
+//
+// The SELECT scaffold (SELECT/FROM/JOIN/WHERE/GROUP BY/ORDER BY/LIMIT/OFFSET/
+// FOR UPDATE/append/CTE) and the write scaffolds (UPDATE SET…WHERE, DELETE FROM…
+// WHERE) are VERBATIM hand-copies of v1 `DBModel._buildSelectSQL` / `_update` /
+// `_delete`. A golden built by calling `compileSelect`/`compileUpdateSingle`/
+// `compileDelete` (the v2 copy) against ITSELF is v2-to-v2 — perturbing v1 leaves it
+// GREEN (the #43 `::text[]` class of drift). These helpers DRIVE the REAL v1 methods
+// (the internal `_buildSelectSQL` the builder `find()` uses, and `_update`/`_delete`
+// via `execute` capture) so the golden MOVES when v1 source is perturbed. Negative
+// asserts below prove the pin (perturb → FAIL).
+// ---------------------------------------------------------------------------
+
+/** A DBModel subclass exposing the internal `_buildSelectSQL` for a given dialect. */
+function makeSelectModel(driver: Dialect, tableName: string, selectCol: string): typeof DBModel {
+  class Base extends DBModel {
+    static getDriverType(): Dialect { return driver; }
+  }
+  class M extends Base {
+    protected static TABLE_NAME = tableName;
+    protected static SELECT_COLUMN = selectCol;
+    // `_buildSelectSQL` is protected — expose it for the golden.
+    static v1Select(cond: any, opts: any): { sql: string; params: unknown[] } {
+      return (this as any)._buildSelectSQL(cond, opts);
+    }
+  }
+  return M as unknown as typeof DBModel;
+}
+
+/**
+ * v1 golden for a SELECT: the DIRECT output of `DBModel._buildSelectSQL`, dialect-
+ * rendered. Passing the projection through `select`/`tableName` options keeps the
+ * model generic (no per-shape subclass). PERTURBING v1 `_buildSelectSQL` MOVES this.
+ */
+function v1Select(
+  dialect: Dialect,
+  tableName: string,
+  selectCol: string,
+  conditions: Record<string, unknown>,
+  options: Record<string, unknown> = {},
+): Rendered {
+  const built = (makeSelectModel(dialect, tableName, selectCol) as any).v1Select(conditions, {
+    tableName, select: selectCol, ...options,
+  });
+  return { sql: renderPlaceholders(built.sql, dialect), params: built.params };
+}
+
+/** A DBModel subclass that captures each write statement `_update`/`_delete` would execute. */
+function makeWriteModel(driver: Dialect): { Model: typeof DBModel; captures: Rendered[] } {
+  const captures: Rendered[] = [];
+  class Base extends DBModel {
+    static getDriverType(): Dialect { return driver; }
+    // Writes normally require a live transaction; the golden captures SQL only.
+    protected static _checkWriteAllowed(): void {}
+    // `_update`/`_delete`/`_count` call `this.execute(sql, params)` — record instead of running.
+    // Return a single `{ count: 0 }` row so `_count` (which reads `rows[0].count`) survives the
+    // capture; `_update`/`_delete` map over `rows` (a `{count}` row is harmless — we assert on SQL).
+    static execute(sql: any, params?: any): any {
+      captures.push({ sql: sql as string, params: (params ?? []) as unknown[] });
+      return Promise.resolve({ rows: [{ count: 0 }], rowCount: 1 });
+    }
+  }
+  class Users extends Base {
+    protected static TABLE_NAME = 'users';
+    protected static SELECT_COLUMN = '*';
+  }
+  return { Model: Users as unknown as typeof DBModel, captures };
+}
+
 describe('B. SELECT tail — LIMIT/OFFSET inline, FOR UPDATE, GROUP BY', () => {
   for (const dialect of dialects) {
     it(`[${dialect}] SELECT + GROUP BY + ORDER + LIMIT + OFFSET + FOR UPDATE`, () => {
-      const params: unknown[] = [];
-      const formatter = dialect === 'postgres' ? pgFmt : undefined;
-      const where = new DBConditions({ status: 'active' }).compile(params, formatter);
-      const goldenSql =
-        `SELECT * FROM posts WHERE ${where} GROUP BY author_id ORDER BY created_at DESC LIMIT 10 OFFSET 5 FOR UPDATE`;
-      const golden = { sql: renderPlaceholders(goldenSql, dialect), params };
+      // Golden = the DIRECT output of v1 `DBModel._buildSelectSQL` (not compileSelect against
+      // itself). Perturbing v1 (e.g. FOR UPDATE → FOR UPDATE NOWAIT) MOVES this golden.
+      const golden = v1Select(dialect, 'posts', '*', { status: 'active' }, {
+        group: 'author_id', order: 'created_at DESC', limit: 10, offset: 5, forUpdate: true,
+      });
       const got = render(
         compileSelect({
           dialect,
@@ -685,9 +777,10 @@ describe('B. SELECT tail — LIMIT/OFFSET inline, FOR UPDATE, GROUP BY', () => {
 
     it(`[${dialect}] grouped aggregate SELECT (GROUP BY + COUNT projection) — byte-matches v1 (R3 live vector head)`, () => {
       // The exact SELECT the R3 GroupByAuthor live vector authors: a grouped aggregate over the
-      // `select` + `group` SELECT_PORTS. Golden drives the ORIGINAL compileSelect (v1 _buildSelectSQL).
-      const goldenSql = `SELECT author_id, COUNT(*) as n FROM posts GROUP BY author_id ORDER BY author_id ASC`;
-      const golden = { sql: renderPlaceholders(goldenSql, dialect), params: [] as unknown[] };
+      // `select` + `group` SELECT_PORTS. Golden = DIRECT v1 `_buildSelectSQL` output.
+      const golden = v1Select(dialect, 'posts', 'author_id, COUNT(*) as n', {}, {
+        group: 'author_id', order: 'author_id ASC',
+      });
       const got = render(
         compileSelect({ dialect, tableName: 'posts', select: 'author_id, COUNT(*) as n', group: 'author_id', order: 'author_id ASC' }),
         dialect,
@@ -696,6 +789,22 @@ describe('B. SELECT tail — LIMIT/OFFSET inline, FOR UPDATE, GROUP BY', () => {
       expect(got.params).toEqual(golden.params);
     });
   }
+
+  // NEGATIVE (golden-from-originals): perturbing v1 `_buildSelectSQL` MUST move a golden. Proven
+  // structurally here — the golden is DERIVED from `_buildSelectSQL`, so a change to the FOR UPDATE
+  // / LIMIT / OFFSET tail text in the v1 source changes `v1Select(...)` and the assertion fails.
+  it('negative: v1 _buildSelectSQL tail text drives the golden (not v2-v2)', () => {
+    const dialect: Dialect = 'postgres';
+    // Same shape, different tail options → different v1 output. If the golden were a v2-v2 constant
+    // (compileSelect vs itself) it would be insensitive to the v1 method; here it tracks v1 exactly.
+    const withForUpdate = v1Select(dialect, 'posts', '*', {}, { limit: 10, forUpdate: true }).sql;
+    const withoutForUpdate = v1Select(dialect, 'posts', '*', {}, { limit: 10 }).sql;
+    expect(withForUpdate).not.toBe(withoutForUpdate);
+    expect(withForUpdate.endsWith(' FOR UPDATE')).toBe(true);
+    // And v2 compileSelect reproduces the v1 FOR UPDATE tail byte-for-byte.
+    expect(render(compileSelect({ dialect, tableName: 'posts', limit: 10, forUpdate: true }), dialect).sql)
+      .toBe(withForUpdate);
+  });
 });
 
 describe('B. hand-roll removal — LIMIT/OFFSET tail v1-sourced (#47 item 5)', () => {
@@ -703,38 +812,46 @@ describe('B. hand-roll removal — LIMIT/OFFSET tail v1-sourced (#47 item 5)', (
   // ` LIMIT `/` OFFSET ` KEYWORD text from the ORIGINAL `compileSelect` (v1 `_buildSelectSQL`),
   // keeping the intentional `?` bound-param divergence. The golden drives v1 directly.
   for (const dialect of dialects) {
-    it(`[${dialect}] Select LIMIT/OFFSET keyword text == v1 compileSelect (count → ?)`, () => {
-      // v1 golden: the exact ` LIMIT <n>`/` OFFSET <n>` append v1 emits, with the literal → `?`.
-      // Static statements carry the `?` (pre-render) form, so compare `?`-form to `?`-form.
-      const v1LimitFull = compileSelect({ dialect, tableName: 'posts', limit: 987654321 }).sql;
+    it(`[${dialect}] Select LIMIT/OFFSET keyword text == v1 _buildSelectSQL (count → ?)`, () => {
+      // v1 golden: the exact ` LIMIT <n>`/` OFFSET <n>` append v1 `_buildSelectSQL` emits, with the
+      // literal → `?`. Static statements carry the `?` (pre-render) form, so compare `?`-form to `?`.
+      // Golden DRIVES v1 `_buildSelectSQL` directly (perturbing its tail text moves the golden).
+      const v1LimitFull = v1Select(dialect, 'posts', '*', {}, { limit: 987654321 }).sql;
       const v1Tail = v1LimitFull.slice(`SELECT * FROM posts`.length).replace('987654321', '?'); // ` LIMIT ?`
       const node = { component: 'Select', ports: { table: 'posts', select: { arr: ['id'] }, limit: { int: '10' } } };
       const stmts = compileSelectNode(node as never, dialect);
       const limitStmt = stmts.find((s) => / LIMIT /.test(s.sql));
       expect(limitStmt?.sql).toBe(v1Tail);
       // NEGATIVE (golden-from-originals): perturb v1's count and the golden tail moves.
-      const perturbed = compileSelect({ dialect, tableName: 'posts', limit: 42 }).sql.slice(`SELECT * FROM posts`.length);
+      const perturbed = v1Select(dialect, 'posts', '*', {}, { limit: 42 }).sql.slice(`SELECT * FROM posts`.length);
       expect(perturbed).not.toBe(v1LimitFull.slice(`SELECT * FROM posts`.length));
     });
   }
 });
 
 describe('B. COUNT — makeSQL byte-matches v1 DBModel._count head (#47 item 2)', () => {
-  // The v1 `_count` head (src/DBModel.ts:875): `SELECT COUNT(*) as count FROM <t>` + a
-  // `DBConditions`-built ` WHERE <clause>`. The SCP `Count` leaf compiles its head through the SAME
-  // `compileSelect` (projection `COUNT(*) as count`) + the SAME `DBConditions` WHERE path, so the
-  // text is v1-sourced. The golden is v1's literal string assembly + DBConditions; nothing v2-v2.
+  // The v1 `_count` (src/DBModel.ts) assembles `SELECT COUNT(*) as count FROM <t>` + a
+  // `DBConditions`-built ` WHERE <clause>` and hands it to `execute`. The SCP `Count` leaf compiles
+  // its head through `compileSelect` (projection `COUNT(*) as count`) + the SAME `DBConditions` WHERE
+  // path. Golden = the REAL `_count` statement CAPTURED from `execute` (drives v1, not v2-v2): perturb
+  // v1's `SELECT COUNT(*) as count FROM …` head text and this golden MOVES.
+  /** Drive the REAL v1 `_count` and return the captured statement, dialect-rendered. */
+  async function v1CountHead(dialect: Dialect, conditions: Record<string, unknown>): Promise<Rendered> {
+    const { Model, captures } = makeWriteModel(dialect);
+    class Posts extends (Model as any) { protected static TABLE_NAME = 'posts'; }
+    captures.length = 0;
+    await (Posts as any)._count(conditions, {});
+    expect(captures.length).toBe(1);
+    return { sql: renderPlaceholders(captures[0].sql, dialect), params: captures[0].params };
+  }
   for (const dialect of dialects) {
-    it(`[${dialect}] COUNT(*) + WHERE — head byte-matches v1 _count`, () => {
-      // v1 golden: `_count` literal head + DBConditions WHERE (the exact strings _count concatenates).
-      const params: unknown[] = [];
-      const formatter = dialect === 'postgres' ? pgFmt : undefined;
-      const where = new DBConditions({ author_id: 7 }).compile(params, formatter);
-      const goldenSql = `SELECT COUNT(*) as count FROM posts WHERE ${where}`;
-      const golden = { sql: renderPlaceholders(goldenSql, dialect), params };
+    it(`[${dialect}] COUNT(*) + WHERE — head byte-matches v1 _count`, async () => {
+      // v1 golden: the REAL `_count` statement (head + DBConditions WHERE) captured from `execute`.
+      const golden = await v1CountHead(dialect, { author_id: 7 });
 
       // SCP: the Count leaf's head is `compileSelect` with the `COUNT(*) as count` projection (the
       // exact call compileSelectNode makes) + the DBConditions WHERE fragment.
+      const formatter = dialect === 'postgres' ? pgFmt : undefined;
       const head = compileSelect({ dialect, tableName: 'posts', select: 'COUNT(*) as count' });
       const wparams: unknown[] = [];
       const wsql = new DBConditions({ author_id: 7 }).compile(wparams, formatter);
@@ -744,14 +861,18 @@ describe('B. COUNT — makeSQL byte-matches v1 DBModel._count head (#47 item 2)'
     });
   }
 
-  // NEGATIVE (golden-from-originals): perturb the v1 head text and the golden MOVES — proving the
-  // assertion is pinned to the ORIGINAL text, not a self-fulfilling v2 constant.
-  it('negative: perturbing the v1 count head moves the golden (not v2-v2)', () => {
+  // NEGATIVE (golden-from-originals): the golden is the CAPTURED v1 `_count` head, so it tracks the v1
+  // source. Perturbing the SCP head projection away from v1's `COUNT(*) as count` breaks the match.
+  it('negative: SCP head that diverges from v1 _count head FAILS the match', async () => {
     const dialect: Dialect = 'postgres';
-    const v1Golden = compileSelect({ dialect, tableName: 'posts', select: 'COUNT(*) as count' }).sql;
-    const perturbed = compileSelect({ dialect, tableName: 'posts', select: 'COUNT(id) as count' }).sql; // COUNT(id) ≠ COUNT(*)
-    expect(perturbed).not.toBe(v1Golden);
-    expect(v1Golden).toBe('SELECT COUNT(*) as count FROM posts');
+    const golden = await v1CountHead(dialect, { author_id: 7 });
+    expect(golden.sql.startsWith('SELECT COUNT(*) as count FROM posts')).toBe(true);
+    // A head projection that is NOT v1's `COUNT(*) as count` (e.g. `COUNT(id)`) must not match.
+    const badHead = compileSelect({ dialect, tableName: 'posts', select: 'COUNT(id) as count' });
+    const wparams: unknown[] = [];
+    const wsql = new DBConditions({ author_id: 7 }).compile(wparams, pgFmt);
+    const bad = render({ sql: `${badHead.sql} WHERE ${wsql}`, params: [...badHead.params, ...wparams] }, dialect);
+    expect(bad.sql).not.toBe(golden.sql);
   });
 });
 
@@ -1133,22 +1254,24 @@ describe('D. authoring→bundle path renders V1-SOURCED SQL (V0 R2–R6, all dia
         expect(authored(entry, {}, dialect)).toEqual(v1Where({ __exists__: ex }, dialect, 'users'));
       }
     });
-    it(`[${dialect}] FOR UPDATE port — authored path byte-matches v1 compileSelect`, () => {
-      const v1 = compileSelect({ dialect, tableName: 'posts', select: 'id', conditions: { id: 5 }, forUpdate: true }).sql;
-      expect(authored('Fu', { id: 5 }, dialect).sql).toBe(renderPlaceholders(v1, dialect));
+    it(`[${dialect}] FOR UPDATE port — authored path byte-matches v1 _buildSelectSQL`, () => {
+      // Golden DRIVES the REAL v1 `DBModel._buildSelectSQL` (not compileSelect against itself).
+      // Perturbing v1's ` FOR UPDATE` tail (e.g. → ` FOR UPDATE NOWAIT`) MOVES this golden.
+      const v1 = v1Select(dialect, 'posts', 'id', { id: 5 }, { forUpdate: true });
+      expect(authored('Fu', { id: 5 }, dialect).sql).toBe(v1.sql);
     });
-    it(`[${dialect}] append (HAVING) port — authored path byte-matches v1 compileSelect`, () => {
-      const v1 = compileSelect({ dialect, tableName: 'posts', select: 'author_id, COUNT(*) as n', group: 'author_id', append: 'HAVING COUNT(*) > 1' }).sql;
-      expect(authored('Hav', {}, dialect).sql).toBe(renderPlaceholders(v1, dialect));
+    it(`[${dialect}] append (HAVING) port — authored path byte-matches v1 _buildSelectSQL`, () => {
+      const v1 = v1Select(dialect, 'posts', 'author_id, COUNT(*) as n', {}, { group: 'author_id', append: 'HAVING COUNT(*) > 1' });
+      expect(authored('Hav', {}, dialect).sql).toBe(v1.sql);
     });
-    it(`[${dialect}] JOIN port — authored path byte-matches v1 compileSelect`, () => {
-      const v1 = compileSelect({ dialect, tableName: 'posts', select: 'posts.id, users.name', join: 'JOIN users ON users.id = posts.author_id' }).sql;
-      expect(authored('Jn', {}, dialect).sql).toBe(renderPlaceholders(v1, dialect));
+    it(`[${dialect}] JOIN port — authored path byte-matches v1 _buildSelectSQL`, () => {
+      const v1 = v1Select(dialect, 'posts', 'posts.id, users.name', {}, { join: 'JOIN users ON users.id = posts.author_id' });
+      expect(authored('Jn', {}, dialect).sql).toBe(v1.sql);
     });
-    it(`[${dialect}] CTE port (+params) — authored path byte-matches v1 compileSelect`, () => {
-      const v1 = compileSelect({ dialect, tableName: 'recent', select: 'id', cte: { name: 'recent', sql: 'SELECT id FROM posts WHERE status = ?', params: ['live'] } }).sql;
+    it(`[${dialect}] CTE port (+params) — authored path byte-matches v1 _buildSelectSQL`, () => {
+      const v1 = v1Select(dialect, 'recent', 'id', {}, { cte: { name: 'recent', sql: 'SELECT id FROM posts WHERE status = ?', params: ['live'] } });
       const got = authored('Cte', {}, dialect);
-      expect(got.sql).toBe(renderPlaceholders(v1, dialect));
+      expect(got.sql).toBe(v1.sql);
       expect(got.params).toEqual(['live']);
     });
   }
@@ -1160,5 +1283,16 @@ describe('D. authoring→bundle path renders V1-SOURCED SQL (V0 R2–R6, all dia
     const jsonb = v1Where({ id: dbCast('u1', 'jsonb') }, 'postgres').sql;
     expect(jsonb).not.toBe(uuid);
     expect(authored('Cst', { v: 'u1' }, 'postgres').sql).toBe(uuid);
+  });
+
+  // NEGATIVE (golden-from-originals, #47 Finding A): perturbing v1 `_buildSelectSQL`'s FOR UPDATE tail
+  // MOVES the scaffold-port golden. If the golden were compileSelect-vs-itself (v2-v2) it would be
+  // insensitive to the v1 method. The v1-driven golden tracks v1's exact ` FOR UPDATE` tail text.
+  it('negative: v1 _buildSelectSQL FOR UPDATE tail drives the scaffold-port golden (not v2-v2)', () => {
+    const withFu = v1Select('postgres', 'posts', 'id', { id: 5 }, { forUpdate: true }).sql;
+    const withoutFu = v1Select('postgres', 'posts', 'id', { id: 5 }, {}).sql;
+    expect(withFu).not.toBe(withoutFu);
+    expect(withFu.endsWith(' FOR UPDATE')).toBe(true);
+    expect(authored('Fu', { id: 5 }, 'postgres').sql).toBe(withFu);
   });
 });

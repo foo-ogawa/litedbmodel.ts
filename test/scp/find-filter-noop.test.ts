@@ -22,6 +22,7 @@ import { describe, it, expect } from 'vitest';
 import { DBModel } from '../../src/DBModel';
 import { DBConditions } from '../../src/DBConditions';
 import { compileWhere, renderPlaceholders, assembleMakeSQL, type Dialect } from '../../src/scp/makesql';
+import { assertFindFilterFolded, findFilterKeys, FindFilterLeakError } from '../../src/scp/index';
 
 const dialects: Dialect[] = ['postgres', 'mysql', 'sqlite'];
 
@@ -76,4 +77,67 @@ describe('R8 FIND_FILTER — merged filter is byte-identical to an authored SCP 
       void Doc; // the model documents where FIND_FILTER lives; the compile is condition-driven.
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// #47 Finding B — the LATENT AUTHORING BOUNDARY is closed FAIL-CLOSED.
+//
+// The no-op proof above holds only when the author folds the FIND_FILTER predicates into the
+// SCP-authored WHERE. If a model DECLARES a FIND_FILTER and is routed through the SCP compile
+// WITHOUT its scope keys, the SCP compile has no model context to auto-apply it, so the scope
+// would silently leak. `assertFindFilterFolded` is the fail-closed guard: missing scope keys →
+// loud `FindFilterLeakError`; scope keys present → no-op (redundant with the authored WHERE).
+// ---------------------------------------------------------------------------
+describe('R8 FIND_FILTER — fail-closed guard (a FIND_FILTER model cannot silently leak via SCP)', () => {
+  class SoftDeleted extends DBModel {
+    protected static TABLE_NAME = 'docs';
+    protected static SELECT_COLUMN = '*';
+    // Soft-delete + tenant scope: v1 merges these into EVERY find/count WHERE.
+    protected static FIND_FILTER = [['deleted_at', null], ['tenant_id', 5]] as any;
+  }
+  class Unfiltered extends DBModel {
+    protected static TABLE_NAME = 'events';
+    protected static SELECT_COLUMN = '*';
+    // No FIND_FILTER → the guard is a no-op for any authored WHERE.
+  }
+
+  it('extracts the FIND_FILTER scope keys via the SAME condsToRecord v1 merges with', () => {
+    expect(findFilterKeys((SoftDeleted as any).FIND_FILTER).sort()).toEqual(['deleted_at', 'tenant_id']);
+    expect(findFilterKeys((Unfiltered as any).FIND_FILTER)).toEqual([]);
+    expect(findFilterKeys(null)).toEqual([]);
+  });
+
+  it('THROWS FindFilterLeakError when a FIND_FILTER model is SCP-compiled without the scope keys', () => {
+    // Author expresses only their own predicate (status) — the model scope is DROPPED. Fail-closed.
+    expect(() => assertFindFilterFolded(SoftDeleted as any, ['status'])).toThrow(FindFilterLeakError);
+    try {
+      assertFindFilterFolded(SoftDeleted as any, ['status']);
+    } catch (e) {
+      expect(e).toBeInstanceOf(FindFilterLeakError);
+      const err = e as FindFilterLeakError;
+      expect(err.modelName).toBe('SoftDeleted');
+      expect(err.missingKeys.sort()).toEqual(['deleted_at', 'tenant_id']);
+      expect(err.message).toContain('would be silently dropped');
+    }
+  });
+
+  it('THROWS when the scope is PARTIALLY folded (one key present, one missing)', () => {
+    // A partial fold is still a leak — the missing key silently drops. Fail-closed on the remainder.
+    expect(() => assertFindFilterFolded(SoftDeleted as any, ['status', 'deleted_at'])).toThrow(FindFilterLeakError);
+    try {
+      assertFindFilterFolded(SoftDeleted as any, ['status', 'deleted_at']);
+    } catch (e) {
+      expect((e as FindFilterLeakError).missingKeys).toEqual(['tenant_id']);
+    }
+  });
+
+  it('is a NO-OP when every FIND_FILTER scope key is folded into the authored WHERE', () => {
+    // The author folded BOTH scope predicates (the no-op case proven byte-equal above).
+    expect(() => assertFindFilterFolded(SoftDeleted as any, ['status', 'deleted_at', 'tenant_id'])).not.toThrow();
+  });
+
+  it('is a NO-OP for a model with no FIND_FILTER (nothing to fold)', () => {
+    expect(() => assertFindFilterFolded(Unfiltered as any, [])).not.toThrow();
+    expect(() => assertFindFilterFolded(Unfiltered as any, ['anything'])).not.toThrow();
+  });
 });
