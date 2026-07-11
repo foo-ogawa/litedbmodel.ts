@@ -246,6 +246,30 @@ function v1Verdict(m: MatrixResult): string {
   } else {
     lines.push(`v1-ts cell did not run${v1ts?.error ? `: ${v1ts.error}` : ''}.`, '');
   }
+
+  // ── v1-rs apples-to-apples (SAME Rust runtime family) — the TRUE gap-to-v1 for Rust ──
+  const v1rs = cell(m, 'v1-rs', 'ir');
+  if (v1rs && !v1rs.error) {
+    const v1rd = v1rs.dialects.sqlite;
+    const rsql = dcell(m, 'rust', 'sql', 'sqlite'), rir = dcell(m, 'rust', 'ir', 'sqlite'), rcg = dcell(m, 'rust', 'codegen', 'sqlite');
+    lines.push('### v1-rs (`litedbmodel.rs@0.4.5` async ActiveRecord) vs v2 Rust surfaces — SQLite micro p50 (APPLES-TO-APPLES)', '');
+    lines.push('> Same Rust runtime family (in-proc SQLite, I/O-excluded client-side path), so `×v1-rs`');
+    lines.push('> is the TRUE gap-to-v1 for Rust — not a cross-runtime ratio against v1-ts.', '');
+    lines.push('| Micro case | v1-rs (µs) | v2 sql (µs) | v2 ir (µs) | v2 codegen (µs) | sql ×v1-rs | ir ×v1-rs | codegen ×v1-rs |');
+    lines.push('|---|---|---|---|---|---|---|---|');
+    for (const caseId of CROSSLANG_MICRO_CASE_IDS) {
+      const v1 = v1rd?.micro[caseId]?.p50Ms;
+      const s0 = rsql?.micro[caseId]?.p50Ms, i0 = rir?.micro[caseId]?.p50Ms, c0 = rcg?.micro[caseId]?.p50Ms;
+      lines.push(`| ${CROSSLANG_CASE_LABELS[caseId]} | ${fmtUs(v1)} | ${fmtUs(s0)} | ${fmtUs(i0)} | ${fmtUs(c0)} | ${fmtRatio(relativeOverhead(s0 ?? NaN, v1 ?? NaN))} | ${fmtRatio(relativeOverhead(i0 ?? NaN, v1 ?? NaN))} | ${fmtRatio(relativeOverhead(c0 ?? NaN, v1 ?? NaN))} |`);
+    }
+    lines.push('', '> `×v1-rs` = v2 Rust surface ÷ v1-rs, SQLite micro p50. v1-rs is the achievable in-proc-SQLite');
+    lines.push('> comparison of the OLD hand-written runtime. Residual over v1-rs = SQL render (`?`→`$N` /');
+    lines.push('> placeholder walk) + boxed-`Value` row hydration + litedbmodel plumbing; the boxed-row');
+    lines.push('> portion is #76-de-box-addressable, the render walk is largely inherent to the portable IR.', '');
+  } else if (v1rs) {
+    lines.push('### v1-rs vs v2 Rust — APPLES-TO-APPLES', '', `v1-rs cell did not run${v1rs.error ? `: ${v1rs.error}` : ''}.`, '');
+  }
+
   const regressed = out.filter((s) => s.includes('REGRESSION'));
   if (regressed.length === 0) {
     lines.push(`**Verdict: ✅ NO REGRESSION** — every v2 surface is within the ${V1_REGRESSION_THRESHOLD}× threshold of the v1-ts eager path on every measured SQLite micro case.`);

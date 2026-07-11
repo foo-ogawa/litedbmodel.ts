@@ -20,7 +20,12 @@ path = "src/main.rs"
 [dependencies]
 # The v1-rs crate under test. sqlite + runtime-tokio ONLY (NOT postgres): the in-proc
 # SQLite seam does not need libpq, and default features would pull deadpool-postgres.
-litedbmodel = { path = "../../../../../litedbmodel.rs/litedbmodel", default-features = false, features = ["sqlite", "runtime-tokio"] }
+#
+# ABSOLUTE path: built from within a git worktree
+# under `.claude/worktrees/<name>/…`, a `../…` relative path resolves OUTSIDE the worktree
+# tree and misses the external v1-rs repo. An absolute path resolves correctly regardless
+# of which worktree (or the main checkout) this benchmark is invoked from.
+litedbmodel = { path = "/Users/ogawa/Work/my-libs/litedbmodel.rs/litedbmodel", default-features = false, features = ["sqlite", "runtime-tokio"] }
 tokio = { version = "1", features = ["rt", "time", "sync"] }
 serde_json = "1"
 
