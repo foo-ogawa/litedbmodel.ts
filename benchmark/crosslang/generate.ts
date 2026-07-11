@@ -40,8 +40,33 @@ import {
   CROSSLANG_CASE_IDS_LOCAL,
 } from './domain.js';
 import { CROSSLANG_DIALECTS, type CrosslangDialect } from './contract.js';
+import { assertBcVersionsAligned } from './check-versions.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(HERE, '..', '..');
+
+// Languages whose codegen MUST be de-interpreted native code (bc straight-line/typed — no
+// interpreter delegation): `delegatesToRunBehavior` MUST be false. python/php intentionally use
+// the ir/interpret exec surface (bc 0.3.0: their straight-line codegen is UNSUPPORTED), so their
+// codegen artifact is the LITERAL emitter (`delegatesToRunBehavior=true`) and is NOT asserted here.
+const NATIVE_CODEGEN_LANGS = ['typescript', 'go', 'rust'] as const;
+
+/**
+ * Fail-closed: assert every native-codegen language produced genuinely de-interpreted code
+ * (no silent fallback to the boxed literal/interpreter path). Codifies the "codegen silently
+ * ≈ ir" trap so an invalid perf comparison ERRORS instead of being measured.
+ */
+function assertCodegenSurface(codegen: Record<string, { delegatesToRunBehavior: boolean }>): void {
+  const sham = NATIVE_CODEGEN_LANGS.filter((l) => codegen[l]?.delegatesToRunBehavior !== false);
+  if (sham.length > 0) {
+    throw new Error(
+      `cross-lang bench PREFLIGHT: codegen surface INVALID — ${sham.join(', ')} delegate(s) to the ` +
+        `interpreter (run_behavior) instead of emitting de-interpreted native code. The perf comparison ` +
+        `would be a sham (codegen ≈ ir). Fix the emitter endpoint (src/scp/codegen.ts CODEGEN_EMITTER) ` +
+        `or the bc version. python/php are exempt (ir/interpret surface by design).`,
+    );
+  }
+}
 const OUT = resolve(HERE, 'generated', 'bundles.json');
 // The TRUE bc-generated codegen module per language (source text), consumed by the
 // codegen cells. Written next to the JSON artifact; committed + drift-checked.
@@ -57,10 +82,13 @@ const GO_CASE_PKG = (caseId: string) => `cg_${caseId.replace(/[^A-Za-z0-9_]/g, '
 // bc's shared generator supports exactly these litedbmodel-facing languages (the
 // mode-3 codegen "endpoint 3" literal-bake emitters). Each cell's codegen module is
 // the generator output for that language over the SqlBundle's portable IR.
-const CODEGEN_LANGS = ['typescript', 'python', 'go', 'rust', 'php'] as const;
+// Codegen-MODULE langs = the de-boxed-typed-endpoint langs only (spec'd architecture: static
+// de-interpreted codegen is ts/go/rust). python/php are the ir/interpret surface — they have NO
+// codegen module (a DECLARED spec choice, not a fallback). No literal-emitter substitution.
+const CODEGEN_LANGS = ['typescript', 'go', 'rust'] as const;
 type CodegenLang = (typeof CODEGEN_LANGS)[number];
 const CODEGEN_EXT: Record<CodegenLang, string> = {
-  typescript: 'ts', python: 'py', go: 'go', rust: 'rs', php: 'php',
+  typescript: 'ts', go: 'go', rust: 'rs',
 };
 
 // Per-(language × case) generated-module path. TS lands as a real `.ts` (tsx imports
@@ -262,6 +290,11 @@ function generateCodegen(
 }
 
 function main(): void {
+  // PREFLIGHT (fail-closed, codified): every language's bc dep MUST be the same version, else the
+  // cross-lang comparison is invalid. Throws with a per-manifest diff on drift.
+  const bcVersion = assertBcVersionsAligned(REPO_ROOT);
+  console.error(`bc ${bcVersion} — aligned across all languages ✓`);
+
   const registered = registeredLanguages();
 
   // 1. PER-DIALECT bundles (sqlite / postgres / mysql).
@@ -278,6 +311,11 @@ function main(): void {
     codegen[lang] = artifact;
     codegenSources[lang] = sourceByCase;
   }
+
+  // PREFLIGHT (fail-closed, codified): the native-codegen langs MUST emit de-interpreted native
+  // code — never a silent fallback to the boxed literal/interpreter path (which would measure
+  // codegen ≈ ir). Throws on any silent fallback. Runs on EVERY path (not just --check).
+  assertCodegenSurface(codegen);
 
   const artifact = {
     corpusVersion: 3,
@@ -312,18 +350,15 @@ function main(): void {
       mkdirSync(dir, { recursive: true });
       writeFileSync(resolve(dir, 'gen.go'), src);
     }
-    let sham = false;
+    // Surface already asserted fail-closed above (assertCodegenSurface). Report per lang.
     for (const lang of CODEGEN_LANGS) {
-      const deint = !codegen[lang].delegatesToRunBehavior;
-      console.error(`  ${lang.padEnd(11)} de-interpreted(delegatesToRunBehavior=false)=${deint}`);
-      if (!deint) sham = true;
+      const native = (NATIVE_CODEGEN_LANGS as readonly string[]).includes(lang);
+      console.error(
+        `  ${lang.padEnd(11)} delegatesToRunBehavior=${codegen[lang].delegatesToRunBehavior}` +
+          `${native ? ' (native-codegen: MUST be false)' : ' (ir/interpret surface — literal by design)'}`,
+      );
     }
-    if (sham) {
-      console.error('SHAM: a generated codegen module DELEGATES to the interpreter (run_behavior) — it is NOT de-interpreted.');
-      console.error('The generator regressed to literal-bake + interpreter transcription. Fix the emitter / bc version.');
-      process.exit(1);
-    }
-    console.error(`OK: freshly generated (${CROSSLANG_DIALECTS.length} dialects × ${dialects.sqlite.cases.length} bundles, ${CODEGEN_LANGS.length} codegen langs) — all de-interpreted.`);
+    console.error(`OK: freshly generated (${CROSSLANG_DIALECTS.length} dialects × ${dialects.sqlite.cases.length} bundles) — native langs de-interpreted, py/php on ir surface.`);
     return;
   }
 

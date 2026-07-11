@@ -37,8 +37,8 @@ import {
   bundleToPortableIR,
   codegenExecuteBundleForTest,
   CODEGEN_LANGUAGES,
-  STRAIGHTLINE_EMITTER,
-  assertLanguageSupported,
+  CODEGEN_EMITTER,
+  codegenEmitterFor,
   type SqlBundle,
 } from '../../src/scp/index';
 
@@ -104,20 +104,28 @@ const EXEC_VECTORS = loadExecVectors();
 const TX_VECTORS = loadTxVectors();
 
 describe('WS7f codegen — bc shared generator capability', () => {
-  it('bc registers all 5 STRAIGHT-LINE emitters (typescript/python/go/rust/php) — Go IS supported (bc#13/#75)', () => {
-    // litedbmodel codegen is STATIC codegen (spec §9): it drives the `<lang>-straightline`
-    // de-interpreted endpoint, so every straight-line emitter it targets must be registered.
+  it('drives the de-boxed TYPED endpoint for ts/go/rust; py/php have NO de-box endpoint (NO literal fallback)', () => {
+    // litedbmodel codegen is STATIC de-interpreted codegen (spec §9) with NO fallback (an unspec'd
+    // fallback is invalid). ts/go/rust map to a de-box endpoint bc registers; py/php do NOT — and
+    // litedbmodel does NOT substitute the literal emitter, it hard-errors (bc capability gap).
     const registered = new Set(REGISTERED);
-    for (const language of CODEGEN_LANGUAGES) {
-      expect(registered.has(STRAIGHTLINE_EMITTER[language])).toBe(true);
+    for (const language of ['typescript', 'go', 'rust'] as const) {
+      const emitter = CODEGEN_EMITTER[language];
+      expect(emitter).toBeDefined();
+      expect(registered.has(emitter!)).toBe(true);
     }
-    expect([...CODEGEN_LANGUAGES].sort()).toEqual(['go', 'php', 'python', 'rust', 'typescript']);
+    expect(CODEGEN_EMITTER.python).toBeUndefined();
+    expect(CODEGEN_EMITTER.php).toBeUndefined();
+    // Requesting codegen for py/php ERRORS (no fallback), naming the capability gap + ESCALATE.
+    for (const language of ['python', 'php']) {
+      expect(() => codegenEmitterFor(language, REGISTERED)).toThrow(/no de-boxed typed endpoint|ESCALATE to bc/);
+    }
   });
 
   it('rejects an unsupported language loudly (fail-closed; escalate-to-bc message)', () => {
-    expect(() => assertLanguageSupported('ruby', REGISTERED)).toThrow(/not a supported target/);
-    // A registry missing the straight-line emitter for a supported logical language fails closed.
-    expect(() => assertLanguageSupported('go', ['typescript'])).toThrow(/ESCALATE to bc/);
+    expect(() => codegenEmitterFor('ruby', REGISTERED)).toThrow(/not a supported target/);
+    // A registry missing the de-box emitter for a supported logical language fails closed (no fallback).
+    expect(() => codegenEmitterFor('go', ['typescript'])).toThrow(/ESCALATE to bc/);
   });
 });
 

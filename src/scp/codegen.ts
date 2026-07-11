@@ -52,31 +52,30 @@ import type { TransactionPlan } from './makesql/tx';
 
 /**
  * The languages litedbmodel mode-3 codegen supports — exactly the set bc's shared generator
- * registers (bc#13 SP1 typescript/python + SP2 go/rust/php). {@link assertLanguageSupported}
+ * registers (bc#13 SP1 typescript/python + SP2 go/rust/php). {@link codegenEmitterFor}
  * verifies against the LIVE registry so a bc capability drift is caught loudly.
  */
 export const CODEGEN_LANGUAGES = ['typescript', 'python', 'go', 'rust', 'php'] as const;
 export type CodegenLanguage = (typeof CODEGEN_LANGUAGES)[number];
 
 /**
- * The bc emitter language litedbmodel drives for each logical target: the **straight-line**
- * (de-interpreted, bc#75) endpoint, NOT the classic literal endpoint. The literal endpoint
- * (`typescript`/`go`/…) bakes the IR as a native literal and still runs it through the
- * interpreter (`runBehavior`) — that is `≈ ir`, not real static code. The `<lang>-straightline`
- * endpoint emits STATIC native source (no `RunPlan`/scope snapshot/closure/op-id search/embedded
- * IR for sequential shapes). litedbmodel's codegen mode IS static codegen (spec §9), so it MUST
- * use this endpoint.
+ * The bc emitter litedbmodel drives for each codegen target: the **de-interpreted TYPED de-box**
+ * endpoint. litedbmodel codegen IS static de-interpreted codegen (spec §9) — there is **NO literal /
+ * straight-line / interpreter fallback**. An unspec'd fallback is INVALID (it silently swallows the
+ * "this shape can't be codegen'd" signal); a shape that cannot de-box MUST fail loudly at generation.
+ *
+ * - rust/go → `<lang>-typed-raw` (bc#76): materialize concrete structs DIRECTLY from the raw wire —
+ *   v1-native alloc profile, no dynamic `Value` boxing. Requires the IR to carry `outType`/`outputType`
+ *   (bc#76 hard-fails without it — the correct fail-closed behavior, NOT a degrade to boxed code).
+ * - ts → `typescript-typed` (bc#48): typed view over the same de-interpreted straight-line body.
+ * - **python/php: NOT present.** bc registers no de-boxed typed endpoint for them (capability limit).
+ *   litedbmodel does NOT substitute the literal (≈ir) emitter — that would be an unspec'd fallback.
+ *   Codegen for py/php is a bc capability gap that ERRORS (ESCALATE to bc), never a silent literal.
  */
-// bc 0.3.0: rust/go/ts straight-line は本物 native 脱解釈。**python/php の straight-line は
-// UNSUPPORTED**（bc emit が loud に拒否）— それらは ir/interpret 経路を使うので codegen artifact は
-// LITERAL emitter（IR bake + run_behavior ＝ `≈ ir`）に留める。py/php に static-codegen 加速は無い
-// （honest な非対称。sham ではない）。
-export const STRAIGHTLINE_EMITTER: Record<CodegenLanguage, string> = {
-  typescript: 'typescript-straightline',
-  go: 'go-straightline',
-  rust: 'rust-straightline',
-  python: 'python',
-  php: 'php',
+export const CODEGEN_EMITTER: Partial<Record<CodegenLanguage, string>> = {
+  typescript: 'typescript-typed',
+  go: 'go-typed-raw',
+  rust: 'rust-typed-raw',
 };
 
 /**
@@ -135,25 +134,32 @@ function companionOf(bundle: SqlBundle): SqlCatalogCompanion {
 }
 
 /**
- * Assert the requested language is one bc's shared generator can emit as STATIC straight-line
- * code — checked against the LIVE registry (the `<lang>-straightline` emitter must be registered),
- * not just the {@link CODEGEN_LANGUAGES} constant, so a bc capability drift fails LOUDLY.
+ * Resolve the de-boxed typed emitter for a codegen target, or throw. No fallback: a language
+ * without a registered de-box endpoint is a bc capability gap that fails LOUDLY (never a silent
+ * substitution of the literal/interpreter emitter — an unspec'd fallback is invalid).
  */
-export function assertLanguageSupported(language: string, registered: readonly string[]): asserts language is CodegenLanguage {
+export function codegenEmitterFor(language: string, registered: readonly string[]): string {
   if (!(CODEGEN_LANGUAGES as readonly string[]).includes(language)) {
     throw new Error(
       `litedbmodel codegen: language '${language}' is not a supported target (supported: ${CODEGEN_LANGUAGES.join(', ')})`,
     );
   }
-  const emitter = STRAIGHTLINE_EMITTER[language as CodegenLanguage];
-  if (!registered.includes(emitter)) {
+  const emitter = CODEGEN_EMITTER[language as CodegenLanguage];
+  if (emitter === undefined) {
     throw new Error(
-      `litedbmodel codegen: bc's shared generator does not register the STRAIGHT-LINE emitter '${emitter}' ` +
-        `for '${language}' (bc registered: ${[...registered].sort().join(', ')}). litedbmodel codegen is STATIC ` +
-        `codegen (spec §9), so the de-interpreted straight-line endpoint is required — this is a bc#13/#75 ` +
-        `capability limit — ESCALATE to bc (bc#22 pattern), never fork a litedbmodel-local generator (codegen は上流所有, spec §9).`,
+      `litedbmodel codegen: no de-boxed typed endpoint for '${language}'. litedbmodel codegen is STATIC ` +
+        `de-interpreted codegen (spec §9) with NO literal/interpreter fallback (an unspec'd fallback is invalid). ` +
+        `bc registers de-box endpoints only for ${Object.keys(CODEGEN_EMITTER).join('/')} — a '${language}' typed ` +
+        `endpoint is a bc capability gap. ESCALATE to bc (bc#22 pattern); never substitute the literal emitter.`,
     );
   }
+  if (!registered.includes(emitter)) {
+    throw new Error(
+      `litedbmodel codegen: bc's shared generator does not register the '${emitter}' emitter for '${language}' ` +
+        `(bc registered: ${[...registered].sort().join(', ')}). ESCALATE to bc (bc#22 pattern), never fork locally.`,
+    );
+  }
+  return emitter;
 }
 
 /**
@@ -168,11 +174,11 @@ export function generateCodegenArtifact(
   registeredLanguages: readonly string[],
   runtimeImport?: string,
 ): CodegenArtifact {
-  assertLanguageSupported(language, registeredLanguages);
+  // Resolve the de-box endpoint or throw (no literal/straight-line fallback — unspec'd fallback = invalid).
+  const emitter = codegenEmitterFor(language, registeredLanguages);
   const ir = bundleToPortableIR(bundle);
-  const emitter = STRAIGHTLINE_EMITTER[language];
   const module = generateModule(ir, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
-  return { language, module, companion: companionOf(bundle), ir, bundle };
+  return { language: language as CodegenLanguage, module, companion: companionOf(bundle), ir, bundle };
 }
 
 /**

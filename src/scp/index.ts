@@ -242,10 +242,10 @@ export { compileDeleteMany } from './makesql';
 // behavior-identical to the mode-2 thin-runtime (proven by the codegen conformance leg).
 export {
   CODEGEN_LANGUAGES,
-  STRAIGHTLINE_EMITTER,
+  CODEGEN_EMITTER,
   generateCodegenArtifact,
   bundleToPortableIR,
-  assertLanguageSupported,
+  codegenEmitterFor,
   codegenExecuteBundleForTest,
 } from './codegen';
 export type {
