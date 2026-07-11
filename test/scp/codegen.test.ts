@@ -1,21 +1,25 @@
 /**
  * litedbmodel v2 SCP — mode-3 codegen conformance (WS7f, #35; makeSQL flip, epic #43/#45).
  *
- * Proves the AC "生成コード出力が thin-runtime と byte 一致" HONESTLY on the STATIC makeSQL bundle:
+ * Proves the AC "生成コード出力が thin-runtime と byte 一致" HONESTLY on the STATIC makeSQL bundle,
+ * now via bc's STRAIGHT-LINE (de-interpreted, bc#75) endpoint — REAL static code, not the old
+ * literal-bake+interpret path:
  *
- *  - **All 5 languages** (bc#13 — typescript/python/go/rust/php): bc's shared generator emits a
- *    behavior module for every §8 read/tx bundle in the frozen corpus, baking the portable IR (a
- *    read bundle's surrogate `makeSQL`-node IR / the `makeSQL` component IR for a write) as a native
- *    literal + a `bind(handlers)` accessor. We assert the baked IR equals `bundleToPortableIR` and
- *    the generator's embedded fingerprint recomputes.
+ *  - **All 5 languages** (bc#13/#75 — typescript/python/go/rust/php): bc's shared generator emits a
+ *    STRAIGHT-LINE behavior module for every §8 read/tx bundle in the frozen corpus from the
+ *    portable IR (a read bundle's surrogate `makeSQL`-node IR / the `makeSQL` component IR for a
+ *    write) + a `bind(handlers)` accessor. We assert the module is genuinely de-interpreted: it
+ *    carries the generation-time IR FINGERPRINT (fail-closed skew gate) but does NOT embed the IR
+ *    itself and contains no interpreter machinery (anti-sham gate).
  *  - **SQL catalog companion**: the STATIC makeSQL execution catalog (readGraph / statement /
  *    relations / transaction) rides the companion byte-identical to the bundle's SQL fields.
  *  - **In-process byte-identity**: `codegenExecuteBundleForTest` (a codegen consumer reading the
  *    companion) drives the IDENTICAL static-makeSQL render/execute path `executeBundle` uses — its
  *    output equals mode-2 `executeBundle` AND the frozen vector's `expectedResult`, EXACTLY.
- *  - **TS leg — emitted source loads + bakes the right IR**: the emitted TS module is written,
- *    imported (its load-time fail-closed checks run), and its baked IR literal is asserted to equal
- *    `bundleToPortableIR` — proving the emitted source embeds the correct portable IR.
+ *  - **TS leg — emitted source loads + is de-interpreted**: the emitted TS module is written,
+ *    imported (its load-time fail-closed checks run), and its IR_FINGERPRINT constant is asserted
+ *    to equal the fingerprint of `bundleToPortableIR` — while the source is proven NOT to embed the
+ *    IR (de-interpretation, bc#75).
  *
  * Byte-identity uses EXACT structural comparison (canonical JSON of the bigint-encoded value).
  */
@@ -33,11 +37,22 @@ import {
   bundleToPortableIR,
   codegenExecuteBundleForTest,
   CODEGEN_LANGUAGES,
+  STRAIGHTLINE_EMITTER,
   assertLanguageSupported,
   type SqlBundle,
 } from '../../src/scp/index';
 
 const REGISTERED = bc.registeredLanguages();
+
+/**
+ * Anti-sham markers (bc#75): a de-interpreted straight-line module must contain NONE of these —
+ * the embedded ComponentGraphIR JSON literal, nor a named `IR` export. If any appears, the module
+ * could secretly interpret a baked IR (a sham "codegen"), so we reject it.
+ */
+const IR_EMBED_MARKERS: RegExp[] = [
+  /"irVersion"|'irVersion'/,
+  /\bexport const IR\b|\bexport var IR\b|\bpub static IR\b|\bvar IR\b\s*=|'IR'\s*=>/,
+];
 
 // ── bigint-safe encode/decode (mirror the harness canonical encoding) ─────────
 type Json = unknown;
@@ -89,36 +104,41 @@ const EXEC_VECTORS = loadExecVectors();
 const TX_VECTORS = loadTxVectors();
 
 describe('WS7f codegen — bc shared generator capability', () => {
-  it('bc registers all 5 emitters (typescript/python/go/rust/php) — Go IS supported (bc#13 SP2)', () => {
-    // bc registers the 5 base language emitters PLUS per-language strategy variants
-    // (`*-straightline` / `*-typed`); assert every language litedbmodel targets is
-    // registered (subset), not exact set-equality — bc owns the variant list and adds to it.
-    const base = ['go', 'php', 'python', 'rust', 'typescript'];
+  it('bc registers all 5 STRAIGHT-LINE emitters (typescript/python/go/rust/php) — Go IS supported (bc#13/#75)', () => {
+    // litedbmodel codegen is STATIC codegen (spec §9): it drives the `<lang>-straightline`
+    // de-interpreted endpoint, so every straight-line emitter it targets must be registered.
     const registered = new Set(REGISTERED);
-    expect(base.every((l) => registered.has(l))).toBe(true);
-    expect([...CODEGEN_LANGUAGES].sort()).toEqual(base);
-    expect([...CODEGEN_LANGUAGES].every((l) => registered.has(l))).toBe(true);
+    for (const language of CODEGEN_LANGUAGES) {
+      expect(registered.has(STRAIGHTLINE_EMITTER[language])).toBe(true);
+    }
+    expect([...CODEGEN_LANGUAGES].sort()).toEqual(['go', 'php', 'python', 'rust', 'typescript']);
   });
 
   it('rejects an unsupported language loudly (fail-closed; escalate-to-bc message)', () => {
     expect(() => assertLanguageSupported('ruby', REGISTERED)).toThrow(/not a supported target/);
+    // A registry missing the straight-line emitter for a supported logical language fails closed.
     expect(() => assertLanguageSupported('go', ['typescript'])).toThrow(/ESCALATE to bc/);
   });
 });
 
-describe('WS7f codegen — per-language source generation from the §8 STATIC makeSQL bundle', () => {
+describe('WS7f codegen — per-language STRAIGHT-LINE (de-interpreted) source from the §8 STATIC makeSQL bundle', () => {
   for (const v of [...EXEC_VECTORS, ...TX_VECTORS]) {
     for (const language of CODEGEN_LANGUAGES) {
-      it(`${language}: bakes the portable IR literal + carries the static SQL catalog — ${v.name}`, () => {
+      it(`${language}: emits de-interpreted static code (fingerprint, NO embedded IR) + static SQL catalog — ${v.name}`, () => {
         const art = generateCodegenArtifact(v.bundle, language, REGISTERED);
         expect(art.language).toBe(language);
         expect(art.module.code.length).toBeGreaterThan(0);
-        // The baked IR equals the bundle's portable IR EXACTLY.
+        // The module was generated from the bundle's portable IR EXACTLY.
         expect(canon(art.ir)).toBe(canon(bundleToPortableIR(v.bundle)));
-        // The generator's embedded fingerprint recomputes over the baked IR (load-time guard SSoT).
+        // The generator's fingerprint recomputes over the source IR and is baked into the code
+        // (the fail-closed skew gate SSoT — computed at generation time, IR not embedded).
         const recomputed = bc.fingerprintComponentGraph(art.ir);
         expect(art.module.fingerprint).toBe(recomputed);
         expect(art.module.code).toContain(recomputed);
+        // De-interpretation (bc#75 anti-sham): the module must NOT embed the IR it compiled away.
+        for (const marker of IR_EMBED_MARKERS) {
+          expect(art.module.code).not.toMatch(marker);
+        }
         // The companion carries the STATIC makeSQL catalog, byte-identical to the bundle's fields.
         expect(art.companion.dialect).toBe(v.bundle.dialect);
         expect([...art.companion.optionalHeads].sort()).toEqual([...v.bundle.optionalHeads].sort());
@@ -197,8 +217,8 @@ describe('WS7f codegen — tx bundle: companion transaction plan is byte-identic
   }
 });
 
-// ── The emitted TS module WRITES + IMPORTS + bakes the correct portable IR ──
-describe('WS7f codegen — the EMITTED TS source loads and bakes the correct portable IR', () => {
+// ── The emitted TS module WRITES + IMPORTS + is de-interpreted (no embedded IR, bc#75) ──
+describe('WS7f codegen — the EMITTED TS straight-line source loads and is de-interpreted', () => {
   let outDir: string;
   beforeAll(() => {
     outDir = mkdtempSync(join(__dirname, '..', '..', '.codegen-out-'));
@@ -208,19 +228,27 @@ describe('WS7f codegen — the EMITTED TS source loads and bakes the correct por
   });
 
   for (const [i, v] of EXEC_VECTORS.entries()) {
-    it(`emitted .ts module loads (fail-closed checks run) + baked IR == bundleToPortableIR — ${v.name}`, async () => {
+    it(`emitted .ts module loads (fail-closed checks run), carries IR_FINGERPRINT + does NOT embed the IR — ${v.name}`, async () => {
       const art = generateCodegenArtifact(v.bundle, 'typescript', REGISTERED);
       const modPath = join(outDir, `behaviors_${i}.generated.ts`);
       writeFileSync(modPath, art.module.code, 'utf8');
 
-      // Import the EMITTED module (its load-time fail-closed checks run here — a corrupt bake throws).
+      // Import the EMITTED module (its load-time fail-closed checks — spec-version envelope pin —
+      // run here). The de-interpreted module exports IR_FINGERPRINT + COMPONENT_NAMES, NOT the IR.
       const mod = (await import(pathToFileURL(modPath).href)) as {
-        IR: bc.ComponentGraphIR;
+        IR_FINGERPRINT: string;
         COMPONENT_NAMES: readonly string[];
+        bind: unknown;
       };
 
-      // The emitted module's baked IR literal equals the bundle's portable IR (structural exact match).
-      expect(canon(mod.IR)).toBe(canon(bundleToPortableIR(v.bundle)));
+      // The emitted module's generation-time fingerprint equals the fingerprint of the portable IR
+      // the consumer holds (the fail-closed skew gate) — WITHOUT the IR ever being embedded.
+      expect(mod.IR_FINGERPRINT).toBe(bc.fingerprintComponentGraph(bundleToPortableIR(v.bundle)));
+      expect(Array.isArray(mod.COMPONENT_NAMES)).toBe(true);
+      // De-interpretation (bc#75): the emitted source embeds no IR literal / no named IR export.
+      for (const marker of IR_EMBED_MARKERS) {
+        expect(art.module.code).not.toMatch(marker);
+      }
     });
   }
 });

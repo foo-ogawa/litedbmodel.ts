@@ -16,7 +16,7 @@ keywords = ["orm", "sql", "ir", "runtime", "conformance", "litedbmodel"]
 # evaluation (ref/refOpt/coalesce/eq/… — the SKIP guards + param slots) to the shared common
 # core, exactly as the TS reference imports `behavior-contracts` from npm. HARD dependency,
 # consumed from the published PyPI registry (NO local path — the no-local-deps gate forbids it).
-dependencies = ["behavior-contracts==0.2.3"]
+dependencies = ["behavior-contracts==0.2.5"]
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
