@@ -1,0 +1,11 @@
+# Transient run output
+.crosslang-results.json
+# v1 baseline install (npm alias) — reinstalled via v1ts/package.json
+v1ts/node_modules/
+# Compiled adapter binaries + build dirs
+adapters/rust/target/
+adapters/go/go_bench
+adapters/v1rs/target/
+# Python bytecode
+adapters/python/__pycache__/
+**/__pycache__/

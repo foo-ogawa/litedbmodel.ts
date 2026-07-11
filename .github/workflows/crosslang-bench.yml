@@ -1,0 +1,40 @@
+name: Cross-lang bench drift-check (#44)
+
+# The cross-language execution-surface benchmark (benchmark/crosslang, epic #44) consumes
+# GENERATED artifacts (the makeSQL bundle JSON) — it must NOT drift from what src/ compiles.
+# This is the CI drift-check hook: it rebuilds the SCP dist, regenerates the bundles in memory
+# and fails if they differ from the committed generated/bundles.json, then runs the fairness
+# self-check (queries/op + rows/op parity between the raw-SQL baseline and the litedbmodel path).
+# It does NOT run the full multi-language bench (that needs 5 toolchains) — just the fast gates.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'benchmark/crosslang/**'
+      - '.github/workflows/crosslang-bench.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install
+        run: npm ci --ignore-scripts
+      - name: Build SCP dist (consume-only source for the bench)
+        run: npm run build:scp
+      - name: Drift-check the generated makeSQL bundles
+        run: npx tsx benchmark/crosslang/generate.ts --check
+      - name: Fairness self-check (queries/op + rows/op parity)
+        run: npx tsx benchmark/crosslang/selfcheck.ts
+      - name: Smoke the TS bench cells (quick)
+        run: CROSSLANG_ONLY=ts BENCH_ITER=50 BENCH_WARMUP=10 BENCH_TP_ITER=50 BENCH_MICRO_ITER=200 BENCH_MICRO_WARMUP=50 npx tsx benchmark/crosslang/run.ts
