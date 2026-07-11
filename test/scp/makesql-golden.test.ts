@@ -176,39 +176,49 @@ describe('A. subquery / EXISTS — makeSQL byte-matches DBModel.inSubquery/exist
     expect(golden.sql).toContain('users.id IN (SELECT orders.user_id FROM orders WHERE orders.status =');
   });
 
-  it('NOT IN(subquery) + composite (a,b) IN(subquery)', () => {
-    // NOT IN subquery.
-    const notIn = new DBSubquery(
-      [{ columnName: 'id', tableName: 'users' }],
-      'banned',
-      [{ columnName: 'user_id', tableName: 'banned' }],
-      [],
-      'NOT IN'
-    );
-    // Composite (tenant_id, id) IN (SELECT …).
-    const comp = new DBSubquery(
-      [
-        { columnName: 'tenant_id', tableName: 'users' },
-        { columnName: 'id', tableName: 'users' },
-      ],
-      'orders',
-      [
-        { columnName: 'tenant_id', tableName: 'orders' },
-        { columnName: 'user_id', tableName: 'orders' },
-      ],
-      [{ column: { columnName: 'status', tableName: 'orders' }, value: 'paid' }],
-      'IN'
-    );
-    for (const ex of [notIn, comp]) {
-      const condObj = { __subquery__: ex };
-      const params: unknown[] = [];
-      const goldenSql = new DBConditions(condObj).compile(params, pgFmt);
-      const golden = { sql: renderPlaceholders(goldenSql, 'postgres'), params };
-      const got = render(compileWhere(condObj, 'postgres'), 'postgres');
-      expect(got.sql).toBe(golden.sql);
-      expect(got.params).toEqual(golden.params);
-    }
-  });
+  // #47: byte-assert composite (a,b) IN(subquery) on ALL dialects (was PG only). The row-value
+  // IN-subquery construct is dialect-INVARIANT in DBConditions (only the placeholder renderer
+  // differs — `$N` on PG vs `?` on MySQL/SQLite), so every dialect byte-matches v1 DBConditions.
+  // The matching live vector (CompInSubquery) proves it EXECUTES on real PG + MySQL.
+  for (const dialect of dialects) {
+    it(`[${dialect}] NOT IN(subquery) + composite (a,b) IN(subquery)`, () => {
+      // NOT IN subquery.
+      const notIn = new DBSubquery(
+        [{ columnName: 'id', tableName: 'users' }],
+        'banned',
+        [{ columnName: 'user_id', tableName: 'banned' }],
+        [],
+        'NOT IN'
+      );
+      // Composite (tenant_id, id) IN (SELECT …).
+      const comp = new DBSubquery(
+        [
+          { columnName: 'tenant_id', tableName: 'users' },
+          { columnName: 'id', tableName: 'users' },
+        ],
+        'orders',
+        [
+          { columnName: 'tenant_id', tableName: 'orders' },
+          { columnName: 'user_id', tableName: 'orders' },
+        ],
+        [{ column: { columnName: 'status', tableName: 'orders' }, value: 'paid' }],
+        'IN'
+      );
+      const formatter = dialect === 'postgres' ? pgFmt : (ph: string) => ph;
+      for (const ex of [notIn, comp]) {
+        const condObj = { __subquery__: ex };
+        const params: unknown[] = [];
+        const goldenSql = new DBConditions(condObj).compile(params, formatter);
+        const golden = { sql: renderPlaceholders(goldenSql, dialect), params };
+        const got = render(compileWhere(condObj, dialect), dialect);
+        expect(got.sql).toBe(golden.sql);
+        expect(got.params).toEqual(golden.params);
+      }
+      // The composite lhs renders as a row-value tuple on every dialect (v1-sourced text).
+      const compSql = renderPlaceholders(new DBConditions({ __subquery__: comp }).compile([], formatter), dialect);
+      expect(compSql).toContain('(users.tenant_id, users.id) IN (SELECT orders.tenant_id, orders.user_id FROM orders WHERE orders.status =');
+    });
+  }
 
   it('= ANY(?::type[]) scalar-array condition (PG) via raw', () => {
     const condObj = { __raw__: ['users.id = ANY(?::uuid[])', [['u1', 'u2']]] };

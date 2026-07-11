@@ -68,6 +68,7 @@ import {
   whereEq,
   whereGe,
   whereIn,
+  whereIsNull,
   inColumn,
   whereBetween,
   whereLike,
@@ -226,6 +227,35 @@ class Blog extends SemanticBehavior {
       order: 'id ASC',
     });
   }
+  // ── #47 byte-only-cell live vectors: IS NULL / IS NOT NULL + composite (a,b) IN (subquery) ──────
+  // These constructs were v1-byte-asserted in makesql-golden but had NO live vector (strict rule:
+  // byte-only ≠ done). READ_SCHEMA users: (7,'Ada'), (8,'Alan'), (9,NULL). Results are dialect-
+  // invariant (IS NULL / IS NOT NULL / row-value IN(subquery) are standard on PG + MySQL 8 + SQLite).
+
+  /** #47 IS NOT NULL: `name IS NOT NULL` → users 7,8. Live cell for the byte-only IS NOT NULL.
+   *  `ne(<col>, null)` is the bridge's IS NOT NULL form (authoring-compile.ts:237). The column ref
+   *  is the recorder path `$.name` (not an input value — `columnOf` reads its trailing segment). */
+  UsersWithName($: In<{ name?: string }>) {
+    return L.Select({ table: 'users', select: ['id', 'name'], where: [ne($.name, null)], order: 'id ASC' });
+  }
+  /** #47 IS NULL: `name IS NULL` → user 9. Live cell for the byte-only IS NULL (`eq(<col>, null)`). */
+  UsersNoName($: In<{ name?: string }>) {
+    return L.Select({ table: 'users', select: ['id', 'name'], where: [whereIsNull($.name)], order: 'id ASC' });
+  }
+  /**
+   * #47 composite (a,b) IN (subquery): `(posts.author_id, posts.id) IN (SELECT users.id, 1 FROM
+   * users WHERE users.name = 'Ada')` → post 1 (author 7 = Ada's id, id 1). Live cell for the
+   * composite-tuple-IN-subquery construct (byte-done PG only before). The composite lhs is authored
+   * as a parenthesized column-list string; the tuple-IN-subquery text is dialect-invariant.
+   */
+  CompInSubquery(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [whereInSubquery(_$, '(posts.author_id, posts.id)', { sql: 'SELECT users.id, 1 FROM users WHERE users.name = ?', params: ['Ada'] })],
+      order: 'id ASC',
+    });
+  }
+
   /** R5 JOIN: posts JOIN users → each post's author name (stable scalar projection). */
   JoinAuthor(_$: In<Record<string, never>>) {
     return L.Select({
@@ -430,6 +460,10 @@ const READ_SCHEMA_SQLITE: readonly string[] = [
   `INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')`,
   `INSERT INTO users VALUES (7, 'Ada')`,
   `INSERT INTO users VALUES (8, 'Alan')`,
+  // #47 IS NULL / IS NOT NULL live cell: a NULL-name user (id 9). No post references author_id 9,
+  // so Feed / JoinAuthor / InSubquery (name='Ada') results are UNCHANGED — only the new
+  // UsersWithName (IS NOT NULL → 7,8) / UsersNoName (IS NULL → 9) vectors observe it.
+  `INSERT INTO users VALUES (9, NULL)`,
   `INSERT INTO tags VALUES (10, 1, 'greeting')`,
   `INSERT INTO tags VALUES (11, 1, 'first')`,
   `INSERT INTO tags VALUES (12, 2, 'world')`,
@@ -519,6 +553,10 @@ const READ_SCHEMA_PG: readonly string[] = [
   `INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')`,
   `INSERT INTO users VALUES (7, 'Ada')`,
   `INSERT INTO users VALUES (8, 'Alan')`,
+  // #47 IS NULL / IS NOT NULL live cell: a NULL-name user (id 9). No post references author_id 9,
+  // so Feed / JoinAuthor / InSubquery (name='Ada') results are UNCHANGED — only the new
+  // UsersWithName (IS NOT NULL → 7,8) / UsersNoName (IS NULL → 9) vectors observe it.
+  `INSERT INTO users VALUES (9, NULL)`,
   `INSERT INTO tags VALUES (10, 1, 'greeting')`,
   `INSERT INTO tags VALUES (11, 1, 'first')`,
   `INSERT INTO tags VALUES (12, 2, 'world')`,
@@ -537,6 +575,10 @@ const READ_SCHEMA_MYSQL: readonly string[] = [
   `INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')`,
   `INSERT INTO users VALUES (7, 'Ada')`,
   `INSERT INTO users VALUES (8, 'Alan')`,
+  // #47 IS NULL / IS NOT NULL live cell: a NULL-name user (id 9). No post references author_id 9,
+  // so Feed / JoinAuthor / InSubquery (name='Ada') results are UNCHANGED — only the new
+  // UsersWithName (IS NOT NULL → 7,8) / UsersNoName (IS NULL → 9) vectors observe it.
+  `INSERT INTO users VALUES (9, NULL)`,
   `INSERT INTO tags VALUES (10, 1, 'greeting')`,
   `INSERT INTO tags VALUES (11, 1, 'first')`,
   `INSERT INTO tags VALUES (12, 2, 'world')`,
@@ -1141,6 +1183,13 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
     { name: "CteLive: WITH live_posts AS (status='live') → posts 1,3 [R4]", entry: 'CteLive', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
     // R6 append (HAVING): GROUP BY author_id HAVING COUNT(*) > 1 → only author 7 (2 posts).
     { name: 'HavingAuthor: GROUP BY author_id HAVING COUNT(*) > 1 → author 7 [R6]', entry: 'HavingAuthor', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // #47 IS NOT NULL live cell: name IS NOT NULL → users 7,8 (9 is NULL, excluded).
+    { name: 'UsersWithName: name IS NOT NULL → users 7,8 [#47 byte-only→live]', entry: 'UsersWithName', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // #47 IS NULL live cell: name IS NULL → user 9 only.
+    { name: 'UsersNoName: name IS NULL → user 9 [#47 byte-only→live]', entry: 'UsersNoName', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // #47 composite (a,b) IN (subquery) live cell: (posts.author_id, posts.id) IN (SELECT users.id, 1
+    // FROM users WHERE name='Ada') → post 1 (Ada=7, id 1). Was byte-done PG only; now byte all-dialect + live.
+    { name: 'CompInSubquery: (author_id, id) IN (SELECT id, 1 WHERE name=?) → post 1 [#47 byte-only→live]', entry: 'CompInSubquery', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
   ];
 
   const exec: LiveExecVector[] = execSpecs.map((s) => {
