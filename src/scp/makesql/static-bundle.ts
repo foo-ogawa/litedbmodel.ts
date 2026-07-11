@@ -52,6 +52,7 @@ import { IN_SENTINEL } from './tx';
 import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
 import { renderPlaceholders, type Dialect } from './handler';
 import { compileWriteNode } from './tx';
+import { assertFindFilterFolded, type FindFilterSource } from '../find-filter-guard';
 import { mapSqliteError } from '../errors';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import { dbCast, dbDynamic, dbImmediate, dbTupleIn } from '../../DBValues';
@@ -650,7 +651,7 @@ function compilePrimaryNode(node: ComponentRefNode, dialect: Dialect): StaticSta
   const component = 'map' in node ? (node as MapNode).map.component : node.component;
   if (component === 'Select' || component === 'Count') return compileSelectNode(node, dialect);
   if (component === 'Insert' || component === 'Update' || component === 'Delete') {
-    const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> });
+    const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> }, dialect);
     return [{ sql: op.sql, params: op.params }];
   }
   throw new Error(`static-bundle: catalog component '${component}' has no makeSQL compile (SQL CRUD only: Select/Count/Insert/Update/Delete)`);
@@ -757,6 +758,58 @@ function collectRefHeads(node: unknown, into: Set<string>): void {
     return;
   }
   for (const v of Object.values(node as Record<string, unknown>)) collectRefHeads(v, into);
+}
+
+// ── FIND_FILTER leak guard: authored WHERE column keys (fail-closed model-scope enforcement) ──
+
+/**
+ * Collect the top-level COLUMN names an authored `where` port constrains — the LHS column of each
+ * eq/ne/cmp member, the IN-sentinel column, and (recursively) the columns of `and`/`or` groups and
+ * SKIP-`cond` members. This is exactly the key set v1 compares against when it folds a model's
+ * `FIND_FILTER` into the WHERE (`condsToRecord(FIND_FILTER)` keys vs the compiled predicate), so the
+ * {@link assertFindFilterFolded} guard can fail-closed when a FIND_FILTER model is SCP-compiled
+ * without its scope predicates folded in. Additive sentinel primitives (immediate/dynamic/exists/…)
+ * carry no plain column key and are skipped — a scope key must be an ordinary eq/cmp/in the author
+ * expressed, matching how a FIND_FILTER predicate manifests.
+ */
+function whereMemberColumns(node: unknown, into: Set<string>): void {
+  const op = opKey(node);
+  if (op === undefined) return;
+  if (op === 'and' || op === 'or') {
+    const args = (node as Record<string, unknown[]>)[op];
+    if (Array.isArray(args)) for (const m of args) whereMemberColumns(m, into);
+    return;
+  }
+  if (op === 'cond') {
+    const cargs = (node as Record<string, unknown[]>).cond;
+    if (Array.isArray(cargs) && cargs.length === 3) whereMemberColumns(cargs[1], into);
+    return;
+  }
+  if (op === 'eq' || op in CMP_OPS) {
+    const args = (node as Record<string, unknown[]>)[op];
+    if (!Array.isArray(args) || args.length !== 2) return;
+    const inCol = inSentinelColumn(args[0]);
+    if (inCol !== undefined) { into.add(inCol); return; }
+    // A plain column ref LHS (a bare eq/cmp). An additive sentinel LHS (immediate/dynamic/exists/…)
+    // is NOT a plain column — its column key would be encoded in the primitive, so it is skipped
+    // (a FIND_FILTER scope key is always an ordinary eq/cmp/IS NULL the author must fold explicitly).
+    const lhsOp = opKey(args[0]);
+    if (lhsOp === 'ref' || lhsOp === 'refOpt') {
+      const path = (args[0] as Record<string, unknown[]>)[lhsOp];
+      if (Array.isArray(path) && path.length > 0 && typeof path[path.length - 1] === 'string' && path[0] !== IN_SENTINEL) {
+        into.add(path[path.length - 1] as string);
+      }
+    }
+  }
+}
+
+/** The authored WHERE column-key set of a read node's `where` port (for the FIND_FILTER guard). */
+function authoredWhereKeysOf(ports: Record<string, unknown>): Set<string> {
+  const keys = new Set<string>();
+  const arr = arrPort(ports, 'where');
+  if (arr === undefined) return keys;
+  for (const m of arr) whereMemberColumns(m, keys);
+  return keys;
 }
 
 // ── Runtime: evaluate value-specs + skip per-input, assemble, render, execute ──
@@ -938,7 +991,7 @@ function scopePort(statements: readonly StaticStatement[]): unknown {
 function compileNodeStatements(node: RefLike, dialect: Dialect): StaticStatement[] {
   const component = 'map' in node ? (node as MapNode).map.component : node.component;
   if (component === 'Select' || component === 'Count') return compileSelectNode(node, dialect);
-  const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> });
+  const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> }, dialect);
   return [{ sql: op.sql, params: op.params }];
 }
 
@@ -969,9 +1022,25 @@ export function compileReadGraph(
   contract: BehaviorModelContract,
   dialect: Dialect,
   entry?: string,
+  findFilterModel?: FindFilterSource,
 ): ReadGraph {
   const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
   if (component === undefined) throw new Error(`static-bundle: entry component '${entry ?? '<first>'}' not found in contract`);
+
+  // FIND_FILTER fail-closed guard (M2): when a `DBModel`-shaped source that DECLARES a `FIND_FILTER`
+  // (soft-delete / tenant scope) is routed through the SCP read compile, its scope predicates MUST be
+  // folded into the authored `where` of every read node — the SCP compile has no model context to
+  // auto-apply them (see find-filter-guard.ts). If any read node's authored WHERE omits a scope key,
+  // `assertFindFilterFolded` throws (never a silent cross-tenant / soft-deleted leak). No model
+  // supplied ⇒ nothing to enforce (the guard is a no-op for a model with no FIND_FILTER either way).
+  if (findFilterModel !== undefined) {
+    for (const n of component.body) {
+      if ('cond' in n) continue;
+      const ref = 'map' in n ? (n as MapNode).map : (n as ComponentRefNode);
+      if (ref.component !== 'Select' && ref.component !== 'Count') continue;
+      assertFindFilterFolded(findFilterModel, authoredWhereKeysOf(ref.ports as Record<string, unknown>));
+    }
+  }
 
   const statementsById: Record<string, readonly StaticStatement[]> = {};
   for (const n of component.body) {

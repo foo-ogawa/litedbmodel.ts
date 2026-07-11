@@ -80,23 +80,27 @@ type execStatementResult struct {
 }
 
 // gateShortCircuit evaluates a gate rule on a statement result → the short-circuit reason, or ""
-// to continue (write-runtime.ts gateShortCircuit).
-func gateShortCircuit(gate string, r execStatementResult) ShortCircuitReason {
+// to continue (tx.ts gateShortCircuit). An unknown / forward-incompatible gate rule is a FAIL-CLOSED
+// error (aligned with Python + Rust + TS + PHP): a corrupt gate MUST NOT silently continue (fail-open
+// would skip a malformed gate and let the write COMMIT).
+func gateShortCircuit(gate string, r execStatementResult) (ShortCircuitReason, error) {
 	switch gate {
 	case "existsElseRollback":
 		if len(r.rows) == 0 {
-			return ReasonRequiresAbsent
+			return ReasonRequiresAbsent, nil
 		}
 	case "insertedElseRollback":
 		if r.changes == 0 {
-			return ReasonUniqueCollision
+			return ReasonUniqueCollision, nil
 		}
 	case "insertedElseNoop":
 		if r.changes == 0 {
-			return ReasonIdempotentDuplicate
+			return ReasonIdempotentDuplicate, nil
 		}
+	default:
+		return "", fmt.Errorf("scp write: unknown gate rule '%s'", gate)
 	}
-	return ""
+	return "", nil
 }
 
 // execTxStatement renders + executes one statement's makeSQL op in the given scope (tx.ts
@@ -246,7 +250,13 @@ func executeTransaction(db TxDB, plan *bc.JObj, input *bc.Obj, dialect Dialect) 
 
 		// Gate-first: a failing gate short-circuits — ROLLBACK and STOP (tail never executes).
 		if stmt.gate != "" {
-			if reason := gateShortCircuit(stmt.gate, result); reason != "" {
+			reason, gErr := gateShortCircuit(stmt.gate, result)
+			if gErr != nil {
+				// Unknown gate rule (fail-closed): ROLLBACK and surface the error — never COMMIT.
+				_ = tx.Rollback()
+				return TransactionResult{}, gErr
+			}
+			if reason != "" {
 				if rbErr := tx.Rollback(); rbErr != nil {
 					return TransactionResult{}, mapSqliteError(rbErr)
 				}

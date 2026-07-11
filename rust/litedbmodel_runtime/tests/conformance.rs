@@ -287,3 +287,28 @@ fn transaction_short_circuits_on_missing_requires() {
     let rows = stmt.all(&[]).unwrap();
     assert_val(rows[0].obj_get("n"), &Value::Int(0));
 }
+
+// M4 (re-audit): an UNKNOWN / forward-incompatible gate rule FAILS CLOSED (aligned with TS +
+// Python + Go + PHP): the tx aborts (Err) and does NOT commit — a corrupt gate must never be
+// silently skipped into a COMMIT.
+#[test]
+fn transaction_unknown_gate_fails_closed() {
+    let driver = SqliteDriver::in_memory(&tx_schema()).unwrap();
+    let mut bundle = write_bundle();
+    // Tag the requires gate with a bogus rule the runtime does not recognize.
+    bundle["transaction"]["statements"][0]["gate"] = json!("someFutureGateRuleThatDoesNotExist");
+    let res = execute_transaction_bundle(&bundle, &json!({"author_id": 7, "title": "X"}), &driver);
+    assert!(
+        res.is_err(),
+        "an unknown gate rule must fail closed (Err), not commit"
+    );
+    let msg = format!("{}", res.err().unwrap());
+    assert!(
+        msg.contains("unknown gate rule"),
+        "error should name the unknown gate rule, got: {msg}"
+    );
+    // FAIL-CLOSED: nothing committed.
+    let mut stmt = driver.prepare("SELECT COUNT(*) AS n FROM posts");
+    let rows = stmt.all(&[]).unwrap();
+    assert_val(rows[0].obj_get("n"), &Value::Int(0));
+}

@@ -531,3 +531,42 @@ describe('WS5 — executeTransaction runs a hand-derived plan against real SQLit
     expect(db.prepare('SELECT COUNT(*) c FROM posts').get()).toEqual({ c: 1 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// M4 (re-audit) — an UNKNOWN / forward-incompatible gate rule is FAIL-CLOSED (aligned across
+// all 5 runtimes: TS + Python + Rust + Go + PHP). A corrupt gate string must NOT silently
+// continue (fail-open would skip the gate and let the write COMMIT). Here on the TS runtime:
+// `executeTransaction` aborts (throws) and does NOT commit. The other 4 languages assert the
+// same invariant in their own runtime tests (python/tests/test_runtime.py,
+// rust .../runtime.rs #[test], go write_test.go, php WriteRuntimeTest).
+// ---------------------------------------------------------------------------
+describe('M4 — unknown gate rule fails CLOSED (never a silent commit)', () => {
+  it('executeTransaction ABORTS (throws) and does NOT commit on an unknown gate rule', () => {
+    const db = freshDb();
+    // A hand-built plan with a body write GATED by a bogus/forward-incompatible gate string.
+    const bodyOp = compileWriteNode({
+      id: 'ins',
+      component: 'Insert',
+      ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id' },
+    } as never);
+    const plan: TransactionPlan = {
+      phase: 'create',
+      entityFrom: null,
+      onIdempotentHit: 'rollback',
+      statements: [
+        // Reuse a real existence probe as the gate statement, but tag it with an UNKNOWN gate rule.
+        {
+          id: 'g',
+          role: 'gate:requires',
+          op: { sql: 'SELECT 1 FROM users WHERE id = ?', params: [{ ref: ['author_id'] }] },
+          gate: 'someFutureGateRuleThatDoesNotExist' as never,
+          label: 'bogus gate',
+        },
+        { id: 'b', role: 'body', op: bodyOp, label: 'Insert posts' },
+      ],
+    };
+    expect(() => executeTransaction(db, plan, { author_id: 7, title: 'X' })).toThrow(/unknown gate rule/);
+    // FAIL-CLOSED: the write must NOT have committed (the tx rolled back).
+    expect(db.prepare('SELECT COUNT(*) c FROM posts').get()).toEqual({ c: 0 });
+  });
+});

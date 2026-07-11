@@ -125,6 +125,11 @@ final class WriteRuntime
             // A driver failure: ROLLBACK, then map + re-throw the structured SqlFailure (spec §11).
             self::bestEffortRollback($db);
             throw SqlFailure::fromPdo($e);
+        } catch (\Throwable $e) {
+            // Any other failure (e.g. an unknown gate rule — the fail-closed abort): ROLLBACK so the
+            // open transaction never COMMITs, then re-throw. Fail-closed, never a silent commit.
+            self::bestEffortRollback($db);
+            throw $e;
         }
     }
 
@@ -167,11 +172,14 @@ final class WriteRuntime
      */
     private static function gateShortCircuit(string $gate, array $result): ?string
     {
+        // An unknown / forward-incompatible gate rule is FAIL-CLOSED (aligned with Python + Rust +
+        // TS + Go): a corrupt gate MUST NOT silently continue (fail-open would skip a malformed gate
+        // and let the write COMMIT). Throwing aborts the tx (the caller ROLLBACKs on the exception).
         return match ($gate) {
             'existsElseRollback' => count($result['rows']) === 0 ? 'requires_absent' : null,
             'insertedElseRollback' => $result['changes'] === 0 ? 'unique_collision' : null,
             'insertedElseNoop' => $result['changes'] === 0 ? 'idempotent_duplicate' : null,
-            default => null,
+            default => throw new \RuntimeException("scp write: unknown gate rule '{$gate}'"),
         };
     }
 

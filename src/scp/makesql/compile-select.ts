@@ -25,8 +25,15 @@ import type { Dialect } from './handler';
 export interface SelectDesc {
   dialect: Dialect;
   tableName: string;
-  /** SELECT column list (default `*`). */
+  /** SELECT column list (an explicit `options.select`). Empty/absent → falls back to {@link selectColumn}. */
   select?: string;
+  /**
+   * The model's `SELECT_COLUMN` (v1 `DBModel.SELECT_COLUMN`) — the fallback projection when no explicit
+   * `select` is given. v1 derives the SELECT list as `options.select || this.SELECT_COLUMN`
+   * (`DBModel._buildSelectSQL`:572), so a subclass that overrides `SELECT_COLUMN` must flow through here
+   * rather than being hardcoded to `'*'`. Absent → the base-class default `'*'` (`DBModel.SELECT_COLUMN`).
+   */
+  selectColumn?: string;
   conditions?: ConditionObject;
   join?: string;
   joinParams?: unknown[];
@@ -45,7 +52,7 @@ export interface SelectDesc {
  */
 export function compileSelect(desc: SelectDesc): MakeSQL {
   const params: unknown[] = [];
-  const selectCols = desc.select ?? '*';
+  const selectCols = desc.select || (desc.selectColumn ?? '*');
   const formatter = formatterFor(desc.dialect);
 
   // Param order (matches SQL order): CTE params → JOIN params → WHERE params.
