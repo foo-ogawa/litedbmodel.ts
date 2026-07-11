@@ -4,7 +4,7 @@ go 1.25.0
 
 // behavior-contracts (Go module): the litedbmodel SCP runtime delegates the CLOSED
 // Expression-IR evaluation to the shared common core, mirroring the TS reference's npm
-// dependency. Pinned to the PUBLISHED VCS tag `go/v0.2.5` (NO local `replace` onto a sibling
+// dependency. Pinned to the PUBLISHED VCS tag `go/v0.3.0` (NO local `replace` onto a sibling
 // checkout — the no-local-deps gate forbids it).
 //
 // behavior-contracts is a PRIVATE repo: resolving it needs GOPRIVATE + authenticated git
