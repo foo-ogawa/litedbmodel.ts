@@ -424,7 +424,7 @@ const MYSQL_PK_HINT_RE = /\s*\/\*scp:pk=[^*]*\*\//;
  * INSERT…RETURNING op, so the MySQL driver emulation can re-select by the REAL primary key. The
  * comment is STRIPPED (with the RETURNING clause) before the INSERT executes, so the executed SQL
  * stays byte-clean; it is emitted ONLY into the mysql-dialect bundle (PG/SQLite keep native
- * RETURNING and never see it). Format: ` /*scp:pk=col1,col2;ai=<autoIncCol|>*​/`.
+ * RETURNING and never see it). Format: ` /*scp:pk=col1,col2;ai=<autoIncCol|>* /`.
  */
 export function mysqlPkHint(op: TxOp): TxOp {
   if (op.pk === undefined) return op;
