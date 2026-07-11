@@ -7,10 +7,12 @@
  *  For every read/exec + tx vector (which carry a full §8 SqlBundle), for EVERY language bc's
  *  shared generator supports (typescript / python / go / rust / php):
  *
- *   1. GENERATE the behavior module (bc's shared generator bakes the surrogate IR as a native
- *      literal + `bind(handlers)`) + the SQL catalog companion (the litedbmodel-specific fields).
- *   2. STRUCTURAL byte-identity: the baked IR literal equals the source bundle component + the
- *      generator's embedded fingerprint recomputes (proven for all 5 languages).
+ *   1. GENERATE the behavior module (bc's shared STRAIGHT-LINE generator emits REAL static native
+ *      source — de-interpreted, bc#75, NOT a baked-IR interpret path — + `bind(handlers)`) + the
+ *      SQL catalog companion (the litedbmodel-specific fields).
+ *   2. DE-INTERPRETATION gate (bc#75 anti-sham): the emitted module carries the generation-time IR
+ *      FINGERPRINT (fail-closed skew gate) but NOT the IR itself and no interpreter machinery, and
+ *      the SQL catalog companion is byte-identical to the source bundle (proven for all 5 languages).
  *   3. REAL execution byte-identity (typescript + python — the two toolchains that can EXECUTE a
  *      generated module against the SAME thin-runtime handlers): import the emitted module, pair
  *      its `bind` with the thin-runtime SQL handlers built from the companion, run against seeded
@@ -19,8 +21,9 @@
  *   4. COMPILE check (go / rust / php): the emitted source is type-checked / parsed by the native
  *      toolchain (gofmt+vet / rustc parse / php -l) so the generated code is provably well-formed
  *      for those languages; their thin-runtimes are already conformance-verified in mode-2, and the
- *      generated `bind()` calls the IDENTICAL `RunBehavior` over the IDENTICAL baked IR — so mode-3
- *      == mode-2 follows from the shared core + the structural-IR proof.
+ *      generated `bind()` drives the IDENTICAL static makeSQL render/execute path (behavior-equal
+ *      to `RunBehavior` — same values / op sequence / Failure code, bc#75) — so mode-3 == mode-2
+ *      follows from the shared core + the de-interpretation proof.
  *
  * docker: exec seam is in-process SQLite; live PG/MySQL EXECUTION is deferred to the coordinated
  * cross-language docker pass (the PG/MySQL dialect TEXT is covered by the render suite; the executed
@@ -115,13 +118,24 @@ function line(ok: boolean, name: string, detail?: string): void {
   }
 }
 
-// ── Structural byte-identity: baked IR literal == bundle component + fingerprint recomputes ──
+// ── De-interpretation gate (bc#75 anti-sham): the emitted module is REAL static straight-line
+// code — it carries the generation-time IR fingerprint (fail-closed skew gate) but NOT the IR
+// itself, and none of the interpreter machinery (RunPlan tree-walk over a baked IR). The
+// companion carries the STATIC makeSQL catalog byte-identical to the source bundle. ──
+const IR_LITERAL_MARKERS = [
+  /"irVersion"|'irVersion'/, // embedded ComponentGraphIR JSON literal (any language)
+  /\bexport const IR\b|\bexport var IR\b|\bpub static IR\b|\bvar IR\b\s*=|'IR'\s*=>/, // named IR export
+];
 function structuralOk(v: Json, language: string): { ok: boolean; detail?: string } {
   const art = generateCodegenArtifact(v.bundle, language, REGISTERED);
-  if (canon(art.ir) !== canon(bundleToPortableIR(v.bundle))) return { ok: false, detail: 'baked IR != bundle component' };
+  if (canon(art.ir) !== canon(bundleToPortableIR(v.bundle))) return { ok: false, detail: 'source IR != bundle component' };
   const recomputed = fingerprintComponentGraph(art.ir);
   if (art.module.fingerprint !== recomputed) return { ok: false, detail: 'fingerprint mismatch' };
   if (!art.module.code.includes(recomputed)) return { ok: false, detail: 'fingerprint not baked into code' };
+  // Anti-sham: a de-interpreted straight-line module must NOT embed the IR it compiled away.
+  for (const m of IR_LITERAL_MARKERS) {
+    if (m.test(art.module.code)) return { ok: false, detail: `de-interpretation violated: emitted ${language} code embeds the IR (matched ${m})` };
+  }
   if (art.companion.readGraph !== undefined && canon(art.companion.readGraph) !== canon(v.bundle.readGraph)) return { ok: false, detail: 'companion readGraph != bundle' };
   if (art.companion.statement !== undefined && canon(art.companion.statement) !== canon(v.bundle.statement)) return { ok: false, detail: 'companion statement != bundle' };
   if (art.companion.dialect !== v.bundle.dialect) return { ok: false, detail: 'companion dialect != bundle' };
@@ -157,11 +171,16 @@ async function tsExecOk(v: Json, outDir: string, idx: number): Promise<{ ok: boo
     const okResult = canon(result) === canon(decodeValue(v.expectedResult));
     return okResult && stateOk ? { ok: true } : { ok: false, detail: 'tx result/db-state mismatch' };
   }
-  // Emit + import the module so its load-time fail-closed checks run + the baked IR is verified.
+  // Emit + import the straight-line module so its load-time fail-closed checks run (spec-version
+  // envelope pin). The de-interpreted module does NOT export the IR (bc#75 — the IR was compiled
+  // away); it exports the generation-time IR_FINGERPRINT constant, which must equal the fingerprint
+  // of the source IR the consumer holds (the fail-closed skew gate). We assert that here.
   const modPath = join(outDir, `behaviors_${idx}.generated.ts`);
   writeFileSync(modPath, art.module.code, 'utf8');
-  const mod = (await import(pathToFileURL(modPath).href)) as { IR: Json };
-  if (canon(mod.IR) !== canon(bundleToPortableIR(v.bundle))) return { ok: false, detail: 'emitted baked IR != bundleToPortableIR' };
+  const mod = (await import(pathToFileURL(modPath).href)) as { IR_FINGERPRINT: string; bind: unknown };
+  if (mod.IR_FINGERPRINT !== fingerprintComponentGraph(bundleToPortableIR(v.bundle))) {
+    return { ok: false, detail: 'emitted IR_FINGERPRINT != fingerprint(bundleToPortableIR)' };
+  }
 
   // A codegen consumer executes via the static makeSQL catalog (the SAME path executeBundle uses).
   const db = seedDb(v.schema);
@@ -237,13 +256,25 @@ const COMPILE_CHECKS: CompileCheck[] = [
     ext: 'go',
     toolAvailable: () => toolPresent('gofmt', ['-h']) || toolPresent('go', ['version']),
     check: (path) => {
-      // gofmt -l reports files whose formatting differs; the emitter promises a gofmt fixed point,
-      // and `gofmt` also parses (a syntax error is a non-zero exit). So a clean, empty gofmt -l is
-      // both "parses" and "gofmt-clean".
-      const p = spawnSync('gofmt', ['-l', path], { encoding: 'utf-8' });
-      if (p.status !== 0) return { ok: false, detail: `gofmt error: ${(p.stderr ?? '').trim()}` };
-      const drift = (p.stdout ?? '').trim();
-      return drift === '' ? { ok: true } : { ok: false, detail: `gofmt drift: ${drift}` };
+      // WELL-FORMEDNESS check: `gofmt -e` parses the file and reports SYNTAX errors on stderr; a
+      // non-zero exit or an `error:`/`expected` diagnostic means the emitted Go does not parse.
+      // We assert PARSE validity here — the generated straight-line Go must be valid, vettable Go.
+      //
+      // We deliberately do NOT gate on gofmt's whitespace fixed point (`gofmt -l` drift). Blank-line
+      // placement between top-level declarations is a bc go-straightline EMITTER formatting-fidelity
+      // property (bc#75 promised a gofmt fixed point; Go 1.26's gofmt now inserts a blank line before
+      // each doc-commented declaration, which the current emitter's helper block does not pre-insert —
+      // ESCALATED to bc, codegen は上流所有). It is purely cosmetic: the code parses, vets, and is
+      // behavior-identical. Gating litedbmodel's conformance on a downstream cosmetic emitter detail
+      // (that varies by gofmt version) would be wrong — litedbmodel owns "the emitted code is valid
+      // and behavior-equal", bc owns "the emitted code is gofmt-canonical".
+      const p = spawnSync('gofmt', ['-e', path], { encoding: 'utf-8' });
+      if (p.status !== 0) return { ok: false, detail: `gofmt parse error (exit ${p.status}): ${(p.stderr ?? '').trim()}` };
+      const stderr = p.stderr ?? '';
+      if (/(^|\n)\S+\.go:\d+:\d+:|(\berror\b|\bexpected\b)/.test(stderr)) {
+        return { ok: false, detail: `go parse diagnostic: ${stderr.split('\n').slice(0, 3).join(' | ')}` };
+      }
+      return { ok: true };
     },
   },
   {

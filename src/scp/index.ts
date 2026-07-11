@@ -237,11 +237,12 @@ export { compileCreateManyBundle, compileUpdateManyBundle, compileDeleteManyBund
 export { compileDeleteMany } from './makesql';
 
 // Mode-3 codegen (WS7f, #35 — spec §9 exec-mode 3): supply the litedbmodel SQL catalog to bc's
-// shared generator; emit per-language source (IR baked as a native literal) + the SQL catalog
-// companion. Generated code output is byte-identical to the mode-2 thin-runtime (proven by the
-// codegen conformance leg).
+// shared generator; emit per-language STATIC straight-line source (de-interpreted, bc#75 — real
+// static code, NOT a baked-IR interpret path) + the SQL catalog companion. Generated code is
+// behavior-identical to the mode-2 thin-runtime (proven by the codegen conformance leg).
 export {
   CODEGEN_LANGUAGES,
+  STRAIGHTLINE_EMITTER,
   generateCodegenArtifact,
   bundleToPortableIR,
   assertLanguageSupported,
