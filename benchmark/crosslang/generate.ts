@@ -9,7 +9,7 @@
 // is the language-neutral §8 published artifact (pure JSON) that Python / Rust /
 // PHP / Go load and execute via their thin runtimes — exactly the ir path.
 
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as lm from '../../dist/scp/index.mjs';
@@ -108,15 +108,35 @@ function main(): void {
   }
 
   const artifact = {
-    generatedAt: new Date().toISOString(),
     corpusVersion: 2,
     schema: [...SCHEMA],
     seed: seedStatements(),
     cases,
   };
+  const body = JSON.stringify(artifact, null, 2);
+
+  // CI drift-check: `--check` regenerates in memory and compares to the committed artifact
+  // (ignoring the volatile generatedAt timestamp), failing loudly on drift — so a src/ change
+  // that alters the compiled bundles is caught in CI without re-running the whole bench.
+  if (process.argv.includes('--check')) {
+    if (!existsSync(OUT)) {
+      console.error(`DRIFT: ${OUT} is missing — run \`npx tsx benchmark/crosslang/generate.ts\` and commit it.`);
+      process.exit(1);
+    }
+    const committed = readFileSync(OUT, 'utf8').replace(/\n?$/, '');
+    const fresh = body.replace(/\n?$/, '');
+    if (committed !== fresh) {
+      console.error('DRIFT: generated makeSQL bundles differ from the committed generated/bundles.json.');
+      console.error('The compiled artifact changed (a src/ or authoring change). Re-run the generator and commit:');
+      console.error('  npx tsx benchmark/crosslang/generate.ts');
+      process.exit(1);
+    }
+    console.error(`OK: generated/bundles.json is up to date (${cases.length} case bundles, no drift).`);
+    return;
+  }
 
   mkdirSync(dirname(OUT), { recursive: true });
-  writeFileSync(OUT, JSON.stringify(artifact, null, 2));
+  writeFileSync(OUT, body);
   console.error(`Wrote ${OUT} (${cases.length} case bundles)`);
   for (const c of cases) console.error(`  ${c.case.padEnd(14)} kind=${c.kind} fp=${c.fingerprint.slice(0, 12)}… Q=${c.expectedQueries} R=${c.expectedRows}`);
 }

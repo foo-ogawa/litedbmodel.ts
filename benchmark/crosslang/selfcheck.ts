@@ -25,7 +25,8 @@ function instrument<T>(db: any, fn: () => T): { result: T; queries: number; rows
 const withQueryCount = instrument;
 const rowCount = (_: any) => 0; // rows now measured via the instrument
 
-console.log('=== fairness + correctness smoke ===');
+console.log('=== litedbmodel #44 cross-lang fairness self-check (queries/op + rows/op parity) ===');
+let failures = 0;
 for (const caseId of Object.keys(SQL_BASELINE)) {
   const base = SQL_BASELINE[caseId];
   // sql baseline: DML statements + DB rows read
@@ -59,7 +60,14 @@ for (const caseId of Object.keys(SQL_BASELINE)) {
   } catch (e) { err = (e as Error).message; }
   dbB.close();
 
-  const qOk = lmQ === sqlC.queries ? 'OK' : `DIVERGE`;
-  const rOk = lmRows === sqlC.rows ? 'OK' : `DIVERGE`;
-  console.log(`${caseId.padEnd(14)} Q sql=${sqlC.queries} lm=${lmQ} [${qOk}]  rows sql=${sqlC.rows} lm=${lmRows} [${rOk}] ${err ? 'ERR:' + err : ''}`);
+  const qOk = lmQ === sqlC.queries;
+  const rOk = lmRows === sqlC.rows;
+  if (!qOk || !rOk || err) failures++;
+  console.log(`${caseId.padEnd(14)} Q sql=${sqlC.queries} lm=${lmQ} [${qOk ? 'OK' : 'DIVERGE'}]  rows sql=${sqlC.rows} lm=${lmRows} [${rOk ? 'OK' : 'DIVERGE'}] ${err ? 'ERR:' + err : ''}`);
 }
+
+if (failures > 0) {
+  console.error(`\n❌ ${failures} fairness divergence(s) — the sql baseline and litedbmodel path do NOT do identical logical work.`);
+  process.exit(1);
+}
+console.log('\n✅ fairness self-check passed — queries/op + rows/op identical across sql baseline and litedbmodel path for all 8 cases.');
