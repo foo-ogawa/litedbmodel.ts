@@ -25,10 +25,19 @@
  *     final left-to-right one-pass AFTER the SQL text is fully assembled (spec §8 — the
  *     number-reassignment problem is designed out because the pass runs once over the final
  *     flat text). SQLite/MySQL keep `?`.
+ *   - **Per-column value cast (PG)**: a written column with a declared `sqlCast` type emits
+ *     `?::<sqlCast>` on Postgres — in an INSERT `VALUES (…)` tuple (`PostgresSqlBuilder`:289-296)
+ *     AND an UPDATE `SET c = ?::<sqlCast>` (`DBModel._update`:1058-1063) — via the dialect cast
+ *     formatter (`formatterFor`), skipping `timestamp`/`date`. MySQL/SQLite emit a bare `?` (the
+ *     cast formatter is identity there). This is resolved at compile (the write path targets a
+ *     single dialect), applied in `compile-crud.compileUpdateSingle` and `tx.compileWriteNode`.
  *
- * Everything else (SELECT/UPDATE/DELETE skeletons, `col = ?`, `col IN (?, …)` expansion, the
- * fragment tree, RETURNING for SQLite/Postgres) is identical text across dialects, so it is
- * NOT part of the strategy — only the genuine divergences live here.
+ * Everything else (SELECT/UPDATE/DELETE skeletons, a NON-cast `col = ?`, `col IN (?, …)` expansion,
+ * the fragment tree, RETURNING for SQLite/Postgres) is identical text across dialects, so it is
+ * NOT part of the strategy — only the genuine divergences (including the PG per-column cast above)
+ * live here. NB: `col = ?` / `VALUES (?)` is identical across dialects ONLY for a column with no
+ * `sqlCast`; a PG cast column is the `?::<sqlCast>` divergence just described (this was previously
+ * mis-documented as unconditionally identical).
  *
  * ## DB behavior differences beyond SQL text (spec §13) — closeable-by-convention line
  *

@@ -35,6 +35,7 @@
 import { evaluateExpression, type Scope, type Value } from 'behavior-contracts';
 import { assembleMakeSQL, type MakeSQL } from './makesql';
 import { renderPlaceholders, type Dialect as MakeSQLDialect } from './handler';
+import { formatterFor } from './compile';
 import { mapSqliteError } from '../errors';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import {
@@ -302,6 +303,40 @@ function collectFamily(ports: Record<string, unknown>, prefix: string): Record<s
   return out;
 }
 
+/**
+ * Collect the `sqlCast.<field>` port family → `Map<column, sqlCastType>` (the PG per-column cast
+ * types, e.g. `jsonb`/`uuid`/`int[]`). This mirrors the `sqlCastMap` v1 `DBModel._insert`/`_update`
+ * read from the column metadata (`getSqlCastMap`) to emit `?::<sqlCast>` on Postgres. A write node
+ * that declares no cast ports yields an empty map (no cast columns — the common case).
+ */
+function collectSqlCast(ports: Record<string, unknown>): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const k of Object.keys(ports)) {
+    if (!k.startsWith('sqlCast.')) continue;
+    const v = ports[k];
+    if (typeof v !== 'string') {
+      throw new Error(`compileWriteNode: port '${k}' (a sqlCast type) must be a literal string in the IR (got ${JSON.stringify(v)})`);
+    }
+    map.set(k.slice('sqlCast.'.length), v);
+  }
+  return map;
+}
+
+/**
+ * The placeholder text for one written column's value, applying the v1 PER-COLUMN cast on Postgres.
+ * Byte-identical to v1 `DBModel._insert` (`src/drivers/PostgresSqlBuilder.ts:289-296`) and `_update`
+ * (`src/DBModel.ts:1058-1063`): a PG cast column emits `?::<sqlCast>` via the SAME dialect cast
+ * formatter (`formatterFor('postgres')`), SKIPPING `timestamp`/`date` (the pg driver serializes Date
+ * objects itself — an explicit cast interferes). MySQL/SQLite emit a bare `?` (v1's dialect-aware
+ * `SqlCastFormatter` is identity there — the .rs `::type` leak is NOT reproduced). The tx-write path
+ * targets a single dialect at compile, so the cast is resolved here, not deferred.
+ */
+function castPlaceholder(dialect: MakeSQLDialect, sqlCastMap: Map<string, string>, column: string): string {
+  const sqlCast = sqlCastMap.get(column);
+  if (dialect !== 'postgres' || sqlCast === undefined || sqlCast === 'timestamp' || sqlCast === 'date') return '?';
+  return formatterFor('postgres')('?', sqlCast);
+}
+
 function opKey(node: unknown): string | undefined {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
   const keys = Object.keys(node as object);
@@ -444,10 +479,12 @@ export function stripMysqlPkHint(sql: string): string {
  * the reduced bridge's `compileNode` for the write path (the tx-DAG base writes). INSERT columns
  * are CANONICAL (alphabetical) sorted — the v2 write-path SSoT (matches `DBModel._insert`).
  */
-export function compileWriteNode(node: WriteNodeLike): TxOp {
+export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 'sqlite'): TxOp {
   const { component, ports } = node;
   const table = stringPort(ports, 'table');
   if (table === undefined) throw new Error(`compileWriteNode: ${component} node requires a literal 'table' port`);
+  // Per-column PG cast types (`sqlCast.<field>` ports) — drive the v1 `?::<sqlCast>` on Postgres.
+  const sqlCastMap = collectSqlCast(ports);
 
   switch (component) {
     case 'Insert': {
@@ -455,7 +492,9 @@ export function compileWriteNode(node: WriteNodeLike): TxOp {
       const cols = Object.keys(values);
       if (cols.length === 0) throw new Error(`compileWriteNode: Insert requires at least one 'values.<field>' port`);
       const sorted = [...cols].sort();
-      const placeholders = sorted.map(() => '?').join(', ');
+      // v1 `DBModel._insert` emits `?::<sqlCast>` PER COLUMN on Postgres (skipping timestamp/date);
+      // the placeholder list is thus per-column, NOT a uniform `?` join (the latent H1 divergence).
+      const placeholders = sorted.map((c) => castPlaceholder(dialect, sqlCastMap, c)).join(', ');
       const sql = `INSERT INTO ${table} (${sorted.join(', ')}) VALUES (${placeholders})${returningTail(ports)}`;
       const pk = pkPort(ports);
       return { sql, params: sorted.map((c) => values[c]), ...(pk !== undefined ? { pk } : {}) };
@@ -466,7 +505,8 @@ export function compileWriteNode(node: WriteNodeLike): TxOp {
       if (setCols.length === 0) throw new Error(`compileWriteNode: Update requires at least one 'set.<field>' port`);
       const where = lowerWherePort(ports, 'Update');
       if (where.sql === '') throw new Error(`compileWriteNode: Update requires a 'where' port`);
-      const setClauses = setCols.map((c) => `${c} = ?`).join(', ');
+      // v1 `DBModel._update` emits `<c> = ?::<sqlCast>` PER COLUMN on Postgres (skipping timestamp/date).
+      const setClauses = setCols.map((c) => `${c} = ${castPlaceholder(dialect, sqlCastMap, c)}`).join(', ');
       const sql = `UPDATE ${table} SET ${setClauses} WHERE ${where.sql}${returningTail(ports)}`;
       return { sql, params: [...setCols.map((c) => set[c]), ...where.params] };
     }
@@ -839,6 +879,11 @@ function gateShortCircuit(gate: GateRule, result: { rows: Record<string, unknown
       return result.changes === 0 ? 'unique_collision' : null;
     case 'insertedElseNoop':
       return result.changes === 0 ? 'idempotent_duplicate' : null;
+    default:
+      // Fail-CLOSED on an unknown / forward-incompatible gate rule (aligned with Python + Rust): a
+      // corrupt or unrecognized gate MUST NOT silently continue (fail-open would let a malformed gate
+      // be skipped and the write COMMIT). Throwing here aborts the tx (the caller's catch ROLLBACKs).
+      throw new Error(`scp write: unknown gate rule '${String(gate)}'`);
   }
 }
 

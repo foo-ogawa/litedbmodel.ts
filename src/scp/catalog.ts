@@ -187,11 +187,15 @@ const WRITE_SET: ReadonlySet<string> = new Set(WRITE_CATALOG_NAMES);
 /**
  * The dynamic per-field write-port families (`<group>.<field>` — the flattened record
  * convention; longest-prefix wins). A `values.<field>` (Insert) or `set.<field>`
- * (Update) port carries the field's Expression IR value.
+ * (Update) port carries the field's Expression IR value; a `sqlCast.<field>` port carries
+ * the field's PostgreSQL cast type (a literal string, e.g. `jsonb`/`uuid`/`int[]`) that drives
+ * the v1 per-column `?::<sqlCast>` on Postgres (`DBModel._insert`/`_update`). `sqlCast.` ports are
+ * INERT on MySQL/SQLite (v1's dialect-aware cast formatter is identity there).
  */
 export const WRITE_PORT_FAMILIES: readonly string[] = [
   'values.',
   'set.',
+  'sqlCast.',
 ];
 
 /**

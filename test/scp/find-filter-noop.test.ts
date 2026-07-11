@@ -23,6 +23,7 @@ import { DBModel } from '../../src/DBModel';
 import { DBConditions } from '../../src/DBConditions';
 import { compileWhere, renderPlaceholders, assembleMakeSQL, type Dialect } from '../../src/scp/makesql';
 import { assertFindFilterFolded, findFilterKeys, FindFilterLeakError } from '../../src/scp/index';
+import { SemanticBehavior, components, publishBehaviors, eq, compileBundle, type In } from '../../src/scp';
 
 const dialects: Dialect[] = ['postgres', 'mysql', 'sqlite'];
 
@@ -139,5 +140,65 @@ describe('R8 FIND_FILTER — fail-closed guard (a FIND_FILTER model cannot silen
   it('is a NO-OP for a model with no FIND_FILTER (nothing to fold)', () => {
     expect(() => assertFindFilterFolded(Unfiltered as any, [])).not.toThrow();
     expect(() => assertFindFilterFolded(Unfiltered as any, ['anything'])).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M2 (re-audit) — the FIND_FILTER guard is now WIRED INTO the compile path (not just
+// exported + unit-tested in isolation). A FIND_FILTER model routed through the SCP READ
+// compile (`compileBundle` → `compileReadGraph`) without its scope keys folded FAILS-CLOSED
+// with `FindFilterLeakError` — it can no longer silently drop the scope (cross-tenant /
+// soft-deleted leak). This proves the guard fires on the ACTUAL compile path.
+// ---------------------------------------------------------------------------
+const Lg = components();
+
+// A read behavior whose Select is SCOPED (folds the soft-delete + tenant keys into the WHERE).
+class ScopedRead extends SemanticBehavior {
+  Docs($: In<{ tenant_id: number; deleted_at: null; status: string }>) {
+    return Lg.Select({
+      table: 'docs',
+      select: ['id', 'title'],
+      where: [eq($.status, $.status), eq($.tenant_id, $.tenant_id), eq($.deleted_at, $.deleted_at)],
+    });
+  }
+}
+
+// A read behavior whose Select DROPS the model scope (only the author's own predicate) — a leak.
+class UnscopedRead extends SemanticBehavior {
+  Docs($: In<{ status: string }>) {
+    return Lg.Select({ table: 'docs', select: ['id', 'title'], where: [eq($.status, $.status)] });
+  }
+}
+
+describe('M2 FIND_FILTER guard — WIRED into compileReadGraph/compileBundle (fail-closed on the compile path)', () => {
+  // The FIND_FILTER model source (only `FIND_FILTER` + `name` are read by the guard).
+  const softDeleteModel = {
+    name: 'Doc',
+    FIND_FILTER: [['deleted_at', null], ['tenant_id', 5]] as unknown as any,
+  };
+
+  it('THROWS FindFilterLeakError when a FIND_FILTER model compiles a read WITHOUT the scope keys', () => {
+    const contract = publishBehaviors(UnscopedRead);
+    expect(() => compileBundle(contract, 'Docs', [], 'postgres', softDeleteModel)).toThrow(FindFilterLeakError);
+    try {
+      compileBundle(contract, 'Docs', [], 'postgres', softDeleteModel);
+    } catch (e) {
+      expect((e as FindFilterLeakError).missingKeys.sort()).toEqual(['deleted_at', 'tenant_id']);
+    }
+  });
+
+  it('does NOT throw when the read folds every FIND_FILTER scope key into the authored WHERE', () => {
+    const contract = publishBehaviors(ScopedRead);
+    expect(() => compileBundle(contract, 'Docs', [], 'postgres', softDeleteModel)).not.toThrow();
+  });
+
+  it('is a NO-OP when NO model is supplied (back-compat — the guard only enforces with a model)', () => {
+    const contract = publishBehaviors(UnscopedRead);
+    expect(() => compileBundle(contract, 'Docs', [], 'postgres')).not.toThrow();
+  });
+
+  it('is a NO-OP for a model with no FIND_FILTER even when supplied', () => {
+    const contract = publishBehaviors(UnscopedRead);
+    expect(() => compileBundle(contract, 'Docs', [], 'postgres', { name: 'Unfiltered' })).not.toThrow();
   });
 });

@@ -39,6 +39,8 @@ import {
   compileCompositeKeyStaticLimited,
   compileSelectNode,
   resolvePgArrayCast,
+  compileWriteNode,
+  renderTxStatement,
   type Dialect,
   type MakeSQL,
 } from '../../src/scp/makesql';
@@ -1394,5 +1396,130 @@ describe('D. authoring→bundle path renders V1-SOURCED SQL (V0 R2–R6, all dia
     expect(withFu).not.toBe(withoutFu);
     expect(withFu.endsWith(' FOR UPDATE')).toBe(true);
     expect(authored('Fu', { id: 5 }, 'postgres').sql).toBe(withFu);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H1 (re-audit) — the SINGLE-ROW tx-write path must emit the PG per-column
+// `?::<sqlCast>` cast, byte-identical to v1 `PostgresSqlBuilder.buildInsert`
+// (INSERT) and `DBModel._update` (UPDATE). The tx-write compile (`compileWriteNode`)
+// previously took NO dialect and emitted a bare `?`, silently dropping the cast — a
+// real v1 divergence for jsonb/uuid/int[] columns. These goldens DRIVE the ORIGINAL
+// v1 builder / formatter so a v1 regression MOVES the golden (golden-from-originals),
+// pinning the fix so the latent bug cannot recur.
+// ---------------------------------------------------------------------------
+describe('H1. single-row tx-write per-column PG cast — byte-matches v1 (all 3 dialects)', () => {
+  // A representative cast column set: jsonb (object payload), uuid (string key), int[] (array).
+  // `timestamp`/`date` are DELIBERATELY excluded from the cast (v1 skips them — pg serializes Date).
+  const castMap = new Map<string, string>([
+    ['payload', 'jsonb'],
+    ['ext_id', 'uuid'],
+    ['tags', 'int[]'],
+    ['created_at', 'timestamp'], // present but MUST be skipped (bare ?), matching v1
+  ]);
+  // Insert columns are CANONICAL (alphabetical) sorted by the tx-write compile (matches _insert).
+  const insertCols = ['created_at', 'ext_id', 'name', 'payload', 'tags'].sort();
+  const insertRow: Record<string, unknown> = {
+    created_at: '2020-01-01T00:00:00Z',
+    ext_id: 'a1b2',
+    name: 'doc',
+    payload: { k: 1 },
+    tags: [7, 8],
+  };
+
+  // The authored write node carrying `sqlCast.<field>` ports (the additive bundle-shape extension).
+  const insertPorts: Record<string, unknown> = { table: 'docs', returning: 'id' };
+  for (const c of insertCols) insertPorts[`values.${c}`] = { ref: [c] };
+  for (const [c, t] of castMap) if (insertCols.includes(c)) insertPorts[`sqlCast.${c}`] = t;
+
+  for (const dialect of dialects) {
+    it(`[${dialect}] tx-write single INSERT emits v1 buildInsert cast text (byte-match)`, () => {
+      // GOLDEN = the REAL v1 `PostgresSqlBuilder.buildInsert` (single-record VALUES path) — the exact
+      // per-column `?::<sqlCast>` v1 sends. Driving the ORIGINAL builder makes this golden-from-originals.
+      const golden = render(
+        builderOf[dialect].buildInsert({
+          tableName: 'docs',
+          columns: insertCols,
+          records: [insertRow],
+          rawRecords: [insertRow],
+          sqlCastMap: castMap,
+          returning: 'id',
+        }),
+        dialect
+      );
+      const op = compileWriteNode({ id: 'ins', component: 'Insert', ports: insertPorts } as never, dialect);
+      const got = renderTxStatement(op, insertRow, dialect);
+      // The tx-write compile serializes the payload object to JSON at the driver boundary; compare the
+      // SQL TEXT byte-for-byte (the cast placeholders) — the SQL is where H1 diverged.
+      expect(got.sql).toBe(golden.sql);
+      if (dialect === 'postgres') {
+        // PG: jsonb/uuid/int[] carry the cast; timestamp is SKIPPED (bare $N); name (no cast) bare $N.
+        expect(got.sql).toContain('::jsonb');
+        expect(got.sql).toContain('::uuid');
+        expect(got.sql).toContain('::int[]');
+        expect(got.sql).not.toContain('created_at::'); // timestamp cast skipped (v1)
+      } else {
+        // MySQL/SQLite: NO cast leaks — every value is a bare `?` (v1's cast formatter is identity).
+        expect(got.sql).not.toContain('::');
+      }
+    });
+
+    it(`[${dialect}] tx-write single UPDATE emits v1 _update SET cast text (byte-match)`, () => {
+      // GOLDEN = the v1 `DBModel._update` SET-clause built with the SAME dialect cast formatter v1 uses
+      // (src/DBModel.ts:1058-1063: `formatter('?', sqlCast)`, skip timestamp/date) + `DBConditions` WHERE.
+      const setVals: Record<string, unknown> = { name: 'doc', payload: { k: 1 }, ext_id: 'a1b2', created_at: '2020' };
+      const formatter = dialect === 'postgres' ? pgFmt : undefined;
+      const params: unknown[] = [];
+      const setClauses: string[] = [];
+      for (const [col, val] of Object.entries(setVals)) {
+        params.push(val);
+        const sqlCast = castMap.get(col);
+        if (sqlCast && formatter && sqlCast !== 'timestamp' && sqlCast !== 'date') setClauses.push(`${col} = ${formatter('?', sqlCast)}`);
+        else setClauses.push(`${col} = ?`);
+      }
+      const where = new DBConditions({ id: 5 }).compile(params, formatter);
+      const goldenSql = renderPlaceholders(`UPDATE docs SET ${setClauses.join(', ')} WHERE ${where} RETURNING id`, dialect);
+
+      const updPorts: Record<string, unknown> = {
+        table: 'docs',
+        where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['id_val'] }] }] },
+        returning: 'id',
+      };
+      for (const c of Object.keys(setVals)) updPorts[`set.${c}`] = { ref: [c] };
+      for (const [c, t] of castMap) if (c in setVals) updPorts[`sqlCast.${c}`] = t;
+      const op = compileWriteNode({ id: 'upd', component: 'Update', ports: updPorts } as never, dialect);
+      const got = renderTxStatement(op, { ...setVals, id_val: 5 }, dialect);
+      expect(got.sql).toBe(goldenSql);
+      if (dialect === 'postgres') {
+        expect(got.sql).toContain('payload = $2::jsonb');
+        expect(got.sql).toContain('ext_id = $3::uuid');
+        expect(got.sql).toContain('created_at = $4 WHERE'); // timestamp SKIPPED → bare $4
+      } else {
+        expect(got.sql).not.toContain('::');
+      }
+    });
+  }
+
+  // NEGATIVE (golden-from-originals): perturb the v1 builder's cast type and the golden MOVES — proving
+  // the tx-write assertion is pinned to the ORIGINAL v1 cast text, not a self-fulfilling v2 constant.
+  it('negative: perturbing the v1 buildInsert sqlCast type moves the golden (not v2-v2)', () => {
+    const asJsonb = render(builderOf.postgres.buildInsert({ tableName: 'docs', columns: ['payload'], records: [{ payload: { k: 1 } }], rawRecords: [{ payload: { k: 1 } }], sqlCastMap: new Map([['payload', 'jsonb']]) }), 'postgres').sql;
+    const asText = render(builderOf.postgres.buildInsert({ tableName: 'docs', columns: ['payload'], records: [{ payload: { k: 1 } }], rawRecords: [{ payload: { k: 1 } }], sqlCastMap: new Map([['payload', 'text']]) }), 'postgres').sql;
+    expect(asJsonb).not.toBe(asText); // the v1 builder's cast type genuinely drives the golden
+    const op = compileWriteNode({ id: 'n', component: 'Insert', ports: { table: 'docs', 'values.payload': { ref: ['payload'] }, 'sqlCast.payload': 'jsonb' } } as never, 'postgres');
+    expect(renderTxStatement(op, { payload: { k: 1 } }, 'postgres').sql).toBe(asJsonb);
+    expect(renderTxStatement(op, { payload: { k: 1 } }, 'postgres').sql).not.toBe(asText);
+  });
+
+  // The OLD bug (bare `?`, no cast) must NOT reappear: on PG a cast column WITHOUT the fix would render
+  // `?` instead of `?::jsonb`. Assert the fixed compile diverges from a hypothetical no-cast render.
+  it('regression: the sqlCast port changes the PG placeholder (a bare-? render would be wrong)', () => {
+    const withCast = compileWriteNode({ id: 'w', component: 'Insert', ports: { table: 'docs', 'values.payload': { ref: ['payload'] }, 'sqlCast.payload': 'jsonb' } } as never, 'postgres');
+    const noCast = compileWriteNode({ id: 'w', component: 'Insert', ports: { table: 'docs', 'values.payload': { ref: ['payload'] } } } as never, 'postgres');
+    const a = renderTxStatement(withCast, { payload: { k: 1 } }, 'postgres').sql;
+    const b = renderTxStatement(noCast, { payload: { k: 1 } }, 'postgres').sql;
+    expect(a).toContain('::jsonb');
+    expect(b).not.toContain('::');
+    expect(a).not.toBe(b);
   });
 });
