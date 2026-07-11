@@ -169,6 +169,7 @@ async function tsExecOk(v: Json, outDir: string, idx: number): Promise<{ ok: boo
       optionalHeads: [...art.companion.optionalHeads],
       relations: art.companion.relations,
       ...(art.companion.transaction !== undefined ? { transaction: art.companion.transaction } : {}),
+      ...(art.companion.outputType !== undefined ? { outputType: art.companion.outputType } : {}),
     };
     if (canon(reassembled) !== canon(v.bundle)) return { ok: false, detail: 'reassembled bundle != source' };
     const db = seedDb(v.schema);
@@ -334,15 +335,19 @@ async function main(): Promise<void> {
   const tallies: Record<string, Tally> = {};
   try {
     for (const suite of suites) {
-      // The DE-BOX codegen leg is the READ (exec) surface: a read bundle's IR carries the typed
-      // outType/outputType annotations that bc's typed(-raw) emitters de-box into concrete row
-      // structs. A `tx` (write) bundle's `makeSqlComponentIR` is opaque/untyped — its output is a
-      // heterogeneous summary / dialect-emulated RETURNING that is NOT de-boxable, so it is NOT part
-      // of the codegen-module surface (writes execute through each language's NATIVE transaction
-      // runtime, proven in the mode-2 thin-runtime conformance leg). Skipping tx here is a SCOPING
-      // decision (writes aren't codegen-module cases), NOT a fallback — we never substitute a boxed
-      // literal/interpreter emitter for a read that fails to type.
-      const bundleVectors = suite.vectors.filter((v: Json) => v.kind === 'exec');
+      // The DE-BOX codegen leg covers BOTH read AND write. A read (exec) bundle's IR carries the
+      // typed outType/outputType annotations bc's typed(-raw) emitters de-box into concrete row
+      // structs; a WRITE (tx) bundle carries the TransactionResult `outputType` (entity/returnedRows
+      // rows typed via the schema SoT — `annotateWriteBundleOutType`), so the SAME emitters de-box the
+      // write RESULT into a concrete struct. There is NO literal/boxed fallback: an un-de-boxable
+      // write THROWS at generation. A tx vector WITHOUT an `outputType` on its bundle is a write shape
+      // outside the single-row-struct de-box capability (e.g. a heterogeneous multi-table COMPOSITE
+      // write, which targets two tables and cannot materialize one row struct) — it is genuinely not a
+      // codegen-module case (a capability boundary, not a fallback) and stays covered by the mode-2
+      // thin-runtime tx leg. We include exec + de-boxable tx vectors here.
+      const bundleVectors = suite.vectors.filter(
+        (v: Json) => v.kind === 'exec' || (v.kind === 'tx' && v.bundle?.outputType !== undefined),
+      );
       if (bundleVectors.length === 0) continue;
       tallies[suite.suite] = await runExecVectors(bundleVectors, suite.suite, outDir);
     }

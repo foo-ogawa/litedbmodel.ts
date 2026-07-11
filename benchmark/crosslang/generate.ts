@@ -153,15 +153,19 @@ function buildBundle(
 ): { bundle: any; kind: CaseArtifact['kind']; entry?: string; withRelation?: string; relation?: unknown } {
   if (caseId === 'batchInsert') {
     const cols = ['author_id', 'title', 'status', 'views', 'created_at'];
+    // The schema/DDL (SCHEMA) is the column-type SoT (spec §4.1): it types the write's
+    // TransactionResult output (entity/returnedRows rows) so bc's typed-raw de-box engages for the
+    // WRITE codegen module too (concrete result struct, no dynamic Value boxing). Unknown → THROW.
     const bundle = lm.compileCreateManyBundle(
       'BatchInsert',
       { tableName: 'posts', columns: cols, records: INPUTS.batchInsert.rows as any },
       dialect,
+      COLUMN_TYPES,
     );
     return { bundle, kind: 'batch' };
   }
   if (caseId === 'writeTxGate') {
-    const bundle = lm.compileWriteBundle(writesContract, 'Create', writeGateContract, 'create', dialect);
+    const bundle = lm.compileWriteBundle(writesContract, 'Create', writeGateContract, 'create', dialect, COLUMN_TYPES);
     return { bundle, kind: 'tx' };
   }
   const rel = READ_RELATION[caseId];
@@ -278,15 +282,13 @@ function generateCodegen(
   const sourceByCase: Record<string, string> = {};
   let delegates = false;
   for (const c of cases) {
-    // De-boxed typed codegen (spec §9 / §4.1) is the READ surface: a read node's SELECT projection
-    // is typed (outType/outputType from the schema SoT) so bc's typed-raw emitter materializes
-    // concrete row structs. A WRITE case (batch INSERT / gate-first tx) has a heterogeneous,
-    // NON-de-boxable output (a `{changes,lastInsertRowid}` summary or a dialect-emulated RETURNING),
-    // so it is NOT part of the typed-codegen surface — it executes through each language's NATIVE
-    // transaction runtime (`executeTransactionBundle`), which is the de-interpreted write path, not
-    // the interpreter-boxed one. Skipping it here is a SCOPING decision (writes aren't codegen-module
-    // cases), NOT a fallback: we never substitute a boxed/literal emitter for a read that fails to type.
-    if (c.kind !== 'read' && c.kind !== 'relation') continue;
+    // De-boxed typed codegen (spec §9 / §4.1) covers BOTH read AND write. A read node's SELECT
+    // projection is typed (outType/outputType from the schema SoT) so bc's typed-raw emitter
+    // materializes concrete row structs; a WRITE case (batch INSERT / gate-first tx) carries the
+    // TransactionResult typed shape (`annotateWriteBundleOutType` — entity/returnedRows rows typed via
+    // the SAME schema SoT), so the SAME typed-raw emitter materializes a concrete result struct (no
+    // dynamic Value boxing on the entity/returnedRows data plane). There is NO literal/boxed fallback:
+    // an un-de-boxable write shape THROWS at generation. All 8 cases are codegen-module cases.
     // The generator wants the SqlBundle; it derives the portable IR itself. For the TS
     // cell to import the generated module by relative path we pin the runtime import to
     // the installed `behavior-contracts` package (the default emitter import).

@@ -149,6 +149,31 @@
             }
           ],
           "onIdempotentHit": "rollback"
+        },
+        "outputType": {
+          "obj": {
+            "committed": "bool",
+            "executed": {
+              "arr": "string"
+            },
+            "shortCircuit": {
+              "opt": {
+                "obj": {
+                  "statementId": "string",
+                  "reason": "string"
+                }
+              }
+            },
+            "entity": {
+              "opt": {
+                "obj": {
+                  "id": "int",
+                  "author_id": "int",
+                  "title": "string"
+                }
+              }
+            }
+          }
         }
       },
       "input": {
@@ -362,6 +387,31 @@
             }
           ],
           "onIdempotentHit": "rollback"
+        },
+        "outputType": {
+          "obj": {
+            "committed": "bool",
+            "executed": {
+              "arr": "string"
+            },
+            "shortCircuit": {
+              "opt": {
+                "obj": {
+                  "statementId": "string",
+                  "reason": "string"
+                }
+              }
+            },
+            "entity": {
+              "opt": {
+                "obj": {
+                  "id": "int",
+                  "author_id": "int",
+                  "title": "string"
+                }
+              }
+            }
+          }
         }
       },
       "input": {

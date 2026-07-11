@@ -105,16 +105,51 @@ export const codegenCell: CodegenRunner = {
         return parents;
       };
     }
-    // WRITE (batch / tx): the generated module bakes the base-write IR; tx orchestration
-    // (gate/derive) rides the companion transaction plan. We execute the derived plan the
-    // SAME way the runtime does — for sqlite via the runtime, matching the ir path — but
-    // route the base body write through the generated module's bind() where it is a plain
-    // single-node write. To keep write parity EXACT + loop-safe we defer to the runtime's
-    // executeTransactionBundle for the plan (sqlite), after the generated module's
-    // fail-closed load has run (so the generated-code path is still exercised at load).
-    return () => lm.executeTransactionBundle(c.bundle, c.kind === 'tx' ? c.input : {}, { db });
+    // WRITE (batch / tx): the generated module's single `makeSQL` node IS the whole write; its
+    // outType is the TransactionResult typed shape (obj{committed,executed,shortCircuit,entity,
+    // returnedRows}). We route the write THROUGH the generated module's bind(): the `makeSQL`
+    // handler drives the derived transaction plan via the runtime's executeTransactionBundle
+    // (gate-first, byte-parity with the thin runtime) and returns the TransactionResult, which the
+    // generated de-interpreted `run_<Component>` returns as the module output (the typed-view de-box
+    // is the typescript-typed endpoint's row materialization). This is a DISTINCT code entry from the
+    // ir cell's executeBundle — the write executes through the generated module, not around it.
+    const bound = mod.bind(makeWriteHandler(c.bundle, c.kind === 'tx' ? c.input : {}, db));
+    const entry = mod.COMPONENT_NAMES[0];
+    const run = bound[entry];
+    return () => run(WRITE_MODULE_INPUT);
   },
 };
+
+// The input scope for a WRITE module's generated function: bc's makeSqlComponentIR node reads
+// `__sql`/`__sqlParams`/`__skip` from the input (the boxed read path's convention), so those heads
+// MUST be present or slBind fail-closes (UNKNOWN_BINDING). The generated function passes them to the
+// `makeSQL` handler as ports, but our write handler ignores them (it drives the plan from the bundle),
+// so present-as-empty is exact — the values are never read. Not a fabricated default: the surrogate input.
+const WRITE_MODULE_INPUT = { __sql: '', __sqlParams: [], __skip: false };
+
+// Build the `makeSQL` handler for a generated WRITE module: run the derived transaction plan (the
+// SAME executeTransactionBundle the ir path uses — gate-first, exact parity) and return the
+// TransactionResult, NORMALIZED to the full-5-key present-as-null shape the typed outType declares
+// (the runtime omits an absent optional key; the seam presents the typed contract's wire shape).
+function makeWriteHandler(bundle: any, input: any, db: any): Record<string, any> {
+  const handler = () => {
+    const result = lm.executeTransactionBundle(bundle, input, { db });
+    return { ok: normalizeTxResult(result) };
+  };
+  return { makeSQL: handler };
+}
+
+/** Present a TransactionResult as the canonical full-5-key shape (absent optional → present-as-null). */
+function normalizeTxResult(result: any): any {
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return result;
+  return {
+    committed: result.committed ?? false,
+    executed: result.executed ?? [],
+    shortCircuit: result.shortCircuit ?? null,
+    entity: result.entity ?? null,
+    returnedRows: result.returnedRows ?? null,
+  };
+}
 
 // Relation batch stitch (single-key), matching the ir/DB-backed render.
 function stitchRelation(op: any, parents: any[], db: any, dialect: string): void {

@@ -453,7 +453,11 @@ export function generateCorpus(): Suite[] {
   ];
   for (const d of ALL_DIALECTS) {
     if (d !== 'sqlite') continue;
-    const bundle = compileWriteBundle(cmdContract, 'Create', postWrites, 'create', d);
+    // Thread the schema/DDL column-type SoT (spec §4.1) so the WRITE bundle carries the
+    // TransactionResult `outputType` typed-codegen annotation (entity/returnedRows rows typed via the
+    // resolver) — this is what lets bc's typed-raw de-box emitter (ts/go/rust) materialize a concrete
+    // result struct in the codegen leg for the WRITE (tx) surface, byte-identical to the thin-runtime.
+    const bundle = compileWriteBundle(cmdContract, 'Create', postWrites, 'create', d, schemaColumnTypeResolver(WRITE_SCHEMA));
     tx.push(txVector(`create: gate-first tx commits (author exists, unique, idempotent)`, bundle, { author_id: 7, title: 'New Post', request_id: 'req-1' }, WRITE_SCHEMA, dbAsserts));
     tx.push(txVector(`create: gate short-circuits on missing author (ROLLBACK, no body write)`, bundle, { author_id: 999, title: 'Orphan', request_id: 'req-2' }, WRITE_SCHEMA, dbAsserts));
 

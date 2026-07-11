@@ -41,7 +41,7 @@
  * rejects a shape it must be ESCALATED to bc (bc#13/#75 capability), never worked around locally.
  */
 
-import { generateModule, type ComponentGraphIR, type GeneratedModule, type Scope, type Value } from 'behavior-contracts';
+import { generateModule, type Component, type ComponentGraphIR, type GeneratedModule, type Scope, type Value } from 'behavior-contracts';
 import type { SqlBundle, SqliteDb } from './runtime';
 import { executeBundle } from './runtime';
 import { makeSqlComponentIR } from './makesql/ir';
@@ -115,6 +115,12 @@ export interface SqlCatalogCompanion {
   readonly relations: Record<string, RelationOp>;
   /** Derived gate-first write-time-relations transaction plan (spec §6/§8), for a Command bundle. */
   readonly transaction?: TransactionPlan;
+  /**
+   * WRITE bundles: the codegen typed-de-box `outputType` (the TransactionResult typed shape). Rides
+   * the companion so a codegen consumer that reassembles the bundle from the artifact round-trips it
+   * losslessly (the read de-box carries its outType/outputType inside `readGraph.ir` instead).
+   */
+  readonly outputType?: unknown;
 }
 
 /** The full codegen artifact for one bundle × one language. */
@@ -138,7 +144,17 @@ export interface CodegenArtifact {
  */
 export function bundleToPortableIR(bundle: SqlBundle): ComponentGraphIR {
   if (bundle.readGraph !== undefined) return bundle.readGraph.ir;
-  return makeSqlComponentIR(bundle.name);
+  const ir = makeSqlComponentIR(bundle.name);
+  // A WRITE bundle's typed de-box (spec §4.1/§9): attach the derived `outputType` (the
+  // TransactionResult typed shape) to the single `makeSQL` node's `outType` + the component's
+  // `outputType` — exactly how the read graph annotates its surrogate IR. Without it, bc's typed
+  // emitters would hard-fail ("nothing to de-box"), which is the correct fail-closed signal; a
+  // resolver-less write bundle (no `outputType`) stays un-annotated (interpret/boxed only, as before).
+  if (bundle.outputType === undefined) return ir;
+  const c = ir.components[0];
+  const body = c.body.map((n, i) => (i === 0 ? { ...n, outType: bundle.outputType } : n));
+  const component = { ...c, body, outputType: bundle.outputType } as unknown as Component;
+  return { ...ir, components: [component] };
 }
 
 /** The STATIC makeSQL execution catalog carried alongside the straight-line module. */
@@ -149,6 +165,7 @@ function companionOf(bundle: SqlBundle): SqlCatalogCompanion {
     relations: bundle.relations,
     ...(bundle.readGraph !== undefined ? { readGraph: bundle.readGraph } : {}),
     ...(bundle.statement !== undefined ? { statement: bundle.statement } : {}),
+    ...(bundle.outputType !== undefined ? { outputType: bundle.outputType } : {}),
   };
   return bundle.transaction === undefined ? base : { ...base, transaction: bundle.transaction };
 }

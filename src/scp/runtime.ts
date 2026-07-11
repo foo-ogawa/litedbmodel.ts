@@ -63,6 +63,7 @@ import {
   type InsertManyBuildOptions,
 } from './makesql/compile-crud';
 import { assembleMakeSQL, type MakeSQL } from './makesql/makesql';
+import { annotateWriteBundleOutType } from './makesql/writeouttype';
 import type { UpdateManyBuildOptions } from '../drivers/types';
 import {
   lifecycleFor,
@@ -118,6 +119,15 @@ export interface SqlBundle {
   readonly relations: Record<string, RelationOp>;
   /** The derived write-time-relations transaction plan (present ONLY for a write Command bundle). */
   readonly transaction?: TransactionPlan;
+  /**
+   * Codegen typed-de-box `outputType` for a WRITE bundle (spec §4.1 / §9): the bc portable type of
+   * the write's {@link TransactionResult} (entity / returnedRows rows typed via the schema SoT). A
+   * READ bundle carries its outType/outputType inside `readGraph.ir` instead; a write bundle has no
+   * such surrogate, so its output type rides HERE and is attached to the write's `makeSqlComponentIR`
+   * node/component by {@link bundleToPortableIR}. Present ONLY when a column-type resolver was
+   * supplied at compile (additive/back-compat: absent → the write IR stays un-annotated, as before).
+   */
+  readonly outputType?: unknown;
 }
 
 /** The primary catalog node of a component (the first non-cond, non-map body node). */
@@ -329,6 +339,7 @@ export function compileWriteBundle(
   writes: EntityWritesDefinition,
   phase: WriteLifecyclePhase,
   dialectName: DialectName = 'sqlite',
+  resolveColumnType?: ColumnTypeResolver,
 ): SqlBundle {
   const component = contract.components.find((c) => c.name === entry);
   if (component === undefined) throw new Error(`scp write: entry component '${entry}' not found in contract`);
@@ -344,7 +355,7 @@ export function compileWriteBundle(
   const base: BaseWrite = { op: baseOp, label: `${(writeNode as { component: string }).component}` };
   const plan = deriveTransactionPlan(phase, [base], lifecycle, dialectName);
 
-  return {
+  const bundle: SqlBundle = {
     dialect: dialectName,
     name: component.name,
     statement: { sql: baseOp.sql, params: baseOp.params },
@@ -352,6 +363,12 @@ export function compileWriteBundle(
     relations: {},
     transaction: plan,
   };
+  // Codegen typed de-box (spec §4.1/§9): when the schema/DDL column-type SoT is supplied, annotate
+  // the write bundle with the TransactionResult `outputType` (entity/returnedRows rows typed via the
+  // resolver + the write's target/RETURNING) so bc's typed(-raw) emitters materialize a concrete
+  // struct for the result. Fail-closed inside `annotateWriteBundleOutType`. Absent resolver → the
+  // bundle stays un-annotated (interpret/boxed only, back-compat).
+  return resolveColumnType === undefined ? bundle : annotateWriteBundleOutType(bundle, resolveColumnType);
 }
 
 /**
@@ -436,6 +453,7 @@ export function compileCreateManyBundle(
   name: string,
   options: InsertManyBuildOptions & { pk?: { columns: readonly string[]; autoInc: string | null } },
   dialectName: DialectName = 'sqlite',
+  resolveColumnType?: ColumnTypeResolver,
 ): SqlBundle {
   const components = compileInsertMany(dialectName, options);
   const ops = components.map((c, i) => {
@@ -456,7 +474,11 @@ export function compileCreateManyBundle(
   if (head === undefined) {
     throw new Error(`scp write: compileCreateManyBundle('${name}') produced no INSERT statements (empty createMany grouping) — an empty-ops batch bundle is a compile bug, not a silent empty-SQL default.`);
   }
-  return { dialect: dialectName, name, statement: { sql: head.sql, params: head.params as unknown[] }, optionalHeads: [], relations: {}, transaction: plan };
+  const bundle: SqlBundle = { dialect: dialectName, name, statement: { sql: head.sql, params: head.params as unknown[] }, optionalHeads: [], relations: {}, transaction: plan };
+  // Codegen typed de-box (spec §4.1/§9): annotate the batch write with the TransactionResult
+  // `outputType` when the schema SoT resolver is supplied (returnedRows rows typed via the RETURNING
+  // + target table). Fail-closed. Absent resolver → un-annotated (back-compat).
+  return resolveColumnType === undefined ? bundle : annotateWriteBundleOutType(bundle, resolveColumnType);
 }
 
 /**
