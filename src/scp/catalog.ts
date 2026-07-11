@@ -72,6 +72,21 @@ const SELECT_PORTS: Record<string, PortSchema> = {
   limit: P('expr'),
   offset: P('expr'),
   group: P('string'),
+  // Additive read-tail/head ports (V0 R3/R4/R5/R6). SQL is v1-sourced from the matching
+  // `SelectDesc` fields via `compileSelect` (`_buildSelectSQL`), wired in `compileSelectNode`:
+  //  - `forUpdate` (R3): a literal `'true'` string toggles the ` FOR UPDATE` tail.
+  //  - `join`/`joinParams` (R5): a literal JOIN clause text (`JOIN t ON …`) + its bound
+  //    value-specs (`expr[]`), spliced after `FROM <t>` (v1 `_buildSelectSQL` JOIN position).
+  //  - `cte`/`cteParams` (R4): a WITH-CTE `{name, sql}` literal + its bound value-specs,
+  //    prefixed as `WITH <name> AS (<sql>) ` (v1 WITH-wrap). `cteParams` bind FIRST (v1 param
+  //    order: CTE → JOIN → WHERE).
+  //  - `append` (R6): a raw trailing clause text (e.g. `HAVING …`) appended verbatim.
+  forUpdate: P('string'),
+  join: P('string'),
+  joinParams: P('expr[]'),
+  cte: P('map'),
+  cteParams: P('expr[]'),
+  append: P('string'),
 };
 
 /**

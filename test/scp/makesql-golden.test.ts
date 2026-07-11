@@ -41,6 +41,23 @@ import {
   type Dialect,
   type MakeSQL,
 } from '../../src/scp/makesql';
+import {
+  components,
+  publishBehaviors,
+  SemanticBehavior,
+  whereEq,
+  whereBetween,
+  whereLike,
+  whereILike,
+  whereCast,
+  whereDynamic,
+  whereImmediate,
+  whereTupleIn,
+  whereInSubquery,
+  whereExists,
+  type In,
+} from '../../src/scp/index';
+import { compileReadGraph, renderReadPrimary } from '../../src/scp/makesql/static-bundle';
 
 type Rendered = { sql: string; params: unknown[] };
 
@@ -1015,5 +1032,133 @@ describe('C. Composite STATIC relation form (#47 item 1) — PG byte-matches v1 
       'postgres',
     ).sql;
     expect(oneKey).not.toBe(twoKey); // fewer key columns → different unnest arity → golden moves
+  });
+});
+
+// ===========================================================================
+// D. AUTHORING → live bundle path (V0 R2–R6) — the ADDED where-primitives /
+//    SELECT_PORTS reach a replayable bundle and render V1-SOURCED SQL byte-for-byte.
+//
+// These assert the LIVE-reachable path (`L.Select(...)` → compileReadGraph →
+// renderReadPrimary — the SAME path the language runtimes replay) reproduces the
+// ORIGINAL builder output (`DBConditions`/`dbCast`/`dbDynamic`/`dbImmediate`/`dbTupleIn`/
+// `DBSubquery`/`DBExists` for WHERE; `compileSelect`=`_buildSelectSQL` for the ports),
+// on EVERY dialect where the text differs. Nothing is compared v2-to-v2: each golden
+// drives the v1 builder directly. This closes the V0 "byte-provable but not live-
+// reachable" gap for R2 (subquery/EXISTS), R3-remainder (BETWEEN/LIKE/ILIKE/cast/
+// dynamic/immediate/tuple-IN + FOR UPDATE), R4 (CTE), R5 (JOIN), R6 (append/HAVING).
+// ===========================================================================
+describe('D. authoring→bundle path renders V1-SOURCED SQL (V0 R2–R6, all dialects)', () => {
+  const L = components();
+  class Q extends SemanticBehavior {
+    // R3-remainder WHERE primitives
+    Btw($: In<{ lo: number; hi: number }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereBetween($, 'age', $.lo, $.hi)] }); }
+    Lk($: In<{ p: string }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereLike($, 'name', $.p)] }); }
+    ILk($: In<{ p: string }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereILike($, 'name', $.p)] }); }
+    Cst($: In<{ v: string }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereCast($, 'id', 'uuid', $.v)] }); }
+    Dyn($: In<{ q: string }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereDynamic($, 'search', "to_tsvector('en', ?)", [$.q])] }); }
+    Imm(_$: In<Record<string, never>>) { return L.Select({ table: 'posts', select: ['id'], where: [whereImmediate(_$, 'created_at', 'NOW()')] }); }
+    Tpl(_$: In<Record<string, never>>) { return L.Select({ table: 'posts', select: ['id'], where: [whereTupleIn(_$, ['tenant_id', 'id'], [[1, 10], [2, 20]])] }); }
+    // R2 subquery / EXISTS
+    Sub(_$: In<Record<string, never>>) {
+      return L.Select({ table: 'users', select: ['id'], where: [whereInSubquery(_$, 'users.id', { sql: 'SELECT orders.user_id FROM orders WHERE orders.status = ?', params: ['paid'] })] });
+    }
+    NotIn(_$: In<Record<string, never>>) {
+      return L.Select({ table: 'users', select: ['id'], where: [whereInSubquery(_$, 'users.id', { sql: 'SELECT banned.user_id FROM banned' }, true)] });
+    }
+    Ex(_$: In<Record<string, never>>) {
+      return L.Select({ table: 'users', select: ['id'], where: [whereExists(_$, { sql: 'SELECT 1 FROM orders WHERE orders.user_id = users.id' })] });
+    }
+    NotEx(_$: In<Record<string, never>>) {
+      return L.Select({ table: 'users', select: ['id'], where: [whereExists(_$, { sql: 'SELECT 1 FROM orders WHERE orders.user_id = users.id' }, true)] });
+    }
+    // R3 FOR UPDATE, R4 CTE, R5 JOIN, R6 append/HAVING
+    Fu($: In<{ id: number }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereEq($.id, $.id)], forUpdate: 'true' }); }
+    Hav(_$: In<Record<string, never>>) { return L.Select({ table: 'posts', select: ['author_id', 'COUNT(*) as n'], group: 'author_id', append: 'HAVING COUNT(*) > 1' }); }
+    Jn(_$: In<Record<string, never>>) { return L.Select({ table: 'posts', select: ['posts.id', 'users.name'], join: 'JOIN users ON users.id = posts.author_id' }); }
+    Cte(_$: In<Record<string, never>>) { return L.Select({ table: 'recent', select: ['id'], cte: { name: 'recent', sql: 'SELECT id FROM posts WHERE status = ?' }, cteParams: ['live'] }); }
+  }
+  function authored(entry: string, input: Record<string, unknown>, dialect: Dialect): Rendered {
+    const g = compileReadGraph(publishBehaviors(Q), dialect, entry);
+    const r = renderReadPrimary(g, input);
+    return { sql: r.sql, params: r.params };
+  }
+  /** v1 golden: a bare SELECT head + a DBConditions-built WHERE (the exact v1 assembly). */
+  function v1Where(cond: Record<string, unknown>, dialect: Dialect, table = 'posts', cols = 'id'): Rendered {
+    const params: unknown[] = [];
+    // The v1 dialect cast formatter: PG applies `?::type`; MySQL/SQLite drop the cast (identity) —
+    // this is `formatterFor(dialect)`, the SAME gating the live compile passes. (`undefined` would
+    // fall to DBValues' DEFAULT formatter, which ALWAYS casts — wrong for MySQL/SQLite dbCast.)
+    const formatter = dialect === 'postgres' ? pgFmt : (ph: string) => ph;
+    const where = new DBConditions(cond).compile(params, formatter);
+    return { sql: renderPlaceholders(`SELECT ${cols} FROM ${table} WHERE ${where}`, dialect), params };
+  }
+
+  for (const dialect of dialects) {
+    it(`[${dialect}] BETWEEN — authored path byte-matches v1 custom-op`, () => {
+      expect(authored('Btw', { lo: 18, hi: 65 }, dialect)).toEqual(v1Where({ 'age BETWEEN ? AND ?': [18, 65] }, dialect));
+    });
+    it(`[${dialect}] LIKE / ILIKE — authored path byte-matches v1 custom-op`, () => {
+      expect(authored('Lk', { p: '%x%' }, dialect)).toEqual(v1Where({ 'name LIKE ?': '%x%' }, dialect));
+      expect(authored('ILk', { p: '%x%' }, dialect)).toEqual(v1Where({ 'name ILIKE ?': '%x%' }, dialect));
+    });
+    it(`[${dialect}] dbCast (dialect-gated ::uuid) — authored path byte-matches v1 dbCast`, () => {
+      expect(authored('Cst', { v: 'u1' }, dialect)).toEqual(v1Where({ id: dbCast('u1', 'uuid') }, dialect));
+    });
+    it(`[${dialect}] dbDynamic fn(?) — authored path byte-matches v1 dbDynamic`, () => {
+      expect(authored('Dyn', { q: 'hello' }, dialect)).toEqual(v1Where({ search: dbDynamic("to_tsvector('en', ?)", ['hello']) }, dialect));
+    });
+    it(`[${dialect}] dbImmediate NOW() — authored path byte-matches v1 dbImmediate`, () => {
+      expect(authored('Imm', {}, dialect)).toEqual(v1Where({ created_at: dbImmediate('NOW()') }, dialect));
+    });
+    it(`[${dialect}] tuple-IN — authored path byte-matches v1 dbTupleIn`, () => {
+      expect(authored('Tpl', {}, dialect)).toEqual(v1Where({ __tuple__: dbTupleIn(['tenant_id', 'id'], [[1, 10], [2, 20]]) }, dialect));
+    });
+    it(`[${dialect}] IN(subquery) / NOT IN(subquery) — authored path byte-matches v1 DBSubquery`, () => {
+      const sub = new DBSubquery(
+        [{ columnName: 'id', tableName: 'users' }], 'orders',
+        [{ columnName: 'user_id', tableName: 'orders' }],
+        [{ column: { columnName: 'status', tableName: 'orders' }, value: 'paid' }], 'IN',
+      );
+      expect(authored('Sub', {}, dialect)).toEqual(v1Where({ __subquery__: sub }, dialect, 'users'));
+      const notIn = new DBSubquery(
+        [{ columnName: 'id', tableName: 'users' }], 'banned',
+        [{ columnName: 'user_id', tableName: 'banned' }], [], 'NOT IN',
+      );
+      expect(authored('NotIn', {}, dialect)).toEqual(v1Where({ __subquery__: notIn }, dialect, 'users'));
+    });
+    it(`[${dialect}] EXISTS / NOT EXISTS — authored path byte-matches v1 DBExists`, () => {
+      for (const [entry, not] of [['Ex', false], ['NotEx', true]] as const) {
+        const ex = new DBExists('orders', [{ column: { columnName: 'user_id', tableName: 'orders' }, value: parentRef({ columnName: 'id', tableName: 'users' }) }], not);
+        expect(authored(entry, {}, dialect)).toEqual(v1Where({ __exists__: ex }, dialect, 'users'));
+      }
+    });
+    it(`[${dialect}] FOR UPDATE port — authored path byte-matches v1 compileSelect`, () => {
+      const v1 = compileSelect({ dialect, tableName: 'posts', select: 'id', conditions: { id: 5 }, forUpdate: true }).sql;
+      expect(authored('Fu', { id: 5 }, dialect).sql).toBe(renderPlaceholders(v1, dialect));
+    });
+    it(`[${dialect}] append (HAVING) port — authored path byte-matches v1 compileSelect`, () => {
+      const v1 = compileSelect({ dialect, tableName: 'posts', select: 'author_id, COUNT(*) as n', group: 'author_id', append: 'HAVING COUNT(*) > 1' }).sql;
+      expect(authored('Hav', {}, dialect).sql).toBe(renderPlaceholders(v1, dialect));
+    });
+    it(`[${dialect}] JOIN port — authored path byte-matches v1 compileSelect`, () => {
+      const v1 = compileSelect({ dialect, tableName: 'posts', select: 'posts.id, users.name', join: 'JOIN users ON users.id = posts.author_id' }).sql;
+      expect(authored('Jn', {}, dialect).sql).toBe(renderPlaceholders(v1, dialect));
+    });
+    it(`[${dialect}] CTE port (+params) — authored path byte-matches v1 compileSelect`, () => {
+      const v1 = compileSelect({ dialect, tableName: 'recent', select: 'id', cte: { name: 'recent', sql: 'SELECT id FROM posts WHERE status = ?', params: ['live'] } }).sql;
+      const got = authored('Cte', {}, dialect);
+      expect(got.sql).toBe(renderPlaceholders(v1, dialect));
+      expect(got.params).toEqual(['live']);
+    });
+  }
+
+  // NEGATIVE (golden-from-originals): perturb the v1 dbCast type and the authored-path golden moves —
+  // proving the assertion is pinned to the ORIGINAL dbCast text, not a self-fulfilling v2 constant.
+  it('negative: perturbing the v1 dbCast type moves the authored golden (not v2-v2)', () => {
+    const uuid = v1Where({ id: dbCast('u1', 'uuid') }, 'postgres').sql;
+    const jsonb = v1Where({ id: dbCast('u1', 'jsonb') }, 'postgres').sql;
+    expect(jsonb).not.toBe(uuid);
+    expect(authored('Cst', { v: 'u1' }, 'postgres').sql).toBe(uuid);
   });
 });

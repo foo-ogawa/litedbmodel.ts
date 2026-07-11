@@ -150,6 +150,16 @@ export {
   whereIsNull,
   whereIn,
   inColumn,
+  // Additive where-primitives (V0 R2/R3): live-reachable, v1-sourced SQL.
+  whereBetween,
+  whereLike,
+  whereILike,
+  whereCast,
+  whereDynamic,
+  whereImmediate,
+  whereTupleIn,
+  whereInSubquery,
+  whereExists,
 } from './authoring-sql';
 
 // Error Mapping (spec §11 item 5): driver error → SCP Failure + Policy Kind.

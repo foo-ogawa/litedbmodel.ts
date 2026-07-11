@@ -54,8 +54,20 @@ import { renderPlaceholders, type Dialect } from './handler';
 import { compileWriteNode } from './tx';
 import { mapSqliteError } from '../errors';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
+import { dbCast, dbDynamic, dbImmediate, dbTupleIn } from '../../DBValues';
 import { conditionsFor } from './json-array';
 import { compileSelect } from './compile-select';
+import { formatterFor } from './compile';
+import {
+  BETWEEN_SENTINEL,
+  LIKE_SENTINEL,
+  CAST_SENTINEL,
+  DYNAMIC_SENTINEL,
+  IMMEDIATE_SENTINEL,
+  TUPLE_SENTINEL,
+  SUBQUERY_SENTINEL,
+  EXISTS_SENTINEL,
+} from '../authoring-sql';
 
 // ── Expression IR alias (a value-spec / skip expression is a closed-set bc node) ──
 
@@ -137,6 +149,27 @@ function stringArrayPort(ports: Record<string, unknown>, name: string): string[]
   });
 }
 
+/** Read a `{name, sql}` CTE map port (V0 R4). Both fields must be literal strings in the IR. */
+function mapPort(ports: Record<string, unknown>, name: string): { name: string; sql: string } | undefined {
+  const v = ports[name];
+  if (v === undefined) return undefined;
+  if (typeof v === 'object' && v !== null && 'obj' in v && typeof (v as { obj: unknown }).obj === 'object') {
+    const obj = (v as { obj: Record<string, unknown> }).obj;
+    if (typeof obj.name !== 'string' || typeof obj.sql !== 'string') {
+      throw new Error(`static-bundle: port '${name}' must be a {name, sql} literal map (got ${JSON.stringify(v)})`);
+    }
+    return { name: obj.name, sql: obj.sql };
+  }
+  throw new Error(`static-bundle: port '${name}' must be an {obj:{name, sql}} literal (got ${JSON.stringify(v)})`);
+}
+
+/** Read an `{arr:[…]}` list of DEFERRED value-specs (bc Expression IR), e.g. cte/join params. */
+function exprArrayPort(ports: Record<string, unknown>, name: string): ValueSpec[] | undefined {
+  const arr = arrPort(ports, name);
+  if (arr === undefined) return undefined;
+  return arr as ValueSpec[];
+}
+
 function opKey(node: unknown): string | undefined {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
   const keys = Object.keys(node as object);
@@ -167,6 +200,146 @@ function binOperands(node: unknown, op: string, at: string): [unknown, unknown] 
   const args = (node as Record<string, unknown[]>)[op];
   if (!Array.isArray(args) || args.length !== 2) throw new Error(`static-bundle: ${at}: '${op}' expects exactly 2 operands`);
   return [args[0], args[1]];
+}
+
+// ── Additive where-primitive decode (V0 R2/R3) ─────────────────────────────────
+//
+// The authoring layer (`authoring-sql.ts`) encodes each additive where-primitive as
+// `eq(<sentinel ref>, <value>)` (the SAME closed-set trick `whereIn` uses). Here we detect the
+// sentinel ref-path head, rebuild the EXACT v1 `ConditionObject` (or `DBSubquery`/`DBExists`) it
+// stands for, drive the ORIGINAL `DBConditions.compile()` for byte-true text, and defer the value
+// operands as value-specs 1:1 with the produced `?` placeholders — never a hand-rolled string.
+
+/** The sentinel ref-path segments (`[head, seg0, …]`) if `node` is a sentinel column ref. */
+function sentinelPath(node: unknown): string[] | undefined {
+  const op = opKey(node);
+  if (op !== 'ref' && op !== 'refOpt') return undefined;
+  const path = (node as Record<string, unknown[]>)[op];
+  if (!Array.isArray(path) || path.length === 0) return undefined;
+  return path.every((s) => typeof s === 'string') ? (path as string[]) : undefined;
+}
+
+/** Extract a literal `{arr:[…]}` value-spec list from a value operand (else undefined). */
+function litArr(node: unknown): unknown[] | undefined {
+  if (node !== null && typeof node === 'object' && !Array.isArray(node) && 'arr' in (node as object)) {
+    const a = (node as { arr: unknown }).arr;
+    if (Array.isArray(a)) return a;
+  }
+  return undefined;
+}
+
+/** A nested makeSQL Fragment carried in a param slot: `{obj:{sql:<str>, params?:{arr:[…]}}}`. */
+interface NestedSub {
+  readonly sql: string;
+  readonly params: readonly ValueSpec[];
+}
+
+/** Decode the nested-makeSQL Fragment param operand of a subquery/EXISTS primitive. */
+function nestedSub(node: unknown, at: string): NestedSub {
+  if (node === null || typeof node !== 'object' || Array.isArray(node) || !('obj' in (node as object))) {
+    throw new Error(`static-bundle: ${at}: subquery operand must be a nested makeSQL Fragment {obj:{sql, params?}}`);
+  }
+  const obj = (node as { obj: Record<string, unknown> }).obj;
+  const sqlNode = obj.sql;
+  if (typeof sqlNode !== 'string') throw new Error(`static-bundle: ${at}: nested subquery 'sql' must be a literal string`);
+  const params = obj.params === undefined ? [] : (litArr(obj.params) ?? undefinedThrow(at));
+  return { sql: sqlNode, params };
+}
+function undefinedThrow(at: string): never {
+  throw new Error(`static-bundle: ${at}: nested subquery 'params' must be an {arr:[…]} literal`);
+}
+
+/**
+ * Decode a sentinel-encoded additive where-primitive into its v1-sourced fragment. Returns
+ * undefined when the LHS is NOT one of the additive sentinels (the caller falls through to the
+ * eq/cmp/IN handling). The TEXT is always produced by the ORIGINAL builders (`DBConditions` /
+ * `dbCast` / `dbDynamic` / `dbImmediate` / `dbTupleIn` / `DBSubquery` / `DBExists`).
+ */
+function decodeSentinel(col: unknown, val: unknown, dialect: Dialect, at: string): WhereFragment | undefined {
+  const path = sentinelPath(col);
+  if (path === undefined) return undefined;
+  const head = path[0];
+
+  if (head === BETWEEN_SENTINEL) {
+    const [column] = [path[1]];
+    const bounds = litArr(val);
+    if (bounds === undefined || bounds.length !== 2) throw new Error(`static-bundle: ${at}: BETWEEN expects a 2-element bounds array`);
+    // v1 custom-op key `col BETWEEN ? AND ?` → 2 placeholders, both deferred.
+    return { sql: v1ConditionText({ [`${column} BETWEEN ? AND ?`]: [PROBE, PROBE] }, dialect), params: bounds as ValueSpec[] };
+  }
+
+  if (head === LIKE_SENTINEL) {
+    const [column, keyword] = [path[1], path[2]];
+    // v1 custom-op key `col LIKE ?` / `col ILIKE ?` → 1 placeholder, deferred.
+    return { sql: v1ConditionText({ [`${column} ${keyword} ?`]: PROBE }, dialect), params: [val] };
+  }
+
+  if (head === CAST_SENTINEL) {
+    const [column, sqlType, cmpOp] = [path[1], path[2], path[3]];
+    // Drive the ORIGINAL `dbCast(value, type, op)` so the PG `::type` cast (and MySQL/SQLite
+    // no-cast) is byte-true and dialect-gated by the formatter `v1ConditionText` passes.
+    return { sql: v1ConditionText({ [column]: dbCast(PROBE, sqlType, cmpOp) }, dialect), params: [val] };
+  }
+
+  if (head === DYNAMIC_SENTINEL) {
+    const [column, template] = [path[1], path[2]];
+    const values = litArr(val);
+    // `dbDynamic(template, values)` → `col = <template>` with one `?` per template placeholder.
+    const nPlaceholders = (template.match(/\?/g) ?? []).length;
+    const probeVals = Array.from({ length: nPlaceholders }, () => PROBE);
+    const deferred = values ?? [val];
+    if (deferred.length !== nPlaceholders) {
+      throw new Error(`static-bundle: ${at}: dbDynamic template has ${nPlaceholders} '?' but ${deferred.length} value-specs`);
+    }
+    return { sql: v1ConditionText({ [column]: dbDynamic(template, probeVals) }, dialect), params: deferred as ValueSpec[] };
+  }
+
+  if (head === IMMEDIATE_SENTINEL) {
+    const [column, sql] = [path[1], path[2]];
+    // `dbImmediate(sql)` → `col = <sql>` inline, NO bound param.
+    return { sql: v1ConditionText({ [column]: dbImmediate(sql) }, dialect), params: [] };
+  }
+
+  if (head === TUPLE_SENTINEL) {
+    const columns = path.slice(1);
+    const tuples = litArr(val);
+    if (tuples === undefined) throw new Error(`static-bundle: ${at}: tuple-IN expects an array-of-tuples value`);
+    // Each tuple is itself a literal `{arr:[…]}` of value-specs. The v1 `dbTupleIn` text is
+    // `(a, b) IN ((?, ?), …)` — one `?` per tuple element; defer them in row-major order.
+    const rows = tuples.map((t) => litArr(t) ?? throwTuple(at));
+    const deferred: ValueSpec[] = [];
+    for (const row of rows) for (const el of row) deferred.push(el as ValueSpec);
+    // Build the v1 text with PROBE tuples of the same shape (all-int probes → identical text).
+    const probeRows = rows.map((r) => r.map(() => PROBE));
+    return { sql: tupleInText(columns, probeRows, dialect), params: deferred };
+  }
+
+  if (head === SUBQUERY_SENTINEL) {
+    const [lhs, keyword] = [path[1], path[2]];
+    const sub = nestedSub(val, at);
+    // v1 `DBSubquery` renders `<lhs> <IN|NOT IN> (<inner SELECT>)`. The inner SELECT text is
+    // v1-sourced by the AUTHOR (dialect-tuned) and spliced verbatim; its bound value-specs follow.
+    return { sql: `${lhs} ${keyword} (${sub.sql})`, params: sub.params };
+  }
+
+  if (head === EXISTS_SENTINEL) {
+    const [keyword] = [path[1]];
+    const sub = nestedSub(val, at);
+    // v1 `DBExists` renders `<EXISTS|NOT EXISTS> (<inner SELECT 1 …>)`. Inner text v1-sourced.
+    return { sql: `${keyword} (${sub.sql})`, params: sub.params };
+  }
+
+  return undefined;
+}
+function throwTuple(at: string): never {
+  throw new Error(`static-bundle: ${at}: each tuple-IN row must be an {arr:[…]} literal`);
+}
+
+/** The v1 `dbTupleIn` text via a nested `DBConditions.__tuple__` (byte-true; probe tuples). */
+function tupleInText(columns: readonly string[], probeRows: unknown[][], dialect: Dialect): string {
+  // Reuse the ORIGINAL dbTupleIn so the `(cols) IN ((?, …), …)` text is v1-produced, not hand-rolled.
+  const cond: ConditionObject = { __tuple__: dbTupleIn([...columns], probeRows) };
+  return v1ConditionText(cond, dialect);
 }
 
 /** The comparison-operator SQL symbols, keyed by the bc operator name (drives the v1 custom-op key). */
@@ -201,7 +374,10 @@ const PROBE = '__probe__';
  */
 function v1ConditionText(conditions: ConditionObject, dialect: Dialect): string {
   const probe: unknown[] = [];
-  return conditionsFor(conditions, dialect).compile(probe);
+  // Pass the dialect cast formatter so `dbCast` gates the `::type` cast per-dialect (PG applies it,
+  // MySQL/SQLite drop it — v1 parity). Inert for every non-cast construct (the formatter is only
+  // consulted by DBCast/DBCastArray), so it stays byte-identical for eq/cmp/BETWEEN/LIKE/etc.
+  return conditionsFor(conditions, dialect).compile(probe, formatterFor(dialect));
 }
 
 /**
@@ -294,8 +470,12 @@ function lowerWhereMember(node: unknown, dialect: Dialect, at: string): WhereFra
 
   if (op === 'eq') {
     const [col, val] = binOperands(node, op, at);
+    // Additive where-primitives (V0 R2/R3) — decoded FIRST (an IMMEDIATE/EXISTS primitive carries a
+    // `null` RHS that would otherwise be mis-read as IS NULL).
     const inCol = inSentinelColumn(col);
     if (inCol !== undefined) return inListFragment(dialect, inCol, val);
+    const additive = decodeSentinel(col, val, dialect, at);
+    if (additive !== undefined) return additive;
     const column = columnOf(col, at);
     if (val === null) return { sql: v1ConditionText({ [column]: null }, dialect), params: [] };
     // v1 default equality: `{col: value}` → `col = ?`.
@@ -408,9 +588,20 @@ export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatem
   const cols = isCount ? 'COUNT(*) as count' : select && select.length > 0 ? select.join(', ') : '*';
 
   const statements: StaticStatement[] = [];
-  // Head `SELECT <cols> FROM <t>` — driven by the ORIGINAL `_buildSelectSQL` (via compileSelect,
-  // no WHERE/tail) so the skeleton text is byte-identical to v1.
-  statements.push({ sql: compileSelect({ dialect, tableName: table, select: cols }).sql, params: [] });
+  // Head `[WITH …] SELECT <cols> FROM <t>[ JOIN …]` — driven by the ORIGINAL `_buildSelectSQL` (via
+  // compileSelect, no WHERE/tail) so the skeleton text is byte-identical to v1. The optional
+  // `cte`/`join` head fields (V0 R4/R5) are v1-sourced from the SAME `SelectDesc`; the `?`
+  // placeholders in their raw text bind to the deferred `cteParams`/`joinParams` value-specs (v1
+  // param order: CTE → JOIN → WHERE). `select` carries the joined-column projection as authored.
+  const cte = mapPort(ports, 'cte');
+  const join = stringPort(ports, 'join');
+  const cteParams = exprArrayPort(ports, 'cteParams');
+  const joinParams = exprArrayPort(ports, 'joinParams');
+  const headDesc: Parameters<typeof compileSelect>[0] = { dialect, tableName: table, select: cols };
+  if (cte !== undefined) headDesc.cte = { name: cte.name, sql: cte.sql, params: [] };
+  if (join !== undefined) headDesc.join = join;
+  const headParams: ValueSpec[] = [...(cteParams ?? []), ...(joinParams ?? [])];
+  statements.push({ sql: compileSelect(headDesc).sql, params: headParams });
 
   const whereFrags = lowerWherePort(ports, dialect, component);
   for (const frag of whereFrags) {
@@ -433,6 +624,14 @@ export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatem
   // stays a bound `?` value-spec (the intentional portable divergence from v1's literal inlining).
   if (ports.limit !== undefined) statements.push({ sql: limitOffsetTail('limit', dialect, table), params: [ports.limit as ValueSpec] });
   if (ports.offset !== undefined) statements.push({ sql: limitOffsetTail('offset', dialect, table), params: [ports.offset as ValueSpec] });
+
+  // FOR UPDATE / append (V0 R3/R6) — v1 `_buildSelectSQL` tail order is `… FOR UPDATE <append>`.
+  // Both are v1-sourced via `selectTail` (a bare-head compileSelect, head sliced off). `append`
+  // (e.g. HAVING) is raw trailing text with no bound param on this authored surface.
+  const forUpdate = stringPort(ports, 'forUpdate');
+  if (forUpdate === 'true') statements.push({ sql: selectTail({ dialect, tableName: table, forUpdate: true }, table), params: [] });
+  const append = stringPort(ports, 'append');
+  if (append !== undefined) statements.push({ sql: selectTail({ dialect, tableName: table, append }, table), params: [] });
 
   return statements;
 }
