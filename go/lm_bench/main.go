@@ -45,40 +45,54 @@ type caseArt struct {
 type artifact struct {
 	Schema []string
 	Seed   []string
-	Cases  map[string]*caseArt
+	// Cases is the sqlite map (in-proc DB-backed + fairness cost denominator);
+	// CasesByDialect carries all 3 dialects for the per-dialect MICRO axis (#44 gap #1).
+	Cases          map[string]*caseArt
+	CasesByDialect map[string]map[string]*caseArt
+}
+
+func parseCase(c *caseArt) *caseArt {
+	// Parse the bundle + input into bc-ordered nodes (the runtime consumes bc.JObj/Obj).
+	bnode, err := bc.ParseJSONOrdered(c.Bundle)
+	must(err)
+	c.bundleObj = bnode.(*bc.JObj)
+	if relN, ok := c.bundleObj.Get("relations"); ok {
+		if relObj, ok := relN.(*bc.JObj); ok {
+			c.relationsJObj = relObj
+		}
+	}
+	inode, err := bc.ParseJSONOrdered(c.Input)
+	must(err)
+	v, err := rt.DecodeConformanceValue(inode)
+	must(err)
+	if obj, ok := v.(*bc.Obj); ok {
+		c.inputScope = obj
+	} else {
+		c.inputScope = bc.NewObj()
+	}
+	return c
 }
 
 func loadArtifact(path string) *artifact {
 	raw, err := os.ReadFile(path)
 	must(err)
 	var top struct {
-		Schema []string   `json:"schema"`
-		Seed   []string   `json:"seed"`
-		Cases  []*caseArt `json:"cases"`
+		Schema   []string `json:"schema"`
+		Seed     []string `json:"seed"`
+		Dialects map[string]struct {
+			Cases []*caseArt `json:"cases"`
+		} `json:"dialects"`
 	}
 	must(json.Unmarshal(raw, &top))
-	a := &artifact{Schema: top.Schema, Seed: top.Seed, Cases: map[string]*caseArt{}}
-	for _, c := range top.Cases {
-		// Parse the bundle + input into bc-ordered nodes (the runtime consumes bc.JObj/Obj).
-		bnode, err := bc.ParseJSONOrdered(c.Bundle)
-		must(err)
-		c.bundleObj = bnode.(*bc.JObj)
-		if relN, ok := c.bundleObj.Get("relations"); ok {
-			if relObj, ok := relN.(*bc.JObj); ok {
-				c.relationsJObj = relObj
-			}
+	a := &artifact{Schema: top.Schema, Seed: top.Seed, CasesByDialect: map[string]map[string]*caseArt{}}
+	for d, blk := range top.Dialects {
+		m := map[string]*caseArt{}
+		for _, c := range blk.Cases {
+			m[c.Case] = parseCase(c)
 		}
-		inode, err := bc.ParseJSONOrdered(c.Input)
-		must(err)
-		v, err := rt.DecodeConformanceValue(inode)
-		must(err)
-		if obj, ok := v.(*bc.Obj); ok {
-			c.inputScope = obj
-		} else {
-			c.inputScope = bc.NewObj()
-		}
-		a.Cases[c.Case] = c
+		a.CasesByDialect[d] = m
 	}
+	a.Cases = a.CasesByDialect["sqlite"]
 	return a
 }
 
@@ -265,11 +279,31 @@ func main() {
 	}
 }
 
+// The Go bench adapter drives the in-proc SQLite (modernc.org/sqlite) DB-backed axis;
+// the live PG/MySQL wiring (the runtime's OpenPostgres/OpenMysql seam — pgx +
+// go-sql-driver) is NOT wired into this bench adapter in this pass, so PG/MySQL
+// DB-backed is reported as an explicit per-cell skip (never silently dropped). The
+// per-dialect MICRO axis IS covered (the mock renders each dialect's bundle).
+func dbSkipReason(dialect string) string {
+	if dialect == "sqlite" {
+		return ""
+	}
+	return "go bench adapter drives in-proc sqlite (modernc) only; live " + dialect + " (runtime OpenPostgres/OpenMysql: pgx/go-sql-driver) not wired into this bench adapter"
+}
+
 func handle(req map[string]any, impl string, art *artifact) {
 	kind, _ := req["kind"].(string)
+	dialect, _ := req["dialect"].(string)
+	if dialect == "" {
+		dialect = "sqlite"
+	}
 	switch kind {
 	case "run":
 		caseID := req["case"].(string)
+		if reason := dbSkipReason(dialect); reason != "" {
+			write(map[string]any{"kind": "skipped", "case": caseID, "dialect": dialect, "reason": reason})
+			return
+		}
 		warmup := int(req["warmup"].(float64))
 		iters := int(req["iterations"].(float64))
 		db := seedDB(art)
@@ -282,9 +316,13 @@ func handle(req map[string]any, impl string, art *artifact) {
 				runLM(c, db)
 			}
 		})
-		write(map[string]any{"kind": "run", "case": caseID, "samplesMs": samples})
+		write(map[string]any{"kind": "run", "case": caseID, "dialect": dialect, "samplesMs": samples})
 	case "throughput":
 		caseID := req["case"].(string)
+		if reason := dbSkipReason(dialect); reason != "" {
+			write(map[string]any{"kind": "skipped", "case": caseID, "dialect": dialect, "reason": reason})
+			return
+		}
 		iters := int(req["iterations"].(float64))
 		db := seedDB(art)
 		defer db.Close()
@@ -298,14 +336,27 @@ func handle(req map[string]any, impl string, art *artifact) {
 			}
 		}
 		el := float64(time.Since(t0).Nanoseconds()) / 1e6
-		write(map[string]any{"kind": "throughput", "case": caseID, "elapsedMs": el, "completed": iters})
+		write(map[string]any{"kind": "throughput", "case": caseID, "dialect": dialect, "elapsedMs": el, "completed": iters})
 	case "micro":
 		caseID := req["case"].(string)
+		if impl == "sql" && dialect != "sqlite" {
+			write(map[string]any{"kind": "skipped", "case": caseID, "dialect": dialect, "reason": "hand-SQL baseline is sqlite-shaped"})
+			return
+		}
+		// The Go micro mock rides `database/sql`, whose arg-conversion layer rejects the
+		// PG/MySQL IN-list ARRAY param (`[]Value`) that only the native pgx/go-sql-driver
+		// bind — so the non-sqlite micro (client-path) cannot run through the mock harness
+		// here. Skipped honestly (the SQLite micro client-path IS measured).
+		if dialect != "sqlite" {
+			write(map[string]any{"kind": "skipped", "case": caseID, "dialect": dialect, "reason": "go micro mock rides database/sql; its arg layer rejects the " + dialect + " IN-list array param ([]Value) — non-sqlite micro not run through the mock"})
+			return
+		}
 		warmup := int(req["warmup"].(float64))
 		iters := int(req["iterations"].(float64))
 		mock := openMockDB()
 		defer mock.Close()
-		c := art.Cases[caseID]
+		// PER-DIALECT bundle — the render/placeholder/array form differs.
+		c := art.CasesByDialect[dialect][caseID]
 		samples := collect(warmup, iters, func() {
 			if impl == "sql" {
 				runSQL(caseID, mock)
@@ -313,13 +364,13 @@ func handle(req map[string]any, impl string, art *artifact) {
 				runLM(c, mock)
 			}
 		})
-		write(map[string]any{"kind": "micro", "case": caseID, "samplesMs": samples})
+		write(map[string]any{"kind": "micro", "case": caseID, "dialect": dialect, "samplesMs": samples})
 	case "rss":
 		write(map[string]any{"kind": "rss", "rssBytes": rssBytes()})
 	case "cost":
 		caseID := req["case"].(string)
 		q, r := cost(impl, caseID, art)
-		write(map[string]any{"kind": "cost", "case": caseID, "queries": q, "rows": r})
+		write(map[string]any{"kind": "cost", "case": caseID, "dialect": dialect, "queries": q, "rows": r})
 	case "shutdown":
 		os.Exit(0)
 	}

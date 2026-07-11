@@ -1,19 +1,33 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Artifact generation (epic #44) — compile the 8 shared-domain behaviors into
-// makeSQL bundles + codegen fingerprints, emit the ONE generated artifact every
-// language's ir / codegen cells consume.
+// makeSQL bundles (PER DIALECT) + the TRUE bc-generated codegen modules, emitting
+// the ONE generated artifact every language's ir / codegen cells consume.
 // ════════════════════════════════════════════════════════════════════════════
 //
-// 🔒 CONSUME-ONLY: this uses the litedbmodel public compile API (dist/scp) to
-// PRODUCE artifacts; it does NOT modify src. The output `generated/bundles.json`
+// 🔒 CONSUME-ONLY: this uses the litedbmodel public compile/codegen API (dist/scp)
+// to PRODUCE artifacts; it does NOT modify src. The output `generated/bundles.json`
 // is the language-neutral §8 published artifact (pure JSON) that Python / Rust /
 // PHP / Go load and execute via their thin runtimes — exactly the ir path.
+//
+// TWO validity-driven axes vs the original single-dialect artifact (#44 owner gaps):
+//   1. PER-DIALECT bundles — the SAME 8 behaviors are compiled for `sqlite`,
+//      `postgres`, AND `mysql`. Each renders DIFFERENT SQL/placeholder/array forms
+//      (`?`→`$N` for PG, single-JSON-array IN-list for MySQL/SQLite), so the ir/
+//      codegen CLIENT-PATH cost is reported per dialect, not just SQLite.
+//   2. TRUE codegen modules — `generateCodegenArtifact` runs bc's SHARED generator
+//      over each bundle's portable IR and emits a language-native module (the IR
+//      baked as a literal + `bind(handlers)` + fail-closed fingerprint/spec-version
+//      load checks). The codegen cell COMPILES + LOADS + BINDS this generated
+//      module and executes THROUGH it — a genuinely distinct code entry from `ir`
+//      (which calls `executeBundle` on the raw JSON). See the honest disclosure in
+//      CROSS-LANG.md: at this bc version the generated module is still interpreter-
+//      transcription (it delegates to `runBehavior`), so codegen ≈ ir is EXPECTED.
 
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as lm from '../../dist/scp/index.mjs';
-import { fingerprintComponentGraph } from 'behavior-contracts';
+import { fingerprintComponentGraph, registeredLanguages } from 'behavior-contracts';
 import {
   SCHEMA,
   INPUTS,
@@ -25,9 +39,29 @@ import {
   writeGateContract,
   CROSSLANG_CASE_IDS_LOCAL,
 } from './domain.js';
+import { CROSSLANG_DIALECTS, type CrosslangDialect } from './contract.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = resolve(HERE, 'generated', 'bundles.json');
+// The TRUE bc-generated codegen module per language (source text), consumed by the
+// codegen cells. Written next to the JSON artifact; committed + drift-checked.
+const CODEGEN_DIR = resolve(HERE, 'generated', 'codegen');
+
+// bc's shared generator supports exactly these litedbmodel-facing languages (the
+// mode-3 codegen "endpoint 3" literal-bake emitters). Each cell's codegen module is
+// the generator output for that language over the SqlBundle's portable IR.
+const CODEGEN_LANGS = ['typescript', 'python', 'go', 'rust', 'php'] as const;
+type CodegenLang = (typeof CODEGEN_LANGS)[number];
+const CODEGEN_EXT: Record<CodegenLang, string> = {
+  typescript: 'ts', python: 'py', go: 'go', rust: 'rs', php: 'php',
+};
+
+// Per-(language × case) generated-module path. TS lands as a real `.ts` (tsx imports
+// it directly); the other languages land under their own subdir as EVIDENCE of the
+// true generated-code artifact (their runtimes consume it if wired).
+function codegenFilePath(lang: CodegenLang, caseId: string): string {
+  return resolve(CODEGEN_DIR, lang, `${caseId}.${CODEGEN_EXT[lang]}`);
+}
 
 // Seed spec as language-neutral INSERT statements, so every language's ir cell
 // seeds an IDENTICAL in-memory SQLite (same dataset the TS cells use).
@@ -66,30 +100,44 @@ interface CaseArtifact {
   expectedRows: number;
 }
 
-function buildBundle(caseId: string): { bundle: any; kind: CaseArtifact['kind']; entry?: string; withRelation?: string; relation?: unknown } {
+// Clone a relation decl with the target dialect so the batch op renders the correct
+// placeholder/array form (PG `= ANY($1::type[])` vs MySQL/SQLite single-JSON param).
+function relForDialect(decl: any, dialect: CrosslangDialect): any {
+  return { ...decl, dialect };
+}
+
+function buildBundle(
+  caseId: string,
+  dialect: CrosslangDialect,
+): { bundle: any; kind: CaseArtifact['kind']; entry?: string; withRelation?: string; relation?: unknown } {
   if (caseId === 'batchInsert') {
     const cols = ['author_id', 'title', 'status', 'views', 'created_at'];
-    const bundle = lm.compileCreateManyBundle('BatchInsert', { tableName: 'posts', columns: cols, records: INPUTS.batchInsert.rows as any }, 'sqlite');
+    const bundle = lm.compileCreateManyBundle(
+      'BatchInsert',
+      { tableName: 'posts', columns: cols, records: INPUTS.batchInsert.rows as any },
+      dialect,
+    );
     return { bundle, kind: 'batch' };
   }
   if (caseId === 'writeTxGate') {
-    const bundle = lm.compileWriteBundle(writesContract, 'Create', writeGateContract, 'create', 'sqlite');
+    const bundle = lm.compileWriteBundle(writesContract, 'Create', writeGateContract, 'create', dialect);
     return { bundle, kind: 'tx' };
   }
   const rel = READ_RELATION[caseId];
   if (rel) {
-    const bundle = lm.compileBundle(readsContract, READ_ENTRY[caseId], [rel.decl], 'sqlite');
-    return { bundle, kind: 'relation', entry: READ_ENTRY[caseId], withRelation: rel.withName, relation: rel.decl };
+    const decl = relForDialect(rel.decl, dialect);
+    const bundle = lm.compileBundle(readsContract, READ_ENTRY[caseId], [decl], dialect);
+    return { bundle, kind: 'relation', entry: READ_ENTRY[caseId], withRelation: rel.withName, relation: decl };
   }
-  const bundle = lm.compileBundle(readsContract, READ_ENTRY[caseId], [], 'sqlite');
+  const bundle = lm.compileBundle(readsContract, READ_ENTRY[caseId], [], dialect);
   return { bundle, kind: 'read', entry: READ_ENTRY[caseId] };
 }
 
-function main(): void {
+// Build the per-dialect case list (the 8 bundles compiled for one dialect).
+function buildDialect(dialect: CrosslangDialect): CaseArtifact[] {
   const cases: CaseArtifact[] = [];
   for (const caseId of CROSSLANG_CASE_IDS_LOCAL) {
-    const { bundle, kind, entry, withRelation, relation } = buildBundle(caseId);
-    // Portable IR fingerprint = the codegen fail-closed identity the codegen cell verifies at load.
+    const { bundle, kind, entry, withRelation, relation } = buildBundle(caseId, dialect);
     const ir = lm.bundleToPortableIR(bundle);
     const fingerprint = fingerprintComponentGraph(ir);
     const base = SQL_BASELINE[caseId];
@@ -106,39 +154,127 @@ function main(): void {
       expectedRows: base.rows,
     });
   }
+  return cases;
+}
+
+// The TRUE generated codegen module for one language: bc's shared generator run over
+// EACH case bundle's portable IR (sqlite dialect — the codegen module bakes the IR /
+// wiring which is dialect-INVARIANT; the SQL catalog / dialect render rides the
+// companion bundle, exactly as mode-3 specifies). We concatenate per-case generated
+// modules into one file, but the load-bearing fact is that the codegen cell IMPORTS
+// and BINDS this generated source, not that it lives in one file.
+interface CodegenModuleArtifact {
+  language: string;
+  // For TS we emit an executable module string the cell compiles + binds. For the
+  // other languages the generated source is emitted to disk as EVIDENCE (the true
+  // generated-code artifact) + the cell consumes it if its toolchain wires it.
+  filenameHint: string;
+  // Per-case generated-module fingerprint (the fail-closed identity the cell verifies).
+  fingerprintByCase: Record<string, string>;
+  // Whether the generated module still delegates to the shared interpreter
+  // (`runBehavior`) — TRUE at this bc version (interpreter-transcription, bc#75
+  // pending). Surfaced so the report discloses codegen≈ir honestly.
+  delegatesToRunBehavior: boolean;
+}
+
+// Generate ONE module per (language × case). The bc generator emits a full standalone
+// module (imports + IR literal + bind), so cases CANNOT be concatenated into one file
+// (duplicate top-level declarations); each case is its own compile unit. The codegen
+// cell loads + binds each case module individually.
+function generateCodegen(
+  cases: CaseArtifact[],
+  language: CodegenLang,
+  registered: readonly string[],
+): { artifact: CodegenModuleArtifact; sourceByCase: Record<string, string> } {
+  const fingerprintByCase: Record<string, string> = {};
+  const sourceByCase: Record<string, string> = {};
+  let delegates = false;
+  for (const c of cases) {
+    // The generator wants the SqlBundle; it derives the portable IR itself. For the TS
+    // cell to import the generated module by relative path we pin the runtime import to
+    // the installed `behavior-contracts` package (the default emitter import).
+    const art = lm.generateCodegenArtifact(c.bundle as any, language, registered as string[]);
+    fingerprintByCase[c.case] = art.module.fingerprint;
+    if (art.module.code.includes('runBehavior') || art.module.code.includes('run_behavior') || art.module.code.includes('RunBehavior')) delegates = true;
+    sourceByCase[c.case] = art.module.code;
+  }
+  return {
+    artifact: { language, filenameHint: `behaviors.generated.${CODEGEN_EXT[language]}`, fingerprintByCase, delegatesToRunBehavior: delegates },
+    sourceByCase,
+  };
+}
+
+function main(): void {
+  const registered = registeredLanguages();
+
+  // 1. PER-DIALECT bundles (sqlite / postgres / mysql).
+  const dialects: Record<string, { cases: CaseArtifact[] }> = {};
+  for (const d of CROSSLANG_DIALECTS) dialects[d] = { cases: buildDialect(d) };
+
+  // 2. TRUE generated codegen modules — bc generator output per language. The module
+  //    is dialect-invariant (IR/wiring only); the dialect SQL rides the companion
+  //    bundle the cell already has per dialect. We generate from the sqlite bundles.
+  const codegen: Record<string, CodegenModuleArtifact> = {};
+  const codegenSources: Record<string, Record<string, string>> = {};
+  for (const lang of CODEGEN_LANGS) {
+    const { artifact, sourceByCase } = generateCodegen(dialects.sqlite.cases, lang, registered);
+    codegen[lang] = artifact;
+    codegenSources[lang] = sourceByCase;
+  }
 
   const artifact = {
-    corpusVersion: 2,
+    corpusVersion: 3,
     schema: [...SCHEMA],
     seed: seedStatements(),
-    cases,
+    dialects,
+    codegen,
   };
   const body = JSON.stringify(artifact, null, 2);
 
-  // CI drift-check: `--check` regenerates in memory and compares to the committed artifact
-  // (ignoring the volatile generatedAt timestamp), failing loudly on drift — so a src/ change
-  // that alters the compiled bundles is caught in CI without re-running the whole bench.
+  // CI drift-check: regenerate in memory and compare to the committed artifact +
+  // generated codegen sources, failing loudly on drift — so a src/ change that
+  // alters the compiled bundles OR the generated code is caught in CI without
+  // re-running the whole bench.
   if (process.argv.includes('--check')) {
+    let drift = false;
     if (!existsSync(OUT)) {
       console.error(`DRIFT: ${OUT} is missing — run \`npx tsx benchmark/crosslang/generate.ts\` and commit it.`);
       process.exit(1);
     }
     const committed = readFileSync(OUT, 'utf8').replace(/\n?$/, '');
-    const fresh = body.replace(/\n?$/, '');
-    if (committed !== fresh) {
-      console.error('DRIFT: generated makeSQL bundles differ from the committed generated/bundles.json.');
+    if (committed !== body.replace(/\n?$/, '')) drift = true;
+    for (const lang of CODEGEN_LANGS) {
+      for (const c of dialects.sqlite.cases) {
+        const p = codegenFilePath(lang, c.case);
+        if (!existsSync(p) || readFileSync(p, 'utf8').replace(/\n?$/, '') !== codegenSources[lang][c.case].replace(/\n?$/, '')) drift = true;
+      }
+    }
+    if (drift) {
+      console.error('DRIFT: generated bundles or codegen modules differ from the committed artifact.');
       console.error('The compiled artifact changed (a src/ or authoring change). Re-run the generator and commit:');
       console.error('  npx tsx benchmark/crosslang/generate.ts');
       process.exit(1);
     }
-    console.error(`OK: generated/bundles.json is up to date (${cases.length} case bundles, no drift).`);
+    console.error(`OK: generated artifact is up to date (${CROSSLANG_DIALECTS.length} dialects × ${dialects.sqlite.cases.length} case bundles, ${CODEGEN_LANGS.length} codegen modules, no drift).`);
     return;
   }
 
   mkdirSync(dirname(OUT), { recursive: true });
   writeFileSync(OUT, body);
-  console.error(`Wrote ${OUT} (${cases.length} case bundles)`);
-  for (const c of cases) console.error(`  ${c.case.padEnd(14)} kind=${c.kind} fp=${c.fingerprint.slice(0, 12)}… Q=${c.expectedQueries} R=${c.expectedRows}`);
+  for (const lang of CODEGEN_LANGS) {
+    for (const c of dialects.sqlite.cases) {
+      const p = codegenFilePath(lang, c.case);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, codegenSources[lang][c.case]);
+    }
+  }
+  console.error(`Wrote ${OUT} (${CROSSLANG_DIALECTS.length} dialects × ${dialects.sqlite.cases.length} case bundles)`);
+  for (const d of CROSSLANG_DIALECTS) {
+    console.error(`  [${d}]`);
+    for (const c of dialects[d].cases) console.error(`    ${c.case.padEnd(14)} kind=${c.kind} fp=${c.fingerprint.slice(0, 12)}… Q=${c.expectedQueries} R=${c.expectedRows}`);
+  }
+  console.error(`Wrote ${CODEGEN_LANGS.length}×${dialects.sqlite.cases.length} generated codegen modules to ${CODEGEN_DIR}`);
+  for (const lang of CODEGEN_LANGS) console.error(`  ${lang.padEnd(11)} delegatesToRunBehavior=${codegen[lang].delegatesToRunBehavior}`);
 }
 
 main();

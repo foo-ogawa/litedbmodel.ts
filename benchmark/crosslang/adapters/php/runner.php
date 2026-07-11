@@ -34,10 +34,18 @@ foreach ($argv as $a) {
 
 $rawArtifact = file_get_contents($BUNDLES_PATH);
 $artifact = json_decode($rawArtifact); // stdClass
-$CASES = [];
-foreach ($artifact->cases as $c) {
-    $CASES[$c->case] = $c;
+// Per-dialect case maps. $CASES_BY_DIALECT[<dialect>][<case>] = caseObj; $CASES is the
+// sqlite map (in-proc DB-backed + fairness cost denominator). The per-dialect maps back
+// the MICRO axis (#44 gap #1) — each dialect renders a different SQL/placeholder form.
+$CASES_BY_DIALECT = [];
+foreach ($artifact->dialects as $d => $blk) {
+    $m = [];
+    foreach ($blk->cases as $c) {
+        $m[$c->case] = $c;
+    }
+    $CASES_BY_DIALECT[$d] = $m;
 }
+$CASES = $CASES_BY_DIALECT['sqlite'];
 $SCHEMA = $artifact->schema;
 $SEED = $artifact->seed;
 
@@ -46,8 +54,7 @@ $SEED = $artifact->seed;
 function loadBundles(string $impl, string $raw, object $artifact, array $cases): array
 {
     if ($impl === 'codegen') {
-        foreach ($artifact->cases as $c) {
-            // integrity hash of the resident bundle (the baked-artifact fail-closed check)
+        foreach ($artifact->dialects->sqlite->cases as $c) {
             $c->_integrity = 'fp:' . substr(hash('sha256', json_encode($c->bundle)), 0, 16);
         }
         return $cases;
@@ -55,7 +62,7 @@ function loadBundles(string $impl, string $raw, object $artifact, array $cases):
     if ($impl === 'ir') {
         $reparsed = json_decode($raw);
         $m = [];
-        foreach ($reparsed->cases as $c) {
+        foreach ($reparsed->dialects->sqlite->cases as $c) {
             $m[$c->case] = $c;
         }
         return $m;
@@ -393,15 +400,39 @@ function writeMsg(array $obj): void
     fwrite(STDOUT, json_encode($obj) . "\n");
 }
 
+// The PHP bench adapter drives the in-proc SQLite (PDO sqlite) DB-backed axis; live
+// PG/MySQL wiring (the runtime's LiveDb PDO pgsql/mysql seam) is NOT wired into this
+// bench adapter in this pass, so PG/MySQL DB-backed is an explicit per-cell skip (never
+// silently dropped). The per-dialect MICRO axis IS covered (mock renders each bundle).
+function dbSkipReason(string $dialect): string
+{
+    if ($dialect === 'sqlite') {
+        return '';
+    }
+    return "php bench adapter drives in-proc PDO sqlite only; live $dialect (runtime LiveDb PDO pgsql/mysql seam) not wired into this bench adapter";
+}
+
 function handle(array $req, string $impl, array $schema, array $seed, array $cases, array $bundles): void
 {
+    global $CASES_BY_DIALECT;
     $kind = $req['kind'];
+    $dialect = $req['dialect'] ?? 'sqlite';
     if ($kind === 'run') {
+        $reason = dbSkipReason($dialect);
+        if ($reason !== '') {
+            writeMsg(['kind' => 'skipped', 'case' => $req['case'], 'dialect' => $dialect, 'reason' => $reason]);
+            return;
+        }
         $db = seedDb($schema, $seed);
         $op = makeOp($impl, $req['case'], $db, $cases, $bundles);
         $samples = collect($op, $req['warmup'], $req['iterations']);
-        writeMsg(['kind' => 'run', 'case' => $req['case'], 'samplesMs' => $samples]);
+        writeMsg(['kind' => 'run', 'case' => $req['case'], 'dialect' => $dialect, 'samplesMs' => $samples]);
     } elseif ($kind === 'throughput') {
+        $reason = dbSkipReason($dialect);
+        if ($reason !== '') {
+            writeMsg(['kind' => 'skipped', 'case' => $req['case'], 'dialect' => $dialect, 'reason' => $reason]);
+            return;
+        }
         $db = seedDb($schema, $seed);
         $op = makeOp($impl, $req['case'], $db, $cases, $bundles);
         $t0 = hrtime(true);
@@ -411,17 +442,31 @@ function handle(array $req, string $impl, array $schema, array $seed, array $cas
             $completed++;
         }
         $elapsed = (hrtime(true) - $t0) / 1e6;
-        writeMsg(['kind' => 'throughput', 'case' => $req['case'], 'elapsedMs' => $elapsed, 'completed' => $completed]);
+        writeMsg(['kind' => 'throughput', 'case' => $req['case'], 'dialect' => $dialect, 'elapsedMs' => $elapsed, 'completed' => $completed]);
     } elseif ($kind === 'micro') {
+        if ($impl === 'sql' && $dialect !== 'sqlite') {
+            writeMsg(['kind' => 'skipped', 'case' => $req['case'], 'dialect' => $dialect, 'reason' => 'hand-SQL baseline is sqlite-shaped']);
+            return;
+        }
+        // The PHP micro mock is a MockPDO over in-proc sqlite; a PG/MySQL-rendered
+        // statement (e.g. `= ANY(?)` / `JSON_TABLE(?)`) is not valid sqlite, so the
+        // non-sqlite micro cannot run through the mock harness. Skipped honestly (the
+        // SQLite micro client-path IS measured).
+        if ($dialect !== 'sqlite') {
+            writeMsg(['kind' => 'skipped', 'case' => $req['case'], 'dialect' => $dialect, 'reason' => "php micro mock is MockPDO over sqlite; the $dialect-rendered SQL (= ANY / JSON_TABLE) is not valid sqlite — non-sqlite micro not run through the mock"]);
+            return;
+        }
         $db = new MockPDO($schema);
-        $op = makeOp($impl, $req['case'], $db, $cases, $bundles);
+        // PER-DIALECT bundle map (micro renders the dialect's SQL/placeholder form).
+        $microCases = $CASES_BY_DIALECT[$dialect];
+        $op = makeOp($impl, $req['case'], $db, $microCases, $microCases);
         $samples = collect($op, $req['warmup'], $req['iterations']);
-        writeMsg(['kind' => 'micro', 'case' => $req['case'], 'samplesMs' => $samples]);
+        writeMsg(['kind' => 'micro', 'case' => $req['case'], 'dialect' => $dialect, 'samplesMs' => $samples]);
     } elseif ($kind === 'rss') {
         writeMsg(['kind' => 'rss', 'rssBytes' => memory_get_usage(true)]);
     } elseif ($kind === 'cost') {
         [$q, $r] = cost($impl, $req['case'], $schema, $seed, $cases, $bundles);
-        writeMsg(['kind' => 'cost', 'case' => $req['case'], 'queries' => $q, 'rows' => $r]);
+        writeMsg(['kind' => 'cost', 'case' => $req['case'], 'dialect' => $dialect, 'queries' => $q, 'rows' => $r]);
     } elseif ($kind === 'shutdown') {
         exit(0);
     }

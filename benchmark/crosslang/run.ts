@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { runMatrix, DEFAULT_CONFIG, type HarnessConfig } from './harness.js';
 import { renderReport } from './report.js';
-import { CROSSLANG_CASE_IDS, type CrosslangCaseId } from './contract.js';
+import { CROSSLANG_CASE_IDS, CROSSLANG_DIALECTS, type CrosslangCaseId, type CrosslangDialect } from './contract.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT_MD = resolve(HERE, '../CROSS-LANG.md');
@@ -31,6 +31,10 @@ function config(): HarnessConfig {
   const cases = casesEnv
     ? (casesEnv.split(',').map((s) => s.trim()).filter(Boolean) as CrosslangCaseId[])
     : ([...CROSSLANG_CASE_IDS] as CrosslangCaseId[]);
+  const dialectsEnv = process.env.CROSSLANG_DIALECTS;
+  const dialects = dialectsEnv
+    ? (dialectsEnv.split(',').map((s) => s.trim()).filter(Boolean) as CrosslangDialect[])
+    : ([...CROSSLANG_DIALECTS] as CrosslangDialect[]);
   return {
     ...DEFAULT_CONFIG,
     iterations: iter,
@@ -39,12 +43,13 @@ function config(): HarnessConfig {
     microIterations: Number(process.env.BENCH_MICRO_ITER ?? DEFAULT_CONFIG.microIterations),
     microWarmup: Number(process.env.BENCH_MICRO_WARMUP ?? DEFAULT_CONFIG.microWarmup),
     cases,
+    dialects,
   };
 }
 
 async function main(): Promise<void> {
   const cfg = config();
-  console.error(`Cross-language bench — iterations=${cfg.iterations} warmup=${cfg.warmup} micro=${cfg.microIterations} cases=${cfg.cases?.length}\n`);
+  console.error(`Cross-language bench — iterations=${cfg.iterations} warmup=${cfg.warmup} micro=${cfg.microIterations} cases=${cfg.cases?.length} dialects=${cfg.dialects?.join(',')}\n`);
 
   // Regenerate the shared bundle artifact (consume-only compile — src untouched).
   console.error('Generating makeSQL bundles (generated/bundles.json)…');

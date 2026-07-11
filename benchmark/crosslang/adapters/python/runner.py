@@ -2,29 +2,36 @@
 """litedbmodel cross-language adapter RUNNER — Python (epic #44).
 
 Speaks the line-delimited JSON contract (../../contract.ts) over stdin/stdout for the
-three Python cells: sql / codegen / ir.
+three Python cells: sql / codegen / ir. Every case-scoped request carries a `dialect`
+(sqlite/postgres/mysql):
 
-  sql     — hand-optimized raw SQL via stdlib sqlite3 (baseline 1.0×)
-  codegen — the makeSQL bundle resident as a native literal + fingerprint-verified ONCE at
-            load (no per-run disk read/parse), executed via the litedbmodel_runtime thin runtime
-  ir      — the bundle loaded FROM the generated JSON on disk, executed via the SAME runtime
+  micro     — runs against the PER-DIALECT bundle (different SQL/`?`→`$N`/JSON-array
+              render forms) with the mock driver → the CLIENT-PATH cost per dialect.
+  DB-backed — sqlite via the in-proc stdlib sqlite3 driver; postgres/mysql via the
+              shipped `PostgresDriver`/`MysqlDriver` (psycopg / PyMySQL) through the
+              SAME `execute_bundle`/`read_bundle`/`execute_transaction_bundle` runtime.
 
-The bundle artifact (generated/bundles.json) is the language-neutral §8 artifact the TS
-generator emits; Python consumes it unchanged — identical logical work to every other cell.
+  sql     — hand-optimized raw SQL via stdlib sqlite3 (baseline 1.0×; sqlite only)
+  codegen — the bc-GENERATED module (generated/codegen/python/<case>.py) IMPORTED +
+            fingerprint-verified at load, executed via `bind(handlers)` — a distinct
+            code entry from ir. (Honest: at this bc version the generated module still
+            delegates to the shared runtime — codegen ≈ ir is expected; see CROSS-LANG.md.)
+  ir      — the bundle loaded FROM the generated JSON on disk, executed via the runtime
 """
 
 from __future__ import annotations
 
-import hashlib
+import importlib.util
 import json
 import os
+import re
 import sys
 import time
+import traceback
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent.parent.parent
-# litedbmodel_runtime ships under <repo>/python.
 sys.path.insert(0, str(REPO / "python"))
 
 from litedbmodel_runtime import (  # noqa: E402
@@ -35,56 +42,71 @@ from litedbmodel_runtime import (  # noqa: E402
 from litedbmodel_runtime.driver import SqliteDriver  # noqa: E402
 
 BUNDLES_PATH = HERE.parent.parent / "generated" / "bundles.json"
+CODEGEN_DIR = HERE.parent.parent / "generated" / "codegen" / "python"
 
 IMPL = "sql"
 for a in sys.argv[1:]:
     if a.startswith("--impl="):
         IMPL = a.split("=", 1)[1]
 
-# The generated artifact (schema + seed + 8 case bundles + fingerprints).
 _RAW = BUNDLES_PATH.read_text()
 ARTIFACT = json.loads(_RAW)
-CASES = {c["case"]: c for c in ARTIFACT["cases"]}
+# Per-dialect case maps.
+CASES_BY_DIALECT = {d: {c["case"]: c for c in blk["cases"]} for d, blk in ARTIFACT["dialects"].items()}
 SCHEMA = ARTIFACT["schema"]
 SEED = ARTIFACT["seed"]
 
+# Connection config (matches docker-compose.test.yml + WS6 host defaults).
+def _pg_cfg():
+    return dict(host=os.environ.get("TEST_DB_HOST", "localhost"), port=int(os.environ.get("TEST_DB_PORT", "5433")),
+                user=os.environ.get("TEST_DB_USER", "testuser"), password=os.environ.get("TEST_DB_PASSWORD", "testpass"),
+                dbname=os.environ.get("TEST_DB_NAME", "testdb"))
+def _mysql_cfg():
+    return dict(host=os.environ.get("TEST_MYSQL_HOST", "localhost"), port=int(os.environ.get("TEST_MYSQL_PORT", "3307")),
+                user=os.environ.get("TEST_MYSQL_USER", "testuser"), password=os.environ.get("TEST_MYSQL_PASSWORD", "testpass"),
+                dbname=os.environ.get("TEST_MYSQL_DB", "testdb"))
 
-def _canon(x):
-    if isinstance(x, dict):
-        return "{" + ",".join(f"{json.dumps(k)}:{_canon(v)}" for k, v in sorted(x.items())) + "}"
-    if isinstance(x, list):
-        return "[" + ",".join(_canon(v) for v in x) + "]"
-    return json.dumps(x)
+# Real-DB schema/seed (mirror of domain.ts PG_SCHEMA / MYSQL_SCHEMA).
+PG_SCHEMA = [
+    "DROP TABLE IF EXISTS comments CASCADE", "DROP TABLE IF EXISTS posts CASCADE",
+    "DROP TABLE IF EXISTS users CASCADE", "DROP TABLE IF EXISTS uniq CASCADE",
+    "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, post_count INTEGER NOT NULL DEFAULT 0)",
+    "CREATE TABLE posts (id SERIAL PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, views INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)",
+    "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)",
+    "CREATE TABLE uniq (name TEXT NOT NULL, s0 TEXT, f0 TEXT)",
+]
+PG_SEQ_RESET = ["SELECT setval('posts_id_seq', (SELECT MAX(id) FROM posts))"]
+MYSQL_SCHEMA = [
+    "SET FOREIGN_KEY_CHECKS = 0", "DROP TABLE IF EXISTS comments", "DROP TABLE IF EXISTS posts",
+    "DROP TABLE IF EXISTS users", "DROP TABLE IF EXISTS uniq", "SET FOREIGN_KEY_CHECKS = 1",
+    "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL, post_count INT NOT NULL DEFAULT 0)",
+    "CREATE TABLE posts (id INT AUTO_INCREMENT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), views INT NOT NULL DEFAULT 0, created_at VARCHAR(255) NOT NULL)",
+    "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255) NOT NULL, created_at VARCHAR(255) NOT NULL)",
+    "CREATE TABLE uniq (name VARCHAR(255) NOT NULL, s0 VARCHAR(255), f0 VARCHAR(255))",
+]
 
 
-def _load_bundles(impl):
-    """codegen: verify each baked bundle's fingerprint once (fail-closed) and keep it resident.
-    ir: reparse the bundle JSON from disk. Both yield the SAME case map; the difference is the
-    cold-start integrity check + parse-source, which is the codegen/ir distinction."""
-    if impl == "codegen":
-        for c in ARTIFACT["cases"]:
-            digest = "fp:" + hashlib.sha256(_canon(c["bundle"]).encode()).hexdigest()[:16]
-            # Recompute a stable integrity hash of the resident bundle (the baked-artifact
-            # fail-closed check). A mismatch of the STORED value below would abort the cell.
-            c["_integrity"] = digest
-        return CASES
-    if impl == "ir":
-        reparsed = json.loads(_RAW)
-        return {c["case"]: c for c in reparsed["cases"]}
-    return CASES
+def _load_codegen_modules():
+    """Import each bc-GENERATED python module (generated/codegen/python/<case>.py) and
+    verify its baked fingerprint (fail-closed) — the TRUE generated-code load path."""
+    mods = {}
+    for case_id in CASES_BY_DIALECT["sqlite"]:
+        path = CODEGEN_DIR / f"{case_id}.py"
+        spec = importlib.util.spec_from_file_location(f"gen_{case_id}", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # runs the module's own fail-closed load checks
+        mods[case_id] = mod
+    return mods
 
 
-BUNDLES = _load_bundles(IMPL)
+CODEGEN_MODS = _load_codegen_modules() if IMPL == "codegen" else {}
 
 
-# ── sql baseline (hand-optimized raw SQL) ─────────────────────────────────────
-def seed_conn():
+# ── sql baseline (hand-optimized raw SQL; sqlite only) ────────────────────────
+def seed_sqlite():
     d = SqliteDriver.in_memory(list(SCHEMA))
     for s in SEED:
         d.prepare(s).run([])
-    # stdlib sqlite3 auto-opens a transaction on DML; commit the seed and switch to
-    # autocommit so the runtime's explicit BEGIN/COMMIT own transaction control
-    # (otherwise the runtime's BEGIN collides with an implicit open transaction).
     d.conn.commit()
     d.conn.isolation_level = None
     return d
@@ -93,46 +115,38 @@ def seed_conn():
 def sql_op(case_id, driver):
     p = driver.prepare
     if case_id == "find":
-        return lambda: p(
-            "SELECT id, author_id, title, status, views, created_at FROM posts WHERE author_id = ? AND status = ? AND created_at >= ? ORDER BY id ASC"
-        ).all([1, "live", "2026-02-01"])
+        return lambda: p("SELECT id, author_id, title, status, views, created_at FROM posts WHERE author_id = ? AND status = ? AND created_at >= ? ORDER BY id ASC").all([1, "live", "2026-02-01"])
     if case_id == "complexWhere":
-        return lambda: p(
-            "SELECT id, author_id, title, status, views FROM posts WHERE author_id = ? AND created_at >= ? AND title LIKE ? AND id IN (?, ?, ?, ?, ?) ORDER BY id ASC"
-        ).all([1, "2026-02-01", "post-%", 1, 2, 3, 4, 5])
+        return lambda: p("SELECT id, author_id, title, status, views FROM posts WHERE author_id = ? AND created_at >= ? AND title LIKE ? AND id IN (?, ?, ?, ?, ?) ORDER BY id ASC").all([1, "2026-02-01", "post-%", 1, 2, 3, 4, 5])
     if case_id == "inList":
-        ids = list(range(1, 11))
-        ph = ", ".join("?" for _ in ids)
+        ids = list(range(1, 11)); ph = ", ".join("?" for _ in ids)
         return lambda: p(f"SELECT id, title FROM posts WHERE id IN ({ph}) ORDER BY id ASC").all(ids)
     if case_id == "belongsTo":
         def run():
             posts = p("SELECT id, author_id, title FROM posts WHERE author_id = ? ORDER BY id ASC").all([1])
-            aids = sorted({r["author_id"] for r in posts})
-            ph = ", ".join("?" for _ in aids)
+            aids = sorted({r["author_id"] for r in posts}); ph = ", ".join("?" for _ in aids)
             p(f"SELECT id, name FROM users WHERE id IN ({ph})").all(aids)
         return run
     if case_id == "hasMany":
         def run():
             posts = p("SELECT id, author_id, title FROM posts WHERE author_id = ? ORDER BY id ASC").all([1])
-            ids = [r["id"] for r in posts]
-            ph = ", ".join("?" for _ in ids)
+            ids = [r["id"] for r in posts]; ph = ", ".join("?" for _ in ids)
             p(f"SELECT id, post_id, body FROM comments WHERE post_id IN ({ph})").all(ids)
         return run
     if case_id == "hasManyLimit":
         def run():
             posts = p("SELECT id, author_id, title FROM posts WHERE author_id = ? ORDER BY id ASC").all([1])
-            ids = [r["id"] for r in posts]
-            ph = ", ".join("?" for _ in ids)
+            ids = [r["id"] for r in posts]; ph = ", ".join("?" for _ in ids)
             p(f"SELECT id, post_id, body FROM (SELECT id, post_id, body, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id DESC) rn FROM comments WHERE post_id IN ({ph})) WHERE rn <= 3").all(ids)
         return run
     if case_id == "batchInsert":
-        rows = CASES["batchInsert"]["input"]["rows"]
+        rows = CASES_BY_DIALECT["sqlite"]["batchInsert"]["input"]["rows"]
         cols = ["author_id", "title", "status", "views", "created_at"]
         vals = ",".join("(" + ",".join("?" for _ in cols) + ")" for _ in rows)
         flat = [r[c] for r in rows for c in cols]
         return lambda: p(f"INSERT INTO posts ({','.join(cols)}) VALUES {vals}").run(flat)
     if case_id == "writeTxGate":
-        inp = CASES["writeTxGate"]["input"]
+        inp = CASES_BY_DIALECT["sqlite"]["writeTxGate"]["input"]
         def run():
             author = p("SELECT 1 FROM users WHERE id = ?").all([inp["author_id"]])
             if not author:
@@ -144,12 +158,10 @@ def sql_op(case_id, driver):
     raise ValueError(f"unknown case {case_id}")
 
 
-# ── litedbmodel runtime (codegen / ir) op ─────────────────────────────────────
-def lm_op(case_id, driver):
-    c = BUNDLES[case_id]
-    bundle = c["bundle"]
-    kind = c["kind"]
-    inp = c["input"]
+# ── litedbmodel runtime (ir) op ────────────────────────────────────────────────
+def lm_op(case_id, dialect, driver):
+    c = CASES_BY_DIALECT[dialect][case_id]
+    bundle, kind, inp = c["bundle"], c["kind"], c["input"]
     if kind in ("batch", "tx"):
         scope = inp if kind == "tx" else {}
         return lambda: execute_transaction_bundle(bundle, scope, driver)
@@ -159,56 +171,120 @@ def lm_op(case_id, driver):
     return lambda: execute_bundle(bundle, inp, driver)
 
 
-def make_op(case_id, driver):
+# ── codegen op — execute THROUGH the bc-generated module's bind() ─────────────
+def codegen_op(case_id, dialect, driver):
+    """Run the case via the imported generated module's bind(handlers). The generated
+    module bakes the IR; the __makeSqlNode handler renders + executes each node against
+    the driver (via the runtime's read graph render). Distinct entry from ir's
+    execute_bundle. For write/relation the generated read module doesn't cover the tx/
+    stitch, so those defer to the runtime (same as ir) after the generated load ran."""
+    c = CASES_BY_DIALECT[dialect][case_id]
+    mod = CODEGEN_MODS[case_id]
+    # The generated module exposes bind(handlers) -> {Component: fn}. We build a handler
+    # that renders this node's read graph against the scope and runs it on the driver.
+    if c["kind"] in ("read", "relation"):
+        from litedbmodel_runtime.static_bundle import render_read_primary
+        read_graph = c["bundle"]["readGraph"]
+
+        def handler(ports, ctx):
+            scope = ports.get("__scope", {})
+            rendered = render_read_primary(read_graph, scope)
+            rows = driver.prepare(rendered["sql"]).all(rendered["params"])
+            return {"ok": rows}
+
+        bound = mod.bind({"__makeSqlNode": handler})
+        entry = mod.COMPONENT_NAMES[0]
+        run = bound[entry]
+        if c["kind"] == "read":
+            return lambda: run(c["input"])
+        # relation: generated primary read (1 query), then ONE relation batch query
+        # (run_relation_op) — 2 queries total, matching the ir path's fairness count.
+        from litedbmodel_runtime.relation import run_relation_op
+        rel_op = c["bundle"]["relations"][c["withRelation"]]
+
+        def rel():
+            parents = run(c["input"])
+            plist = parents if isinstance(parents, list) else []
+            run_relation_op(rel_op, plist, driver)
+            return parents
+        return rel
+    # write path — defer to runtime (generated module ran its fail-closed load already).
+    return lm_op(case_id, dialect, driver)
+
+
+def make_op(case_id, dialect, driver):
     if IMPL == "sql":
         return sql_op(case_id, driver)
-    return lm_op(case_id, driver)
+    if IMPL == "codegen":
+        return codegen_op(case_id, dialect, driver)
+    return lm_op(case_id, dialect, driver)
 
 
-# ── fairness cost probe: DML statements + rows read (excl. tx-control) ─────────
-import re  # noqa: E402
+# ── DB-backed connection per dialect (lazy) ────────────────────────────────────
+_LIVE = {}
 
+
+def live_driver(dialect):
+    if dialect in _LIVE:
+        return _LIVE[dialect]
+    from litedbmodel_runtime import PostgresDriver, MysqlDriver
+    if dialect == "postgres":
+        d = PostgresDriver.connect(**_pg_cfg())
+        d.exec_ddl(list(PG_SCHEMA))
+        for s in SEED:
+            d.prepare(s).run([])
+        d.exec_ddl(list(PG_SEQ_RESET))
+    else:
+        d = MysqlDriver.connect(**_mysql_cfg())
+        d.exec_ddl(list(MYSQL_SCHEMA))
+        for s in SEED:
+            d.prepare(s).run([])
+    _LIVE[dialect] = d
+    return d
+
+
+def db_supported(dialect):
+    if IMPL == "sql" and dialect != "sqlite":
+        return (False, f"sql baseline is hand-written sqlite SQL — not run against {dialect}")
+    return (True, None)
+
+
+def make_db_op(case_id, dialect):
+    if dialect == "sqlite":
+        driver = seed_sqlite()
+        return make_op(case_id, "sqlite", driver), (lambda: driver.close())
+    driver = live_driver(dialect)
+    return make_op(case_id, dialect, driver), (lambda: None)
+
+
+# ── fairness cost probe (sqlite; queries/op + rows/op) ─────────────────────────
 TX_CTRL = re.compile(r"^\s*(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA)\b", re.I)
 
 
 class _CountingStmt:
     def __init__(self, stmt, counters):
-        self._stmt = stmt
-        self._c = counters
-
+        self._stmt = stmt; self._c = counters
     def all(self, params):
-        self._c["q"] += 1
-        r = self._stmt.all(params)
-        self._c["r"] += len(r) if isinstance(r, list) else 0
-        return r
-
+        self._c["q"] += 1; r = self._stmt.all(params); self._c["r"] += len(r) if isinstance(r, list) else 0; return r
     def run(self, params):
-        self._c["q"] += 1
-        return self._stmt.run(params)
+        self._c["q"] += 1; return self._stmt.run(params)
 
 
 class _CountingDriver:
-    """Wraps a Driver, counting DML statements + rows read (tx-control excluded)."""
-
     def __init__(self, inner):
-        self._inner = inner
-        self.counters = {"q": 0, "r": 0}
-
+        self._inner = inner; self.counters = {"q": 0, "r": 0}
     def prepare(self, sql):
         stmt = self._inner.prepare(sql)
-        if TX_CTRL.match(sql):
-            return stmt
-        return _CountingStmt(stmt, self.counters)
-
+        return stmt if TX_CTRL.match(sql) else _CountingStmt(stmt, self.counters)
     def close(self):
         self._inner.close()
 
 
 def cost(case_id):
-    inner = seed_conn()
+    inner = seed_sqlite()
     driver = _CountingDriver(inner)
     try:
-        make_op(case_id, driver)()
+        make_op(case_id, "sqlite", driver)()
     finally:
         driver.close()
     return driver.counters["q"], driver.counters["r"]
@@ -220,9 +296,7 @@ def collect(op, warmup, iterations):
         op()
     samples = [0.0] * iterations
     for i in range(iterations):
-        t0 = time.perf_counter()
-        op()
-        samples[i] = (time.perf_counter() - t0) * 1000.0
+        t0 = time.perf_counter(); op(); samples[i] = (time.perf_counter() - t0) * 1000.0
     return samples
 
 
@@ -252,10 +326,8 @@ def _fixture(sql):
 class _MockPrepared:
     def __init__(self, sql):
         self._rows = _fixture(sql)
-
     def all(self, params):
         return self._rows
-
     def run(self, params):
         from litedbmodel_runtime.driver import RunInfo
         return RunInfo(1, 41)
@@ -264,54 +336,62 @@ class _MockPrepared:
 class MockDriver:
     def prepare(self, sql):
         return _MockPrepared(sql)
-
     def close(self):
         pass
 
 
 def write(obj):
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
+    sys.stdout.write(json.dumps(obj) + "\n"); sys.stdout.flush()
 
 
 def handle(req):
     kind = req["kind"]
     if kind == "run":
-        driver = seed_conn()
-        op = make_op(req["case"], driver)
-        samples = collect(op, req["warmup"], req["iterations"])
-        driver.close()
-        write({"kind": "run", "case": req["case"], "samplesMs": samples})
+        dialect = req["dialect"]
+        ok, reason = db_supported(dialect)
+        if not ok:
+            write({"kind": "skipped", "case": req["case"], "dialect": dialect, "reason": reason}); return
+        op, teardown = make_db_op(req["case"], dialect)
+        samples = collect(op, req["warmup"], req["iterations"]); teardown()
+        write({"kind": "run", "case": req["case"], "dialect": dialect, "samplesMs": samples})
     elif kind == "throughput":
-        driver = seed_conn()
-        op = make_op(req["case"], driver)
-        t0 = time.perf_counter()
-        completed = 0
+        dialect = req["dialect"]
+        ok, reason = db_supported(dialect)
+        if not ok:
+            write({"kind": "skipped", "case": req["case"], "dialect": dialect, "reason": reason}); return
+        op, teardown = make_db_op(req["case"], dialect)
+        t0 = time.perf_counter(); completed = 0
         for _ in range(req["iterations"]):
-            op()
-            completed += 1
-        elapsed = (time.perf_counter() - t0) * 1000.0
-        driver.close()
-        write({"kind": "throughput", "case": req["case"], "elapsedMs": elapsed, "completed": completed})
+            op(); completed += 1
+        elapsed = (time.perf_counter() - t0) * 1000.0; teardown()
+        write({"kind": "throughput", "case": req["case"], "dialect": dialect, "elapsedMs": elapsed, "completed": completed})
     elif kind == "micro":
+        dialect = req["dialect"]
+        if IMPL == "sql" and dialect != "sqlite":
+            write({"kind": "skipped", "case": req["case"], "dialect": dialect, "reason": "hand-SQL baseline is sqlite-shaped"}); return
         driver = MockDriver()
-        op = make_op(req["case"], driver)
+        op = make_op(req["case"], dialect, driver)
         samples = collect(op, req["warmup"], req["iterations"])
-        write({"kind": "micro", "case": req["case"], "samplesMs": samples})
+        write({"kind": "micro", "case": req["case"], "dialect": dialect, "samplesMs": samples})
     elif kind == "rss":
         try:
             import resource
             rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-            # macOS reports bytes, Linux KiB.
             if sys.platform != "darwin":
                 rss *= 1024
         except Exception:
             rss = 0
         write({"kind": "rss", "rssBytes": rss})
     elif kind == "cost":
+        dialect = req["dialect"]
         q, r = cost(req["case"])
-        write({"kind": "cost", "case": req["case"], "queries": q, "rows": r})
+        write({"kind": "cost", "case": req["case"], "dialect": dialect, "queries": q, "rows": r})
     elif kind == "shutdown":
+        for d in _LIVE.values():
+            try:
+                d.close()
+            except Exception:
+                pass
         sys.exit(0)
 
 
@@ -324,12 +404,10 @@ def main():
         try:
             req = json.loads(line)
         except Exception as e:  # noqa: BLE001
-            write({"kind": "error", "message": f"bad request line: {e}"})
-            continue
+            write({"kind": "error", "message": f"bad request line: {e}"}); continue
         try:
             handle(req)
         except Exception as e:  # noqa: BLE001
-            import traceback
             write({"kind": "error", "message": str(e), "stack": traceback.format_exc()})
 
 

@@ -21,11 +21,22 @@ use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::time::Instant;
 
-// ── generated artifact (schema + seed + 8 case bundles) ──────────────────────
+// ── generated artifact (schema + seed + PER-DIALECT case bundles) ────────────
+// `cases` is the sqlite map (the in-proc DB-backed path + fairness cost denominator);
+// `cases_by_dialect` carries all 3 dialects for the per-dialect MICRO axis (#44 gap #1).
 struct Artifact {
     schema: Vec<String>,
     seed: Vec<String>,
     cases: HashMap<String, J>,
+    cases_by_dialect: HashMap<String, HashMap<String, J>>,
+}
+
+fn cases_map(block: &J) -> HashMap<String, J> {
+    let mut cases = HashMap::new();
+    for c in block["cases"].as_array().unwrap() {
+        cases.insert(c["case"].as_str().unwrap().to_string(), c.clone());
+    }
+    cases
 }
 
 fn load_artifact(path: &str) -> Artifact {
@@ -43,14 +54,16 @@ fn load_artifact(path: &str) -> Artifact {
         .iter()
         .map(|s| s.as_str().unwrap().to_string())
         .collect();
-    let mut cases = HashMap::new();
-    for c in j["cases"].as_array().unwrap() {
-        cases.insert(c["case"].as_str().unwrap().to_string(), c.clone());
+    let mut cases_by_dialect = HashMap::new();
+    for (d, block) in j["dialects"].as_object().unwrap() {
+        cases_by_dialect.insert(d.clone(), cases_map(block));
     }
+    let cases = cases_by_dialect.get("sqlite").cloned().unwrap();
     Artifact {
         schema,
         seed,
         cases,
+        cases_by_dialect,
     }
 }
 
@@ -628,10 +641,31 @@ fn main() {
     }
 }
 
+// The Rust bench adapter drives the in-proc SqliteDriver for the DB-backed axis; the
+// live PG/MySQL wiring (behind the runtime's async `livedb` cargo feature — tokio +
+// deadpool/sqlx) is NOT wired into this bench adapter in this pass, so PG/MySQL
+// DB-backed is reported as an explicit per-cell skip (never silently dropped). The
+// per-dialect MICRO axis IS covered (the mock renders each dialect's bundle).
+fn db_skip_reason(dialect: &str) -> Option<String> {
+    match dialect {
+        "sqlite" => None,
+        other => Some(format!(
+            "rust bench adapter drives in-proc SqliteDriver only; live {other} (runtime `livedb` async feature: tokio+deadpool/sqlx) not wired into this bench adapter"
+        )),
+    }
+}
+
 fn handle(kind: &str, req: &J, impl_: &str, art: &Artifact) {
     match kind {
         "run" => {
             let case = req["case"].as_str().unwrap();
+            let dialect = req["dialect"].as_str().unwrap_or("sqlite");
+            if let Some(reason) = db_skip_reason(dialect) {
+                write_line(
+                    &serde_json::json!({"kind":"skipped","case":case,"dialect":dialect,"reason":reason}),
+                );
+                return;
+            }
             let warmup = req["warmup"].as_u64().unwrap() as usize;
             let iters = req["iterations"].as_u64().unwrap() as usize;
             let d = seed_driver(art);
@@ -643,10 +677,19 @@ fn handle(kind: &str, req: &J, impl_: &str, art: &Artifact) {
                     run_lm(&cjson, &d);
                 }
             });
-            write_line(&serde_json::json!({"kind":"run","case":case,"samplesMs":samples}));
+            write_line(
+                &serde_json::json!({"kind":"run","case":case,"dialect":dialect,"samplesMs":samples}),
+            );
         }
         "throughput" => {
             let case = req["case"].as_str().unwrap();
+            let dialect = req["dialect"].as_str().unwrap_or("sqlite");
+            if let Some(reason) = db_skip_reason(dialect) {
+                write_line(
+                    &serde_json::json!({"kind":"skipped","case":case,"dialect":dialect,"reason":reason}),
+                );
+                return;
+            }
             let iters = req["iterations"].as_u64().unwrap() as usize;
             let d = seed_driver(art);
             let cjson = art.cases[case].clone();
@@ -660,25 +703,38 @@ fn handle(kind: &str, req: &J, impl_: &str, art: &Artifact) {
             }
             let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
             write_line(
-                &serde_json::json!({"kind":"throughput","case":case,"elapsedMs":elapsed,"completed":iters}),
+                &serde_json::json!({"kind":"throughput","case":case,"dialect":dialect,"elapsedMs":elapsed,"completed":iters}),
             );
         }
         "micro" => {
             let case = req["case"].as_str().unwrap();
+            let dialect = req["dialect"].as_str().unwrap_or("sqlite");
+            if impl_ == "sql" && dialect != "sqlite" {
+                write_line(
+                    &serde_json::json!({"kind":"skipped","case":case,"dialect":dialect,"reason":"hand-SQL baseline is sqlite-shaped"}),
+                );
+                return;
+            }
             let warmup = req["warmup"].as_u64().unwrap() as usize;
             let iters = req["iterations"].as_u64().unwrap() as usize;
             let mock = MockDriver;
-            let cjson = art.cases[case].clone();
+            // PER-DIALECT bundle — the render/placeholder/array form differs.
+            let cjson = art.cases_by_dialect[dialect][case].clone();
             let samples = collect(warmup, iters, || run_micro(impl_, &cjson, &mock));
-            write_line(&serde_json::json!({"kind":"micro","case":case,"samplesMs":samples}));
+            write_line(
+                &serde_json::json!({"kind":"micro","case":case,"dialect":dialect,"samplesMs":samples}),
+            );
         }
         "rss" => {
             write_line(&serde_json::json!({"kind":"rss","rssBytes":rss_bytes()}));
         }
         "cost" => {
             let case = req["case"].as_str().unwrap();
+            let dialect = req["dialect"].as_str().unwrap_or("sqlite");
             let (q, r) = cost(impl_, case, art);
-            write_line(&serde_json::json!({"kind":"cost","case":case,"queries":q,"rows":r}));
+            write_line(
+                &serde_json::json!({"kind":"cost","case":case,"dialect":dialect,"queries":q,"rows":r}),
+            );
         }
         "shutdown" => std::process::exit(0),
         _ => {}

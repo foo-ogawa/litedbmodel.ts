@@ -76,6 +76,17 @@ export interface CaseResult {
   // Fairness evidence (from the `cost` probe): queries + rows per op.
   queries?: number;
   rows?: number;
+  // An HONEST per-cell "did not run" reason (e.g. no live PG driver, or the sql
+  // baseline on a non-sqlite DB-backed cell) — rendered as a note, never dropped.
+  skipped?: string;
+}
+
+// Per-dialect results for one cell: the DB-backed cases + the micro cases compiled
+// for THAT dialect (the render/placeholder/array form differs per dialect).
+export interface DialectResult {
+  cases: Record<string, CaseResult>;
+  micro: Record<string, LatencyStats>;
+  microSkipped: Record<string, string>;
 }
 
 export interface CellResult {
@@ -85,8 +96,8 @@ export interface CellResult {
   rssBytes?: number;
   // Compiled-artifact size in bytes (Rust/Go binaries). Undefined for interpreted cells.
   artifactSizeBytes?: number;
-  cases: Record<string, CaseResult>;
-  micro: Record<string, LatencyStats>;
+  // Per-dialect (sqlite/postgres/mysql) case + micro results.
+  dialects: Record<string, DialectResult>;
   pending?: boolean;
   // A cell that failed to run (toolchain/build error) carries an error note so the
   // report renders an honest failure row rather than silently dropping the cell.
@@ -98,5 +109,6 @@ export interface MatrixResult {
   iterations: number;
   warmup: number;
   microIterations: number;
+  dialects: readonly string[];
   cells: CellResult[];
 }

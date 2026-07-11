@@ -12,12 +12,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import {
-  encodeMessage, decodeMessages, CROSSLANG_CASE_IDS, CROSSLANG_MICRO_CASE_IDS,
-  type Request, type Response, type CrosslangCaseId, type CrosslangMicroCaseId,
+  encodeMessage, decodeMessages, CROSSLANG_CASE_IDS, CROSSLANG_MICRO_CASE_IDS, CROSSLANG_DIALECTS,
+  type Request, type Response, type CrosslangCaseId, type CrosslangMicroCaseId, type CrosslangDialect,
 } from './contract.js';
 import {
   summarizeLatency, throughputOpsPerSec, coldStartMs,
-  type CellResult, type CaseResult, type MatrixResult,
+  type CellResult, type CaseResult, type MatrixResult, type DialectResult,
 } from './metrics.js';
 import { liveCells, type CellSpec } from './registry.js';
 
@@ -29,6 +29,7 @@ export interface HarnessConfig {
   microWarmup: number;
   microIterations: number;
   cases?: CrosslangCaseId[];
+  dialects?: CrosslangDialect[];
   responseTimeoutMs?: number;
 }
 
@@ -129,29 +130,41 @@ async function runCell(spec: CellSpec, config: HarnessConfig): Promise<CellResul
   const proc = new AdapterProcess(spec.spawn!);
   const cases = config.cases ?? [...CROSSLANG_CASE_IDS];
   const microCases = CROSSLANG_MICRO_CASE_IDS.filter((c) => (cases as string[]).includes(c)) as CrosslangMicroCaseId[];
+  const dialects = config.dialects ?? [...CROSSLANG_DIALECTS];
 
   try {
     const ready = await proc.awaitReady(timeout);
     const cold = coldStartMs(proc.spawnedAtEpochMs, ready.readyAtEpochMs);
 
-    const caseResults: Record<string, CaseResult> = {};
-    for (const caseId of cases) {
-      const cost = (await proc.request({ kind: 'cost', case: caseId }, timeout)) as Extract<Response, { kind: 'cost' }>;
-      const run = (await proc.request({ kind: 'run', case: caseId, warmup: config.warmup, iterations: config.iterations }, timeout)) as Extract<Response, { kind: 'run' }>;
-      const tp = (await proc.request({ kind: 'throughput', case: caseId, iterations: config.throughputIterations, concurrency: config.concurrency }, timeout)) as Extract<Response, { kind: 'throughput' }>;
-      caseResults[caseId] = {
-        case: caseId,
-        latency: summarizeLatency(run.samplesMs),
-        throughputOpsPerSec: throughputOpsPerSec(tp.completed, tp.elapsedMs),
-        queries: cost.queries,
-        rows: cost.rows,
-      };
-    }
+    const dialectResults: Record<string, DialectResult> = {};
+    // For each dialect: DB-backed cases (real DB) + micro cases (per-dialect bundle).
+    for (const dialect of dialects) {
+      const caseResults: Record<string, CaseResult> = {};
+      for (const caseId of cases) {
+        const cost = (await proc.request({ kind: 'cost', case: caseId, dialect }, timeout)) as Extract<Response, { kind: 'cost' } | { kind: 'skipped' }>;
+        const run = (await proc.request({ kind: 'run', case: caseId, dialect, warmup: config.warmup, iterations: config.iterations }, timeout)) as Extract<Response, { kind: 'run' } | { kind: 'skipped' }>;
+        if (run.kind === 'skipped') {
+          caseResults[caseId] = { case: caseId, latency: summarizeLatency([]), skipped: run.reason };
+          continue;
+        }
+        const tp = (await proc.request({ kind: 'throughput', case: caseId, dialect, iterations: config.throughputIterations, concurrency: config.concurrency }, timeout)) as Extract<Response, { kind: 'throughput' } | { kind: 'skipped' }>;
+        caseResults[caseId] = {
+          case: caseId,
+          latency: summarizeLatency(run.samplesMs),
+          throughputOpsPerSec: tp.kind === 'throughput' ? throughputOpsPerSec(tp.completed, tp.elapsedMs) : undefined,
+          queries: cost.kind === 'cost' ? cost.queries : undefined,
+          rows: cost.kind === 'cost' ? cost.rows : undefined,
+        };
+      }
 
-    const micro: Record<string, ReturnType<typeof summarizeLatency>> = {};
-    for (const caseId of microCases) {
-      const res = (await proc.request({ kind: 'micro', case: caseId, warmup: config.microWarmup, iterations: config.microIterations }, timeout)) as Extract<Response, { kind: 'micro' }>;
-      micro[caseId] = summarizeLatency(res.samplesMs);
+      const micro: Record<string, ReturnType<typeof summarizeLatency>> = {};
+      const microSkipped: Record<string, string> = {};
+      for (const caseId of microCases) {
+        const res = (await proc.request({ kind: 'micro', case: caseId, dialect, warmup: config.microWarmup, iterations: config.microIterations }, timeout)) as Extract<Response, { kind: 'micro' } | { kind: 'skipped' }>;
+        if (res.kind === 'skipped') microSkipped[caseId] = res.reason;
+        else micro[caseId] = summarizeLatency(res.samplesMs);
+      }
+      dialectResults[dialect] = { cases: caseResults, micro, microSkipped };
     }
 
     const rss = (await proc.request({ kind: 'rss' }, timeout)) as Extract<Response, { kind: 'rss' }>;
@@ -160,12 +173,12 @@ async function runCell(spec: CellSpec, config: HarnessConfig): Promise<CellResul
       language: spec.language, impl: spec.impl,
       coldStartMs: cold, rssBytes: rss.rssBytes,
       artifactSizeBytes: artifactSizeBytes(spec),
-      cases: caseResults, micro,
+      dialects: dialectResults,
     };
   } catch (err) {
     return {
       language: spec.language, impl: spec.impl,
-      cases: {}, micro: {},
+      dialects: {},
       error: err instanceof Error ? err.message.split('\n')[0] : String(err),
     };
   } finally {
@@ -201,6 +214,7 @@ export async function runMatrix(config: HarnessConfig = DEFAULT_CONFIG): Promise
     iterations: config.iterations,
     warmup: config.warmup,
     microIterations: config.microIterations,
+    dialects: config.dialects ?? [...CROSSLANG_DIALECTS],
     cells,
   };
 }

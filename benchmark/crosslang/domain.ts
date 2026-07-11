@@ -331,3 +331,79 @@ export const READ_RELATION: Record<string, { decl: any; withName: string } | und
   hasMany: { decl: REL_HAS_MANY, withName: 'comments' },
   hasManyLimit: { decl: REL_HAS_MANY_LIMIT, withName: 'recent' },
 };
+
+// ── Real-DB (PG / MySQL) schema + seed for the DB-backed axis (#44 gap #2) ─────
+// Every language's DB-backed cell creates its OWN bench tables (drop-then-create) in
+// an ISOLATED namespace, seeds the SAME 8-user/40-post/200-comment dataset the SQLite
+// cells use, and runs the 8 cases against the REAL dockerized DB. The table names are
+// the SAME (`users`/`posts`/`comments`/`uniq`) as the compiled bundles reference, so
+// the SAME bundle SQL executes unchanged — only the connection + dialect differ.
+// `posts.id` must AUTO-GENERATE: the batchInsert / writeTxGate cases INSERT posts
+// with no id (matching SQLite's implicit rowid). PG uses SERIAL, MySQL AUTO_INCREMENT.
+// After seeding explicit ids the PG sequence is bumped past the seeded max (see
+// `pgSeqResetStatements`) so the write cases' new rows don't collide.
+export const PG_SCHEMA: readonly string[] = [
+  `DROP TABLE IF EXISTS comments CASCADE`,
+  `DROP TABLE IF EXISTS posts CASCADE`,
+  `DROP TABLE IF EXISTS users CASCADE`,
+  `DROP TABLE IF EXISTS uniq CASCADE`,
+  `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, post_count INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE TABLE posts (id SERIAL PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, views INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`,
+  `CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE uniq (name TEXT NOT NULL, s0 TEXT, f0 TEXT)`,
+];
+export const MYSQL_SCHEMA: readonly string[] = [
+  `SET FOREIGN_KEY_CHECKS = 0`,
+  `DROP TABLE IF EXISTS comments`,
+  `DROP TABLE IF EXISTS posts`,
+  `DROP TABLE IF EXISTS users`,
+  `DROP TABLE IF EXISTS uniq`,
+  `SET FOREIGN_KEY_CHECKS = 1`,
+  `CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL, post_count INT NOT NULL DEFAULT 0)`,
+  `CREATE TABLE posts (id INT AUTO_INCREMENT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), views INT NOT NULL DEFAULT 0, created_at VARCHAR(255) NOT NULL)`,
+  `CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255) NOT NULL, created_at VARCHAR(255) NOT NULL)`,
+  `CREATE TABLE uniq (name VARCHAR(255) NOT NULL, s0 VARCHAR(255), f0 VARCHAR(255))`,
+];
+
+// After seeding 40 posts with explicit ids 1..40, advance the PG SERIAL sequence so a
+// subsequent no-id INSERT gets id 41+ (MySQL AUTO_INCREMENT self-advances past the max).
+export const PG_SEQ_RESET: readonly string[] = [`SELECT setval('posts_id_seq', (SELECT MAX(id) FROM posts))`];
+
+// The seed as language-neutral INSERT statements (the SAME dataset as `seed()` above),
+// portable across PG/MySQL. Deterministic: 8 users, 40 posts, 200 comments.
+export function seedStatementsShared(): string[] {
+  const stmts: string[] = [];
+  for (let u = 1; u <= 8; u++) stmts.push(`INSERT INTO users (id, name, post_count) VALUES (${u}, 'user-${u}', 5)`);
+  let pid = 0;
+  let cid = 0;
+  for (let u = 1; u <= 8; u++) {
+    for (let k = 0; k < 5; k++) {
+      pid++;
+      const status = k % 3 === 0 ? 'live' : k % 3 === 1 ? 'draft' : 'live';
+      const day = String(k + 1).padStart(2, '0');
+      stmts.push(`INSERT INTO posts (id, author_id, title, status, views, created_at) VALUES (${pid}, ${u}, 'post-${pid}', '${status}', ${pid * 10}, '2026-02-${day}')`);
+      for (let c = 0; c < 5; c++) {
+        cid++;
+        stmts.push(`INSERT INTO comments (id, post_id, body, created_at) VALUES (${cid}, ${pid}, 'comment-${cid}', '2026-03-01')`);
+      }
+    }
+  }
+  return stmts;
+}
+
+// Env-driven connection config (matches docker-compose.test.yml + WS6 host defaults:
+// PG 5433, MySQL 3307 when the livedb override republishes the ports to the host).
+export const PG_CONN = {
+  host: process.env.TEST_DB_HOST || 'localhost',
+  port: parseInt(process.env.TEST_DB_PORT || '5433', 10),
+  database: process.env.TEST_DB_NAME || 'testdb',
+  user: process.env.TEST_DB_USER || 'testuser',
+  password: process.env.TEST_DB_PASSWORD || 'testpass',
+};
+export const MYSQL_CONN = {
+  host: process.env.TEST_MYSQL_HOST || 'localhost',
+  port: parseInt(process.env.TEST_MYSQL_PORT || '3307', 10),
+  database: process.env.TEST_MYSQL_DB || 'testdb',
+  user: process.env.TEST_MYSQL_USER || 'testuser',
+  password: process.env.TEST_MYSQL_PASSWORD || 'testpass',
+};

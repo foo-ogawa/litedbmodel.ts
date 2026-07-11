@@ -1,5 +1,5 @@
 {
-  "corpusVersion": 2,
+  "corpusVersion": 3,
   "schema": [
     "CREATE TABLE users (\n     id INTEGER PRIMARY KEY,\n     name TEXT NOT NULL,\n     post_count INTEGER NOT NULL DEFAULT 0\n   );",
     "CREATE TABLE posts (\n     id INTEGER PRIMARY KEY,\n     author_id INTEGER NOT NULL,\n     title TEXT NOT NULL,\n     status TEXT,\n     views INTEGER NOT NULL DEFAULT 0,\n     created_at TEXT NOT NULL\n   );",
@@ -256,1017 +256,3256 @@
     "INSERT INTO comments (id, post_id, body, created_at) VALUES (199, 40, 'comment-199', '2026-03-01')",
     "INSERT INTO comments (id, post_id, body, created_at) VALUES (200, 40, 'comment-200', '2026-03-01')"
   ],
-  "cases": [
-    {
-      "case": "find",
-      "kind": "read",
-      "entry": "Find",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Find",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "Find",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
+  "dialects": {
+    "sqlite": {
+      "cases": [
+        {
+          "case": "find",
+          "kind": "read",
+          "entry": "Find",
+          "bundle": {
+            "dialect": "sqlite",
+            "name": "Find",
+            "readGraph": {
+              "dialect": "sqlite",
+              "name": "Find",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
                   {
-                    "component": "__makeSqlNode",
-                    "id": "n0",
-                    "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
-                          },
-                          "status": {
-                            "ref": [
-                              "status"
-                            ]
-                          },
-                          "since": {
-                            "ref": [
-                              "since"
-                            ]
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              "status": {
+                                "ref": [
+                                  "status"
+                                ]
+                              },
+                              "since": {
+                                "ref": [
+                                  "since"
+                                ]
+                              }
+                            }
                           }
                         }
                       }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "created_at": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "since": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "status": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Find",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
                     }
                   }
-                ],
-                "inputPorts": {
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "created_at": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "since": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "status": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "Find",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title, status, views, created_at FROM posts",
-                "params": []
+                ]
               },
-              {
-                "sql": "author_id = ?",
-                "params": [
+              "statementsById": {
+                "n0": [
                   {
-                    "ref": [
-                      "author_id"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": "status = ?",
-                "params": [
+                    "sql": "SELECT id, author_id, title, status, views, created_at FROM posts",
+                    "params": []
+                  },
                   {
-                    "ref": [
-                      "status"
-                    ]
-                  }
-                ],
-                "whereFragment": true,
-                "skip": {
-                  "not": [
-                    {
-                      "ne": [
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "status = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "status"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true,
+                    "skip": {
+                      "not": [
                         {
-                          "refOpt": [
-                            "status"
+                          "ne": [
+                            {
+                              "refOpt": [
+                                "status"
+                              ]
+                            },
+                            null
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "sql": "created_at >= ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "since"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": [
+                "status"
+              ]
+            },
+            "optionalHeads": [
+              "status"
+            ],
+            "relations": {}
+          },
+          "input": {
+            "author_id": 1,
+            "status": "live",
+            "since": "2026-02-01"
+          },
+          "fingerprint": "fnv1a64:ab8b1725da0fc202",
+          "expectedQueries": 1,
+          "expectedRows": 3
+        },
+        {
+          "case": "complexWhere",
+          "kind": "read",
+          "entry": "ComplexWhere",
+          "bundle": {
+            "dialect": "sqlite",
+            "name": "ComplexWhere",
+            "readGraph": {
+              "dialect": "sqlite",
+              "name": "ComplexWhere",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              "since": {
+                                "ref": [
+                                  "since"
+                                ]
+                              },
+                              "titleLike": {
+                                "ref": [
+                                  "titleLike"
+                                ]
+                              },
+                              "ids": {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "@in": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "@like": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "created_at": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "ids": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "since": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "titleLike": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "ComplexWhere",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title, status, views FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "created_at >= ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "since"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "title LIKE ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "titleLike"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "id IN (SELECT value FROM json_each(?))",
+                    "params": [
+                      {
+                        "__jsonArray": {
+                          "ref": [
+                            "ids"
                           ]
                         },
-                        null
-                      ]
-                    }
-                  ]
-                }
-              },
-              {
-                "sql": "created_at >= ?",
-                "params": [
+                        "dialect": "sqlite"
+                      }
+                    ],
+                    "whereFragment": true
+                  },
                   {
-                    "ref": [
-                      "since"
-                    ]
+                    "sql": " ORDER BY id ASC",
+                    "params": []
                   }
-                ],
-                "whereFragment": true
+                ]
               },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
-              }
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {}
+          },
+          "input": {
+            "author_id": 1,
+            "since": "2026-02-01",
+            "titleLike": "post-%",
+            "ids": [
+              1,
+              2,
+              3,
+              4,
+              5
             ]
           },
-          "optionalHeads": [
-            "status"
-          ]
+          "fingerprint": "fnv1a64:ead6ce5e6e15d33f",
+          "expectedQueries": 1,
+          "expectedRows": 5
         },
-        "optionalHeads": [
-          "status"
-        ],
-        "relations": {}
-      },
-      "input": {
-        "author_id": 1,
-        "status": "live",
-        "since": "2026-02-01"
-      },
-      "fingerprint": "fnv1a64:ab8b1725da0fc202",
-      "expectedQueries": 1,
-      "expectedRows": 3
-    },
-    {
-      "case": "complexWhere",
-      "kind": "read",
-      "entry": "ComplexWhere",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "ComplexWhere",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "ComplexWhere",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
+        {
+          "case": "inList",
+          "kind": "read",
+          "entry": "ByIds",
+          "bundle": {
+            "dialect": "sqlite",
+            "name": "ByIds",
+            "readGraph": {
+              "dialect": "sqlite",
+              "name": "ByIds",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
                   {
-                    "component": "__makeSqlNode",
-                    "id": "n0",
-                    "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
-                          },
-                          "since": {
-                            "ref": [
-                              "since"
-                            ]
-                          },
-                          "titleLike": {
-                            "ref": [
-                              "titleLike"
-                            ]
-                          },
-                          "ids": {
-                            "ref": [
-                              "ids"
-                            ]
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "ids": {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
+                            }
                           }
                         }
                       }
-                    }
-                  }
-                ],
-                "inputPorts": {
-                  "@in": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "@like": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "created_at": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "ids": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "since": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "titleLike": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "ComplexWhere",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title, status, views FROM posts",
-                "params": []
-              },
-              {
-                "sql": "author_id = ?",
-                "params": [
-                  {
-                    "ref": [
-                      "author_id"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": "created_at >= ?",
-                "params": [
-                  {
-                    "ref": [
-                      "since"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": "title LIKE ?",
-                "params": [
-                  {
-                    "ref": [
-                      "titleLike"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": "id IN (SELECT value FROM json_each(?))",
-                "params": [
-                  {
-                    "__jsonArray": {
+                    ],
+                    "inputPorts": {
+                      "@in": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "ids": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "ByIds",
+                    "output": {
                       "ref": [
-                        "ids"
+                        "n0"
                       ]
                     },
-                    "dialect": "sqlite"
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
-              }
-            ]
-          },
-          "optionalHeads": []
-        },
-        "optionalHeads": [],
-        "relations": {}
-      },
-      "input": {
-        "author_id": 1,
-        "since": "2026-02-01",
-        "titleLike": "post-%",
-        "ids": [
-          1,
-          2,
-          3,
-          4,
-          5
-        ]
-      },
-      "fingerprint": "fnv1a64:ead6ce5e6e15d33f",
-      "expectedQueries": 1,
-      "expectedRows": 5
-    },
-    {
-      "case": "inList",
-      "kind": "read",
-      "entry": "ByIds",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "ByIds",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "ByIds",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
-                  {
-                    "component": "__makeSqlNode",
-                    "id": "n0",
-                    "ports": {
-                      "__scope": {
-                        "obj": {
-                          "ids": {
-                            "ref": [
-                              "ids"
-                            ]
-                          }
-                        }
-                      }
-                    }
-                  }
-                ],
-                "inputPorts": {
-                  "@in": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "ids": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "ByIds",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, title FROM posts",
-                "params": []
-              },
-              {
-                "sql": "id IN (SELECT value FROM json_each(?))",
-                "params": [
-                  {
-                    "__jsonArray": {
-                      "ref": [
-                        "ids"
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
                       ]
-                    },
-                    "dialect": "sqlite"
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
-              }
-            ]
-          },
-          "optionalHeads": []
-        },
-        "optionalHeads": [],
-        "relations": {}
-      },
-      "input": {
-        "ids": [
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          7,
-          8,
-          9,
-          10
-        ]
-      },
-      "fingerprint": "fnv1a64:5e989cf7594927a8",
-      "expectedQueries": 1,
-      "expectedRows": 10
-    },
-    {
-      "case": "belongsTo",
-      "kind": "relation",
-      "entry": "Posts",
-      "withRelation": "author",
-      "relation": {
-        "name": "author",
-        "kind": "belongsTo",
-        "targetTable": "users",
-        "select": [
-          "id",
-          "name"
-        ],
-        "parentKey": "author_id",
-        "targetKey": "id",
-        "dialect": "sqlite"
-      },
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Posts",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "Posts",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
-                  {
-                    "component": "__makeSqlNode",
-                    "id": "n0",
-                    "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
-                          }
-                        }
-                      }
                     }
                   }
-                ],
-                "inputPorts": {
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "Posts",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title FROM posts",
-                "params": []
+                ]
               },
-              {
-                "sql": "author_id = ?",
-                "params": [
+              "statementsById": {
+                "n0": [
                   {
-                    "ref": [
-                      "author_id"
-                    ]
+                    "sql": "SELECT id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "id IN (SELECT value FROM json_each(?))",
+                    "params": [
+                      {
+                        "__jsonArray": {
+                          "ref": [
+                            "ids"
+                          ]
+                        },
+                        "dialect": "sqlite"
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
                   }
-                ],
-                "whereFragment": true
+                ]
               },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
-              }
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {}
+          },
+          "input": {
+            "ids": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
             ]
           },
-          "optionalHeads": []
+          "fingerprint": "fnv1a64:5e989cf7594927a8",
+          "expectedQueries": 1,
+          "expectedRows": 10
         },
-        "optionalHeads": [],
-        "relations": {
-          "author": {
+        {
+          "case": "belongsTo",
+          "kind": "relation",
+          "entry": "Posts",
+          "withRelation": "author",
+          "relation": {
             "name": "author",
             "kind": "belongsTo",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ],
             "parentKey": "author_id",
             "targetKey": "id",
+            "dialect": "sqlite"
+          },
+          "bundle": {
             "dialect": "sqlite",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))"
-          }
-        }
-      },
-      "input": {
-        "author_id": 1
-      },
-      "fingerprint": "fnv1a64:73aab41f049301f1",
-      "expectedQueries": 2,
-      "expectedRows": 6
-    },
-    {
-      "case": "hasMany",
-      "kind": "relation",
-      "entry": "Posts",
-      "withRelation": "comments",
-      "relation": {
-        "name": "comments",
-        "kind": "hasMany",
-        "targetTable": "comments",
-        "select": [
-          "id",
-          "post_id",
-          "body"
-        ],
-        "parentKey": "id",
-        "targetKey": "post_id",
-        "dialect": "sqlite"
-      },
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Posts",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "Posts",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
+            "name": "Posts",
+            "readGraph": {
+              "dialect": "sqlite",
+              "name": "Posts",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
                   {
-                    "component": "__makeSqlNode",
-                    "id": "n0",
-                    "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            }
                           }
                         }
                       }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Posts",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
                     }
                   }
-                ],
-                "inputPorts": {
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "Posts",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title FROM posts",
-                "params": []
+                ]
               },
-              {
-                "sql": "author_id = ?",
-                "params": [
+              "statementsById": {
+                "n0": [
                   {
-                    "ref": [
-                      "author_id"
-                    ]
+                    "sql": "SELECT id, author_id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
                   }
-                ],
-                "whereFragment": true
+                ]
               },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {
+              "author": {
+                "name": "author",
+                "kind": "belongsTo",
+                "parentKey": "author_id",
+                "targetKey": "id",
+                "dialect": "sqlite",
+                "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))"
               }
-            ]
+            }
           },
-          "optionalHeads": []
+          "input": {
+            "author_id": 1
+          },
+          "fingerprint": "fnv1a64:73aab41f049301f1",
+          "expectedQueries": 2,
+          "expectedRows": 6
         },
-        "optionalHeads": [],
-        "relations": {
-          "comments": {
+        {
+          "case": "hasMany",
+          "kind": "relation",
+          "entry": "Posts",
+          "withRelation": "comments",
+          "relation": {
             "name": "comments",
             "kind": "hasMany",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ],
             "parentKey": "id",
             "targetKey": "post_id",
+            "dialect": "sqlite"
+          },
+          "bundle": {
             "dialect": "sqlite",
-            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT value FROM json_each(?))"
-          }
-        }
-      },
-      "input": {
-        "author_id": 1
-      },
-      "fingerprint": "fnv1a64:73aab41f049301f1",
-      "expectedQueries": 2,
-      "expectedRows": 30
-    },
-    {
-      "case": "hasManyLimit",
-      "kind": "relation",
-      "entry": "Posts",
-      "withRelation": "recent",
-      "relation": {
-        "name": "recent",
-        "kind": "hasMany",
-        "targetTable": "comments",
-        "select": [
-          "id",
-          "post_id",
-          "body"
-        ],
-        "parentKey": "id",
-        "targetKey": "post_id",
-        "order": "id DESC",
-        "limit": 3,
-        "dialect": "sqlite"
-      },
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Posts",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "Posts",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
+            "name": "Posts",
+            "readGraph": {
+              "dialect": "sqlite",
+              "name": "Posts",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
                   {
-                    "component": "__makeSqlNode",
-                    "id": "n0",
-                    "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            }
                           }
                         }
                       }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Posts",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
                     }
                   }
-                ],
-                "inputPorts": {
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "Posts",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title FROM posts",
-                "params": []
+                ]
               },
-              {
-                "sql": "author_id = ?",
-                "params": [
+              "statementsById": {
+                "n0": [
                   {
-                    "ref": [
-                      "author_id"
-                    ]
+                    "sql": "SELECT id, author_id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
                   }
-                ],
-                "whereFragment": true
+                ]
               },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {
+              "comments": {
+                "name": "comments",
+                "kind": "hasMany",
+                "parentKey": "id",
+                "targetKey": "post_id",
+                "dialect": "sqlite",
+                "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT value FROM json_each(?))"
               }
-            ]
+            }
           },
-          "optionalHeads": []
+          "input": {
+            "author_id": 1
+          },
+          "fingerprint": "fnv1a64:73aab41f049301f1",
+          "expectedQueries": 2,
+          "expectedRows": 30
         },
-        "optionalHeads": [],
-        "relations": {
-          "recent": {
+        {
+          "case": "hasManyLimit",
+          "kind": "relation",
+          "entry": "Posts",
+          "withRelation": "recent",
+          "relation": {
             "name": "recent",
             "kind": "hasMany",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ],
             "parentKey": "id",
             "targetKey": "post_id",
+            "order": "id DESC",
+            "limit": 3,
+            "dialect": "sqlite"
+          },
+          "bundle": {
             "dialect": "sqlite",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id DESC) AS _rn FROM comments WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 3"
-          }
-        }
-      },
-      "input": {
-        "author_id": 1
-      },
-      "fingerprint": "fnv1a64:73aab41f049301f1",
-      "expectedQueries": 2,
-      "expectedRows": 20
-    },
-    {
-      "case": "batchInsert",
-      "kind": "batch",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "BatchInsert",
-        "statement": {
-          "sql": "INSERT INTO posts (author_id, created_at, status, title, views) SELECT json_extract(value, '$.author_id'), json_extract(value, '$.created_at'), json_extract(value, '$.status'), json_extract(value, '$.title'), json_extract(value, '$.views') FROM json_each(?)",
-          "params": [
-            "[{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-0\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-1\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-2\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-3\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-4\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-5\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-6\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-7\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-8\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-9\",\"views\":0}]"
-          ]
+            "name": "Posts",
+            "readGraph": {
+              "dialect": "sqlite",
+              "name": "Posts",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Posts",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {
+              "recent": {
+                "name": "recent",
+                "kind": "hasMany",
+                "parentKey": "id",
+                "targetKey": "post_id",
+                "dialect": "sqlite",
+                "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id DESC) AS _rn FROM comments WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 3"
+              }
+            }
+          },
+          "input": {
+            "author_id": 1
+          },
+          "fingerprint": "fnv1a64:73aab41f049301f1",
+          "expectedQueries": 2,
+          "expectedRows": 20
         },
-        "optionalHeads": [],
-        "relations": {},
-        "transaction": {
-          "phase": "create",
-          "entityFrom": null,
-          "statements": [
-            {
-              "id": "tx_body_0",
-              "role": "body",
-              "op": {
-                "sql": "INSERT INTO posts (author_id, created_at, status, title, views) SELECT json_extract(value, '$.author_id'), json_extract(value, '$.created_at'), json_extract(value, '$.status'), json_extract(value, '$.title'), json_extract(value, '$.views') FROM json_each(?)",
-                "params": [
-                  "[{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-0\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-1\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-2\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-3\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-4\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-5\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-6\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-7\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-8\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-9\",\"views\":0}]"
-                ]
+        {
+          "case": "batchInsert",
+          "kind": "batch",
+          "bundle": {
+            "dialect": "sqlite",
+            "name": "BatchInsert",
+            "statement": {
+              "sql": "INSERT INTO posts (author_id, created_at, status, title, views) SELECT json_extract(value, '$.author_id'), json_extract(value, '$.created_at'), json_extract(value, '$.status'), json_extract(value, '$.title'), json_extract(value, '$.views') FROM json_each(?)",
+              "params": [
+                "[{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-0\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-1\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-2\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-3\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-4\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-5\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-6\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-7\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-8\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-9\",\"views\":0}]"
+              ]
+            },
+            "optionalHeads": [],
+            "relations": {},
+            "transaction": {
+              "phase": "create",
+              "entityFrom": null,
+              "statements": [
+                {
+                  "id": "tx_body_0",
+                  "role": "body",
+                  "op": {
+                    "sql": "INSERT INTO posts (author_id, created_at, status, title, views) SELECT json_extract(value, '$.author_id'), json_extract(value, '$.created_at'), json_extract(value, '$.status'), json_extract(value, '$.title'), json_extract(value, '$.views') FROM json_each(?)",
+                    "params": [
+                      "[{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-0\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-1\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-2\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-3\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-4\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-5\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-6\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-7\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-8\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-9\",\"views\":0}]"
+                    ]
+                  },
+                  "label": "createMany group 0"
+                }
+              ],
+              "onIdempotentHit": "rollback"
+            }
+          },
+          "input": {
+            "rows": [
+              {
+                "author_id": 2,
+                "title": "bulk-0",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
               },
-              "label": "createMany group 0"
-            }
-          ],
-          "onIdempotentHit": "rollback"
-        }
-      },
-      "input": {
-        "rows": [
-          {
-            "author_id": 2,
-            "title": "bulk-0",
-            "status": "live",
-            "views": 0,
-            "created_at": "2026-05-01"
+              {
+                "author_id": 2,
+                "title": "bulk-1",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-2",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-3",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-4",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-5",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-6",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-7",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-8",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-9",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              }
+            ]
           },
-          {
-            "author_id": 2,
-            "title": "bulk-1",
-            "status": "live",
-            "views": 0,
-            "created_at": "2026-05-01"
-          },
-          {
-            "author_id": 2,
-            "title": "bulk-2",
-            "status": "live",
-            "views": 0,
-            "created_at": "2026-05-01"
-          },
-          {
-            "author_id": 2,
-            "title": "bulk-3",
-            "status": "live",
-            "views": 0,
-            "created_at": "2026-05-01"
-          },
-          {
-            "author_id": 2,
-            "title": "bulk-4",
-            "status": "live",
-            "views": 0,
-            "created_at": "2026-05-01"
-          },
-          {
-            "author_id": 2,
-            "title": "bulk-5",
-            "status": "live",
-            "views": 0,
-            "created_at": "2026-05-01"
-          },
-          {
-            "author_id": 2,
-            "title": "bulk-6",
-            "status": "live",
-            "views": 0,
-            "created_at": "2026-05-01"
-          },
-          {
-            "author_id": 2,
-            "title": "bulk-7",
-            "status": "live",
-            "views": 0,
-            "created_at": "2026-05-01"
-          },
-          {
-            "author_id": 2,
-            "title": "bulk-8",
-            "status": "live",
-            "views": 0,
-            "created_at": "2026-05-01"
-          },
-          {
-            "author_id": 2,
-            "title": "bulk-9",
-            "status": "live",
-            "views": 0,
-            "created_at": "2026-05-01"
-          }
-        ]
-      },
-      "fingerprint": "fnv1a64:c3101fb11da847e5",
-      "expectedQueries": 1,
-      "expectedRows": 0
-    },
-    {
-      "case": "writeTxGate",
-      "kind": "tx",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Create",
-        "statement": {
-          "sql": "INSERT INTO posts (author_id, created_at, title) VALUES (?, ?, ?) RETURNING id, author_id, title",
-          "params": [
-            {
-              "ref": [
-                "author_id"
-              ]
-            },
-            {
-              "ref": [
-                "created_at"
-              ]
-            },
-            {
-              "ref": [
-                "title"
-              ]
-            }
-          ]
+          "fingerprint": "fnv1a64:c3101fb11da847e5",
+          "expectedQueries": 1,
+          "expectedRows": 0
         },
-        "optionalHeads": [],
-        "relations": {},
-        "transaction": {
-          "phase": "create",
-          "entityFrom": "tx_body_2",
-          "statements": [
-            {
-              "id": "tx_requires_0",
-              "role": "gate:requires",
-              "op": {
-                "sql": "SELECT 1 FROM users WHERE id = ?",
-                "params": [
-                  {
-                    "ref": [
-                      "author_id"
-                    ]
-                  }
-                ]
-              },
-              "gate": "existsElseRollback",
-              "label": "requires users"
+        {
+          "case": "writeTxGate",
+          "kind": "tx",
+          "bundle": {
+            "dialect": "sqlite",
+            "name": "Create",
+            "statement": {
+              "sql": "INSERT INTO posts (author_id, created_at, title) VALUES (?, ?, ?) RETURNING id, author_id, title",
+              "params": [
+                {
+                  "ref": [
+                    "author_id"
+                  ]
+                },
+                {
+                  "ref": [
+                    "created_at"
+                  ]
+                },
+                {
+                  "ref": [
+                    "title"
+                  ]
+                }
+              ]
             },
-            {
-              "id": "tx_unique_1",
-              "role": "gate:unique",
-              "op": {
-                "sql": "INSERT INTO uniq (name, s0, f0) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-                "params": [
-                  "title_per_author",
-                  {
-                    "ref": [
-                      "author_id"
+            "optionalHeads": [],
+            "relations": {},
+            "transaction": {
+              "phase": "create",
+              "entityFrom": "tx_body_2",
+              "statements": [
+                {
+                  "id": "tx_requires_0",
+                  "role": "gate:requires",
+                  "op": {
+                    "sql": "SELECT 1 FROM users WHERE id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
                     ]
                   },
-                  {
-                    "ref": [
-                      "title"
-                    ]
-                  }
-                ]
-              },
-              "gate": "insertedElseRollback",
-              "label": "unique title_per_author"
-            },
-            {
-              "id": "tx_body_2",
-              "role": "body",
-              "op": {
-                "sql": "INSERT INTO posts (author_id, created_at, title) VALUES (?, ?, ?) RETURNING id, author_id, title",
-                "params": [
-                  {
-                    "ref": [
-                      "author_id"
-                    ]
-                  },
-                  {
-                    "ref": [
-                      "created_at"
+                  "gate": "existsElseRollback",
+                  "label": "requires users"
+                },
+                {
+                  "id": "tx_unique_1",
+                  "role": "gate:unique",
+                  "op": {
+                    "sql": "INSERT INTO uniq (name, s0, f0) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                    "params": [
+                      "title_per_author",
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      },
+                      {
+                        "ref": [
+                          "title"
+                        ]
+                      }
                     ]
                   },
-                  {
-                    "ref": [
-                      "title"
+                  "gate": "insertedElseRollback",
+                  "label": "unique title_per_author"
+                },
+                {
+                  "id": "tx_body_2",
+                  "role": "body",
+                  "op": {
+                    "sql": "INSERT INTO posts (author_id, created_at, title) VALUES (?, ?, ?) RETURNING id, author_id, title",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      },
+                      {
+                        "ref": [
+                          "created_at"
+                        ]
+                      },
+                      {
+                        "ref": [
+                          "title"
+                        ]
+                      }
                     ]
-                  }
-                ]
-              },
-              "label": "Insert"
-            },
-            {
-              "id": "tx_derive_3",
-              "role": "derive",
-              "op": {
-                "sql": "UPDATE users SET post_count = post_count + ? WHERE id = ?",
-                "params": [
-                  1,
-                  {
-                    "ref": [
-                      "author_id"
+                  },
+                  "label": "Insert"
+                },
+                {
+                  "id": "tx_derive_3",
+                  "role": "derive",
+                  "op": {
+                    "sql": "UPDATE users SET post_count = post_count + ? WHERE id = ?",
+                    "params": [
+                      1,
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
                     ]
-                  }
-                ]
-              },
-              "label": "derive users.post_count"
+                  },
+                  "label": "derive users.post_count"
+                }
+              ],
+              "onIdempotentHit": "rollback"
             }
-          ],
-          "onIdempotentHit": "rollback"
+          },
+          "input": {
+            "author_id": 1,
+            "title": "txn-post",
+            "created_at": "2026-05-01"
+          },
+          "fingerprint": "fnv1a64:9ef9671fecd59dd0",
+          "expectedQueries": 4,
+          "expectedRows": 2
         }
-      },
-      "input": {
-        "author_id": 1,
-        "title": "txn-post",
-        "created_at": "2026-05-01"
-      },
-      "fingerprint": "fnv1a64:9ef9671fecd59dd0",
-      "expectedQueries": 4,
-      "expectedRows": 2
+      ]
+    },
+    "postgres": {
+      "cases": [
+        {
+          "case": "find",
+          "kind": "read",
+          "entry": "Find",
+          "bundle": {
+            "dialect": "postgres",
+            "name": "Find",
+            "readGraph": {
+              "dialect": "postgres",
+              "name": "Find",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              "status": {
+                                "ref": [
+                                  "status"
+                                ]
+                              },
+                              "since": {
+                                "ref": [
+                                  "since"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "created_at": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "since": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "status": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Find",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title, status, views, created_at FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "status = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "status"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true,
+                    "skip": {
+                      "not": [
+                        {
+                          "ne": [
+                            {
+                              "refOpt": [
+                                "status"
+                              ]
+                            },
+                            null
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "sql": "created_at >= ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "since"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": [
+                "status"
+              ]
+            },
+            "optionalHeads": [
+              "status"
+            ],
+            "relations": {}
+          },
+          "input": {
+            "author_id": 1,
+            "status": "live",
+            "since": "2026-02-01"
+          },
+          "fingerprint": "fnv1a64:ab8b1725da0fc202",
+          "expectedQueries": 1,
+          "expectedRows": 3
+        },
+        {
+          "case": "complexWhere",
+          "kind": "read",
+          "entry": "ComplexWhere",
+          "bundle": {
+            "dialect": "postgres",
+            "name": "ComplexWhere",
+            "readGraph": {
+              "dialect": "postgres",
+              "name": "ComplexWhere",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              "since": {
+                                "ref": [
+                                  "since"
+                                ]
+                              },
+                              "titleLike": {
+                                "ref": [
+                                  "titleLike"
+                                ]
+                              },
+                              "ids": {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "@in": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "@like": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "created_at": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "ids": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "since": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "titleLike": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "ComplexWhere",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title, status, views FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "created_at >= ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "since"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "title LIKE ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "titleLike"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "id = ANY(?)",
+                    "params": [
+                      {
+                        "__jsonArray": {
+                          "ref": [
+                            "ids"
+                          ]
+                        },
+                        "dialect": "postgres"
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {}
+          },
+          "input": {
+            "author_id": 1,
+            "since": "2026-02-01",
+            "titleLike": "post-%",
+            "ids": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          "fingerprint": "fnv1a64:ead6ce5e6e15d33f",
+          "expectedQueries": 1,
+          "expectedRows": 5
+        },
+        {
+          "case": "inList",
+          "kind": "read",
+          "entry": "ByIds",
+          "bundle": {
+            "dialect": "postgres",
+            "name": "ByIds",
+            "readGraph": {
+              "dialect": "postgres",
+              "name": "ByIds",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "ids": {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "@in": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "ids": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "ByIds",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "id = ANY(?)",
+                    "params": [
+                      {
+                        "__jsonArray": {
+                          "ref": [
+                            "ids"
+                          ]
+                        },
+                        "dialect": "postgres"
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {}
+          },
+          "input": {
+            "ids": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          },
+          "fingerprint": "fnv1a64:5e989cf7594927a8",
+          "expectedQueries": 1,
+          "expectedRows": 10
+        },
+        {
+          "case": "belongsTo",
+          "kind": "relation",
+          "entry": "Posts",
+          "withRelation": "author",
+          "relation": {
+            "name": "author",
+            "kind": "belongsTo",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ],
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "postgres"
+          },
+          "bundle": {
+            "dialect": "postgres",
+            "name": "Posts",
+            "readGraph": {
+              "dialect": "postgres",
+              "name": "Posts",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Posts",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {
+              "author": {
+                "name": "author",
+                "kind": "belongsTo",
+                "parentKey": "author_id",
+                "targetKey": "id",
+                "dialect": "postgres",
+                "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+              }
+            }
+          },
+          "input": {
+            "author_id": 1
+          },
+          "fingerprint": "fnv1a64:73aab41f049301f1",
+          "expectedQueries": 2,
+          "expectedRows": 6
+        },
+        {
+          "case": "hasMany",
+          "kind": "relation",
+          "entry": "Posts",
+          "withRelation": "comments",
+          "relation": {
+            "name": "comments",
+            "kind": "hasMany",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ],
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "postgres"
+          },
+          "bundle": {
+            "dialect": "postgres",
+            "name": "Posts",
+            "readGraph": {
+              "dialect": "postgres",
+              "name": "Posts",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Posts",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {
+              "comments": {
+                "name": "comments",
+                "kind": "hasMany",
+                "parentKey": "id",
+                "targetKey": "post_id",
+                "dialect": "postgres",
+                "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@)"
+              }
+            }
+          },
+          "input": {
+            "author_id": 1
+          },
+          "fingerprint": "fnv1a64:73aab41f049301f1",
+          "expectedQueries": 2,
+          "expectedRows": 30
+        },
+        {
+          "case": "hasManyLimit",
+          "kind": "relation",
+          "entry": "Posts",
+          "withRelation": "recent",
+          "relation": {
+            "name": "recent",
+            "kind": "hasMany",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ],
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "order": "id DESC",
+            "limit": 3,
+            "dialect": "postgres"
+          },
+          "bundle": {
+            "dialect": "postgres",
+            "name": "Posts",
+            "readGraph": {
+              "dialect": "postgres",
+              "name": "Posts",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Posts",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {
+              "recent": {
+                "name": "recent",
+                "kind": "hasMany",
+                "parentKey": "id",
+                "targetKey": "post_id",
+                "dialect": "postgres",
+                "sql": "SELECT comments.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM comments WHERE comments.post_id = _keys.key ORDER BY id DESC LIMIT 3) comments"
+              }
+            }
+          },
+          "input": {
+            "author_id": 1
+          },
+          "fingerprint": "fnv1a64:73aab41f049301f1",
+          "expectedQueries": 2,
+          "expectedRows": 20
+        },
+        {
+          "case": "batchInsert",
+          "kind": "batch",
+          "bundle": {
+            "dialect": "postgres",
+            "name": "BatchInsert",
+            "statement": {
+              "sql": "INSERT INTO posts (author_id, created_at, status, title, views) SELECT v.author_id, v.created_at, v.status, v.title, v.views FROM UNNEST(?::int[], ?::text[], ?::text[], ?::text[], ?::int[]) AS v(author_id, created_at, status, title, views)",
+              "params": [
+                [
+                  2,
+                  2,
+                  2,
+                  2,
+                  2,
+                  2,
+                  2,
+                  2,
+                  2,
+                  2
+                ],
+                [
+                  "2026-05-01",
+                  "2026-05-01",
+                  "2026-05-01",
+                  "2026-05-01",
+                  "2026-05-01",
+                  "2026-05-01",
+                  "2026-05-01",
+                  "2026-05-01",
+                  "2026-05-01",
+                  "2026-05-01"
+                ],
+                [
+                  "live",
+                  "live",
+                  "live",
+                  "live",
+                  "live",
+                  "live",
+                  "live",
+                  "live",
+                  "live",
+                  "live"
+                ],
+                [
+                  "bulk-0",
+                  "bulk-1",
+                  "bulk-2",
+                  "bulk-3",
+                  "bulk-4",
+                  "bulk-5",
+                  "bulk-6",
+                  "bulk-7",
+                  "bulk-8",
+                  "bulk-9"
+                ],
+                [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              ]
+            },
+            "optionalHeads": [],
+            "relations": {},
+            "transaction": {
+              "phase": "create",
+              "entityFrom": null,
+              "statements": [
+                {
+                  "id": "tx_body_0",
+                  "role": "body",
+                  "op": {
+                    "sql": "INSERT INTO posts (author_id, created_at, status, title, views) SELECT v.author_id, v.created_at, v.status, v.title, v.views FROM UNNEST(?::int[], ?::text[], ?::text[], ?::text[], ?::int[]) AS v(author_id, created_at, status, title, views)",
+                    "params": [
+                      {
+                        "arr": [
+                          2,
+                          2,
+                          2,
+                          2,
+                          2,
+                          2,
+                          2,
+                          2,
+                          2,
+                          2
+                        ]
+                      },
+                      {
+                        "arr": [
+                          "2026-05-01",
+                          "2026-05-01",
+                          "2026-05-01",
+                          "2026-05-01",
+                          "2026-05-01",
+                          "2026-05-01",
+                          "2026-05-01",
+                          "2026-05-01",
+                          "2026-05-01",
+                          "2026-05-01"
+                        ]
+                      },
+                      {
+                        "arr": [
+                          "live",
+                          "live",
+                          "live",
+                          "live",
+                          "live",
+                          "live",
+                          "live",
+                          "live",
+                          "live",
+                          "live"
+                        ]
+                      },
+                      {
+                        "arr": [
+                          "bulk-0",
+                          "bulk-1",
+                          "bulk-2",
+                          "bulk-3",
+                          "bulk-4",
+                          "bulk-5",
+                          "bulk-6",
+                          "bulk-7",
+                          "bulk-8",
+                          "bulk-9"
+                        ]
+                      },
+                      {
+                        "arr": [
+                          0,
+                          0,
+                          0,
+                          0,
+                          0,
+                          0,
+                          0,
+                          0,
+                          0,
+                          0
+                        ]
+                      }
+                    ]
+                  },
+                  "label": "createMany group 0"
+                }
+              ],
+              "onIdempotentHit": "rollback"
+            }
+          },
+          "input": {
+            "rows": [
+              {
+                "author_id": 2,
+                "title": "bulk-0",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-1",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-2",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-3",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-4",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-5",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-6",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-7",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-8",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-9",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              }
+            ]
+          },
+          "fingerprint": "fnv1a64:c3101fb11da847e5",
+          "expectedQueries": 1,
+          "expectedRows": 0
+        },
+        {
+          "case": "writeTxGate",
+          "kind": "tx",
+          "bundle": {
+            "dialect": "postgres",
+            "name": "Create",
+            "statement": {
+              "sql": "INSERT INTO posts (author_id, created_at, title) VALUES (?, ?, ?) RETURNING id, author_id, title",
+              "params": [
+                {
+                  "ref": [
+                    "author_id"
+                  ]
+                },
+                {
+                  "ref": [
+                    "created_at"
+                  ]
+                },
+                {
+                  "ref": [
+                    "title"
+                  ]
+                }
+              ]
+            },
+            "optionalHeads": [],
+            "relations": {},
+            "transaction": {
+              "phase": "create",
+              "entityFrom": "tx_body_2",
+              "statements": [
+                {
+                  "id": "tx_requires_0",
+                  "role": "gate:requires",
+                  "op": {
+                    "sql": "SELECT 1 FROM users WHERE id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ]
+                  },
+                  "gate": "existsElseRollback",
+                  "label": "requires users"
+                },
+                {
+                  "id": "tx_unique_1",
+                  "role": "gate:unique",
+                  "op": {
+                    "sql": "INSERT INTO uniq (name, s0, f0) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                    "params": [
+                      "title_per_author",
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      },
+                      {
+                        "ref": [
+                          "title"
+                        ]
+                      }
+                    ]
+                  },
+                  "gate": "insertedElseRollback",
+                  "label": "unique title_per_author"
+                },
+                {
+                  "id": "tx_body_2",
+                  "role": "body",
+                  "op": {
+                    "sql": "INSERT INTO posts (author_id, created_at, title) VALUES (?, ?, ?) RETURNING id, author_id, title",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      },
+                      {
+                        "ref": [
+                          "created_at"
+                        ]
+                      },
+                      {
+                        "ref": [
+                          "title"
+                        ]
+                      }
+                    ]
+                  },
+                  "label": "Insert"
+                },
+                {
+                  "id": "tx_derive_3",
+                  "role": "derive",
+                  "op": {
+                    "sql": "UPDATE users SET post_count = post_count + ? WHERE id = ?",
+                    "params": [
+                      1,
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ]
+                  },
+                  "label": "derive users.post_count"
+                }
+              ],
+              "onIdempotentHit": "rollback"
+            }
+          },
+          "input": {
+            "author_id": 1,
+            "title": "txn-post",
+            "created_at": "2026-05-01"
+          },
+          "fingerprint": "fnv1a64:9ef9671fecd59dd0",
+          "expectedQueries": 4,
+          "expectedRows": 2
+        }
+      ]
+    },
+    "mysql": {
+      "cases": [
+        {
+          "case": "find",
+          "kind": "read",
+          "entry": "Find",
+          "bundle": {
+            "dialect": "mysql",
+            "name": "Find",
+            "readGraph": {
+              "dialect": "mysql",
+              "name": "Find",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              "status": {
+                                "ref": [
+                                  "status"
+                                ]
+                              },
+                              "since": {
+                                "ref": [
+                                  "since"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "created_at": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "since": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "status": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Find",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title, status, views, created_at FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "status = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "status"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true,
+                    "skip": {
+                      "not": [
+                        {
+                          "ne": [
+                            {
+                              "refOpt": [
+                                "status"
+                              ]
+                            },
+                            null
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "sql": "created_at >= ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "since"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": [
+                "status"
+              ]
+            },
+            "optionalHeads": [
+              "status"
+            ],
+            "relations": {}
+          },
+          "input": {
+            "author_id": 1,
+            "status": "live",
+            "since": "2026-02-01"
+          },
+          "fingerprint": "fnv1a64:ab8b1725da0fc202",
+          "expectedQueries": 1,
+          "expectedRows": 3
+        },
+        {
+          "case": "complexWhere",
+          "kind": "read",
+          "entry": "ComplexWhere",
+          "bundle": {
+            "dialect": "mysql",
+            "name": "ComplexWhere",
+            "readGraph": {
+              "dialect": "mysql",
+              "name": "ComplexWhere",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              "since": {
+                                "ref": [
+                                  "since"
+                                ]
+                              },
+                              "titleLike": {
+                                "ref": [
+                                  "titleLike"
+                                ]
+                              },
+                              "ids": {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "@in": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "@like": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "created_at": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "ids": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "since": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "titleLike": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "ComplexWhere",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title, status, views FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "created_at >= ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "since"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "title LIKE ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "titleLike"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": "id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+                    "params": [
+                      {
+                        "__jsonArray": {
+                          "ref": [
+                            "ids"
+                          ]
+                        },
+                        "dialect": "mysql"
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {}
+          },
+          "input": {
+            "author_id": 1,
+            "since": "2026-02-01",
+            "titleLike": "post-%",
+            "ids": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          "fingerprint": "fnv1a64:ead6ce5e6e15d33f",
+          "expectedQueries": 1,
+          "expectedRows": 5
+        },
+        {
+          "case": "inList",
+          "kind": "read",
+          "entry": "ByIds",
+          "bundle": {
+            "dialect": "mysql",
+            "name": "ByIds",
+            "readGraph": {
+              "dialect": "mysql",
+              "name": "ByIds",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "ids": {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "@in": {
+                        "required": true,
+                        "type": "unknown"
+                      },
+                      "ids": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "ByIds",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+                    "params": [
+                      {
+                        "__jsonArray": {
+                          "ref": [
+                            "ids"
+                          ]
+                        },
+                        "dialect": "mysql"
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {}
+          },
+          "input": {
+            "ids": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          },
+          "fingerprint": "fnv1a64:5e989cf7594927a8",
+          "expectedQueries": 1,
+          "expectedRows": 10
+        },
+        {
+          "case": "belongsTo",
+          "kind": "relation",
+          "entry": "Posts",
+          "withRelation": "author",
+          "relation": {
+            "name": "author",
+            "kind": "belongsTo",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ],
+            "parentKey": "author_id",
+            "targetKey": "id",
+            "dialect": "mysql"
+          },
+          "bundle": {
+            "dialect": "mysql",
+            "name": "Posts",
+            "readGraph": {
+              "dialect": "mysql",
+              "name": "Posts",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Posts",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {
+              "author": {
+                "name": "author",
+                "kind": "belongsTo",
+                "parentKey": "author_id",
+                "targetKey": "id",
+                "dialect": "mysql",
+                "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+              }
+            }
+          },
+          "input": {
+            "author_id": 1
+          },
+          "fingerprint": "fnv1a64:73aab41f049301f1",
+          "expectedQueries": 2,
+          "expectedRows": 6
+        },
+        {
+          "case": "hasMany",
+          "kind": "relation",
+          "entry": "Posts",
+          "withRelation": "comments",
+          "relation": {
+            "name": "comments",
+            "kind": "hasMany",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ],
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "dialect": "mysql"
+          },
+          "bundle": {
+            "dialect": "mysql",
+            "name": "Posts",
+            "readGraph": {
+              "dialect": "mysql",
+              "name": "Posts",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Posts",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {
+              "comments": {
+                "name": "comments",
+                "kind": "hasMany",
+                "parentKey": "id",
+                "targetKey": "post_id",
+                "dialect": "mysql",
+                "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+              }
+            }
+          },
+          "input": {
+            "author_id": 1
+          },
+          "fingerprint": "fnv1a64:73aab41f049301f1",
+          "expectedQueries": 2,
+          "expectedRows": 30
+        },
+        {
+          "case": "hasManyLimit",
+          "kind": "relation",
+          "entry": "Posts",
+          "withRelation": "recent",
+          "relation": {
+            "name": "recent",
+            "kind": "hasMany",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ],
+            "parentKey": "id",
+            "targetKey": "post_id",
+            "order": "id DESC",
+            "limit": 3,
+            "dialect": "mysql"
+          },
+          "bundle": {
+            "dialect": "mysql",
+            "name": "Posts",
+            "readGraph": {
+              "dialect": "mysql",
+              "name": "Posts",
+              "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                  {
+                    "body": [
+                      {
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {
+                          "__scope": {
+                            "obj": {
+                              "author_id": {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "inputPorts": {
+                      "author_id": {
+                        "required": true,
+                        "type": "unknown"
+                      }
+                    },
+                    "name": "Posts",
+                    "output": {
+                      "ref": [
+                        "n0"
+                      ]
+                    },
+                    "plan": {
+                      "concurrency": 16,
+                      "groups": [
+                        [
+                          0
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "statementsById": {
+                "n0": [
+                  {
+                    "sql": "SELECT id, author_id, title FROM posts",
+                    "params": []
+                  },
+                  {
+                    "sql": "author_id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ],
+                    "whereFragment": true
+                  },
+                  {
+                    "sql": " ORDER BY id ASC",
+                    "params": []
+                  }
+                ]
+              },
+              "optionalHeads": []
+            },
+            "optionalHeads": [],
+            "relations": {
+              "recent": {
+                "name": "recent",
+                "kind": "hasMany",
+                "parentKey": "id",
+                "targetKey": "post_id",
+                "dialect": "mysql",
+                "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id DESC) AS _rn FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 3"
+              }
+            }
+          },
+          "input": {
+            "author_id": 1
+          },
+          "fingerprint": "fnv1a64:73aab41f049301f1",
+          "expectedQueries": 2,
+          "expectedRows": 20
+        },
+        {
+          "case": "batchInsert",
+          "kind": "batch",
+          "bundle": {
+            "dialect": "mysql",
+            "name": "BatchInsert",
+            "statement": {
+              "sql": "INSERT INTO posts (author_id, created_at, status, title, views) SELECT jt.author_id, JSON_UNQUOTE(jt.created_at), JSON_UNQUOTE(jt.status), JSON_UNQUOTE(jt.title), jt.views FROM JSON_TABLE(?, '$[*]' COLUMNS(author_id BIGINT PATH '$.author_id', created_at JSON PATH '$.created_at', status JSON PATH '$.status', title JSON PATH '$.title', views BIGINT PATH '$.views')) jt",
+              "params": [
+                "[{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-0\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-1\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-2\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-3\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-4\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-5\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-6\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-7\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-8\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-9\",\"views\":0}]"
+              ]
+            },
+            "optionalHeads": [],
+            "relations": {},
+            "transaction": {
+              "phase": "create",
+              "entityFrom": null,
+              "statements": [
+                {
+                  "id": "tx_body_0",
+                  "role": "body",
+                  "op": {
+                    "sql": "INSERT INTO posts (author_id, created_at, status, title, views) SELECT jt.author_id, JSON_UNQUOTE(jt.created_at), JSON_UNQUOTE(jt.status), JSON_UNQUOTE(jt.title), jt.views FROM JSON_TABLE(?, '$[*]' COLUMNS(author_id BIGINT PATH '$.author_id', created_at JSON PATH '$.created_at', status JSON PATH '$.status', title JSON PATH '$.title', views BIGINT PATH '$.views')) jt",
+                    "params": [
+                      "[{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-0\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-1\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-2\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-3\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-4\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-5\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-6\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-7\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-8\",\"views\":0},{\"author_id\":2,\"created_at\":\"2026-05-01\",\"status\":\"live\",\"title\":\"bulk-9\",\"views\":0}]"
+                    ]
+                  },
+                  "label": "createMany group 0"
+                }
+              ],
+              "onIdempotentHit": "rollback"
+            }
+          },
+          "input": {
+            "rows": [
+              {
+                "author_id": 2,
+                "title": "bulk-0",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-1",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-2",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-3",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-4",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-5",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-6",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-7",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-8",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              },
+              {
+                "author_id": 2,
+                "title": "bulk-9",
+                "status": "live",
+                "views": 0,
+                "created_at": "2026-05-01"
+              }
+            ]
+          },
+          "fingerprint": "fnv1a64:c3101fb11da847e5",
+          "expectedQueries": 1,
+          "expectedRows": 0
+        },
+        {
+          "case": "writeTxGate",
+          "kind": "tx",
+          "bundle": {
+            "dialect": "mysql",
+            "name": "Create",
+            "statement": {
+              "sql": "INSERT INTO posts (author_id, created_at, title) VALUES (?, ?, ?) RETURNING id, author_id, title",
+              "params": [
+                {
+                  "ref": [
+                    "author_id"
+                  ]
+                },
+                {
+                  "ref": [
+                    "created_at"
+                  ]
+                },
+                {
+                  "ref": [
+                    "title"
+                  ]
+                }
+              ]
+            },
+            "optionalHeads": [],
+            "relations": {},
+            "transaction": {
+              "phase": "create",
+              "entityFrom": "tx_body_2",
+              "statements": [
+                {
+                  "id": "tx_requires_0",
+                  "role": "gate:requires",
+                  "op": {
+                    "sql": "SELECT 1 FROM users WHERE id = ?",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ]
+                  },
+                  "gate": "existsElseRollback",
+                  "label": "requires users"
+                },
+                {
+                  "id": "tx_unique_1",
+                  "role": "gate:unique",
+                  "op": {
+                    "sql": "INSERT IGNORE INTO uniq (name, s0, f0) VALUES (?, ?, ?)",
+                    "params": [
+                      "title_per_author",
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      },
+                      {
+                        "ref": [
+                          "title"
+                        ]
+                      }
+                    ]
+                  },
+                  "gate": "insertedElseRollback",
+                  "label": "unique title_per_author"
+                },
+                {
+                  "id": "tx_body_2",
+                  "role": "body",
+                  "op": {
+                    "sql": "INSERT INTO posts (author_id, created_at, title) VALUES (?, ?, ?) RETURNING id, author_id, title",
+                    "params": [
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      },
+                      {
+                        "ref": [
+                          "created_at"
+                        ]
+                      },
+                      {
+                        "ref": [
+                          "title"
+                        ]
+                      }
+                    ]
+                  },
+                  "label": "Insert"
+                },
+                {
+                  "id": "tx_derive_3",
+                  "role": "derive",
+                  "op": {
+                    "sql": "UPDATE users SET post_count = post_count + ? WHERE id = ?",
+                    "params": [
+                      1,
+                      {
+                        "ref": [
+                          "author_id"
+                        ]
+                      }
+                    ]
+                  },
+                  "label": "derive users.post_count"
+                }
+              ],
+              "onIdempotentHit": "rollback"
+            }
+          },
+          "input": {
+            "author_id": 1,
+            "title": "txn-post",
+            "created_at": "2026-05-01"
+          },
+          "fingerprint": "fnv1a64:9ef9671fecd59dd0",
+          "expectedQueries": 4,
+          "expectedRows": 2
+        }
+      ]
     }
-  ]
+  },
+  "codegen": {
+    "typescript": {
+      "language": "typescript",
+      "filenameHint": "behaviors.generated.ts",
+      "fingerprintByCase": {
+        "find": "fnv1a64:ab8b1725da0fc202",
+        "complexWhere": "fnv1a64:ead6ce5e6e15d33f",
+        "inList": "fnv1a64:5e989cf7594927a8",
+        "belongsTo": "fnv1a64:73aab41f049301f1",
+        "hasMany": "fnv1a64:73aab41f049301f1",
+        "hasManyLimit": "fnv1a64:73aab41f049301f1",
+        "batchInsert": "fnv1a64:c3101fb11da847e5",
+        "writeTxGate": "fnv1a64:9ef9671fecd59dd0"
+      },
+      "delegatesToRunBehavior": true
+    },
+    "python": {
+      "language": "python",
+      "filenameHint": "behaviors.generated.py",
+      "fingerprintByCase": {
+        "find": "fnv1a64:ab8b1725da0fc202",
+        "complexWhere": "fnv1a64:ead6ce5e6e15d33f",
+        "inList": "fnv1a64:5e989cf7594927a8",
+        "belongsTo": "fnv1a64:73aab41f049301f1",
+        "hasMany": "fnv1a64:73aab41f049301f1",
+        "hasManyLimit": "fnv1a64:73aab41f049301f1",
+        "batchInsert": "fnv1a64:c3101fb11da847e5",
+        "writeTxGate": "fnv1a64:9ef9671fecd59dd0"
+      },
+      "delegatesToRunBehavior": true
+    },
+    "go": {
+      "language": "go",
+      "filenameHint": "behaviors.generated.go",
+      "fingerprintByCase": {
+        "find": "fnv1a64:ab8b1725da0fc202",
+        "complexWhere": "fnv1a64:ead6ce5e6e15d33f",
+        "inList": "fnv1a64:5e989cf7594927a8",
+        "belongsTo": "fnv1a64:73aab41f049301f1",
+        "hasMany": "fnv1a64:73aab41f049301f1",
+        "hasManyLimit": "fnv1a64:73aab41f049301f1",
+        "batchInsert": "fnv1a64:c3101fb11da847e5",
+        "writeTxGate": "fnv1a64:9ef9671fecd59dd0"
+      },
+      "delegatesToRunBehavior": true
+    },
+    "rust": {
+      "language": "rust",
+      "filenameHint": "behaviors.generated.rs",
+      "fingerprintByCase": {
+        "find": "fnv1a64:ab8b1725da0fc202",
+        "complexWhere": "fnv1a64:ead6ce5e6e15d33f",
+        "inList": "fnv1a64:5e989cf7594927a8",
+        "belongsTo": "fnv1a64:73aab41f049301f1",
+        "hasMany": "fnv1a64:73aab41f049301f1",
+        "hasManyLimit": "fnv1a64:73aab41f049301f1",
+        "batchInsert": "fnv1a64:c3101fb11da847e5",
+        "writeTxGate": "fnv1a64:9ef9671fecd59dd0"
+      },
+      "delegatesToRunBehavior": true
+    },
+    "php": {
+      "language": "php",
+      "filenameHint": "behaviors.generated.php",
+      "fingerprintByCase": {
+        "find": "fnv1a64:ab8b1725da0fc202",
+        "complexWhere": "fnv1a64:ead6ce5e6e15d33f",
+        "inList": "fnv1a64:5e989cf7594927a8",
+        "belongsTo": "fnv1a64:73aab41f049301f1",
+        "hasMany": "fnv1a64:73aab41f049301f1",
+        "hasManyLimit": "fnv1a64:73aab41f049301f1",
+        "batchInsert": "fnv1a64:c3101fb11da847e5",
+        "writeTxGate": "fnv1a64:9ef9671fecd59dd0"
+      },
+      "delegatesToRunBehavior": true
+    }
+  }
 }

@@ -70,23 +70,39 @@ export const CROSSLANG_MICRO_CASE_IDS = [
 
 export type CrosslangMicroCaseId = (typeof CROSSLANG_MICRO_CASE_IDS)[number];
 
+// ── The dialect axis (litedbmodel's 3 targets — validity gap #1, #44) ────────
+// The compiled bundle renders DIFFERENT SQL/placeholder/array forms per dialect
+// (`?`→`$N` for postgres, single-JSON-array IN-list forms for mysql/sqlite), so the
+// CLIENT-PATH cost itself is dialect-dependent. Every micro case runs against ALL
+// three bundles; every DB-backed case runs against the matching REAL database.
+export const CROSSLANG_DIALECTS = ['sqlite', 'postgres', 'mysql'] as const;
+export type CrosslangDialect = (typeof CROSSLANG_DIALECTS)[number];
+
 // ── Protocol messages (harness → child) ──────────────────────────────────────
+// Every case-scoped request now carries the target `dialect`: the child selects the
+// matching per-dialect bundle (micro + DB-backed) and, for DB-backed, the matching
+// real database. `sql`/`v1` cells honor sqlite only (a hand-SQL baseline is dialect-
+// specific by construction); they report an explicit skip for pg/mysql DB-backed.
 export type Request =
-  | { kind: 'run'; case: CrosslangCaseId; warmup: number; iterations: number }
-  | { kind: 'throughput'; case: CrosslangCaseId; iterations: number; concurrency: number }
-  | { kind: 'micro'; case: CrosslangMicroCaseId; warmup: number; iterations: number }
+  | { kind: 'run'; case: CrosslangCaseId; dialect: CrosslangDialect; warmup: number; iterations: number }
+  | { kind: 'throughput'; case: CrosslangCaseId; dialect: CrosslangDialect; iterations: number; concurrency: number }
+  | { kind: 'micro'; case: CrosslangMicroCaseId; dialect: CrosslangDialect; warmup: number; iterations: number }
   | { kind: 'rss' }
-  | { kind: 'cost'; case: CrosslangCaseId }
+  | { kind: 'cost'; case: CrosslangCaseId; dialect: CrosslangDialect }
   | { kind: 'shutdown' };
 
 // ── Protocol messages (child → harness) ──────────────────────────────────────
+// A `skipped` response is an HONEST per-cell "did not run" (e.g. a language with no
+// live PG driver, or the sql baseline on a non-sqlite DB-backed cell) — rendered as an
+// explicit note, never silently dropped.
 export type Response =
   | { kind: 'ready'; language: string; impl: Impl; readyAtEpochMs: number }
-  | { kind: 'run'; case: CrosslangCaseId; samplesMs: number[] }
-  | { kind: 'throughput'; case: CrosslangCaseId; elapsedMs: number; completed: number }
-  | { kind: 'micro'; case: CrosslangMicroCaseId; samplesMs: number[] }
+  | { kind: 'run'; case: CrosslangCaseId; dialect: CrosslangDialect; samplesMs: number[] }
+  | { kind: 'throughput'; case: CrosslangCaseId; dialect: CrosslangDialect; elapsedMs: number; completed: number }
+  | { kind: 'micro'; case: CrosslangMicroCaseId; dialect: CrosslangDialect; samplesMs: number[] }
   | { kind: 'rss'; rssBytes: number }
-  | { kind: 'cost'; case: CrosslangCaseId; queries: number; rows: number }
+  | { kind: 'cost'; case: CrosslangCaseId; dialect: CrosslangDialect; queries: number; rows: number }
+  | { kind: 'skipped'; case: string; dialect: CrosslangDialect; reason: string }
   | { kind: 'error'; message: string; stack?: string };
 
 // ── Serialization helpers (shared by harness AND the TS adapter) ─────────────

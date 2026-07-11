@@ -3,6 +3,7 @@ import {
   freshDb, readsContract, writesContract, writeGateContract,
   READ_ENTRY, READ_RELATION, INPUTS, SQL_BASELINE,
 } from './domain.js';
+import { CROSSLANG_DIALECTS } from './contract.js';
 
 // Fairness instrument: count DML statements (excluding BEGIN/COMMIT/tx-control) and
 // DB rows read (rows returned by .all/.get). Wraps db.prepare so it captures every
@@ -66,8 +67,36 @@ for (const caseId of Object.keys(SQL_BASELINE)) {
   console.log(`${caseId.padEnd(14)} Q sql=${sqlC.queries} lm=${lmQ} [${qOk ? 'OK' : 'DIVERGE'}]  rows sql=${sqlC.rows} lm=${lmRows} [${rOk ? 'OK' : 'DIVERGE'}] ${err ? 'ERR:' + err : ''}`);
 }
 
+// ── Per-dialect structural fairness: each dialect's compiled bundle must carry the
+// SAME expected queries/op + rows/op as the sqlite baseline (the logical DB work is
+// dialect-invariant; only the rendered SQL/placeholder form differs). The executed
+// fairness above proves it on real SQLite; this proves the postgres + mysql bundles
+// are logically identical without needing a live DB in CI. Reads from the generated
+// per-dialect artifact.
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const HERE = dirname(fileURLToPath(import.meta.url));
+const artifact = JSON.parse(readFileSync(resolve(HERE, 'generated', 'bundles.json'), 'utf8')) as {
+  dialects: Record<string, { cases: { case: string; expectedQueries: number; expectedRows: number }[] }>;
+};
+console.log('\n=== per-dialect structural fairness (expected queries/op + rows/op identical across dialects) ===');
+for (const dialect of CROSSLANG_DIALECTS) {
+  const cases = artifact.dialects[dialect]?.cases ?? [];
+  for (const c of cases) {
+    const base = SQL_BASELINE[c.case];
+    const qOk = c.expectedQueries === base.queries;
+    const rOk = c.expectedRows === base.rows;
+    if (!qOk || !rOk) {
+      failures++;
+      console.log(`[${dialect}] ${c.case.padEnd(14)} DIVERGE expectedQ=${c.expectedQueries}/${base.queries} expectedR=${c.expectedRows}/${base.rows}`);
+    }
+  }
+  console.log(`[${dialect}] ${cases.length} cases — expected queries/op + rows/op match the sqlite baseline`);
+}
+
 if (failures > 0) {
   console.error(`\n❌ ${failures} fairness divergence(s) — the sql baseline and litedbmodel path do NOT do identical logical work.`);
   process.exit(1);
 }
-console.log('\n✅ fairness self-check passed — queries/op + rows/op identical across sql baseline and litedbmodel path for all 8 cases.');
+console.log('\n✅ fairness self-check passed — queries/op + rows/op identical across the sql baseline and the litedbmodel path for all 8 cases × 3 dialects.');
