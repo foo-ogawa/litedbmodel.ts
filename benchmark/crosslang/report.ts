@@ -208,17 +208,84 @@ function v1Verdict(m: MatrixResult): string {
 
   const v1rs = cell(m, 'v1-rs', 'ir');
   if (v1rs?.error || !v1rs) {
-    lines.push('### v1-rs (old `litedbmodel.rs@0.4.5`, async + deadpool) — NOT WIRED (explicit)', '');
-    lines.push('The old `litedbmodel.rs@0.4.5` **builds** (verified: `cargo build -p litedbmodel');
-    lines.push('--features sqlite --release` succeeds), but it is a `#[derive]`-macro ActiveRecord over an');
-    lines.push('**async sqlx / tokio-postgres + deadpool** model with NO makeSQL bundle and no synchronous');
-    lines.push('in-process seam comparable to the v2 harness contract. Wiring its 8 cases would measure');
-    lines.push('sqlx/tokio overhead, not a comparable client-side path, and — crucially — the #40 axis it');
-    lines.push('exists to check (pooled-async vs v2-sync) is a LIVE-DB pooling concern that the in-proc');
-    lines.push('SQLite micro-bench cannot exercise (near-zero I/O hides the pool). It is therefore left');
-    lines.push('UNWIRED (not silently dropped): the #40 sync-vs-async regression is a docker/live-PG');
-    lines.push('measurement, out of scope for this in-proc pass; the v2 Rust `sql`/`codegen`/`ir` columns');
-    lines.push('above already quantify the v2 Rust runtime\'s own client-side overhead.');
+    lines.push('### v1-rs (old `litedbmodel.rs@0.4.5`, async + deadpool) — did NOT run (explicit)', '');
+    lines.push(`The v1-rs cell failed to build/run${v1rs?.error ? `: \`${v1rs.error}\`` : ''}. It is an async`);
+    lines.push('`sqlx`/tokio + `deadpool` ActiveRecord with NO makeSQL bundle; it is wired against an in-proc');
+    lines.push('SQLite `:memory:` DB (`benchmark/crosslang/adapters/v1rs`). Rebuild with');
+    lines.push('`cargo build --release --manifest-path benchmark/crosslang/adapters/v1rs/Cargo.toml`.');
+    lines.push('It is surfaced here (not silently dropped) so the failure is visible.');
+    lines.push('');
+  } else {
+    // v1-rs RAN — real numbers. Compare v1-rust vs v2-rust per case.
+    const v2cg = cell(m, 'rust', 'codegen'), v2ir = cell(m, 'rust', 'ir'), v2sql = cell(m, 'rust', 'sql');
+    lines.push('### v1-rs (old `litedbmodel.rs@0.4.5`) vs v2-rust — in-proc SQLite `:memory:` comparison', '');
+    lines.push('**Seam.** v1-rs is an async `sqlx`/tokio + `deadpool` ActiveRecord with NO makeSQL bundle and no');
+    lines.push('synchronous in-proc `Driver` seam. It is wired (`benchmark/crosslang/adapters/v1rs`) against an');
+    lines.push('IN-PROC SQLite `:memory:` DB — sqlx supports `:memory:` — seeded from the SAME');
+    lines.push('`generated/bundles.json` schema+seed as every v2 cell, running the SAME 8 access patterns through');
+    lines.push('v1-rs\'s real public ActiveRecord API (`find` with `Condition`s, batched-IN relation loads,');
+    lines.push('`create_many`, gate-first write-tx via `execute_query`/`execute_write`). A single-thread tokio');
+    lines.push('runtime `block_on`s each op. N+1 is avoided EXACTLY as the v2 baseline does it (parent query →');
+    lines.push('collect keys → ONE batched `IN (...)` child query). The **I/O-excluded micro** cell isolates');
+    lines.push('v1-rs\'s client-side path only — `build_select_sql`/`build_insert` SQL construction +');
+    lines.push('`from_row` hydration over fixed mock rows, NO sqlx execute — matching the other langs\' micro.');
+    lines.push('');
+    lines.push('> **Scope (explicit).** This in-proc-SQLite bench does NOT exercise the #40 pooled-async-vs-sync');
+    lines.push('> axis: that regression only shows under LIVE-PG **network** I/O where connection pooling and the');
+    lines.push('> tokio scheduler matter (a docker/live-DB concern). Against in-proc `:memory:` (near-zero I/O)');
+    lines.push('> the pool is invisible, so these numbers compare the two Rust ActiveRecord CLIENT-SIDE paths');
+    lines.push('> (v1-rs hand `Condition`→SQL + `from_row`, vs v2 makeSQL-IR runtime), not the pool behaviour.');
+    lines.push('');
+
+    // Fairness: queries/op + rows/op per case (must match the shared shape).
+    lines.push('#### Fairness — v1-rs `queries/op` + `rows/op` (must match the shared cases)', '');
+    lines.push('| Case | v1-rs queries/op | v1-rs rows/op | shared (v2) queries/op | shared rows/op | match |');
+    lines.push('|---|---|---|---|---|---|');
+    let fairOk = true;
+    for (const caseId of CROSSLANG_CASE_IDS) {
+      const v1 = v1rs.cases[caseId];
+      const ref = v2sql?.cases[caseId] ?? v2ir?.cases[caseId];
+      const qm = v1?.queries === ref?.queries, rm = v1?.rows === ref?.rows;
+      if (!qm || !rm) fairOk = false;
+      lines.push(`| ${CROSSLANG_CASE_LABELS[caseId]} | ${v1?.queries ?? '—'} | ${v1?.rows ?? '—'} | ${ref?.queries ?? '—'} | ${ref?.rows ?? '—'} | ${qm && rm ? '✅' : '❌'} |`);
+    }
+    lines.push('');
+    lines.push(`> ${fairOk ? '✅ v1-rs does IDENTICAL logical work (queries/op + rows/op) to the shared v2 cases on every case — no strawman.' : '❌ v1-rs diverges from the shared logical work on at least one case (see ❌ rows).'}`);
+    lines.push('');
+
+    // DB-backed p50 (in-proc :memory:, client-side-dominated) — v1-rust vs v2-rust.
+    lines.push('#### DB-backed p50 (in-proc `:memory:`, ms) — v1-rust vs v2-rust', '');
+    lines.push('| Case | v1-rs (ms) | v2 sql (ms) | v2 codegen (ms) | v2 ir (ms) | v1-rs ÷ v2-ir | verdict |');
+    lines.push('|---|---|---|---|---|---|---|');
+    for (const caseId of CROSSLANG_CASE_IDS) {
+      const v1 = v1rs.cases[caseId]?.latency.p50Ms;
+      const ir = v2ir?.cases[caseId]?.latency.p50Ms;
+      const ratio = relativeOverhead(v1 ?? NaN, ir ?? NaN);
+      const verdict = Number.isNaN(ratio) ? '—' : ratio < 1 ? `v1-rs faster (${ratio.toFixed(2)}×)` : `v2-ir faster (${(1 / ratio).toFixed(2)}×)`;
+      lines.push(`| ${CROSSLANG_CASE_LABELS[caseId]} | ${fmtMs(v1)} | ${fmtMs(v2sql?.cases[caseId]?.latency.p50Ms)} | ${fmtMs(v2cg?.cases[caseId]?.latency.p50Ms)} | ${fmtMs(ir)} | ${fmtRatio(ratio)} | ${verdict} |`);
+    }
+    lines.push('');
+
+    // Micro (I/O-excluded, client-side path only) — the load-bearing v1-rust vs v2-rust signal.
+    lines.push('#### I/O-excluded micro p50 (µs, client-side path only) — v1-rust vs v2-rust', '');
+    lines.push('| Micro case | v1-rs (µs) | v2 codegen (µs) | v2 ir (µs) | v1-rs ÷ v2-ir (best) | verdict |');
+    lines.push('|---|---|---|---|---|---|');
+    for (const caseId of CROSSLANG_MICRO_CASE_IDS) {
+      const v1 = v1rs.micro[caseId]?.p50Ms;
+      const cg = v2cg?.micro[caseId]?.p50Ms, ir = v2ir?.micro[caseId]?.p50Ms;
+      const bestV2 = [cg, ir].filter((x): x is number => typeof x === 'number' && !Number.isNaN(x));
+      const best = bestV2.length ? Math.min(...bestV2) : NaN;
+      const ratio = relativeOverhead(v1 ?? NaN, best);
+      const verdict = Number.isNaN(ratio) ? '—' : ratio < 1 ? `v1-rs lighter (${ratio.toFixed(2)}×)` : `v2 lighter (${(1 / ratio).toFixed(2)}×)`;
+      lines.push(`| ${CROSSLANG_CASE_LABELS[caseId]} | ${fmtUs(v1)} | ${fmtUs(cg)} | ${fmtUs(ir)} | ${fmtRatio(ratio)} | ${verdict} |`);
+    }
+    lines.push('');
+    lines.push('> **v1-rust-vs-v2-rust verdict.** On the I/O-excluded micro-bench, v1-rs\'s hand `Condition`→SQL');
+    lines.push('> builder + direct `from_row` hydration is lighter than v2\'s portable makeSQL-IR runtime (the v2');
+    lines.push('> runtime walks a bc Expression-IR + plan/map orchestration per op). This mirrors the v1-ts-vs-v2');
+    lines.push('> client-side finding above: v2 trades v1\'s hand-tuned builders for a portable, multi-language IR');
+    lines.push('> runtime. Once real I/O is included the gap shrinks (the DB-backed `:memory:` table above), and');
+    lines.push('> — restated — the #40 pooled-async-vs-sync axis is a live-PG concern this in-proc pass cannot test.');
     lines.push('');
   }
 

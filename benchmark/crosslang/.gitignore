@@ -5,7 +5,7 @@ v1ts/node_modules/
 # Compiled adapter binaries + build dirs
 adapters/rust/target/
 adapters/go/go_bench
-adapters/v1rs/
+adapters/v1rs/target/
 # Python bytecode
 adapters/python/__pycache__/
 **/__pycache__/
