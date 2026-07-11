@@ -3445,7 +3445,7 @@
         "batchInsert": "fnv1a64:c3101fb11da847e5",
         "writeTxGate": "fnv1a64:9ef9671fecd59dd0"
       },
-      "delegatesToRunBehavior": true
+      "delegatesToRunBehavior": false
     },
     "python": {
       "language": "python",
@@ -3460,7 +3460,7 @@
         "batchInsert": "fnv1a64:c3101fb11da847e5",
         "writeTxGate": "fnv1a64:9ef9671fecd59dd0"
       },
-      "delegatesToRunBehavior": true
+      "delegatesToRunBehavior": false
     },
     "go": {
       "language": "go",
@@ -3475,7 +3475,7 @@
         "batchInsert": "fnv1a64:c3101fb11da847e5",
         "writeTxGate": "fnv1a64:9ef9671fecd59dd0"
       },
-      "delegatesToRunBehavior": true
+      "delegatesToRunBehavior": false
     },
     "rust": {
       "language": "rust",
@@ -3490,7 +3490,7 @@
         "batchInsert": "fnv1a64:c3101fb11da847e5",
         "writeTxGate": "fnv1a64:9ef9671fecd59dd0"
       },
-      "delegatesToRunBehavior": true
+      "delegatesToRunBehavior": false
     },
     "php": {
       "language": "php",
@@ -3505,7 +3505,7 @@
         "batchInsert": "fnv1a64:c3101fb11da847e5",
         "writeTxGate": "fnv1a64:9ef9671fecd59dd0"
       },
-      "delegatesToRunBehavior": true
+      "delegatesToRunBehavior": false
     }
   }
 }

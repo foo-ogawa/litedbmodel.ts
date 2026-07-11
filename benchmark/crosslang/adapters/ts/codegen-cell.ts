@@ -6,26 +6,28 @@
 // the ir cell calls, with only a cosmetic `JSON.stringify(bundle).length`-style verify
 // at load — so codegen was literally an alias of ir. This cell fixes that: it IMPORTS
 // the bc-GENERATED module (`generated/codegen/typescript/<case>.ts`, emitted by
-// litedbmodel `generateCodegenArtifact` = bc's shared generator), runs the module's
-// REAL fail-closed load checks (`fingerprintComponentGraph(IR) === IR_FINGERPRINT`,
-// `SPEC_VERSIONS` match), and executes each case by calling the module's
-// `bind(handlers)[Component](input)` — a `runBehavior` over the IR baked as a native
-// literal, a distinct code entry from the ir cell's `executeBundle(rawJson)`.
+// litedbmodel `generateCodegenArtifact` = bc's shared STRAIGHT-LINE generator), runs the
+// module's REAL fail-closed skew gate (recompute `fingerprintComponentGraph(liveIR)` and
+// assert it equals the baked `IR_FINGERPRINT`; `EXPECTED_SPEC_VERSIONS` self-checked at
+// module load), and executes each case by calling the module's `bind(handlers)[Component]
+// (input)` — a distinct code entry from the ir cell's `executeBundle(rawJson)`.
 //
-// HONEST DISCLOSURE (see CROSS-LANG.md): at this bc version the generated module is
-// interpreter-transcription — `bind()` delegates to the shared `runBehavior`, and
-// litedbmodel's `generateCodegenArtifact` exposes ONLY the literal-bake endpoint (the
-// `*-straightline` de-interpreted emitters bc registers are REJECTED by litedbmodel's
-// `CODEGEN_LANGUAGES` allowlist). So codegen ≈ ir is EXPECTED until bc#75 lands true
-// de-interpretation; this cell proves the generated-code PATH is wired + fail-closed,
-// not that it is yet faster.
+// STATUS (bc 0.2.5 + PR#51): the generated module is now GENUINELY DE-INTERPRETED — bc's
+// `<lang>-straightline` endpoint emits native straight-line source (no `runBehavior`
+// tree-walk; the portable IR is NOT embedded, only its fingerprint). The anti-sham gate in
+// generate.ts confirms `delegatesToRunBehavior=false`. So `codegen < ir` is now expected
+// where de-interpretation removes interpreter overhead, while staying observationally equal
+// to `ir`. (bc#76 handler de-boxing is not yet integrated → a further gain is pending.)
 
 import { fingerprintComponentGraph } from 'behavior-contracts';
 import * as lm from '../../../../dist/scp/index.mjs';
 
 // The generated module surface (every `generated/codegen/typescript/<case>.ts` exports these).
 interface GeneratedModule {
-  IR: any;
+  // The bc#75 STRAIGHT-LINE module does NOT embed the portable IR (baking it would make
+  // interpreting it possible — the point of de-interpretation). It carries only the baked
+  // IR_FINGERPRINT + COMPONENT_NAMES; the consumer recomputes the fingerprint of the LIVE IR
+  // it loaded and compares (the fail-closed skew gate the module header specifies).
   IR_FINGERPRINT: string;
   EXPECTED_SPEC_VERSIONS: { behavior: number; expression: number; plan: number };
   COMPONENT_NAMES: readonly string[];
@@ -38,11 +40,15 @@ type CaseArt = { case: string; kind: string; entry?: string; withRelation?: stri
 // generated source (not the raw JSON). One dynamic import map keyed by case id.
 const GEN_DIR = new URL('../../generated/codegen/typescript/', import.meta.url);
 
-async function loadGenerated(caseId: string): Promise<GeneratedModule> {
+async function loadGenerated(caseId: string, bundle: any): Promise<GeneratedModule> {
   const mod = (await import(new URL(`${caseId}.ts`, GEN_DIR).href)) as unknown as GeneratedModule;
-  // REAL fail-closed load checks the generated module bakes (bc#13 endpoint-3 contract):
-  // recompute the IR fingerprint + assert it matches the baked constant.
-  const recomputed = fingerprintComponentGraph(mod.IR);
+  // REAL fail-closed skew gate (bc#75 straight-line endpoint): the module does NOT embed the
+  // IR — it bakes only IR_FINGERPRINT. Recompute the fingerprint of the LIVE portable IR (the
+  // bundle the cell holds) and assert it equals the baked constant, exactly as the generated
+  // module header prescribes. A mismatch means the generated code was built from a different
+  // IR than the one being executed → fail closed.
+  const liveIr = lm.bundleToPortableIR(bundle);
+  const recomputed = fingerprintComponentGraph(liveIr);
   if (recomputed !== mod.IR_FINGERPRINT) {
     throw new Error(`codegen: generated ${caseId} fingerprint mismatch (${recomputed} != ${mod.IR_FINGERPRINT})`);
   }
@@ -78,7 +84,7 @@ const MODULES = new Map<string, GeneratedModule>();
 
 export const codegenCell: CodegenRunner = {
   async preload(cases) {
-    for (const c of cases) MODULES.set(c.case, await loadGenerated(c.case));
+    for (const c of cases) MODULES.set(c.case, await loadGenerated(c.case, c.bundle));
   },
   op(c, db, dialect) {
     const mod = MODULES.get(c.case);

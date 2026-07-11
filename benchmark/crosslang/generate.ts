@@ -181,6 +181,51 @@ interface CodegenModuleArtifact {
 // module (imports + IR literal + bind), so cases CANNOT be concatenated into one file
 // (duplicate top-level declarations); each case is its own compile unit. The codegen
 // cell loads + binds each case module individually.
+// Strip line/block comments and string/docstring literals across the 5 target languages
+// (C-style `//` + `/* */`, `#` line comments for Python/PHP, `'`/`"`/backtick strings and
+// Python triple-quoted docstrings), then test whether the interpreter symbol survives as a
+// genuine CODE reference. Used by the anti-sham gate so a de-interpreted module whose COMMENTS
+// merely mention `run_behavior` is not misreported as delegating.
+function codeMentionsInterpreter(src: string): boolean {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    const c2 = src.slice(i, i + 2);
+    const c3 = src.slice(i, i + 3);
+    if (c2 === '/*') {
+      const end = src.indexOf('*/', i + 2);
+      i = end < 0 ? n : end + 2;
+      continue;
+    }
+    if (c2 === '//' || c === '#') {
+      const end = src.indexOf('\n', i);
+      i = end < 0 ? n : end;
+      continue;
+    }
+    if (c3 === "'''" || c3 === '"""') {
+      const q = c3;
+      const end = src.indexOf(q, i + 3);
+      i = end < 0 ? n : end + 3;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      const q = c;
+      i += 1;
+      while (i < n && src[i] !== q) {
+        if (src[i] === '\\') i += 2;
+        else i += 1;
+      }
+      i += 1;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return /runBehavior|run_behavior|RunBehavior/.test(out);
+}
+
 function generateCodegen(
   cases: CaseArtifact[],
   language: CodegenLang,
@@ -195,7 +240,12 @@ function generateCodegen(
     // the installed `behavior-contracts` package (the default emitter import).
     const art = lm.generateCodegenArtifact(c.bundle as any, language, registered as string[]);
     fingerprintByCase[c.case] = art.module.fingerprint;
-    if (art.module.code.includes('runBehavior') || art.module.code.includes('run_behavior') || art.module.code.includes('RunBehavior')) delegates = true;
+    // Anti-sham DELEGATION gate: does the generated module CALL the interpreter
+    // (`runBehavior`/`run_behavior`/`RunBehavior`) at the CODE level? The straight-line
+    // (bc#75) emitters produce de-interpreted native source whose EXPLANATORY COMMENTS say
+    // "does NOT go through run_behavior" — a naive substring match false-positives on that
+    // prose. Strip comments + string/docstring literals first so we count a genuine CALL only.
+    if (codeMentionsInterpreter(art.module.code)) delegates = true;
     sourceByCase[c.case] = art.module.code;
   }
   return {
