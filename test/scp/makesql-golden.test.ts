@@ -23,12 +23,14 @@ import type { SqlBuilder } from '../../src/drivers/types';
 import {
   assembleMakeSQL,
   renderPlaceholders,
+  conditionsFor,
   compileWhere,
   compileSelect,
   compileInsertMany,
   compileUpdateMany,
   compileUpdateSingle,
   compileDelete,
+  compileDeleteMany,
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
   compileCompositeKeyUnlimited,
@@ -586,6 +588,48 @@ describe('B. single UPDATE / DELETE — makeSQL byte-matches original _update/_d
       }
     });
   }
+  // deleteMany (V0 addition — the DONE-list gap): compileDeleteMany COMPOSES compileDelete
+  // (→ DBConditions/conditionsFor), so its per-statement text is byte-identical to what the v1
+  // condition path emits. Single PK → ONE DELETE with a v1 IN-list; composite PK → ONE DELETE per
+  // present-column-set group whose WHERE is the v1 conjunction of per-column IN-lists. PG stays
+  // byte-match v1 (IN (?, …)); MySQL/SQLite take the SAME single-column-IN JSON-form deviation the
+  // single DELETE / IN-list golden above uses (proven result-equal on real DBs elsewhere).
+  for (const dialect of dialects) {
+    it(`[${dialect}] deleteMany single-PK → v1 IN-list DELETE (byte-match)`, () => {
+      const keys = [{ id: 1 }, { id: 3 }, { id: 5 }];
+      const got = compileDeleteMany({ dialect, tableName: 'users', keyColumns: ['id'], keys }).map((c) => render(c, dialect));
+      expect(got.length).toBe(1);
+      if (dialect === 'postgres') {
+        const params: unknown[] = [];
+        const where = new DBConditions({ id: [1, 3, 5] }).compile(params, pgFmt);
+        const golden = { sql: renderPlaceholders(`DELETE FROM users WHERE ${where}`, dialect), params };
+        expect(got[0].sql).toBe(golden.sql);
+        expect(got[0].params).toEqual(golden.params);
+      } else {
+        const golden = dialect === 'mysql'
+          ? { sql: "DELETE FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)", params: ['[1,3,5]'] }
+          : { sql: 'DELETE FROM users WHERE id IN (SELECT value FROM json_each(?))', params: ['[1,3,5]'] };
+        expect(got[0]).toEqual(golden);
+      }
+    });
+
+    it(`[${dialect}] deleteMany composite-PK → v1 per-column IN-list conjunction (byte-match)`, () => {
+      // A composite PK's WHERE is the v1 conjunction of per-column IN-lists, built through the SAME
+      // conditionsFor (→ DBConditions on PG, the documented single-column-IN JSON rewrite per column
+      // on MySQL/SQLite). The golden drives that ORIGINAL builder directly — one present-column-set
+      // group → ONE DELETE — so it is byte-match to the v1 condition path on every dialect.
+      const keys = [{ tenant_id: 100, id: 1 }, { tenant_id: 100, id: 2 }];
+      const got = compileDeleteMany({ dialect, tableName: 'comments', keyColumns: ['tenant_id', 'id'], keys }).map((c) => render(c, dialect));
+      expect(got.length).toBe(1);
+      const params: unknown[] = [];
+      const formatter = dialect === 'postgres' ? pgFmt : undefined;
+      const where = conditionsFor({ tenant_id: [100, 100], id: [1, 2] }, dialect).compile(params, formatter);
+      const golden = { sql: renderPlaceholders(`DELETE FROM comments WHERE ${where}`, dialect), params };
+      expect(got[0].sql).toBe(golden.sql);
+      expect(got[0].params).toEqual(golden.params);
+    });
+  }
+
   it('DELETE without WHERE throws (v1 anchor)', () => {
     expect(() => compileDelete({ dialect: 'postgres', tableName: 'users', conditions: {} })).toThrow(/DELETE requires conditions/);
   });
@@ -617,6 +661,19 @@ describe('B. SELECT tail — LIMIT/OFFSET inline, FOR UPDATE, GROUP BY', () => {
           forUpdate: true,
         }),
         dialect
+      );
+      expect(got.sql).toBe(golden.sql);
+      expect(got.params).toEqual(golden.params);
+    });
+
+    it(`[${dialect}] grouped aggregate SELECT (GROUP BY + COUNT projection) — byte-matches v1 (R3 live vector head)`, () => {
+      // The exact SELECT the R3 GroupByAuthor live vector authors: a grouped aggregate over the
+      // `select` + `group` SELECT_PORTS. Golden drives the ORIGINAL compileSelect (v1 _buildSelectSQL).
+      const goldenSql = `SELECT author_id, COUNT(*) as n FROM posts GROUP BY author_id ORDER BY author_id ASC`;
+      const golden = { sql: renderPlaceholders(goldenSql, dialect), params: [] as unknown[] };
+      const got = render(
+        compileSelect({ dialect, tableName: 'posts', select: 'author_id, COUNT(*) as n', group: 'author_id', order: 'author_id ASC' }),
+        dialect,
       );
       expect(got.sql).toBe(golden.sql);
       expect(got.params).toEqual(golden.params);

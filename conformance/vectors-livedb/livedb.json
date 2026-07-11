@@ -3801,6 +3801,177 @@
       ]
     },
     {
+      "name": "GroupByAuthor: GROUP BY author_id + COUNT(*) → per-author counts [R3]",
+      "kind": "exec",
+      "input": {},
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "GroupByAuthor",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "GroupByAuthor",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {}
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {},
+                "name": "GroupByAuthor",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT author_id, COUNT(*) as n FROM posts",
+                "params": []
+              },
+              {
+                "sql": " GROUP BY author_id",
+                "params": []
+              },
+              {
+                "sql": " ORDER BY author_id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "GroupByAuthor",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "GroupByAuthor",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "__makeSqlNode",
+                    "id": "n0",
+                    "ports": {
+                      "__scope": {
+                        "obj": {}
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {},
+                "name": "GroupByAuthor",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "SELECT author_id, COUNT(*) as n FROM posts",
+                "params": []
+              },
+              {
+                "sql": " GROUP BY author_id",
+                "params": []
+              },
+              {
+                "sql": " ORDER BY author_id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "expectedResult": [
+        {
+          "author_id": 7,
+          "n": 2
+        },
+        {
+          "author_id": 8,
+          "n": 1
+        }
+      ]
+    },
+    {
       "name": "Posts: belongsTo author hydrated onto each parent [#43]",
       "kind": "read",
       "input": {

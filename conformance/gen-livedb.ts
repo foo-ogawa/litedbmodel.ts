@@ -143,6 +143,15 @@ class Blog extends SemanticBehavior {
     return L.Select({ table: 'typed', select: ['label'], where: [whereIn(inColumn($, 'amt'), $.keys)], order: 'label ASC' });
   }
 
+  // GROUP BY (R3 — v0 matrix): the `group` port is part of the fixed SELECT_PORTS surface, so a
+  // grouped aggregate SELECT is authorable AND live-executable additively (no §2 change). The
+  // projection is a stable aggregate over the grouped column so the assembled result is
+  // dialect-invariant: `SELECT author_id, COUNT(*) as n FROM posts GROUP BY author_id ORDER BY
+  // author_id ASC`. READ_SCHEMA posts: author 7 → 2, author 8 → 1.
+  GroupByAuthor(_$: In<Record<string, never>>) {
+    return L.Select({ table: 'posts', select: ['author_id', 'COUNT(*) as n'], group: 'author_id', order: 'author_id ASC' });
+  }
+
   // count() (#47 item 2 — v1 `DBModel._count`): `SELECT COUNT(*) as count FROM posts[ WHERE …]`.
   /** count() over ALL rows: `SELECT COUNT(*) as count FROM posts`. */
   CountAll(_$: In<Record<string, never>>) {
@@ -942,6 +951,17 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
       name: 'CountByAuthor: COUNT(*) WHERE author_id = 999 → 0 (empty) [#47]',
       entry: 'CountByAuthor',
       input: { author_id: 999 },
+      relations: [],
+      schemaSqlite: READ_SCHEMA_SQLITE,
+      schemaPg: READ_SCHEMA_PG,
+      schemaMysql: READ_SCHEMA_MYSQL,
+    },
+    // GROUP BY (R3): grouped aggregate SELECT via the SELECT_PORTS `group` port — live on PG+MySQL.
+    // author 7 → 2 posts, author 8 → 1 post (dialect-invariant `{author_id, n}` rows).
+    {
+      name: 'GroupByAuthor: GROUP BY author_id + COUNT(*) → per-author counts [R3]',
+      entry: 'GroupByAuthor',
+      input: {},
       relations: [],
       schemaSqlite: READ_SCHEMA_SQLITE,
       schemaPg: READ_SCHEMA_PG,
