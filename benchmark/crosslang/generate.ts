@@ -23,7 +23,7 @@
 //      CROSS-LANG.md: at this bc version the generated module is still interpreter-
 //      transcription (it delegates to `runBehavior`), so codegen ≈ ir is EXPECTED.
 
-import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as lm from '../../dist/scp/index.mjs';
@@ -46,6 +46,13 @@ const OUT = resolve(HERE, 'generated', 'bundles.json');
 // The TRUE bc-generated codegen module per language (source text), consumed by the
 // codegen cells. Written next to the JSON artifact; committed + drift-checked.
 const CODEGEN_DIR = resolve(HERE, 'generated', 'codegen');
+// The Go generated modules are ALSO materialized as per-case Go PACKAGES *inside the go module*
+// (`go/lm_bench/cgmods/<case>/gen.go`, `package cg_<case>`) — Go cannot import a package from
+// outside its module tree, and the 8 flat `package behaviors` files (duplicate top-level decls)
+// cannot compile together. The bench's codegen cell imports these per-case packages and executes
+// THROUGH each module's `Bind(handler)[entry](input)`. Gitignored + regenerated (build output).
+const GO_CGMODS_DIR = resolve(HERE, '..', '..', 'go', 'lm_bench', 'cgmods');
+const GO_CASE_PKG = (caseId: string) => `cg_${caseId.replace(/[^A-Za-z0-9_]/g, '_')}`;
 
 // bc's shared generator supports exactly these litedbmodel-facing languages (the
 // mode-3 codegen "endpoint 3" literal-bake emitters). Each cell's codegen module is
@@ -281,31 +288,42 @@ function main(): void {
   };
   const body = JSON.stringify(artifact, null, 2);
 
-  // CI drift-check: regenerate in memory and compare to the committed artifact +
-  // generated codegen sources, failing loudly on drift — so a src/ change that
-  // alters the compiled bundles OR the generated code is caught in CI without
-  // re-running the whole bench.
+  // CI gate (--check): the generated artifacts are BUILD OUTPUT (gitignored, regenerated at run
+  // time) — NOT committed — so there is no committed copy to diff against (the old "stale committed
+  // codegen" trap the #44 owner flagged). Instead this gate asserts the LOAD-BEARING invariant on
+  // the FRESHLY generated code: every language's codegen module is genuinely DE-INTERPRETED
+  // (bc#75 straight-line — `delegatesToRunBehavior=false`). A src/ change that makes the generator
+  // fall back to interpreter-transcription (literal-bake + run_behavior) fails CI here. It writes
+  // the artifacts to disk (same as a normal run) so a following selfcheck/bench sees fresh output.
   if (process.argv.includes('--check')) {
-    let drift = false;
-    if (!existsSync(OUT)) {
-      console.error(`DRIFT: ${OUT} is missing — run \`npx tsx benchmark/crosslang/generate.ts\` and commit it.`);
-      process.exit(1);
-    }
-    const committed = readFileSync(OUT, 'utf8').replace(/\n?$/, '');
-    if (committed !== body.replace(/\n?$/, '')) drift = true;
+    mkdirSync(dirname(OUT), { recursive: true });
+    writeFileSync(OUT, body);
     for (const lang of CODEGEN_LANGS) {
       for (const c of dialects.sqlite.cases) {
         const p = codegenFilePath(lang, c.case);
-        if (!existsSync(p) || readFileSync(p, 'utf8').replace(/\n?$/, '') !== codegenSources[lang][c.case].replace(/\n?$/, '')) drift = true;
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, codegenSources[lang][c.case]);
       }
     }
-    if (drift) {
-      console.error('DRIFT: generated bundles or codegen modules differ from the committed artifact.');
-      console.error('The compiled artifact changed (a src/ or authoring change). Re-run the generator and commit:');
-      console.error('  npx tsx benchmark/crosslang/generate.ts');
+    for (const c of dialects.sqlite.cases) {
+      const pkg = GO_CASE_PKG(c.case);
+      const src = codegenSources.go[c.case].replace(/^package\s+behaviors\b/m, `package ${pkg}`);
+      const dir = resolve(GO_CGMODS_DIR, c.case);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, 'gen.go'), src);
+    }
+    let sham = false;
+    for (const lang of CODEGEN_LANGS) {
+      const deint = !codegen[lang].delegatesToRunBehavior;
+      console.error(`  ${lang.padEnd(11)} de-interpreted(delegatesToRunBehavior=false)=${deint}`);
+      if (!deint) sham = true;
+    }
+    if (sham) {
+      console.error('SHAM: a generated codegen module DELEGATES to the interpreter (run_behavior) — it is NOT de-interpreted.');
+      console.error('The generator regressed to literal-bake + interpreter transcription. Fix the emitter / bc version.');
       process.exit(1);
     }
-    console.error(`OK: generated artifact is up to date (${CROSSLANG_DIALECTS.length} dialects × ${dialects.sqlite.cases.length} case bundles, ${CODEGEN_LANGS.length} codegen modules, no drift).`);
+    console.error(`OK: freshly generated (${CROSSLANG_DIALECTS.length} dialects × ${dialects.sqlite.cases.length} bundles, ${CODEGEN_LANGS.length} codegen langs) — all de-interpreted.`);
     return;
   }
 
@@ -317,6 +335,16 @@ function main(): void {
       mkdirSync(dirname(p), { recursive: true });
       writeFileSync(p, codegenSources[lang][c.case]);
     }
+  }
+  // Materialize the Go per-case packages INSIDE the go module so the bench can compile+import them.
+  // Each is the SAME generated source with only the package clause rewritten `behaviors` -> `cg_<case>`
+  // (byte-identical code otherwise — the anti-sham gate checks the flat generated/ copy).
+  for (const c of dialects.sqlite.cases) {
+    const pkg = GO_CASE_PKG(c.case);
+    const src = codegenSources.go[c.case].replace(/^package\s+behaviors\b/m, `package ${pkg}`);
+    const dir = resolve(GO_CGMODS_DIR, c.case);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, 'gen.go'), src);
   }
   console.error(`Wrote ${OUT} (${CROSSLANG_DIALECTS.length} dialects × ${dialects.sqlite.cases.length} case bundles)`);
   for (const d of CROSSLANG_DIALECTS) {

@@ -246,12 +246,17 @@ func main() {
 	}
 	art := loadArtifact(bundlesPath)
 
-	// codegen: verify each baked bundle once at load (fail-closed integrity check) — the cold-start
-	// cost distinguishing codegen from ir (which parses from disk).
+	// codegen: run each generated module's REAL fail-closed skew gate + fail-closed load once at
+	// cold start (recompute FingerprintComponentGraph(live readGraph.IR) == baked IRFingerprint and
+	// force each module's init via Bind). This is the GENUINE codegen load cost (the old decorative
+	// `len(c.Bundle)` "verify" is deleted); the timed ops below then execute THROUGH the generated
+	// de-interpreted code, not ExecuteBundle.
 	if impl == "codegen" {
+		mock := openMockDB()
 		for _, c := range art.Cases {
-			_ = len(c.Bundle) // touch/verify the resident bundle
+			runCodegen(c, mock)
 		}
+		mock.Close()
 	}
 
 	write(map[string]any{"kind": "ready", "language": "go", "impl": impl, "readyAtEpochMs": nowMs()})
@@ -312,6 +317,8 @@ func handle(req map[string]any, impl string, art *artifact) {
 		samples := collect(warmup, iters, func() {
 			if impl == "sql" {
 				runSQL(caseID, db)
+			} else if impl == "codegen" {
+				runCodegen(c, db)
 			} else {
 				runLM(c, db)
 			}
@@ -331,6 +338,8 @@ func handle(req map[string]any, impl string, art *artifact) {
 		for i := 0; i < iters; i++ {
 			if impl == "sql" {
 				runSQL(caseID, db)
+			} else if impl == "codegen" {
+				runCodegen(c, db)
 			} else {
 				runLM(c, db)
 			}
@@ -360,6 +369,8 @@ func handle(req map[string]any, impl string, art *artifact) {
 		samples := collect(warmup, iters, func() {
 			if impl == "sql" {
 				runSQL(caseID, mock)
+			} else if impl == "codegen" {
+				runCodegen(c, mock)
 			} else {
 				runLM(c, mock)
 			}
@@ -371,6 +382,14 @@ func handle(req map[string]any, impl string, art *artifact) {
 		caseID := req["case"].(string)
 		q, r := cost(impl, caseID, art)
 		write(map[string]any{"kind": "cost", "case": caseID, "dialect": dialect, "queries": q, "rows": r})
+	case "verify":
+		// Behaviour-equality selfcheck: generated-code output == interpreter output (same rows).
+		caseID := req["case"].(string)
+		c := art.Cases[caseID]
+		cg := runCodegenValue(art, c)
+		ir := runLMValue(art, c)
+		write(map[string]any{"kind": "verify", "case": caseID, "impl_kind": c.Kind,
+			"equal": cg == ir, "cg_len": len(cg), "ir_len": len(ir)})
 	case "shutdown":
 		os.Exit(0)
 	}

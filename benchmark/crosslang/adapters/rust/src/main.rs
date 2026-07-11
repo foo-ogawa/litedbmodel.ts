@@ -16,6 +16,7 @@ use litedbmodel_runtime::{
     decode_scope, execute_bundle, execute_transaction_bundle, read_bundle_pooled, Driver,
     PreparedStatement, RunInfo, SqliteDriver,
 };
+use litedbmodel_runtime::Scope;
 use serde_json::Value as J;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -313,6 +314,8 @@ fn cost(impl_: &str, case_name: &str, art: &Artifact) -> (u64, u64) {
     };
     if impl_ == "sql" {
         run_sql_counting(case_name, &counter);
+    } else if impl_ == "codegen" {
+        run_codegen(&art.cases[case_name], &counter);
     } else {
         run_lm_counting(&art.cases[case_name], &counter);
     }
@@ -544,6 +547,8 @@ unsafe impl Sync for MockDriver {}
 fn run_micro(impl_: &str, case: &J, mock: &MockDriver) {
     if impl_ == "sql" {
         run_sql_generic(case["case"].as_str().unwrap(), mock);
+    } else if impl_ == "codegen" {
+        run_codegen(case, mock);
     } else {
         let kind = case["kind"].as_str().unwrap();
         let bundle = &case["bundle"];
@@ -564,6 +569,236 @@ fn run_micro(impl_: &str, case: &J, mock: &MockDriver) {
                 execute_bundle(bundle, input, mock).unwrap();
             }
         }
+    }
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// TRUE-codegen cell (#44 anti-sham fix) — execute THROUGH the bc-GENERATED module.
+// ════════════════════════════════════════════════════════════════════════════
+//
+// The OLD codegen path was a DECORATION: `run_micro`/`run_lm` called the SAME
+// `execute_bundle`/`read_bundle_pooled` the `ir` cell calls, with only a cosmetic
+// resident-bundle "verify" at load — so codegen was literally an alias of `ir`
+// (and even measured slightly SLOWER: verify + noise). This module fixes that: it
+// COMPILES the bc-GENERATED straight-line modules
+// (`generated/codegen/rust/<case>.rs`, emitted by litedbmodel `generateCodegenArtifact`
+// = bc#75 straight-line, de-interpreted native source — the portable IR is NOT
+// embedded, only its fingerprint) and executes each read case THROUGH the module's
+// `bind(handler).call(entry, input)` — a DISTINCT code entry from `ir`'s
+// `execute_bundle`, with NO `run_behavior` tree-walk. It runs the REAL fail-closed
+// skew gate (recompute `fingerprint_component_graph(live readGraph.ir)` == baked
+// `IR_FINGERPRINT`) mirroring the generated module header + the TS codegen cell.
+// The generated modules are declared at crate root (top-level `#[path]` resolves relative to
+// `src/`) and re-exported under `codegen_gen` for tidy call sites. Each is its own compile unit
+// (they share top-level names: `bind`/`Bound`/`run_<Component>`), so they cannot be concatenated.
+#[path = "../../../generated/codegen/rust/find.rs"]
+mod cg_find;
+#[path = "../../../generated/codegen/rust/complexWhere.rs"]
+mod cg_complex_where;
+#[path = "../../../generated/codegen/rust/inList.rs"]
+mod cg_in_list;
+#[path = "../../../generated/codegen/rust/belongsTo.rs"]
+mod cg_belongs_to;
+#[path = "../../../generated/codegen/rust/hasMany.rs"]
+mod cg_has_many;
+#[path = "../../../generated/codegen/rust/hasManyLimit.rs"]
+mod cg_has_many_limit;
+#[path = "../../../generated/codegen/rust/batchInsert.rs"]
+mod cg_batch_insert;
+#[path = "../../../generated/codegen/rust/writeTxGate.rs"]
+mod cg_write_tx_gate;
+
+
+use behavior_contracts::{ComponentExec, ExecOutcome};
+use litedbmodel_runtime::{render_read_primary, stitch_relation};
+
+// The makeSQL handler for the GENERATED module's `__makeSqlNode` boundary op: bc's
+// generated code calls this per SQL node with the evaluated `__scope`; we render the
+// primary read node's statement via the SAME runtime `render_read_primary` the `ir`
+// path uses and execute it on the driver. This is what makes the generated module
+// GENUINELY run SQL (vs the decorative verify) — bc composes (de-interpreted, native),
+// makeSQL executes (the shared render+driver seam).
+struct CodegenReadHandler<'a> {
+    read_graph: &'a J,
+    driver: &'a dyn Driver,
+}
+impl<'a> ComponentExec for CodegenReadHandler<'a> {
+    fn exec(
+        &mut self,
+        _component: &str,
+        _ports: &[(String, Value)],
+        _bound: Option<&Value>,
+    ) -> Option<ExecOutcome> {
+        // The single-node read graph always dispatches through exec_ctx (needs the scope port).
+        self.exec_ctx("", _component, _ports, _bound)
+    }
+    fn exec_ctx(
+        &mut self,
+        _node_id: &str,
+        _component: &str,
+        ports: &[(String, Value)],
+        _bound: Option<&Value>,
+    ) -> Option<ExecOutcome> {
+        // Render the primary node against the evaluated `__scope` and run REAL SQL.
+        let scope: Scope = match ports.iter().find(|(k, _)| k == "__scope").map(|(_, v)| v) {
+            Some(Value::Obj(pairs)) => pairs.clone(),
+            _ => return Some(ExecOutcome::Error("codegen: __scope did not evaluate to an object".into())),
+        };
+        let rendered = match render_read_primary(self.read_graph, &scope) {
+            Ok(r) => r,
+            Err(e) => return Some(ExecOutcome::Error(e)),
+        };
+        // to_driver_param equivalent: Obj emit-payload -> compact JSON, else pass through.
+        let params: Vec<Value> = rendered
+            .params
+            .iter()
+            .map(|v| match v {
+                Value::Obj(_) => Value::Str(serde_json::to_string(&encode_value(v)).unwrap()),
+                other => other.clone(),
+            })
+            .collect();
+        let mut stmt = self.driver.prepare(&rendered.sql);
+        match stmt.all(&params) {
+            Ok(rows) => Some(ExecOutcome::Ok(Value::Arr(rows))),
+            Err(e) => Some(ExecOutcome::Error(e.message)),
+        }
+    }
+}
+use litedbmodel_runtime::encode_value;
+
+// A no-op handler used only to FORCE the generated module's fail-closed load-time
+// checks for the write cases (batch/tx), whose actual execution defers to the runtime
+// transaction path (write parity is exact + loop-safe) — mirroring the TS codegen cell.
+struct NoopHandler;
+impl ComponentExec for NoopHandler {
+    fn exec(&mut self, _c: &str, _p: &[(String, Value)], _b: Option<&Value>) -> Option<ExecOutcome> {
+        Some(ExecOutcome::Error("codegen: write body not executed through generated module (deferred to tx path)".into()))
+    }
+}
+
+// REAL fail-closed skew gate (bc#75 straight-line): recompute the fingerprint of the LIVE
+// component-graph IR the runtime would execute and assert it equals the module's baked
+// IR_FINGERPRINT. For reads the live IR is `readGraph.ir`; for writes the runtime does not
+// surface the portable IR, so we compare against the case-artifact fingerprint that the
+// generator computed from the SAME bundle (a real generated-const vs live comparison).
+fn codegen_skew_gate(case: &J, baked_fp: &str) {
+    let live_fp: String = if let Some(rg) = case["bundle"].get("readGraph").filter(|g| !g.is_null()) {
+        behavior_contracts::fingerprint_component_graph(&rg["ir"])
+            .expect("codegen: fingerprint live readGraph.ir")
+    } else {
+        case["fingerprint"].as_str().unwrap().to_string()
+    };
+    if live_fp != baked_fp {
+        panic!("codegen: generated {} fingerprint mismatch ({live_fp} != {baked_fp}) — regenerate (fail-closed)",
+            case["case"].as_str().unwrap());
+    }
+}
+
+// Execute ONE case THROUGH the generated de-interpreted module. Reads/relations run the
+// generated `bind(handler).call(entry, input)`; the companion relation is hydrated via the
+// shared runtime `stitch_relation` (same grouping SSoT as `read_bundle_pooled`). Writes force
+// the generated module's fail-closed load, then defer execution to the runtime tx path.
+
+fn rows_count(v: &serde_json::Value) -> usize {
+    v.as_array().map(|a| a.len()).unwrap_or(0)
+}
+
+// Value-returning variants for the behaviour-equality selfcheck (encode bc Value -> JSON).
+fn run_codegen_value(case: &J, driver: &dyn Driver) -> serde_json::Value {
+    let case_name = case["case"].as_str().unwrap();
+    let kind = case["kind"].as_str().unwrap();
+    let input = &case["input"];
+    macro_rules! read_val { ($m:ident,$e:literal)=>{{
+        codegen_skew_gate(case, $m::IR_FINGERPRINT);
+        let rg=&case["bundle"]["readGraph"];
+        let h=CodegenReadHandler{read_graph:rg,driver};
+        let mut b=$m::bind(h);
+        let sc:Scope=decode_scope(input).unwrap();
+        b.call($e,&sc).unwrap()
+    }};}
+    let out: Value = match case_name {
+        "find" => read_val!(cg_find,"Find"),
+        "complexWhere" => read_val!(cg_complex_where,"ComplexWhere"),
+        "inList" => read_val!(cg_in_list,"ByIds"),
+        "belongsTo"|"hasMany"|"hasManyLimit" => {
+            let parents = match case_name {
+                "belongsTo"=>read_val!(cg_belongs_to,"Posts"),
+                "hasMany"=>read_val!(cg_has_many,"Posts"),
+                _=>read_val!(cg_has_many_limit,"Posts"),
+            };
+            let rows = match parents { Value::Arr(r)=>r, _=>vec![] };
+            let with=case["withRelation"].as_str().unwrap();
+            let op=&case["bundle"]["relations"][with];
+            Value::Arr(stitch_relation(op, rows, driver).unwrap())
+        }
+        "batchInsert" => { let _=cg_batch_insert::bind(NoopHandler); execute_transaction_bundle(&case["bundle"], &J::Object(Default::default()), driver).unwrap() }
+        "writeTxGate" => { let _=cg_write_tx_gate::bind(NoopHandler); execute_transaction_bundle(&case["bundle"], input, driver).unwrap() }
+        _=>Value::Null,
+    };
+    encode_value(&out)
+}
+
+fn run_lm_value(case: &J, driver: &dyn Driver) -> serde_json::Value {
+    let bundle=&case["bundle"]; let kind=case["kind"].as_str().unwrap(); let input=&case["input"];
+    let out: Value = match kind {
+        "batch" => execute_transaction_bundle(bundle, &J::Object(Default::default()), driver).unwrap(),
+        "tx" => execute_transaction_bundle(bundle, input, driver).unwrap(),
+        "relation" => {
+            let with=case["withRelation"].as_str().unwrap();
+            let op=&bundle["relations"][with];
+            let base=execute_bundle(bundle, input, driver).unwrap();
+            let rows=match base{Value::Arr(r)=>r,_=>vec![]};
+            Value::Arr(stitch_relation(op, rows, driver).unwrap())
+        }
+        _ => execute_bundle(bundle, input, driver).unwrap(),
+    };
+    encode_value(&out)
+}
+
+fn run_codegen(case: &J, driver: &dyn Driver) {
+    let case_name = case["case"].as_str().unwrap();
+    let kind = case["kind"].as_str().unwrap();
+    let input = &case["input"];
+    macro_rules! read_via {
+        ($m:ident, $entry:literal) => {{
+            codegen_skew_gate(case, $m::IR_FINGERPRINT);
+            let read_graph = &case["bundle"]["readGraph"];
+            let handler = CodegenReadHandler { read_graph, driver };
+            let mut bound = $m::bind(handler);
+            let scope: Scope = decode_scope(input).expect("codegen: decode input");
+            bound.call($entry, &scope).expect("codegen: generated call")
+        }};
+    }
+    match case_name {
+        "find" => { let _ = read_via!(cg_find, "Find"); }
+        "complexWhere" => { let _ = read_via!(cg_complex_where, "ComplexWhere"); }
+        "inList" => { let _ = read_via!(cg_in_list, "ByIds"); }
+        "belongsTo" | "hasMany" | "hasManyLimit" => {
+            let parents = match kind {
+                _ => match case_name {
+                    "belongsTo" => read_via!(cg_belongs_to, "Posts"),
+                    "hasMany" => read_via!(cg_has_many, "Posts"),
+                    "hasManyLimit" => read_via!(cg_has_many_limit, "Posts"),
+                    _ => unreachable!(),
+                },
+            };
+            let rows = match parents { Value::Arr(r) => r, _ => Vec::new() };
+            let with_name = case["withRelation"].as_str().unwrap();
+            let op = &case["bundle"]["relations"][with_name];
+            let _ = stitch_relation(op, rows, driver).expect("codegen: stitch_relation");
+        }
+        "batchInsert" => {
+            codegen_skew_gate(case, cg_batch_insert::IR_FINGERPRINT);
+            let _ = cg_batch_insert::bind(NoopHandler); // force fail-closed load
+            execute_transaction_bundle(&case["bundle"], &J::Object(Default::default()), driver).unwrap();
+        }
+        "writeTxGate" => {
+            codegen_skew_gate(case, cg_write_tx_gate::IR_FINGERPRINT);
+            let _ = cg_write_tx_gate::bind(NoopHandler); // force fail-closed load
+            execute_transaction_bundle(&case["bundle"], input, driver).unwrap();
+        }
+        _ => panic!("unknown codegen case {case_name}"),
     }
 }
 
@@ -596,11 +831,16 @@ fn main() {
     let bundles = here.join("../../generated/bundles.json");
     let art = load_artifact(bundles.to_str().unwrap());
 
-    // codegen: verify each baked bundle once at load (fail-closed integrity check) — the cold-start
-    // cost that distinguishes codegen from ir (which parses from disk per cold start).
+    // codegen: run each generated module's REAL fail-closed skew gate + fail-closed load once at
+    // cold start — recompute fingerprint_component_graph(live readGraph.ir) == baked IR_FINGERPRINT
+    // and force the module's spec-version MODULE_CHECK via bind(). This is the GENUINE codegen
+    // load cost (the old decorative `serde_json::to_string(bundle)` "verify" is deleted); the timed
+    // ops below then execute THROUGH the generated de-interpreted code, not `execute_bundle`.
     if impl_ == "codegen" {
+        let mock = MockDriver;
         for (_name, c) in &art.cases {
-            let _ = serde_json::to_string(&c["bundle"]).unwrap().len(); // touch/verify resident IR
+            // Exercises the skew gate + module load; the read cases also warm the generated call path.
+            run_codegen(c, &mock);
         }
     }
     // decode_scope is used by the runtime; touch it so the import is exercised.
@@ -673,6 +913,8 @@ fn handle(kind: &str, req: &J, impl_: &str, art: &Artifact) {
             let samples = collect(warmup, iters, || {
                 if impl_ == "sql" {
                     run_sql(case, &d);
+                } else if impl_ == "codegen" {
+                    run_codegen(&cjson, &d);
                 } else {
                     run_lm(&cjson, &d);
                 }
@@ -697,6 +939,8 @@ fn handle(kind: &str, req: &J, impl_: &str, art: &Artifact) {
             for _ in 0..iters {
                 if impl_ == "sql" {
                     run_sql(case, &d);
+                } else if impl_ == "codegen" {
+                    run_codegen(&cjson, &d);
                 } else {
                     run_lm(&cjson, &d);
                 }
@@ -735,6 +979,19 @@ fn handle(kind: &str, req: &J, impl_: &str, art: &Artifact) {
             write_line(
                 &serde_json::json!({"kind":"cost","case":case,"dialect":dialect,"queries":q,"rows":r}),
             );
+        }
+        "verify" => {
+            // Behaviour-equality selfcheck: generated-code output == interpreter output (same rows).
+            let case = req["case"].as_str().unwrap();
+            let cjson = art.cases[case].clone();
+            let kind = cjson["kind"].as_str().unwrap();
+            let d1 = seed_driver(art);
+            let cg = run_codegen_value(&cjson, &d1);
+            let d2 = seed_driver(art);
+            let ir = run_lm_value(&cjson, &d2);
+            let equal = cg == ir;
+            write_line(&serde_json::json!({"kind":"verify","case":case,"impl_kind":kind,"equal":equal,
+                "cg_rows": rows_count(&cg), "ir_rows": rows_count(&ir)}));
         }
         "shutdown" => std::process::exit(0),
         _ => {}

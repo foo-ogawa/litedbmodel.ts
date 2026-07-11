@@ -273,6 +273,29 @@ fn distribute_to_parent(op: &RelationOp, parent: &Value, batch: &RelationBatch) 
     }
 }
 
+/// Batch-load + hydrate ONE declared relation onto an ALREADY-FETCHED parent row list, using the
+/// SAME `run_relation_op` / `distribute_to_parent` the runtime's own read path uses (NO reimplemented
+/// grouping — the semantics stay single-sourced here). `op_json` is the relation op as it appears
+/// under `bundle["relations"][name]` (pure JSON). The public seam the codegen bench cell uses: it
+/// runs the GENERATED de-interpreted module for the primary read (its own distinct code entry — NOT
+/// `execute_bundle`), then hydrates the companion relation through this shared runtime stitch so the
+/// hydrated result is byte-identical to `read_bundle_pooled`'s.
+pub fn stitch_relation(
+    op_json: &serde_json::Value,
+    mut parents: Vec<Value>,
+    driver: &dyn Driver,
+) -> Result<Vec<Value>, SqlFailure> {
+    let op = op_from_json(op_json);
+    let batch = run_relation_op(&op, &parents, driver)?;
+    for row in parents.iter_mut() {
+        let child = distribute_to_parent(&op, row, &batch);
+        if let Value::Obj(pairs) = row {
+            pairs.push((op.name.clone(), child));
+        }
+    }
+    Ok(parents)
+}
+
 /// Run a READ bundle's primary row list, then batch-load + hydrate the selected relations onto each
 /// parent (port of the TS `readBundle` typed-object surface, declarative-select path). The primary
 /// read rides [`execute_bundle_pooled`] (the #40 executor-layer sibling fan-out); each named relation

@@ -9,3 +9,7 @@ adapters/v1rs/target/
 # Python bytecode
 adapters/python/__pycache__/
 **/__pycache__/
+
+# Generated build output — regenerated at run time by generate.ts / run.ts (NEVER commit; the
+# committed copies were stale/confusing per the #44 owner). bundles.json + codegen/{ts,py,go,rust,php}.
+generated/

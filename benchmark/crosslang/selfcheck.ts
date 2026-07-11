@@ -95,6 +95,90 @@ for (const dialect of CROSSLANG_DIALECTS) {
   console.log(`[${dialect}] ${cases.length} cases — expected queries/op + rows/op match the sqlite baseline`);
 }
 
+
+// ── Anti-sham: the GENERATED Rust/Go codegen modules must be genuinely DE-INTERPRETED ──────────
+// The codegen bench cells (adapters/rust + go/lm_bench) COMPILE + EXECUTE these generated modules
+// (NOT execute_bundle/ExecuteBundle). Assert — structurally, on the regenerated source — that no
+// generated module CALLS the interpreter (`run_behavior`/`RunBehavior`) at the CODE level, nor
+// embeds the portable IR (only its fingerprint). This is the bc#75 straight-line guarantee; a
+// regression here (a generator that falls back to literal-bake + run_behavior) fails the bench.
+// Comment/string-literal-stripped so the explanatory prose ("does NOT go through run_behavior")
+// is not a false positive.
+function stripCommentsAndStrings(src: string): string {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    const c2 = src.slice(i, i + 2);
+    const c3 = src.slice(i, i + 3);
+    if (c2 === '/*') { const e = src.indexOf('*/', i + 2); i = e < 0 ? n : e + 2; continue; }
+    if (c2 === '//' || c === '#') { const e = src.indexOf('\n', i); i = e < 0 ? n : e; continue; }
+    if (c3 === "'".repeat(3) || c3 === '"'.repeat(3)) { const q = c3; const e = src.indexOf(q, i + 3); i = e < 0 ? n : e + 3; continue; }
+    if (c === "'" || c === '"' || c === '`') { const q = c; i += 1; while (i < n && src[i] !== q) { if (src[i] === '\\') i += 2; else i += 1; } i += 1; continue; }
+    out += c; i += 1;
+  }
+  return out;
+}
+const CODEGEN_CASES = ['find', 'complexWhere', 'inList', 'belongsTo', 'hasMany', 'hasManyLimit', 'batchInsert', 'writeTxGate'];
+const GEN_ROOT = resolve(HERE, 'generated', 'codegen');
+const GO_CGMODS = resolve(HERE, '..', '..', 'go', 'lm_bench', 'cgmods');
+console.log('\n=== anti-sham: generated Rust/Go codegen modules are de-interpreted (no run_behavior / no embedded IR) ===');
+const antiShamTargets: { label: string; path: string }[] = [];
+for (const c of CODEGEN_CASES) {
+  antiShamTargets.push({ label: `rust/${c}.rs`, path: resolve(GEN_ROOT, 'rust', `${c}.rs`) });
+  antiShamTargets.push({ label: `go(flat)/${c}.go`, path: resolve(GEN_ROOT, 'go', `${c}.go`) });
+  antiShamTargets.push({ label: `go(pkg)/${c}/gen.go`, path: resolve(GO_CGMODS, c, 'gen.go') });
+}
+for (const t of antiShamTargets) {
+  let src: string;
+  try { src = readFileSync(t.path, 'utf8'); }
+  catch { failures++; console.log(`  ${t.label.padEnd(28)} MISSING (regenerate) — ${t.path}`); continue; }
+  const code = stripCommentsAndStrings(src);
+  const callsInterpreter = /\b(run_behavior|RunBehavior|runBehavior)\b/.test(code);
+  // Embedded-IR heuristic: a de-interpreted module carries only IR_FINGERPRINT/IRFingerprint, never a
+  // baked IR literal (irVersion / a "components" graph) that could be interpreted. The straight-line
+  // emitter never emits those tokens as CODE.
+  const embedsIr = /\b(irVersion)\b/.test(code) || /["']components["']\s*:/.test(code);
+  const ok = !callsInterpreter && !embedsIr;
+  if (!ok) failures++;
+  console.log(`  ${t.label.padEnd(28)} ${ok ? 'OK (no interpreter call, no embedded IR)' : `SHAM: callsInterpreter=${callsInterpreter} embedsIr=${embedsIr}`}`);
+}
+
+
+// ── Anti-sham (adapter wiring): the codegen CELL must invoke the GENERATED function, not the
+// interpreter. Assert the Rust/Go codegen dispatch (`run_codegen` / `runCodegen`) routes reads
+// through the generated module's `bind(...).call(...)` / `Bind(...)[entry](...)` and does NOT call
+// `execute_bundle` / `read_bundle_pooled` / `ExecuteBundle` / `ReadBundle` for the read path.
+// (Write cases legitimately defer to the tx path AFTER the generated module's fail-closed load.)
+console.log('\n=== anti-sham (adapter wiring): codegen cell invokes the generated function, not the interpreter ===');
+const RUST_MAIN = resolve(HERE, 'adapters', 'rust', 'src', 'main.rs');
+const GO_CELL = resolve(HERE, '..', '..', 'go', 'lm_bench', 'codegen_cell.go');
+function sliceFn(src: string, startNeedle: string): string {
+  const i = src.indexOf(startNeedle);
+  if (i < 0) return '';
+  // grab a generous window (the function body) — enough to cover the read dispatch
+  return src.slice(i, i + 2600);
+}
+{
+  const rust = readFileSync(RUST_MAIN, 'utf8');
+  const body = sliceFn(rust, 'fn run_codegen(case: &J, driver: &dyn Driver) {');
+  const invokesGenerated = /\.call\(/.test(body) && /::bind\(/.test(body);
+  const callsInterpreterOnRead = /execute_bundle\b|read_bundle_pooled\b/.test(body);
+  const ok = invokesGenerated && !callsInterpreterOnRead;
+  if (!ok) failures++;
+  console.log(`  rust run_codegen           ${ok ? 'OK (bind(...).call(...); no execute_bundle/read_bundle_pooled on the read path)' : `SHAM: generated=${invokesGenerated} interpreterOnRead=${callsInterpreterOnRead}`}`);
+}
+{
+  const go = readFileSync(GO_CELL, 'utf8');
+  const body = sliceFn(go, 'func runCodegen(c *caseArt, db rt.SQLDB) {');
+  const invokesGenerated = /mod\.bind\(/.test(body) && /bound\[mod\.entry\]/.test(body);
+  const callsInterpreterOnRead = /rt\.ExecuteBundle\b|rt\.ReadBundle\b/.test(body);
+  const ok = invokesGenerated && !callsInterpreterOnRead;
+  if (!ok) failures++;
+  console.log(`  go   runCodegen            ${ok ? 'OK (mod.bind(...)[entry](...); no ExecuteBundle/ReadBundle on the read path)' : `SHAM: generated=${invokesGenerated} interpreterOnRead=${callsInterpreterOnRead}`}`);
+}
+
 if (failures > 0) {
   console.error(`\n❌ ${failures} fairness divergence(s) — the sql baseline and litedbmodel path do NOT do identical logical work.`);
   process.exit(1);

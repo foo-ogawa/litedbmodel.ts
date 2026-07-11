@@ -209,6 +209,8 @@ func costViaTrace(impl, caseID string, a *artifact) (int, int) {
 	traceCtr = &traceCounters{}
 	if impl == "sql" {
 		runSQL(caseID, db)
+	} else if impl == "codegen" {
+		runCodegen(a.Cases[caseID], db)
 	} else {
 		runLM(a.Cases[caseID], db)
 	}
