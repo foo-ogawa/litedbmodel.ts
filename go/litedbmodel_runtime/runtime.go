@@ -30,7 +30,7 @@ import (
 
 // Version is synced from package.json by scripts/sync-versions.mjs (Go = VCS tag, not a manifest
 // field, so this constant is the in-source mirror the CI tag check compares against).
-const Version = "2.0.0"
+const Version = "2.0.1"
 
 // scopePort is the synthetic port that carries a SQL node's render scope (runtime.ts SCOPE_PORT).
 const scopePort = "__scope"

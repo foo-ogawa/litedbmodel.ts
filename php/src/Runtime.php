@@ -43,7 +43,7 @@ namespace LiteDbModel\Runtime;
 final class Runtime
 {
     /** Version mirrored from package.json by scripts/sync-versions.mjs (SSoT). */
-    public const VERSION = '2.0.0';
+    public const VERSION = '2.0.1';
 
     /**
      * Render the PRIMARY read node's statements of a `ReadGraph` against a scope for a dialect →
