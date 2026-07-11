@@ -20,6 +20,7 @@ declare(strict_types=1);
  */
 
 $root = dirname(__DIR__, 2); // php/conformance -> php -> repo root
+require $root . '/php/src/BehaviorContracts/Constants.php';
 require $root . '/php/src/BehaviorContracts/ExprFailure.php';
 require $root . '/php/src/BehaviorContracts/ExprEval.php';
 require $root . '/php/src/BehaviorContracts/PlanFailure.php';
@@ -27,16 +28,18 @@ require $root . '/php/src/BehaviorContracts/Plan.php';
 require $root . '/php/src/BehaviorContracts/BehaviorFailure.php';
 require $root . '/php/src/BehaviorContracts/Behavior.php';
 require $root . '/php/src/Dialect.php';
-require $root . '/php/src/Render.php';
 require $root . '/php/src/SqlFailure.php';
+require $root . '/php/src/StaticBundle.php';
 require $root . '/php/src/WriteRuntime.php';
 require $root . '/php/src/Runtime.php';
+require $root . '/php/src/Relation.php';
 require $root . '/php/src/LiveDb.php';
 
 use LiteDbModel\Runtime\LiveDb;
+use LiteDbModel\Runtime\Relation;
 use LiteDbModel\Runtime\Runtime;
 
-const SUPPORTED_CORPUS_VERSION = 1;
+const SUPPORTED_CORPUS_VERSION = 2;
 const PG_SCHEMA = 'scp_php';
 const MYSQL_DB = 'scp_php';
 
@@ -90,7 +93,7 @@ function inputToScope(mixed $decoded): array
 }
 
 // The tables the corpus touches (drop dependents first).
-const ALL_TABLES = ['post_tags', 'posts', 'tags', 'users', 'idem', 'uniq', 'outbox'];
+const ALL_TABLES = ['post_tags', 'order_lines', 'comments', 'posts', 'tags', 'docs', 'docs2', 'revs', 'typed', 'users', 'users2', 'idem', 'uniq', 'outbox'];
 
 function resetPg(PDO $db, array $schema): void
 {
@@ -122,15 +125,54 @@ function runExec(PDO $db, \stdClass $bundle, \stdClass $v): array
     return $ok ? ['ok' => true] : ['ok' => false, 'detail' => 'result ' . json_encode($result) . ' != ' . json_encode($v->expectedResult)];
 }
 
-/** @return array{ok:bool, detail?:string} */
-function runTx(PDO $db, \stdClass $bundle, \stdClass $v): array
+/**
+ * A read-RELATION EXECUTION vector: run the parent read + batch-load/hydrate the `with` relations,
+ * compare to the PER-DIALECT golden ($expectedKey = expectedResultPg / expectedResultMysql — a
+ * limited hasMany's `_rn` window column is present on MySQL but projected away by PG's LATERAL form).
+ *
+ * @return array{ok:bool, detail?:string}
+ */
+function runRead(PDO $db, \stdClass $bundle, \stdClass $v, string $expectedKey): array
 {
+    $withNames = array_map('strval', (array) ($v->with ?? []));
+    $result = Relation::readBundle($bundle, inputToScope($v->input), $db, $withNames);
+    $expected = $v->{$expectedKey};
+    $ok = valuesEqual($result, $expected);
+    return $ok ? ['ok' => true] : ['ok' => false, 'detail' => 'result ' . json_encode($result) . ' != ' . json_encode($expected)];
+}
+
+/**
+ * A CROSS-DB read-RELATION vector (V0 R1): the parent runs on the PRIMARY $db and a TAGGED relation
+ * on the SECONDARY $secondary (the target model's own DB). Seed the secondary DB with its own schema
+ * (the parent DB has NO target table — a mis-route would fail loudly), then route the tagged relation
+ * via the `connections` registry. A green hydrated result is unforgeable proof the tag routed the
+ * batch to the secondary connection.
+ *
+ * @return array{ok:bool, detail?:string}
+ */
+function runCrossDb(PDO $db, PDO $secondary, callable $secondaryReset, \stdClass $bundle, \stdClass $v, string $expectedKey, string $secondarySchemaKey): array
+{
+    $secondaryReset($secondary, array_map('strval', (array) $v->{$secondarySchemaKey}));
+    $withNames = array_map('strval', (array) ($v->with ?? []));
+    $connections = [(string) $v->connectionTag => $secondary];
+    $result = Relation::readBundle($bundle, inputToScope($v->input), $db, $withNames, $connections);
+    $expected = $v->{$expectedKey};
+    $ok = valuesEqual($result, $expected);
+    return $ok ? ['ok' => true] : ['ok' => false, 'detail' => 'result ' . json_encode($result) . ' != ' . json_encode($expected)];
+}
+
+/** @return array{ok:bool, detail?:string} */
+function runTx(PDO $db, \stdClass $bundle, \stdClass $v, string $txExpectedKey): array
+{
+    // A write may GENUINELY diverge by dialect (DELETE…RETURNING returns rows on PG, [] on MySQL);
+    // the mysql leg then carries `expectedResultMysql`. Fall back to the shared `expectedResult`.
+    $expected = isset($v->{$txExpectedKey}) ? $v->{$txExpectedKey} : $v->expectedResult;
     $result = Runtime::executeTransactionBundle($bundle, inputToScope($v->input), $db);
-    $resultOk = valuesEqual($result, $v->expectedResult);
+    $resultOk = valuesEqual($result, $expected);
     $stateOk = true;
     $detail = [];
     if (!$resultOk) {
-        $detail[] = 'result ' . json_encode($result) . ' != ' . json_encode($v->expectedResult);
+        $detail[] = 'result ' . json_encode($result) . ' != ' . json_encode($expected);
     }
     foreach (($v->expectedDbState ?? []) as $s) {
         $rows = $db->query((string) $s->query)->fetchAll(PDO::FETCH_OBJ);
@@ -147,18 +189,25 @@ function runTx(PDO $db, \stdClass $bundle, \stdClass $v): array
  * @param array<int,\stdClass> $vectors
  * @return array{pass:int, fail:int}
  */
-function runDialectLeg(string $dialect, PDO $db, callable $reset, array $vectors, string $bundleKey, string $schemaKey): array
+function runDialectLeg(string $dialect, PDO $db, callable $reset, array $vectors, string $bundleKey, string $schemaKey, string $readExpectedKey, PDO $secondary, callable $secondaryReset, string $secondarySchemaKey): array
 {
     $t = ['pass' => 0, 'fail' => 0];
     fwrite(STDERR, "\nlivedb-{$dialect} — " . count($vectors) . " vectors (real {$dialect})\n");
     foreach ($vectors as $v) {
-        $schema = array_map('strval', (array) $v->{$schemaKey});
+        $kind = (string) $v->kind;
+        // CROSS-DB vectors carry their OWN primary schema key (the parent DB — NO target table).
+        $primarySchemaKey = $kind === 'crossdb' ? ($dialect === 'pg' ? 'primarySchemaPg' : 'primarySchemaMysql') : $schemaKey;
+        $schema = array_map('strval', (array) $v->{$primarySchemaKey});
         $reset($db, $schema);
         $bundle = $v->{$bundleKey};
         try {
-            $kind = (string) $v->kind;
-            $r = $kind === 'exec' ? runExec($db, $bundle, $v)
-                : ($kind === 'tx' ? runTx($db, $bundle, $v) : ['ok' => false, 'detail' => "unknown kind {$kind}"]);
+            $r = match ($kind) {
+                'exec' => runExec($db, $bundle, $v),
+                'read' => runRead($db, $bundle, $v, $readExpectedKey),
+                'crossdb' => runCrossDb($db, $secondary, $secondaryReset, $bundle, $v, $readExpectedKey, $secondarySchemaKey),
+                'tx' => runTx($db, $bundle, $v, $readExpectedKey),
+                default => ['ok' => false, 'detail' => "unknown kind {$kind}"],
+            };
         } catch (\Throwable $e) {
             $r = ['ok' => false, 'detail' => 'threw: ' . $e->getMessage() . "\n" . $e->getTraceAsString()];
         }
@@ -211,8 +260,10 @@ try {
 }
 
 $vectors = $corpus->vectors;
-$pgT = runDialectLeg('pg', $pg, 'resetPg', $vectors, 'bundlePg', 'schemaPg');
-$myT = runDialectLeg('mysql', $my, 'resetMysql', $vectors, 'bundleMysql', 'schemaMysql');
+// CROSS-DB (V0 R1): each leg's SECONDARY connection is the OTHER live DB (pg leg → my; mysql leg →
+// pg), reset with the OTHER dialect's reset fn + the vector's per-leg secondary schema.
+$pgT = runDialectLeg('pg', $pg, 'resetPg', $vectors, 'bundlePg', 'schemaPg', 'expectedResultPg', $my, 'resetMysql', 'secondarySchemaPg');
+$myT = runDialectLeg('mysql', $my, 'resetMysql', $vectors, 'bundleMysql', 'schemaMysql', 'expectedResultMysql', $pg, 'resetPg', 'secondarySchemaMysql');
 
 $suites = ['livedb-pg' => $pgT, 'livedb-mysql' => $myT];
 $totalPass = $pgT['pass'] + $myT['pass'];

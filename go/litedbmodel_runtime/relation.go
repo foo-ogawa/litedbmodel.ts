@@ -1,139 +1,279 @@
-// litedbmodel v2 SCP — Relation ops (Read) + staged batch resolution (Go port of src/scp/relation.ts;
-// spec §5).
+// litedbmodel v2 SCP — read-relation batch EXECUTION (Go port of src/scp/relation.ts, #43).
 //
-// A relation is a pre-compiled batch op (spec §8) carried pure-JSON in the bundle. It renders
-// through the SAME normative RenderOperation (fragment tree + IN-list `(?, ?, …)` expansion), so a
-// thin per-language runtime gets the relation batch SQL for free. runRelationOp renders the batch
-// SELECT ONCE for the deduped parent key set (structurally no N+1) and groups the child rows by
-// their target key; distributeToParent attaches per cardinality. Ported byte-true to relation.ts.
+// Byte-for-byte port of the TS reference relation runtime: the STATIC pre-compiled batch op
+// (bundle.relations[name] — pure JSON) is EXECUTED, never regenerated. A RelationOp carries the
+// batched child SELECT text with ONE `?` for the deduped-key array param; the runtime dedupes the
+// parent keys, resolves the deferred PG array cast from the REAL keys, renders `?`→`$N`, short-
+// circuits an empty key set (NO query), runs the batch, groups the child rows by target key, and
+// distributes them onto the parents per cardinality (hasMany → list, belongsTo/hasOne → single or
+// nil). The SAME RunRelationOp / DistributeToParent / dedupeKeys the TS eager path uses.
 //
-// The vector corpus exercises relations indirectly (the exec bundles' Φ output is the base
-// read + the map-node authors; the bundle's `relations` are the typed-object read surface, not the
-// executeBundle path). This port keeps the runtime surface complete + gives the Go tests a real
-// belongsTo/hasMany batch to assert against the TS reference behavior.
+// #40 parallel-safe: the batch is grouped-then-distributed by key, so the hydrated result is
+// deterministic regardless of query-completion order. Independent sibling relations may run in any
+// order (bc RunPlan fan-out) and still produce the identical hydrated shape.
 
 package litedbmodel_runtime
 
 import (
 	"fmt"
+	"strings"
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
 )
 
-// relationKeysHead is the reserved input head the relation batch query binds its deduped key
-// array to (relation.ts RELATION_KEYS_HEAD).
-const relationKeysHead = "__keys"
+func errReadNotList(out bc.Value) error {
+	kind := "non-list"
+	if out == nil {
+		kind = "null"
+	}
+	return fmt.Errorf("scp read: the read behavior output is not a row list (got %s); the typed-object read surface expects a Select-shaped output", kind)
+}
 
-// RelationOp is a parsed §8 relation batch op.
+func errRelationNotDeclared(name string) error {
+	return fmt.Errorf("declarative select: relation '%s' is not declared on this model", name)
+}
+
+// RelationOp is the pre-compiled STATIC batch op read out of bundle.relations[name] (pure JSON).
+// Single-key relations carry ParentKey/TargetKey; composite (#47 item 1) carry ParentKeys/TargetKeys.
 type RelationOp struct {
-	Name      string
-	Kind      string // belongsTo / hasMany / hasOne
-	ParentKey string
-	TargetKey string
-	Query     *bc.JObj // the batched child SELECT (CompiledOperation)
+	Name       string
+	Kind       string // "belongsTo" | "hasMany" | "hasOne"
+	ParentKey  string
+	TargetKey  string
+	ParentKeys []string // composite: ordered parent key columns (nil for single-key)
+	TargetKeys []string // composite: ordered child key columns (nil for single-key)
+	Dialect    string
+	Connection string // CROSS-DB (V0 R1): the target model's connection tag (empty for same-DB)
+	SQL        string
 }
 
-// relationOpFromJObj parses a bundle relation op object.
-func relationOpFromJObj(o *bc.JObj) (*RelationOp, error) {
-	r := &RelationOp{}
-	if v, ok := o.Get("name"); ok {
-		r.Name, _ = v.(string)
+// relationOpFromJObj reads one bundle.relations entry into a RelationOp.
+func relationOpFromJObj(o *bc.JObj) RelationOp {
+	return RelationOp{
+		Name:       getStrJ(o, "name"),
+		Kind:       getStrJ(o, "kind"),
+		ParentKey:  getStrJ(o, "parentKey"),
+		TargetKey:  getStrJ(o, "targetKey"),
+		ParentKeys: getStrArrJ(o, "parentKeys"),
+		TargetKeys: getStrArrJ(o, "targetKeys"),
+		Dialect:    getStrJ(o, "dialect"),
+		Connection: getStrJ(o, "connection"),
+		SQL:        getStrJ(o, "sql"),
 	}
-	if v, ok := o.Get("kind"); ok {
-		r.Kind, _ = v.(string)
-	}
-	if v, ok := o.Get("parentKey"); ok {
-		r.ParentKey, _ = v.(string)
-	}
-	if v, ok := o.Get("targetKey"); ok {
-		r.TargetKey, _ = v.(string)
-	}
-	if v, ok := o.Get("query"); ok {
-		r.Query, _ = v.(*bc.JObj)
-	}
-	if r.Query == nil {
-		return nil, fmt.Errorf("scp relation '%s': missing query", r.Name)
-	}
-	return r, nil
 }
 
-// relationBatch groups child rows by parent-key value (stringified) — relation.ts RelationBatch.
-type relationBatch map[string][]*bc.Obj
-
-// runRelationOp runs ONE relation op for a set of parent rows: dedup the parent keys, render +
-// execute the batched child SELECT ONCE, and group the child rows by target key (relation.ts
-// runRelationOp). When there are no non-null keys the query is NOT issued (empty batch), matching
-// v1 — the correct empty-set behavior, not a fallback default. Returns the rendered SQL, the
-// deduped keys, and the grouping.
-func runRelationOp(op *RelationOp, parents []*bc.Obj, db SQLDB, dialect Dialect) (sqlText string, keys []bc.Value, batch relationBatch, err error) {
-	keys = dedupeKeys(parents, op.ParentKey)
-	batch = relationBatch{}
-
-	scope := bc.NewObj()
-	scope.Set(relationKeysHead, keys)
-	rendered, rerr := RenderOperation(op.Query, scope, dialect)
-	if rerr != nil {
-		return "", keys, batch, rerr
+func getStrJ(o *bc.JObj, k string) string {
+	if v, ok := o.Get(k); ok {
+		s, _ := v.(string)
+		return s
 	}
-	if len(keys) == 0 {
-		// No parent keys → no batched query issued; still return the rendered SQL (the IN-list
-		// `1 = 0` degeneration is observable) but do not touch the driver.
-		return rendered.SQL, keys, batch, nil
-	}
-	args := make([]any, len(rendered.Params))
-	for i, p := range rendered.Params {
-		args[i] = toDriverParam(p)
-	}
-	rows, qerr := queryRows(db, rendered.SQL, args)
-	if qerr != nil {
-		return "", keys, batch, qerr
-	}
-	for _, rowV := range rows {
-		row, ok := rowV.(*bc.Obj)
-		if !ok {
-			continue
-		}
-		k := keyString(getObj(row, op.TargetKey))
-		batch[k] = append(batch[k], row)
-	}
-	return rendered.SQL, keys, batch, nil
+	return ""
 }
 
-// dedupeKeys returns the deduped, non-null parent-key values (insertion order preserved,
-// deterministic) — relation.ts dedupeKeys.
-func dedupeKeys(parents []*bc.Obj, parentKey string) []bc.Value {
-	seen := map[string]bool{}
-	var out []bc.Value
-	for _, p := range parents {
-		v := getObj(p, parentKey)
-		if v == nil {
-			continue
-		}
-		s := keyString(v)
-		if seen[s] {
-			continue
-		}
-		seen[s] = true
-		out = append(out, v)
+// getStrArrJ reads an optional string[] field (nil if absent) — the composite key column lists.
+func getStrArrJ(o *bc.JObj, k string) []string {
+	v, ok := o.Get(k)
+	if !ok {
+		return nil
+	}
+	arr, ok := v.([]bc.JNode)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		s, _ := e.(string)
+		out = append(out, s)
 	}
 	return out
 }
 
-// distributeToParent attaches a resolved batch onto ONE parent per cardinality (relation.ts
-// distributeToParent): hasMany → the child list ([] when none); belongsTo/hasOne → the single
-// child (or nil). This is the declared cardinality's empty representation, not an ad-hoc default.
-func distributeToParent(op *RelationOp, parent *bc.Obj, batch relationBatch) bc.Value {
-	key := getObj(parent, op.ParentKey)
-	var rows []*bc.Obj
-	if key != nil {
-		rows = batch[keyString(key)]
+// parentKeyCols / targetKeyCols return the ordered key columns (single-key → 1-element).
+func (op RelationOp) parentKeyCols() []string {
+	if op.ParentKeys != nil {
+		return op.ParentKeys
+	}
+	return []string{op.ParentKey}
+}
+
+func (op RelationOp) targetKeyCols() []string {
+	if op.TargetKeys != nil {
+		return op.TargetKeys
+	}
+	return []string{op.TargetKey}
+}
+
+// keyIdentity is the stringified key identity for dedupe/grouping (tuple → space-joined scalars).
+func keyIdentity(values []bc.Value) string {
+	parts := make([]string, len(values))
+	for i, v := range values {
+		parts[i] = stringifyKey(v)
+	}
+	return strings.Join(parts, " ")
+}
+
+// stringifyKey mirrors TS `String(v)` for the key-identity used by dedupe + grouping. A whole
+// float prints as an integer (a scanned int column arrives as float64), bool → "true"/"false".
+func stringifyKey(v bc.Value) string {
+	switch t := v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	case string:
+		return t
+	case float64:
+		return encodeFloat(t)
+	case int64:
+		return encodeFloat(float64(t))
+	default:
+		return jsStringify(v)
+	}
+}
+
+// dedupeKeys returns the deduped, non-nil parent-key TUPLES (insertion order preserved). Drop a
+// tuple if ANY key column is nil; dedupe on the stringified tuple identity. Port of TS dedupeKeys.
+func dedupeKeys(parents []bc.Value, keyCols []string) [][]bc.Value {
+	seen := map[string]struct{}{}
+	out := [][]bc.Value{}
+	for _, p := range parents {
+		obj, ok := p.(*bc.Obj)
+		if !ok {
+			continue
+		}
+		tuple := make([]bc.Value, len(keyCols))
+		anyNil := false
+		for i, c := range keyCols {
+			v, present := obj.Get(c)
+			if !present || v == nil {
+				anyNil = true
+				break
+			}
+			tuple[i] = v
+		}
+		if anyNil {
+			continue
+		}
+		s := keyIdentity(tuple)
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, tuple)
+	}
+	return out
+}
+
+// bindKeys binds the deduped keys to the op's params per dialect + arity (TS bindKeys). Single-key:
+// PG → ONE scalar array param; MySQL/SQLite → ONE JSON scalar-array string. Composite: PG → ONE
+// array param PER key column (transposed tuples); MySQL/SQLite → ONE JSON array-of-tuples string.
+// Returns the positional args list.
+func bindKeys(op RelationOp, tuples [][]bc.Value) []any {
+	composite := op.ParentKeys != nil
+	if op.Dialect == "postgres" {
+		nCols := 1
+		if composite {
+			nCols = len(op.parentKeyCols())
+		}
+		args := make([]any, nCols)
+		for col := 0; col < nCols; col++ {
+			colArr := make([]any, len(tuples))
+			for i, t := range tuples {
+				colArr[i] = toDriverParam(t[col])
+			}
+			args[col] = colArr
+		}
+		return args
+	}
+	// MySQL/SQLite: ONE JSON param — a scalar array (single-key) or an array-of-tuples (composite).
+	var payload []bc.Value
+	if composite {
+		payload = make([]bc.Value, len(tuples))
+		for i, t := range tuples {
+			payload[i] = bc.Value([]bc.Value(t))
+		}
+	} else {
+		payload = make([]bc.Value, len(tuples))
+		for i, t := range tuples {
+			payload[i] = t[0]
+		}
+	}
+	return []any{jsStringify(bc.Value(payload))}
+}
+
+// RelationBatch is the child rows grouped for a batch: stringified target-key identity → child rows.
+type RelationBatch map[string][]bc.Value
+
+// RunRelationOp runs ONE relation batch op for a set of parent rows (port of TS runRelationOp).
+// Dedup the parent-key tuples, resolve the deferred PG array cast(s) from the REAL keys (one per key
+// column for composite) BEFORE the `?`→`$N` render; on a NON-empty key set execute binding the keys
+// (single array / per-column arrays / JSON tuples) and group the child rows by target-key identity.
+// An EMPTY key set issues NO query, matching TS.
+func RunRelationOp(op RelationOp, parents []bc.Value, db SQLDB) (RelationBatch, error) {
+	pCols := op.parentKeyCols()
+	keys := dedupeKeys(parents, pCols)
+	batch := RelationBatch{}
+	sqlText := op.SQL
+	if op.Dialect == "postgres" {
+		for col := range pCols {
+			colVals := make([]bc.Value, len(keys))
+			for i, t := range keys {
+				colVals[i] = t[col]
+			}
+			sqlText = resolvePgArrayCast(sqlText, colVals)
+		}
+	}
+	sqlText = renderPlaceholders(sqlText, op.Dialect)
+	if len(keys) == 0 {
+		return batch, nil
+	}
+	tCols := op.targetKeyCols()
+	rows, err := queryRows(db, sqlText, bindKeys(op, keys))
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		obj, ok := r.(*bc.Obj)
+		if !ok {
+			continue
+		}
+		tuple := make([]bc.Value, len(tCols))
+		for i, c := range tCols {
+			tuple[i], _ = obj.Get(c)
+		}
+		k := keyIdentity(tuple)
+		batch[k] = append(batch[k], r)
+	}
+	return batch, nil
+}
+
+// DistributeToParent distributes a resolved batch onto ONE parent per cardinality (port of TS
+// distributeToParent): hasMany → the child list ([] when none); belongsTo/hasOne → the single child
+// (or nil). Keyed by the parent's key-tuple identity.
+func DistributeToParent(op RelationOp, parent *bc.Obj, batch RelationBatch) bc.Value {
+	var rows []bc.Value
+	pCols := op.parentKeyCols()
+	tuple := make([]bc.Value, len(pCols))
+	anyNil := false
+	for i, c := range pCols {
+		v, ok := parent.Get(c)
+		if !ok || v == nil {
+			anyNil = true
+			break
+		}
+		tuple[i] = v
+	}
+	if !anyNil {
+		rows = batch[keyIdentity(tuple)]
 	}
 	if op.Kind == "hasMany" {
-		out := make([]bc.Value, len(rows))
-		for i, r := range rows {
-			out[i] = r
+		if rows == nil {
+			return []bc.Value{}
 		}
-		return out
+		return rows
 	}
 	if len(rows) > 0 {
 		return rows[0]
@@ -141,29 +281,63 @@ func distributeToParent(op *RelationOp, parent *bc.Obj, batch relationBatch) bc.
 	return nil
 }
 
-// getObj reads a key off a bc.Obj (nil if absent).
-func getObj(o *bc.Obj, key string) bc.Value {
-	if o == nil {
-		return nil
+// driverForOp returns the driver a relation runs against: its tagged cross-DB connection, else the
+// primary db. CROSS-DB (V0 R1): a relation whose op carries a `Connection` tag (its target model
+// lives in a DIFFERENT DB — v1 LazyRelation.ts:236) routes to connections[tag]. Loud failure when
+// the tag has no registered driver (a real wiring bug — never a silent same-DB fallback that would
+// run the target's query on the wrong DB). Untagged relations use the primary db.
+func driverForOp(op RelationOp, db SQLDB, connections map[string]SQLDB) (SQLDB, error) {
+	if op.Connection == "" {
+		return db, nil
 	}
-	v, _ := o.Get(key)
-	return v
+	d, ok := connections[op.Connection]
+	if !ok || d == nil {
+		return nil, fmt.Errorf("cross-DB relation '%s': no driver registered for connection '%s' (pass it in ReadBundle connections)", op.Name, op.Connection)
+	}
+	return d, nil
 }
 
-// keyString stringifies a key value deterministically (relation.ts String(v)).
-func keyString(v bc.Value) string {
-	switch t := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return t
-	case int64:
-		return fmt.Sprintf("%d", t)
-	case float64:
-		return fmt.Sprintf("%v", t)
-	case bool:
-		return fmt.Sprintf("%v", t)
-	default:
-		return fmt.Sprintf("%v", t)
+// ReadBundle runs a READ bundle's primary row list, then batch-loads + hydrates the selected
+// relations onto each parent (port of the TS readBundle typed-object surface, declarative-select
+// path). The primary read output must be a bare row list; each named relation in withNames is
+// batch-prefetched ONCE over the whole page (staged, no N+1) via the SAME RunRelationOp and
+// attached onto each parent as an own key. `relations` is the bundle.relations JObj.
+//
+// CROSS-DB (V0 R1): a relation op carrying a `connection` tag is batched against connections[tag]
+// (its target model's DB) instead of the primary db; untagged relations ignore connections. Pass a
+// nil/empty map for a single-DB read.
+func ReadBundle(bundle *SqlBundle, relations *bc.JObj, input *bc.Obj, db SQLDB, withNames []string, connections map[string]SQLDB) (bc.Value, error) {
+	out, err := ExecuteBundle(bundle, input, db)
+	if err != nil {
+		return nil, err
 	}
+	rows, ok := out.([]bc.Value)
+	if !ok {
+		return nil, errReadNotList(out)
+	}
+	for _, name := range withNames {
+		opN, present := relations.Get(name)
+		if !present {
+			return nil, errRelationNotDeclared(name)
+		}
+		opObj, ok := opN.(*bc.JObj)
+		if !ok {
+			return nil, errRelationNotDeclared(name)
+		}
+		op := relationOpFromJObj(opObj)
+		relDB, err := driverForOp(op, db, connections)
+		if err != nil {
+			return nil, err
+		}
+		batch, err := RunRelationOp(op, rows, relDB)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			if obj, ok := r.(*bc.Obj); ok {
+				obj.Set(name, DistributeToParent(op, obj, batch))
+			}
+		}
+	}
+	return rows, nil
 }

@@ -15,17 +15,30 @@ from __future__ import annotations
 from .dialect import SQLITE, POSTGRES, MYSQL, Dialect, dialect_for, to_dollar_placeholders
 from .driver import Driver, MysqlDriver, PostgresDriver, PreparedStatement, RunInfo, SqliteDriver
 from .errors import SqlFailure, map_sqlite_error
-from .render import RenderedSql, WHERE_SLOT, render_operation
+from .static_bundle import (
+    NODE_COMPONENT,
+    SCOPE_PORT,
+    assemble_make_sql,
+    compose_make_sql,
+    execute_read_graph,
+    render_placeholders,
+    render_read_primary,
+    render_statements,
+)
 from .runtime import (
     ENTITY_ROOT,
-    SCOPE_PORT,
     execute_bundle,
     execute_transaction_bundle,
     order_by_nulls,
-    render_operation_bundle,
+)
+from .relation import (
+    dedupe_keys,
+    distribute_to_parent,
+    read_bundle,
+    run_relation_op,
 )
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 __all__ = [
     "__version__",
@@ -46,15 +59,23 @@ __all__ = [
     # errors
     "SqlFailure",
     "map_sqlite_error",
-    # render
-    "RenderedSql",
-    "WHERE_SLOT",
-    "render_operation",
-    "render_operation_bundle",
+    # static makeSQL bundle runtime (the sole read/render path)
+    "NODE_COMPONENT",
+    "SCOPE_PORT",
+    "assemble_make_sql",
+    "compose_make_sql",
+    "execute_read_graph",
+    "render_placeholders",
+    "render_read_primary",
+    "render_statements",
     # runtime
     "ENTITY_ROOT",
-    "SCOPE_PORT",
     "execute_bundle",
     "execute_transaction_bundle",
     "order_by_nulls",
+    # read-relation batch execution + hydration (#43)
+    "dedupe_keys",
+    "distribute_to_parent",
+    "read_bundle",
+    "run_relation_op",
 ]

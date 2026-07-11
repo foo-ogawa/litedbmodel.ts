@@ -1,16 +1,24 @@
 //! litedbmodel v2 SCP — SQL driver seam (Rust, WS7e).
 //!
-//! The minimal synchronous SQL-driver surface the runtime needs, mirroring the TS `SqliteDb`
-//! seam (`prepare(sql).all(...) / .run(...)`) and the audited Python/PHP `Driver` seams. The
-//! conformance bar executes against an in-process `rusqlite` connection ([`SqliteDriver`]) — the
-//! sanctioned in-proc substitute for a docker integration DB (#34 AC; live PG/MySQL is deferred to
-//! a coordinated cross-language docker pass).
+//! The minimal SQL-driver surface the runtime needs, mirroring the TS `SqliteDb` seam
+//! (`prepare(sql).all(...) / .run(...)`) and the audited Python/PHP `Driver` seams. The conformance
+//! bar executes against an in-process `rusqlite` connection ([`SqliteDriver`]) — the sanctioned
+//! in-proc substitute for a docker integration DB (#34 AC).
 //!
-//! A postgres (`tokio-postgres`) / mysql (`mysql_async`) driver plugs into this SAME [`Driver`]
-//! trait later: implement `prepare` returning a [`PreparedStatement`] over the paramstyle the
-//! bundle's dialect emits (`$N` for Postgres, `?` for MySQL) — no runtime change. The runtime only
-//! ever binds already-rendered scalar params (`bind_params` converts a bc [`Value`] to the driver's
-//! native param type), so the seam is dialect-agnostic.
+//! ## Sync seam, async pools underneath (#40)
+//!
+//! This [`Driver`] trait is a SYNCHRONOUS FACADE: `prepare(sql).all(...) / .run(...)` return
+//! eagerly. The in-proc [`SqliteDriver`] is genuinely synchronous (rusqlite, in-process, no I/O
+//! wait). The LIVE PostgreSQL / MySQL drivers ([`crate::livedb`], `livedb` feature) implement this
+//! SAME trait but are backed by ASYNC connection POOLS — `tokio-postgres` + `deadpool-postgres`
+//! (PG) and `sqlx` (MySQL/SQLite) on a shared tokio runtime, restoring the old `litedbmodel.rs`
+//! execution model. Each pooled driver is `Send + Sync` (the pool is `Clone`-cheap and internally
+//! synchronized), so the facade's `all()`/`run()` block-on the pooled future while DISTINCT threads
+//! checking out DISTINCT pooled connections run REAL parallel DB I/O. That is what lets the plan's
+//! `concurrency` (default 16) become concurrent sibling-relation dispatch at the executor layer
+//! (`static_bundle::dispatch_read_nodes_parallel`) without changing the IR, the dialect SQL text, or
+//! the trait: the seam is dialect- and execution-model-agnostic. The runtime only ever binds
+//! already-rendered scalar params (a bc [`Value`] → the driver's native param type).
 
 use behavior_contracts::Value;
 use rusqlite::types::{Value as SqlValue, ValueRef};

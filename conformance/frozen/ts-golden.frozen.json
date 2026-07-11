@@ -1,1 +1,1 @@
-{"lang":"ts","suites":{"dialect":{"pass":12,"fail":0},"exec":{"pass":3,"fail":0},"render":{"pass":30,"fail":0},"tx":{"pass":4,"fail":0}},"total_pass":49,"total_fail":0,"version_mismatch":false}
+{"lang":"ts","suites":{"dialect":{"pass":12,"fail":0},"exec":{"pass":2,"fail":0},"render":{"pass":18,"fail":0},"tx":{"pass":4,"fail":0}},"total_pass":36,"total_fail":0,"version_mismatch":false}

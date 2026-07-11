@@ -96,9 +96,47 @@ final class MysqlLivePdo extends \PDO
     public function prepare(string $query, array $options = []): \PDOStatement|false
     {
         if (preg_match('/^\s*INSERT\s+(?:IGNORE\s+)?INTO\s+([A-Za-z_][A-Za-z0-9_]*)\b.*\bRETURNING\s+(.+?)\s*$/is', $query, $m) === 1) {
+            // Strip the RETURNING clause AND the strip-before-execute PK hint (tx.ts mysqlPkHint) so
+            // the executed INSERT is byte-clean; parse the PK hint + INSERT column list so the
+            // re-select keys off the REAL PK (AUTO_INCREMENT range or client-supplied UUID/composite
+            // values), NOT a hardcoded `id`.
             $insertSql = preg_replace('/\s+RETURNING\s+.+$/is', '', $query) ?? $query;
-            $this->pendingReturning = ['table' => $m[1], 'cols' => $m[2]];
+            $insertSql = preg_replace('#\s*/\*scp:pk=[^*]*\*/#', '', $insertSql) ?? $insertSql;
+            $cols = preg_replace('#\s*/\*scp:pk=[^*]*\*/#', '', $m[2]) ?? $m[2];
+            $pkCols = [];
+            $autoInc = '';
+            if (preg_match('#/\*scp:pk=([^;*]*);ai=([^*]*)\*/#i', $m[2], $hm) === 1) {
+                foreach (explode(',', $hm[1]) as $c) {
+                    $c = trim($c);
+                    if ($c !== '') {
+                        $pkCols[] = $c;
+                    }
+                }
+                $autoInc = trim($hm[2]);
+            }
+            $insertCols = [];
+            if (preg_match('/^\s*INSERT\s+(?:IGNORE\s+)?INTO\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)/is', $insertSql, $cm) === 1) {
+                foreach (explode(',', $cm[1]) as $c) {
+                    $insertCols[] = trim($c);
+                }
+            }
+            $this->pendingReturning = [
+                'table' => $m[1],
+                'cols' => trim($cols),
+                'pkCols' => $pkCols,
+                'autoInc' => $autoInc,
+                'insertCols' => $insertCols,
+            ];
             return parent::prepare($insertSql, $options);
+        }
+        // A non-INSERT RETURNING (UPDATE/DELETE … RETURNING): MySQL has no native RETURNING and the
+        // pre-image is gone, so v1 (`mysql.ts`) strips RETURNING, runs the write, and returns NO
+        // rows. Byte-faithful: prepare the stripped write; the statement returns [] (empty flag).
+        if (preg_match('/^\s*(?:UPDATE|DELETE)\b.*\bRETURNING\s+.+$/is', $query) === 1) {
+            $writeSql = preg_replace('/\s+RETURNING\s+.+$/is', '', $query) ?? $query;
+            $writeSql = preg_replace('#\s*/\*scp:pk=[^*]*\*/#', '', $writeSql) ?? $writeSql;
+            $this->pendingReturning = ['emptyReturning' => true];
+            return parent::prepare($writeSql, $options);
         }
         $this->pendingReturning = null;
         return parent::prepare($query, $options);
@@ -131,17 +169,57 @@ final class MysqlReturningStatement extends \PDOStatement
     public function execute(?array $params = null): bool
     {
         $bound = $params === null ? null : array_values($params);
-        $ok = parent::execute($bound); // the RETURNING-stripped INSERT
-        if ($this->returning !== null) {
-            $lastId = (int) $this->pdo->lastInsertId();
-            $sel = $this->pdo->prepare("SELECT {$this->returning['cols']} FROM {$this->returning['table']} WHERE id = ?");
-            $sel->execute([$lastId]);
+        $ok = parent::execute($bound); // the RETURNING-stripped write
+        if ($this->returning !== null && ($this->returning['emptyReturning'] ?? false)) {
+            // Non-INSERT RETURNING: the write ran; MySQL returns no rows (v1 parity).
+            $this->returningRows = [];
+        } elseif ($this->returning !== null) {
+            [$whereSql, $whereParams] = $this->reselectWhere($bound ?? []);
+            $sel = $this->pdo->prepare("SELECT {$this->returning['cols']} FROM {$this->returning['table']} WHERE {$whereSql}");
+            $sel->execute($whereParams);
             $rows = $sel->fetchAll(\PDO::FETCH_OBJ);
             $this->returningRows = is_array($rows) ? array_values($rows) : [];
         } else {
             $this->returningRows = null;
         }
         return $ok;
+    }
+
+    /**
+     * Build the MySQL RETURNING re-select WHERE (`?` body + params) keyed off the REAL primary key:
+     *  - AUTO_INCREMENT single-column PK → an identity range over the affected rows (v1 semantics,
+     *    real column name);
+     *  - client-supplied PK (UUID / composite) → the PK value(s) from the bound INSERT params by
+     *    column position;
+     *  - no hint → `id = ?` on lastInsertId (legacy auto-`id` fallback).
+     *
+     * @param list<mixed> $bound
+     * @return array{0:string,1:list<mixed>}
+     */
+    private function reselectWhere(array $bound): array
+    {
+        $pkCols = $this->returning['pkCols'] ?? [];
+        $autoInc = $this->returning['autoInc'] ?? '';
+        if (count($pkCols) === 0) {
+            return ['id = ?', [(int) $this->pdo->lastInsertId()]];
+        }
+        if ($autoInc !== '' && count($pkCols) === 1 && $pkCols[0] === $autoInc) {
+            $lastId = (int) $this->pdo->lastInsertId();
+            $affected = max(1, $this->rowCount());
+            return ["{$autoInc} >= ? AND {$autoInc} < ?", [$lastId, $lastId + $affected]];
+        }
+        $insertCols = $this->returning['insertCols'] ?? [];
+        $conds = [];
+        $vals = [];
+        foreach ($pkCols as $pk) {
+            $idx = array_search($pk, $insertCols, true);
+            if ($idx === false || !array_key_exists($idx, $bound)) {
+                return ['id = ?', [(int) $this->pdo->lastInsertId()]];
+            }
+            $conds[] = "{$pk} = ?";
+            $vals[] = $bound[$idx];
+        }
+        return [implode(' AND ', $conds), $vals];
     }
 
     #[\ReturnTypeWillChange]

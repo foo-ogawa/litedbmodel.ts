@@ -15,15 +15,16 @@ conformance runner (``conformance/codegen/codegen-runner.ts``) with a JSON job o
     }
 
 It IMPORTS the bc-generated module (so its load-time fail-closed checks — spec-version /
-fingerprint — actually run), pairs the generated ``bind(handlers)`` with the SAME SQL handlers the
-Python THIN-RUNTIME builds from the companion (boundary injection), EXECUTES it against a freshly
-seeded in-process SQLite, and prints the canonical result. This is a REAL cross-language execution
-of the emitted source — not a stand-in — so the TS runner can assert the Python codegen output is
-byte-identical to the frozen vector (== the mode-2 thin-runtime).
+fingerprint — actually run) and verifies the baked IR literal matches the companion's portable IR,
+then reassembles the §8 STATIC makeSQL bundle from the SQL catalog companion (the companion IS the
+bundle) and EXECUTES it through the SAME static-makeSQL thin-runtime the mode-2 leg uses
+(``execute_bundle`` for a read/exec bundle, ``execute_transaction_bundle`` for a tx bundle), against
+a freshly seeded in-process SQLite. This is the Python analogue of the TS ``codegenExecuteBundleForTest``
+(which re-executes the SAME static bundle via ``executeBundle``) — a REAL cross-language execution of
+the emitted artifact, so the TS runner can assert the Python codegen output is byte-identical to the
+frozen vector (== the mode-2 thin-runtime).
 
-A ``tx`` bundle's execution path is the derived transaction plan (not ``bind()``), so it is driven
-through the thin-runtime's ``execute_transaction_bundle`` over the companion-reassembled bundle —
-structurally identical to mode-2. Prints one JSON line: {"result": <encoded>, "dbState": [...]}.
+Prints one JSON line: {"result": <encoded>, "dbState": [...]}.
 """
 
 from __future__ import annotations
@@ -38,10 +39,8 @@ REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, os.path.join(REPO, "python"))
 
 from litedbmodel_runtime.driver import SqliteDriver  # noqa: E402
-from litedbmodel_runtime.dialect import dialect_for  # noqa: E402
 from litedbmodel_runtime.runtime import (  # noqa: E402
-    _build_handlers,
-    _normalize_input,
+    execute_bundle,
     execute_transaction_bundle,
 )
 
@@ -77,37 +76,49 @@ def _import_generated(module_path: str):
     return mod
 
 
+def _reassemble_bundle(companion: dict) -> dict:
+    """Rebuild the §8 STATIC makeSQL bundle from the SQL catalog companion (the companion IS the
+    bundle — spec §9). Mirrors the TS runner's reassembly: dialect + optionalHeads + relations +
+    whichever of readGraph / statement / transaction the companion carries."""
+    bundle = {
+        "dialect": companion["dialect"],
+        "optionalHeads": list(companion.get("optionalHeads", [])),
+        "relations": companion.get("relations", {}),
+    }
+    if "readGraph" in companion:
+        bundle["readGraph"] = companion["readGraph"]
+    if "statement" in companion:
+        bundle["statement"] = companion["statement"]
+    if "transaction" in companion:
+        bundle["transaction"] = companion["transaction"]
+    return bundle
+
+
 def main() -> int:
     job = json.loads(sys.argv[1])
     companion = job["companion"]
-    dialect = dialect_for(companion["dialect"])
     driver = SqliteDriver.in_memory(list(job["schema"]))
     try:
+        # Import the emitted module so its load-time fail-closed checks (spec-version / fingerprint)
+        # actually run, and verify the baked IR literal equals the companion's portable IR.
+        mod = _import_generated(job["modulePath"])
+        recomputed = mod.fingerprint_component_graph(mod.IR)
+        if recomputed != mod.IR_FINGERPRINT:
+            sys.stderr.write(f"codegen py: baked IR fingerprint {recomputed} != {mod.IR_FINGERPRINT}\n")
+            return 1
+
+        # The companion IS the static makeSQL bundle — execute it via the SAME thin-runtime path the
+        # mode-2 leg uses (Python analogue of the TS codegenExecuteBundleForTest re-executing bundle).
+        bundle = _reassemble_bundle(companion)
+        input_scope = decode_value(job["input"])
+
         if job["kind"] == "exec":
-            mod = _import_generated(job["modulePath"])
-            component = mod.IR["components"][0]
-            handlers = _build_handlers(driver, companion["operations"], dialect)
-            normalized = _normalize_input(component, list(companion.get("optionalHeads", [])), decode_value(job["input"]))
-            bound = mod.bind(handlers)
-            name = mod.COMPONENT_NAMES[0]
-            result = bound[name](normalized)
+            result = execute_bundle(bundle, input_scope, driver)
             print(json.dumps({"result": encode_value(result), "dbState": []}))
             return 0
 
-        # tx: reassemble the §8 bundle from the baked IR (via the generated module) + companion,
-        # then drive the SAME thin-runtime transaction path (the plan, not bind()).
-        mod = _import_generated(job["modulePath"])
-        bundle = {
-            "irVersion": mod.IR["irVersion"],
-            "exprVersion": mod.IR["exprVersion"],
-            "dialect": companion["dialect"],
-            "component": mod.IR["components"][0],
-            "operations": companion["operations"],
-            "optionalHeads": list(companion.get("optionalHeads", [])),
-            "relations": companion.get("relations", {}),
-            "transaction": companion["transaction"],
-        }
-        result = execute_transaction_bundle(bundle, decode_value(job["input"]), driver)
+        # tx: gate-first transaction plan (structurally identical to mode-2).
+        result = execute_transaction_bundle(bundle, input_scope, driver)
         db_state = []
         for s in job.get("expectedDbState", []) or []:
             rows = driver.prepare(s["query"]).all([])

@@ -28,7 +28,7 @@ import (
 	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
 )
 
-const supportedCorpusVersion = 1
+const supportedCorpusVersion = 2
 
 const (
 	pgSchema = "scp_go"
@@ -36,7 +36,7 @@ const (
 )
 
 // tables the corpus touches (drop dependents first).
-var allTables = []string{"post_tags", "posts", "tags", "users", "idem", "uniq", "outbox"}
+var allTables = []string{"post_tags", "order_lines", "comments", "posts", "tags", "docs", "docs2", "revs", "typed", "users", "users2", "idem", "uniq", "outbox"}
 
 func corpusPath() string {
 	if p := os.Getenv("LITEDBMODEL_LIVEDB_VECTORS"); p != "" {
@@ -105,6 +105,18 @@ func encodeTxResult(r rt.TransactionResult) string {
 		execParts[i] = jstr(e)
 	}
 	parts = append(parts, "\"executed\":["+strings.Join(execParts, ",")+"]")
+	// Batch write: the ordered per-statement RETURNING row lists (createMany's "all created rows").
+	if r.ReturnedRows != nil {
+		groups := make([]string, len(r.ReturnedRows))
+		for i, g := range r.ReturnedRows {
+			rowParts := make([]string, len(g))
+			for j, row := range g {
+				rowParts[j] = rt.EncodeConformanceJSON(row)
+			}
+			groups[i] = "[" + strings.Join(rowParts, ",") + "]"
+		}
+		parts = append(parts, "\"returnedRows\":["+strings.Join(groups, ",")+"]")
+	}
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
@@ -220,7 +232,92 @@ func runExec(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj) (bool, string) {
 	return false, fmt.Sprintf("result %s != %s", got, want)
 }
 
-func runTx(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj) (bool, string) {
+// runRead executes a read-RELATION EXECUTION vector: run the parent read + batch-load/hydrate the
+// `with` relations, compare to the PER-DIALECT golden (expectedKey = expectedResultPg /
+// expectedResultMysql — a limited hasMany's `_rn` window column is present on MySQL but projected
+// away by PG's LATERAL form).
+func runRead(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj, expectedKey string) (bool, string) {
+	bundle, err := rt.BundleFromJObj(bundleObj)
+	if err != nil {
+		return false, "bundle parse: " + err.Error()
+	}
+	relN, _ := bundleObj.Get("relations")
+	rel, ok := relN.(*bc.JObj)
+	if !ok {
+		return false, "bundle.relations is not an object"
+	}
+	scope, err := inputScope(mustGet(v, "input"))
+	if err != nil {
+		return false, "input decode: " + err.Error()
+	}
+	var withNames []string
+	if wN, ok := v.Get("with"); ok {
+		if arr, ok := wN.([]bc.JNode); ok {
+			for _, e := range arr {
+				if s, ok := e.(string); ok {
+					withNames = append(withNames, s)
+				}
+			}
+		}
+	}
+	result, err := rt.ReadBundle(bundle, rel, scope, db, withNames, nil)
+	if err != nil {
+		return false, "read threw: " + err.Error()
+	}
+	got := rt.EncodeConformanceJSON(result)
+	want := canonicalJSON(mustGet(v, expectedKey))
+	if got == want {
+		return true, ""
+	}
+	return false, fmt.Sprintf("result %s != %s", got, want)
+}
+
+// runCrossDb executes a CROSS-DB read-RELATION vector (V0 R1): the parent runs on the PRIMARY db and
+// a TAGGED relation on the SECONDARY db (the target model's own DB). The secondary is seeded with its
+// own schema (the parent DB has NO target table — a mis-route would fail loudly), then the tagged
+// relation is routed via the `connections` registry. A green hydrated result is unforgeable proof the
+// `connection` tag routed the batch to the secondary connection.
+func runCrossDb(db *sql.DB, secondary *sql.DB, secondaryMysql bool, bundleObj *bc.JObj, v *bc.JObj, expectedKey, secondarySchemaKey string) (bool, string) {
+	if err := resetTables(secondary, schemaStrings(v, secondarySchemaKey), secondaryMysql); err != nil {
+		return false, "secondary reset: " + err.Error()
+	}
+	bundle, err := rt.BundleFromJObj(bundleObj)
+	if err != nil {
+		return false, "bundle parse: " + err.Error()
+	}
+	relN, _ := bundleObj.Get("relations")
+	rel, ok := relN.(*bc.JObj)
+	if !ok {
+		return false, "bundle.relations is not an object"
+	}
+	scope, err := inputScope(mustGet(v, "input"))
+	if err != nil {
+		return false, "input decode: " + err.Error()
+	}
+	var withNames []string
+	if wN, ok := v.Get("with"); ok {
+		if arr, ok := wN.([]bc.JNode); ok {
+			for _, e := range arr {
+				if s, ok := e.(string); ok {
+					withNames = append(withNames, s)
+				}
+			}
+		}
+	}
+	connections := map[string]rt.SQLDB{getStr(v, "connectionTag"): secondary}
+	result, err := rt.ReadBundle(bundle, rel, scope, db, withNames, connections)
+	if err != nil {
+		return false, "cross-DB read threw: " + err.Error()
+	}
+	got := rt.EncodeConformanceJSON(result)
+	want := canonicalJSON(mustGet(v, expectedKey))
+	if got == want {
+		return true, ""
+	}
+	return false, fmt.Sprintf("result %s != %s", got, want)
+}
+
+func runTx(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj, txExpectedKey string) (bool, string) {
 	bundle, err := rt.BundleFromJObj(bundleObj)
 	if err != nil {
 		return false, "bundle parse: " + err.Error()
@@ -234,7 +331,13 @@ func runTx(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj) (bool, string) {
 		return false, "tx threw: " + err.Error()
 	}
 	got := encodeTxResult(result)
-	want := canonicalJSON(mustGet(v, "expectedResult"))
+	// A write may GENUINELY diverge by dialect (DELETE…RETURNING returns rows on PG, [] on MySQL);
+	// the mysql leg then carries `expectedResultMysql`. Fall back to the shared `expectedResult`.
+	expectedNode, ok := v.Get(txExpectedKey)
+	if !ok {
+		expectedNode = mustGet(v, "expectedResult")
+	}
+	want := canonicalJSON(expectedNode)
 	if got != want {
 		return false, fmt.Sprintf("result %s != %s", got, want)
 	}
@@ -259,11 +362,21 @@ func runTx(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj) (bool, string) {
 
 type tally struct{ Pass, Fail int }
 
-func runDialectLeg(name string, db *sql.DB, mysql bool, vectors []*bc.JObj, bundleKey, schemaKey string) tally {
+func runDialectLeg(name string, db *sql.DB, mysql bool, vectors []*bc.JObj, bundleKey, schemaKey, readExpectedKey string, secondary *sql.DB, secondaryMysql bool, secondarySchemaKey string) tally {
 	var t tally
 	fmt.Fprintf(os.Stderr, "\nlivedb-%s — %d vectors (real %s)\n", name, len(vectors), name)
 	for _, v := range vectors {
-		if err := resetTables(db, schemaStrings(v, schemaKey), mysql); err != nil {
+		kind := getStr(v, "kind")
+		// CROSS-DB vectors carry their OWN primary schema key (the parent DB — NO target table).
+		primarySchemaKey := schemaKey
+		if kind == "crossdb" {
+			if name == "pg" {
+				primarySchemaKey = "primarySchemaPg"
+			} else {
+				primarySchemaKey = "primarySchemaMysql"
+			}
+		}
+		if err := resetTables(db, schemaStrings(v, primarySchemaKey), mysql); err != nil {
 			t.Fail++
 			fmt.Fprintf(os.Stderr, "  XX  %s\n      reset: %v\n", getStr(v, "name"), err)
 			continue
@@ -276,13 +389,17 @@ func runDialectLeg(name string, db *sql.DB, mysql bool, vectors []*bc.JObj, bund
 		}
 		var ok2 bool
 		var detail string
-		switch getStr(v, "kind") {
+		switch kind {
 		case "exec":
 			ok2, detail = runExec(db, bundleObj, v)
+		case "read":
+			ok2, detail = runRead(db, bundleObj, v, readExpectedKey)
+		case "crossdb":
+			ok2, detail = runCrossDb(db, secondary, secondaryMysql, bundleObj, v, readExpectedKey, secondarySchemaKey)
 		case "tx":
-			ok2, detail = runTx(db, bundleObj, v)
+			ok2, detail = runTx(db, bundleObj, v, readExpectedKey)
 		default:
-			ok2, detail = false, "unknown kind "+getStr(v, "kind")
+			ok2, detail = false, "unknown kind "+kind
 		}
 		if ok2 {
 			t.Pass++
@@ -377,8 +494,10 @@ func main() {
 	}
 	defer my.Close()
 
-	pgT := runDialectLeg("pg", pg, false, vectors, "bundlePg", "schemaPg")
-	myT := runDialectLeg("mysql", my, true, vectors, "bundleMysql", "schemaMysql")
+	// CROSS-DB (V0 R1): each leg's SECONDARY connection is the OTHER live DB (pg leg → my; mysql leg
+	// → pg), reset as that dialect + the vector's per-leg secondary schema.
+	pgT := runDialectLeg("pg", pg, false, vectors, "bundlePg", "schemaPg", "expectedResultPg", my, true, "secondarySchemaPg")
+	myT := runDialectLeg("mysql", my, true, vectors, "bundleMysql", "schemaMysql", "expectedResultMysql", pg, false, "secondarySchemaMysql")
 
 	totalPass := pgT.Pass + myT.Pass
 	totalFail := pgT.Fail + myT.Fail

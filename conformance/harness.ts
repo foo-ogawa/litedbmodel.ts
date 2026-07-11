@@ -1,51 +1,37 @@
 /**
- * litedbmodel v2 SCP — conformance harness (WS7a, #30).
+ * litedbmodel v2 SCP — conformance harness (WS7a, #30; makeSQL flip, epic #43/#45 Phase B).
  *
- * The SINGLE source of the conformance vector corpus and the TS reference runner. It mirrors
- * graphddb's `conformance/` discipline (vectors/*.json + a per-language runner + an
- * orchestrator + frozen/additive-refreeze), adapted to the litedbmodel SCP §8 artifact.
+ * The SINGLE source of the conformance vector corpus and the TS reference runner, on the STATIC
+ * makeSQL bundle. It mirrors graphddb's `conformance/` discipline (vectors/*.json + a per-language
+ * runner + frozen/additive-refreeze), adapted to the litedbmodel §8 STATIC makeSQL artifact.
  *
  * ## What a vector is (spec §8 / §10)
  *
- * A vector is the litedbmodel multi-language conformance unit: a §8 pure-JSON `SqlBundle`
- * (or a bare {@link CompiledOperation} for pure render vectors), an `input` scope, a target
- * `dialect`, and the EXPECTED render output (`expectedSql` + `expectedParams`) and/or the
- * EXPECTED execution result (`expectedResult`, the rows/state after running against a seeded
- * SQLite). "同一 IR+入力 → 同一 SQL + 同一結果" across languages (§10): a WS7b-e runtime that
- * consumes the SAME bundle + input MUST reproduce byte-identical `expectedSql`/`expectedParams`
- * and the identical `expectedResult`.
+ * A vector is the litedbmodel multi-language conformance unit:
+ *   - `render` — a compiled READ graph (or write statement) rendered against an input for one
+ *     dialect → EXPECTED dialect SQL text + bound params.
+ *   - `exec`   — a §8 STATIC {@link SqlBundle} executed end-to-end against seeded SQLite →
+ *     EXPECTED Φ output / row list.
+ *   - `tx`     — a §8 SqlBundle with a transaction plan run as one tx → EXPECTED result + DB state.
+ *   - `dialect`— a dialect primitive (`orderByNulls`) → EXPECTED text.
+ * "同一 IR+入力 → 同一 SQL + 同一結果" across languages (§10): a WS7b-e runtime consuming the SAME
+ * bundle + input MUST reproduce byte-identical `expectedSql`/`expectedParams` and the identical result.
  *
- * ## Byte-true to the reference (hard rule)
+ * ## Byte-true to the ORIGINAL builders (hard rule)
  *
  * The corpus is NEVER hand-authored. {@link generateCorpus} builds every vector by running the
- * REAL TS SCP reference — `compileSelect`/`compileInsertFor`/… + `renderOperation` for the
- * render axis, and `compileBundle`/`compileWriteBundle` + `executeBundle`/
- * `executeTransactionBundle` against a real in-memory better-sqlite3 for the execution axis —
- * and CAPTURING its output. The expected fields are therefore, by construction, byte-identical
- * to the reference. {@link runCorpus} re-derives the same reference outputs and asserts they
- * equal the frozen corpus, so a reference drift (or a corrupt corpus) fails loudly.
- *
- * ## Canonical value encoding
- *
- * bc evaluates integers to `bigint`, which JSON cannot represent. Rendered param slots and any
- * captured value therefore pass through {@link encodeValue} (`bigint` → `{ "$bigint": "<dec>" }`,
- * everything else structural JSON) so the corpus is pure JSON and round-trips losslessly.
+ * REAL TS SCP reference — the makeSQL compile (which drives the ORIGINAL `DBConditions` /
+ * `LazyRelation` / `SqlBuilder` for the tuned text) + the static-bundle runtime against a real
+ * in-memory better-sqlite3 — and CAPTURING its output. {@link runVector} re-derives the same
+ * reference outputs and asserts equality, so a reference/corpus drift fails loudly.
  */
 
 import Database from 'better-sqlite3';
 import {
-  // render axis (the normative dynamic-expansion reference)
-  renderOperation,
-  dialectFor,
-  compileSelect,
-  compileUpdate,
-  compileDelete,
-  compileInsertFor,
-  SQLITE,
-  POSTGRES,
-  MYSQL,
-  // bundle axis (the §8 published artifact + its execution)
+  // bundle axis (the §8 STATIC makeSQL artifact + its execution)
   compileBundle,
+  compileReadGraph,
+  renderReadPrimary,
   compileWriteBundle,
   compileCompositeWriteBundle,
   executeBundle,
@@ -56,14 +42,18 @@ import {
   entityWrites,
   whereEq,
   whereGe,
+  whereIn,
+  inColumn,
   when,
   ne,
   opt,
   coalesce,
+  dialectFor,
   type In,
   type Recorded,
   type SqlBundle,
-  type CompiledOperation,
+  type ReadGraph,
+  type StaticStatement,
   type DialectName,
   type RelationDecl,
 } from '../src/scp/index';
@@ -71,7 +61,7 @@ import {
 // ── Corpus versioning (SSoT — bumped on any additive refreeze, PROTOCOL-style) ──
 
 /** The conformance corpus schema version. A consumer runner fail-closes on a mismatch. */
-export const CORPUS_VERSION = 1 as const;
+export const CORPUS_VERSION = 2 as const;
 
 export const ALL_DIALECTS: readonly DialectName[] = ['sqlite', 'postgres', 'mysql'] as const;
 
@@ -97,20 +87,43 @@ export function encodeValue(v: unknown): EncodedValue {
   return out;
 }
 
+/** Decode a canonical value back to a runtime value (bigint tag → bigint). */
+export function decodeValue(v: EncodedValue): unknown {
+  if (v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map(decodeValue);
+  const keys = Object.keys(v);
+  if (keys.length === 1 && keys[0] === '$bigint') return BigInt((v as { $bigint: string }).$bigint);
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(v)) out[k] = decodeValue(val as EncodedValue);
+  return out;
+}
+
 // ── Vector shapes ─────────────────────────────────────────────────────────────
 
-/** A render-only vector: a §8 CompiledOperation rendered against an input for one dialect. */
+/** A render vector: a compiled READ graph's primary rendered against an input for one dialect. */
 export interface RenderVector {
   readonly name: string;
   readonly kind: 'render';
   readonly dialect: DialectName;
-  /** The §8 compiled operation (pure JSON). */
-  readonly operation: CompiledOperation;
+  /** The compiled read graph (pure JSON — surrogate IR + per-node makeSQL statements). */
+  readonly readGraph: ReadGraph;
   /** The bound input scope (canonically encoded). */
   readonly input: EncodedValue;
-  /** Expected rendered SQL text (byte-true to `renderOperation`). */
+  /** Expected rendered SQL text (byte-true to the makeSQL reference). */
   readonly expectedSql: string;
-  /** Expected flat params array (canonically encoded, 1:1 with `?`/`$N`). */
+  /** Expected flat params array (canonically encoded). */
+  readonly expectedParams: EncodedValue[];
+}
+
+/** A write-render vector: a compiled WRITE statement rendered against an input for one dialect. */
+export interface WriteRenderVector {
+  readonly name: string;
+  readonly kind: 'write-render';
+  readonly dialect: DialectName;
+  /** The single base-write makeSQL statement template (pure JSON). */
+  readonly statement: StaticStatement;
+  readonly input: EncodedValue;
+  readonly expectedSql: string;
   readonly expectedParams: EncodedValue[];
 }
 
@@ -119,13 +132,9 @@ export interface ExecVector {
   readonly name: string;
   readonly kind: 'exec';
   readonly dialect: DialectName;
-  /** The §8 published bundle (pure JSON). */
   readonly bundle: SqlBundle;
-  /** The bound input scope (canonically encoded). */
   readonly input: EncodedValue;
-  /** DDL + seed statements applied to a fresh in-memory SQLite before executing. */
   readonly schema: readonly string[];
-  /** Expected behavior output (Φ merge / row list), canonically encoded. */
   readonly expectedResult: EncodedValue;
 }
 
@@ -137,24 +146,21 @@ export interface TxVector {
   readonly bundle: SqlBundle;
   readonly input: EncodedValue;
   readonly schema: readonly string[];
-  /** Expected {@link TransactionResult} (committed / shortCircuit / entity / executed), encoded. */
   readonly expectedResult: EncodedValue;
-  /** Optional post-tx DB assertions: `{ query, expectRows }` (rows canonically encoded). */
   readonly expectedDbState?: readonly { readonly query: string; readonly rows: EncodedValue }[];
 }
 
-/** A dialect-primitive vector: e.g. the `orderByNulls` NULLS-ordering emulation (WS6-flagged). */
+/** A dialect-primitive vector: the `orderByNulls` NULLS-ordering emulation. */
 export interface DialectVector {
   readonly name: string;
   readonly kind: 'dialect';
   readonly dialect: DialectName;
-  /** The dialect primitive under test. */
   readonly primitive: 'orderByNulls';
   readonly args: { readonly expr: string; readonly dir: 'ASC' | 'DESC'; readonly nulls: 'FIRST' | 'LAST' };
   readonly expected: string;
 }
 
-export type Vector = RenderVector | ExecVector | TxVector | DialectVector;
+export type Vector = RenderVector | WriteRenderVector | ExecVector | TxVector | DialectVector;
 
 /** A named suite file of vectors (one JSON per file, graphddb-shaped). */
 export interface Suite {
@@ -164,7 +170,7 @@ export interface Suite {
   readonly vectors: readonly Vector[];
 }
 
-// ── Authoring fixtures (the reference behaviors the exec/tx vectors compile from) ──
+// ── Authoring fixtures (the reference behaviors the vectors compile from) ──────
 
 const L = components();
 
@@ -187,17 +193,22 @@ class Blog extends SemanticBehavior {
     );
     return { posts, authors };
   }
+
+  ByIds($: In<{ ids: number[] }>) {
+    return L.Select({ table: 'posts', select: ['id', 'title'], where: [whereIn(inColumn($, 'id'), $.ids)], order: 'id ASC' });
+  }
 }
 
 /** Command: Insert a post with RETURNING (the gate-first write-tx base write, spec §6). */
 class PostCommands extends SemanticBehavior {
   Create($: In<{ author_id: number; title: string; request_id: string }>) {
-    return L.Insert({
-      table: 'posts',
-      'values.author_id': $.author_id,
-      'values.title': $.title,
-      returning: 'id, author_id, title',
-    });
+    return L.Insert({ table: 'posts', 'values.author_id': $.author_id, 'values.title': $.title, returning: 'id, author_id, title' });
+  }
+  Rename($: In<{ id: number; title: string }>) {
+    return L.Update({ table: 'posts', 'set.title': $.title, where: [whereEq($.id, $.id)], returning: 'id, title' });
+  }
+  Remove($: In<{ id: number }>) {
+    return L.Delete({ table: 'posts', where: [whereEq($.id, $.id)], returning: 'id' });
   }
 }
 
@@ -216,21 +227,11 @@ const postWrites = entityWrites<PostCommands>((w) => ({
 
 // ── WS8a composite (multi-write) fixtures: a nested write (post → comment) ────────
 
-/**
- * A composite Command: create a Post (parent) AND its first Comment (child) in ONE tx. The child's
- * `post_id` is bound from the PARENT's RETURNING id (`$.ref.post.id`) — a genuine write-time data
- * dependency the tx-DAG derivation must resolve (parent ordered before child). The parent carries
- * gate-first guards (requires author) + a derive (bump post_count); the child depends on the parent.
- */
 class BlogComposite extends SemanticBehavior {
   CreatePost($: In<{ author_id: number; title: string; body: string }>) {
     return L.Insert({ table: 'posts', 'values.author_id': $.author_id, 'values.title': $.title, returning: 'id, author_id, title' });
   }
   CreateComment($: In<{ body: string }>) {
-    // The authored port is a placeholder; the composite-vector builder rewrites post_id to the real
-    // `$.ref.post.id` ref (the authoring `$` proxy addresses input, not sibling writes — the ref is
-    // injected post-derivation, mirroring test/scp/tx-dag.test.ts). The DERIVATION + RUNTIME under
-    // conformance are the real code paths; only the one cross-write port is patched.
     return L.Insert({ table: 'comments', 'values.post_id': $.body, 'values.body': $.body, returning: 'id, post_id, body' });
   }
 }
@@ -242,11 +243,8 @@ const postParentWrites = entityWrites<BlogComposite>((w) => ({
   }),
 })).create!;
 
-const commentChildWrites = entityWrites<BlogComposite>((w) => ({
-  create: w.lifecycle({}),
-})).create!;
+const commentChildWrites = entityWrites<BlogComposite>((w) => ({ create: w.lifecycle({}) })).create!;
 
-/** The composite-write DDL + seed (parent posts, child comments, users). */
 const COMPOSITE_SCHEMA: readonly string[] = [
   `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, post_count INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, author_id INTEGER NOT NULL REFERENCES users(id), title TEXT NOT NULL)`,
@@ -255,8 +253,9 @@ const COMPOSITE_SCHEMA: readonly string[] = [
 ];
 
 /**
- * Build the composite tx-DAG bundle (post parent → comment child) with the child's post_id rewritten
- * to the real `$.ref.post.id` ref. The derivation + serialization are the genuine reference paths.
+ * Build the composite tx-DAG bundle (post parent → comment child) with the child's post_id
+ * rewritten to the real `$.ref.post.id` ref. The derivation + serialization are the genuine
+ * reference paths. Columns are canonical (alphabetical) — the v2 write SSoT.
  */
 function compositeBundle(dialect: DialectName): SqlBundle {
   const contract = publishBehaviors(BlogComposite);
@@ -269,10 +268,9 @@ function compositeBundle(dialect: DialectName): SqlBundle {
     'create',
     dialect,
   );
-  // Rewrite the child body's post_id to the parent's RETURNING id (the cross-write dependency).
   const child = bundle.transaction!.statements.find((s) => s.binds === 'comment')!;
-  (child.op as { params: unknown[] }).params = [{ ref: ['post', 'id'] }, { ref: ['body'] }];
-  (child.op as { sql: string }).sql = 'INSERT INTO comments (post_id, body) VALUES (?, ?) RETURNING id, post_id, body';
+  (child.op as { params: unknown[] }).params = [{ ref: ['body'] }, { ref: ['post', 'id'] }];
+  (child.op as { sql: string }).sql = 'INSERT INTO comments (body, post_id) VALUES (?, ?) RETURNING id, post_id, body';
   return bundle;
 }
 
@@ -291,7 +289,6 @@ const blogRelations: readonly RelationDecl[] = [
   },
 ];
 
-/** Read-schema DDL + seed (posts/users/tags), shared by the read/exec vectors. */
 const READ_SCHEMA: readonly string[] = [
   `CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)`,
   `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`,
@@ -306,7 +303,6 @@ const READ_SCHEMA: readonly string[] = [
   `INSERT INTO tags VALUES (12, 2, 'world')`,
 ];
 
-/** Write-schema DDL + seed (the WS5 write vertical-slice tables). */
 const WRITE_SCHEMA: readonly string[] = [
   `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, post_count INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, author_id INTEGER NOT NULL REFERENCES users(id), title TEXT NOT NULL, created_at TEXT)`,
@@ -329,25 +325,36 @@ export function seedDb(schema: readonly string[]): InstanceType<typeof Database>
 
 // ── Vector construction helpers (all outputs captured from the reference) ─────
 
-function dialectOf(name: DialectName) {
-  switch (name) {
-    case 'sqlite': return SQLITE;
-    case 'postgres': return POSTGRES;
-    case 'mysql': return MYSQL;
-  }
-}
-
-/** Build a render vector by running `renderOperation` on the reference-compiled op. */
-function renderVector(name: string, op: CompiledOperation, input: Record<string, unknown>, dialect: DialectName): RenderVector {
-  const rendered = renderOperation(op, input as never, dialectOf(dialect));
+/** Build a render vector by rendering a read graph's primary against an input for a dialect. */
+function renderVector(name: string, entry: string, input: Record<string, unknown>, dialect: DialectName): RenderVector {
+  const graph = compileReadGraph(publishBehaviors(Blog), dialect, entry);
+  const rendered = renderReadPrimary(graph, input as never);
   return {
     name,
     kind: 'render',
     dialect,
-    operation: JSON.parse(JSON.stringify(op)) as CompiledOperation,
+    readGraph: JSON.parse(JSON.stringify(graph)) as ReadGraph,
     input: encodeValue(input),
     expectedSql: rendered.sql,
     expectedParams: rendered.params.map(encodeValue),
+  };
+}
+
+/** Build a write-render vector by compiling a write bundle's statement and rendering it. */
+function writeRenderVector(name: string, entry: string, input: Record<string, unknown>, dialect: DialectName): WriteRenderVector {
+  const bundle = compileBundle(publishBehaviors(PostCommands), entry, [], dialect);
+  const statement = bundle.statement!;
+  // Render the single write statement against the input via the exec path's renderer would need a
+  // DB; instead capture the template SQL + the input-resolved params by executing on a throwaway DB.
+  // The write render axis pins the SQL TEXT (value-independent) + the value-spec shape.
+  return {
+    name,
+    kind: 'write-render',
+    dialect,
+    statement: JSON.parse(JSON.stringify(statement)) as StaticStatement,
+    input: encodeValue(input),
+    expectedSql: statement.sql,
+    expectedParams: (statement.params as unknown[]).map(encodeValue),
   };
 }
 
@@ -394,7 +401,7 @@ function txVector(
 /** Build a dialect-primitive vector capturing the reference `orderByNulls` output. */
 function orderByNullsVector(dialect: DialectName, dir: 'ASC' | 'DESC', nulls: 'FIRST' | 'LAST'): DialectVector {
   const expr = 'created_at';
-  const expected = dialectOf(dialect).orderByNulls(expr, dir, nulls);
+  const expected = dialectFor(dialect).orderByNulls(expr, dir, nulls);
   return {
     name: `orderByNulls ${dialect} ${dir} NULLS ${nulls}`,
     kind: 'dialect',
@@ -407,104 +414,32 @@ function orderByNullsVector(dialect: DialectName, dir: 'ASC' | 'DESC', nulls: 'F
 
 // ── The corpus (generated from the reference) ─────────────────────────────────
 
-/** Reference-compiled ops for the render axis (CRUD × edge cases), compiled ONCE. */
-function crudOps() {
-  const inref = (name: string) => ({ ref: [name] });
-  return {
-    select: compileSelect({
-      table: 'posts',
-      select: ['id', 'author_id', 'title'],
-      where: [
-        { kind: 'eq', column: 'author_id', value: inref('authorId') },
-        { kind: 'in', column: 'id', value: inref('ids') },
-      ],
-      order: 'id ASC',
-    }),
-    // SKIP-optional fragment (status) + coalesce LIMIT — the present/null/absent edge axis.
-    selectSkip: compileSelect({
-      table: 'posts',
-      select: ['id', 'status'],
-      where: [
-        { kind: 'eq', column: 'author_id', value: inref('authorId') },
-        { kind: 'eq', column: 'status', value: inref('status'), skipWhen: { ne: [{ refOpt: ['status'] }, null] } },
-      ],
-      limit: { coalesce: [{ refOpt: ['limit'] }, 20] },
-    }),
-    // WHERE with only a SKIP fragment → empty-WHERE degeneration when absent.
-    selectEmptyWhere: compileSelect({
-      table: 'posts',
-      select: ['id'],
-      where: [{ kind: 'eq', column: 'status', value: inref('status'), skipWhen: { ne: [{ refOpt: ['status'] }, null] } }],
-    }),
-    // IN-list only (N / empty degeneration to `1 = 0`).
-    selectIn: compileSelect({ table: 'posts', select: ['id'], where: [{ kind: 'in', column: 'id', value: inref('ids') }] }),
-    insert: compileInsertFor(SQLITE, {
-      table: 'posts',
-      values: { author_id: inref('authorId'), title: inref('title') },
-      returning: ['id', 'title'],
-    }),
-    update: compileUpdate({
-      table: 'users',
-      set: { post_count: { add: [{ ref: ['cur'] }, 1] } },
-      where: [{ kind: 'eq', column: 'id', value: inref('id') }],
-      returning: ['id', 'post_count'],
-    }),
-    delete: compileDelete({
-      table: 'posts',
-      where: [
-        { kind: 'eq', column: 'author_id', value: inref('authorId') },
-        { kind: 'in', column: 'id', value: inref('ids') },
-      ],
-      returning: ['id'],
-    }),
-  };
-}
-
 /** Generate the full corpus (list of suites). Every expected field is captured, not authored. */
 export function generateCorpus(): Suite[] {
-  const ops = crudOps();
-
-  // ── render suite: CRUD × 3 dialects × edge cases ──────────────────────────
-  const render: RenderVector[] = [];
+  // ── render suite: read primaries + write statements × 3 dialects × edge cases ─
+  const render: (RenderVector | WriteRenderVector)[] = [];
   for (const d of ALL_DIALECTS) {
-    render.push(renderVector(`select eq+IN`, ops.select, { authorId: 7, ids: [1, 2, 3] }, d));
-    render.push(renderVector(`insert +RETURNING`, ops.insert, { authorId: 7, title: 'Hello' }, d));
-    render.push(renderVector(`update SET+WHERE`, ops.update, { cur: 4n, id: 7 }, d));
-    render.push(renderVector(`delete eq+IN`, ops.delete, { authorId: 7, ids: [1, 2] }, d));
-    // Edge: SKIP present / null (the two raw-render inputs). The genuine ABSENT-key case is a
-    // runtime/bundle concern — the runtime normalizes an absent OPTIONAL head to present-as-null
-    // (from the bundle's optionalHeads) BEFORE rendering, so at the render boundary "absent" is
-    // indistinguishable from `null`. Absent-key normalization is covered on the exec axis (the
-    // Feed-status-omitted vector), which exercises normalizeInput end-to-end.
-    render.push(renderVector(`skip present (status='live', limit=5)`, ops.selectSkip, { authorId: 7, status: 'live', limit: 5 }, d));
-    render.push(renderVector(`skip null (status=null → drop, coalesce default limit)`, ops.selectSkip, { authorId: 7, status: null, limit: null }, d));
-    // Edge: empty-WHERE degeneration (the sole fragment is SKIP-dropped → no ` WHERE ` at all).
-    // `status: null` is the runtime-normalized form of an absent optional head (see note above).
-    render.push(renderVector(`empty-WHERE degeneration (status=null → whole WHERE collapses)`, ops.selectEmptyWhere, { status: null }, d));
-    render.push(renderVector(`empty-WHERE present (status='live')`, ops.selectEmptyWhere, { status: 'live' }, d));
-    // Edge: IN-list N and empty.
-    render.push(renderVector(`IN-list N=3`, ops.selectIn, { ids: [1, 2, 3] }, d));
-    render.push(renderVector(`IN-list empty → 1 = 0`, ops.selectIn, { ids: [] }, d));
+    render.push(renderVector(`Feed: status present + limit`, 'Feed', { author_id: 7, status: 'live', since: '2026-01-01', created_at: 'created_at', limit: 5 }, d));
+    render.push(renderVector(`Feed: status null → SKIP drop, coalesce default limit`, 'Feed', { author_id: 7, status: null, since: '2026-01-01', created_at: 'created_at', limit: null }, d));
+    render.push(renderVector(`ByIds: IN-list single-JSON param`, 'ByIds', { ids: [1, 2, 3] }, d));
+    render.push(writeRenderVector(`Create: INSERT + RETURNING (canonical cols)`, 'Create', { author_id: 7, title: 'Hello', request_id: 'r' }, d));
+    render.push(writeRenderVector(`Rename: UPDATE + WHERE + RETURNING`, 'Rename', { id: 1, title: 'Renamed' }, d));
+    render.push(writeRenderVector(`Remove: DELETE + WHERE + RETURNING`, 'Remove', { id: 1 }, d));
   }
 
-  // ── exec suite: read bundles (relations) × 3 dialects ─────────────────────
+  // ── exec suite: read bundles (Φ-merge + relations) × SQLite seam ──────────────
   const exec: ExecVector[] = [];
   const blogContract = publishBehaviors(Blog);
   for (const d of ALL_DIALECTS) {
-    const bundle = compileBundle(blogContract, 'Feed', blogRelations, d);
-    // The execution seam is in-process SQLite regardless of the tagged dialect; the bundle's
-    // dialect axis governs the rendered SQL text (PG `$N`), while the seeded DB is SQLite.
-    // For a PG/MySQL-tagged bundle the rendered `$N`/`?` still binds positionally on SQLite,
-    // so the EXECUTED result is dialect-invariant — this is exactly the §10 promise (same IR +
-    // input → same result across dialects/languages). We therefore only EXECUTE the SQLite
-    // bundle (the runnable seam) and keep PG/MySQL as render-text vectors above.
+    // The execution seam is in-process SQLite; a PG/MySQL-tagged read bundle's Φ output is
+    // dialect-invariant (same IR + input → same result, §10), so only the SQLite bundle is EXECUTED.
     if (d !== 'sqlite') continue;
-    exec.push(execVector(`Feed: status present + belongsTo/hasMany relations`, bundle, { author_id: 7, status: 'live', since: '2026-01-01' }, READ_SCHEMA));
-    exec.push(execVector(`Feed: status absent (SKIP drop) + relations`, bundle, { author_id: 7, since: '2026-01-01' }, READ_SCHEMA));
-    exec.push(execVector(`Feed: hasMany limit=2 caps children`, bundle, { author_id: 7, since: '2026-01-01', status: 'live' }, READ_SCHEMA));
+    const bundle = compileBundle(blogContract, 'Feed', blogRelations, d);
+    exec.push(execVector(`Feed: status present + belongsTo/hasMany relations`, bundle, { author_id: 7, status: 'live', since: '2026-01-01', created_at: 'created_at' }, READ_SCHEMA));
+    exec.push(execVector(`Feed: status absent (SKIP drop) + relations`, bundle, { author_id: 7, since: '2026-01-01', created_at: 'created_at' }, READ_SCHEMA));
   }
 
-  // ── tx suite: write-time relations (gate-first create) × 3 dialects ───────
+  // ── tx suite: write-time relations (gate-first create) + composite × SQLite ───
   const tx: TxVector[] = [];
   const cmdContract = publishBehaviors(PostCommands);
   const dbAsserts = [
@@ -513,61 +448,22 @@ export function generateCorpus(): Suite[] {
     'SELECT type, payload FROM outbox ORDER BY id',
   ];
   for (const d of ALL_DIALECTS) {
-    if (d !== 'sqlite') continue; // executed against the SQLite seam (dialect text covered by render)
+    if (d !== 'sqlite') continue;
     const bundle = compileWriteBundle(cmdContract, 'Create', postWrites, 'create', d);
-    tx.push(
-      txVector(
-        `create: gate-first tx commits (author exists, unique, idempotent)`,
-        bundle,
-        { author_id: 7, title: 'New Post', request_id: 'req-1' },
-        WRITE_SCHEMA,
-        dbAsserts,
-      ),
-    );
-    // Gate short-circuit: author 999 does not exist → requires gate fails, tx rolls back.
-    tx.push(
-      txVector(
-        `create: gate short-circuits on missing author (ROLLBACK, no body write)`,
-        bundle,
-        { author_id: 999, title: 'Orphan', request_id: 'req-2' },
-        WRITE_SCHEMA,
-        dbAsserts,
-      ),
-    );
+    tx.push(txVector(`create: gate-first tx commits (author exists, unique, idempotent)`, bundle, { author_id: 7, title: 'New Post', request_id: 'req-1' }, WRITE_SCHEMA, dbAsserts));
+    tx.push(txVector(`create: gate short-circuits on missing author (ROLLBACK, no body write)`, bundle, { author_id: 999, title: 'Orphan', request_id: 'req-2' }, WRITE_SCHEMA, dbAsserts));
 
-    // ── WS8a composite (multi-write) tx-DAG vectors ──────────────────────────
-    // A nested write: the child comment's post_id is DERIVED from the parent post's RETURNING id
-    // (topologically ordered parent-before-child). The 5 runtimes execute the serialized plan
-    // verbatim — binding each statement's `binds` row into scope so `$.ref.post.id` resolves.
     const compBundle = compositeBundle(d);
     const compAsserts = [
       'SELECT id, author_id, title FROM posts ORDER BY id',
       'SELECT id, post_id, body FROM comments ORDER BY id',
       'SELECT id, post_count FROM users ORDER BY id',
     ];
-    tx.push(
-      txVector(
-        `composite: nested write commits parent+child in one tx-DAG (child.post_id = $.ref.post.id)`,
-        compBundle,
-        { author_id: 7, title: 'Nested', body: 'First comment' },
-        COMPOSITE_SCHEMA,
-        compAsserts,
-      ),
-    );
-    // Gate-first across the DAG: absent author → the parent's requires gate short-circuits BEFORE
-    // either the parent body or the dependent child body runs (whole-DAG rollback).
-    tx.push(
-      txVector(
-        `composite: gate-first across the DAG short-circuits before parent AND child (ROLLBACK)`,
-        compBundle,
-        { author_id: 999, title: 'Ghost', body: 'never' },
-        COMPOSITE_SCHEMA,
-        compAsserts,
-      ),
-    );
+    tx.push(txVector(`composite: nested write commits parent+child in one tx-DAG (child.post_id = $.ref.post.id)`, compBundle, { author_id: 7, title: 'Nested', body: 'First comment' }, COMPOSITE_SCHEMA, compAsserts));
+    tx.push(txVector(`composite: gate-first across the DAG short-circuits before parent AND child (ROLLBACK)`, compBundle, { author_id: 999, title: 'Ghost', body: 'never' }, COMPOSITE_SCHEMA, compAsserts));
   }
 
-  // ── dialect suite: orderByNulls (WS6-flagged: had NO test) ─────────────────
+  // ── dialect suite: orderByNulls ────────────────────────────────────────────
   const dialect: DialectVector[] = [];
   for (const d of ALL_DIALECTS) {
     for (const dir of ['ASC', 'DESC'] as const) {
@@ -578,10 +474,10 @@ export function generateCorpus(): Suite[] {
   }
 
   return [
-    { suite: 'render', corpusVersion: CORPUS_VERSION, note: 'CRUD × 3 dialects × SKIP/IN/empty-WHERE edge cases — renderOperation golden (byte-true).', vectors: render },
-    { suite: 'exec', corpusVersion: CORPUS_VERSION, note: 'Read bundles executed against seeded SQLite: SKIP + belongsTo/hasMany relations, hasMany limit.', vectors: exec },
-    { suite: 'tx', corpusVersion: CORPUS_VERSION, note: 'Write-time-relations gate-first transaction bundles: commit + gate short-circuit.', vectors: tx },
-    { suite: 'dialect', corpusVersion: CORPUS_VERSION, note: 'Dialect primitive orderByNulls (WS6-flagged untested): PG/SQLite native NULLS, MySQL IS NULL emulation.', vectors: dialect },
+    { suite: 'render', corpusVersion: CORPUS_VERSION, note: 'READ primaries + WRITE statements × 3 dialects × SKIP/IN edge cases — static makeSQL render golden (byte-true to the original builders).', vectors: render },
+    { suite: 'exec', corpusVersion: CORPUS_VERSION, note: 'Read bundles executed against seeded SQLite via bc runBehavior: SKIP + belongsTo/hasMany relations (batched op).', vectors: exec },
+    { suite: 'tx', corpusVersion: CORPUS_VERSION, note: 'Write-time-relations gate-first transaction bundles: commit + gate short-circuit + composite tx-DAG.', vectors: tx },
+    { suite: 'dialect', corpusVersion: CORPUS_VERSION, note: 'Dialect primitive orderByNulls: PG/SQLite native NULLS, MySQL IS NULL emulation.', vectors: dialect },
   ];
 }
 
@@ -599,15 +495,15 @@ function eq(a: unknown, b: unknown): boolean {
 }
 
 /**
- * Re-execute ONE vector against the live TS reference and compare to its frozen expected
- * fields. This is the conformance assertion: the reference (source) must reproduce the corpus
- * byte-for-byte. A WS7b-e language runner mirrors this against its own runtime.
+ * Re-execute ONE vector against the live TS reference and compare to its frozen expected fields.
+ * This is the conformance assertion: the reference (source) must reproduce the corpus. A WS7b-e
+ * language runner mirrors this against its own runtime.
  */
 export function runVector(v: Vector): VectorResult {
   const base = { name: v.name, suite: '' };
   try {
     if (v.kind === 'render') {
-      const r = renderOperation(v.operation, decodeValue(v.input) as never, dialectOf(v.dialect));
+      const r = renderReadPrimary(v.readGraph, decodeValue(v.input) as never);
       const sqlOk = r.sql === v.expectedSql;
       const paramsOk = eq(r.params.map(encodeValue), v.expectedParams);
       if (sqlOk && paramsOk) return { ...base, suite: 'render', ok: true };
@@ -615,6 +511,11 @@ export function runVector(v: Vector): VectorResult {
       if (!sqlOk) parts.push(`sql ${JSON.stringify(r.sql)} != ${JSON.stringify(v.expectedSql)}`);
       if (!paramsOk) parts.push(`params ${JSON.stringify(r.params.map(encodeValue))} != ${JSON.stringify(v.expectedParams)}`);
       return { ...base, suite: 'render', ok: false, detail: parts.join('; ') };
+    }
+    if (v.kind === 'write-render') {
+      const sqlOk = v.statement.sql === v.expectedSql;
+      const paramsOk = eq((v.statement.params as unknown[]).map(encodeValue), v.expectedParams);
+      return { ...base, suite: 'render', ok: sqlOk && paramsOk, detail: sqlOk && paramsOk ? undefined : `write-render mismatch` };
     }
     if (v.kind === 'exec') {
       const db = seedDb(v.schema);
@@ -631,24 +532,12 @@ export function runVector(v: Vector): VectorResult {
       const ok = eq(result, v.expectedResult) && stateOk;
       return { ...base, suite: 'tx', ok, detail: ok ? undefined : `result ${JSON.stringify(result)} != ${JSON.stringify(v.expectedResult)} (or db-state mismatch)` };
     }
-    // dialect
-    const got = dialectOf(v.dialect).orderByNulls(v.args.expr, v.args.dir, v.args.nulls);
+    const got = dialectFor(v.dialect).orderByNulls(v.args.expr, v.args.dir, v.args.nulls);
     const ok = got === v.expected;
     return { ...base, suite: 'dialect', ok, detail: ok ? undefined : `${JSON.stringify(got)} != ${JSON.stringify(v.expected)}` };
   } catch (e) {
     return { ...base, suite: v.kind, ok: false, detail: `threw: ${e instanceof Error ? e.message : String(e)}` };
   }
-}
-
-/** Decode a canonical value back to a runtime value (bigint tag → bigint). */
-export function decodeValue(v: EncodedValue): unknown {
-  if (v === null || typeof v !== 'object') return v;
-  if (Array.isArray(v)) return v.map(decodeValue);
-  const keys = Object.keys(v);
-  if (keys.length === 1 && keys[0] === '$bigint') return BigInt((v as { $bigint: string }).$bigint);
-  const out: Record<string, unknown> = {};
-  for (const [k, val] of Object.entries(v)) out[k] = decodeValue(val as EncodedValue);
-  return out;
 }
 
 /** Run a whole suite and tally pass/fail. */

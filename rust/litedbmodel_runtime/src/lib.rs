@@ -9,19 +9,22 @@
 //! crate re-implements NO generic evaluator and NO SQL generation. The SQL text comes wholly from
 //! the published bundle; the old standalone `litedbmodel.rs` SQL generation is retired.
 //!
-//! Module map (mirrors the Python/PHP ports):
-//!   - [`dialect`] — the `?`→`$N` finalize + orderByNulls dialect strategy (spec §4/§8/§10).
-//!   - [`render`]  — the NORMATIVE fragment-tree render + param assembly (dynamic-expansion spec).
-//!   - [`driver`]  — the synchronous SQL-driver seam (in-proc `rusqlite`; PG/MySQL plug in later).
-//!   - [`errors`]  — SQLite error → structured `SqlFailure` (kind + honored bc Policy Kind).
-//!   - [`value`]   — JSON ⇄ bc `Value` conversion + the `$bigint` conformance codec.
-//!   - [`runtime`] — render → execute → assembly, and the gate-first write transaction.
+//! Module map (mirrors the Python/Go/PHP ports):
+//!   - [`dialect`]       — the `?`→`$N` finalize + orderByNulls dialect strategy (spec §4/§8/§10).
+//!   - [`static_bundle`] — the static makeSQL render/execute (port of `src/scp/makesql/*`); the
+//!     SOLE read/render path (the reduced fragment-tree render is retired).
+//!   - [`driver`]        — the synchronous SQL-driver seam (in-proc `rusqlite`; PG/MySQL later).
+//!   - [`errors`]        — SQLite error → structured `SqlFailure` (kind + honored bc Policy Kind).
+//!   - [`value`]         — JSON ⇄ bc `Value` conversion + the `$bigint` conformance codec.
+//!   - [`runtime`]       — the thin facade dispatching to the read graph executor + the gate-first
+//!     write transaction.
 
 pub mod dialect;
 pub mod driver;
 pub mod errors;
-pub mod render;
+pub mod relation;
 pub mod runtime;
+pub mod static_bundle;
 pub mod value;
 
 /// WS7g (#36) live PostgreSQL / MySQL drivers — behind the `livedb` feature so the default
@@ -30,7 +33,7 @@ pub mod value;
 pub mod livedb;
 
 /// Version mirrored from package.json by scripts/sync-versions.mjs (SSoT).
-pub const VERSION: &str = "2.0.0";
+pub const VERSION: &str = "2.0.1";
 
 // ── public surface (mirrors the Python `__all__`) ──────────────────────────────
 pub use dialect::{dialect_for, to_dollar_placeholders, Dialect};
@@ -38,9 +41,14 @@ pub use driver::{Driver, PreparedStatement, RunInfo, SqliteDriver};
 pub use errors::{map_sqlite_error, re_error_to_sql_failure, SqlFailure};
 #[cfg(feature = "livedb")]
 pub use livedb::{MysqlDriver, PostgresDriver};
-pub use render::{render_operation, RenderedSql, WHERE_SLOT};
+pub use relation::read_bundle_pooled;
 pub use runtime::{
-    execute_bundle, execute_transaction_bundle, order_by_nulls, render_operation_bundle,
-    ENTITY_ROOT, SCOPE_PORT,
+    execute_bundle, execute_bundle_pooled, execute_transaction_bundle, order_by_nulls,
+    render_read_primary_bundle, ENTITY_ROOT,
+};
+pub use static_bundle::{
+    dispatch_read_nodes_parallel, execute_read_graph, execute_read_graph_pooled,
+    render_placeholders, render_read_primary, render_statements, render_tx_op, RenderedSql,
+    NODE_COMPONENT, SCOPE_PORT,
 };
 pub use value::{decode_scope, decode_value, encode_value, Scope};

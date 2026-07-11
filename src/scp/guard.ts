@@ -10,7 +10,9 @@
  */
 
 import { assertPortable, FORBIDDEN_OBJECT_KEY, PORTABLE_EXPR_OPERATORS, PortabilityError, type Component, type ComponentGraphIR } from 'behavior-contracts';
-import type { CompiledOperation, ExprNode, Fragment, FragmentTree } from './ir';
+
+/** A bc Expression IR node (closed operator set). Structural alias — a JSON expression tree. */
+export type ExprNode = unknown;
 
 /**
  * Assert one Expression IR node is portable: no residue (functions/Date/…) and every
@@ -73,25 +75,6 @@ function walkExpr(node: unknown, path: string): void {
   for (const k of keys) walkExpr((node as Record<string, unknown>)[k], `${path}.${k}`);
 }
 
-/** Assert a fragment (and its slots + `when`) emits only portable Expression IR. */
-function assertFragmentPortable(node: Fragment | FragmentTree, path: string): void {
-  if ('connector' in node) {
-    node.fragments.forEach((f, i) => assertFragmentPortable(f, `${path}.fragments[${i}]`));
-    return;
-  }
-  if (node.when !== undefined) assertExprPortable(node.when, `${path}.when`);
-  node.params.forEach((p, i) => assertExprPortable(p, `${path}.params[${i}]`));
-}
-
-/**
- * Assert a whole compiled operation emits only portable Expression IR (static params +
- * fragment tree). Throws {@link PortabilityError} on the first non-portable construct.
- */
-export function assertOperationPortable(op: CompiledOperation): void {
-  op.params.forEach((p, i) => assertExprPortable(p, `$.params[${i}]`));
-  if (op.where !== null) assertFragmentPortable(op.where, '$.where');
-}
-
 // ── Authoring→IR lower guard (WS2, #22 — auto-applied on the single compile path) ─────
 
 /**
@@ -107,17 +90,35 @@ export function assertComponentPortable(component: Component): void {
   for (const n of component.body) {
     if ('map' in n) {
       assertExprPortable(n.map.over, `${at}/${n.id}.map.over`);
-      assertExprPortable(n.map.ports, `${at}/${n.id}.map.ports`);
+      assertPortsPortable(n.map.ports, `${at}/${n.id}.map.ports`);
       if (n.map.when !== undefined) assertExprPortable(n.map.when, `${at}/${n.id}.map.when`);
     } else if ('cond' in n) {
       assertExprPortable(n.cond.if, `${at}/${n.id}.cond.if`);
       assertExprPortable(n.cond.then, `${at}/${n.id}.cond.then`);
       assertExprPortable(n.cond.else, `${at}/${n.id}.cond.else`);
     } else {
-      assertExprPortable(n.ports, `${at}/${n.id}.ports`);
+      assertPortsPortable(n.ports, `${at}/${n.id}.ports`);
     }
   }
   assertExprPortable(component.output, `${at}.output`);
+}
+
+/**
+ * A component node's `ports` (and a `map.ports`) is a FIELD MAP — port NAME → ExprNode — not an
+ * Expression node itself. Walk each port VALUE as an expression, never the ports object as a whole:
+ * a SINGLE-port node (`{ table: 'posts' }`, e.g. a `Count` with only `table`) would otherwise be
+ * misread by {@link walkExpr}'s single-key = OPERATOR heuristic as an unknown-opcode `{table:…}`
+ * node. Recursing the values sidesteps that (same rationale bc's guard applies to `{obj:{…}}`).
+ */
+function assertPortsPortable(ports: unknown, path: string): void {
+  if (ports === null || typeof ports !== 'object' || Array.isArray(ports)) {
+    // Not a ports map (shouldn't happen for a well-formed node) — defer to the expr walker.
+    assertExprPortable(ports as ExprNode, path);
+    return;
+  }
+  for (const [name, value] of Object.entries(ports as Record<string, unknown>)) {
+    assertExprPortable(value as ExprNode, `${path}.${name}`);
+  }
 }
 
 /**

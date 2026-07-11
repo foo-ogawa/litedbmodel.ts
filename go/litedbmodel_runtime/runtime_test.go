@@ -9,20 +9,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// parseOp parses a compiled-operation JSON literal into a *bc.JObj.
-func parseOp(t *testing.T, s string) *bc.JObj {
-	t.Helper()
-	n, err := bc.ParseJSONOrdered([]byte(s))
-	if err != nil {
-		t.Fatalf("parse op: %v", err)
-	}
-	o, ok := n.(*bc.JObj)
-	if !ok {
-		t.Fatalf("op is not an object")
-	}
-	return o
-}
-
 func scope(pairs ...any) *bc.Obj {
 	o := bc.NewObj()
 	for i := 0; i < len(pairs); i += 2 {
@@ -31,72 +17,83 @@ func scope(pairs ...any) *bc.Obj {
 	return o
 }
 
-// ── render: SKIP existence + empty-WHERE degeneration (spec §2/§3) ─────────────
+// statements parses a JSON array of static statement templates into []bc.JNode.
+func statements(t *testing.T, s string) []bc.JNode {
+	t.Helper()
+	n, err := bc.ParseJSONOrdered([]byte(s))
+	if err != nil {
+		t.Fatalf("parse statements: %v", err)
+	}
+	arr, ok := n.([]bc.JNode)
+	if !ok {
+		t.Fatalf("statements is not an array")
+	}
+	return arr
+}
 
-func TestRenderSkipDropsFragmentAndCollapsesWhere(t *testing.T) {
-	op := parseOp(t, `{"component":"Select","sql":"SELECT id FROM posts{where}","where":{"connector":"AND","fragments":[{"sql":"status = ?","params":[{"ref":["status"]}],"when":{"ne":[{"refOpt":["status"]},null]}}]},"params":[],"assembly":{"shape":"items"}}`)
-	d, _ := DialectFor("sqlite")
+// ── render: static makeSQL statements → SQL text + params (SKIP drop, connectors) ──
 
-	// status = null → fragment dropped → whole WHERE collapses (no ` WHERE `).
-	r, err := RenderOperation(op, scope("status", nil), d)
+const feedStatements = `[
+  {"sql":"SELECT id, author_id, status FROM posts","params":[]},
+  {"sql":"author_id = ?","params":[{"ref":["author_id"]}],"whereFragment":true},
+  {"sql":"status = ?","params":[{"ref":["status"]}],"whereFragment":true,"skip":{"not":[{"ne":[{"refOpt":["status"]},null]}]}},
+  {"sql":" ORDER BY id ASC","params":[]},
+  {"sql":" LIMIT ?","params":[{"coalesce":[{"refOpt":["limit"]},20]}]}
+]`
+
+func TestRenderStatementsPresentAndSkip(t *testing.T) {
+	stmts := statements(t, feedStatements)
+
+	// All present: WHERE author_id = ? AND status = ? ORDER BY … LIMIT ?
+	r, err := renderStatements(stmts, "sqlite", scope("author_id", float64(7), "status", "live", "limit", float64(5)))
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if r.SQL != "SELECT id FROM posts" {
-		t.Errorf("empty-WHERE degeneration: got %q", r.SQL)
+	if r.SQL != "SELECT id, author_id, status FROM posts WHERE author_id = ? AND status = ? ORDER BY id ASC LIMIT ?" {
+		t.Errorf("present render: got %q", r.SQL)
 	}
-	if len(r.Params) != 0 {
-		t.Errorf("dropped fragment must push no params, got %v", r.Params)
+	if len(r.Params) != 3 || r.Params[0] != float64(7) || r.Params[1] != "live" || r.Params[2] != float64(5) {
+		t.Errorf("present params: got %v", r.Params)
 	}
 
-	// status present → fragment kept.
-	r2, _ := RenderOperation(op, scope("status", "live"), d)
-	if r2.SQL != "SELECT id FROM posts WHERE status = ?" {
-		t.Errorf("present fragment: got %q", r2.SQL)
+	// status absent (present-as-null) → skip drops it; coalesce defaults limit → 20.
+	r2, _ := renderStatements(stmts, "sqlite", scope("author_id", float64(7), "status", nil, "limit", nil))
+	if r2.SQL != "SELECT id, author_id, status FROM posts WHERE author_id = ? ORDER BY id ASC LIMIT ?" {
+		t.Errorf("skip-drop render: got %q", r2.SQL)
 	}
-	if len(r2.Params) != 1 || r2.Params[0] != "live" {
-		t.Errorf("present fragment param: got %v", r2.Params)
+	if len(r2.Params) != 2 || r2.Params[0] != float64(7) || r2.Params[1] != float64(20) {
+		t.Errorf("skip-drop params (coalesce default): got %v", r2.Params)
 	}
 }
 
-// ── render: IN-list expansion + empty-array `1 = 0` degeneration (spec §5) ─────
-
-func TestRenderInListExpansionAndEmptyDegeneration(t *testing.T) {
-	op := parseOp(t, `{"component":"Select","sql":"SELECT id FROM posts{where}","where":{"connector":"AND","fragments":[{"always":true,"sql":"id IN (?)","params":[{"ref":["ids"]}],"expand":0}]},"params":[],"assembly":{"shape":"items"}}`)
-	d, _ := DialectFor("sqlite")
-
-	r, _ := RenderOperation(op, scope("ids", []bc.Value{int64(1), int64(2), int64(3)}), d)
-	if r.SQL != "SELECT id FROM posts WHERE id IN (?, ?, ?)" {
-		t.Errorf("IN-list N=3: got %q", r.SQL)
-	}
-	if len(r.Params) != 3 {
-		t.Errorf("IN-list N=3 params: got %v", r.Params)
-	}
-
-	r2, _ := RenderOperation(op, scope("ids", []bc.Value{}), d)
-	if r2.SQL != "SELECT id FROM posts WHERE 1 = 0" {
-		t.Errorf("empty IN degeneration: got %q", r2.SQL)
-	}
-	if len(r2.Params) != 0 {
-		t.Errorf("empty IN pushes no params, got %v", r2.Params)
+func TestRenderPostgresDollarPlaceholders(t *testing.T) {
+	stmts := statements(t, feedStatements)
+	r, _ := renderStatements(stmts, "postgres", scope("author_id", float64(7), "status", "live", "limit", float64(5)))
+	if r.SQL != "SELECT id, author_id, status FROM posts WHERE author_id = $1 AND status = $2 ORDER BY id ASC LIMIT $3" {
+		t.Errorf("PG $N: got %q", r.SQL)
 	}
 }
 
-// ── dialect: `?`→`$N` PG one-pass over a fully-assembled statement (spec §8) ───
+func TestRenderInListSingleJsonParam(t *testing.T) {
+	stmts := statements(t, `[
+      {"sql":"SELECT id FROM posts","params":[]},
+      {"sql":"id IN (SELECT value FROM json_each(?))","params":[{"__jsonArray":{"ref":["ids"]},"dialect":"sqlite"}],"whereFragment":true}
+    ]`)
+	r, _ := renderStatements(stmts, "sqlite", scope("ids", []bc.Value{int64(1), int64(2), int64(3)}))
+	if r.SQL != "SELECT id FROM posts WHERE id IN (SELECT value FROM json_each(?))" {
+		t.Errorf("IN-list SQL: got %q", r.SQL)
+	}
+	if len(r.Params) != 1 || r.Params[0] != "[1,2,3]" {
+		t.Errorf("IN-list single JSON param: got %v", r.Params)
+	}
+}
 
-func TestPostgresDollarPlaceholderFinalPass(t *testing.T) {
-	op := parseOp(t, `{"component":"Update","sql":"UPDATE users SET post_count = ?{where} RETURNING id","where":{"connector":"AND","fragments":[{"always":true,"sql":"id = ?","params":[{"ref":["id"]}]}]},"params":[{"add":[{"ref":["cur"]},1]}],"assembly":{"shape":"items"}}`)
-	pg, _ := DialectFor("postgres")
-	r, err := RenderOperation(op, scope("cur", int64(4), "id", int64(7)), pg)
-	if err != nil {
-		t.Fatalf("render: %v", err)
+func TestRenderPlaceholdersQuoteAware(t *testing.T) {
+	if got := renderPlaceholders("SELECT '?' AS q WHERE a = ?", "postgres"); got != "SELECT '?' AS q WHERE a = $1" {
+		t.Errorf("quote-aware PG: got %q", got)
 	}
-	if r.SQL != "UPDATE users SET post_count = $1 WHERE id = $2 RETURNING id" {
-		t.Errorf("PG $N one-pass: got %q", r.SQL)
-	}
-	// bc arithmetic: add(4,1) → int64(5); the WHERE key is int64(7).
-	if len(r.Params) != 2 || r.Params[0] != int64(5) || r.Params[1] != int64(7) {
-		t.Errorf("PG params: got %v", r.Params)
+	if got := renderPlaceholders("a = ? AND b = ?", "sqlite"); got != "a = ? AND b = ?" {
+		t.Errorf("sqlite untouched: got %q", got)
 	}
 }
 
@@ -116,9 +113,15 @@ func TestUnknownDialectFailsClosed(t *testing.T) {
 	}
 }
 
-// ── executeBundle: end-to-end read via bc RunBehavior + real SQLite ───────────
+// ── executeBundle: end-to-end read via bc RunBehavior + a makeSQL handler + real SQLite ──
 
-const feedBundle = `{"irVersion":1,"exprVersion":2,"dialect":"sqlite","component":{"body":[{"component":"Select","id":"n0","ports":{"__scope":{"obj":{"author_id":{"ref":["author_id"]},"status":{"ref":["status"]},"since":{"ref":["since"]},"limit":{"ref":["limit"]}}}}}],"inputPorts":{"author_id":{"required":true},"since":{"required":true},"status":{"required":true},"limit":{"required":true}},"name":"Feed","output":{"ref":["n0"]},"plan":{"concurrency":16,"groups":[[0]]}},"operations":{"n0":{"component":"Select","sql":"SELECT id, author_id, status FROM posts{where} ORDER BY id ASC LIMIT ?","where":{"connector":"AND","fragments":[{"always":true,"sql":"author_id = ?","params":[{"ref":["author_id"]}]},{"sql":"status = ?","params":[{"ref":["status"]}],"when":{"ne":[{"refOpt":["status"]},null]}}]},"params":[{"coalesce":[{"refOpt":["limit"]},20]}],"assembly":{"shape":"items"}}},"optionalHeads":["status","limit"],"relations":{}}`
+const feedReadBundle = `{"dialect":"sqlite","name":"Feed","optionalHeads":["status","limit"],"relations":{},"readGraph":{"dialect":"sqlite","name":"Feed","optionalHeads":["status","limit"],"statementsById":{"n0":[
+  {"sql":"SELECT id, author_id, status FROM posts","params":[]},
+  {"sql":"author_id = ?","params":[{"ref":["author_id"]}],"whereFragment":true},
+  {"sql":"status = ?","params":[{"ref":["status"]}],"whereFragment":true,"skip":{"not":[{"ne":[{"refOpt":["status"]},null]}]}},
+  {"sql":" ORDER BY id ASC","params":[]},
+  {"sql":" LIMIT ?","params":[{"coalesce":[{"refOpt":["limit"]},20]}]}
+]},"ir":{"irVersion":1,"exprVersion":2,"components":[{"name":"Feed","inputPorts":{"author_id":{"required":true},"status":{"required":true},"limit":{"required":true}},"body":[{"id":"n0","component":"__makeSqlNode","ports":{"__scope":{"obj":{"author_id":{"ref":["author_id"]},"status":{"ref":["status"]},"limit":{"ref":["limit"]}}}}}],"output":{"ref":["n0"]},"plan":{"concurrency":16,"groups":[[0]]}}]}}}`
 
 func seedFeed(t *testing.T) *sql.DB {
 	t.Helper()
@@ -126,13 +129,12 @@ func seedFeed(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	stmts := []string{
+	for _, s := range []string{
 		`CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, status TEXT)`,
 		`INSERT INTO posts VALUES (1, 7, 'live')`,
 		`INSERT INTO posts VALUES (2, 7, 'draft')`,
 		`INSERT INTO posts VALUES (3, 8, 'live')`,
-	}
-	for _, s := range stmts {
+	} {
 		if _, err := db.Exec(s); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
@@ -141,21 +143,19 @@ func seedFeed(t *testing.T) *sql.DB {
 }
 
 func TestExecuteBundleStatusPresentAndAbsent(t *testing.T) {
-	bundle, err := ParseBundle([]byte(feedBundle))
+	bundle, err := ParseBundle([]byte(feedReadBundle))
 	if err != nil {
 		t.Fatalf("parse bundle: %v", err)
 	}
 	db := seedFeed(t)
 	defer db.Close()
 
-	// status present → SKIP fragment kept; only the 'live' post of author 7.
-	got := EncodeConformanceJSON(mustRun(t, bundle, scope("author_id", float64(7), "status", "live", "since", "x"), db))
+	got := EncodeConformanceJSON(mustRun(t, bundle, scope("author_id", float64(7), "status", "live"), db))
 	if got != `[{"id":1,"author_id":7,"status":"live"}]` {
 		t.Errorf("status present: got %s", got)
 	}
 
-	// status absent → normalizeInput fills status=null (optionalHeads) → fragment dropped → both posts.
-	got2 := EncodeConformanceJSON(mustRun(t, bundle, scope("author_id", float64(7), "since", "x"), db))
+	got2 := EncodeConformanceJSON(mustRun(t, bundle, scope("author_id", float64(7)), db))
 	if got2 != `[{"id":1,"author_id":7,"status":"live"},{"id":2,"author_id":7,"status":"draft"}]` {
 		t.Errorf("status absent (SKIP drop): got %s", got2)
 	}
@@ -172,17 +172,20 @@ func mustRun(t *testing.T, b *SqlBundle, input *bc.Obj, db SQLDB) bc.Value {
 
 // ── executeTransactionBundle: gate-first commit + short-circuit (spec §6) ─────
 
-const txBundle = `{"irVersion":1,"exprVersion":2,"dialect":"sqlite","component":{"body":[],"inputPorts":{},"name":"Create","output":null},"operations":{},"optionalHeads":[],"relations":{},"transaction":{"phase":"create","entityFrom":"tx_body_1","onIdempotentHit":"rollback","statements":[{"id":"tx_requires_0","role":"gate:requires","gate":"existsElseRollback","label":"requires users","op":{"component":"Select","sql":"SELECT 1 FROM users WHERE id = ?","where":null,"params":[{"ref":["author_id"]}],"assembly":{"shape":"items"}}},{"id":"tx_body_1","role":"body","label":"body","op":{"component":"Insert","sql":"INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id","where":null,"params":[{"ref":["author_id"]},{"ref":["title"]}],"assembly":{"shape":"items"}}},{"id":"tx_derive_2","role":"derive","label":"derive","op":{"component":"Update","sql":"UPDATE users SET post_count = post_count + ?{where}","where":{"connector":"AND","fragments":[{"always":true,"sql":"id = ?","params":[{"ref":["author_id"]}]}]},"params":[1],"assembly":{"shape":"items"}}}]}}`
+const txBundle = `{"dialect":"sqlite","name":"Create","optionalHeads":[],"relations":{},"transaction":{"phase":"create","entityFrom":"tx_body_1","onIdempotentHit":"rollback","statements":[
+  {"id":"tx_requires_0","role":"gate:requires","gate":"existsElseRollback","label":"requires users","op":{"sql":"SELECT 1 FROM users WHERE id = ?","params":[{"ref":["author_id"]}]}},
+  {"id":"tx_body_1","role":"body","label":"body","op":{"sql":"INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id","params":[{"ref":["author_id"]},{"ref":["title"]}]}},
+  {"id":"tx_derive_2","role":"derive","label":"derive","op":{"sql":"UPDATE users SET post_count = post_count + ? WHERE id = ?","params":[1,{"ref":["author_id"]}]}}
+]}}`
 
 func seedTx(t *testing.T) *sql.DB {
 	t.Helper()
 	db, _ := sql.Open("sqlite", ":memory:")
-	stmts := []string{
+	for _, s := range []string{
 		`CREATE TABLE users (id INTEGER PRIMARY KEY, post_count INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, author_id INTEGER NOT NULL, title TEXT NOT NULL)`,
 		`INSERT INTO users (id, post_count) VALUES (7, 2)`,
-	}
-	for _, s := range stmts {
+	} {
 		if _, err := db.Exec(s); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
@@ -208,7 +211,6 @@ func TestExecuteTransactionCommit(t *testing.T) {
 	if len(res.Executed) != 3 {
 		t.Errorf("all statements execute on commit: got %v", res.Executed)
 	}
-	// derive incremented post_count 2 → 3.
 	var pc int64
 	if err := db.QueryRow(`SELECT post_count FROM users WHERE id = 7`).Scan(&pc); err != nil {
 		t.Fatalf("verify: %v", err)
@@ -223,7 +225,6 @@ func TestExecuteTransactionGateShortCircuit(t *testing.T) {
 	db := seedTx(t)
 	defer db.Close()
 
-	// author 999 does not exist → requires gate fails → ROLLBACK, tail never runs.
 	res, err := ExecuteTransactionBundle(bundle, scope("author_id", float64(999), "title", "Orphan"), db)
 	if err != nil {
 		t.Fatalf("tx: %v", err)
@@ -237,13 +238,11 @@ func TestExecuteTransactionGateShortCircuit(t *testing.T) {
 	if len(res.Executed) != 1 || res.Executed[0] != "tx_requires_0" {
 		t.Errorf("gate-first: only the requires gate runs, got %v", res.Executed)
 	}
-	// No body write happened.
 	var n int64
 	db.QueryRow(`SELECT COUNT(*) FROM posts`).Scan(&n)
 	if n != 0 {
 		t.Errorf("gate-first: no body write, but posts has %d rows", n)
 	}
-	// post_count unchanged (derive never ran).
 	var pc int64
 	db.QueryRow(`SELECT post_count FROM users WHERE id = 7`).Scan(&pc)
 	if pc != 2 {
@@ -254,14 +253,12 @@ func TestExecuteTransactionGateShortCircuit(t *testing.T) {
 // ── conformance value codec round-trip ────────────────────────────────────────
 
 func TestConformanceCodec(t *testing.T) {
-	// int64 → $bigint; whole float64 → plain integer.
 	if got := EncodeConformanceJSON(int64(5)); got != `{"$bigint":"5"}` {
 		t.Errorf("int64 encode: got %s", got)
 	}
 	if got := EncodeConformanceJSON(float64(7)); got != `7` {
 		t.Errorf("whole float encode: got %s", got)
 	}
-	// $bigint tag decodes to int64; bare integer decodes to float64 (a JS number).
 	n, _ := bc.ParseJSONOrdered([]byte(`{"$bigint":"4"}`))
 	v, _ := DecodeConformanceValue(n)
 	if v != int64(4) {
@@ -271,47 +268,5 @@ func TestConformanceCodec(t *testing.T) {
 	v2, _ := DecodeConformanceValue(n2)
 	if v2 != float64(7) {
 		t.Errorf("bare-int decode: got %T %v", v2, v2)
-	}
-}
-
-// ── relation batch: belongsTo single + hasMany list, no N+1 (one query) ───────
-
-func TestRunRelationOpBelongsToAndHasMany(t *testing.T) {
-	db, _ := sql.Open("sqlite", ":memory:")
-	defer db.Close()
-	for _, s := range []string{
-		`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)`,
-		`INSERT INTO users VALUES (7,'Ada'),(8,'Alan')`,
-	} {
-		if _, err := db.Exec(s); err != nil {
-			t.Fatalf("seed: %v", err)
-		}
-	}
-	relObj := parseOp(t, `{"name":"author","kind":"belongsTo","parentKey":"author_id","targetKey":"id","query":{"component":"Select","sql":"SELECT id, name FROM users{where}","where":{"connector":"AND","fragments":[{"always":true,"sql":"id IN (?)","params":[{"ref":["__keys"]}],"expand":0}]},"params":[],"assembly":{"shape":"items"}}}`)
-	op, err := relationOpFromJObj(relObj)
-	if err != nil {
-		t.Fatalf("rel parse: %v", err)
-	}
-	d, _ := DialectFor("sqlite")
-	parents := []*bc.Obj{scope("author_id", float64(7)), scope("author_id", float64(8)), scope("author_id", float64(7))}
-	sqlText, keys, batch, err := runRelationOp(op, parents, db, d)
-	if err != nil {
-		t.Fatalf("runRelationOp: %v", err)
-	}
-	// deduped keys → 2 → one batched IN (?, ?) query (structural no N+1).
-	if sqlText != "SELECT id, name FROM users WHERE id IN (?, ?)" {
-		t.Errorf("batch SQL: got %q", sqlText)
-	}
-	if len(keys) != 2 {
-		t.Errorf("deduped keys: got %v", keys)
-	}
-	// distributeToParent belongsTo → single child.
-	first := distributeToParent(op, parents[0], batch)
-	obj, ok := first.(*bc.Obj)
-	if !ok {
-		t.Fatalf("belongsTo → single object, got %T", first)
-	}
-	if name, _ := obj.Get("name"); name != "Ada" {
-		t.Errorf("author of 7: got %v", name)
 	}
 }

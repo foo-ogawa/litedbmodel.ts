@@ -1,6 +1,6 @@
 [package]
 name = "livedb_runner"
-version = "2.0.0"
+version = "2.0.1"
 edition.workspace = true
 license.workspace = true
 description = "Runs the litedbmodel SCP LIVE-DB corpus (pg+mysql bundles) through the litedbmodel_runtime crate against REAL Postgres + MySQL and prints a JSON summary (WS7g, #36)."
@@ -11,6 +11,7 @@ name = "livedb_runner"
 path = "src/main.rs"
 
 [dependencies]
-# The `livedb` feature pulls in the runtime's synchronous postgres + mysql drivers.
+# The `livedb` feature pulls in the runtime's ASYNC + connection-pool postgres + mysql drivers
+# (tokio-postgres + deadpool-postgres / sqlx on the tokio runtime; #40).
 litedbmodel_runtime = { path = "../litedbmodel_runtime", features = ["livedb"] }
 serde_json = { workspace = true }

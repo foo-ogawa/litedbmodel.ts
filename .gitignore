@@ -51,5 +51,6 @@ php/.phpunit.cache/
 python/**/__pycache__/
 python/*.egg-info/
 python/**/*.egg-info/
+python/build/
 
 

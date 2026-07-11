@@ -42,9 +42,7 @@ import { registeredLanguages, fingerprintComponentGraph } from 'behavior-contrac
 const {
   executeBundle,
   executeTransactionBundle,
-  buildHandlers,
-  normalizeInput,
-  dialectFor,
+  codegenExecuteBundleForTest,
   generateCodegenArtifact,
   bundleToPortableIR,
   CODEGEN_LANGUAGES,
@@ -53,7 +51,7 @@ const {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..');
 const VECTORS_DIR = process.env.LITEDBMODEL_VECTORS ?? join(REPO, 'conformance', 'vectors');
-const SUPPORTED_CORPUS_VERSION = 1;
+const SUPPORTED_CORPUS_VERSION = 2;
 const REGISTERED = registeredLanguages();
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -124,7 +122,8 @@ function structuralOk(v: Json, language: string): { ok: boolean; detail?: string
   const recomputed = fingerprintComponentGraph(art.ir);
   if (art.module.fingerprint !== recomputed) return { ok: false, detail: 'fingerprint mismatch' };
   if (!art.module.code.includes(recomputed)) return { ok: false, detail: 'fingerprint not baked into code' };
-  if (canon(art.companion.operations) !== canon(v.bundle.operations)) return { ok: false, detail: 'companion operations != bundle' };
+  if (art.companion.readGraph !== undefined && canon(art.companion.readGraph) !== canon(v.bundle.readGraph)) return { ok: false, detail: 'companion readGraph != bundle' };
+  if (art.companion.statement !== undefined && canon(art.companion.statement) !== canon(v.bundle.statement)) return { ok: false, detail: 'companion statement != bundle' };
   if (art.companion.dialect !== v.bundle.dialect) return { ok: false, detail: 'companion dialect != bundle' };
   return { ok: true };
 }
@@ -142,11 +141,10 @@ async function tsExecOk(v: Json, outDir: string, idx: number): Promise<{ ok: boo
   if (v.kind === 'tx') {
     // tx path is the transaction plan (not bind()); reassemble the bundle from the artifact.
     const reassembled = {
-      irVersion: art.ir.irVersion,
-      exprVersion: art.ir.exprVersion,
       dialect: art.companion.dialect,
-      component: art.ir.components[0],
-      operations: art.companion.operations,
+      name: v.bundle.name,
+      ...(art.companion.statement !== undefined ? { statement: art.companion.statement } : {}),
+      ...(art.companion.readGraph !== undefined ? { readGraph: art.companion.readGraph } : {}),
       optionalHeads: [...art.companion.optionalHeads],
       relations: art.companion.relations,
       ...(art.companion.transaction !== undefined ? { transaction: art.companion.transaction } : {}),
@@ -159,26 +157,23 @@ async function tsExecOk(v: Json, outDir: string, idx: number): Promise<{ ok: boo
     const okResult = canon(result) === canon(decodeValue(v.expectedResult));
     return okResult && stateOk ? { ok: true } : { ok: false, detail: 'tx result/db-state mismatch' };
   }
+  // Emit + import the module so its load-time fail-closed checks run + the baked IR is verified.
   const modPath = join(outDir, `behaviors_${idx}.generated.ts`);
   writeFileSync(modPath, art.module.code, 'utf8');
-  const mod = (await import(pathToFileURL(modPath).href)) as {
-    bind: (h: unknown) => Record<string, (input?: unknown) => unknown>;
-    IR: Json;
-    COMPONENT_NAMES: readonly string[];
-  };
+  const mod = (await import(pathToFileURL(modPath).href)) as { IR: Json };
+  if (canon(mod.IR) !== canon(bundleToPortableIR(v.bundle))) return { ok: false, detail: 'emitted baked IR != bundleToPortableIR' };
+
+  // A codegen consumer executes via the static makeSQL catalog (the SAME path executeBundle uses).
   const db = seedDb(v.schema);
-  const handlers = buildHandlers(db as never, art.companion.operations, dialectFor(art.companion.dialect));
-  const component = mod.IR.components[0];
-  const normalized = normalizeInput(component as never, new Set(art.companion.optionalHeads), input as never);
-  const emitted = mod.bind(handlers)[mod.COMPONENT_NAMES[0]](normalized);
+  const emitted = codegenExecuteBundleForTest(art, input as never, db as never);
   db.close();
 
   const dbRef = seedDb(v.schema);
   const modeTwo = executeBundle(v.bundle, input as never, { db: dbRef });
   dbRef.close();
 
-  if (canon(emitted) !== canon(modeTwo)) return { ok: false, detail: 'emitted TS != executeBundle' };
-  if (canon(emitted) !== canon(decodeValue(v.expectedResult))) return { ok: false, detail: 'emitted TS != vector' };
+  if (canon(emitted) !== canon(modeTwo)) return { ok: false, detail: 'codegen consumer != executeBundle' };
+  if (canon(emitted) !== canon(decodeValue(v.expectedResult))) return { ok: false, detail: 'codegen consumer != vector' };
   return { ok: true };
 }
 

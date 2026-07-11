@@ -1,15 +1,15 @@
-//! Integration tests for the litedbmodel SCP Rust runtime (WS7e, #34).
+//! Integration tests for the litedbmodel SCP Rust runtime (WS7e, #34; static-makeSQL flip #43/#45).
 //!
-//! These exercise the public surface against small hand-written §8 fixtures and the in-proc
-//! `rusqlite` driver — REAL SQL, not stubs — covering render (SKIP / IN-list / empty-WHERE /
-//! dialect `?`→`$N`), a read bundle end-to-end, and a gate-first write transaction (commit +
-//! short-circuit). The frozen 49-vector corpus is asserted by `rust/vectors_runner`; these are the
-//! crate-local `cargo test` gate on top.
+//! These exercise the public surface against small hand-written static-makeSQL fixtures and the
+//! in-proc `rusqlite` driver — REAL SQL, not stubs — covering the render axis (SKIP-fragment drop /
+//! WHERE-AND connector / IN-list single-JSON param / LIMIT deferral / dialect `?`→`$N`), a read
+//! bundle end-to-end, and a gate-first write transaction (commit + short-circuit). The frozen 36-
+//! vector corpus is asserted by `rust/vectors_runner`; these are the crate-local `cargo test` gate.
 
 use behavior_contracts::{deep_equals, Value};
 use litedbmodel_runtime::{
-    dialect_for, execute_bundle, execute_transaction_bundle, render_operation, Dialect, Driver,
-    SqliteDriver,
+    dialect_for, execute_bundle, execute_transaction_bundle, render_placeholders,
+    render_read_primary, render_statements, Driver, SqliteDriver,
 };
 use serde_json::json;
 
@@ -28,84 +28,120 @@ fn assert_val(got: Option<&Value>, want: &Value) {
     }
 }
 
+/// The canonical Feed read node's static statement templates (SELECT + WHERE + LIMIT).
+fn feed_statements() -> Vec<serde_json::Value> {
+    vec![
+        json!({"sql": "SELECT id, author_id, title, status FROM posts", "params": []}),
+        json!({"sql": "author_id = ?", "params": [{"ref": ["author_id"]}], "whereFragment": true}),
+        json!({
+            "sql": "status = ?",
+            "params": [{"ref": ["status"]}],
+            "whereFragment": true,
+            "skip": {"not": [{"ne": [{"refOpt": ["status"]}, null]}]}
+        }),
+        json!({"sql": " ORDER BY id ASC", "params": []}),
+        json!({"sql": " LIMIT ?", "params": [{"coalesce": [{"refOpt": ["limit"]}, 20]}]}),
+    ]
+}
+
 #[test]
-fn render_eq_and_in_list_expands() {
-    let op = json!({
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where} ORDER BY id ASC",
-        "where": {
-            "connector": "AND",
-            "fragments": [
-                {"always": true, "sql": "author_id = ?", "params": [{"ref": ["authorId"]}]},
-                {"always": true, "sql": "id IN (?)", "params": [{"ref": ["ids"]}], "expand": 0}
-            ]
-        },
-        "params": []
-    });
+fn render_all_fragments_present() {
     let s = scope(&[
-        ("authorId", Value::Int(7)),
-        (
-            "ids",
-            Value::Arr(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
-        ),
+        ("author_id", Value::Int(7)),
+        ("status", Value::Str("live".into())),
+        ("limit", Value::Int(5)),
     ]);
-    let r = render_operation(&op, &s, Dialect::Sqlite).unwrap();
+    let r = render_statements(&feed_statements(), "sqlite", &s).unwrap();
     assert_eq!(
         r.sql,
-        "SELECT id FROM posts WHERE author_id = ? AND id IN (?, ?, ?) ORDER BY id ASC"
+        "SELECT id, author_id, title, status FROM posts WHERE author_id = ? AND status = ? ORDER BY id ASC LIMIT ?"
     );
-    assert_eq!(r.params.len(), 4);
+    assert_eq!(r.params.len(), 3);
 }
 
 #[test]
-fn render_empty_in_list_degenerates() {
-    let op = json!({
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {"connector": "AND", "fragments": [
-            {"always": true, "sql": "id IN (?)", "params": [{"ref": ["ids"]}], "expand": 0}
-        ]},
-        "params": []
-    });
-    let s = scope(&[("ids", Value::Arr(vec![]))]);
-    let r = render_operation(&op, &s, Dialect::Sqlite).unwrap();
-    assert_eq!(r.sql, "SELECT id FROM posts WHERE 1 = 0");
-    assert!(r.params.is_empty());
-}
-
-#[test]
-fn render_skip_null_collapses_whole_where() {
-    let op = json!({
-        "component": "Select",
-        "sql": "SELECT id FROM posts{where}",
-        "where": {"connector": "AND", "fragments": [
-            {"when": {"ne": [{"refOpt": ["status"]}, null]}, "sql": "status = ?", "params": [{"ref": ["status"]}]}
-        ]},
-        "params": []
-    });
-    let s = scope(&[("status", Value::Null)]);
-    let r = render_operation(&op, &s, Dialect::Sqlite).unwrap();
-    assert_eq!(r.sql, "SELECT id FROM posts");
-    assert!(r.params.is_empty());
+fn render_skip_drops_status_and_defaults_limit() {
+    // status absent (present-as-null) → skip drops the fragment; coalesce defaults the limit.
+    let s = scope(&[
+        ("author_id", Value::Int(7)),
+        ("status", Value::Null),
+        ("limit", Value::Null),
+    ]);
+    let r = render_statements(&feed_statements(), "sqlite", &s).unwrap();
+    assert_eq!(
+        r.sql,
+        "SELECT id, author_id, title, status FROM posts WHERE author_id = ? ORDER BY id ASC LIMIT ?"
+    );
+    assert_eq!(r.params.len(), 2);
+    assert!(deep_equals(&r.params[1], &Value::Int(20)));
 }
 
 #[test]
 fn render_postgres_dollar_placeholders() {
-    let op = json!({
-        "component": "Select",
-        "sql": "SELECT id FROM posts WHERE author_id = ? AND title = ?",
-        "where": null,
-        "params": [{"ref": ["authorId"]}, {"ref": ["title"]}]
-    });
     let s = scope(&[
-        ("authorId", Value::Int(7)),
-        ("title", Value::Str("x".into())),
+        ("author_id", Value::Int(7)),
+        ("status", Value::Str("live".into())),
+        ("limit", Value::Int(5)),
     ]);
-    let r = render_operation(&op, &s, Dialect::Postgres).unwrap();
+    let r = render_statements(&feed_statements(), "postgres", &s).unwrap();
     assert_eq!(
         r.sql,
-        "SELECT id FROM posts WHERE author_id = $1 AND title = $2"
+        "SELECT id, author_id, title, status FROM posts WHERE author_id = $1 AND status = $2 ORDER BY id ASC LIMIT $3"
     );
+}
+
+#[test]
+fn render_in_list_single_json_param_sqlite() {
+    let stmts = vec![
+        json!({"sql": "SELECT id FROM posts", "params": []}),
+        json!({
+            "sql": "id IN (SELECT value FROM json_each(?))",
+            "params": [{"__jsonArray": {"ref": ["ids"]}, "dialect": "sqlite"}],
+            "whereFragment": true
+        }),
+    ];
+    let s = scope(&[(
+        "ids",
+        Value::Arr(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+    )]);
+    let r = render_statements(&stmts, "sqlite", &s).unwrap();
+    assert_eq!(
+        r.sql,
+        "SELECT id FROM posts WHERE id IN (SELECT value FROM json_each(?))"
+    );
+    assert_eq!(r.params.len(), 1);
+    assert!(deep_equals(&r.params[0], &Value::Str("[1,2,3]".into()))); // single JSON param
+}
+
+#[test]
+fn render_placeholder_rewrite_quote_aware() {
+    // A `?` inside a string literal is NOT a placeholder (mirrors TS renderPlaceholders).
+    assert_eq!(
+        render_placeholders("SELECT '?' AS q WHERE a = ?", "postgres"),
+        "SELECT '?' AS q WHERE a = $1"
+    );
+    assert_eq!(
+        render_placeholders("a = ? AND b = ?", "sqlite"),
+        "a = ? AND b = ?"
+    );
+}
+
+#[test]
+fn render_read_primary_picks_first_body_node() {
+    let graph = json!({
+        "dialect": "sqlite",
+        "name": "Feed",
+        "statementsById": {"n0": feed_statements()},
+        "optionalHeads": ["status", "limit"],
+        "ir": {"irVersion": 1, "exprVersion": 2, "components": [{"name": "Feed", "body": [{"id": "n0"}]}]}
+    });
+    // status + limit omitted → normalized present-as-null → skip drop + coalesce default.
+    let r = render_read_primary(&graph, &scope(&[("author_id", Value::Int(7))])).unwrap();
+    assert_eq!(
+        r.sql,
+        "SELECT id, author_id, title, status FROM posts WHERE author_id = ? ORDER BY id ASC LIMIT ?"
+    );
+    assert_eq!(r.params.len(), 2);
 }
 
 #[test]
@@ -138,35 +174,48 @@ fn dialect_for_unknown_fails_closed() {
 #[test]
 fn execute_read_bundle_end_to_end() {
     let schema = vec![
-        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT)".to_string(),
-        "INSERT INTO posts (id, author_id, title) VALUES (1, 7, 'Hello')".to_string(),
-        "INSERT INTO posts (id, author_id, title) VALUES (2, 7, 'World')".to_string(),
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT, status TEXT)"
+            .to_string(),
+        "INSERT INTO posts (id, author_id, title, status) VALUES (1, 7, 'Hello', 'live')"
+            .to_string(),
+        "INSERT INTO posts (id, author_id, title, status) VALUES (2, 7, 'World', 'live')"
+            .to_string(),
     ];
     let driver = SqliteDriver::in_memory(&schema).unwrap();
+    // A single-node static-makeSQL read bundle: bc drives the surrogate `__makeSqlNode` node, the
+    // makeSQL handler renders its statements + executes REAL SQL, Φ maps the rows to `posts`.
     let bundle = json!({
-        "irVersion": 1,
-        "exprVersion": 2,
         "dialect": "sqlite",
-        "component": {
+        "name": "Feed",
+        "readGraph": {
+            "dialect": "sqlite",
             "name": "Feed",
-            "inputPorts": {"author_id": {"required": true, "type": "unknown"}},
-            "body": [
-                {"component": "Select", "id": "n0", "ports": {"__scope": {"obj": {"author_id": {"ref": ["author_id"]}}}}}
-            ],
-            "output": {"obj": {"posts": {"ref": ["n0"]}}},
-            "plan": {"concurrency": 1, "groups": [[0]]}
+            "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [{
+                    "name": "Feed",
+                    "inputPorts": {"author_id": {"required": true, "type": "unknown"}},
+                    "body": [{
+                        "component": "__makeSqlNode",
+                        "id": "n0",
+                        "ports": {"__scope": {"obj": {"author_id": {"ref": ["author_id"]}}}}
+                    }],
+                    "output": {"obj": {"posts": {"ref": ["n0"]}}},
+                    "plan": {"concurrency": 1, "groups": [[0]]}
+                }]
+            },
+            "statementsById": {
+                "n0": [
+                    {"sql": "SELECT id, author_id, title FROM posts", "params": []},
+                    {"sql": "author_id = ?", "params": [{"ref": ["author_id"]}], "whereFragment": true},
+                    {"sql": " ORDER BY id ASC", "params": []}
+                ]
+            },
+            "optionalHeads": []
         },
-        "operations": {
-            "n0": {
-                "component": "Select",
-                "sql": "SELECT id, author_id, title FROM posts{where} ORDER BY id ASC",
-                "where": {"connector": "AND", "fragments": [
-                    {"always": true, "sql": "author_id = ?", "params": [{"ref": ["author_id"]}]}
-                ]},
-                "params": []
-            }
-        },
-        "optionalHeads": []
+        "optionalHeads": [],
+        "relations": {}
     });
     let out = execute_bundle(&bundle, &json!({"author_id": 7}), &driver).unwrap();
     let posts = out.obj_get("posts").expect("posts key");
@@ -178,29 +227,21 @@ fn execute_read_bundle_end_to_end() {
 
 fn write_bundle() -> serde_json::Value {
     json!({
-        "irVersion": 1,
-        "exprVersion": 2,
         "dialect": "sqlite",
-        "component": {
-            "name": "Create",
-            "inputPorts": {"author_id": {"required": true}, "title": {"required": true}},
-            "body": [{"component": "Insert", "id": "n0", "ports": {"__scope": {"obj": {}}}}],
-            "output": {"ref": ["n0"]},
-            "plan": {"concurrency": 1, "groups": [[0]]}
-        },
-        "operations": {},
+        "name": "Create",
         "optionalHeads": [],
+        "relations": {},
         "transaction": {
             "phase": "create",
             "entityFrom": "tx_body_1",
             "statements": [
                 {
                     "id": "tx_requires_0", "role": "gate:requires", "gate": "existsElseRollback",
-                    "op": {"component": "Select", "sql": "SELECT 1 FROM users WHERE id = ?", "where": null, "params": [{"ref": ["author_id"]}]}
+                    "op": {"sql": "SELECT 1 FROM users WHERE id = ?", "params": [{"ref": ["author_id"]}]}
                 },
                 {
                     "id": "tx_body_1", "role": "body",
-                    "op": {"component": "Insert", "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title", "where": null, "params": [{"ref": ["author_id"]}, {"ref": ["title"]}]}
+                    "op": {"sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title", "params": [{"ref": ["author_id"]}, {"ref": ["title"]}]}
                 }
             ]
         }

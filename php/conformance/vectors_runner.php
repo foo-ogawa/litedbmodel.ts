@@ -29,6 +29,7 @@ declare(strict_types=1);
  */
 
 $root = dirname(__DIR__, 2); // php/conformance -> php -> repo root
+require $root . '/php/src/BehaviorContracts/Constants.php';
 require $root . '/php/src/BehaviorContracts/ExprFailure.php';
 require $root . '/php/src/BehaviorContracts/ExprEval.php';
 require $root . '/php/src/BehaviorContracts/PlanFailure.php';
@@ -36,15 +37,15 @@ require $root . '/php/src/BehaviorContracts/Plan.php';
 require $root . '/php/src/BehaviorContracts/BehaviorFailure.php';
 require $root . '/php/src/BehaviorContracts/Behavior.php';
 require $root . '/php/src/Dialect.php';
-require $root . '/php/src/Render.php';
 require $root . '/php/src/SqlFailure.php';
+require $root . '/php/src/StaticBundle.php';
 require $root . '/php/src/WriteRuntime.php';
 require $root . '/php/src/Runtime.php';
 
 use LiteDbModel\Runtime\Runtime;
 
 /** The corpus schema version this runner supports (pin — bumped on additive refreeze). */
-const SUPPORTED_CORPUS_VERSION = 1;
+const SUPPORTED_CORPUS_VERSION = 2;
 
 $vectorsDir = getenv('LITEDBMODEL_VECTORS');
 if ($vectorsDir === false || $vectorsDir === '') {
@@ -152,8 +153,10 @@ function runVector(\stdClass $v): array
     try {
         $kind = (string) ($v->kind ?? '');
         if ($kind === 'render') {
+            // Render the PRIMARY read node's static makeSQL statements of the ReadGraph → dialect
+            // SQL + flat params, asserted byte-identical to the reference-captured golden.
             $scope = inputToScope(decodeValue($v->input));
-            $r = Runtime::renderOperation($v->operation, $scope, (string) $v->dialect);
+            $r = Runtime::renderReadPrimary($v->readGraph, $scope);
             $sqlOk = $r['sql'] === (string) $v->expectedSql;
             $expectedParams = is_array($v->expectedParams) ? $v->expectedParams : [];
             $paramsOk = valuesEqual($r['params'], $expectedParams);
@@ -168,6 +171,18 @@ function runVector(\stdClass $v): array
                 $parts[] = 'params ' . json_encode($r['params']) . ' != ' . json_encode($expectedParams);
             }
             return ['ok' => false, 'detail' => implode('; ', $parts)];
+        }
+        if ($kind === 'write-render') {
+            // A write statement's compiled makeSQL template is asserted byte-identical to golden
+            // (the deferred Expression-IR params are NOT evaluated here — they resolve at tx time).
+            $stmt = $v->statement;
+            $sqlOk = (string) ($stmt->sql ?? '') === (string) $v->expectedSql;
+            $expectedParams = is_array($v->expectedParams) ? $v->expectedParams : [];
+            $actualParams = is_array($stmt->params ?? null) ? $stmt->params : [];
+            $paramsOk = valuesEqual($actualParams, $expectedParams);
+            return $sqlOk && $paramsOk
+                ? ['ok' => true]
+                : ['ok' => false, 'detail' => 'write-render mismatch'];
         }
         if ($kind === 'exec') {
             $schema = is_array($v->schema) ? $v->schema : [];

@@ -44,6 +44,7 @@ import { classifyBehaviorEffect, type Catalog, type CatalogEntry, type Component
  */
 export type CatalogName =
   | 'Select'
+  | 'Count'
   | 'Insert'
   | 'Update'
   | 'Delete'
@@ -71,6 +72,21 @@ const SELECT_PORTS: Record<string, PortSchema> = {
   limit: P('expr'),
   offset: P('expr'),
   group: P('string'),
+  // Additive read-tail/head ports (V0 R3/R4/R5/R6). SQL is v1-sourced from the matching
+  // `SelectDesc` fields via `compileSelect` (`_buildSelectSQL`), wired in `compileSelectNode`:
+  //  - `forUpdate` (R3): a literal `'true'` string toggles the ` FOR UPDATE` tail.
+  //  - `join`/`joinParams` (R5): a literal JOIN clause text (`JOIN t ON …`) + its bound
+  //    value-specs (`expr[]`), spliced after `FROM <t>` (v1 `_buildSelectSQL` JOIN position).
+  //  - `cte`/`cteParams` (R4): a WITH-CTE `{name, sql}` literal + its bound value-specs,
+  //    prefixed as `WITH <name> AS (<sql>) ` (v1 WITH-wrap). `cteParams` bind FIRST (v1 param
+  //    order: CTE → JOIN → WHERE).
+  //  - `append` (R6): a raw trailing clause text (e.g. `HAVING …`) appended verbatim.
+  forUpdate: P('string'),
+  join: P('string'),
+  joinParams: P('expr[]'),
+  cte: P('map'),
+  cteParams: P('expr[]'),
+  append: P('string'),
 };
 
 /**
@@ -86,6 +102,12 @@ const WRITE_PORTS: Record<string, PortSchema> = {
   returning: P('string'),
   onConflict: P('string'),
   onConflictAction: P('string'),
+  // PRIMARY KEY descriptor for the MySQL RETURNING emulation (INSERT…RETURNING): `pk` is a
+  // comma-separated PK column list, `autoInc` names the single AUTO_INCREMENT column (absent for a
+  // client-supplied PK). Consumed by compileWriteNode → mysqlPkHint so the emulation re-selects by
+  // the REAL PK. Inert on PG/SQLite (native RETURNING).
+  pk: P('string'),
+  autoInc: P('string'),
 };
 
 const entry = (name: CatalogName, inputPorts: Record<string, PortSchema>, shape: string, portableToIR: boolean): CatalogEntry => ({
@@ -110,6 +132,11 @@ export const LITEDBMODEL_CATALOG: Catalog = {
   // Read: `items` (a Select root yields a row list; per-row collapse to `item` is the
   // consumer's cardinality concern, mirrored from graphddb Query's `cardinality` port).
   Select: entry('Select', { ...SELECT_PORTS, cardinality: P('string') }, 'items', true),
+  // COUNT(*) aggregate read (v1 `DBModel._count`): `SELECT COUNT(*) as count FROM t[ WHERE …]`.
+  // Only `table` (required) + the optional `where` fragment tree — v1's count carries no
+  // projection/order/limit/offset (it counts the filtered rows). Output is a one-row `[{count}]`
+  // list (the `items` shape, like every read); the consumer reads `count` — v1's `parseInt(count)`.
+  Count: entry('Count', { table: P('string', true), where: P('fragment') }, 'items', true),
   // Writes yield the RETURNING row list (`items`); a single-row write collapses at the
   // consumer boundary, same as reads.
   Insert: entry('Insert', WRITE_PORTS, 'items', true),
@@ -135,6 +162,7 @@ export function catalogEntry(name: string): CatalogEntry | undefined {
 /** The catalog names litedbmodel declares (the C2 per-DSL surface). */
 export const CATALOG_NAMES: readonly CatalogName[] = [
   'Select',
+  'Count',
   'Insert',
   'Update',
   'Delete',

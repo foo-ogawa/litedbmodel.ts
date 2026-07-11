@@ -9,9 +9,11 @@ namespace LiteDbModel\Runtime;
  * WS7d #33; spec §6 / §3 / §11).
  *
  * Executes a derived `TransactionPlan` (pure JSON, from the §8 bundle) against REAL SQL (PDO) as
- * ONE transaction with gate-first short-circuit (spec §6). It renders each ordered statement with
- * the SAME normative {@link Render::renderOperation} the read path uses, and drives an explicit
- * `BEGIN` / `COMMIT` / `ROLLBACK` envelope through PDO. Semantics-identical to the TS reference.
+ * ONE transaction with gate-first short-circuit (spec §6). It renders each ordered statement's
+ * static makeSQL op with the SAME {@link StaticBundle::renderTxOp} assemble/render the read path
+ * uses (evaluate deferred Expression-IR params → assemble → dialect placeholders), and drives an
+ * explicit `BEGIN` / `COMMIT` / `ROLLBACK` envelope through PDO. Semantics-identical to the TS
+ * reference (`src/scp/makesql/tx.ts`).
  *
  *   BEGIN;
  *     for each ordered statement:
@@ -39,6 +41,18 @@ final class WriteRuntime
     {
         $statements = is_array($plan->statements ?? null) ? $plan->statements : [];
         $entityFrom = $plan->entityFrom ?? null;
+
+        // Batch mode (createMany/updateMany/deleteMany): gate-free, ref-free plan (entityFrom null,
+        // every statement a plain body) — accumulate each body statement's RETURNING rows in order.
+        $isBatch = $entityFrom === null;
+        foreach ($statements as $s) {
+            if ($s instanceof \stdClass && (($s->gate ?? null) !== null || ($s->binds ?? null) !== null || ($s->role ?? '') !== 'body')) {
+                $isBatch = false;
+                break;
+            }
+        }
+        /** @var list<list<array<string,mixed>>> $returnedRows */
+        $returnedRows = [];
 
         $db->exec('BEGIN');
         /** @var list<string> $executed */
@@ -89,13 +103,21 @@ final class WriteRuntime
                         $scope[$binds] = $row;
                     }
                 }
+
+                if ($isBatch && ($stmt->role ?? '') === 'body' && count($result['rows']) > 0) {
+                    $returnedRows[] = array_map([self::class, 'entityToArray'], $result['rows']);
+                }
             }
             $db->exec('COMMIT');
-            return [
+            $out = [
                 'committed' => true,
                 'entity' => self::entityToArray($entity),
                 'executed' => $executed,
             ];
+            if (count($returnedRows) > 0) {
+                $out['returnedRows'] = $returnedRows;
+            }
+            return $out;
         } catch (SqlFailure $e) {
             self::bestEffortRollback($db);
             throw $e;
@@ -118,10 +140,12 @@ final class WriteRuntime
     private static function runOne(\PDO $db, \stdClass $stmt, array $scope, array &$executed, Dialect $dialect): array
     {
         $op = $stmt->op;
-        $rendered = Render::renderOperation($op, $scope, $dialect);
-        $params = array_map([self::class, 'toDriverParam'], $rendered['params']);
-        $component = (string) ($op->component ?? '');
-        $hasReturn = $component === 'Select' || preg_match('/\breturning\b/i', $rendered['sql']) === 1;
+        $rendered = StaticBundle::renderTxOp($op, $scope, $dialect->name);
+        $params = array_map(fn ($p) => self::toDriverParam($p, $dialect->name), $rendered['params']);
+        $sql = $rendered['sql'];
+        // A returning statement (SELECT-prefixed gate/derive, or RETURNING body) yields rows;
+        // a plain write yields an affected-row count (mirrors TS execStatement hasReturn).
+        $hasReturn = preg_match('/^\s*select\b/i', $sql) === 1 || preg_match('/\breturning\b/i', $sql) === 1;
 
         $pdoStmt = $db->prepare($rendered['sql']);
         $pdoStmt->execute(array_values($params));
@@ -156,13 +180,19 @@ final class WriteRuntime
      * directly). An emit payload (`{obj:{…}}`) evaluates to stdClass → serialize to the outbox
      * JSON text column. Booleans → 1/0. Mirrors write-runtime.ts `toDriverParam`.
      */
-    private static function toDriverParam(mixed $v): mixed
+    private static function toDriverParam(mixed $v, string $dialect = 'sqlite'): mixed
     {
         if (is_bool($v)) {
             return $v ? 1 : 0;
         }
         if ($v instanceof \stdClass) {
             return json_encode($v, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        }
+        // A batch write (createMany/updateMany) on PG binds a native array to one `$N` (UNNEST /
+        // `= ANY`). PDO_pgsql cannot bind a PHP array — convert it to the PG `{…}` array-literal text
+        // (the SAME conversion the relation-batch read path uses, StaticBundle::pgArrayLiteral).
+        if (is_array($v)) {
+            return $dialect === 'postgres' ? StaticBundle::pgArrayLiteral($v) : json_encode($v, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         }
         return $v;
     }

@@ -97,16 +97,21 @@ class PostSearch extends SemanticBehavior {
 describe('WS3 §8 bundle — round-trip from serialized JSON executes with bc-core alone', () => {
   const contract = publishBehaviors(PostSearch);
 
-  it('the compiled bundle is the §8 shape: sql + fragment tree + Expression-IR param slots', () => {
+  it('the compiled bundle is the §8 STATIC makeSQL shape: statement templates + Expression-IR value-specs', () => {
     const bundle = compileBundle(contract, 'Feed');
-    const op = bundle.operations.n0;
-    expect(op.sql).toBe('SELECT id, author_id, title, status FROM posts{where} ORDER BY id ASC LIMIT ?');
-    // Fragment tree with existence rule (SKIP → when-guarded), NOT a boolean.
-    const frags = op.where!.fragments as Array<{ when?: unknown; sql: string }>;
-    expect(frags[1].sql).toBe('status = ?');
-    expect(frags[1].when).toEqual({ ne: [{ refOpt: ['status'] }, null] });
-    // The LIMIT param slot is preserved as Expression IR (bc-core evaluates it per language).
-    expect(op.params).toEqual([{ coalesce: [{ refOpt: ['limit'] }, 20] }]);
+    // A read bundle carries a portable read graph: per-node static makeSQL statement templates.
+    const stmts = bundle.readGraph!.statementsById.n0;
+    // Head statement is the value-independent SELECT text (no {where} splice marker — the
+    // WHERE connectors are resolved at runtime from the present set).
+    expect(stmts[0].sql).toBe('SELECT id, author_id, title, status FROM posts');
+    // A WHERE fragment carries a bare predicate body + `whereFragment` flag; the SKIP-optional
+    // status fragment carries a bc presence `skip` expression (NOT a fragment-tree `when`).
+    const statusFrag = stmts.find((s) => s.sql === 'status = ?')!;
+    expect(statusFrag.whereFragment).toBe(true);
+    expect(statusFrag.skip).toEqual({ not: [{ ne: [{ refOpt: ['status'] }, null] }] });
+    // The LIMIT statement's value-spec stays as bc Expression IR (evaluated per-input/per-language).
+    const limitStmt = stmts.find((s) => s.sql === ' LIMIT ?')!;
+    expect(limitStmt.params).toEqual([{ coalesce: [{ refOpt: ['limit'] }, 20] }]);
   });
 
   it('serialized → JSON.parse → executeBundle == direct executeBehavior (present)', () => {
@@ -239,7 +244,7 @@ describe('WS3 FIX 1 — INSERT column order: SCP == real v2 DBModel (canonical, 
     // land on the same canonical column order.
     const contract = publishBehaviors(CreateParityPost);
     const bundle = compileBundle(contract, 'Create');
-    const scpSql = bundle.operations.n0.sql;
+    const scpSql = bundle.statement!.sql;
 
     // Byte-for-byte identity (the un-faked assertion, genuinely exercising the divergence).
     expect(scpSql).toBe(v2Sql);

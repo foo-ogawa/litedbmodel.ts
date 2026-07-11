@@ -1,19 +1,22 @@
-"""Runtime unit tests (WS7b, #31): execute_bundle / execute_transaction_bundle end-to-end.
+"""Runtime unit tests (epic #43/#45): execute_bundle / execute_transaction_bundle end-to-end.
 
-These exercise the SQL-backend runtime against a REAL in-proc sqlite3 driver, independent of the
-frozen corpus, to prove:
-  - read bundle → bc run_behavior (plan/map/wire/output) + SQL handlers → assembled Φ output;
+These exercise the static-makeSQL SQL-backend runtime against a REAL in-proc sqlite3 driver,
+independent of the frozen corpus, to prove:
+  - read bundle → bc run_behavior (plan/map/wire/output) + a makeSQL handler → assembled Φ output;
   - write bundle → gate-first transaction (commit; requires short-circuit ROLLBACK; idempotent
     duplicate short-circuit) with `$.entity` RETURNING exposure + emit-payload JSON serialization;
   - bc-core is CONSUMED (the surrogate `__scope` port is evaluated by bc, the map orchestration is
     bc's) — not reimplemented.
+
+The bundle is the LOCKED static-makeSQL shape: a read carries a `readGraph` (a bc surrogate
+`ComponentGraphIR` of `__makeSqlNode` nodes + per-node STATIC `{sql, params, skip?, whereFragment?}`
+statement templates); a write carries a `transaction` plan of `{sql, params}` makeSQL ops.
 """
 
 from __future__ import annotations
 
 from litedbmodel_runtime import execute_bundle, execute_transaction_bundle
 from litedbmodel_runtime.driver import SqliteDriver
-
 
 # ── A minimal read bundle: one Select + a per-row map Select (mirrors the Feed shape) ──
 
@@ -25,55 +28,65 @@ READ_SCHEMA = [
     "INSERT INTO users VALUES (7, 'Ada')",
 ]
 
+_N0_STATEMENTS = [
+    {"sql": "SELECT id, author_id, title, status FROM posts", "params": []},
+    {"sql": "author_id = ?", "params": [{"ref": ["author_id"]}], "whereFragment": True},
+    {
+        "sql": "status = ?",
+        "params": [{"ref": ["status"]}],
+        "whereFragment": True,
+        "skip": {"not": [{"ne": [{"refOpt": ["status"]}, None]}]},
+    },
+    {"sql": " ORDER BY id ASC", "params": []},
+]
+
+_N1_STATEMENTS = [
+    {"sql": "SELECT id, name FROM users", "params": []},
+    {"sql": "id = ?", "params": [{"ref": ["$e0", "author_id"]}], "whereFragment": True},
+]
+
 
 def _read_bundle():
     return {
-        "irVersion": 1,
-        "exprVersion": 1,
         "dialect": "sqlite",
+        "name": "Feed",
+        "readGraph": {
+            "dialect": "sqlite",
+            "name": "Feed",
+            "statementsById": {"n0": _N0_STATEMENTS, "n1": _N1_STATEMENTS},
+            "optionalHeads": ["status"],
+            "ir": {
+                "irVersion": 1,
+                "exprVersion": 2,
+                "components": [
+                    {
+                        "name": "Feed",
+                        "inputPorts": {"author_id": {"required": True}, "status": {"required": True}},
+                        "body": [
+                            {
+                                "id": "n0",
+                                "component": "__makeSqlNode",
+                                "ports": {"__scope": {"obj": {"author_id": {"ref": ["author_id"]}, "status": {"ref": ["status"]}}}},
+                            },
+                            {
+                                "id": "n1",
+                                "map": {
+                                    "over": {"ref": ["n0"]},
+                                    "as": "$e0",
+                                    "component": "__makeSqlNode",
+                                    "parent": "n0",
+                                    "ports": {"__scope": {"obj": {"$e0": {"ref": ["$e0"]}}}},
+                                },
+                            },
+                        ],
+                        "output": {"obj": {"posts": {"ref": ["n0"]}, "authors": {"ref": ["n1"]}}},
+                        "plan": {"concurrency": 16, "groups": [[0], [1]]},
+                    }
+                ],
+            },
+        },
         "optionalHeads": ["status"],
         "relations": {},
-        "operations": {
-            "n0": {
-                "component": "Select",
-                "sql": "SELECT id, author_id, title, status FROM posts{where} ORDER BY id ASC",
-                "where": {
-                    "connector": "AND",
-                    "fragments": [
-                        {"always": True, "sql": "author_id = ?", "params": [{"ref": ["author_id"]}]},
-                        {"when": {"ne": [{"refOpt": ["status"]}, None]}, "sql": "status = ?", "params": [{"ref": ["status"]}]},
-                    ],
-                },
-                "params": [],
-                "assembly": {"shape": "items"},
-            },
-            "n1": {
-                "component": "Select",
-                "sql": "SELECT id, name FROM users{where}",
-                "where": {"connector": "AND", "fragments": [{"always": True, "sql": "id = ?", "params": [{"ref": ["$e0", "author_id"]}]}]},
-                "params": [],
-                "assembly": {"shape": "items"},
-            },
-        },
-        "component": {
-            "name": "Feed",
-            "inputPorts": {"author_id": {"required": True}, "status": {"required": True}},
-            "body": [
-                {"id": "n0", "component": "Select", "ports": {"__scope": {"obj": {"author_id": {"ref": ["author_id"]}, "status": {"ref": ["status"]}}}}},
-                {
-                    "id": "n1",
-                    "map": {
-                        "over": {"ref": ["n0"]},
-                        "as": "$e0",
-                        "component": "Select",
-                        "parent": "n0",
-                        "ports": {"__scope": {"obj": {"$e0": {"ref": ["$e0"]}}}},
-                    },
-                },
-            ],
-            "output": {"obj": {"posts": {"ref": ["n0"]}, "authors": {"ref": ["n1"]}}},
-            "plan": {"concurrency": 16, "groups": [[0], [1]]},
-        },
     }
 
 
@@ -112,22 +125,20 @@ WRITE_SCHEMA = [
 
 def _write_bundle():
     return {
-        "irVersion": 1,
-        "exprVersion": 1,
         "dialect": "sqlite",
+        "name": "Create",
         "optionalHeads": [],
         "relations": {},
-        "operations": {},
-        "component": {"name": "Create", "inputPorts": {}, "body": [], "output": {"obj": {}}},
         "transaction": {
             "phase": "create",
             "entityFrom": "tx_body_2",
+            "onIdempotentHit": "rollback",
             "statements": [
-                {"id": "tx_requires_0", "gate": "existsElseRollback", "op": {"component": "Select", "sql": "SELECT 1 FROM users WHERE id = ?", "where": None, "params": [{"ref": ["author_id"]}], "assembly": {"shape": "items"}}},
-                {"id": "tx_idem_1", "gate": "insertedElseNoop", "op": {"component": "Insert", "sql": "INSERT INTO idem (token) VALUES (?) ON CONFLICT DO NOTHING", "where": None, "params": [{"ref": ["request_id"]}], "assembly": {"shape": "items"}}},
-                {"id": "tx_body_2", "op": {"component": "Insert", "sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title", "where": None, "params": [{"ref": ["author_id"]}, {"ref": ["title"]}], "assembly": {"shape": "items"}}},
-                {"id": "tx_derive_3", "op": {"component": "Update", "sql": "UPDATE users SET post_count = post_count + ?{where}", "where": {"connector": "AND", "fragments": [{"always": True, "sql": "id = ?", "params": [{"ref": ["author_id"]}]}]}, "params": [1], "assembly": {"shape": "items"}}},
-                {"id": "tx_emit_4", "op": {"component": "Insert", "sql": "INSERT INTO outbox (type, payload) VALUES (?, ?)", "where": None, "params": ["PostCreated", {"obj": {"postId": {"ref": ["__entity", "id"]}, "userId": {"ref": ["author_id"]}}}], "assembly": {"shape": "items"}}},
+                {"id": "tx_requires_0", "role": "gate:requires", "gate": "existsElseRollback", "label": "requires users", "op": {"sql": "SELECT 1 FROM users WHERE id = ?", "params": [{"ref": ["author_id"]}]}},
+                {"id": "tx_idem_1", "role": "gate:idempotency", "gate": "insertedElseNoop", "label": "idempotency idem", "op": {"sql": "INSERT INTO idem (token) VALUES (?) ON CONFLICT DO NOTHING", "params": [{"ref": ["request_id"]}]}},
+                {"id": "tx_body_2", "role": "body", "label": "Insert", "op": {"sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title", "params": [{"ref": ["author_id"]}, {"ref": ["title"]}]}},
+                {"id": "tx_derive_3", "role": "derive", "label": "derive users.post_count", "op": {"sql": "UPDATE users SET post_count = post_count + ? WHERE id = ?", "params": [1, {"ref": ["author_id"]}]}},
+                {"id": "tx_emit_4", "role": "emit", "label": "emit PostCreated", "op": {"sql": "INSERT INTO outbox (type, payload) VALUES (?, ?)", "params": ["PostCreated", {"obj": {"postId": {"ref": ["__entity", "id"]}, "userId": {"ref": ["author_id"]}}}]}},
             ],
         },
     }

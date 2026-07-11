@@ -31,8 +31,8 @@ import {
   executeTransactionBundle,
   executeTransaction,
   countingDriver,
-  renderOperation,
-  compileNode,
+  renderTxStatement,
+  compileWriteNode,
   type In,
   type SqlBundle,
 } from '../../src/scp';
@@ -137,7 +137,7 @@ function compositeEntries(withGates: boolean) {
  * ref would be written directly; the compileNode bridge lowers `$.ref.post.id` → {ref:['post','id']}.)
  */
 function childBodyWithParentRef() {
-  return compileNode(
+  return compileWriteNode(
     {
       id: 'c',
       component: 'Insert',
@@ -156,7 +156,7 @@ function childBodyWithParentRef() {
 describe('WS8a — composite write derives to a topologically-ordered gate-first tx DAG', () => {
   it('nested write: child (post_id = $.ref.post.id) is ordered AFTER parent — derived from the dep graph', () => {
     // Two named base writes: parent post + child comment (post_id from $.ref.post.id).
-    const parentOp = compileNode(
+    const parentOp = compileWriteNode(
       { id: 'p', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' } } as never,
     );
     const plan = deriveTransactionPlan(
@@ -184,7 +184,7 @@ describe('WS8a — composite write derives to a topologically-ordered gate-first
     db.exec('DELETE FROM post_tags');
 
     const bases = [
-      { op: compileNode({ id: 'p', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' } } as never), label: 'Insert post', name: 'post', effects: { requires: [{ kind: 'requires' as const, table: 'users', keys: { id: '$.input.author_id' } }], derive: [{ kind: 'derive' as const, table: 'users', keys: { id: '$.input.author_id' }, attribute: 'post_count', amount: 1 }] } },
+      { op: compileWriteNode({ id: 'p', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' } } as never), label: 'Insert post', name: 'post', effects: { requires: [{ kind: 'requires' as const, table: 'users', keys: { id: '$.input.author_id' } }], derive: [{ kind: 'derive' as const, table: 'users', keys: { id: '$.input.author_id' }, attribute: 'post_count', amount: 1 }] } },
       { op: childBodyWithParentRef(), label: 'Insert comment', name: 'comment', effects: {} },
     ];
     const plan = deriveTransactionPlan('create', bases, { effects: {} });
@@ -208,7 +208,7 @@ describe('WS8a — DAG determinism (stable topo order, byte-identical ordered SQ
     deriveTransactionPlan(
       'create',
       [
-        { op: compileNode({ id: 'p', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'Insert post', name: 'post', effects: { requires: [{ kind: 'requires', table: 'users', keys: { id: '$.input.author_id' } }], derive: [{ kind: 'derive', table: 'users', keys: { id: '$.input.author_id' }, attribute: 'post_count', amount: 1 }] } },
+        { op: compileWriteNode({ id: 'p', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'Insert post', name: 'post', effects: { requires: [{ kind: 'requires', table: 'users', keys: { id: '$.input.author_id' } }], derive: [{ kind: 'derive', table: 'users', keys: { id: '$.input.author_id' }, attribute: 'post_count', amount: 1 }] } },
         { op: childBodyWithParentRef(), label: 'Insert comment', name: 'comment', effects: { emits: [{ kind: 'emit', name: 'CommentAdded', outboxTable: 'outbox', payload: { commentId: '$.ref.comment.id', postId: '$.ref.post.id' } }] } },
       ],
       { effects: {} },
@@ -223,13 +223,13 @@ describe('WS8a — DAG determinism (stable topo order, byte-identical ordered SQ
   it('golden: the derived ordered SQL group is exactly the topological order', () => {
     const plan = buildPlan();
     const scope = { author_id: 7, title: 'T', body: 'B', post: { id: 5 }, comment: { id: 9 } };
-    const sql = plan.statements.map((s) => renderOperation(s.op, scope).sql);
+    const sql = plan.statements.map((s) => renderTxStatement(s.op, scope).sql);
     // requires gate → parent body → parent derive → child body → child emit (topo + gate-first).
     expect(sql).toEqual([
       'SELECT 1 FROM users WHERE id = ?',
       'INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id',
       'UPDATE users SET post_count = post_count + ? WHERE id = ?',
-      'INSERT INTO comments (post_id, body) VALUES (?, ?) RETURNING id, post_id, body',
+      'INSERT INTO comments (body, post_id) VALUES (?, ?) RETURNING id, post_id, body',
       'INSERT INTO outbox (type, payload) VALUES (?, ?)',
     ]);
     expect(plan.statements.map((s) => s.role)).toEqual(['gate:requires', 'body', 'derive', 'body', 'emit']);
@@ -243,7 +243,7 @@ describe('WS8a — gate-first across the DAG (a gate short-circuits ALL dependen
     const db = freshDb();
     const { db: counting, prepared } = countingDriver(db);
     const bases = [
-      { op: compileNode({ id: 'p', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'Insert post', name: 'post', effects: { requires: [{ kind: 'requires' as const, table: 'users', keys: { id: '$.input.author_id' } }] } },
+      { op: compileWriteNode({ id: 'p', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'Insert post', name: 'post', effects: { requires: [{ kind: 'requires' as const, table: 'users', keys: { id: '$.input.author_id' } }] } },
       { op: childBodyWithParentRef(), label: 'Insert comment', name: 'comment', effects: {} },
     ];
     const plan = deriveTransactionPlan('create', bases, { effects: {} });
@@ -265,11 +265,11 @@ describe('WS8a — gate-first across the DAG (a gate short-circuits ALL dependen
     const db = freshDb();
     // Child op that inserts a comment with an INVALID post_id (a literal-ish bad ref) to force a
     // FK violation AFTER the parent body already ran — proving the tx is atomic across the DAG.
-    const badChild = compileNode(
+    const badChild = compileWriteNode(
       { id: 'c', component: 'Insert', ports: { table: 'comments', 'values.post_id': { ref: ['bogus_post_id'] }, 'values.body': { ref: ['body'] }, returning: 'id' } } as never,
     );
     const bases = [
-      { op: compileNode({ id: 'p', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'Insert post', name: 'post', effects: {} },
+      { op: compileWriteNode({ id: 'p', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'Insert post', name: 'post', effects: {} },
       { op: badChild, label: 'Insert comment', name: 'comment', effects: {} },
     ];
     const plan = deriveTransactionPlan('create', bases, { effects: {} });
@@ -314,8 +314,8 @@ describe('WS8a — fail-closed DAG derivation (cycle + dangling ref ESCALATE, no
       deriveTransactionPlan(
         'create',
         [
-          { op: compileNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['b', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'A', name: 'a', effects: {} },
-          { op: compileNode({ id: 'b', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['a', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'B', name: 'b', effects: {} },
+          { op: compileWriteNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['b', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'A', name: 'a', effects: {} },
+          { op: compileWriteNode({ id: 'b', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['a', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'B', name: 'b', effects: {} },
         ],
         { effects: {} },
       );
@@ -327,8 +327,8 @@ describe('WS8a — fail-closed DAG derivation (cycle + dangling ref ESCALATE, no
       deriveTransactionPlan(
         'create',
         [
-          { op: compileNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['nonexistent', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'A', name: 'a', effects: {} },
-          { op: compileNode({ id: 'b', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'B', name: 'b', effects: {} },
+          { op: compileWriteNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['nonexistent', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'A', name: 'a', effects: {} },
+          { op: compileWriteNode({ id: 'b', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'B', name: 'b', effects: {} },
         ],
         { effects: {} },
       );
@@ -340,7 +340,7 @@ describe('WS8a — fail-closed DAG derivation (cycle + dangling ref ESCALATE, no
       deriveTransactionPlan(
         'create',
         [
-          { op: compileNode({ id: 'p', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] } } } as never), label: 'parent no-returning', name: 'post', effects: {} },
+          { op: compileWriteNode({ id: 'p', component: 'Insert', ports: { table: 'posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] } } } as never), label: 'parent no-returning', name: 'post', effects: {} },
           { op: childBodyWithParentRef(), label: 'child', name: 'comment', effects: {} },
         ],
         { effects: {} },
@@ -353,8 +353,8 @@ describe('WS8a — fail-closed DAG derivation (cycle + dangling ref ESCALATE, no
       deriveTransactionPlan(
         'create',
         [
-          { op: compileNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'A', name: 'dup', effects: {} },
-          { op: compileNode({ id: 'b', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'B', name: 'dup', effects: {} },
+          { op: compileWriteNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'A', name: 'dup', effects: {} },
+          { op: compileWriteNode({ id: 'b', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'B', name: 'dup', effects: {} },
         ],
         { effects: {} },
       );
@@ -366,8 +366,8 @@ describe('WS8a — fail-closed DAG derivation (cycle + dangling ref ESCALATE, no
       deriveTransactionPlan(
         'create',
         [
-          { op: compileNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'A', name: 'a', effects: { emits: [{ kind: 'emit', name: 'X', outboxTable: 'outbox', payload: { pid: '$.entity.id' } }] } },
-          { op: compileNode({ id: 'b', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'B', name: 'b', effects: {} },
+          { op: compileWriteNode({ id: 'a', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'A', name: 'a', effects: { emits: [{ kind: 'emit', name: 'X', outboxTable: 'outbox', payload: { pid: '$.entity.id' } }] } },
+          { op: compileWriteNode({ id: 'b', component: 'Insert', ports: { table: 'posts', 'values.title': { ref: ['title'] }, returning: 'id' } } as never), label: 'B', name: 'b', effects: {} },
         ],
         { effects: {} },
       );

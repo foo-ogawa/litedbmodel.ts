@@ -1,6 +1,6 @@
 [package]
 name = "vectors_runner"
-version = "2.0.0"
+version = "2.0.1"
 edition.workspace = true
 license.workspace = true
 description = "Runs the litedbmodel SCP conformance VECTOR corpus through the DEPENDED litedbmodel_runtime crate and prints a JSON summary (WS7d, #30)."
