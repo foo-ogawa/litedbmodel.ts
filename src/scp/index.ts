@@ -48,7 +48,6 @@ export {
   builderFor,
   compileInsert as compileInsertMakeSQL,
   compileUpdateMany,
-  compileFindByPkeys,
   compileUpdateSingle,
   compileDelete as compileDeleteMakeSQL,
   inferPgArrayType,

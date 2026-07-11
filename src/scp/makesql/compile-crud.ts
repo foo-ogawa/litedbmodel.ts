@@ -22,7 +22,6 @@ import type {
   SqlBuilder,
   InsertBuildOptions,
   UpdateManyBuildOptions,
-  FindByPkeysOptions,
 } from '../../drivers/types';
 import type { ConditionObject } from '../../DBConditions';
 import { DBToken, DBImmediateValue, type SqlCastFormatter } from '../../DBValues';
@@ -213,21 +212,6 @@ export function compileUpdateMany(dialect: Dialect, options: UpdateManyBuildOpti
     }
   }
   const { sql, params } = builderFor(dialect).buildUpdateMany(options);
-  return { sql, params };
-}
-
-// ============================================================================
-// findByPkeys (single & composite) — driven by the original `buildFindByPkeys`.
-// ============================================================================
-
-/**
- * Compile findByPkeys to a `makeSQL` bundle: PG single = `= ANY(?::type[])`, PG
- * composite = `(cols) IN (SELECT * FROM UNNEST(?::t[],…))`; MySQL single = `IN (?,…)`,
- * composite = `JOIN (VALUES ROW(…)) AS v(…)`; SQLite single = `IN (?,…)`, composite =
- * `WITH v(cols) AS (VALUES …) … JOIN v ON …`.
- */
-export function compileFindByPkeys(dialect: Dialect, options: FindByPkeysOptions): MakeSQL {
-  const { sql, params } = builderFor(dialect).buildFindByPkeys(options);
   return { sql, params };
 }
 

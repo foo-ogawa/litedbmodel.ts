@@ -49,7 +49,6 @@ export {
   compileInsert,
   compileInsertMany,
   compileUpdateMany,
-  compileFindByPkeys,
   compileUpdateSingle,
   compileDelete,
   compileDeleteMany,
