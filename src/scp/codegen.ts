@@ -67,12 +67,16 @@ export type CodegenLanguage = (typeof CODEGEN_LANGUAGES)[number];
  * IR for sequential shapes). litedbmodel's codegen mode IS static codegen (spec §9), so it MUST
  * use this endpoint.
  */
+// bc 0.3.0: rust/go/ts straight-line は本物 native 脱解釈。**python/php の straight-line は
+// UNSUPPORTED**（bc emit が loud に拒否）— それらは ir/interpret 経路を使うので codegen artifact は
+// LITERAL emitter（IR bake + run_behavior ＝ `≈ ir`）に留める。py/php に static-codegen 加速は無い
+// （honest な非対称。sham ではない）。
 export const STRAIGHTLINE_EMITTER: Record<CodegenLanguage, string> = {
   typescript: 'typescript-straightline',
-  python: 'python-straightline',
   go: 'go-straightline',
   rust: 'rust-straightline',
-  php: 'php-straightline',
+  python: 'python',
+  php: 'php',
 };
 
 /**
