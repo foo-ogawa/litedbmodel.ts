@@ -16,9 +16,9 @@ dependencies = [
 
 [[package]]
 name = "behavior-contracts"
-version = "0.2.5"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b395e186f9783d0342b45bf2545d76abec0361448cf9afa2aaa5e0253736273d"
+checksum = "488f4e0c685c258b916b6230f85028e63e309ca2db543a40fa088e92386f7de8"
 dependencies = [
  "serde_json",
 ]

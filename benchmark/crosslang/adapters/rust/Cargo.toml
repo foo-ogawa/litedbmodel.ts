@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 litedbmodel_runtime = { path = "../../../../rust/litedbmodel_runtime" }
-behavior-contracts = "0.2.3"
+behavior-contracts = "0.3.0"
 serde_json = "1"
 
 [profile.release]
