@@ -31,6 +31,7 @@ import {
   // bundle axis (the §8 STATIC makeSQL artifact + its execution)
   compileBundle,
   compileReadGraph,
+  schemaColumnTypeResolver,
   renderReadPrimary,
   compileWriteBundle,
   compileCompositeWriteBundle,
@@ -434,7 +435,10 @@ export function generateCorpus(): Suite[] {
     // The execution seam is in-process SQLite; a PG/MySQL-tagged read bundle's Φ output is
     // dialect-invariant (same IR + input → same result, §10), so only the SQLite bundle is EXECUTED.
     if (d !== 'sqlite') continue;
-    const bundle = compileBundle(blogContract, 'Feed', blogRelations, d);
+    // Thread the schema/DDL column-type SoT (spec §4.1) so the read bundle's IR carries the
+    // per-node `outType` / component `outputType` typed-codegen annotations — this is what lets bc's
+    // typed-raw de-box emitters (ts/go/rust) materialize concrete row structs in the codegen leg.
+    const bundle = compileBundle(blogContract, 'Feed', blogRelations, d, undefined, schemaColumnTypeResolver(READ_SCHEMA));
     exec.push(execVector(`Feed: status present + belongsTo/hasMany relations`, bundle, { author_id: 7, status: 'live', since: '2026-01-01', created_at: 'created_at' }, READ_SCHEMA));
     exec.push(execVector(`Feed: status absent (SKIP drop) + relations`, bundle, { author_id: 7, since: '2026-01-01', created_at: 'created_at' }, READ_SCHEMA));
   }

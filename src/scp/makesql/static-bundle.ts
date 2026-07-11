@@ -53,6 +53,8 @@ import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
 import { renderPlaceholders, type Dialect } from './handler';
 import { compileWriteNode } from './tx';
 import { assertFindFilterFolded, type FindFilterSource } from '../find-filter-guard';
+import { deriveReadOutTypes } from './outtype';
+import type { ColumnTypeResolver } from '../coltype';
 import { mapSqliteError } from '../errors';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import { dbCast, dbDynamic, dbImmediate, dbTupleIn } from '../../DBValues';
@@ -1023,6 +1025,7 @@ export function compileReadGraph(
   dialect: Dialect,
   entry?: string,
   findFilterModel?: FindFilterSource,
+  resolveColumnType?: ColumnTypeResolver,
 ): ReadGraph {
   const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
   if (component === undefined) throw new Error(`static-bundle: entry component '${entry ?? '<first>'}' not found in contract`);
@@ -1048,15 +1051,28 @@ export function compileReadGraph(
     statementsById[n.id] = compileNodeStatements(n as RefLike, dialect);
   }
 
+  // Typed-codegen `outType`/`outputType` annotations (spec §4.1; #58/#56). Derived from the ORIGINAL
+  // body (real `table`/`select` ports) so bc's typed-raw de-box emitters can materialize concrete
+  // row structs instead of hard-failing ("nothing to de-box"). Only when a column-type resolver (the
+  // schema/DDL SoT) is supplied — without it the read graph stays un-annotated (interpret path only;
+  // typed codegen then fail-closes downstream, never silently boxes). Any ambiguity throws here.
+  const outTypes = resolveColumnType !== undefined ? deriveReadOutTypes(component as never, resolveColumnType) : undefined;
+
   const surrogateBody = component.body.map((n) => {
     if ('cond' in n) return n;
     const stmts = statementsById[n.id];
+    const outType = outTypes?.byNode.get(n.id);
+    const outAnn = outType !== undefined ? { outType } : {};
     if ('map' in n) {
-      return { ...n, map: { ...n.map, component: NODE_COMPONENT, ports: { [SCOPE_PORT]: scopePort(stmts) } } };
+      return { ...n, ...outAnn, map: { ...n.map, component: NODE_COMPONENT, ports: { [SCOPE_PORT]: scopePort(stmts) } } };
     }
-    return { ...n, component: NODE_COMPONENT, ports: { [SCOPE_PORT]: scopePort(stmts) } };
+    return { ...n, ...outAnn, component: NODE_COMPONENT, ports: { [SCOPE_PORT]: scopePort(stmts) } };
   });
-  const surrogate = { ...component, body: surrogateBody } as unknown as BcComponent;
+  const surrogate = {
+    ...component,
+    body: surrogateBody,
+    ...(outTypes !== undefined ? { outputType: outTypes.outputType } : {}),
+  } as unknown as BcComponent;
   const ir: ComponentGraphIR = { irVersion: 1, exprVersion: 2, components: [surrogate] };
 
   return {

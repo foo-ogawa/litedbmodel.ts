@@ -36,7 +36,6 @@ import {
   generateCodegenArtifact,
   bundleToPortableIR,
   codegenExecuteBundleForTest,
-  CODEGEN_LANGUAGES,
   CODEGEN_EMITTER,
   codegenEmitterFor,
   type SqlBundle,
@@ -129,9 +128,16 @@ describe('WS7f codegen — bc shared generator capability', () => {
   });
 });
 
+// The DE-BOX codegen languages (ts/go/rust) over the READ (exec) surface. python/php are the
+// ir/interpret surface (no de-box endpoint — a declared spec choice, not a fallback). A tx (write)
+// bundle's `makeSqlComponentIR` is opaque/untyped and NOT de-boxable by the go/rust raw ABI, so
+// writes are not part of the per-language de-box surface here (the tx codegen companion-plan is
+// covered by the TS-only test below; write execution is proven in the mode-2 thin-runtime leg).
+const DEBOX_LANGS = ['typescript', 'go', 'rust'] as const;
+
 describe('WS7f codegen — per-language STRAIGHT-LINE (de-interpreted) source from the §8 STATIC makeSQL bundle', () => {
-  for (const v of [...EXEC_VECTORS, ...TX_VECTORS]) {
-    for (const language of CODEGEN_LANGUAGES) {
+  for (const v of EXEC_VECTORS) {
+    for (const language of DEBOX_LANGS) {
       it(`${language}: emits de-interpreted static code (fingerprint, NO embedded IR) + static SQL catalog — ${v.name}`, () => {
         const art = generateCodegenArtifact(v.bundle, language, REGISTERED);
         expect(art.language).toBe(language);

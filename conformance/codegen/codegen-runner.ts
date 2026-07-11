@@ -48,8 +48,15 @@ const {
   codegenExecuteBundleForTest,
   generateCodegenArtifact,
   bundleToPortableIR,
-  CODEGEN_LANGUAGES,
+  CODEGEN_EMITTER,
 } = lm;
+
+// The codegen languages litedbmodel drives through bc's DE-BOX typed endpoint (ts/go/rust). This is
+// the SPEC'd codegen surface (spec §9 / §4.1): python/php are the ir/INTERPRET surface — bc registers
+// NO de-box typed endpoint for them, so they are NOT codegen languages (a DECLARED choice, not a
+// fallback). The de-box emitter map (`CODEGEN_EMITTER`) IS that authority, so we derive the set from
+// it rather than the broader "supported target" `CODEGEN_LANGUAGES` (which still lists py/php).
+const DEBOX_LANGS = Object.keys(CODEGEN_EMITTER as Record<string, string>);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..');
@@ -196,41 +203,10 @@ async function tsExecOk(v: Json, outDir: string, idx: number): Promise<{ ok: boo
   return { ok: true };
 }
 
-// ── Python real execution: shell to the Python executor (imports emitted module) ──
-function pyExecOk(v: Json, outDir: string, idx: number): { ok: boolean; detail?: string } {
-  const art = generateCodegenArtifact(v.bundle, 'python', REGISTERED);
-  const modPath = join(outDir, `behaviors_${idx}.generated.py`);
-  writeFileSync(modPath, art.module.code, 'utf8');
-  const job = {
-    modulePath: modPath,
-    companion: JSON.parse(JSON.stringify(art.companion)),
-    input: v.input,
-    schema: v.schema,
-    expectedResult: v.expectedResult,
-    kind: v.kind,
-    expectedDbState: v.expectedDbState ?? [],
-  };
-  const proc = spawnSync('python3', [join(HERE, 'py_codegen_exec.py'), JSON.stringify(job)], {
-    cwd: REPO,
-    encoding: 'utf-8',
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  if (proc.status !== 0) return { ok: false, detail: `python exec exited ${proc.status}: ${(proc.stderr ?? '').split('\n').slice(-4).join(' | ')}` };
-  const lastLine = (proc.stdout ?? '').trimEnd().split('\n').pop() ?? '';
-  let out: { result: Json; dbState: Json[] };
-  try {
-    out = JSON.parse(lastLine);
-  } catch {
-    return { ok: false, detail: `python produced no JSON: ${lastLine}` };
-  }
-  if (canon(out.result) !== canon(decodeValue(v.expectedResult))) return { ok: false, detail: `python result != vector` };
-  for (const [i, s] of (v.expectedDbState ?? []).entries()) {
-    if (canon(out.dbState[i]?.rows) !== canon(decodeValue(s.rows))) return { ok: false, detail: `python db-state[${i}] mismatch` };
-  }
-  return { ok: true };
-}
+// (Python real-execution codegen check removed: python is the ir/interpret surface, not a de-box
+// codegen language — bc registers no python typed endpoint. `py_codegen_exec.py` is unused here.)
 
-// ── Go/Rust/PHP: the emitted source is parsed/compiled by the native toolchain ──
+// ── Go/Rust: the emitted de-boxed source is parsed/compiled by the native toolchain ──
 interface CompileCheck {
   lang: string;
   ext: string;
@@ -241,16 +217,9 @@ function toolPresent(cmd: string, args: string[]): boolean {
   const p = spawnSync(cmd, args, { encoding: 'utf-8' });
   return p.status === 0 || p.status === 1 || p.error === undefined;
 }
+// go/rust ONLY — the DE-BOX codegen languages (ts is exec-checked above). php is NOT a codegen
+// language (ir/interpret surface, no de-box endpoint), so it is not compile-checked here.
 const COMPILE_CHECKS: CompileCheck[] = [
-  {
-    lang: 'php',
-    ext: 'php',
-    toolAvailable: () => toolPresent('php', ['--version']),
-    check: (path) => {
-      const p = spawnSync('php', ['-l', path], { encoding: 'utf-8' });
-      return p.status === 0 ? { ok: true } : { ok: false, detail: (p.stdout ?? '') + (p.stderr ?? '') };
-    },
-  },
   {
     lang: 'go',
     ext: 'go',
@@ -306,9 +275,10 @@ async function runExecVectors(vectors: Json[], suiteName: string, outDir: string
   const t: Tally = { pass: 0, fail: 0 };
   console.error(`\n${suiteName}.json — ${vectors.length} bundle vectors × codegen`);
   for (const [idx, v] of vectors.entries()) {
-    // 1) structural byte-identity for ALL 5 languages
+    // 1) structural byte-identity for the DE-BOX codegen languages (ts/go/rust). python/php are the
+    //    ir/interpret surface (no de-box endpoint — a declared spec choice), so they are NOT codegen'd.
     let allStructural = true;
-    for (const lang of CODEGEN_LANGUAGES) {
+    for (const lang of DEBOX_LANGS) {
       const r = structuralOk(v, lang);
       if (!r.ok) {
         line(false, `${v.name} [structural:${lang}]`, r.detail);
@@ -317,11 +287,11 @@ async function runExecVectors(vectors: Json[], suiteName: string, outDir: string
       }
     }
     if (allStructural) {
-      line(true, `${v.name} [structural: all 5 langs bake identical IR]`);
+      line(true, `${v.name} [structural: ${DEBOX_LANGS.join('/')} bake identical IR + de-box]`);
       t.pass++;
     }
 
-    // 2) TS real execution
+    // 2) TS real execution (through the emitted typed module + thin handlers)
     try {
       const r = await tsExecOk(v, outDir, idx);
       line(r.ok, `${v.name} [exec:ts emitted module]`, r.detail);
@@ -331,17 +301,7 @@ async function runExecVectors(vectors: Json[], suiteName: string, outDir: string
       t.fail++;
     }
 
-    // 3) Python real execution
-    try {
-      const r = pyExecOk(v, outDir, idx);
-      line(r.ok, `${v.name} [exec:py emitted module]`, r.detail);
-      r.ok ? t.pass++ : t.fail++;
-    } catch (e) {
-      line(false, `${v.name} [exec:py]`, e instanceof Error ? e.message : String(e));
-      t.fail++;
-    }
-
-    // 4) Go/Rust/PHP compile/parse check of the emitted source
+    // 3) Go/Rust compile/parse check of the emitted de-boxed source
     for (const c of COMPILE_CHECKS) {
       if (!c.toolAvailable()) {
         line(true, `${v.name} [compile:${c.lang} SKIPPED — toolchain absent]`);
@@ -374,8 +334,15 @@ async function main(): Promise<void> {
   const tallies: Record<string, Tally> = {};
   try {
     for (const suite of suites) {
-      // Only exec + tx suites carry a full §8 bundle (component + operations) that codegen bakes.
-      const bundleVectors = suite.vectors.filter((v: Json) => v.kind === 'exec' || v.kind === 'tx');
+      // The DE-BOX codegen leg is the READ (exec) surface: a read bundle's IR carries the typed
+      // outType/outputType annotations that bc's typed(-raw) emitters de-box into concrete row
+      // structs. A `tx` (write) bundle's `makeSqlComponentIR` is opaque/untyped — its output is a
+      // heterogeneous summary / dialect-emulated RETURNING that is NOT de-boxable, so it is NOT part
+      // of the codegen-module surface (writes execute through each language's NATIVE transaction
+      // runtime, proven in the mode-2 thin-runtime conformance leg). Skipping tx here is a SCOPING
+      // decision (writes aren't codegen-module cases), NOT a fallback — we never substitute a boxed
+      // literal/interpreter emitter for a read that fails to type.
+      const bundleVectors = suite.vectors.filter((v: Json) => v.kind === 'exec');
       if (bundleVectors.length === 0) continue;
       tallies[suite.suite] = await runExecVectors(bundleVectors, suite.suite, outDir);
     }

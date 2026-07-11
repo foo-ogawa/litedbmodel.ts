@@ -34,6 +34,7 @@ import {
 import { buildResultSet, type ReadOptions } from './typed-object';
 import type { DialectName } from './dialect';
 import type { FindFilterSource } from './find-filter-guard';
+import type { ColumnTypeResolver } from './coltype';
 import {
   compileReadGraph,
   executeReadGraph,
@@ -163,6 +164,7 @@ export function compileBundle(
   relations: readonly RelationDecl[] = [],
   dialectName: DialectName = 'sqlite',
   findFilterModel?: FindFilterSource,
+  resolveColumnType?: ColumnTypeResolver,
 ): SqlBundle {
   const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
   if (component === undefined) throw new Error(`scp runtime: entry component '${entry ?? '<first>'}' not found in contract`);
@@ -187,7 +189,7 @@ export function compileBundle(
     };
   }
 
-  const readGraph = compileReadGraph(contract, dialectName, entry, findFilterModel);
+  const readGraph = compileReadGraph(contract, dialectName, entry, findFilterModel, resolveColumnType);
   return {
     dialect: dialectName,
     name: readGraph.name,

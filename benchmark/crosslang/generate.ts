@@ -45,6 +45,12 @@ import { assertBcVersionsAligned } from './check-versions.js';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..');
 
+// The column-type SoT (spec §4.1): the shared-domain CREATE TABLE DDL, parsed into a
+// `(table, column) → SQL type` resolver. `compileBundle` consults it to derive each read node's
+// `outType`/`outputType` so bc's typed-raw de-box endpoint emits concrete row structs (no dynamic
+// Value boxing) for the READ cases. Unknown/ambiguous columns THROW (no-assume, no-fallback).
+const COLUMN_TYPES = lm.schemaColumnTypeResolver(SCHEMA);
+
 // Languages whose codegen MUST be de-interpreted native code (bc straight-line/typed — no
 // interpreter delegation): `delegatesToRunBehavior` MUST be false. python/php intentionally use
 // the ir/interpret exec surface (bc 0.3.0: their straight-line codegen is UNSUPPORTED), so their
@@ -161,10 +167,12 @@ function buildBundle(
   const rel = READ_RELATION[caseId];
   if (rel) {
     const decl = relForDialect(rel.decl, dialect);
-    const bundle = lm.compileBundle(readsContract, READ_ENTRY[caseId], [decl], dialect);
+    // The schema/DDL (SCHEMA) is the column-type SoT (spec §4.1): it types each read node's SELECT
+    // projection so bc's typed-raw de-box engages (concrete row structs, no dynamic Value boxing).
+    const bundle = lm.compileBundle(readsContract, READ_ENTRY[caseId], [decl], dialect, undefined, COLUMN_TYPES);
     return { bundle, kind: 'relation', entry: READ_ENTRY[caseId], withRelation: rel.withName, relation: decl };
   }
-  const bundle = lm.compileBundle(readsContract, READ_ENTRY[caseId], [], dialect);
+  const bundle = lm.compileBundle(readsContract, READ_ENTRY[caseId], [], dialect, undefined, COLUMN_TYPES);
   return { bundle, kind: 'read', entry: READ_ENTRY[caseId] };
 }
 
@@ -270,6 +278,15 @@ function generateCodegen(
   const sourceByCase: Record<string, string> = {};
   let delegates = false;
   for (const c of cases) {
+    // De-boxed typed codegen (spec §9 / §4.1) is the READ surface: a read node's SELECT projection
+    // is typed (outType/outputType from the schema SoT) so bc's typed-raw emitter materializes
+    // concrete row structs. A WRITE case (batch INSERT / gate-first tx) has a heterogeneous,
+    // NON-de-boxable output (a `{changes,lastInsertRowid}` summary or a dialect-emulated RETURNING),
+    // so it is NOT part of the typed-codegen surface — it executes through each language's NATIVE
+    // transaction runtime (`executeTransactionBundle`), which is the de-interpreted write path, not
+    // the interpreter-boxed one. Skipping it here is a SCOPING decision (writes aren't codegen-module
+    // cases), NOT a fallback: we never substitute a boxed/literal emitter for a read that fails to type.
+    if (c.kind !== 'read' && c.kind !== 'relation') continue;
     // The generator wants the SqlBundle; it derives the portable IR itself. For the TS
     // cell to import the generated module by relative path we pin the runtime import to
     // the installed `behavior-contracts` package (the default emitter import).
@@ -333,17 +350,21 @@ function main(): void {
   // (bc#75 straight-line — `delegatesToRunBehavior=false`). A src/ change that makes the generator
   // fall back to interpreter-transcription (literal-bake + run_behavior) fails CI here. It writes
   // the artifacts to disk (same as a normal run) so a following selfcheck/bench sees fresh output.
+  // The read/relation cases that produced a de-boxed codegen module (writes are not codegen-module
+  // cases — see generateCodegen). Only these have `codegenSources[lang][case]` populated.
+  const codegenCases = dialects.sqlite.cases.filter((c) => codegenSources[CODEGEN_LANGS[0]][c.case] !== undefined);
+
   if (process.argv.includes('--check')) {
     mkdirSync(dirname(OUT), { recursive: true });
     writeFileSync(OUT, body);
     for (const lang of CODEGEN_LANGS) {
-      for (const c of dialects.sqlite.cases) {
+      for (const c of codegenCases) {
         const p = codegenFilePath(lang, c.case);
         mkdirSync(dirname(p), { recursive: true });
         writeFileSync(p, codegenSources[lang][c.case]);
       }
     }
-    for (const c of dialects.sqlite.cases) {
+    for (const c of codegenCases) {
       const pkg = GO_CASE_PKG(c.case);
       const src = codegenSources.go[c.case].replace(/^package\s+behaviors\b/m, `package ${pkg}`);
       const dir = resolve(GO_CGMODS_DIR, c.case);
@@ -365,7 +386,7 @@ function main(): void {
   mkdirSync(dirname(OUT), { recursive: true });
   writeFileSync(OUT, body);
   for (const lang of CODEGEN_LANGS) {
-    for (const c of dialects.sqlite.cases) {
+    for (const c of codegenCases) {
       const p = codegenFilePath(lang, c.case);
       mkdirSync(dirname(p), { recursive: true });
       writeFileSync(p, codegenSources[lang][c.case]);
@@ -374,7 +395,7 @@ function main(): void {
   // Materialize the Go per-case packages INSIDE the go module so the bench can compile+import them.
   // Each is the SAME generated source with only the package clause rewritten `behaviors` -> `cg_<case>`
   // (byte-identical code otherwise — the anti-sham gate checks the flat generated/ copy).
-  for (const c of dialects.sqlite.cases) {
+  for (const c of codegenCases) {
     const pkg = GO_CASE_PKG(c.case);
     const src = codegenSources.go[c.case].replace(/^package\s+behaviors\b/m, `package ${pkg}`);
     const dir = resolve(GO_CGMODS_DIR, c.case);

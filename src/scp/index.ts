@@ -171,6 +171,11 @@ export type { SqlFailureKind } from './errors';
 export { assertFindFilterFolded, findFilterKeys, FindFilterLeakError } from './find-filter-guard';
 export type { FindFilterSource } from './find-filter-guard';
 
+// Column type system (spec §4.1; #58): SQL type → bc outType scalar, and the schema/DDL SoT
+// resolver that types a SELECT projection for typed (de-boxed) codegen. Fail-closed throughout.
+export { sqlTypeToBcScalar, parseSchemaColumnTypes, schemaColumnTypeResolver } from './coltype';
+export type { BcScalar, ColumnTypeResolver } from './coltype';
+
 // Thin TS runtime (spec §3 / §10 / §11): validate → SKIP → expand → eval → bind → execute → assembly.
 // `compileBundle` emits the §8 published artifact (Backend-Compiled once, TS-side);
 // `executeBundle` runs that artifact via bc runtime-core alone (the multi-language target).
@@ -246,6 +251,7 @@ export {
   generateCodegenArtifact,
   bundleToPortableIR,
   codegenEmitterFor,
+  typedEmitterFor,
   codegenExecuteBundleForTest,
 } from './codegen';
 export type {

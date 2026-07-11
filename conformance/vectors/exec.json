@@ -47,6 +47,16 @@
                           }
                         }
                       }
+                    },
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "author_id": "int",
+                          "title": "string",
+                          "status": "string"
+                        }
+                      }
                     }
                   },
                   {
@@ -68,6 +78,16 @@
                                 "$e0"
                               ]
                             }
+                          }
+                        }
+                      }
+                    },
+                    "outType": {
+                      "arr": {
+                        "arr": {
+                          "obj": {
+                            "id": "int",
+                            "name": "string"
                           }
                         }
                       }
@@ -121,6 +141,30 @@
                       1
                     ]
                   ]
+                },
+                "outputType": {
+                  "obj": {
+                    "authors": {
+                      "arr": {
+                        "arr": {
+                          "obj": {
+                            "id": "int",
+                            "name": "string"
+                          }
+                        }
+                      }
+                    },
+                    "posts": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "author_id": "int",
+                          "title": "string",
+                          "status": "string"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             ]
@@ -327,6 +371,16 @@
                           }
                         }
                       }
+                    },
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "author_id": "int",
+                          "title": "string",
+                          "status": "string"
+                        }
+                      }
                     }
                   },
                   {
@@ -348,6 +402,16 @@
                                 "$e0"
                               ]
                             }
+                          }
+                        }
+                      }
+                    },
+                    "outType": {
+                      "arr": {
+                        "arr": {
+                          "obj": {
+                            "id": "int",
+                            "name": "string"
                           }
                         }
                       }
@@ -401,6 +465,30 @@
                       1
                     ]
                   ]
+                },
+                "outputType": {
+                  "obj": {
+                    "authors": {
+                      "arr": {
+                        "arr": {
+                          "obj": {
+                            "id": "int",
+                            "name": "string"
+                          }
+                        }
+                      }
+                    },
+                    "posts": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "author_id": "int",
+                          "title": "string",
+                          "status": "string"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             ]

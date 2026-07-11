@@ -64,10 +64,18 @@ export type CodegenLanguage = (typeof CODEGEN_LANGUAGES)[number];
  * straight-line / interpreter fallback**. An unspec'd fallback is INVALID (it silently swallows the
  * "this shape can't be codegen'd" signal); a shape that cannot de-box MUST fail loudly at generation.
  *
- * - rust/go → `<lang>-typed-raw` (bc#76): materialize concrete structs DIRECTLY from the raw wire —
- *   v1-native alloc profile, no dynamic `Value` boxing. Requires the IR to carry `outType`/`outputType`
- *   (bc#76 hard-fails without it — the correct fail-closed behavior, NOT a degrade to boxed code).
- * - ts → `typescript-typed` (bc#48): typed view over the same de-interpreted straight-line body.
+ * This map is the AUTHORITY for "which languages are codegen (de-box) languages" (ts/go/rust). Both
+ * of the two typed endpoints below consume the IR's `outType`/`outputType` and are de-interpreted
+ * (NO `run_behavior` on the data plane); the difference is only the row-materialization boundary:
+ *
+ * - go/rust preferred → `<lang>-typed-raw` (bc#76): materialize concrete structs DIRECTLY from the
+ *   RAW wire — v1-native alloc profile, no dynamic `Value` boxing. bc's raw ABI currently covers ONLY
+ *   the single-componentRef read-handler (row-hydrator) shape; a read graph with `map`/`cond` nodes
+ *   is NOT raw-de-boxable, so {@link typedEmitterFor} selects the boxed-input typed path for it.
+ * - go/rust map/cond → `<lang>-typed`: the SAME struct-native de-box, but marshalled from a boxed
+ *   `Value` handler result instead of the raw wire (bc's raw ABI does not cover map/cond yet). Still
+ *   fully typed + de-interpreted — NOT a fallback to the untyped literal/interpreter emitter.
+ * - ts → `typescript-typed` (bc#48): one typed endpoint that covers both shapes.
  * - **python/php: NOT present.** bc registers no de-boxed typed endpoint for them (capability limit).
  *   litedbmodel does NOT substitute the literal (≈ir) emitter — that would be an unspec'd fallback.
  *   Codegen for py/php is a bc capability gap that ERRORS (ESCALATE to bc), never a silent literal.
@@ -76,6 +84,18 @@ export const CODEGEN_EMITTER: Partial<Record<CodegenLanguage, string>> = {
   typescript: 'typescript-typed',
   go: 'go-typed-raw',
   rust: 'rust-typed-raw',
+};
+
+/**
+ * The boxed-input TYPED (de-box) emitter for go/rust, used for a read graph whose shape the raw ABI
+ * does not cover (a `map`/`cond`-containing read). It is still a typed, de-interpreted struct-native
+ * emitter (consumes outType, no `run_behavior` on the data plane); only the marshal boundary differs
+ * (a boxed `Value` handler result instead of the raw wire). TS's single `typescript-typed` covers both.
+ */
+const CODEGEN_EMITTER_TYPED: Partial<Record<CodegenLanguage, string>> = {
+  typescript: 'typescript-typed',
+  go: 'go-typed',
+  rust: 'rust-typed',
 };
 
 /**
@@ -134,9 +154,56 @@ function companionOf(bundle: SqlBundle): SqlCatalogCompanion {
 }
 
 /**
- * Resolve the de-boxed typed emitter for a codegen target, or throw. No fallback: a language
- * without a registered de-box endpoint is a bc capability gap that fails LOUDLY (never a silent
- * substitution of the literal/interpreter emitter — an unspec'd fallback is invalid).
+ * Whether a portable IR is RAW-de-boxable by bc's go/rust raw ABI (bc#76): every body node of every
+ * component is a plain componentRef (the single-componentRef read-handler / row-hydrator shape). A
+ * `map` or `cond` node is NOT covered by the raw ABI yet, so such a read graph must ride the boxed
+ * typed path (`-typed`) instead — still typed + de-interpreted, not a fallback. A write bundle's
+ * `makeSqlComponentIR` is a single componentRef, so it is raw-shaped (though writes are not codegen'd).
+ */
+function isRawDeboxable(ir: ComponentGraphIR): boolean {
+  return ir.components.every((c) => c.body.every((n) => !('map' in n) && !('cond' in n)));
+}
+
+/**
+ * Resolve the de-boxed typed emitter for a codegen target + IR shape, or throw. No fallback: a
+ * language without a registered de-box endpoint is a bc capability gap that fails LOUDLY (never a
+ * silent substitution of the literal/interpreter emitter — an unspec'd fallback is invalid).
+ *
+ * The go/rust choice is SHAPE-AWARE: a raw-de-boxable read (single-componentRef nodes) takes the
+ * RAW ABI (`-typed-raw`, full wire de-box); a `map`/`cond`-containing read takes the boxed-input
+ * typed path (`-typed`) — bc's raw ABI does not cover map/cond. BOTH are typed + de-interpreted; the
+ * `-typed` path is NOT a degrade to the untyped/literal/interpreter emitter. TS uses one typed endpoint.
+ */
+export function typedEmitterFor(language: string, ir: ComponentGraphIR, registered: readonly string[]): string {
+  if (!(CODEGEN_LANGUAGES as readonly string[]).includes(language)) {
+    throw new Error(
+      `litedbmodel codegen: language '${language}' is not a supported target (supported: ${CODEGEN_LANGUAGES.join(', ')})`,
+    );
+  }
+  const raw = CODEGEN_EMITTER[language as CodegenLanguage];
+  if (raw === undefined) {
+    throw new Error(
+      `litedbmodel codegen: no de-boxed typed endpoint for '${language}'. litedbmodel codegen is STATIC ` +
+        `de-interpreted codegen (spec §9) with NO literal/interpreter fallback (an unspec'd fallback is invalid). ` +
+        `bc registers de-box endpoints only for ${Object.keys(CODEGEN_EMITTER).join('/')} — a '${language}' typed ` +
+        `endpoint is a bc capability gap. ESCALATE to bc (bc#22 pattern); never substitute the literal emitter.`,
+    );
+  }
+  // Pick the raw ABI for a raw-de-boxable shape; otherwise the boxed typed de-box (map/cond reads).
+  const emitter = isRawDeboxable(ir) ? raw : (CODEGEN_EMITTER_TYPED[language as CodegenLanguage] as string);
+  if (!registered.includes(emitter)) {
+    throw new Error(
+      `litedbmodel codegen: bc's shared generator does not register the '${emitter}' emitter for '${language}' ` +
+        `(bc registered: ${[...registered].sort().join(', ')}). ESCALATE to bc (bc#22 pattern), never fork locally.`,
+    );
+  }
+  return emitter;
+}
+
+/**
+ * Shape-INDEPENDENT emitter resolution (the raw-preferred endpoint), kept for callers that only need
+ * to know a language's de-box endpoint identity without an IR in hand. Prefer {@link typedEmitterFor}
+ * for actual generation (it picks the raw vs boxed typed path from the IR shape).
  */
 export function codegenEmitterFor(language: string, registered: readonly string[]): string {
   if (!(CODEGEN_LANGUAGES as readonly string[]).includes(language)) {
@@ -174,9 +241,10 @@ export function generateCodegenArtifact(
   registeredLanguages: readonly string[],
   runtimeImport?: string,
 ): CodegenArtifact {
-  // Resolve the de-box endpoint or throw (no literal/straight-line fallback — unspec'd fallback = invalid).
-  const emitter = codegenEmitterFor(language, registeredLanguages);
+  // Resolve the de-box endpoint (shape-aware: raw ABI vs boxed typed) or throw. No literal/straight-line
+  // fallback — an unspec'd fallback is invalid; both endpoints are typed + de-interpreted.
   const ir = bundleToPortableIR(bundle);
+  const emitter = typedEmitterFor(language, ir, registeredLanguages);
   const module = generateModule(ir, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
   return { language: language as CodegenLanguage, module, companion: companionOf(bundle), ir, bundle };
 }
