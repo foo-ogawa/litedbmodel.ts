@@ -342,6 +342,13 @@ export const READ_RELATION: Record<string, { decl: any; withName: string } | und
 // with no id (matching SQLite's implicit rowid). PG uses SERIAL, MySQL AUTO_INCREMENT.
 // After seeding explicit ids the PG sequence is bumped past the seeded max (see
 // `pgSeqResetStatements`) so the write cases' new rows don't collide.
+//
+// #53 follow-up (independent audit): this bench MUST NOT touch the shared `testdb`
+// fixture tables that `test/fixtures/init.sql` seeds for the integration suite. Every
+// language isolates into its OWN `scp_<lang>_bench` schema (PG, via search_path) /
+// database (MySQL) — Rust/Go/PHP already do this (see their adapters' `PG_SCHEMA_NAME`/
+// `MYSQL_DB_NAME` = `scp_rust_bench`/`scp_go_bench`/`scp_php_bench`); TS uses
+// `scp_ts_bench` (below, `PG_CONN`/`MYSQL_CONN`).
 export const PG_SCHEMA: readonly string[] = [
   `DROP TABLE IF EXISTS comments CASCADE`,
   `DROP TABLE IF EXISTS posts CASCADE`,
@@ -399,17 +406,41 @@ export function seedStatementsShared(): string[] {
 
 // Env-driven connection config (matches docker-compose.test.yml + WS6 host defaults:
 // PG 5433, MySQL 3307 when the livedb override republishes the ports to the host).
-export const PG_CONN = {
+//
+// #53 follow-up: TS is isolated into its OWN `scp_ts_bench` namespace (mirroring the
+// Rust/Go/PHP adapters' `scp_<lang>_bench`), never the shared `testdb` fixture tables
+// `test/fixtures/init.sql` seeds for the integration suite.
+//   - PG: `PG_BOOT_CONN` connects to the base `testdb` (bootstrap-only, to CREATE SCHEMA
+//     IF NOT EXISTS); `PG_CONN` is the actual bench connection and sets `search_path` via
+//     the libpq startup `options` param — the pool-safe way to pin a schema, since `pg.Pool`
+//     multiplexes many physical connections and a runtime `SET search_path` on one borrowed
+//     connection would NOT apply to the others (unlike a single-connection driver).
+//   - MySQL: `MYSQL_BOOT_CONN` connects to the base `testdb` (bootstrap-only, to CREATE
+//     DATABASE IF NOT EXISTS); `MYSQL_CONN` points `database` directly at `scp_ts_bench` —
+//     MySQL has no cross-database "current schema" ambiguity, so this is the direct analog of
+//     Rust/Go/PHP's approach.
+export const PG_SCHEMA_NAME = 'scp_ts_bench';
+export const MYSQL_DB_NAME = 'scp_ts_bench';
+
+export const PG_BOOT_CONN = {
   host: process.env.TEST_DB_HOST || 'localhost',
   port: parseInt(process.env.TEST_DB_PORT || '5433', 10),
   database: process.env.TEST_DB_NAME || 'testdb',
   user: process.env.TEST_DB_USER || 'testuser',
   password: process.env.TEST_DB_PASSWORD || 'testpass',
 };
-export const MYSQL_CONN = {
+export const PG_CONN = {
+  ...PG_BOOT_CONN,
+  options: `-c search_path=${PG_SCHEMA_NAME}`,
+};
+export const MYSQL_BOOT_CONN = {
   host: process.env.TEST_MYSQL_HOST || 'localhost',
   port: parseInt(process.env.TEST_MYSQL_PORT || '3307', 10),
   database: process.env.TEST_MYSQL_DB || 'testdb',
   user: process.env.TEST_MYSQL_USER || 'testuser',
   password: process.env.TEST_MYSQL_PASSWORD || 'testpass',
+};
+export const MYSQL_CONN = {
+  ...MYSQL_BOOT_CONN,
+  database: MYSQL_DB_NAME,
 };

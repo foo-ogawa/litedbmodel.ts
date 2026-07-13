@@ -24,12 +24,18 @@
 // production model (the non-TS legs use their shipped SYNC `PostgresDriver`/
 // `MysqlDriver` through the standard runtime), so TS DB-backed PG/MySQL numbers carry
 // the async-driver caveat and are comparable WITHIN TS across surfaces.
+//
+// #53 follow-up (independent audit): this seam is isolated into its OWN `scp_ts_bench`
+// namespace (PG schema via search_path, MySQL database), mirroring the Rust/Go/PHP
+// adapters' `scp_<lang>_bench` — it never creates/seeds/drops tables in the shared
+// `testdb` that `test/fixtures/init.sql` seeds for the integration suite.
 
 import { Pool } from 'pg';
 import mysql from 'mysql2/promise';
 import * as lm from '../../../../dist/scp/index.mjs';
 import {
   PG_SCHEMA, PG_SEQ_RESET, MYSQL_SCHEMA, seedStatementsShared, PG_CONN, MYSQL_CONN,
+  PG_BOOT_CONN, MYSQL_BOOT_CONN, PG_SCHEMA_NAME, MYSQL_DB_NAME,
 } from '../../domain.js';
 
 type Row = Record<string, unknown>;
@@ -49,6 +55,15 @@ export interface LiveDb {
 }
 
 export async function connectPg(): Promise<LiveDb> {
+  // Bootstrap: CREATE SCHEMA IF NOT EXISTS on the base `testdb` connection (isolated
+  // `scp_ts_bench` namespace — mirrors the Rust/Go/PHP adapters; never touches the
+  // integration-test fixture tables in `testdb.public`).
+  const boot = new Pool({ ...PG_BOOT_CONN, max: 1 });
+  await boot.query(`CREATE SCHEMA IF NOT EXISTS ${PG_SCHEMA_NAME}`);
+  await boot.end();
+  // The bench pool's every physical connection pins `search_path` via the libpq startup
+  // `options` param (set in `PG_CONN`) — a runtime `SET search_path` on one borrowed
+  // connection would NOT apply to the pool's other connections.
   const pool = new Pool({ ...PG_CONN, max: 8 });
   await pool.query('SELECT 1');
   for (const s of PG_SCHEMA) await pool.query(s);
@@ -102,6 +117,12 @@ export async function connectPg(): Promise<LiveDb> {
 // ── MySQL ───────────────────────────────────────────────────────────────────────
 
 export async function connectMysql(): Promise<LiveDb> {
+  // Bootstrap: CREATE DATABASE IF NOT EXISTS on the base `testdb` connection (isolated
+  // `scp_ts_bench` database — mirrors the Rust/Go/PHP adapters; never touches the
+  // integration-test fixture tables in `testdb`).
+  const boot = mysql.createPool({ ...MYSQL_BOOT_CONN, connectionLimit: 1 });
+  await boot.query(`CREATE DATABASE IF NOT EXISTS ${MYSQL_DB_NAME}`);
+  await boot.end();
   const pool = mysql.createPool({ ...MYSQL_CONN, connectionLimit: 8, multipleStatements: false });
   await pool.query('SELECT 1');
   for (const s of MYSQL_SCHEMA) await pool.query(s);

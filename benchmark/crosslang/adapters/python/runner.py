@@ -19,6 +19,10 @@ three Python cells: sql / codegen / ir. Every case-scoped request carries a `dia
             then executes via the SAME runtime call `ir` uses (codegen ≈ ir is honest
             and expected for this language; see CROSS-LANG.md).
   ir      — the bundle loaded FROM the generated JSON on disk, executed via the runtime
+
+postgres/mysql DB-backed cells isolate into their OWN `scp_python_bench` schema/database
+(#53 follow-up) — never the shared `testdb` fixture tables `test/fixtures/init.sql` seeds
+for the integration suite. Mirrors the Rust/Go/PHP adapters' `scp_<lang>_bench`.
 """
 
 from __future__ import annotations
@@ -58,6 +62,17 @@ SCHEMA = ARTIFACT["schema"]
 SEED = ARTIFACT["seed"]
 
 # Connection config (matches docker-compose.test.yml + WS6 host defaults).
+#
+# #53 follow-up (independent audit): isolated into its OWN `scp_python_bench` namespace
+# (PG schema via search_path, MySQL database) — mirrors the Rust/Go/PHP adapters'
+# `scp_<lang>_bench` (and this runtime's own `livedb_runner.py` conformance seam, which
+# uses the identical "CREATE SCHEMA/DATABASE IF NOT EXISTS then SET search_path/USE via
+# exec_ddl on the pooled driver" pattern). Never creates/seeds/drops tables in the shared
+# `testdb` that `test/fixtures/init.sql` seeds for the integration suite.
+PG_SCHEMA_NAME = "scp_python_bench"
+MYSQL_DB_NAME = "scp_python_bench"
+
+
 def _pg_cfg():
     return dict(host=os.environ.get("TEST_DB_HOST", "localhost"), port=int(os.environ.get("TEST_DB_PORT", "5433")),
                 user=os.environ.get("TEST_DB_USER", "testuser"), password=os.environ.get("TEST_DB_PASSWORD", "testpass"),
@@ -202,12 +217,18 @@ def live_driver(dialect):
     from litedbmodel_runtime import PostgresDriver, MysqlDriver
     if dialect == "postgres":
         d = PostgresDriver.connect(**_pg_cfg())
+        # Isolated `scp_python_bench` schema (never the shared `testdb.public` fixture
+        # tables) — same "CREATE SCHEMA IF NOT EXISTS + SET search_path" seam as
+        # `livedb_runner.py`'s conformance runner.
+        d.exec_ddl([f"CREATE SCHEMA IF NOT EXISTS {PG_SCHEMA_NAME}", f"SET search_path TO {PG_SCHEMA_NAME}"])
         d.exec_ddl(list(PG_SCHEMA))
         for s in SEED:
             d.prepare(s).run([])
         d.exec_ddl(list(PG_SEQ_RESET))
     else:
         d = MysqlDriver.connect(**_mysql_cfg())
+        # Isolated `scp_python_bench` database (never the shared `testdb` fixture tables).
+        d.exec_ddl([f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB_NAME}", f"USE {MYSQL_DB_NAME}"])
         d.exec_ddl(list(MYSQL_SCHEMA))
         for s in SEED:
             d.prepare(s).run([])

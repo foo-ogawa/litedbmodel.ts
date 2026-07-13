@@ -3,7 +3,7 @@
 // ══════════════════════════════════════════════════════════════════════════════════════════════
 // TODO(#60 m1, Go BLOCKED — bc emitter defect, ESCALATE to bc, do not work around locally):
 //
-// bc's go-typed-native emitter (bc#77/#90) generates the covered-read runner function
+// bc's go-typed-native emitter (bc#102) generates the covered-read runner function
 // `run_native_raw_struct_<Comp>` with a LOWERCASE-initial name (verified against the actual
 // generated source, e.g. `go/lm_bench/cgmods/find/gen.go`) — in Go, a lowercase-initial identifier
 // is UNEXPORTED and cannot be called from another package. Every OTHER symbol the module needs
@@ -671,7 +671,7 @@ func stitchNative(rel *cgplans.Relation, parents []bc.Value, db cgDB) []bc.Value
 func runCodegenCase(dialect, caseID string, db cgDB) bc.Value {
 	_ = preparedFor(dialect, caseID) // validates dialect/case exist before reporting the block
 	panic(
-		"codegen (go): BLOCKED on a bc go-typed-native emitter defect (bc#77/#90) — the generated " +
+		"codegen (go): BLOCKED on a bc go-typed-native emitter defect (bc#102) — the generated " +
 			"covered-read runner `run_native_raw_struct_<Comp>` is emitted with a LOWERCASE-initial " +
 			"name, so it is UNEXPORTED and uncallable from this cell's package. ALL codegen cases " +
 			"(not just complexWhere/inList's bc#86 IN-list gap) are unavailable for Go until this is " +
