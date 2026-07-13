@@ -3,9 +3,16 @@
 // ════════════════════════════════════════════════════════════════════════════
 //
 // This cell IMPORTS the bc-GENERATED module (`generated/codegen/typescript/<case>.ts`,
-// emitted by litedbmodel `generateCodegenArtifact`) and executes each case by calling the
-// module's `bind(handlers)[Component](input)` — a distinct code entry from the ir cell's
-// `executeBundle(rawJson)`.
+// emitted by litedbmodel `generateCodegenArtifact`) and executes each READ/relation case by
+// calling the module's `bind(handlers)[Component](input)` — a distinct code entry from the ir
+// cell's `executeBundle(rawJson)`.
+//
+// WRITES (`batchInsert`/`writeTxGate`) are NOT codegen-module cases (#60 m1 — see generate.ts's
+// module doc): `generate.ts` no longer emits a generated module for them, matching the Rust/Go
+// codegen cells (rust-codegen/src/main.rs, go/lm_bench/codegen_cell.go), which call the
+// gate-first tx executor DIRECTLY with no generated-module wrapper. This cell mirrors that: a
+// write case runs `executeTransactionBundle` directly (the SAME call the ir cell makes) — never
+// attempts to load/bind a nonexistent generated module.
 //
 // OWNER ORDER: the codegen path carries ZERO references to IR data — no fingerprint
 // recompute, no portable-IR derivation, at load OR at exec. Generated modules are
@@ -49,83 +56,50 @@ function makeReadHandler(readGraph: any, db: any): Record<string, any> {
 }
 
 export interface CodegenRunner {
-  // A zero-arg op executing ONE logical case op THROUGH the generated module.
+  // A zero-arg op executing ONE logical case op THROUGH the generated module (read/relation) or
+  // directly via executeTransactionBundle (write — no generated module exists, see module doc).
   op(c: CaseArt, db: any, dialect: string): () => unknown;
-  // Verify + warm all case modules at cold start (the codegen load cost).
+  // Verify + warm all READ/relation case modules at cold start (the codegen load cost). Write
+  // cases are NOT preloaded — there is no generated module file for them (generate.ts, #60 m1).
   preload(cases: CaseArt[]): Promise<void>;
 }
 
-// Loaded generated modules, keyed by case id.
+// Loaded generated modules, keyed by case id. Read/relation cases only.
 const MODULES = new Map<string, GeneratedModule>();
 
 export const codegenCell: CodegenRunner = {
   async preload(cases) {
-    for (const c of cases) MODULES.set(c.case, await loadGenerated(c.case));
+    for (const c of cases) {
+      if (c.kind === 'read' || c.kind === 'relation') MODULES.set(c.case, await loadGenerated(c.case));
+    }
   },
   op(c, db, dialect) {
+    // WRITE (batch / tx): no codegen module exists for this case (#60 m1 — generate.ts only
+    // emits READ/relation modules; matches the Rust/Go codegen cells, which call the gate-first
+    // tx executor directly with no generated-module wrapper). Run the SAME
+    // executeTransactionBundle the ir cell calls.
+    if (c.kind === 'batch' || c.kind === 'tx') {
+      const input = c.kind === 'tx' ? c.input : {};
+      return () => lm.executeTransactionBundle(c.bundle, input, { db });
+    }
     const mod = MODULES.get(c.case);
     if (!mod) throw new Error(`codegen: generated module for ${c.case} not preloaded`);
     // READ + read-relation primary: execute THROUGH the generated module's bind().
-    if (c.kind === 'read' || c.kind === 'relation') {
-      const bound = mod.bind(makeReadHandler(c.bundle.readGraph, db));
-      const entry = mod.COMPONENT_NAMES[0];
-      const run = bound[entry];
-      if (c.kind === 'read') return () => run(c.input);
-      // relation: run the generated primary read, then stitch the relation batch (same
-      // batch render as the ir/DB-backed path — the relation op is not part of the
-      // generated read module's IR; it rides the companion).
-      const relOp = c.bundle.relations[c.withRelation!];
-      return () => {
-        const parents = run(c.input) as any[];
-        stitchRelation(relOp, Array.isArray(parents) ? parents : [], db, dialect);
-        return parents;
-      };
-    }
-    // WRITE (batch / tx): the generated module's single `makeSQL` node IS the whole write; its
-    // outType is the TransactionResult typed shape (obj{committed,executed,shortCircuit,entity,
-    // returnedRows}). We route the write THROUGH the generated module's bind(): the `makeSQL`
-    // handler drives the derived transaction plan via the runtime's executeTransactionBundle
-    // (gate-first, byte-parity with the thin runtime) and returns the TransactionResult, which the
-    // generated de-interpreted `run_<Component>` returns as the module output (the typed-view de-box
-    // is the typescript-typed endpoint's row materialization). This is a DISTINCT code entry from the
-    // ir cell's executeBundle — the write executes through the generated module, not around it.
-    const bound = mod.bind(makeWriteHandler(c.bundle, c.kind === 'tx' ? c.input : {}, db));
+    const bound = mod.bind(makeReadHandler(c.bundle.readGraph, db));
     const entry = mod.COMPONENT_NAMES[0];
     const run = bound[entry];
-    return () => run(WRITE_MODULE_INPUT);
+    if (c.kind === 'read') return () => run(c.input);
+    // relation: run the generated primary read, then stitch the relation batch (same
+    // batch render as the ir/DB-backed path — the relation op is not part of the
+    // generated read module's IR; it rides the companion).
+    const relOp = c.bundle.relations[c.withRelation!];
+    return () => {
+      const parents = run(c.input) as any[];
+      stitchRelation(relOp, Array.isArray(parents) ? parents : [], db, dialect);
+      return parents;
+    };
   },
 };
-
-// The input scope for a WRITE module's generated function: bc's makeSqlComponentIR node reads
-// `__sql`/`__sqlParams`/`__skip` from the input (the boxed read path's convention), so those heads
-// MUST be present or slBind fail-closes (UNKNOWN_BINDING). The generated function passes them to the
-// `makeSQL` handler as ports, but our write handler ignores them (it drives the plan from the bundle),
-// so present-as-empty is exact — the values are never read. Not a fabricated default: the surrogate input.
-const WRITE_MODULE_INPUT = { __sql: '', __sqlParams: [], __skip: false };
-
-// Build the `makeSQL` handler for a generated WRITE module: run the derived transaction plan (the
-// SAME executeTransactionBundle the ir path uses — gate-first, exact parity) and return the
-// TransactionResult, NORMALIZED to the full-5-key present-as-null shape the typed outType declares
-// (the runtime omits an absent optional key; the seam presents the typed contract's wire shape).
-function makeWriteHandler(bundle: any, input: any, db: any): Record<string, any> {
-  const handler = () => {
-    const result = lm.executeTransactionBundle(bundle, input, { db });
-    return { ok: normalizeTxResult(result) };
-  };
-  return { makeSQL: handler };
-}
-
-/** Present a TransactionResult as the canonical full-5-key shape (absent optional → present-as-null). */
-function normalizeTxResult(result: any): any {
-  if (result === null || typeof result !== 'object' || Array.isArray(result)) return result;
-  return {
-    committed: result.committed ?? false,
-    executed: result.executed ?? [],
-    shortCircuit: result.shortCircuit ?? null,
-    entity: result.entity ?? null,
-    returnedRows: result.returnedRows ?? null,
-  };
-}
 
 // Relation batch stitch (single-key), matching the ir/DB-backed render.
 function stitchRelation(op: any, parents: any[], db: any, dialect: string): void {

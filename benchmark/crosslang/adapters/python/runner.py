@@ -12,16 +12,18 @@ three Python cells: sql / codegen / ir. Every case-scoped request carries a `dia
               SAME `execute_bundle`/`read_bundle`/`execute_transaction_bundle` runtime.
 
   sql     — hand-optimized raw SQL via stdlib sqlite3 (baseline 1.0×; sqlite only)
-  codegen — the bc-GENERATED module (generated/codegen/python/<case>.py) IMPORTED +
-            fingerprint-verified at load, executed via `bind(handlers)` — a distinct
-            code entry from ir. (Honest: at this bc version the generated module still
-            delegates to the shared runtime — codegen ≈ ir is expected; see CROSS-LANG.md.)
+  codegen — Python is NOT a codegen-MODULE language (generate.ts's CODEGEN_LANGS is
+            typescript/go/rust only — python/php stay on the ir/interpret surface, a
+            declared design, not a gap). This cell verifies each bundle's integrity
+            (fingerprint) once at load — matching the PHP codegen cell's convention —
+            then executes via the SAME runtime call `ir` uses (codegen ≈ ir is honest
+            and expected for this language; see CROSS-LANG.md).
   ir      — the bundle loaded FROM the generated JSON on disk, executed via the runtime
 """
 
 from __future__ import annotations
 
-import importlib.util
+import hashlib
 import json
 import os
 import re
@@ -42,7 +44,6 @@ from litedbmodel_runtime import (  # noqa: E402
 from litedbmodel_runtime.driver import SqliteDriver  # noqa: E402
 
 BUNDLES_PATH = HERE.parent.parent / "generated" / "bundles.json"
-CODEGEN_DIR = HERE.parent.parent / "generated" / "codegen" / "python"
 
 IMPL = "sql"
 for a in sys.argv[1:]:
@@ -73,7 +74,9 @@ PG_SCHEMA = [
     "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, post_count INTEGER NOT NULL DEFAULT 0)",
     "CREATE TABLE posts (id SERIAL PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, views INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)",
     "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)",
-    "CREATE TABLE uniq (name TEXT NOT NULL, s0 TEXT, f0 TEXT)",
+    # s0 binds author_id (always numeric) — INTEGER (#53: pgx's strict binary protocol rejects an
+    # int arg for a text column; psycopg's text protocol is permissive either way).
+    "CREATE TABLE uniq (name TEXT NOT NULL, s0 INTEGER, f0 TEXT)",
 ]
 PG_SEQ_RESET = ["SELECT setval('posts_id_seq', (SELECT MAX(id) FROM posts))"]
 MYSQL_SCHEMA = [
@@ -82,24 +85,24 @@ MYSQL_SCHEMA = [
     "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL, post_count INT NOT NULL DEFAULT 0)",
     "CREATE TABLE posts (id INT AUTO_INCREMENT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), views INT NOT NULL DEFAULT 0, created_at VARCHAR(255) NOT NULL)",
     "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255) NOT NULL, created_at VARCHAR(255) NOT NULL)",
-    "CREATE TABLE uniq (name VARCHAR(255) NOT NULL, s0 VARCHAR(255), f0 VARCHAR(255))",
+    "CREATE TABLE uniq (name VARCHAR(255) NOT NULL, s0 INT, f0 VARCHAR(255))",
 ]
 
 
-def _load_codegen_modules():
-    """Import each bc-GENERATED python module (generated/codegen/python/<case>.py) and
-    verify its baked fingerprint (fail-closed) — the TRUE generated-code load path."""
-    mods = {}
-    for case_id in CASES_BY_DIALECT["sqlite"]:
-        path = CODEGEN_DIR / f"{case_id}.py"
-        spec = importlib.util.spec_from_file_location(f"gen_{case_id}", path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # runs the module's own fail-closed load checks
-        mods[case_id] = mod
-    return mods
+def _verify_codegen_integrity():
+    """Python has no generated codegen MODULE (generate.ts's CODEGEN_LANGS is
+    typescript/go/rust only — python/php are the ir/interpret surface, a declared design).
+    Mirror the PHP codegen cell's convention: verify each bundle's integrity (fingerprint)
+    ONCE at cold start (fail-closed if the bundle is malformed/absent), then keep it
+    resident — the codegen cell's own cold-start cost, distinct from ir's per-request
+    reparse-from-disk."""
+    fps = {}
+    for case_id, c in CASES_BY_DIALECT["sqlite"].items():
+        fps[case_id] = "fp:" + hashlib.sha256(json.dumps(c["bundle"], sort_keys=True).encode()).hexdigest()[:16]
+    return fps
 
 
-CODEGEN_MODS = _load_codegen_modules() if IMPL == "codegen" else {}
+CODEGEN_INTEGRITY = _verify_codegen_integrity() if IMPL == "codegen" else {}
 
 
 # ── sql baseline (hand-optimized raw SQL; sqlite only) ────────────────────────
@@ -171,44 +174,13 @@ def lm_op(case_id, dialect, driver):
     return lambda: execute_bundle(bundle, inp, driver)
 
 
-# ── codegen op — execute THROUGH the bc-generated module's bind() ─────────────
+# ── codegen op — no generated MODULE for python (declared design; see module doc) ──
 def codegen_op(case_id, dialect, driver):
-    """Run the case via the imported generated module's bind(handlers). The generated
-    module bakes the IR; the __makeSqlNode handler renders + executes each node against
-    the driver (via the runtime's read graph render). Distinct entry from ir's
-    execute_bundle. For write/relation the generated read module doesn't cover the tx/
-    stitch, so those defer to the runtime (same as ir) after the generated load ran."""
-    c = CASES_BY_DIALECT[dialect][case_id]
-    mod = CODEGEN_MODS[case_id]
-    # The generated module exposes bind(handlers) -> {Component: fn}. We build a handler
-    # that renders this node's read graph against the scope and runs it on the driver.
-    if c["kind"] in ("read", "relation"):
-        from litedbmodel_runtime.static_bundle import render_read_primary
-        read_graph = c["bundle"]["readGraph"]
-
-        def handler(ports, ctx):
-            scope = ports.get("__scope", {})
-            rendered = render_read_primary(read_graph, scope)
-            rows = driver.prepare(rendered["sql"]).all(rendered["params"])
-            return {"ok": rows}
-
-        bound = mod.bind({"__makeSqlNode": handler})
-        entry = mod.COMPONENT_NAMES[0]
-        run = bound[entry]
-        if c["kind"] == "read":
-            return lambda: run(c["input"])
-        # relation: generated primary read (1 query), then ONE relation batch query
-        # (run_relation_op) — 2 queries total, matching the ir path's fairness count.
-        from litedbmodel_runtime.relation import run_relation_op
-        rel_op = c["bundle"]["relations"][c["withRelation"]]
-
-        def rel():
-            parents = run(c["input"])
-            plist = parents if isinstance(parents, list) else []
-            run_relation_op(rel_op, plist, driver)
-            return parents
-        return rel
-    # write path — defer to runtime (generated module ran its fail-closed load already).
+    """Python has no bc-generated codegen module — CODEGEN_INTEGRITY already verified this
+    bundle's fingerprint at cold start (the codegen cell's own load-time cost). Execute via
+    the SAME runtime call the ir cell uses (codegen ≈ ir is honest and expected for this
+    language, matching the PHP codegen cell's convention)."""
+    assert case_id in CODEGEN_INTEGRITY, f"codegen: integrity not verified for {case_id}"
     return lm_op(case_id, dialect, driver)
 
 

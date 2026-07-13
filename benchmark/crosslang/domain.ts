@@ -350,7 +350,12 @@ export const PG_SCHEMA: readonly string[] = [
   `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, post_count INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE posts (id SERIAL PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, views INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`,
   `CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)`,
-  `CREATE TABLE uniq (name TEXT NOT NULL, s0 TEXT, f0 TEXT)`,
+  // `s0` binds `author_id` (always numeric) — INTEGER, matching the conformance corpus's
+  // proven-working `uniq` schema (gen-livedb.ts). A TEXT s0 works under the permissive
+  // text-protocol drivers (pg / psycopg) but pgx's strict binary protocol (Go, #53) rejects an
+  // int64 arg for a text column ("unable to encode into text format") — INTEGER is correct for
+  // every driver since the column only ever stores a numeric author_id.
+  `CREATE TABLE uniq (name TEXT NOT NULL, s0 INTEGER, f0 TEXT)`,
 ];
 export const MYSQL_SCHEMA: readonly string[] = [
   `SET FOREIGN_KEY_CHECKS = 0`,
@@ -362,7 +367,8 @@ export const MYSQL_SCHEMA: readonly string[] = [
   `CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL, post_count INT NOT NULL DEFAULT 0)`,
   `CREATE TABLE posts (id INT AUTO_INCREMENT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), views INT NOT NULL DEFAULT 0, created_at VARCHAR(255) NOT NULL)`,
   `CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255) NOT NULL, created_at VARCHAR(255) NOT NULL)`,
-  `CREATE TABLE uniq (name VARCHAR(255) NOT NULL, s0 VARCHAR(255), f0 VARCHAR(255))`,
+  // `s0` binds `author_id` (always numeric) — INT, matching the PG schema's fix above.
+  `CREATE TABLE uniq (name VARCHAR(255) NOT NULL, s0 INT, f0 VARCHAR(255))`,
 ];
 
 // After seeding 40 posts with explicit ids 1..40, advance the PG SERIAL sequence so a

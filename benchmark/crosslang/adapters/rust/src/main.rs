@@ -2,25 +2,138 @@
 //!
 //! Speaks the line-delimited JSON contract over stdin/stdout for TWO Rust cells: sql / ir.
 //!
-//!   sql     — hand-optimized raw SQL via the in-proc `SqliteDriver` (baseline 1.0×)
-//!   ir      — the bundle loaded FROM the generated JSON on disk, executed via the shared runtime
+//!   sql     — hand-optimized raw SQL via the in-proc `SqliteDriver` (baseline 1.0×; sqlite-shaped
+//!             by construction — the `sql` baseline runs on sqlite only, same convention as every
+//!             other language adapter)
+//!   ir      — the bundle loaded FROM the generated JSON on disk, executed via the shared runtime.
+//!             DB-backed on sqlite (in-proc `SqliteDriver`) AND real dockerized Postgres/MySQL
+//!             (#53) via the runtime's live `PostgresDriver`/`MysqlDriver` (the SAME `livedb`
+//!             tokio-postgres+deadpool / sqlx seam `livedb_runner`/conformance use — no new
+//!             driver code, just wiring this bench cell to it).
 //!
 //! The CODEGEN cell rides the DEDICATED `lm_codegen` binary (adapters/rust-codegen) — owner order:
 //! the codegen path carries NO IR data and links NO serde_json, so it cannot live in this binary
-//! (whose ir surface is legitimately JSON). Requesting impl=codegen here PANICS (fail-closed).
+//! (whose ir surface is legitimately JSON). Requesting impl=codegen here PANICS (fail-closed). The
+//! generated read module is wired to the in-proc sqlite driver only, so `codegen` DB-backed runs
+//! on sqlite only (matching every other language's codegen cell) — an explicit per-cell SKIP.
 //!
 //! Consumes generated/bundles.json (the language-neutral §8 artifact) unchanged. Its compiled
 //! release binary size is the Rust artifact-size metric.
 
 use behavior_contracts::Value;
+use litedbmodel_runtime::livedb::{MysqlDriver, PostgresDriver};
 use litedbmodel_runtime::{
     decode_scope, execute_bundle, execute_transaction_bundle, read_bundle_pooled, Driver,
     PreparedStatement, RunInfo, SqliteDriver,
 };
 use serde_json::Value as J;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::time::Instant;
+
+// ── real-DB schema (mirror of domain.ts PG_SCHEMA / MYSQL_SCHEMA; isolated `scp_rust_bench`
+// namespace so this bench never collides with conformance's `scp_rust` tables) ──────────────
+const PG_SCHEMA_NAME: &str = "scp_rust_bench";
+const MYSQL_DB_NAME: &str = "scp_rust_bench";
+
+fn pg_schema_statements() -> Vec<String> {
+    vec![
+        "DROP TABLE IF EXISTS comments CASCADE".into(),
+        "DROP TABLE IF EXISTS posts CASCADE".into(),
+        "DROP TABLE IF EXISTS users CASCADE".into(),
+        "DROP TABLE IF EXISTS uniq CASCADE".into(),
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, post_count INTEGER NOT NULL DEFAULT 0)".into(),
+        "CREATE TABLE posts (id SERIAL PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, views INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)".into(),
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)".into(),
+        // s0 binds author_id (always numeric) — INTEGER (#53: pgx-class strict binary protocols
+        // reject an int arg for a text column; this bench's Rust PgParam already type-coerces, but
+        // INTEGER is the honest column type for the data it actually stores).
+        "CREATE TABLE uniq (name TEXT NOT NULL, s0 INTEGER, f0 TEXT)".into(),
+    ]
+}
+fn pg_seq_reset() -> Vec<String> {
+    vec!["SELECT setval('posts_id_seq', (SELECT MAX(id) FROM posts))".into()]
+}
+fn mysql_schema_statements() -> Vec<String> {
+    vec![
+        "SET FOREIGN_KEY_CHECKS = 0".into(),
+        "DROP TABLE IF EXISTS comments".into(),
+        "DROP TABLE IF EXISTS posts".into(),
+        "DROP TABLE IF EXISTS users".into(),
+        "DROP TABLE IF EXISTS uniq".into(),
+        "SET FOREIGN_KEY_CHECKS = 1".into(),
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL, post_count INT NOT NULL DEFAULT 0)".into(),
+        "CREATE TABLE posts (id INT AUTO_INCREMENT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), views INT NOT NULL DEFAULT 0, created_at VARCHAR(255) NOT NULL)".into(),
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255) NOT NULL, created_at VARCHAR(255) NOT NULL)".into(),
+        "CREATE TABLE uniq (name VARCHAR(255) NOT NULL, s0 INT, f0 VARCHAR(255))".into(),
+    ]
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Connect + (re)seed a live Postgres in the isolated `scp_rust_bench` schema. Panics (fail-closed,
+/// no silent skip) if PG is unreachable — the caller only calls this once a `run`/`throughput`
+/// request for dialect=postgres has already been dispatched (docker is a prerequisite of that path).
+fn connect_pg(art: &Artifact) -> PostgresDriver {
+    let host = env_or("TEST_DB_HOST", "localhost");
+    let port = env_or("TEST_DB_PORT", "5433");
+    let user = env_or("TEST_DB_USER", "testuser");
+    let password = env_or("TEST_DB_PASSWORD", "testpass");
+    let dbname = env_or("TEST_DB_NAME", "testdb");
+    let conn = format!("host={host} port={port} user={user} password={password} dbname={dbname}");
+    let d = PostgresDriver::connect(&conn)
+        .unwrap_or_else(|e| panic!("postgres unreachable at {host}:{port} — {}", e.message));
+    d.exec_ddl(&[
+        format!("CREATE SCHEMA IF NOT EXISTS {PG_SCHEMA_NAME}"),
+        format!("SET search_path TO {PG_SCHEMA_NAME}"),
+    ])
+    .expect("pg schema create");
+    d.exec_ddl(&pg_schema_statements()).expect("pg ddl");
+    for s in &art.seed {
+        d.prepare(s).run(&[]).expect("pg seed");
+    }
+    d.exec_ddl(&pg_seq_reset()).expect("pg seq reset");
+    d
+}
+
+/// Connect + (re)seed a live MySQL in the isolated `scp_rust_bench` database. Panics (fail-closed)
+/// if MySQL is unreachable.
+fn connect_mysql(art: &Artifact) -> MysqlDriver {
+    let host = env_or("TEST_MYSQL_HOST", "127.0.0.1");
+    let port = env_or("TEST_MYSQL_PORT", "3307");
+    let user = env_or("TEST_MYSQL_USER", "testuser");
+    let password = env_or("TEST_MYSQL_PASSWORD", "testpass");
+    let boot_db = env_or("TEST_MYSQL_DB", "testdb");
+    let boot_url = format!("mysql://{user}:{password}@{host}:{port}/{boot_db}");
+    let boot = MysqlDriver::connect(&boot_url)
+        .unwrap_or_else(|e| panic!("mysql unreachable at {host}:{port} — {}", e.message));
+    boot.exec_ddl(&[format!("CREATE DATABASE IF NOT EXISTS {MYSQL_DB_NAME}")])
+        .expect("mysql database create");
+    drop(boot);
+    let url = format!("mysql://{user}:{password}@{host}:{port}/{MYSQL_DB_NAME}");
+    let d = MysqlDriver::connect(&url).unwrap_or_else(|e| {
+        panic!(
+            "mysql ({MYSQL_DB_NAME}) unreachable at {host}:{port} — {}",
+            e.message
+        )
+    });
+    d.exec_ddl(&mysql_schema_statements()).expect("mysql ddl");
+    for s in &art.seed {
+        d.prepare(s).run(&[]).expect("mysql seed");
+    }
+    d
+}
+
+// Lazy, memoized live connections — one per dialect, reused across every `run`/`throughput`
+// request in this adapter process (the harness spawns ONE subprocess per (language × impl) cell,
+// so a single pair of connections serves the whole cell's DB-backed axis).
+thread_local! {
+    static PG_CONN: RefCell<Option<PostgresDriver>> = RefCell::new(None);
+    static MYSQL_CONN: RefCell<Option<MysqlDriver>> = RefCell::new(None);
+}
 
 // ── generated artifact (schema + seed + PER-DIALECT case bundles) ────────────
 // `cases` is the sqlite map (the in-proc DB-backed path + fairness cost denominator);
@@ -217,7 +330,9 @@ fn obj_int(v: &Value, key: &str) -> Option<i64> {
 }
 
 // ── litedbmodel runtime (codegen / ir) op ─────────────────────────────────────
-fn run_lm(case: &J, d: &SqliteDriver) {
+// Generic over `&dyn Driver` so the SAME op runs against SqliteDriver / PostgresDriver /
+// MysqlDriver (#53 — the live PG/MySQL wiring).
+fn run_lm(case: &J, d: &dyn Driver) {
     let bundle = &case["bundle"];
     let kind = case["kind"].as_str().unwrap();
     let input = &case["input"];
@@ -241,8 +356,8 @@ fn run_lm(case: &J, d: &SqliteDriver) {
     }
 }
 
-// A borrowing Sync view over an existing &SqliteDriver (single-threaded bench — sound, see above).
-struct SyncDriverRef<'a>(&'a SqliteDriver);
+// A borrowing Sync view over an existing &dyn Driver (single-threaded bench — sound, see above).
+struct SyncDriverRef<'a>(&'a dyn Driver);
 impl<'a> Driver for SyncDriverRef<'a> {
     fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
         self.0.prepare(sql)
@@ -736,17 +851,47 @@ fn main() {
     }
 }
 
-// The Rust bench adapter drives the in-proc SqliteDriver for the DB-backed axis; the
-// live PG/MySQL wiring (behind the runtime's async `livedb` cargo feature — tokio +
-// deadpool/sqlx) is NOT wired into this bench adapter in this pass, so PG/MySQL
-// DB-backed is reported as an explicit per-cell skip (never silently dropped). The
-// per-dialect MICRO axis IS covered (the mock renders each dialect's bundle).
-fn db_skip_reason(dialect: &str) -> Option<String> {
-    match dialect {
-        "sqlite" => None,
-        other => Some(format!(
-            "rust bench adapter drives in-proc SqliteDriver only; live {other} (runtime `livedb` async feature: tokio+deadpool/sqlx) not wired into this bench adapter"
+// `sql` is the hand-written raw-SQL baseline (sqlite-shaped by construction — every language
+// adapter runs its `sql` cell on sqlite only). `codegen` in THIS binary always panics (fail-closed
+// — it rides the dedicated lm_codegen binary); its generated read module is itself wired to the
+// in-proc sqlite driver only, so codegen DB-backed is sqlite-only across every language (#53 — not
+// a gap, matches the established convention). Only `ir` gains live PG/MySQL (#53).
+fn db_skip_reason(impl_: &str, dialect: &str) -> Option<String> {
+    if dialect == "sqlite" {
+        return None;
+    }
+    match impl_ {
+        "sql" => Some(format!(
+            "sql baseline is hand-written sqlite SQL — not run against {dialect} (dialect-specific by construction)"
         )),
+        "codegen" => Some(format!(
+            "codegen generated-module cell is wired to the in-proc sqlite driver; PG/MySQL DB-backed not wired for the generated cell (see lm_codegen) — not run against {dialect}"
+        )),
+        _ => None, // ir: PG/MySQL wired below (live PostgresDriver/MysqlDriver).
+    }
+}
+
+// Run `op` against the live driver for `dialect` ("postgres" | "mysql"), lazily connecting +
+// seeding once per adapter process (the connection is memoized in PG_CONN/MYSQL_CONN — every
+// `run`/`throughput` request in this cell's whole matrix run reuses it, same lifetime as the
+// in-proc SqliteDriver's per-request re-seed would otherwise cover).
+fn with_live_driver<F: FnOnce(&dyn Driver)>(dialect: &str, art: &Artifact, op: F) {
+    match dialect {
+        "postgres" => PG_CONN.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(connect_pg(art));
+            }
+            op(slot.as_ref().unwrap());
+        }),
+        "mysql" => MYSQL_CONN.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(connect_mysql(art));
+            }
+            op(slot.as_ref().unwrap());
+        }),
+        other => panic!("with_live_driver: unknown dialect {other}"),
     }
 }
 
@@ -755,7 +900,7 @@ fn handle(kind: &str, req: &J, impl_: &str, art: &Artifact) {
         "run" => {
             let case = req["case"].as_str().unwrap();
             let dialect = req["dialect"].as_str().unwrap_or("sqlite");
-            if let Some(reason) = db_skip_reason(dialect) {
+            if let Some(reason) = db_skip_reason(impl_, dialect) {
                 write_line(
                     &serde_json::json!({"kind":"skipped","case":case,"dialect":dialect,"reason":reason}),
                 );
@@ -763,47 +908,69 @@ fn handle(kind: &str, req: &J, impl_: &str, art: &Artifact) {
             }
             let warmup = req["warmup"].as_u64().unwrap() as usize;
             let iters = req["iterations"].as_u64().unwrap() as usize;
-            let d = seed_driver(art);
-            let cjson = art.cases[case].clone();
-            let samples = collect(warmup, iters, || {
-                if impl_ == "sql" {
-                    run_sql(case, &d);
-                } else if impl_ == "codegen" {
-                    panic!("lm_bench serves sql/ir only (codegen = lm_codegen binary)");
-                } else {
-                    run_lm(&cjson, &d);
-                }
-            });
-            write_line(
-                &serde_json::json!({"kind":"run","case":case,"dialect":dialect,"samplesMs":samples}),
-            );
+            let cjson = art.cases_by_dialect[dialect][case].clone();
+            if dialect == "sqlite" {
+                let d = seed_driver(art);
+                let samples = collect(warmup, iters, || {
+                    if impl_ == "sql" {
+                        run_sql(case, &d);
+                    } else if impl_ == "codegen" {
+                        panic!("lm_bench serves sql/ir only (codegen = lm_codegen binary)");
+                    } else {
+                        run_lm(&cjson, &d);
+                    }
+                });
+                write_line(
+                    &serde_json::json!({"kind":"run","case":case,"dialect":dialect,"samplesMs":samples}),
+                );
+            } else {
+                with_live_driver(dialect, art, |d| {
+                    let samples = collect(warmup, iters, || run_lm(&cjson, d));
+                    write_line(
+                        &serde_json::json!({"kind":"run","case":case,"dialect":dialect,"samplesMs":samples}),
+                    );
+                });
+            }
         }
         "throughput" => {
             let case = req["case"].as_str().unwrap();
             let dialect = req["dialect"].as_str().unwrap_or("sqlite");
-            if let Some(reason) = db_skip_reason(dialect) {
+            if let Some(reason) = db_skip_reason(impl_, dialect) {
                 write_line(
                     &serde_json::json!({"kind":"skipped","case":case,"dialect":dialect,"reason":reason}),
                 );
                 return;
             }
             let iters = req["iterations"].as_u64().unwrap() as usize;
-            let d = seed_driver(art);
-            let cjson = art.cases[case].clone();
-            let t0 = Instant::now();
-            for _ in 0..iters {
-                if impl_ == "sql" {
-                    run_sql(case, &d);
-                } else if impl_ == "codegen" {
-                    panic!("lm_bench serves sql/ir only (codegen = lm_codegen binary)");
-                } else {
-                    run_lm(&cjson, &d);
+            let cjson = art.cases_by_dialect[dialect][case].clone();
+            if dialect == "sqlite" {
+                let d = seed_driver(art);
+                let t0 = Instant::now();
+                for _ in 0..iters {
+                    if impl_ == "sql" {
+                        run_sql(case, &d);
+                    } else if impl_ == "codegen" {
+                        panic!("lm_bench serves sql/ir only (codegen = lm_codegen binary)");
+                    } else {
+                        run_lm(&cjson, &d);
+                    }
                 }
+                let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
+                write_line(
+                    &serde_json::json!({"kind":"throughput","case":case,"dialect":dialect,"elapsedMs":elapsed,"completed":iters}),
+                );
+            } else {
+                with_live_driver(dialect, art, |d| {
+                    let t0 = Instant::now();
+                    for _ in 0..iters {
+                        run_lm(&cjson, d);
+                    }
+                    let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
+                    write_line(
+                        &serde_json::json!({"kind":"throughput","case":case,"dialect":dialect,"elapsedMs":elapsed,"completed":iters}),
+                    );
+                });
             }
-            let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
-            write_line(
-                &serde_json::json!({"kind":"throughput","case":case,"dialect":dialect,"elapsedMs":elapsed,"completed":iters}),
-            );
         }
         "micro" => {
             let case = req["case"].as_str().unwrap();

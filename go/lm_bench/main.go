@@ -3,10 +3,16 @@
 // It speaks the line-delimited JSON contract over stdin/stdout for the three Go cells:
 // sql / codegen / ir.
 //
-//	sql     — hand-optimized raw SQL via database/sql + modernc sqlite (baseline 1.0x)
+//	sql     — hand-optimized raw SQL via database/sql + modernc sqlite (baseline 1.0x; sqlite-shaped
+//	          by construction — the sql baseline runs on sqlite only, same convention every
+//	          language adapter uses)
 //	codegen — the makeSQL bundle resident + integrity-verified ONCE at load, executed via the
-//	          DEPENDED litedbmodel_runtime package
-//	ir      — the bundle loaded FROM the generated JSON on disk, executed via the SAME runtime
+//	          DEPENDED litedbmodel_runtime package. Wired to the in-proc sqlite driver only
+//	          (matches every other language's codegen cell) — PG/MySQL DB-backed is a per-cell skip.
+//	ir      — the bundle loaded FROM the generated JSON on disk, executed via the SAME runtime.
+//	          DB-backed on sqlite AND real dockerized Postgres/MySQL (#53) via the runtime's live
+//	          OpenPostgres (pgx)/OpenMysql (go-sql-driver, RETURNING-emulated) — the SAME seam
+//	          livedb_runner/conformance already use; this just wires the bench cell to it.
 //
 // Consumes generated/bundles.json (the language-neutral §8 artifact) unchanged. Its compiled
 // binary size is the Go artifact-size metric.
@@ -30,6 +36,129 @@ import (
 	bc "github.com/foo-ogawa/behavior-contracts/go"
 	_ "modernc.org/sqlite"
 )
+
+// ── real-DB schema (mirror of domain.ts PG_SCHEMA / MYSQL_SCHEMA; isolated `scp_go_bench`
+// namespace so this bench never collides with conformance's `scp_go` tables) ──────────────────
+const pgSchemaName = "scp_go_bench"
+const mysqlDBName = "scp_go_bench"
+
+var pgSchemaStatements = []string{
+	"DROP TABLE IF EXISTS comments CASCADE",
+	"DROP TABLE IF EXISTS posts CASCADE",
+	"DROP TABLE IF EXISTS users CASCADE",
+	"DROP TABLE IF EXISTS uniq CASCADE",
+	"CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, post_count INTEGER NOT NULL DEFAULT 0)",
+	"CREATE TABLE posts (id SERIAL PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, views INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)",
+	"CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)",
+	// s0 binds author_id (always numeric) — INTEGER (#53: pgx's strict binary protocol rejects an
+	// int arg for a text column).
+	"CREATE TABLE uniq (name TEXT NOT NULL, s0 INTEGER, f0 TEXT)",
+}
+var pgSeqReset = "SELECT setval('posts_id_seq', (SELECT MAX(id) FROM posts))"
+var mysqlSchemaStatements = []string{
+	"SET FOREIGN_KEY_CHECKS = 0",
+	"DROP TABLE IF EXISTS comments",
+	"DROP TABLE IF EXISTS posts",
+	"DROP TABLE IF EXISTS users",
+	"DROP TABLE IF EXISTS uniq",
+	"SET FOREIGN_KEY_CHECKS = 1",
+	"CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL, post_count INT NOT NULL DEFAULT 0)",
+	"CREATE TABLE posts (id INT AUTO_INCREMENT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), views INT NOT NULL DEFAULT 0, created_at VARCHAR(255) NOT NULL)",
+	"CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255) NOT NULL, created_at VARCHAR(255) NOT NULL)",
+	"CREATE TABLE uniq (name VARCHAR(255) NOT NULL, s0 INT, f0 VARCHAR(255))",
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// Lazy, memoized live connections — one per dialect, reused across every run/throughput request
+// this adapter process handles (the harness spawns ONE subprocess per (language × impl) cell).
+var pgConn *sql.DB
+var mysqlConn *sql.DB
+
+// connectPG lazily opens + (re)seeds a live Postgres in the isolated scp_go_bench schema. Panics
+// (fail-closed, no silent skip) if PG is unreachable.
+func connectPG(a *artifact) *sql.DB {
+	if pgConn != nil {
+		return pgConn
+	}
+	host := envOr("TEST_DB_HOST", "localhost")
+	port := envOr("TEST_DB_PORT", "5433")
+	user := envOr("TEST_DB_USER", "testuser")
+	pass := envOr("TEST_DB_PASSWORD", "testpass")
+	dbname := envOr("TEST_DB_NAME", "testdb")
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable&search_path=%s", user, pass, host, port, dbname, pgSchemaName)
+	db, err := rt.OpenPostgres(dsn)
+	if err != nil {
+		panic(fmt.Sprintf("postgres unreachable at %s:%s — %v", host, port, err))
+	}
+	must(exec1(db, "CREATE SCHEMA IF NOT EXISTS "+pgSchemaName))
+	must(exec1(db, "SET search_path TO "+pgSchemaName))
+	for _, s := range pgSchemaStatements {
+		must(exec1(db, s))
+	}
+	for _, s := range a.Seed {
+		must(exec1(db, s))
+	}
+	must(exec1(db, pgSeqReset))
+	pgConn = db
+	return db
+}
+
+// connectMysql lazily opens + (re)seeds a live MySQL in the isolated scp_go_bench database.
+// Panics (fail-closed) if MySQL is unreachable.
+func connectMysql(a *artifact) *sql.DB {
+	if mysqlConn != nil {
+		return mysqlConn
+	}
+	host := envOr("TEST_MYSQL_HOST", "127.0.0.1")
+	port := envOr("TEST_MYSQL_PORT", "3307")
+	user := envOr("TEST_MYSQL_USER", "testuser")
+	pass := envOr("TEST_MYSQL_PASSWORD", "testpass")
+	bootDB := envOr("TEST_MYSQL_DB", "testdb")
+	bootDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", user, pass, host, port, bootDB)
+	boot, err := rt.OpenMysql(bootDSN)
+	if err != nil {
+		panic(fmt.Sprintf("mysql unreachable at %s:%s — %v", host, port, err))
+	}
+	must(exec1(boot, "CREATE DATABASE IF NOT EXISTS "+mysqlDBName))
+	boot.Close()
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", user, pass, host, port, mysqlDBName)
+	db, err := rt.OpenMysql(dsn)
+	if err != nil {
+		panic(fmt.Sprintf("mysql (%s) unreachable at %s:%s — %v", mysqlDBName, host, port, err))
+	}
+	for _, s := range mysqlSchemaStatements {
+		must(exec1(db, s))
+	}
+	for _, s := range a.Seed {
+		must(exec1(db, s))
+	}
+	mysqlConn = db
+	return db
+}
+
+func exec1(db *sql.DB, stmt string) error {
+	_, err := db.Exec(stmt)
+	return err
+}
+
+// liveDriverFor returns the memoized live connection for "postgres"/"mysql", connecting +
+// seeding lazily on first use.
+func liveDriverFor(dialect string, a *artifact) *sql.DB {
+	switch dialect {
+	case "postgres":
+		return connectPG(a)
+	case "mysql":
+		return connectMysql(a)
+	default:
+		panic("liveDriverFor: unknown dialect " + dialect)
+	}
+}
 
 // ── generated artifact ────────────────────────────────────────────────────────
 type caseArt struct {
@@ -284,16 +413,23 @@ func main() {
 	}
 }
 
-// The Go bench adapter drives the in-proc SQLite (modernc.org/sqlite) DB-backed axis;
-// the live PG/MySQL wiring (the runtime's OpenPostgres/OpenMysql seam — pgx +
-// go-sql-driver) is NOT wired into this bench adapter in this pass, so PG/MySQL
-// DB-backed is reported as an explicit per-cell skip (never silently dropped). The
-// per-dialect MICRO axis IS covered (the mock renders each dialect's bundle).
-func dbSkipReason(dialect string) string {
+// `sql` is the hand-written raw-SQL baseline (sqlite-shaped by construction — every language
+// adapter runs its `sql` cell on sqlite only). `codegen`'s generated module is wired to the
+// in-proc sqlite driver only (matches every other language's codegen cell) — not a gap, a
+// declared convention. Only `ir` gains live PG/MySQL (#53), via the SAME OpenPostgres/OpenMysql
+// seam livedb_runner/conformance already use.
+func dbSkipReason(impl, dialect string) string {
 	if dialect == "sqlite" {
 		return ""
 	}
-	return "go bench adapter drives in-proc sqlite (modernc) only; live " + dialect + " (runtime OpenPostgres/OpenMysql: pgx/go-sql-driver) not wired into this bench adapter"
+	switch impl {
+	case "sql":
+		return "sql baseline is hand-written sqlite SQL — not run against " + dialect + " (dialect-specific by construction)"
+	case "codegen":
+		return "codegen generated-module cell is wired to the in-proc sqlite driver; PG/MySQL DB-backed not wired for the generated cell — not run against " + dialect
+	default:
+		return "" // ir: PG/MySQL wired below (live OpenPostgres/OpenMysql).
+	}
 }
 
 func handle(req map[string]any, impl string, art *artifact) {
@@ -305,47 +441,63 @@ func handle(req map[string]any, impl string, art *artifact) {
 	switch kind {
 	case "run":
 		caseID := req["case"].(string)
-		if reason := dbSkipReason(dialect); reason != "" {
+		if reason := dbSkipReason(impl, dialect); reason != "" {
 			write(map[string]any{"kind": "skipped", "case": caseID, "dialect": dialect, "reason": reason})
 			return
 		}
 		warmup := int(req["warmup"].(float64))
 		iters := int(req["iterations"].(float64))
-		db := seedDB(art)
-		defer db.Close()
-		c := art.Cases[caseID]
-		samples := collect(warmup, iters, func() {
-			if impl == "sql" {
-				runSQL(caseID, db)
-			} else if impl == "codegen" {
-				runCodegen(dialect, caseID, db)
-			} else {
-				runLM(c, db)
-			}
-		})
-		write(map[string]any{"kind": "run", "case": caseID, "dialect": dialect, "samplesMs": samples})
+		c := art.CasesByDialect[dialect][caseID]
+		if dialect == "sqlite" {
+			db := seedDB(art)
+			defer db.Close()
+			samples := collect(warmup, iters, func() {
+				if impl == "sql" {
+					runSQL(caseID, db)
+				} else if impl == "codegen" {
+					runCodegen(dialect, caseID, db)
+				} else {
+					runLM(c, db)
+				}
+			})
+			write(map[string]any{"kind": "run", "case": caseID, "dialect": dialect, "samplesMs": samples})
+		} else {
+			db := liveDriverFor(dialect, art)
+			samples := collect(warmup, iters, func() { runLM(c, db) })
+			write(map[string]any{"kind": "run", "case": caseID, "dialect": dialect, "samplesMs": samples})
+		}
 	case "throughput":
 		caseID := req["case"].(string)
-		if reason := dbSkipReason(dialect); reason != "" {
+		if reason := dbSkipReason(impl, dialect); reason != "" {
 			write(map[string]any{"kind": "skipped", "case": caseID, "dialect": dialect, "reason": reason})
 			return
 		}
 		iters := int(req["iterations"].(float64))
-		db := seedDB(art)
-		defer db.Close()
-		c := art.Cases[caseID]
-		t0 := time.Now()
-		for i := 0; i < iters; i++ {
-			if impl == "sql" {
-				runSQL(caseID, db)
-			} else if impl == "codegen" {
-				runCodegen(dialect, caseID, db)
-			} else {
+		c := art.CasesByDialect[dialect][caseID]
+		if dialect == "sqlite" {
+			db := seedDB(art)
+			defer db.Close()
+			t0 := time.Now()
+			for i := 0; i < iters; i++ {
+				if impl == "sql" {
+					runSQL(caseID, db)
+				} else if impl == "codegen" {
+					runCodegen(dialect, caseID, db)
+				} else {
+					runLM(c, db)
+				}
+			}
+			el := float64(time.Since(t0).Nanoseconds()) / 1e6
+			write(map[string]any{"kind": "throughput", "case": caseID, "dialect": dialect, "elapsedMs": el, "completed": iters})
+		} else {
+			db := liveDriverFor(dialect, art)
+			t0 := time.Now()
+			for i := 0; i < iters; i++ {
 				runLM(c, db)
 			}
+			el := float64(time.Since(t0).Nanoseconds()) / 1e6
+			write(map[string]any{"kind": "throughput", "case": caseID, "dialect": dialect, "elapsedMs": el, "completed": iters})
 		}
-		el := float64(time.Since(t0).Nanoseconds()) / 1e6
-		write(map[string]any{"kind": "throughput", "case": caseID, "dialect": dialect, "elapsedMs": el, "completed": iters})
 	case "micro":
 		caseID := req["case"].(string)
 		if impl == "sql" && dialect != "sqlite" {
