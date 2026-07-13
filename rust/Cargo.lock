@@ -86,9 +86,9 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "behavior-contracts"
-version = "0.2.3"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a6bde16f59e71608b1c01b9fe6260e139a8723f5ac1be2939d85133a7abf281"
+checksum = "119b7a6d7c1d6a9d66b9fc187a6926d18fff2d2a7c375d482c195ac4e5ca36f9"
 dependencies = [
  "serde_json",
 ]
@@ -943,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "litedbmodel_runtime"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "behavior-contracts",
  "chrono",
@@ -966,7 +966,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "livedb_runner"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "litedbmodel_runtime",
  "serde_json",
@@ -2111,7 +2111,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vectors_runner"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "litedbmodel_runtime",
  "serde_json",

@@ -33,7 +33,7 @@ pub mod value;
 pub mod livedb;
 
 /// Version mirrored from package.json by scripts/sync-versions.mjs (SSoT).
-pub const VERSION: &str = "2.0.1";
+pub const VERSION: &str = "2.0.2";
 
 // ── public surface (mirrors the Python `__all__`) ──────────────────────────────
 pub use dialect::{dialect_for, to_dollar_placeholders, Dialect};
@@ -41,7 +41,7 @@ pub use driver::{Driver, PreparedStatement, RunInfo, SqliteDriver};
 pub use errors::{map_sqlite_error, re_error_to_sql_failure, SqlFailure};
 #[cfg(feature = "livedb")]
 pub use livedb::{MysqlDriver, PostgresDriver};
-pub use relation::read_bundle_pooled;
+pub use relation::{read_bundle_pooled, stitch_relation};
 pub use runtime::{
     execute_bundle, execute_bundle_pooled, execute_transaction_bundle, order_by_nulls,
     render_read_primary_bundle, ENTITY_ROOT,

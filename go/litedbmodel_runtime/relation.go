@@ -306,6 +306,27 @@ func driverForOp(op RelationOp, db SQLDB, connections map[string]SQLDB) (SQLDB, 
 // CROSS-DB (V0 R1): a relation op carrying a `connection` tag is batched against connections[tag]
 // (its target model's DB) instead of the primary db; untagged relations ignore connections. Pass a
 // nil/empty map for a single-DB read.
+// StitchRelation batch-loads + hydrates ONE declared relation onto an ALREADY-FETCHED parent row
+// list, using the SAME RunRelationOp / DistributeToParent the runtime's own read path uses (no
+// reimplemented grouping — the semantics stay single-sourced here). `opJObj` is the relation op as
+// it appears under bundle.relations[name] (pure JSON, bc-ordered). The public seam the codegen bench
+// cell uses: it runs the GENERATED de-interpreted module for the primary read (its own distinct code
+// entry — NOT ExecuteBundle), then hydrates the companion relation through this shared stitch so the
+// hydrated result is byte-identical to ReadBundle's.
+func StitchRelation(opJObj *bc.JObj, parents []bc.Value, db SQLDB) ([]bc.Value, error) {
+	op := relationOpFromJObj(opJObj)
+	batch, err := RunRelationOp(op, parents, db)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range parents {
+		if obj, ok := r.(*bc.Obj); ok {
+			obj.Set(op.Name, DistributeToParent(op, obj, batch))
+		}
+	}
+	return parents, nil
+}
+
 func ReadBundle(bundle *SqlBundle, relations *bc.JObj, input *bc.Obj, db SQLDB, withNames []string, connections map[string]SQLDB) (bc.Value, error) {
 	out, err := ExecuteBundle(bundle, input, db)
 	if err != nil {

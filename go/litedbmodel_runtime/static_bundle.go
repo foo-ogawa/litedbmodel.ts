@@ -444,29 +444,46 @@ func (h *readGraphHandlers) Exec(component string, ports *bc.Obj, bound bc.Value
 
 // ExecCtx renders the node's static statements against the surrogate `__scope` port and runs REAL SQL.
 func (h *readGraphHandlers) ExecCtx(nodeID, component string, ports *bc.Obj, bound bc.Value) (bc.ExecOutcome, bool) {
-	stmts, ok := h.graph.StatementsByID[nodeID]
-	if !ok {
-		return bc.ErrOutcome(fmt.Sprintf("static-bundle: no statements for node '%s'", nodeID)), true
-	}
 	scopeV, _ := ports.Get(scopePort)
 	scope, ok := scopeV.(*bc.Obj)
 	if !ok {
 		return bc.ErrOutcome(fmt.Sprintf("static-bundle: node '%s' surrogate scope did not evaluate to an object", nodeID)), true
 	}
-	rendered, err := renderStatements(stmts, h.dialect, scope)
+	rows, err := RenderExecuteNode(h.graph, nodeID, h.dialect, scope, h.db)
 	if err != nil {
 		return bc.ErrOutcome(err.Error()), true
+	}
+	return bc.OkOutcome(rows), true
+}
+
+// RenderExecuteNode renders ONE read node's static statements against `scope` and runs REAL SQL on
+// `db`, returning the row list. It is the render→execute SSoT behind the `__makeSqlNode` handler
+// (ExecCtx above). Exported so the codegen bench cell's generated-module handler runs the SAME
+// render+execute the interpreter handler runs — the ONLY difference being that the generated
+// de-interpreted module (NOT RunBehavior) drives the call. Byte-identical rows to the ir path.
+func RenderExecuteNode(g *ReadGraph, nodeID, dialect string, scope *bc.Obj, db SQLDB) ([]bc.Value, error) {
+	stmts, ok := g.StatementsByID[nodeID]
+	if !ok {
+		return nil, fmt.Errorf("static-bundle: no statements for node '%s'", nodeID)
+	}
+	rendered, err := renderStatements(stmts, dialect, scope)
+	if err != nil {
+		return nil, err
 	}
 	args := make([]any, len(rendered.Params))
 	for i, p := range rendered.Params {
 		args[i] = toDriverParam(p)
 	}
-	rows, qerr := queryRows(h.db, rendered.SQL, args)
+	rows, qerr := queryRows(db, rendered.SQL, args)
 	if qerr != nil {
-		return bc.ErrOutcome(mapSqliteError(qerr).Error()), true
+		return nil, mapSqliteError(qerr)
 	}
-	return bc.OkOutcome(rows), true
+	return rows, nil
 }
+
+// PrimaryNodeID exposes the read graph's primary render node id (the SELECT relations map over) so
+// the codegen bench cell's handler can render it. Exported companion to RenderExecuteNode.
+func (g *ReadGraph) PrimaryNodeID() (string, error) { return g.primaryNodeID() }
 
 // ExecuteReadGraph executes a compiled ReadGraph via bc RunBehavior + a makeSQL handler: bc drives
 // map iteration / wire binding / Φ output; the handler renders each node's static statements against

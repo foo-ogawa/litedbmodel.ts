@@ -1,0 +1,4 @@
+# Generated codegen packages — the bc-generated per-case straight-line modules materialized INSIDE
+# the go module by benchmark/crosslang/generate.ts (package cg_<case>). Build output: regenerated at
+# bench run time, NEVER committed. codegen_cell.go imports these, so run `generate` before `go build`.
+cgmods/

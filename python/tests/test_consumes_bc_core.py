@@ -9,6 +9,8 @@ that the declared dependency is the PyPI package spec with NO local `../` path.
 
 from __future__ import annotations
 
+import re
+
 import ast
 from pathlib import Path
 
@@ -39,7 +41,12 @@ def test_no_local_generic_evaluator_reimplemented():
 
 def test_pyproject_declares_bc_as_pypi_dep_no_local_path():
     text = PYPROJECT.read_text(encoding="utf-8")
-    assert 'behavior-contracts==0.2.0' in text
+    # bc is consumed as an EXACTLY-PINNED PyPI dependency (`behavior-contracts==<semver>`), never a
+    # range and never a local path — the runtime + the generated §8 bundle must stay in lockstep
+    # (WS7a #30). Assert the pinned FORM, version-agnostically, so this survives version bumps.
+    assert re.search(r'"behavior-contracts==\d+\.\d+\.\d+"', text), (
+        "pyproject must pin behavior-contracts to an exact PyPI version (behavior-contracts==X.Y.Z)"
+    )
     # No local path dep (the no-local-deps gate forbids `../` / file:// / path = ...).
     assert "../" not in text
     assert "file://" not in text

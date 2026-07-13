@@ -220,6 +220,57 @@ posts, _ := postQueries.Search(ctx, db, SearchInput{AuthorID: 7, Since: "2026-01
 - 論理モデル ↔ 物理配置（table/column/PK/index）はモデル定義が吸収（原案 contracts-architecture.md「モデル定義」）。
 - litedbmodel-gen は `schema.sql` から列定義を生成し、**マーカー内は再生成・手書き（リレーション/writes/SCP ブロック）は保持**。
 
+### 4.1 型システム（SQL 型ベース・SSoT）
+
+litedbmodel は SQL バックエンド consumer なので、**列型は SQL 型を SoT とする**（TS の `number` は int/real を区別できないため型の権威にしない — v1 の TS-型ベース `@column`（`design:type=Number`）が INTEGER/REAL を潰していたのを是正）。型は `schema.sql`（DDL）から確定し、**typed codegen（bc typed-raw 脱box）の `outType` 注記**に使う。interpret 経路（動的 Value）では列型は不要だったため v2 は本節を欠いていた。typed codegen が SQL レベルの型精度を要求するため、ここで規定する。
+
+**列型 → bc outType スカラ（正規対応表）**
+
+| SQL 型 | litedbmodel 列型 | bc outType | 備考 |
+|---|---|---|---|
+| INTEGER / INT / BIGINT | `int` | `int` | int は既定 **64bit (i64)**。狭いサイズ制限はデコレータオプション（制約）で表現し、**別型にしない**（int と bigint を分けない） |
+| REAL / FLOAT / DOUBLE | `real` | `float` | int と real は**明確に分離**（普通の処理系どおり） |
+| DECIMAL / NUMERIC | `decimal` | `string` | 精度保持のため文字列表現 |
+| TEXT / VARCHAR / CHAR / UUID | `text` | `string` | |
+| BOOLEAN | `bool` | `bool` | |
+| DATE / TIMESTAMP / DATETIME | `date` | `string` | **一旦 string**（オーナー決定）。bc の `date` scalar 新設（behavior-contracts#84）は将来の最適化として **defer**。litedbmodel 列型は `date` のまま（SQL/意味は保持）だが bc 表現は string。**TS のみ利便で `Date` へ de/serialize 可、他言語（Rust/Go/Py/PHP）は string 扱い**（JSON 列と同じ構図）。DB は行ごとに別 TZ を保存しない |
+| JSON / JSONB | `json` | `string` | 表現は JSON テキスト＝**文字列**。TS のみ利便で object に de/serialize。列ごとに typed obj へ構造化しない |
+
+**構造型（クエリ由来。列型ではない）**
+- 行 = 列の **`obj{列: 型…}`**。
+- hasMany/list = **`arr<行obj>`**、belongsTo/hasOne = **`opt<行obj>`**、connection = `obj{items: arr<…>, cursor: opt<…>}`。
+- **object と array は明確に別**（一括の「json」型にしない）。JSON 列（上表）とは無関係。
+
+**3層（デコレータ型 ↔ SQL 型 ↔ bc outType）**
+
+型は3層で一意対応させる。デコレータが authoring 面で列型を宣言し、SQL 型（DDL）が物理 SoT、bc outType が codegen 面。
+
+| litedbmodel 列型 | デコレータ | SQL 型 | bc outType |
+|---|---|---|---|
+| int | `@column.int()` | INTEGER/INT/BIGINT | `int` |
+| real | `@column.real()` | REAL/FLOAT/DOUBLE | `float` |
+| decimal | `@column.decimal()` | DECIMAL/NUMERIC | `string` |
+| text | `@column.text()`（既定）| TEXT/VARCHAR/CHAR/UUID | `string` |
+| bool | `@column.boolean()` | BOOLEAN | `bool` |
+| date | `@column.date()`/`.datetime()` | DATE/TIMESTAMP/DATETIME | `string`（一旦。bc date 型は #84 defer）|
+| json | `@column.json()` | JSON/JSONB | `string`（TS のみ object）|
+
+**デコレータ API 変更（v1 → v2 破壊的）**
+- **`@column.int()` / `@column.real()` を新設**。int は既定 **64bit(i64)**、狭いサイズ制限は `@column.int({ bits: 32 })` 等の**オプション制約**で表現（別型にしない）。
+- **`@column.bigint()` は廃止**（int が i64 なので冗長 → int に統合）。
+- **無印 `@column()`（`design:type=Number` 依存で int/real 曖昧）は禁止**。数値列は `.int()`/`.real()` を明示必須（未指定＝error、no-assume）。他の型（string/bool/date/json）は design:type から一意なので従来どおり推論可。
+- object と array は別（json 列＝string。行/リレーション構造の obj/arr とは無関係）。
+
+**規律**
+- 型が曖昧/未指定なら **error（no-assume・no-fallback）**。
+- SoT は `schema.sql` の SQL 型。`@column.*` は列型を宣言（gen は schema.sql → デコレータ型を生成）、converter（`src/scp/coltype.ts`）が上表で bc outType 記法へ**一意**変換する。
+
+**脱box は READ と WRITE の両方を覆う（§9 codegen 面）**
+- **READ**: SELECT projection を行 obj 型に型付け（`src/scp/makesql/outtype.ts`）→ bc typed-raw が具体的な行 struct を materialize。
+- **WRITE**: 書き込み出力＝`TransactionResult` の typed shape（`src/scp/makesql/writeouttype.ts`）:
+  `obj{ committed:bool, executed:arr<string>, shortCircuit:opt<obj{statementId:string, reason:string}>, entity:opt<ROW>, returnedRows:opt<arr<arr<ROW>>> }`。
+  `entity`/`returnedRows` の行（ROW）は、書き込み対象テーブル（tx plan の `body` statement の SQL から構造的に抽出）とその RETURNING 列を、**READ と同一の列型 resolver（本節の SoT）** で型付けする。脱box できない write shape（未知テーブル/列、`RETURNING *`、batch 群でテーブル/RETURNING が不一致 等）は **error（no-assume・no-fallback）** — 決してボックス化へ退避しない。READ の surrogate IR と同様、write bundle の `makeSqlComponentIR` の単一 node `outType` + component `outputType` に注記して bc typed-raw に渡す。
+
 ## 5. Relation — Read 系
 
 - Relation は SQL JOIN を**既定にしない**。graphddb / v1 LazyRelation と同型の **staged batch query-composition + object assembly**（feasibility §5・§9）。

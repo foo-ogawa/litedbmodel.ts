@@ -31,6 +31,7 @@ import {
   // bundle axis (the §8 STATIC makeSQL artifact + its execution)
   compileBundle,
   compileReadGraph,
+  schemaColumnTypeResolver,
   renderReadPrimary,
   compileWriteBundle,
   compileCompositeWriteBundle,
@@ -434,7 +435,10 @@ export function generateCorpus(): Suite[] {
     // The execution seam is in-process SQLite; a PG/MySQL-tagged read bundle's Φ output is
     // dialect-invariant (same IR + input → same result, §10), so only the SQLite bundle is EXECUTED.
     if (d !== 'sqlite') continue;
-    const bundle = compileBundle(blogContract, 'Feed', blogRelations, d);
+    // Thread the schema/DDL column-type SoT (spec §4.1) so the read bundle's IR carries the
+    // per-node `outType` / component `outputType` typed-codegen annotations — this is what lets bc's
+    // typed-raw de-box emitters (ts/go/rust) materialize concrete row structs in the codegen leg.
+    const bundle = compileBundle(blogContract, 'Feed', blogRelations, d, undefined, schemaColumnTypeResolver(READ_SCHEMA));
     exec.push(execVector(`Feed: status present + belongsTo/hasMany relations`, bundle, { author_id: 7, status: 'live', since: '2026-01-01', created_at: 'created_at' }, READ_SCHEMA));
     exec.push(execVector(`Feed: status absent (SKIP drop) + relations`, bundle, { author_id: 7, since: '2026-01-01', created_at: 'created_at' }, READ_SCHEMA));
   }
@@ -449,7 +453,11 @@ export function generateCorpus(): Suite[] {
   ];
   for (const d of ALL_DIALECTS) {
     if (d !== 'sqlite') continue;
-    const bundle = compileWriteBundle(cmdContract, 'Create', postWrites, 'create', d);
+    // Thread the schema/DDL column-type SoT (spec §4.1) so the WRITE bundle carries the
+    // TransactionResult `outputType` typed-codegen annotation (entity/returnedRows rows typed via the
+    // resolver) — this is what lets bc's typed-raw de-box emitter (ts/go/rust) materialize a concrete
+    // result struct in the codegen leg for the WRITE (tx) surface, byte-identical to the thin-runtime.
+    const bundle = compileWriteBundle(cmdContract, 'Create', postWrites, 'create', d, schemaColumnTypeResolver(WRITE_SCHEMA));
     tx.push(txVector(`create: gate-first tx commits (author exists, unique, idempotent)`, bundle, { author_id: 7, title: 'New Post', request_id: 'req-1' }, WRITE_SCHEMA, dbAsserts));
     tx.push(txVector(`create: gate short-circuits on missing author (ROLLBACK, no body write)`, bundle, { author_id: 999, title: 'Orphan', request_id: 'req-2' }, WRITE_SCHEMA, dbAsserts));
 

@@ -1,0 +1,20 @@
+[package]
+name = "lm_bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "lm_bench"
+path = "src/main.rs"
+
+[dependencies]
+# `livedb` pulls in the runtime's ASYNC + connection-pool Postgres + MySQL drivers
+# (tokio-postgres + deadpool-postgres / sqlx on the tokio runtime) — the SAME sync-facing
+# `Driver` seam `livedb_runner` uses, wired into the `ir` bench cell (#53).
+litedbmodel_runtime = { path = "../../../../rust/litedbmodel_runtime", features = ["livedb"] }
+behavior-contracts = "0.5.0"
+serde_json = "1"
+
+[profile.release]
+opt-level = 3

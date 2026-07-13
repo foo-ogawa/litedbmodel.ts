@@ -58,8 +58,18 @@ export function evalValueSpec(spec: ValueSpec, scope: Scope): unknown {
   if (isInputRef(spec)) return readPath(scope.input, spec.input);
   if (isWireRef(spec)) {
     const [node, ...rest] = spec.wire;
-    const nodeResults = scope.wire?.[node] ?? {};
-    return readPath(nodeResults, rest);
+    // A wire-ref reads a value an UPSTREAM node produced (WireRef doc). Fragments carrying a
+    // wire-ref are dropped by `isSkipped` when their upstream is skipped, so by evaluation time the
+    // node MUST be present. An absent node is a wiring/ordering bug — fail loudly, NEVER a silent
+    // `?? {}` → null (an unspec'd fallback that would swallow the bug).
+    if (scope.wire === undefined || !(node in scope.wire)) {
+      throw new Error(
+        `scp assemble: wire-ref to node '${node}' has no produced result in scope ` +
+          `(wire keys: ${scope.wire === undefined ? '<no wire scope>' : Object.keys(scope.wire).join(', ')}). ` +
+          `A wire-ref must reference an upstream node that produced — this is a wiring/ordering bug, not a silent null.`,
+      );
+    }
+    return readPath(scope.wire[node], rest);
   }
   if (isLiteral(spec)) return spec.literal;
   if (isValueExpr(spec)) {

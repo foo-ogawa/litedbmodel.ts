@@ -99,12 +99,15 @@ def main() -> int:
     companion = job["companion"]
     driver = SqliteDriver.in_memory(list(job["schema"]))
     try:
-        # Import the emitted module so its load-time fail-closed checks (spec-version / fingerprint)
-        # actually run, and verify the baked IR literal equals the companion's portable IR.
+        # Import the emitted straight-line module so its load-time fail-closed checks (spec-version
+        # envelope pin) actually run. The de-interpreted module does NOT embed the IR (bc#75 — it was
+        # compiled away); it exports the generation-time IR_FINGERPRINT constant, which the caller
+        # compares against the fingerprint of the source IR (the fail-closed skew gate). Here we just
+        # confirm the constant is present (a sham module that secretly interpreted an embedded IR
+        # would have to carry that IR — the anti-sham gate in the runner rejects that).
         mod = _import_generated(job["modulePath"])
-        recomputed = mod.fingerprint_component_graph(mod.IR)
-        if recomputed != mod.IR_FINGERPRINT:
-            sys.stderr.write(f"codegen py: baked IR fingerprint {recomputed} != {mod.IR_FINGERPRINT}\n")
+        if not isinstance(getattr(mod, "IR_FINGERPRINT", None), str):
+            sys.stderr.write("codegen py: emitted module missing IR_FINGERPRINT constant\n")
             return 1
 
         # The companion IS the static makeSQL bundle — execute it via the SAME thin-runtime path the

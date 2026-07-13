@@ -1,0 +1,33 @@
+[package]
+name = "v1rs_bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# The OLD litedbmodel.rs@0.4.5 (v1-rs) cross-language adapter (litedbmodel epic #44).
+#
+# Wires v1-rs into the #44 matrix as a comparison cell. v1-rs is an async sqlx/tokio +
+# deadpool ActiveRecord; there is NO makeSQL bundle and no synchronous in-proc seam, so
+# this adapter runs it against an in-proc SQLite `:memory:` DB (the achievable, faithful
+# comparison) by wrapping a single-thread tokio runtime and `block_on`-ing each op. It
+# speaks the SAME line-delimited JSON contract as the other adapters and consumes the SAME
+# generated/bundles.json schema+seed so the dataset is byte-identical to the v2 cells.
+
+[[bin]]
+name = "v1rs_bench"
+path = "src/main.rs"
+
+[dependencies]
+# The v1-rs crate under test. sqlite + runtime-tokio ONLY (NOT postgres): the in-proc
+# SQLite seam does not need libpq, and default features would pull deadpool-postgres.
+#
+# ABSOLUTE path: built from within a git worktree
+# under `.claude/worktrees/<name>/…`, a `../…` relative path resolves OUTSIDE the worktree
+# tree and misses the external v1-rs repo. An absolute path resolves correctly regardless
+# of which worktree (or the main checkout) this benchmark is invoked from.
+litedbmodel = { path = "/Users/ogawa/Work/my-libs/litedbmodel.rs/litedbmodel", default-features = false, features = ["sqlite", "runtime-tokio"] }
+tokio = { version = "1", features = ["rt", "time", "sync"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3

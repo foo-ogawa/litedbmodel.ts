@@ -171,6 +171,11 @@ export type { SqlFailureKind } from './errors';
 export { assertFindFilterFolded, findFilterKeys, FindFilterLeakError } from './find-filter-guard';
 export type { FindFilterSource } from './find-filter-guard';
 
+// Column type system (spec §4.1; #58): SQL type → bc outType scalar, and the schema/DDL SoT
+// resolver that types a SELECT projection for typed (de-boxed) codegen. Fail-closed throughout.
+export { sqlTypeToBcScalar, parseSchemaColumnTypes, schemaColumnTypeResolver } from './coltype';
+export type { BcScalar, ColumnTypeResolver } from './coltype';
+
 // Thin TS runtime (spec §3 / §10 / §11): validate → SKIP → expand → eval → bind → execute → assembly.
 // `compileBundle` emits the §8 published artifact (Backend-Compiled once, TS-side);
 // `executeBundle` runs that artifact via bc runtime-core alone (the multi-language target).
@@ -237,15 +242,19 @@ export { compileCreateManyBundle, compileUpdateManyBundle, compileDeleteManyBund
 export { compileDeleteMany } from './makesql';
 
 // Mode-3 codegen (WS7f, #35 — spec §9 exec-mode 3): supply the litedbmodel SQL catalog to bc's
-// shared generator; emit per-language source (IR baked as a native literal) + the SQL catalog
-// companion. Generated code output is byte-identical to the mode-2 thin-runtime (proven by the
-// codegen conformance leg).
+// shared generator; emit per-language STATIC straight-line source (de-interpreted, bc#75 — real
+// static code, NOT a baked-IR interpret path) + the SQL catalog companion. Generated code is
+// behavior-identical to the mode-2 thin-runtime (proven by the codegen conformance leg).
 export {
   CODEGEN_LANGUAGES,
+  CODEGEN_EMITTER,
   generateCodegenArtifact,
   bundleToPortableIR,
-  assertLanguageSupported,
+  lowerReadGraphForTypedNative,
+  codegenEmitterFor,
+  typedEmitterFor,
   codegenExecuteBundleForTest,
+  TypedNativeCoverageError,
 } from './codegen';
 export type {
   CodegenLanguage,
