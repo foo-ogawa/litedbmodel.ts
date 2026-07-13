@@ -33,7 +33,7 @@ pub mod value;
 pub mod livedb;
 
 /// Version mirrored from package.json by scripts/sync-versions.mjs (SSoT).
-pub const VERSION: &str = "2.0.1";
+pub const VERSION: &str = "2.0.2";
 
 // ── public surface (mirrors the Python `__all__`) ──────────────────────────────
 pub use dialect::{dialect_for, to_dollar_placeholders, Dialect};
