@@ -27,7 +27,7 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as lm from '../../dist/scp/index.mjs';
-import { fingerprintComponentGraph, registeredLanguages } from 'behavior-contracts';
+import { registeredLanguages } from 'behavior-contracts';
 import {
   SCHEMA,
   INPUTS,
@@ -41,6 +41,7 @@ import {
 } from './domain.js';
 import { CROSSLANG_DIALECTS, type CrosslangDialect } from './contract.js';
 import { assertBcVersionsAligned } from './check-versions.js';
+import { decodeNativeCase, rustCompanionSource, goCompanionSource, type NCase } from './native-companion.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..');
@@ -84,6 +85,12 @@ const CODEGEN_DIR = resolve(HERE, 'generated', 'codegen');
 // THROUGH each module's `Bind(handler)[entry](input)`. Gitignored + regenerated (build output).
 const GO_CGMODS_DIR = resolve(HERE, '..', '..', 'go', 'lm_bench', 'cgmods');
 const GO_CASE_PKG = (caseId: string) => `cg_${caseId.replace(/[^A-Za-z0-9_]/g, '_')}`;
+// The NATIVE pre-decoded codegen execution companions (owner order: the codegen path carries NO IR
+// data and parses NO JSON at execution time). Emitted next to the generated modules: the Rust
+// codegen binary `#[path]`-includes companion.rs; the Go codegen cell imports the cgplans package.
+// Gitignored + regenerated (build output), like the modules themselves.
+const RUST_COMPANION = resolve(CODEGEN_DIR, 'rust', 'companion.rs');
+const GO_CGPLANS_DIR = resolve(HERE, '..', '..', 'go', 'lm_bench', 'cgplans');
 
 // bc's shared generator supports exactly these litedbmodel-facing languages (the
 // mode-3 codegen "endpoint 3" literal-bake emitters). Each cell's codegen module is
@@ -136,7 +143,6 @@ interface CaseArtifact {
   relation?: unknown;
   bundle: unknown;
   input: unknown;
-  fingerprint: string; // codegen: baked-IR fingerprint (fail-closed verified at load)
   expectedQueries: number;
   expectedRows: number;
 }
@@ -185,8 +191,6 @@ function buildDialect(dialect: CrosslangDialect): CaseArtifact[] {
   const cases: CaseArtifact[] = [];
   for (const caseId of CROSSLANG_CASE_IDS_LOCAL) {
     const { bundle, kind, entry, withRelation, relation } = buildBundle(caseId, dialect);
-    const ir = lm.bundleToPortableIR(bundle);
-    const fingerprint = fingerprintComponentGraph(ir);
     const base = SQL_BASELINE[caseId];
     cases.push({
       case: caseId,
@@ -196,7 +200,6 @@ function buildDialect(dialect: CrosslangDialect): CaseArtifact[] {
       ...(relation ? { relation } : {}),
       bundle,
       input: (INPUTS as any)[caseId] ?? {},
-      fingerprint,
       expectedQueries: base.queries,
       expectedRows: base.rows,
     });
@@ -216,8 +219,6 @@ interface CodegenModuleArtifact {
   // other languages the generated source is emitted to disk as EVIDENCE (the true
   // generated-code artifact) + the cell consumes it if its toolchain wires it.
   filenameHint: string;
-  // Per-case generated-module fingerprint (the fail-closed identity the cell verifies).
-  fingerprintByCase: Record<string, string>;
   // Whether the generated module still delegates to the shared interpreter
   // (`runBehavior`) — TRUE at this bc version (interpreter-transcription, bc#75
   // pending). Surfaced so the report discloses codegen≈ir honestly.
@@ -278,7 +279,6 @@ function generateCodegen(
   language: CodegenLang,
   registered: readonly string[],
 ): { artifact: CodegenModuleArtifact; sourceByCase: Record<string, string> } {
-  const fingerprintByCase: Record<string, string> = {};
   const sourceByCase: Record<string, string> = {};
   let delegates = false;
   for (const c of cases) {
@@ -293,7 +293,6 @@ function generateCodegen(
     // cell to import the generated module by relative path we pin the runtime import to
     // the installed `behavior-contracts` package (the default emitter import).
     const art = lm.generateCodegenArtifact(c.bundle as any, language, registered as string[]);
-    fingerprintByCase[c.case] = art.module.fingerprint;
     // Anti-sham DELEGATION gate: does the generated module CALL the interpreter
     // (`runBehavior`/`run_behavior`/`RunBehavior`) at the CODE level? The straight-line
     // (bc#75) emitters produce de-interpreted native source whose EXPLANATORY COMMENTS say
@@ -303,7 +302,7 @@ function generateCodegen(
     sourceByCase[c.case] = art.module.code;
   }
   return {
-    artifact: { language, filenameHint: `behaviors.generated.${CODEGEN_EXT[language]}`, fingerprintByCase, delegatesToRunBehavior: delegates },
+    artifact: { language, filenameHint: `behaviors.generated.${CODEGEN_EXT[language]}`, delegatesToRunBehavior: delegates },
     sourceByCase,
   };
 }
@@ -336,10 +335,28 @@ function main(): void {
   // codegen ≈ ir). Throws on any silent fallback. Runs on EVERY path (not just --check).
   assertCodegenSurface(codegen);
 
+  const seed = seedStatements();
+
+  // 3. NATIVE pre-decoded codegen companions (owner order — the codegen path carries NO IR data
+  //    and parses NO JSON at execution time): decode every dialect's cases through the CLOSED-SET
+  //    fail-closed decoder (native-companion.ts — an out-of-set shape THROWS here) and emit the
+  //    native Rust/Go companion sources the codegen cells execute from.
+  const nativeByDialect: Record<string, NCase[]> = {};
+  for (const d of CROSSLANG_DIALECTS) nativeByDialect[d] = dialects[d].cases.map((c) => decodeNativeCase(c as never));
+  const rustCompanion = rustCompanionSource(nativeByDialect, SCHEMA as readonly string[], seed);
+  const goCompanion = goCompanionSource(nativeByDialect);
+
+  const writeNativeCompanions = (): void => {
+    mkdirSync(dirname(RUST_COMPANION), { recursive: true });
+    writeFileSync(RUST_COMPANION, rustCompanion);
+    mkdirSync(GO_CGPLANS_DIR, { recursive: true });
+    writeFileSync(resolve(GO_CGPLANS_DIR, 'plans.go'), goCompanion);
+  };
+
   const artifact = {
     corpusVersion: 3,
     schema: [...SCHEMA],
-    seed: seedStatements(),
+    seed,
     dialects,
     codegen,
   };
@@ -373,6 +390,7 @@ function main(): void {
       mkdirSync(dir, { recursive: true });
       writeFileSync(resolve(dir, 'gen.go'), src);
     }
+    writeNativeCompanions();
     // Surface already asserted fail-closed above (assertCodegenSurface). Report per lang.
     for (const lang of CODEGEN_LANGS) {
       const native = (NATIVE_CODEGEN_LANGS as readonly string[]).includes(lang);
@@ -404,10 +422,12 @@ function main(): void {
     mkdirSync(dir, { recursive: true });
     writeFileSync(resolve(dir, 'gen.go'), src);
   }
+  writeNativeCompanions();
   console.error(`Wrote ${OUT} (${CROSSLANG_DIALECTS.length} dialects × ${dialects.sqlite.cases.length} case bundles)`);
+  console.error(`Wrote native codegen companions: ${RUST_COMPANION} + ${resolve(GO_CGPLANS_DIR, 'plans.go')}`);
   for (const d of CROSSLANG_DIALECTS) {
     console.error(`  [${d}]`);
-    for (const c of dialects[d].cases) console.error(`    ${c.case.padEnd(14)} kind=${c.kind} fp=${c.fingerprint.slice(0, 12)}… Q=${c.expectedQueries} R=${c.expectedRows}`);
+    for (const c of dialects[d].cases) console.error(`    ${c.case.padEnd(14)} kind=${c.kind} Q=${c.expectedQueries} R=${c.expectedRows}`);
   }
   console.error(`Wrote ${CODEGEN_LANGS.length}×${dialects.sqlite.cases.length} generated codegen modules to ${CODEGEN_DIR}`);
   for (const lang of CODEGEN_LANGS) console.error(`  ${lang.padEnd(11)} delegatesToRunBehavior=${codegen[lang].delegatesToRunBehavior}`);

@@ -9,7 +9,7 @@ go 1.25.0
 //
 // behavior-contracts is a PRIVATE repo: resolving it needs GOPRIVATE + authenticated git
 // access (see .github/workflows/ci.yml, mirroring graphddb's go build).
-require github.com/foo-ogawa/behavior-contracts/go v0.3.0
+require github.com/foo-ogawa/behavior-contracts/go v0.5.0
 
 require (
 	github.com/go-sql-driver/mysql v1.10.0

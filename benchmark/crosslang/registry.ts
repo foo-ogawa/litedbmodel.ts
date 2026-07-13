@@ -24,6 +24,10 @@ const PY_RUNNER = 'benchmark/crosslang/adapters/python/runner.py';
 const PHP = process.env.PHP_BIN ?? 'php';
 const PHP_RUNNER = 'benchmark/crosslang/adapters/php/runner.php';
 const RUST_BIN = process.env.RUST_BENCH_BIN ?? 'benchmark/crosslang/adapters/rust/target/release/lm_bench';
+// The codegen cell is a SEPARATE binary (owner order): its crate carries NO serde_json / no
+// litedbmodel_runtime — generated modules + the generated native companion only. It never
+// parses JSON or touches IR data at execution time.
+const RUST_CODEGEN_BIN = process.env.RUST_CODEGEN_BENCH_BIN ?? 'benchmark/crosslang/adapters/rust-codegen/target/release/lm_codegen';
 const GO_BIN = process.env.GO_BENCH_BIN ?? 'benchmark/crosslang/adapters/go/go_bench';
 const V1RS_BIN = process.env.V1RS_BENCH_BIN ?? 'benchmark/crosslang/adapters/v1rs/target/release/v1rs_bench';
 
@@ -37,7 +41,9 @@ function php(impl: string): CellSpec {
   return { language: 'php', impl, spawn: { command: PHP, args: [PHP_RUNNER, `--impl=${impl}`] } };
 }
 function rust(impl: string): CellSpec {
-  return { language: 'rust', impl, spawn: { command: RUST_BIN, args: [`--impl=${impl}`] } };
+  // codegen rides the dedicated JSON-free binary; sql/ir ride the shared lm_bench adapter.
+  const command = impl === 'codegen' ? RUST_CODEGEN_BIN : RUST_BIN;
+  return { language: 'rust', impl, spawn: { command, args: [`--impl=${impl}`] } };
 }
 function go(impl: string): CellSpec {
   return { language: 'go', impl, spawn: { command: GO_BIN, args: [`--impl=${impl}`] } };

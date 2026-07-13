@@ -25,6 +25,8 @@ import (
 
 	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
 
+	"github.com/foo-ogawa/litedbmodel/go/lm_bench/cgplans"
+
 	bc "github.com/foo-ogawa/behavior-contracts/go"
 	_ "modernc.org/sqlite"
 )
@@ -36,7 +38,6 @@ type caseArt struct {
 	WithRelation  string          `json:"withRelation"`
 	Bundle        json.RawMessage `json:"bundle"`
 	Input         json.RawMessage `json:"input"`
-	Fingerprint   string          `json:"fingerprint"`
 	bundleObj     *bc.JObj
 	relationsJObj *bc.JObj
 	inputScope    *bc.Obj
@@ -246,15 +247,14 @@ func main() {
 	}
 	art := loadArtifact(bundlesPath)
 
-	// codegen: run each generated module's REAL fail-closed skew gate + fail-closed load once at
-	// cold start (recompute FingerprintComponentGraph(live readGraph.IR) == baked IRFingerprint and
-	// force each module's init via Bind). This is the GENUINE codegen load cost (the old decorative
-	// `len(c.Bundle)` "verify" is deleted); the timed ops below then execute THROUGH the generated
-	// de-interpreted code, not ExecuteBundle.
+	// codegen: force each generated module's fail-closed load + warm the native plan path once at
+	// cold start (the codegen path touches NO IR data — the prepared native companion plans were
+	// materialized at package init; the timed ops execute THROUGH the generated de-interpreted
+	// code with the native render/tx engines, never ExecuteBundle).
 	if impl == "codegen" {
 		mock := openMockDB()
-		for _, c := range art.Cases {
-			runCodegen(c, mock)
+		for _, c := range cgplans.CaseIDs {
+			runCodegen("sqlite", c, mock)
 		}
 		mock.Close()
 	}
@@ -318,7 +318,7 @@ func handle(req map[string]any, impl string, art *artifact) {
 			if impl == "sql" {
 				runSQL(caseID, db)
 			} else if impl == "codegen" {
-				runCodegen(c, db)
+				runCodegen(dialect, caseID, db)
 			} else {
 				runLM(c, db)
 			}
@@ -339,7 +339,7 @@ func handle(req map[string]any, impl string, art *artifact) {
 			if impl == "sql" {
 				runSQL(caseID, db)
 			} else if impl == "codegen" {
-				runCodegen(c, db)
+				runCodegen(dialect, caseID, db)
 			} else {
 				runLM(c, db)
 			}
@@ -370,7 +370,7 @@ func handle(req map[string]any, impl string, art *artifact) {
 			if impl == "sql" {
 				runSQL(caseID, mock)
 			} else if impl == "codegen" {
-				runCodegen(c, mock)
+				runCodegen(dialect, caseID, mock)
 			} else {
 				runLM(c, mock)
 			}
@@ -386,8 +386,8 @@ func handle(req map[string]any, impl string, art *artifact) {
 		// Behaviour-equality selfcheck: generated-code output == interpreter output (same rows).
 		caseID := req["case"].(string)
 		c := art.Cases[caseID]
-		cg := runCodegenValue(art, c)
-		ir := runLMValue(art, c)
+		cg := runCodegenValueStr(art, caseID)
+		ir := runLMValueStr(art, c)
 		write(map[string]any{"kind": "verify", "case": caseID, "impl_kind": c.Kind,
 			"equal": cg == ir, "cg_len": len(cg), "ir_len": len(ir)})
 	case "shutdown":
@@ -492,4 +492,105 @@ func repeat(s string, n int) []string {
 		out[i] = s
 	}
 	return out
+}
+
+// ── behaviour-equality verify helpers (the INTERPRETER side lives here — main.go is the ir/sql
+// surface and legitimately imports the runtime; the codegen cell file imports NEITHER rt NOR
+// encoding/json). Each side runs on its OWN freshly-seeded in-memory DB and canonicalizes to the
+// conformance JSON string; integral float64 → int64 canonicalization compares by VALUE (the
+// interpreter's scanValue floats INTEGER columns; the codegen native scan keeps int64).
+
+func runCodegenValueStr(a *artifact, caseID string) string {
+	raw := seedDB(a)
+	defer raw.Close()
+	out := runCodegenCase("sqlite", caseID, raw)
+	return rt.EncodeConformanceJSON(coerceIntsValue(out))
+}
+
+func runLMValueStr(a *artifact, c *caseArt) string {
+	raw := seedDB(a)
+	defer raw.Close()
+	var db rt.SQLDB = raw
+	bundle, err := rt.BundleFromJObj(c.bundleObj)
+	must(err)
+	var out bc.Value
+	switch c.Kind {
+	case "batch":
+		o, e := rt.ExecuteTransactionBundle(bundle, bc.NewObj(), db.(rt.TxDB))
+		must(e)
+		out = txResultToObj(o) // the SAME canonical shape the de-boxed codegen path emits (ser_T0)
+	case "tx":
+		o, e := rt.ExecuteTransactionBundle(bundle, c.inputScope, db.(rt.TxDB))
+		must(e)
+		out = txResultToObj(o)
+	case "relation":
+		o, e := rt.ReadBundle(bundle, c.relationsJObj, c.inputScope, db, []string{c.WithRelation}, nil)
+		must(e)
+		out = o
+	default:
+		o, e := rt.ExecuteBundle(bundle, c.inputScope, db)
+		must(e)
+		out = o
+	}
+	return rt.EncodeConformanceJSON(coerceIntsValue(out))
+}
+
+// txResultToObj presents the runtime's typed TransactionResult STRUCT as the canonical bc.Obj the
+// write outType declares: committed / executed / shortCircuit / entity ALWAYS present
+// (present-as-null), plus returnedRows ONLY when populated — mirroring the de-boxed ser_T0 output.
+func txResultToObj(r rt.TransactionResult) *bc.Obj {
+	out := bc.NewObj()
+	out.Set("committed", r.Committed)
+	execVals := make([]bc.Value, len(r.Executed))
+	for i, e := range r.Executed {
+		execVals[i] = e
+	}
+	out.Set("executed", execVals)
+	if r.ShortCircuit != nil {
+		sc := bc.NewObj()
+		sc.Set("statementId", r.ShortCircuit.StatementID)
+		sc.Set("reason", string(r.ShortCircuit.Reason))
+		out.Set("shortCircuit", sc)
+	} else {
+		out.Set("shortCircuit", nil)
+	}
+	if r.Entity == nil {
+		out.Set("entity", nil)
+	} else {
+		out.Set("entity", r.Entity)
+	}
+	if r.ReturnedRows != nil {
+		rr := make([]bc.Value, len(r.ReturnedRows))
+		for i, group := range r.ReturnedRows {
+			rr[i] = group
+		}
+		out.Set("returnedRows", rr)
+	}
+	return out
+}
+
+// coerceIntsValue rewrites every INTEGRAL float64 to int64 (recursing through objects/arrays) so
+// the two sides compare by VALUE. Representation-only; the row DATA is unchanged.
+func coerceIntsValue(v bc.Value) bc.Value {
+	switch t := v.(type) {
+	case *bc.Obj:
+		out := bc.NewObj()
+		for _, k := range t.Keys {
+			out.Set(k, coerceIntsValue(t.Vals[k]))
+		}
+		return out
+	case []bc.Value:
+		out := make([]bc.Value, len(t))
+		for i, e := range t {
+			out[i] = coerceIntsValue(e)
+		}
+		return out
+	case float64:
+		if t == float64(int64(t)) {
+			return int64(t)
+		}
+		return t
+	default:
+		return v
+	}
 }

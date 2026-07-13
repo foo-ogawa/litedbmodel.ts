@@ -18,6 +18,8 @@ const PINS: readonly ManifestPin[] = [
   { label: 'npm (ts)', file: 'package.json', re: /"behavior-contracts":\s*"[\^~]?([0-9][0-9A-Za-z.\-+]*)"/ },
   { label: 'crates (rust runtime)', file: 'rust/Cargo.toml', re: /^behavior-contracts\s*=\s*"([0-9][0-9A-Za-z.\-+]*)"/m },
   { label: 'crates (rust bench adapter)', file: 'benchmark/crosslang/adapters/rust/Cargo.toml', re: /^behavior-contracts\s*=\s*"([0-9][0-9A-Za-z.\-+]*)"/m },
+  // The dedicated JSON-free codegen adapter crate (default-features = false; version is in the inline table).
+  { label: 'crates (rust codegen adapter)', file: 'benchmark/crosslang/adapters/rust-codegen/Cargo.toml', re: /^behavior-contracts\s*=\s*\{\s*version\s*=\s*"([0-9][0-9A-Za-z.\-+]*)"/m },
   { label: 'go module', file: 'go/go.mod', re: /behavior-contracts\/go\s+v([0-9][0-9A-Za-z.\-+]*)/ },
   { label: 'pypi (python)', file: 'python/pyproject.toml', re: /behavior-contracts==([0-9][0-9A-Za-z.\-+]*)/ },
 ];

@@ -131,8 +131,6 @@ export interface CodegenArtifact {
   readonly module: GeneratedModule;
   /** The SQL catalog companion sidecar (the STATIC makeSQL execution catalog). */
   readonly companion: SqlCatalogCompanion;
-  /** The portable IR the straight-line module was generated FROM (fingerprint-pinned in the code). */
-  readonly ir: ComponentGraphIR;
   /** The originating bundle (so the equivalence leg re-executes the SAME static bundle). */
   readonly bundle: SqlBundle;
 }
@@ -260,10 +258,12 @@ export function generateCodegenArtifact(
 ): CodegenArtifact {
   // Resolve the de-box endpoint (shape-aware: raw ABI vs boxed typed) or throw. No literal/straight-line
   // fallback — an unspec'd fallback is invalid; both endpoints are typed + de-interpreted.
+  // The portable IR exists ONLY transiently here as the generator's input — it is NOT part of the
+  // codegen OUTPUT (no artifact field, no file, no binary; the codegen path never reads IR data).
   const ir = bundleToPortableIR(bundle);
   const emitter = typedEmitterFor(language, ir, registeredLanguages);
   const module = generateModule(ir, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
-  return { language: language as CodegenLanguage, module, companion: companionOf(bundle), ir, bundle };
+  return { language: language as CodegenLanguage, module, companion: companionOf(bundle), bundle };
 }
 
 /**

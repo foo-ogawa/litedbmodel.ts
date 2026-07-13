@@ -1,23 +1,27 @@
-// TRUE-codegen cell (#44 anti-sham fix) — execute THROUGH the bc-GENERATED module.
+// TRUE-codegen cell (#44 perf integration) — execute THROUGH the bc-GENERATED module, over
+// GENERATED NATIVE companion data.
 //
-// The OLD codegen path was a DECORATION: runLM called the SAME ExecuteBundle/ReadBundle the `ir`
-// cell calls, with only a cosmetic resident-bundle "verify" at load — so codegen was literally an
-// alias of `ir` (and measured ~ir). This cell fixes that: it COMPILES the bc-GENERATED straight-
-// line Go modules (materialized per-case as `cgmods/<case>` packages by generate.ts, emitted by
-// litedbmodel generateCodegenArtifact = bc#75 straight-line, de-interpreted native source — the
-// portable IR is NOT embedded, only its fingerprint) and executes each read case THROUGH the
-// module's Bind(handler)[entry](input) — a DISTINCT code entry from `ir`'s ExecuteBundle, with NO
-// RunBehavior tree-walk. It runs the REAL fail-closed skew gate (recompute
-// FingerprintComponentGraph(live readGraph.IR) == baked IRFingerprint) mirroring the generated
-// module header + the TS/Rust codegen cells.
+// OWNER ORDERS (absolute): the codegen EXECUTION path touches NO IR data and NO JSON-handling
+// library — no encoding/json, no litedbmodel_runtime bundle/IR types (rt.BundleFromJObj /
+// rt.ReadGraph carry JSON-decoded IR data). Everything the timed op needs is the GENERATED native
+// companion (`cgplans` — pre-decoded statement/tx/relation plans + bench inputs, emitted by
+// benchmark/crosslang/generate.ts through a CLOSED-SET fail-closed decoder) + the bc-GENERATED
+// straight-line modules (`cgmods/<case>`), + database/sql as the driver seam. The behaviors run
+// THROUGH each module's BindRaw(handler)[entry](input) — a DISTINCT code entry from `ir`'s
+// ExecuteBundle, with NO RunBehavior tree-walk and ZERO dynamic-JSON walking per call.
+//
+// Fail-closed: an unknown case / spec kind / non-scalar driver arg PANICS loudly — never a silent
+// degrade (companion generation already fail-closed on out-of-set shapes).
 package main
 
 import (
-	"fmt"
-
-	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
+	"database/sql"
+	"strconv"
+	"strings"
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
+
+	"github.com/foo-ogawa/litedbmodel/go/lm_bench/cgplans"
 
 	cgBatchInsert "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/batchInsert"
 	cgBelongsTo "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/belongsTo"
@@ -29,174 +33,310 @@ import (
 	cgWriteTxGate "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/writeTxGate"
 )
 
+// cgDB is the SQL driver seam the codegen cell drives (a *sql.DB satisfies it — the real seeded
+// sqlite, the mock micro driver, and the trace cost probe all ride database/sql).
+type cgDB interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	Exec(query string, args ...any) (sql.Result, error)
+	Begin() (*sql.Tx, error)
+}
+
 // genModule is the uniform surface every per-case generated package exposes. `bindRaw` is the
 // RAW-ABI de-boxed dispatch surface (bc#76): a RawComponentExec handler returns a RawValue and the
 // generated `run_typed_raw_*` runner materializes the outType struct DIRECTLY from it (reads AND
 // writes) — no dynamic *Obj/Value tree on the row/entity data plane.
 type genModule struct {
-	fingerprint string
-	bindRaw     func(bc.RawComponentExec) map[string]func(*bc.Obj) (bc.Value, error)
-	entry       string
+	bindRaw func(bc.RawComponentExec) map[string]func(*bc.Obj) (bc.Value, error)
+	entry   string
 }
 
 // codegenModules maps case id -> its generated module surface (built from the imported packages).
 var codegenModules = map[string]genModule{
-	"find":         {cgFind.IRFingerprint, cgFind.BindRaw, cgFind.ComponentNames[0]},
-	"complexWhere": {cgComplexWhere.IRFingerprint, cgComplexWhere.BindRaw, cgComplexWhere.ComponentNames[0]},
-	"inList":       {cgInList.IRFingerprint, cgInList.BindRaw, cgInList.ComponentNames[0]},
-	"belongsTo":    {cgBelongsTo.IRFingerprint, cgBelongsTo.BindRaw, cgBelongsTo.ComponentNames[0]},
-	"hasMany":      {cgHasMany.IRFingerprint, cgHasMany.BindRaw, cgHasMany.ComponentNames[0]},
-	"hasManyLimit": {cgHasManyLimit.IRFingerprint, cgHasManyLimit.BindRaw, cgHasManyLimit.ComponentNames[0]},
-	"batchInsert":  {cgBatchInsert.IRFingerprint, cgBatchInsert.BindRaw, cgBatchInsert.ComponentNames[0]},
-	"writeTxGate":  {cgWriteTxGate.IRFingerprint, cgWriteTxGate.BindRaw, cgWriteTxGate.ComponentNames[0]},
+	"find":         {cgFind.BindRaw, cgFind.ComponentNames[0]},
+	"complexWhere": {cgComplexWhere.BindRaw, cgComplexWhere.ComponentNames[0]},
+	"inList":       {cgInList.BindRaw, cgInList.ComponentNames[0]},
+	"belongsTo":    {cgBelongsTo.BindRaw, cgBelongsTo.ComponentNames[0]},
+	"hasMany":      {cgHasMany.BindRaw, cgHasMany.ComponentNames[0]},
+	"hasManyLimit": {cgHasManyLimit.BindRaw, cgHasManyLimit.ComponentNames[0]},
+	"batchInsert":  {cgBatchInsert.BindRaw, cgBatchInsert.ComponentNames[0]},
+	"writeTxGate":  {cgWriteTxGate.BindRaw, cgWriteTxGate.ComponentNames[0]},
 }
 
-// codegenRawReadHandler is the RAW-ABI makeSQL handler for the GENERATED READ module's node boundary
-// (bc#76 de-box): bc's generated raw runner calls it per SQL node with the evaluated `__scope`; we
-// render the primary read node via the SAME runtime RenderExecuteNode the `ir` path uses, run REAL
-// SQL, and return the row list as a native RawValue ([]RawValue of RawRow) — the generated runner
-// de-boxes each row straight into the concrete struct (no *Obj on the row data plane).
-type codegenRawReadHandler struct {
-	graph     *rt.ReadGraph
-	primaryID string
-	db        rt.SQLDB
+// ── prepared cases: the native input scopes, materialized ONCE at package init ──
+
+type preparedCase struct {
+	plan  *cgplans.CasePlan
+	input *bc.Obj // the bench input scope (native cgplans data → bc values; NO JSON decode)
+	wmi   *bc.Obj // a WRITE module's surrogate input (__sql/__sqlParams/__skip); nil for reads
 }
 
-func (h *codegenRawReadHandler) ExecRaw(component string, ports *bc.Obj, bound bc.Value) (bc.RawOutcome, bool) {
-	return h.ExecRawCtx("", component, ports, bound)
-}
-
-func (h *codegenRawReadHandler) ExecRawCtx(nodeID, component string, ports *bc.Obj, bound bc.Value) (bc.RawOutcome, bool) {
-	scopeV, _ := ports.Get("__scope")
-	scope, ok := scopeV.(*bc.Obj)
-	if !ok {
-		return bc.ErrRaw("codegen: __scope did not evaluate to an object"), true
-	}
-	rows, err := rt.RenderExecuteNode(h.graph, h.primaryID, h.graph.Dialect, scope, h.db)
-	if err != nil {
-		return bc.ErrRaw(err.Error()), true
-	}
-	// Build the RawValue at the wire seam — bc's raw runner de-boxes it. rawFromValueDeboxed mirrors
-	// bc's RawFromValue but coerces an INTEGRAL float64 back to int64: the go runtime's scanValue
-	// floats INTEGER columns for JS-number parity (sqldb.go), but the typed de-box outType is `int`
-	// (a strict RawValue.(int64) type-switch), so the int column's RawValue MUST be int64 — exactly
-	// what a real go wire-consumer scanning an int column produces (the float shim is a boxed-path
-	// artifact the raw seam undoes). A genuine float column keeps float64 (none in these cases).
-	out := make([]bc.RawValue, len(rows))
-	for i, r := range rows {
-		out[i] = rawFromValueDeboxed(r)
-	}
-	return bc.OkRaw(out), true
-}
-
-// codegenRawWriteHandler is the RAW-ABI handler for a GENERATED WRITE module's single node boundary
-// (bc#76 de-box): the node's outType IS the TransactionResult typed shape. We drive the derived
-// transaction plan via the shared runtime ExecuteTransactionBundle (gate-first, byte-parity with the
-// thin runtime) and return the TransactionResult as a native RawValue (RawRow), which the generated
-// marshal_raw_T0 de-boxes into the concrete result struct — no *Obj on the entity/returnedRows plane.
-type codegenRawWriteHandler struct {
-	bundle *rt.SqlBundle
-	input  *bc.Obj
-	db     rt.SQLDB
-}
-
-func (h *codegenRawWriteHandler) ExecRaw(component string, ports *bc.Obj, bound bc.Value) (bc.RawOutcome, bool) {
-	result, err := rt.ExecuteTransactionBundle(h.bundle, h.input, h.db.(rt.TxDB))
-	if err != nil {
-		return bc.ErrRaw(err.Error()), true
-	}
-	// The go runtime returns a typed TransactionResult STRUCT; present it as the canonical bc.Obj the
-	// typed outType declares (committed/executed/shortCircuit/entity always present-as-null;
-	// returnedRows only when populated — matching deriveWriteOutputType), then de-box via the raw seam
-	// (int columns coerced back to int64). The de-box marshaller reads exactly these keys.
-	return bc.OkRaw(rawFromValueDeboxed(txResultToObj(result))), true
-}
-
-// rawFromValueDeboxed mirrors bc.RawFromValue but coerces an INTEGRAL float64 to int64 (the go
-// runtime's scanValue floats INTEGER columns for JS-number parity; the typed de-box outType for those
-// columns is `int`, a strict int64 type-switch). Recurses through objects/arrays so nested row values
-// (entity/returnedRows) coerce too. A non-integral float64 stays float64 (a genuine float column —
-// none in the bench corpus, all numeric columns are INTEGER). Off the hot path (bench-adapter seam).
-func rawFromValueDeboxed(v bc.Value) bc.RawValue {
-	switch t := v.(type) {
-	case *bc.Obj:
-		ro := bc.NewRawObj()
-		for _, k := range t.Keys {
-			ro.Set(k, rawFromValueDeboxed(t.Vals[k]))
+// cgPrepared maps dialect -> case id -> the prepared case.
+var cgPrepared = func() map[string]map[string]*preparedCase {
+	out := make(map[string]map[string]*preparedCase, len(cgplans.Plans))
+	for dialect, cases := range cgplans.Plans {
+		m := make(map[string]*preparedCase, len(cases))
+		for id, plan := range cases {
+			in := bc.NewObj()
+			for _, kv := range plan.Input {
+				in.Set(kv.K, kvValue(kv.V))
+			}
+			var wmi *bc.Obj
+			if plan.Kind == "batch" || plan.Kind == "tx" {
+				wmi = bc.NewObj()
+				wmi.Set("__sql", plan.WriteSQL)
+				wmi.Set("__sqlParams", []bc.Value{})
+				wmi.Set("__skip", false)
+			}
+			m[id] = &preparedCase{plan: plan, input: in, wmi: wmi}
 		}
-		return ro
-	case []bc.Value:
-		out := make([]bc.RawValue, 0, len(t))
-		for _, e := range t {
-			out = append(out, rawFromValueDeboxed(e))
-		}
-		return out
-	case float64:
-		if t == float64(int64(t)) {
-			return int64(t)
-		}
-		return t
-	default:
-		return bc.RawFromValue(v)
-	}
-}
-
-// txResultToObj presents the go runtime's typed TransactionResult STRUCT as the canonical bc.Obj the
-// write outType declares: committed / executed / shortCircuit / entity ALWAYS present (shortCircuit &
-// a null entity present-as-null, so the opt<..> de-box finds every key), plus returnedRows ONLY when
-// the runtime populated it (a batch-with-RETURNING — matching deriveWriteOutputType, which types the
-// field only for that shape). Field order + presence mirror the de-boxed `ser_T0` output exactly, so
-// the codegen output and the interpreter reference (also routed through here) compare byte-for-byte.
-func txResultToObj(r rt.TransactionResult) *bc.Obj {
-	out := bc.NewObj()
-	out.Set("committed", r.Committed)
-	execVals := make([]bc.Value, len(r.Executed))
-	for i, e := range r.Executed {
-		execVals[i] = e
-	}
-	out.Set("executed", execVals)
-	if r.ShortCircuit != nil {
-		sc := bc.NewObj()
-		sc.Set("statementId", r.ShortCircuit.StatementID)
-		sc.Set("reason", string(r.ShortCircuit.Reason))
-		out.Set("shortCircuit", sc)
-	} else {
-		out.Set("shortCircuit", nil)
-	}
-	if r.Entity == nil {
-		out.Set("entity", nil)
-	} else {
-		out.Set("entity", r.Entity)
-	}
-	if r.ReturnedRows != nil {
-		rr := make([]bc.Value, len(r.ReturnedRows))
-		for i, group := range r.ReturnedRows {
-			rr[i] = group
-		}
-		out.Set("returnedRows", rr)
+		out[dialect] = m
 	}
 	return out
-}
+}()
 
-// coerceIntsValue returns a bc.Value with every INTEGRAL float64 rewritten to int64 (recursing
-// through objects/arrays). The go de-boxed codegen output types INTEGER columns as int64 (ser_T0);
-// the interpreter path floats them (scanValue). Both denote the same integers — this canonicalizes
-// the interpreter side by VALUE for the behaviour-equality selfcheck. A fractional float64 (a genuine
-// float column — none in the bench corpus) is left untouched. Representation-only; DATA is unchanged.
-func coerceIntsValue(v bc.Value) bc.Value {
+// kvValue converts a cgplans native input value to a bc Value (closed set — fail-closed).
+func kvValue(v any) bc.Value {
 	switch t := v.(type) {
-	case *bc.Obj:
-		out := bc.NewObj()
-		for _, k := range t.Keys {
-			out.Set(k, coerceIntsValue(t.Vals[k]))
-		}
-		return out
-	case []bc.Value:
+	case nil, bool, int64, float64, string:
+		return t
+	case []int64:
 		out := make([]bc.Value, len(t))
 		for i, e := range t {
-			out[i] = coerceIntsValue(e)
+			out[i] = e
 		}
 		return out
+	case []string:
+		out := make([]bc.Value, len(t))
+		for i, e := range t {
+			out[i] = e
+		}
+		return out
+	default:
+		panic("codegen native: input value outside the closed set (fail-closed)")
+	}
+}
+
+func preparedFor(dialect, caseID string) *preparedCase {
+	pc, ok := cgPrepared[dialect][caseID]
+	if !ok {
+		panic("codegen native: unknown dialect/case '" + dialect + "/" + caseID + "' (fail-closed)")
+	}
+	return pc
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NATIVE value-spec / statement render engine (mirror of the runtime's
+// renderStatements semantics for the CLOSED companion set — byte-identical SQL
+// text + params for the shapes in scope; no JSON, no IR)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// scopeRef walks a bc scope object by path (bc `{ref:[..]}` semantics). Fail-closed: a missing
+// head/segment panics (mirrors bc UNKNOWN_BINDING — never a silent nil).
+func scopeRef(scope *bc.Obj, path []string) bc.Value {
+	cur, ok := scope.Get(path[0])
+	if !ok {
+		panic("codegen native: unknown binding '" + path[0] + "' (fail-closed)")
+	}
+	for _, seg := range path[1:] {
+		obj, isObj := cur.(*bc.Obj)
+		if !isObj {
+			panic("codegen native: ref path '." + seg + "' into a non-object (fail-closed)")
+		}
+		cur, ok = obj.Get(seg)
+		if !ok {
+			panic("codegen native: unknown property '." + seg + "' (fail-closed)")
+		}
+	}
+	return cur
+}
+
+// jsonEscapeInto appends a JSON string literal (native writer — JS JSON.stringify form).
+func jsonEscapeInto(sb *strings.Builder, s string) {
+	sb.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			sb.WriteString("\\\"")
+		case '\\':
+			sb.WriteString("\\\\")
+		case '\n':
+			sb.WriteString("\\n")
+		case '\r':
+			sb.WriteString("\\r")
+		case '\t':
+			sb.WriteString("\\t")
+		case '\b':
+			sb.WriteString("\\b")
+		case '\f':
+			sb.WriteString("\\f")
+		default:
+			if r < 0x20 {
+				sb.WriteString("\\u")
+				hex := strconv.FormatInt(int64(r), 16)
+				for len(hex) < 4 {
+					hex = "0" + hex
+				}
+				sb.WriteString(hex)
+			} else {
+				sb.WriteRune(r)
+			}
+		}
+	}
+	sb.WriteByte('"')
+}
+
+// jsonInListText builds the single-JSON-text IN-list param natively (mirror of the runtime
+// evalSpec encode: mysql booleans as 1/0; closed scalar set — anything else fail-closed).
+func jsonInListText(arr []bc.Value, mysql bool) string {
+	var sb strings.Builder
+	sb.WriteByte('[')
+	for i, e := range arr {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		switch t := e.(type) {
+		case nil:
+			sb.WriteString("null")
+		case bool:
+			if mysql {
+				if t {
+					sb.WriteByte('1')
+				} else {
+					sb.WriteByte('0')
+				}
+			} else if t {
+				sb.WriteString("true")
+			} else {
+				sb.WriteString("false")
+			}
+		case int64:
+			sb.WriteString(strconv.FormatInt(t, 10))
+		case float64:
+			if t == float64(int64(t)) {
+				sb.WriteString(strconv.FormatInt(int64(t), 10))
+			} else {
+				sb.WriteString(strconv.FormatFloat(t, 'g', -1, 64))
+			}
+		case string:
+			jsonEscapeInto(&sb, t)
+		default:
+			panic("codegen native: IN-list element outside the closed scalar set (fail-closed)")
+		}
+	}
+	sb.WriteByte(']')
+	return sb.String()
+}
+
+// evalSpecArg evaluates one companion value-spec against the scope into a DRIVER arg (native
+// mirror of the runtime evalSpec + toDriverParam). A non-scalar arg (a PG array param) cannot
+// bind through database/sql — fail-closed panic (the go bench's PG DB-backed/micro legs are
+// protocol-level skips, so this is unreachable in a valid run — never a silent degrade).
+func evalSpecArg(spec *cgplans.Spec, scope *bc.Obj) any {
+	switch spec.Kind {
+	case cgplans.SpecRef:
+		return driverArg(scopeRef(scope, spec.Path))
+	case cgplans.SpecStr:
+		return spec.Str
+	case cgplans.SpecInt:
+		return spec.Int
+	case cgplans.SpecArrLit:
+		panic("codegen native: literal-array param (PG UNNEST) cannot bind through database/sql — fail-closed")
+	case cgplans.SpecJSONArray:
+		v := scopeRef(scope, spec.Path)
+		arr, ok := v.([]bc.Value)
+		if !ok {
+			panic("codegen native: IN-list value-spec did not evaluate to an array (fail-closed)")
+		}
+		if spec.ArrDialect == cgplans.Postgres {
+			panic("codegen native: postgres array param cannot bind through database/sql — fail-closed")
+		}
+		return jsonInListText(arr, spec.ArrDialect == cgplans.Mysql)
+	default:
+		panic("codegen native: unknown value-spec kind (fail-closed)")
+	}
+}
+
+// driverArg converts a bc scalar Value to a database/sql arg (closed set — fail-closed).
+func driverArg(v bc.Value) any {
+	switch t := v.(type) {
+	case nil, bool, int64, float64, string:
+		return t
+	default:
+		panic("codegen native: a non-scalar reached the param binder (fail-closed)")
+	}
+}
+
+// renderPlaceholdersNative rewrites `?` → `$N` for postgres (quote-aware; byte-port of the
+// runtime renderPlaceholders). MySQL/SQLite keep `?`.
+func renderPlaceholdersNative(sqlText string, dialect cgplans.Dialect) string {
+	if dialect != cgplans.Postgres {
+		return sqlText
+	}
+	var sb strings.Builder
+	sb.Grow(len(sqlText) + 8)
+	index := 0
+	inString := false
+	for _, r := range sqlText {
+		switch {
+		case inString:
+			sb.WriteRune(r)
+			if r == '\'' {
+				inString = false
+			}
+		case r == '\'':
+			sb.WriteRune(r)
+			inString = true
+		case r == '?':
+			index++
+			sb.WriteByte('$')
+			sb.WriteString(strconv.Itoa(index))
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+// renderReadNative renders a native read plan against the evaluated `__scope` (mirror of the
+// runtime renderStatements): SKIP-if-null statement drop (absent == null), ` WHERE `/` AND `
+// connector, `?`→`$N`. The `?`/param arity was asserted at generation time (static data).
+func renderReadNative(plan *cgplans.ReadPlan, scope *bc.Obj) (string, []any) {
+	var sb strings.Builder
+	args := make([]any, 0, 8)
+	whereSeen := false
+	for i := range plan.Stmts {
+		stmt := &plan.Stmts[i]
+		if stmt.HasSkip {
+			v, ok := scope.Get(stmt.SkipIfNullHead)
+			if !ok || v == nil {
+				continue // refOpt(head) == null → skip (absent reads as null — the SKIP contract)
+			}
+		}
+		for j := range stmt.Params {
+			args = append(args, evalSpecArg(&stmt.Params[j], scope))
+		}
+		if stmt.WhereFragment {
+			if whereSeen {
+				sb.WriteString(" AND ")
+			} else {
+				sb.WriteString(" WHERE ")
+			}
+			whereSeen = true
+		}
+		sb.WriteString(stmt.SQL)
+	}
+	return renderPlaceholdersNative(sb.String(), plan.Dialect), args
+}
+
+// ── native row scan (database/sql → bc values; int columns stay int64) ─────────
+
+// scanCell normalizes one scanned column: []byte → string; an INTEGRAL float64 → int64 (the
+// typed de-box outType for INTEGER columns is int64 — this is what a real Go wire consumer
+// scanning an int column produces); everything else passes through.
+func scanCell(v any) any {
+	switch t := v.(type) {
+	case []byte:
+		return string(t)
 	case float64:
 		if t == float64(int64(t)) {
 			return int64(t)
@@ -207,165 +347,366 @@ func coerceIntsValue(v bc.Value) bc.Value {
 	}
 }
 
-// writeModuleInput is the input scope for a WRITE module's raw runner: bc's makeSqlComponentIR node
-// evaluates `__sql`/`__sqlParams`/`__skip` port refs, so those heads MUST be present or slRef
-// fail-closes (UNKNOWN_BINDING). The generated write runner passes them to the handler as ports, but
-// our raw write handler ignores them (it drives the plan from the bundle), so present-as-empty is
-// exact — the values are never read. This is the makeSQL surrogate input, not a fabricated default.
-func writeModuleInput() *bc.Obj {
-	in := bc.NewObj()
-	in.Set("__sql", "")
-	in.Set("__sqlParams", []bc.Value{})
-	in.Set("__skip", false)
-	return in
+type sqlQuerier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
 }
 
-// codegenSkewGate — REAL fail-closed gate (bc#75 straight-line): recompute the fingerprint of the
-// LIVE component-graph IR the runtime would execute and assert it equals the module's baked
-// IRFingerprint. For reads the live IR is readGraph.IR; for writes the runtime does not surface the
-// portable IR, so we compare against the case-artifact Fingerprint the generator computed from the
-// SAME bundle (a real generated-const vs live comparison).
-func codegenSkewGate(c *caseArt, bundle *rt.SqlBundle, baked string) {
-	var live string
-	if bundle.ReadGraph != nil {
-		fp, err := bc.FingerprintComponentGraph(bundle.ReadGraph.IR)
-		must(err)
-		live = fp
-	} else {
-		live = c.Fingerprint
-	}
-	if live != baked {
-		panic(fmt.Sprintf("codegen: generated %s fingerprint mismatch (%s != %s) — regenerate (fail-closed)", c.Case, live, baked))
-	}
-}
-
-// runCodegen executes ONE case THROUGH the generated de-interpreted module. Reads/relations run the
-// generated Bind(handler)[entry](input); the companion relation is hydrated via the shared runtime
-// StitchRelation (same grouping SSoT as ReadBundle). Writes force the generated module's fail-closed
-// load, then defer execution to the runtime tx path.
-func runCodegen(c *caseArt, db rt.SQLDB) {
-	mod, ok := codegenModules[c.Case]
-	if !ok {
-		panic("unknown codegen case " + c.Case)
-	}
-	bundle, err := rt.BundleFromJObj(c.bundleObj)
+// queryNative runs a SELECT/RETURNING natively: ordered column names + normalized cells.
+func queryNative(db sqlQuerier, query string, args []any) ([]string, [][]any) {
+	rows, err := db.Query(query, args...)
 	must(err)
-	codegenSkewGate(c, bundle, mod.fingerprint)
-
-	switch c.Kind {
-	case "read", "relation":
-		pid, err := bundle.ReadGraph.PrimaryNodeID()
-		must(err)
-		handler := &codegenRawReadHandler{graph: bundle.ReadGraph, primaryID: pid, db: db}
-		bound := mod.bindRaw(handler)
-		run := bound[mod.entry]
-		out, err := run(c.inputScope)
-		must(err)
-		if c.Kind == "relation" {
-			parents, _ := out.([]bc.Value)
-			relN, _ := c.relationsJObj.Get(c.WithRelation)
-			relObj := relN.(*bc.JObj)
-			_, err := rt.StitchRelation(relObj, parents, db)
-			must(err)
+	defer rows.Close()
+	cols, err := rows.Columns()
+	must(err)
+	var out [][]any
+	for rows.Next() {
+		raw := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range raw {
+			ptrs[i] = &raw[i]
 		}
-	case "batch":
-		handler := &codegenRawWriteHandler{bundle: bundle, input: bc.NewObj(), db: db}
-		bound := mod.bindRaw(handler)
-		_, err := bound[mod.entry](writeModuleInput())
-		must(err)
-	case "tx":
-		handler := &codegenRawWriteHandler{bundle: bundle, input: c.inputScope, db: db}
-		bound := mod.bindRaw(handler)
-		_, err := bound[mod.entry](writeModuleInput())
-		must(err)
-	default:
-		panic("unknown kind " + c.Kind)
-	}
-}
-
-// ── behaviour-equality selfcheck helpers ───────────────────────────────────────
-// runCodegenValue / runLMValue return the produced output for the behaviour-equality selfcheck,
-// each on its OWN freshly-seeded in-memory DB, encoded to a JSON-comparable string.
-func runCodegenValue(a *artifact, c *caseArt) string {
-	raw := seedDB(a)
-	defer raw.Close()
-	var db rt.SQLDB = raw
-	mod := codegenModules[c.Case]
-	bundle, err := rt.BundleFromJObj(c.bundleObj)
-	must(err)
-	codegenSkewGate(c, bundle, mod.fingerprint)
-	var out bc.Value
-	switch c.Kind {
-	case "read", "relation":
-		pid, e := bundle.ReadGraph.PrimaryNodeID()
-		must(e)
-		bound := mod.bindRaw(&codegenRawReadHandler{graph: bundle.ReadGraph, primaryID: pid, db: db})
-		o, e2 := bound[mod.entry](c.inputScope)
-		must(e2)
-		if c.Kind == "relation" {
-			parents, _ := o.([]bc.Value)
-			relN, _ := c.relationsJObj.Get(c.WithRelation)
-			rows, e3 := rt.StitchRelation(relN.(*bc.JObj), parents, db)
-			must(e3)
-			out = bcRows(rows)
-		} else {
-			out = o
+		must(rows.Scan(ptrs...))
+		for i := range raw {
+			raw[i] = scanCell(raw[i])
 		}
-	case "batch":
-		bound := mod.bindRaw(&codegenRawWriteHandler{bundle: bundle, input: bc.NewObj(), db: db})
-		o, e := bound[mod.entry](writeModuleInput())
-		must(e)
-		out = o
-	default:
-		bound := mod.bindRaw(&codegenRawWriteHandler{bundle: bundle, input: c.inputScope, db: db})
-		o, e := bound[mod.entry](writeModuleInput())
-		must(e)
-		out = o
+		out = append(out, raw)
 	}
-	// Canonicalize integral float64 → int64 uniformly (the relation-stitch path returns float rows
-	// from the driver; the de-box read/write path returns int64) so cg and ir compare by VALUE.
-	return encodeConformance(coerceIntsValue(out))
+	must(rows.Err())
+	return cols, out
 }
 
-func runLMValue(a *artifact, c *caseArt) string {
-	raw := seedDB(a)
-	defer raw.Close()
-	var db rt.SQLDB = raw
-	bundle, err := rt.BundleFromJObj(c.bundleObj)
-	must(err)
-	var out bc.Value
-	switch c.Kind {
-	case "batch":
-		o, e := rt.ExecuteTransactionBundle(bundle, bc.NewObj(), db.(rt.TxDB))
-		must(e)
-		out = txResultToObj(o) // the SAME canonical shape the de-boxed path emits (via ser_T0)
-	case "tx":
-		o, e := rt.ExecuteTransactionBundle(bundle, c.inputScope, db.(rt.TxDB))
-		must(e)
-		out = txResultToObj(o)
-	case "relation":
-		o, e := rt.ReadBundle(bundle, c.relationsJObj, c.inputScope, db, []string{c.WithRelation}, nil)
-		must(e)
-		out = o
-	default:
-		o, e := rt.ExecuteBundle(bundle, c.inputScope, db)
-		must(e)
-		out = o
+func rowsToRaw(cols []string, data [][]any) []bc.RawValue {
+	out := make([]bc.RawValue, len(data))
+	for i, row := range data {
+		ro := bc.NewRawObj()
+		for j, c := range cols {
+			ro.Set(c, row[j])
+		}
+		out[i] = ro
 	}
-	// The de-boxed codegen output types INTEGER columns as int64 (the typed outType); the interpreter
-	// path floats them (scanValue's JS-number shim). Both encode the SAME integers — canonicalize the
-	// interpreter side's integral float64 → int64 so the behaviour-equality selfcheck compares by VALUE
-	// (the codegen output is already int64 via ser_T0). Representation-only; the row DATA is identical.
-	out = coerceIntsValue(out)
-	return encodeConformance(out)
-}
-
-func bcRows(rows []bc.Value) bc.Value {
-	out := make([]bc.Value, len(rows))
-	copy(out, rows)
 	return out
 }
 
-// encodeConformance renders a bc Value to its conformance-JSON string (deterministic key order +
-// $bigint codec), so codegen vs ir outputs compare byte-for-byte.
-func encodeConformance(v bc.Value) string { return rt.EncodeConformanceJSON(v) }
+func rowsToObjs(cols []string, data [][]any) []bc.Value {
+	out := make([]bc.Value, len(data))
+	for i, row := range data {
+		o := bc.NewObj()
+		for j, c := range cols {
+			o.Set(c, row[j])
+		}
+		out[i] = o
+	}
+	return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NATIVE handlers at the generated modules' makeSQL seam
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// nativeReadHandler renders the primary node's NATIVE statement plan against the evaluated
+// `__scope`, runs REAL SQL, and returns the rows as []RawValue of RawObj for bc's de-box.
+type nativeReadHandler struct {
+	plan *cgplans.ReadPlan
+	db   cgDB
+}
+
+func (h *nativeReadHandler) ExecRaw(component string, ports *bc.Obj, bound bc.Value) (bc.RawOutcome, bool) {
+	return h.ExecRawCtx("", component, ports, bound)
+}
+
+func (h *nativeReadHandler) ExecRawCtx(nodeID, component string, ports *bc.Obj, bound bc.Value) (bc.RawOutcome, bool) {
+	scopeV, _ := ports.Get("__scope")
+	scope, ok := scopeV.(*bc.Obj)
+	if !ok {
+		return bc.ErrRaw("codegen: __scope did not evaluate to an object"), true
+	}
+	query, args := renderReadNative(h.plan, scope)
+	cols, data := queryNative(h.db, query, args)
+	return bc.OkRaw(rowsToRaw(cols, data)), true
+}
+
+// nativeWriteHandler runs the NATIVE gate-first transaction plan and returns the
+// TransactionResult as a RawObj (committed/executed/shortCircuit/entity always present —
+// present-as-null for an absent optional — plus returnedRows only when a batch RETURNING
+// produced rows), exactly the shape the generated write module's de-box marshal expects.
+type nativeWriteHandler struct {
+	plan    *cgplans.TxPlan
+	dialect cgplans.Dialect
+	input   *bc.Obj
+	db      cgDB
+}
+
+func (h *nativeWriteHandler) ExecRaw(component string, ports *bc.Obj, bound bc.Value) (bc.RawOutcome, bool) {
+	return bc.OkRaw(execTxNative(h.plan, h.dialect, h.input, h.db)), true
+}
+
+func (h *nativeWriteHandler) ExecRawCtx(nodeID, component string, ports *bc.Obj, bound bc.Value) (bc.RawOutcome, bool) {
+	return h.ExecRaw(component, ports, bound)
+}
+
+// objToRaw converts a scanned row object to a RawValue (native bc-value conversion; the cells are
+// already int64/string/etc. from scanCell).
+func objToRaw(o *bc.Obj) bc.RawValue {
+	ro := bc.NewRawObj()
+	for _, k := range o.Keys {
+		v := o.Vals[k]
+		if inner, isObj := v.(*bc.Obj); isObj {
+			ro.Set(k, objToRaw(inner))
+		} else {
+			ro.Set(k, v)
+		}
+	}
+	return ro
+}
+
+// execTxNative is the NATIVE gate-first transaction execution (mirror of the runtime's
+// ExecuteTransactionBundle for the companion's closed set): BEGIN → per-statement native param
+// eval + render + execute → gate short-circuit (ROLLBACK + committed:false result) →
+// entityFrom/binds RETURNING-row scope binds → batch returnedRows accumulation → COMMIT.
+func execTxNative(plan *cgplans.TxPlan, dialect cgplans.Dialect, input *bc.Obj, db cgDB) bc.RawValue {
+	tx, err := db.Begin()
+	must(err)
+	done := false
+	defer func() {
+		if !done {
+			_ = tx.Rollback() // best-effort on a panic path; the panic itself surfaces
+		}
+	}()
+
+	// The tx scope: the input bindings + later __entity / binds rows (a shallow copy — the
+	// prepared input stays immutable across iterations).
+	scope := bc.NewObj()
+	for _, k := range input.Keys {
+		scope.Set(k, input.Vals[k])
+	}
+
+	executed := make([]bc.RawValue, 0, len(plan.Statements))
+	var entity *bc.Obj
+	var returnedRows []bc.RawValue
+
+	for i := range plan.Statements {
+		stmt := &plan.Statements[i]
+		args := make([]any, 0, len(stmt.Params))
+		for j := range stmt.Params {
+			args = append(args, evalSpecArg(&stmt.Params[j], scope))
+		}
+		query := renderPlaceholdersNative(stmt.SQL, dialect)
+
+		var rows []bc.Value
+		var changes int64
+		if stmt.IsReturn {
+			cols, data := queryNative(tx, query, args)
+			rows = rowsToObjs(cols, data)
+			changes = int64(len(rows))
+		} else {
+			res, execErr := tx.Exec(query, args...)
+			must(execErr)
+			n, affErr := res.RowsAffected()
+			must(affErr)
+			changes = n
+		}
+		executed = append(executed, stmt.ID)
+
+		if stmt.Gate != cgplans.GateNone {
+			var reason string
+			switch stmt.Gate {
+			case cgplans.GateExistsElseRollback:
+				if len(rows) == 0 {
+					reason = "requires_absent"
+				}
+			case cgplans.GateInsertedElseRollback:
+				if changes == 0 {
+					reason = "unique_collision"
+				}
+			case cgplans.GateInsertedElseNoop:
+				if changes == 0 {
+					reason = "idempotent_duplicate"
+				}
+			}
+			if reason != "" {
+				must(tx.Rollback())
+				done = true // the rollback consumed the tx; suppress the deferred rollback
+				sc := bc.NewRawObj()
+				sc.Set("statementId", stmt.ID)
+				sc.Set("reason", reason)
+				out := bc.NewRawObj()
+				out.Set("committed", false)
+				out.Set("executed", executed)
+				out.Set("shortCircuit", sc)
+				out.Set("entity", nil)
+				return out
+			}
+		}
+
+		if plan.IsBatch && len(rows) > 0 {
+			group := make([]bc.RawValue, len(rows))
+			for j, r := range rows {
+				group[j] = objToRaw(r.(*bc.Obj))
+			}
+			returnedRows = append(returnedRows, group)
+		}
+		var firstRow *bc.Obj
+		if len(rows) > 0 {
+			firstRow = rows[0].(*bc.Obj)
+		}
+		if plan.EntityFrom != "" && plan.EntityFrom == stmt.ID {
+			entity = firstRow
+			if entity != nil {
+				scope.Set("__entity", entity)
+			}
+		}
+		if stmt.Binds != "" && firstRow != nil {
+			scope.Set(stmt.Binds, firstRow)
+		}
+	}
+
+	must(tx.Commit())
+	done = true
+	out := bc.NewRawObj()
+	out.Set("committed", true)
+	out.Set("executed", executed)
+	out.Set("shortCircuit", nil)
+	if entity != nil {
+		out.Set("entity", objToRaw(entity))
+	} else {
+		out.Set("entity", nil)
+	}
+	if len(returnedRows) > 0 {
+		out.Set("returnedRows", returnedRows)
+	}
+	return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NATIVE relation batch stitch (mirror of the runtime StitchRelation for the
+// companion's single-key closed set)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// stringifyKeyNative mirrors the runtime's key identity (int64 / integral float / bool / string).
+func stringifyKeyNative(v bc.Value) string {
+	switch t := v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case float64:
+		if t == float64(int64(t)) {
+			return strconv.FormatInt(int64(t), 10)
+		}
+		return strconv.FormatFloat(t, 'g', -1, 64)
+	case string:
+		return t
+	default:
+		panic("codegen native: relation key outside the closed scalar set (fail-closed)")
+	}
+}
+
+// stitchNative batch-loads + hydrates ONE single-key relation onto the parent rows: dedupe
+// non-null parent keys (insertion order), bind (mysql/sqlite: ONE JSON text param; PG cannot
+// bind arrays through database/sql — fail-closed, and the go bench's PG legs are protocol-level
+// skips), group child rows by target key, distribute per cardinality.
+func stitchNative(rel *cgplans.Relation, parents []bc.Value, db cgDB) []bc.Value {
+	seen := make(map[string]bool, len(parents))
+	keys := make([]bc.Value, 0, len(parents))
+	for _, p := range parents {
+		obj, ok := p.(*bc.Obj)
+		if !ok {
+			panic("codegen native: relation parent is not a row object (fail-closed)")
+		}
+		v, has := obj.Get(rel.ParentKey)
+		if !has || v == nil {
+			continue
+		}
+		id := stringifyKeyNative(v)
+		if !seen[id] {
+			seen[id] = true
+			keys = append(keys, v)
+		}
+	}
+
+	batch := make(map[string][]bc.Value)
+	if len(keys) > 0 {
+		if rel.Dialect == cgplans.Postgres {
+			panic("codegen native: postgres relation array binding not wired through database/sql — fail-closed")
+		}
+		sqlText := renderPlaceholdersNative(rel.SQL, rel.Dialect)
+		arg := jsonInListText(keys, rel.Dialect == cgplans.Mysql)
+		cols, data := queryNative(db, sqlText, []any{arg})
+		for _, row := range rowsToObjs(cols, data) {
+			obj := row.(*bc.Obj)
+			k := "null"
+			if v, has := obj.Get(rel.TargetKey); has {
+				k = stringifyKeyNative(v)
+			}
+			batch[k] = append(batch[k], row)
+		}
+	}
+
+	for _, p := range parents {
+		obj := p.(*bc.Obj)
+		var children []bc.Value
+		if v, has := obj.Get(rel.ParentKey); has && v != nil {
+			children = batch[stringifyKeyNative(v)]
+		}
+		if rel.Kind == "hasMany" {
+			if children == nil {
+				children = []bc.Value{}
+			}
+			obj.Set(rel.Name, children)
+		} else {
+			if len(children) > 0 {
+				obj.Set(rel.Name, children[0])
+			} else {
+				obj.Set(rel.Name, nil)
+			}
+		}
+	}
+	return parents
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Case dispatch (through the bc-GENERATED modules — the ONLY exec entry)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// runCodegenCase executes ONE case THROUGH its generated module (RAW ABI) with the native
+// handlers, returning the produced output (the verify leg canonicalizes it; timed loops discard).
+func runCodegenCase(dialect, caseID string, db cgDB) bc.Value {
+	pc := preparedFor(dialect, caseID)
+	mod, ok := codegenModules[caseID]
+	if !ok {
+		panic("unknown codegen case " + caseID + " (fail-closed)")
+	}
+	switch pc.plan.Kind {
+	case "read", "relation":
+		handler := &nativeReadHandler{plan: pc.plan.Read, db: db}
+		bound := mod.bindRaw(handler)
+		out, err := bound[mod.entry](pc.input)
+		must(err)
+		if pc.plan.Kind == "relation" {
+			parents, isArr := out.([]bc.Value)
+			if !isArr {
+				panic("codegen native: generated read returned a non-row-list (fail-closed)")
+			}
+			return stitchNative(pc.plan.Rel, parents, db)
+		}
+		return out
+	case "batch", "tx":
+		handler := &nativeWriteHandler{plan: pc.plan.Tx, dialect: pc.plan.Dialect, input: pc.input, db: db}
+		bound := mod.bindRaw(handler)
+		out, err := bound[mod.entry](pc.wmi)
+		must(err)
+		return out
+	default:
+		panic("unknown codegen case kind '" + pc.plan.Kind + "' (fail-closed)")
+	}
+}
+
+// runCodegen is the timed codegen op (output discarded).
+func runCodegen(dialect, caseID string, db cgDB) {
+	_ = runCodegenCase(dialect, caseID, db)
+}

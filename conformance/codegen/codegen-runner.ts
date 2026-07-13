@@ -40,14 +40,13 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import * as lm from '../../dist/scp/index.mjs';
-import { registeredLanguages, fingerprintComponentGraph } from 'behavior-contracts';
+import { registeredLanguages } from 'behavior-contracts';
 
 const {
   executeBundle,
   executeTransactionBundle,
   codegenExecuteBundleForTest,
   generateCodegenArtifact,
-  bundleToPortableIR,
   CODEGEN_EMITTER,
 } = lm;
 
@@ -129,20 +128,56 @@ function line(ok: boolean, name: string, detail?: string): void {
 // code — it carries the generation-time IR fingerprint (fail-closed skew gate) but NOT the IR
 // itself, and none of the interpreter machinery (RunPlan tree-walk over a baked IR). The
 // companion carries the STATIC makeSQL catalog byte-identical to the source bundle. ──
+// The codegen OUTPUT must carry NO IR data and NO fingerprint (owner order): a de-interpreted
+// module embeds neither the IR it compiled away, a named IR export, NOR the generation-time
+// fingerprint. Each marker here is a hard reject if it appears in emitted source (any language).
 const IR_LITERAL_MARKERS = [
   /"irVersion"|'irVersion'/, // embedded ComponentGraphIR JSON literal (any language)
   /\bexport const IR\b|\bexport var IR\b|\bpub static IR\b|\bvar IR\b\s*=|'IR'\s*=>/, // named IR export
+  /IR_FINGERPRINT|IRFingerprint/, // baked IR fingerprint (banned from codegen output)
+  /\brun_behavior\b|\bRunBehavior\b|\brunBehavior\b/, // interpreter call (would be a sham de-interpretation)
 ];
+/**
+ * Strip COMMENTS (line + block) while PRESERVING string/char/template literals, so an anti-sham
+ * marker matches genuine code/data — an embedded IR JSON literal survives (it lives in a literal),
+ * but explanatory prose like `// no run_behavior tree-walk` does not false-positive.
+ */
+function stripComments(src: string): string {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    // string / char / template literal — copy verbatim to the matching close (respect \escapes)
+    if (c === '"' || c === "'" || c === '`') {
+      out += c;
+      i++;
+      while (i < n && src[i] !== c) {
+        if (src[i] === '\\') { out += src[i]; i++; }
+        if (i < n) { out += src[i]; i++; }
+      }
+      if (i < n) { out += src[i]; i++; }
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '/') { while (i < n && src[i] !== '\n') i++; continue; }
+    if (c === '/' && src[i + 1] === '*') { i += 2; while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++; i += 2; continue; }
+    out += c;
+    i++;
+  }
+  return out;
+}
 function structuralOk(v: Json, language: string): { ok: boolean; detail?: string } {
   const art = generateCodegenArtifact(v.bundle, language, REGISTERED);
-  if (canon(art.ir) !== canon(bundleToPortableIR(v.bundle))) return { ok: false, detail: 'source IR != bundle component' };
-  const recomputed = fingerprintComponentGraph(art.ir);
-  if (art.module.fingerprint !== recomputed) return { ok: false, detail: 'fingerprint mismatch' };
-  if (!art.module.code.includes(recomputed)) return { ok: false, detail: 'fingerprint not baked into code' };
-  // Anti-sham: a de-interpreted straight-line module must NOT embed the IR it compiled away.
+  // Anti-sham: the module must NOT embed IR data / a fingerprint / an interpreter call. Match on the
+  // comment-stripped source so explanatory prose ("no run_behavior tree-walk") is not a false hit;
+  // an embedded IR literal (a string/object literal) survives stripping and is still caught.
+  // Correctness itself is proven by the byte-identity exec leg below — NOT by any runtime IR compare.
+  const code = stripComments(art.module.code);
   for (const m of IR_LITERAL_MARKERS) {
-    if (m.test(art.module.code)) return { ok: false, detail: `de-interpretation violated: emitted ${language} code embeds the IR (matched ${m})` };
+    if (m.test(code)) return { ok: false, detail: `codegen purity violated: emitted ${language} code matched ${m}` };
   }
+  // The companion carries the STATIC makeSQL catalog byte-identical to the source bundle (this is
+  // the SQL execution data — NOT IR: statement text / read-graph statements / dialect).
   if (art.companion.readGraph !== undefined && canon(art.companion.readGraph) !== canon(v.bundle.readGraph)) return { ok: false, detail: 'companion readGraph != bundle' };
   if (art.companion.statement !== undefined && canon(art.companion.statement) !== canon(v.bundle.statement)) return { ok: false, detail: 'companion statement != bundle' };
   if (art.companion.dialect !== v.bundle.dialect) return { ok: false, detail: 'companion dialect != bundle' };
@@ -180,15 +215,11 @@ async function tsExecOk(v: Json, outDir: string, idx: number): Promise<{ ok: boo
     return okResult && stateOk ? { ok: true } : { ok: false, detail: 'tx result/db-state mismatch' };
   }
   // Emit + import the straight-line module so its load-time fail-closed checks run (spec-version
-  // envelope pin). The de-interpreted module does NOT export the IR (bc#75 — the IR was compiled
-  // away); it exports the generation-time IR_FINGERPRINT constant, which must equal the fingerprint
-  // of the source IR the consumer holds (the fail-closed skew gate). We assert that here.
+  // envelope pin). The de-interpreted module carries NO IR and NO fingerprint (owner order) — its
+  // correctness is proven purely by the byte-identity exec equality below.
   const modPath = join(outDir, `behaviors_${idx}.generated.ts`);
   writeFileSync(modPath, art.module.code, 'utf8');
-  const mod = (await import(pathToFileURL(modPath).href)) as { IR_FINGERPRINT: string; bind: unknown };
-  if (mod.IR_FINGERPRINT !== fingerprintComponentGraph(bundleToPortableIR(v.bundle))) {
-    return { ok: false, detail: 'emitted IR_FINGERPRINT != fingerprint(bundleToPortableIR)' };
-  }
+  await import(pathToFileURL(modPath).href);
 
   // A codegen consumer executes via the static makeSQL catalog (the SAME path executeBundle uses).
   const db = seedDb(v.schema);
