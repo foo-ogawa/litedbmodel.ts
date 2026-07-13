@@ -1,14 +1,37 @@
-// TRUE-codegen cell (#44 perf integration) — execute THROUGH the bc-GENERATED module, over
-// GENERATED NATIVE companion data.
+// TRUE-codegen cell (#44 perf integration; #60 milestone 1 — typed-NATIVE READ codegen).
+//
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// TODO(#60 m1, Go BLOCKED — bc emitter defect, ESCALATE to bc, do not work around locally):
+//
+// bc's go-typed-native emitter (bc#77/#90) generates the covered-read runner function
+// `run_native_raw_struct_<Comp>` with a LOWERCASE-initial name (verified against the actual
+// generated source, e.g. `go/lm_bench/cgmods/find/gen.go`) — in Go, a lowercase-initial identifier
+// is UNEXPORTED and cannot be called from another package. Every OTHER symbol the module needs
+// (`T0`, `In_<Comp>`, `Row_<Comp>_<node>`, `Handler_<Comp>`, `PortsNR_<Comp>_<node>`) IS exported,
+// so this looks like a straightforward emitter naming bug (the function should be
+// `RunNativeRawStruct<Comp>`), not a deliberate non-exported-by-design internal — but as generated
+// today the runner is UNCALLABLE from this cell (a separate package), so Go's codegen cell CANNOT
+// be wired onto typed-native in this pass. This is a genuine bc capability gap discovered during
+// #60 m1 implementation — ESCALATE to bc; do NOT fork a local patched copy of the generated module.
+//
+// Consequently ALL codegen cases are UNAVAILABLE for Go right now (not just complexWhere/inList's
+// bc#86 IN-list gap) — `runCodegenCase` panics naming this gap for every case if invoked. This is
+// NOT a silent degrade: `impl=codegen` for Go now fails LOUDLY instead of running the retired
+// RAW-ABI path (which has no generated module to bind against anymore — the old
+// `cgmods/batchInsert`/`complexWhere`/`inList`/`writeTxGate` packages are no longer generated,
+// #60 m1: writes are not codegen-module cases either). The bench harness/report MUST treat Go
+// codegen as "blocked pending bc fix" until this lands upstream — never re-add a boxed/typed-raw
+// fallback here locally.
+// ══════════════════════════════════════════════════════════════════════════════════════════════
 //
 // OWNER ORDERS (absolute): the codegen EXECUTION path touches NO IR data and NO JSON-handling
 // library — no encoding/json, no litedbmodel_runtime bundle/IR types (rt.BundleFromJObj /
 // rt.ReadGraph carry JSON-decoded IR data). Everything the timed op needs is the GENERATED native
 // companion (`cgplans` — pre-decoded statement/tx/relation plans + bench inputs, emitted by
-// benchmark/crosslang/generate.ts through a CLOSED-SET fail-closed decoder) + the bc-GENERATED
-// straight-line modules (`cgmods/<case>`), + database/sql as the driver seam. The behaviors run
-// THROUGH each module's BindRaw(handler)[entry](input) — a DISTINCT code entry from `ir`'s
-// ExecuteBundle, with NO RunBehavior tree-walk and ZERO dynamic-JSON walking per call.
+// benchmark/crosslang/generate.ts through a CLOSED-SET fail-closed decoder) + database/sql as the
+// driver seam. The native SQL render engine / relation stitch / gate-first tx executor below are
+// kept (language-neutral, `bc.Value`-based) — they are NOT what's blocked; only the typed-native
+// module WIRING is.
 //
 // Fail-closed: an unknown case / spec kind / non-scalar driver arg PANICS loudly — never a silent
 // degrade (companion generation already fail-closed on out-of-set shapes).
@@ -22,15 +45,6 @@ import (
 	bc "github.com/foo-ogawa/behavior-contracts/go"
 
 	"github.com/foo-ogawa/litedbmodel/go/lm_bench/cgplans"
-
-	cgBatchInsert "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/batchInsert"
-	cgBelongsTo "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/belongsTo"
-	cgComplexWhere "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/complexWhere"
-	cgFind "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/find"
-	cgHasMany "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/hasMany"
-	cgHasManyLimit "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/hasManyLimit"
-	cgInList "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/inList"
-	cgWriteTxGate "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/writeTxGate"
 )
 
 // cgDB is the SQL driver seam the codegen cell drives (a *sql.DB satisfies it — the real seeded
@@ -39,27 +53,6 @@ type cgDB interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 	Exec(query string, args ...any) (sql.Result, error)
 	Begin() (*sql.Tx, error)
-}
-
-// genModule is the uniform surface every per-case generated package exposes. `bindRaw` is the
-// RAW-ABI de-boxed dispatch surface (bc#76): a RawComponentExec handler returns a RawValue and the
-// generated `run_typed_raw_*` runner materializes the outType struct DIRECTLY from it (reads AND
-// writes) — no dynamic *Obj/Value tree on the row/entity data plane.
-type genModule struct {
-	bindRaw func(bc.RawComponentExec) map[string]func(*bc.Obj) (bc.Value, error)
-	entry   string
-}
-
-// codegenModules maps case id -> its generated module surface (built from the imported packages).
-var codegenModules = map[string]genModule{
-	"find":         {cgFind.BindRaw, cgFind.ComponentNames[0]},
-	"complexWhere": {cgComplexWhere.BindRaw, cgComplexWhere.ComponentNames[0]},
-	"inList":       {cgInList.BindRaw, cgInList.ComponentNames[0]},
-	"belongsTo":    {cgBelongsTo.BindRaw, cgBelongsTo.ComponentNames[0]},
-	"hasMany":      {cgHasMany.BindRaw, cgHasMany.ComponentNames[0]},
-	"hasManyLimit": {cgHasManyLimit.BindRaw, cgHasManyLimit.ComponentNames[0]},
-	"batchInsert":  {cgBatchInsert.BindRaw, cgBatchInsert.ComponentNames[0]},
-	"writeTxGate":  {cgWriteTxGate.BindRaw, cgWriteTxGate.ComponentNames[0]},
 }
 
 // ── prepared cases: the native input scopes, materialized ONCE at package init ──
@@ -676,34 +669,16 @@ func stitchNative(rel *cgplans.Relation, parents []bc.Value, db cgDB) []bc.Value
 // runCodegenCase executes ONE case THROUGH its generated module (RAW ABI) with the native
 // handlers, returning the produced output (the verify leg canonicalizes it; timed loops discard).
 func runCodegenCase(dialect, caseID string, db cgDB) bc.Value {
-	pc := preparedFor(dialect, caseID)
-	mod, ok := codegenModules[caseID]
-	if !ok {
-		panic("unknown codegen case " + caseID + " (fail-closed)")
-	}
-	switch pc.plan.Kind {
-	case "read", "relation":
-		handler := &nativeReadHandler{plan: pc.plan.Read, db: db}
-		bound := mod.bindRaw(handler)
-		out, err := bound[mod.entry](pc.input)
-		must(err)
-		if pc.plan.Kind == "relation" {
-			parents, isArr := out.([]bc.Value)
-			if !isArr {
-				panic("codegen native: generated read returned a non-row-list (fail-closed)")
-			}
-			return stitchNative(pc.plan.Rel, parents, db)
-		}
-		return out
-	case "batch", "tx":
-		handler := &nativeWriteHandler{plan: pc.plan.Tx, dialect: pc.plan.Dialect, input: pc.input, db: db}
-		bound := mod.bindRaw(handler)
-		out, err := bound[mod.entry](pc.wmi)
-		must(err)
-		return out
-	default:
-		panic("unknown codegen case kind '" + pc.plan.Kind + "' (fail-closed)")
-	}
+	_ = preparedFor(dialect, caseID) // validates dialect/case exist before reporting the block
+	panic(
+		"codegen (go): BLOCKED on a bc go-typed-native emitter defect (bc#77/#90) — the generated " +
+			"covered-read runner `run_native_raw_struct_<Comp>` is emitted with a LOWERCASE-initial " +
+			"name, so it is UNEXPORTED and uncallable from this cell's package. ALL codegen cases " +
+			"(not just complexWhere/inList's bc#86 IN-list gap) are unavailable for Go until this is " +
+			"fixed upstream (see the package doc TODO at the top of codegen_cell.go). ESCALATE to bc; " +
+			"do NOT fork a local patched copy of the generated module, and do NOT fall back to the " +
+			"retired RAW-ABI path (no generated write/complexWhere/inList module exists anymore either).",
+	)
 }
 
 // runCodegen is the timed codegen op (output discarded).

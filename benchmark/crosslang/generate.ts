@@ -1,7 +1,8 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Artifact generation (epic #44) — compile the 8 shared-domain behaviors into
-// makeSQL bundles (PER DIALECT) + the TRUE bc-generated codegen modules, emitting
-// the ONE generated artifact every language's ir / codegen cells consume.
+// Artifact generation (epic #44; #60 milestone 1 — typed-NATIVE READ codegen) —
+// compile the 8 shared-domain behaviors into makeSQL bundles (PER DIALECT) + the
+// TRUE bc-generated codegen modules, emitting the ONE generated artifact every
+// language's ir / codegen cells consume.
 // ════════════════════════════════════════════════════════════════════════════
 //
 // 🔒 CONSUME-ONLY: this uses the litedbmodel public compile/codegen API (dist/scp)
@@ -14,16 +15,19 @@
 //      `postgres`, AND `mysql`. Each renders DIFFERENT SQL/placeholder/array forms
 //      (`?`→`$N` for PG, single-JSON-array IN-list for MySQL/SQLite), so the ir/
 //      codegen CLIENT-PATH cost is reported per dialect, not just SQLite.
-//   2. TRUE codegen modules — `generateCodegenArtifact` runs bc's SHARED generator
-//      over each bundle's portable IR and emits a language-native module (the IR
-//      baked as a literal + `bind(handlers)` + fail-closed fingerprint/spec-version
-//      load checks). The codegen cell COMPILES + LOADS + BINDS this generated
-//      module and executes THROUGH it — a genuinely distinct code entry from `ir`
-//      (which calls `executeBundle` on the raw JSON). See the honest disclosure in
-//      CROSS-LANG.md: at this bc version the generated module is still interpreter-
-//      transcription (it delegates to `runBehavior`), so codegen ≈ ir is EXPECTED.
+//   2. TRUE codegen modules — READ cases ONLY (#60 m1: writes are NOT codegen-module
+//      cases anymore — see below). `generateCodegenArtifact` runs bc's SHARED
+//      generator over each read bundle's LOWERED portable IR: go/rust drive bc's
+//      typed-NATIVE endpoint (bc#77/#90, RUNTIME-FREE — zero boxing); ts stays on
+//      the boxed `typescript-typed` endpoint (no typed-native counterpart yet).
+//      typed-native fails CLOSED on an uncovered read shape (an IN-list's
+//      array-typed head — `complexWhere`/`inList` — bc#86 gap): such a case is
+//      SKIPPED for go/rust (reported, not silently substituted) while TS still
+//      covers it. WRITE cases (`batchInsert`/`writeTxGate`) stay on the existing
+//      write/tx execution path (`executeTransactionBundle` — the native adapters'
+//      hand-written tx mirror) — NOT a codegen module, boxed or typed-raw.
 
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as lm from '../../dist/scp/index.mjs';
@@ -57,11 +61,16 @@ const COLUMN_TYPES = lm.schemaColumnTypeResolver(SCHEMA);
 // the ir/interpret exec surface (bc 0.3.0: their straight-line codegen is UNSUPPORTED), so their
 // codegen artifact is the LITERAL emitter (`delegatesToRunBehavior=true`) and is NOT asserted here.
 const NATIVE_CODEGEN_LANGS = ['typescript', 'go', 'rust'] as const;
+// go/rust specifically drive bc's typed-NATIVE endpoint (bc#77/#90, RUNTIME-FREE — #60 m1); ts has
+// no typed-native counterpart yet (stays on the boxed `typescript-typed` endpoint).
+const NATIVE_ONLY_LANGS = ['go', 'rust'] as const;
 
 /**
- * Fail-closed: assert every native-codegen language produced genuinely de-interpreted code
- * (no silent fallback to the boxed literal/interpreter path). Codifies the "codegen silently
- * ≈ ir" trap so an invalid perf comparison ERRORS instead of being measured.
+ * Fail-closed: assert every native-codegen language produced genuinely de-interpreted code for
+ * every case it COVERS (no silent fallback to the boxed literal/interpreter path). Codifies the
+ * "codegen silently ≈ ir" trap so an invalid perf comparison ERRORS instead of being measured. A
+ * case a native lang does NOT cover (see `NativeCoverage` below) is not part of THIS gate — its
+ * absence is reported separately, never silently substituted with a delegating fallback.
  */
 function assertCodegenSurface(codegen: Record<string, { delegatesToRunBehavior: boolean }>): void {
   const sham = NATIVE_CODEGEN_LANGS.filter((l) => codegen[l]?.delegatesToRunBehavior !== false);
@@ -92,17 +101,20 @@ const GO_CASE_PKG = (caseId: string) => `cg_${caseId.replace(/[^A-Za-z0-9_]/g, '
 const RUST_COMPANION = resolve(CODEGEN_DIR, 'rust', 'companion.rs');
 const GO_CGPLANS_DIR = resolve(HERE, '..', '..', 'go', 'lm_bench', 'cgplans');
 
-// bc's shared generator supports exactly these litedbmodel-facing languages (the
-// mode-3 codegen "endpoint 3" literal-bake emitters). Each cell's codegen module is
-// the generator output for that language over the SqlBundle's portable IR.
-// Codegen-MODULE langs = the de-boxed-typed-endpoint langs only (spec'd architecture: static
-// de-interpreted codegen is ts/go/rust). python/php are the ir/interpret surface — they have NO
-// codegen module (a DECLARED spec choice, not a fallback). No literal-emitter substitution.
+// bc's shared generator supports exactly these litedbmodel-facing languages (the READ codegen
+// endpoints — #60 m1). Each cell's codegen module is the generator output for that language over
+// the READ bundle's (lowered, for go/rust) portable IR. Codegen-MODULE langs = ts/go/rust; python/
+// php are the ir/interpret surface — they have NO codegen module (a DECLARED spec choice, not a
+// fallback). WRITE cases (batchInsert/writeTxGate) are NOT codegen-module cases for ANY language
+// anymore (#60 m1) — they stay on the existing write/tx execution path.
 const CODEGEN_LANGS = ['typescript', 'go', 'rust'] as const;
 type CodegenLang = (typeof CODEGEN_LANGS)[number];
 const CODEGEN_EXT: Record<CodegenLang, string> = {
   typescript: 'ts', go: 'go', rust: 'rs',
 };
+// The read case ids (excludes the 2 write cases — batchInsert/writeTxGate are NOT codegen-module
+// cases, #60 m1).
+const READ_CASE_IDS = CROSSLANG_CASE_IDS_LOCAL.filter((c) => c !== 'batchInsert' && c !== 'writeTxGate');
 
 // Per-(language × case) generated-module path. TS lands as a real `.ts` (tsx imports
 // it directly); the other languages land under their own subdir as EVIDENCE of the
@@ -274,28 +286,45 @@ function codeMentionsInterpreter(src: string): boolean {
   return /runBehavior|run_behavior|RunBehavior/.test(out);
 }
 
+/** A read case a native (go/rust) language did NOT cover — a bc#86 typed-native coverage gap,
+ * reported explicitly (never silently regenerated on a boxed/typed-raw fallback). */
+interface UncoveredCase {
+  caseId: string;
+  reason: string;
+}
+
 function generateCodegen(
   cases: CaseArtifact[],
   language: CodegenLang,
   registered: readonly string[],
-): { artifact: CodegenModuleArtifact; sourceByCase: Record<string, string> } {
+): { artifact: CodegenModuleArtifact; sourceByCase: Record<string, string>; uncovered: UncoveredCase[] } {
   const sourceByCase: Record<string, string> = {};
+  const uncovered: UncoveredCase[] = [];
   let delegates = false;
-  for (const c of cases) {
-    // De-boxed typed codegen (spec §9 / §4.1) covers BOTH read AND write. A read node's SELECT
-    // projection is typed (outType/outputType from the schema SoT) so bc's typed-raw emitter
-    // materializes concrete row structs; a WRITE case (batch INSERT / gate-first tx) carries the
-    // TransactionResult typed shape (`annotateWriteBundleOutType` — entity/returnedRows rows typed via
-    // the SAME schema SoT), so the SAME typed-raw emitter materializes a concrete result struct (no
-    // dynamic Value boxing on the entity/returnedRows data plane). There is NO literal/boxed fallback:
-    // an un-de-boxable write shape THROWS at generation. All 8 cases are codegen-module cases.
-    // The generator wants the SqlBundle; it derives the portable IR itself. For the TS
-    // cell to import the generated module by relative path we pin the runtime import to
-    // the installed `behavior-contracts` package (the default emitter import).
-    const art = lm.generateCodegenArtifact(c.bundle as any, language, registered as string[]);
+  // #60 milestone 1: READ cases only — batchInsert/writeTxGate (writes) are NOT codegen-module
+  // cases for ANY language anymore (they stay on the existing write/tx execution path).
+  const readCases = cases.filter((c) => c.kind === 'read' || c.kind === 'relation');
+  for (const c of readCases) {
+    // go/rust drive bc's typed-NATIVE endpoint (bc#77/#90, RUNTIME-FREE); ts stays on the boxed
+    // `typescript-typed` endpoint (no typed-native counterpart registered yet).
+    // `generateCodegenArtifact` lowers the read graph for typed-native internally (litedbmodel's
+    // codegen-only lowering — src/scp/codegen.ts) and fails CLOSED (`TypedNativeCoverageError`) on
+    // an uncovered shape (e.g. `complexWhere`/`inList`'s IN-list array-typed head) — for a NATIVE
+    // lang this is an EXPECTED, DECLARED gap: skip that case's module for THIS language (never
+    // silently fall back to a boxed/typed-raw emitter), and report it.
+    let art: ReturnType<typeof lm.generateCodegenArtifact>;
+    try {
+      art = lm.generateCodegenArtifact(c.bundle as any, language, registered as string[], COLUMN_TYPES);
+    } catch (e) {
+      if (NATIVE_ONLY_LANGS.includes(language as never) && e instanceof lm.TypedNativeCoverageError) {
+        uncovered.push({ caseId: c.case, reason: e.message.split('\n')[0] });
+        continue;
+      }
+      throw e;
+    }
     // Anti-sham DELEGATION gate: does the generated module CALL the interpreter
-    // (`runBehavior`/`run_behavior`/`RunBehavior`) at the CODE level? The straight-line
-    // (bc#75) emitters produce de-interpreted native source whose EXPLANATORY COMMENTS say
+    // (`runBehavior`/`run_behavior`/`RunBehavior`) at the CODE level? The straight-line/typed-native
+    // (bc#75/#90) emitters produce de-interpreted native source whose EXPLANATORY COMMENTS say
     // "does NOT go through run_behavior" — a naive substring match false-positives on that
     // prose. Strip comments + string/docstring literals first so we count a genuine CALL only.
     if (codeMentionsInterpreter(art.module.code)) delegates = true;
@@ -304,6 +333,7 @@ function generateCodegen(
   return {
     artifact: { language, filenameHint: `behaviors.generated.${CODEGEN_EXT[language]}`, delegatesToRunBehavior: delegates },
     sourceByCase,
+    uncovered,
   };
 }
 
@@ -319,15 +349,19 @@ function main(): void {
   const dialects: Record<string, { cases: CaseArtifact[] }> = {};
   for (const d of CROSSLANG_DIALECTS) dialects[d] = { cases: buildDialect(d) };
 
-  // 2. TRUE generated codegen modules — bc generator output per language. The module
-  //    is dialect-invariant (IR/wiring only); the dialect SQL rides the companion
-  //    bundle the cell already has per dialect. We generate from the sqlite bundles.
+  // 2. TRUE generated codegen modules — bc generator output per language, READ cases only (#60
+  //    m1). The module is dialect-invariant (IR/wiring only); the dialect SQL rides the companion
+  //    bundle the cell already has per dialect. We generate from the sqlite bundles. Per-language
+  //    coverage differs for go/rust (typed-native, may skip an uncovered case) vs ts (boxed, covers
+  //    every read case) — `sourceByCase` reflects exactly what THAT language covered.
   const codegen: Record<string, CodegenModuleArtifact> = {};
   const codegenSources: Record<string, Record<string, string>> = {};
+  const uncoveredByLang: Record<string, UncoveredCase[]> = {};
   for (const lang of CODEGEN_LANGS) {
-    const { artifact, sourceByCase } = generateCodegen(dialects.sqlite.cases, lang, registered);
+    const { artifact, sourceByCase, uncovered } = generateCodegen(dialects.sqlite.cases, lang, registered);
     codegen[lang] = artifact;
     codegenSources[lang] = sourceByCase;
+    uncoveredByLang[lang] = uncovered;
   }
 
   // PREFLIGHT (fail-closed, codified): the native-codegen langs MUST emit de-interpreted native
@@ -362,66 +396,64 @@ function main(): void {
   };
   const body = JSON.stringify(artifact, null, 2);
 
-  // CI gate (--check): the generated artifacts are BUILD OUTPUT (gitignored, regenerated at run
-  // time) — NOT committed — so there is no committed copy to diff against (the old "stale committed
-  // codegen" trap the #44 owner flagged). Instead this gate asserts the LOAD-BEARING invariant on
-  // the FRESHLY generated code: every language's codegen module is genuinely DE-INTERPRETED
-  // (bc#75 straight-line — `delegatesToRunBehavior=false`). A src/ change that makes the generator
-  // fall back to interpreter-transcription (literal-bake + run_behavior) fails CI here. It writes
-  // the artifacts to disk (same as a normal run) so a following selfcheck/bench sees fresh output.
-  // The read/relation cases that produced a de-boxed codegen module (writes are not codegen-module
-  // cases — see generateCodegen). Only these have `codegenSources[lang][case]` populated.
-  const codegenCases = dialects.sqlite.cases.filter((c) => codegenSources[CODEGEN_LANGS[0]][c.case] !== undefined);
+  // Write EACH language's generated module for EVERY case it covers (per-language — go/rust may
+  // legitimately not cover a case ts does; #60 m1). No language writes a placeholder/undefined
+  // source for a case it did not cover. CLEAN the codegen dirs FIRST (pure build output,
+  // gitignored) so a case that lost coverage across a run (e.g. a bc/schema change moves it from
+  // covered to uncovered) never leaves a STALE generated module a consumer could mistakenly wire
+  // against — the on-disk set always reflects exactly the CURRENT run's coverage.
+  const writeCodegenFiles = (): void => {
+    rmSync(CODEGEN_DIR, { recursive: true, force: true });
+    rmSync(GO_CGMODS_DIR, { recursive: true, force: true });
+    for (const lang of CODEGEN_LANGS) {
+      for (const caseId of Object.keys(codegenSources[lang])) {
+        const p = codegenFilePath(lang, caseId);
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, codegenSources[lang][caseId]);
+      }
+    }
+    // Materialize the Go per-case packages INSIDE the go module so the bench can compile+import
+    // them. Each is the SAME generated source with only the package clause rewritten
+    // `behaviors` -> `cg_<case>` (byte-identical code otherwise — the flat generated/ copy above
+    // is what the anti-sham gate checks). ONLY for cases go actually covered.
+    for (const caseId of Object.keys(codegenSources.go)) {
+      const pkg = GO_CASE_PKG(caseId);
+      const src = codegenSources.go[caseId].replace(/^package\s+behaviors\b/m, `package ${pkg}`);
+      const dir = resolve(GO_CGMODS_DIR, caseId);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, 'gen.go'), src);
+    }
+  };
+
+  const reportCoverage = (): void => {
+    for (const lang of CODEGEN_LANGS) {
+      const native = (NATIVE_CODEGEN_LANGS as readonly string[]).includes(lang);
+      const covered = Object.keys(codegenSources[lang]).length;
+      console.error(
+        `  ${lang.padEnd(11)} delegatesToRunBehavior=${codegen[lang].delegatesToRunBehavior}` +
+          ` covered=${covered}/${READ_CASE_IDS.length}` +
+          `${native ? ' (native-codegen: MUST be false)' : ' (ir/interpret surface — literal by design)'}`,
+      );
+      for (const u of uncoveredByLang[lang]) {
+        console.error(`    · NOT COVERED [${u.caseId}] (bc#86 gap, reported not silently substituted): ${u.reason}`);
+      }
+    }
+  };
 
   if (process.argv.includes('--check')) {
     mkdirSync(dirname(OUT), { recursive: true });
     writeFileSync(OUT, body);
-    for (const lang of CODEGEN_LANGS) {
-      for (const c of codegenCases) {
-        const p = codegenFilePath(lang, c.case);
-        mkdirSync(dirname(p), { recursive: true });
-        writeFileSync(p, codegenSources[lang][c.case]);
-      }
-    }
-    for (const c of codegenCases) {
-      const pkg = GO_CASE_PKG(c.case);
-      const src = codegenSources.go[c.case].replace(/^package\s+behaviors\b/m, `package ${pkg}`);
-      const dir = resolve(GO_CGMODS_DIR, c.case);
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(resolve(dir, 'gen.go'), src);
-    }
+    writeCodegenFiles();
     writeNativeCompanions();
     // Surface already asserted fail-closed above (assertCodegenSurface). Report per lang.
-    for (const lang of CODEGEN_LANGS) {
-      const native = (NATIVE_CODEGEN_LANGS as readonly string[]).includes(lang);
-      console.error(
-        `  ${lang.padEnd(11)} delegatesToRunBehavior=${codegen[lang].delegatesToRunBehavior}` +
-          `${native ? ' (native-codegen: MUST be false)' : ' (ir/interpret surface — literal by design)'}`,
-      );
-    }
+    reportCoverage();
     console.error(`OK: freshly generated (${CROSSLANG_DIALECTS.length} dialects × ${dialects.sqlite.cases.length} bundles) — native langs de-interpreted, py/php on ir surface.`);
     return;
   }
 
   mkdirSync(dirname(OUT), { recursive: true });
   writeFileSync(OUT, body);
-  for (const lang of CODEGEN_LANGS) {
-    for (const c of codegenCases) {
-      const p = codegenFilePath(lang, c.case);
-      mkdirSync(dirname(p), { recursive: true });
-      writeFileSync(p, codegenSources[lang][c.case]);
-    }
-  }
-  // Materialize the Go per-case packages INSIDE the go module so the bench can compile+import them.
-  // Each is the SAME generated source with only the package clause rewritten `behaviors` -> `cg_<case>`
-  // (byte-identical code otherwise — the anti-sham gate checks the flat generated/ copy).
-  for (const c of codegenCases) {
-    const pkg = GO_CASE_PKG(c.case);
-    const src = codegenSources.go[c.case].replace(/^package\s+behaviors\b/m, `package ${pkg}`);
-    const dir = resolve(GO_CGMODS_DIR, c.case);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(resolve(dir, 'gen.go'), src);
-  }
+  writeCodegenFiles();
   writeNativeCompanions();
   console.error(`Wrote ${OUT} (${CROSSLANG_DIALECTS.length} dialects × ${dialects.sqlite.cases.length} case bundles)`);
   console.error(`Wrote native codegen companions: ${RUST_COMPANION} + ${resolve(GO_CGPLANS_DIR, 'plans.go')}`);
@@ -429,8 +461,8 @@ function main(): void {
     console.error(`  [${d}]`);
     for (const c of dialects[d].cases) console.error(`    ${c.case.padEnd(14)} kind=${c.kind} Q=${c.expectedQueries} R=${c.expectedRows}`);
   }
-  console.error(`Wrote ${CODEGEN_LANGS.length}×${dialects.sqlite.cases.length} generated codegen modules to ${CODEGEN_DIR}`);
-  for (const lang of CODEGEN_LANGS) console.error(`  ${lang.padEnd(11)} delegatesToRunBehavior=${codegen[lang].delegatesToRunBehavior}`);
+  console.error(`Wrote ${CODEGEN_LANGS.length}×${READ_CASE_IDS.length} generated READ codegen modules (per-language coverage) to ${CODEGEN_DIR}`);
+  reportCoverage();
 }
 
 main();

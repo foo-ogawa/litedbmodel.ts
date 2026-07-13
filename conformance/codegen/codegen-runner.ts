@@ -1,29 +1,34 @@
 /**
- * litedbmodel v2 SCP — mode-3 codegen conformance runner (WS7f, #35; spec §9 / §10 / §11).
+ * litedbmodel v2 SCP — mode-3 codegen conformance runner (WS7f, #35; spec §9 / §10 / §11;
+ * #60 milestone 1 — typed-NATIVE READ codegen).
  *
  * The codegen LEG of the cross-language conformance LOCK. It proves the AC "生成コード出力が
- * thin-runtime と byte 一致" against the FROZEN vector corpus (`conformance/vectors/*.json`):
+ * thin-runtime と byte 一致" against the FROZEN vector corpus (`conformance/vectors/*.json`),
+ * READ (exec) vectors ONLY are codegen-module cases (#60 m1 — see below for tx/write vectors):
  *
- *  For every read/exec + tx vector (which carry a full §8 SqlBundle), for EVERY language bc's
- *  shared generator supports (typescript / python / go / rust / php):
- *
- *   1. GENERATE the behavior module (bc's shared STRAIGHT-LINE generator emits REAL static native
- *      source — de-interpreted, bc#75, NOT a baked-IR interpret path — + `bind(handlers)`) + the
- *      SQL catalog companion (the litedbmodel-specific fields).
- *   2. DE-INTERPRETATION gate (bc#75 anti-sham): the emitted module carries the generation-time IR
- *      FINGERPRINT (fail-closed skew gate) but NOT the IR itself and no interpreter machinery, and
- *      the SQL catalog companion is byte-identical to the source bundle (proven for all 5 languages).
- *   3. REAL execution byte-identity (typescript + python — the two toolchains that can EXECUTE a
- *      generated module against the SAME thin-runtime handlers): import the emitted module, pair
+ *   1. GENERATE the behavior module for ts/go/rust: go/rust drive bc's typed-NATIVE endpoint
+ *      (bc#77/#90, RUNTIME-FREE — the litedbmodel-side lowering in `src/scp/codegen.ts` makes the
+ *      surrogate read graph's shape ELIGIBLE for it); ts stays on the boxed `typescript-typed`
+ *      endpoint (no typed-native counterpart registered yet). typed-native FAILS CLOSED on an
+ *      uncovered read shape — this is EXPECTED + REPORTED for such a vector (a bc#86 coverage gap),
+ *      never a hard failure and never silently regenerated on a boxed fallback.
+ *   2. PURITY gate: for a COVERED go/rust read, the emitted module carries NO IR data, NO
+ *      fingerprint, NO interpreter call (`run_behavior`), and NO boxing markers (`obj_native`/
+ *      `ser_T*`/`run_plan`/`RawValue`) — the whole point of typed-native is zero-boxing. The SQL
+ *      catalog companion is byte-identical to the source bundle (a real anti-sham check).
+ *   3. REAL execution byte-identity (typescript — the toolchain that can EXECUTE a generated
+ *      module against the SAME thin-runtime handlers in-process): import the emitted module, pair
  *      its `bind` with the thin-runtime SQL handlers built from the companion, run against seeded
  *      SQLite, and assert the output equals BOTH the frozen vector AND the mode-2 thin-runtime,
  *      byte-for-byte (exact canonical comparison).
- *   4. COMPILE check (go / rust / php): the emitted source is type-checked / parsed by the native
- *      toolchain (gofmt+vet / rustc parse / php -l) so the generated code is provably well-formed
- *      for those languages; their thin-runtimes are already conformance-verified in mode-2, and the
- *      generated `bind()` drives the IDENTICAL static makeSQL render/execute path (behavior-equal
- *      to `RunBehavior` — same values / op sequence / Failure code, bc#75) — so mode-3 == mode-2
- *      follows from the shared core + the de-interpretation proof.
+ *   4. COMPILE check (go / rust, when covered): the emitted source is parsed by the native
+ *      toolchain (gofmt / rustfmt parse) so the generated code is provably well-formed.
+ *
+ * WRITE (tx) vectors are NOT codegen-module cases (#60 m1: writes stay on the existing write/tx
+ * execution path — `executeTransactionBundle`, the SAME function the mode-2 thin-runtime + the
+ * native adapters call, never a generated module, boxed or typed-raw). Their "codegen leg" check
+ * is simply re-running `executeTransactionBundle` against the frozen vector's expected
+ * result/DB-state.
  *
  * docker: exec seam is in-process SQLite; live PG/MySQL EXECUTION is deferred to the coordinated
  * cross-language docker pass (the PG/MySQL dialect TEXT is covered by the render suite; the executed
@@ -48,14 +53,26 @@ const {
   codegenExecuteBundleForTest,
   generateCodegenArtifact,
   CODEGEN_EMITTER,
+  TypedNativeCoverageError,
+  schemaColumnTypeResolver,
 } = lm;
 
-// The codegen languages litedbmodel drives through bc's DE-BOX typed endpoint (ts/go/rust). This is
-// the SPEC'd codegen surface (spec §9 / §4.1): python/php are the ir/INTERPRET surface — bc registers
-// NO de-box typed endpoint for them, so they are NOT codegen languages (a DECLARED choice, not a
-// fallback). The de-box emitter map (`CODEGEN_EMITTER`) IS that authority, so we derive the set from
-// it rather than the broader "supported target" `CODEGEN_LANGUAGES` (which still lists py/php).
+// The codegen languages litedbmodel drives through bc's READ codegen endpoint (ts/go/rust, #60
+// milestone 1). This is the SPEC'd codegen surface (spec §9 / §4.1): python/php are the
+// ir/INTERPRET surface — bc registers NO de-box typed endpoint for them, so they are NOT codegen
+// languages (a DECLARED choice, not a fallback). The emitter map (`CODEGEN_EMITTER`) IS that
+// authority, so we derive the set from it rather than the broader "supported target"
+// `CODEGEN_LANGUAGES` (which still lists py/php).
+//
+// go/rust now drive bc's typed-NATIVE endpoint (bc#77/#90, RUNTIME-FREE — #60 milestone 1); ts has
+// no typed-native counterpart yet and stays on the boxed `typescript-typed` endpoint. typed-native
+// fails CLOSED on an uncovered read shape (`TypedNativeCoverageError`, thrown by litedbmodel's
+// codegen-only lowering BEFORE bc's own generator runs) — this is an EXPECTED, reported outcome for
+// a shape typed-native does not (yet) cover (e.g. this suite's `Feed` vector, whose relation rides a
+// `.map` node with a per-element field-access port bc's port-typing does not resolve — a genuine
+// bc#86 coverage gap), not a hard failure. See `structuralOk`/`nativeCompileCheck` below.
 const DEBOX_LANGS = Object.keys(CODEGEN_EMITTER as Record<string, string>);
+const NATIVE_LANGS = ['go', 'rust'];
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..');
@@ -166,22 +183,47 @@ function stripComments(src: string): string {
   }
   return out;
 }
-function structuralOk(v: Json, language: string): { ok: boolean; detail?: string } {
-  const art = generateCodegenArtifact(v.bundle, language, REGISTERED);
+/** A structural check outcome: `ok` (generated + verified), `fail` (a real defect), or
+ * `uncovered` (a NATIVE-lang typed-native coverage gap — expected + reported, not a failure). */
+type StructuralResult = { kind: 'ok' } | { kind: 'fail'; detail: string } | { kind: 'uncovered'; detail: string };
+
+function structuralCheck(v: Json, language: string, resolveColumnType: (table: string, column: string) => string): StructuralResult {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let art: any;
+  try {
+    art = generateCodegenArtifact(v.bundle, language, REGISTERED, resolveColumnType);
+  } catch (e) {
+    // typed-native (go/rust) fails CLOSED on an uncovered read shape (#60 milestone 1) — this is an
+    // EXPECTED, DECLARED outcome for a shape bc's typed-native endpoint does not (yet) cover (e.g. a
+    // relation expressed via a `.map` node with a per-element field-access port — bc#86 gap), never
+    // silently regenerated on a boxed fallback. Any OTHER language/error is a genuine failure.
+    if (NATIVE_LANGS.includes(language) && e instanceof TypedNativeCoverageError) {
+      return { kind: 'uncovered', detail: e.message.split('\n')[0] };
+    }
+    return { kind: 'fail', detail: e instanceof Error ? e.message : String(e) };
+  }
   // Anti-sham: the module must NOT embed IR data / a fingerprint / an interpreter call. Match on the
   // comment-stripped source so explanatory prose ("no run_behavior tree-walk") is not a false hit;
   // an embedded IR literal (a string/object literal) survives stripping and is still caught.
   // Correctness itself is proven by the byte-identity exec leg below — NOT by any runtime IR compare.
   const code = stripComments(art.module.code);
   for (const m of IR_LITERAL_MARKERS) {
-    if (m.test(code)) return { ok: false, detail: `codegen purity violated: emitted ${language} code matched ${m}` };
+    if (m.test(code)) return { kind: 'fail', detail: `codegen purity violated: emitted ${language} code matched ${m}` };
+  }
+  // typed-native purity (go/rust ONLY when covered): zero boxing markers — the whole point of #60
+  // milestone 1 is that a COVERED read carries no boxed Value/RawValue/run_plan on its hot path.
+  if (NATIVE_LANGS.includes(language)) {
+    const NATIVE_PURITY_MARKERS = [/\bobj_native\b/, /\bser_T\d/, /\brun_plan\b/, /\bRawValue\b/];
+    for (const m of NATIVE_PURITY_MARKERS) {
+      if (m.test(code)) return { kind: 'fail', detail: `typed-native purity violated: emitted ${language} code matched ${m} (should be zero-boxing)` };
+    }
   }
   // The companion carries the STATIC makeSQL catalog byte-identical to the source bundle (this is
   // the SQL execution data — NOT IR: statement text / read-graph statements / dialect).
-  if (art.companion.readGraph !== undefined && canon(art.companion.readGraph) !== canon(v.bundle.readGraph)) return { ok: false, detail: 'companion readGraph != bundle' };
-  if (art.companion.statement !== undefined && canon(art.companion.statement) !== canon(v.bundle.statement)) return { ok: false, detail: 'companion statement != bundle' };
-  if (art.companion.dialect !== v.bundle.dialect) return { ok: false, detail: 'companion dialect != bundle' };
-  return { ok: true };
+  if (art.companion.readGraph !== undefined && canon(art.companion.readGraph) !== canon(v.bundle.readGraph)) return { kind: 'fail', detail: 'companion readGraph != bundle' };
+  if (art.companion.statement !== undefined && canon(art.companion.statement) !== canon(v.bundle.statement)) return { kind: 'fail', detail: 'companion statement != bundle' };
+  if (art.companion.dialect !== v.bundle.dialect) return { kind: 'fail', detail: 'companion dialect != bundle' };
+  return { kind: 'ok' };
 }
 
 // The absolute file URL of bc's runtime dist — passed as the generated module's `runtimeImport`
@@ -191,29 +233,27 @@ function structuralOk(v: Json, language: string): { ok: boolean; detail?: string
 const BC_RUNTIME_URL = pathToFileURL(join(REPO, 'node_modules', 'behavior-contracts', 'dist', 'index.js')).href;
 
 // ── TS real execution: import the emitted module + drive its bind() through the thin handlers ──
-async function tsExecOk(v: Json, outDir: string, idx: number): Promise<{ ok: boolean; detail?: string }> {
-  const art = generateCodegenArtifact(v.bundle, 'typescript', REGISTERED, BC_RUNTIME_URL);
+// #60 milestone 1: a WRITE (tx) vector is NOT a codegen-module case anymore (writes stay on the
+// existing write/tx execution path, `executeTransactionBundle`, never a generated module — boxed
+// or typed-raw). So a tx vector's "codegen leg" check is simply that `executeTransactionBundle`
+// (the SAME function the mode-2 thin-runtime + the native adapters call) reproduces the frozen
+// vector's result/DB-state — no `generateCodegenArtifact` call at all for `kind === 'tx'`.
+async function tsExecOk(
+  v: Json,
+  outDir: string,
+  idx: number,
+  resolveColumnType: (table: string, column: string) => string,
+): Promise<{ ok: boolean; detail?: string }> {
   const input = decodeValue(v.input) as Record<string, unknown>;
   if (v.kind === 'tx') {
-    // tx path is the transaction plan (not bind()); reassemble the bundle from the artifact.
-    const reassembled = {
-      dialect: art.companion.dialect,
-      name: v.bundle.name,
-      ...(art.companion.statement !== undefined ? { statement: art.companion.statement } : {}),
-      ...(art.companion.readGraph !== undefined ? { readGraph: art.companion.readGraph } : {}),
-      optionalHeads: [...art.companion.optionalHeads],
-      relations: art.companion.relations,
-      ...(art.companion.transaction !== undefined ? { transaction: art.companion.transaction } : {}),
-      ...(art.companion.outputType !== undefined ? { outputType: art.companion.outputType } : {}),
-    };
-    if (canon(reassembled) !== canon(v.bundle)) return { ok: false, detail: 'reassembled bundle != source' };
     const db = seedDb(v.schema);
-    const result = executeTransactionBundle(reassembled as never, input as never, { db });
+    const result = executeTransactionBundle(v.bundle as never, input as never, { db });
     const stateOk = (v.expectedDbState ?? []).every((s: Json) => canon(db.prepare(s.query).all()) === canon(decodeValue(s.rows)));
     db.close();
     const okResult = canon(result) === canon(decodeValue(v.expectedResult));
     return okResult && stateOk ? { ok: true } : { ok: false, detail: 'tx result/db-state mismatch' };
   }
+  const art = generateCodegenArtifact(v.bundle, 'typescript', REGISTERED, resolveColumnType, BC_RUNTIME_URL);
   // Emit + import the straight-line module so its load-time fail-closed checks run (spec-version
   // envelope pin). The de-interpreted module carries NO IR and NO fingerprint (owner order) — its
   // correctness is proven purely by the byte-identity exec equality below.
@@ -307,25 +347,46 @@ async function runExecVectors(vectors: Json[], suiteName: string, outDir: string
   const t: Tally = { pass: 0, fail: 0 };
   console.error(`\n${suiteName}.json — ${vectors.length} bundle vectors × codegen`);
   for (const [idx, v] of vectors.entries()) {
-    // 1) structural byte-identity for the DE-BOX codegen languages (ts/go/rust). python/php are the
-    //    ir/interpret surface (no de-box endpoint — a declared spec choice), so they are NOT codegen'd.
+    const resolveColumnType = schemaColumnTypeResolver(v.schema as string[]);
+
+    // #60 milestone 1: a WRITE (tx) vector is NOT a codegen-module case — only its
+    // executeTransactionBundle equivalence is checked (below, via tsExecOk's tx branch). No
+    // structural/compile codegen check applies (there is no codegen module to check).
+    if (v.kind === 'tx') {
+      try {
+        const r = await tsExecOk(v, outDir, idx, resolveColumnType);
+        line(r.ok, `${v.name} [exec:tx executeTransactionBundle]`, r.detail);
+        r.ok ? t.pass++ : t.fail++;
+      } catch (e) {
+        line(false, `${v.name} [exec:tx]`, e instanceof Error ? e.message : String(e));
+        t.fail++;
+      }
+      continue;
+    }
+
+    // 1) structural byte-identity for the READ codegen languages (ts/go/rust). python/php are the
+    //    ir/interpret surface (no endpoint — a declared spec choice), so they are NOT codegen'd. A
+    //    NATIVE lang (go/rust) 'uncovered' result is an EXPECTED, DECLARED typed-native coverage
+    //    gap (#60 m1 / bc#86) — reported distinctly, never counted as a failure OR silently passed.
     let allStructural = true;
     for (const lang of DEBOX_LANGS) {
-      const r = structuralOk(v, lang);
-      if (!r.ok) {
+      const r = structuralCheck(v, lang, resolveColumnType);
+      if (r.kind === 'fail') {
         line(false, `${v.name} [structural:${lang}]`, r.detail);
         allStructural = false;
         t.fail++;
+      } else if (r.kind === 'uncovered') {
+        console.error(`  · ${v.name} [structural:${lang} NOT typed-native-covered — bc#86 gap]: ${r.detail}`);
       }
     }
     if (allStructural) {
-      line(true, `${v.name} [structural: ${DEBOX_LANGS.join('/')} bake identical IR + de-box]`);
+      line(true, `${v.name} [structural: ${DEBOX_LANGS.join('/')} — covered langs bake identical IR + de-box]`);
       t.pass++;
     }
 
     // 2) TS real execution (through the emitted typed module + thin handlers)
     try {
-      const r = await tsExecOk(v, outDir, idx);
+      const r = await tsExecOk(v, outDir, idx, resolveColumnType);
       line(r.ok, `${v.name} [exec:ts emitted module]`, r.detail);
       r.ok ? t.pass++ : t.fail++;
     } catch (e) {
@@ -333,13 +394,25 @@ async function runExecVectors(vectors: Json[], suiteName: string, outDir: string
       t.fail++;
     }
 
-    // 3) Go/Rust compile/parse check of the emitted de-boxed source
+    // 3) Go/Rust compile/parse check of the emitted de-boxed source — SKIPPED (not failed) for a
+    //    vector typed-native does not cover (the structural check above already reported the gap).
     for (const c of COMPILE_CHECKS) {
       if (!c.toolAvailable()) {
         line(true, `${v.name} [compile:${c.lang} SKIPPED — toolchain absent]`);
         continue;
       }
-      const art = generateCodegenArtifact(v.bundle, c.lang === 'go' ? 'go' : c.lang, REGISTERED);
+      let art: ReturnType<typeof generateCodegenArtifact> | undefined;
+      try {
+        art = generateCodegenArtifact(v.bundle, c.lang === 'go' ? 'go' : c.lang, REGISTERED, resolveColumnType);
+      } catch (e) {
+        if (NATIVE_LANGS.includes(c.lang) && e instanceof TypedNativeCoverageError) {
+          line(true, `${v.name} [compile:${c.lang} SKIPPED — not typed-native-covered]`);
+          continue;
+        }
+        line(false, `${v.name} [compile:${c.lang}]`, e instanceof Error ? e.message : String(e));
+        t.fail++;
+        continue;
+      }
       const p = join(outDir, `behaviors_${idx}_${c.lang}.${c.ext}`);
       writeFileSync(p, art.module.code, 'utf8');
       const r = c.check(p);
@@ -366,19 +439,14 @@ async function main(): Promise<void> {
   const tallies: Record<string, Tally> = {};
   try {
     for (const suite of suites) {
-      // The DE-BOX codegen leg covers BOTH read AND write. A read (exec) bundle's IR carries the
-      // typed outType/outputType annotations bc's typed(-raw) emitters de-box into concrete row
-      // structs; a WRITE (tx) bundle carries the TransactionResult `outputType` (entity/returnedRows
-      // rows typed via the schema SoT — `annotateWriteBundleOutType`), so the SAME emitters de-box the
-      // write RESULT into a concrete struct. There is NO literal/boxed fallback: an un-de-boxable
-      // write THROWS at generation. A tx vector WITHOUT an `outputType` on its bundle is a write shape
-      // outside the single-row-struct de-box capability (e.g. a heterogeneous multi-table COMPOSITE
-      // write, which targets two tables and cannot materialize one row struct) — it is genuinely not a
-      // codegen-module case (a capability boundary, not a fallback) and stays covered by the mode-2
-      // thin-runtime tx leg. We include exec + de-boxable tx vectors here.
-      const bundleVectors = suite.vectors.filter(
-        (v: Json) => v.kind === 'exec' || (v.kind === 'tx' && v.bundle?.outputType !== undefined),
-      );
+      // #60 milestone 1: READ (exec) bundles are the ONLY codegen-module case — their surrogate read
+      // graph is lowered + run through bc's typed-native (go/rust) / typed (ts) endpoint. WRITE (tx)
+      // bundles are NOT codegen'd at all anymore (no boxed/typed-raw fallback): they stay on the
+      // existing write/tx execution path (`executeTransactionBundle`, the SAME function the mode-2
+      // thin-runtime + the native adapters call), verified here by re-running that path against the
+      // frozen vector's expected result/DB-state — every tx vector qualifies (not just the
+      // outputType-carrying ones, since there is no de-box capability boundary to gate on anymore).
+      const bundleVectors = suite.vectors.filter((v: Json) => v.kind === 'exec' || v.kind === 'tx');
       if (bundleVectors.length === 0) continue;
       tallies[suite.suite] = await runExecVectors(bundleVectors, suite.suite, outDir);
     }

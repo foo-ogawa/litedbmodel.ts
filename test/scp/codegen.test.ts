@@ -1,25 +1,27 @@
 /**
- * litedbmodel v2 SCP — mode-3 codegen conformance (WS7f, #35; makeSQL flip, epic #43/#45).
+ * litedbmodel v2 SCP — mode-3 codegen conformance (WS7f, #35; makeSQL flip, epic #43/#45;
+ * #60 milestone 1 — typed-NATIVE READ codegen, bc#77/#90).
  *
- * Proves the AC "生成コード出力が thin-runtime と byte 一致" HONESTLY on the STATIC makeSQL bundle,
- * now via bc's STRAIGHT-LINE (de-interpreted, bc#75) endpoint — REAL static code, not the old
- * literal-bake+interpret path:
+ * Proves the AC "生成コード出力が thin-runtime と byte 一致" for the READ codegen surface:
  *
- *  - **All 5 languages** (bc#13/#75 — typescript/python/go/rust/php): bc's shared generator emits a
- *    STRAIGHT-LINE behavior module for every §8 read/tx bundle in the frozen corpus from the
- *    portable IR (a read bundle's surrogate `makeSQL`-node IR / the `makeSQL` component IR for a
- *    write) + a `bind(handlers)` accessor. We assert the module is genuinely de-interpreted: it
- *    carries the generation-time IR FINGERPRINT (fail-closed skew gate) but does NOT embed the IR
- *    itself and contains no interpreter machinery (anti-sham gate).
- *  - **SQL catalog companion**: the STATIC makeSQL execution catalog (readGraph / statement /
- *    relations / transaction) rides the companion byte-identical to the bundle's SQL fields.
+ *  - **go/rust** drive bc's typed-NATIVE endpoint (bc#77/#90, RUNTIME-FREE): litedbmodel's
+ *    codegen-only lowering ({@link lowerReadGraphForTypedNative}) splits the surrogate read
+ *    graph's boxed `__scope` port into individual scalar ref ports and types the component's
+ *    `inputPorts` from the schema (spec §4.1), so a COVERED read shape produces a module with
+ *    ZERO boxing markers (`obj_native`/`ser_T*`/`run_plan`/`RawValue`) and NO embedded IR. An
+ *    UNCOVERED shape (e.g. an IN-list's array-typed head, or a relation expressed via a `.map`
+ *    node with per-element field-access ports) THROWS `TypedNativeCoverageError` — a bc#86
+ *    coverage gap, reported explicitly, never silently regenerated on a boxed fallback.
+ *  - **typescript** stays on the boxed `typescript-typed` endpoint (bc has not registered a
+ *    `typescript-typed-native` endpoint yet) — unaffected by the lowering (it uses the ORIGINAL
+ *    portable IR), so it covers every shape go/rust do NOT (e.g. the frozen `exec.json` vector's
+ *    `.map`-relation shape, and an IN-list read).
  *  - **In-process byte-identity**: `codegenExecuteBundleForTest` (a codegen consumer reading the
  *    companion) drives the IDENTICAL static-makeSQL render/execute path `executeBundle` uses — its
  *    output equals mode-2 `executeBundle` AND the frozen vector's `expectedResult`, EXACTLY.
- *  - **TS leg — emitted source loads + is de-interpreted**: the emitted TS module is written,
- *    imported (its load-time fail-closed checks run), and its IR_FINGERPRINT constant is asserted
- *    to equal the fingerprint of `bundleToPortableIR` — while the source is proven NOT to embed the
- *    IR (de-interpretation, bc#75).
+ *  - **WRITE bundles are NOT codegen-module cases** (#60 m1): `generateCodegenArtifact` throws if
+ *    given a bundle with no `readGraph` — writes stay on the existing write/tx execution path
+ *    (`executeTransactionBundle`).
  *
  * Byte-identity uses EXACT structural comparison (canonical JSON of the bigint-encoded value).
  */
@@ -38,20 +40,86 @@ import {
   codegenExecuteBundleForTest,
   CODEGEN_EMITTER,
   codegenEmitterFor,
+  TypedNativeCoverageError,
+  schemaColumnTypeResolver,
+  compileBundle,
+  publishBehaviors,
+  SemanticBehavior,
+  components,
+  whereEq,
+  whereIn,
+  inColumn,
   type SqlBundle,
+  type ColumnTypeResolver,
 } from '../../src/scp/index';
 
 const REGISTERED = bc.registeredLanguages();
 
 /**
- * Anti-sham markers (bc#75): a de-interpreted straight-line module must contain NONE of these —
- * the embedded ComponentGraphIR JSON literal, nor a named `IR` export. If any appears, the module
- * could secretly interpret a baked IR (a sham "codegen"), so we reject it.
+ * Anti-sham markers (bc#75/#90): a de-interpreted module must contain NONE of these — the
+ * embedded ComponentGraphIR JSON literal, nor a named `IR` export, nor an interpreter CALL
+ * (checked against comment-stripped source — bc's straight-line modules' explanatory COMMENTS
+ * legitimately mention "no runBehavior tree-walk" prose, which must not false-positive here).
  */
 const IR_EMBED_MARKERS: RegExp[] = [
   /"irVersion"|'irVersion'/,
   /\bexport const IR\b|\bexport var IR\b|\bpub static IR\b|\bvar IR\b\s*=|'IR'\s*=>/,
 ];
+const INTERPRETER_CALL_MARKER = /\brun_behavior\b|\bRunBehavior\b|\brunBehavior\b/;
+
+/** Strip line/block comments while preserving string/template literals (mirrors
+ * `conformance/codegen/codegen-runner.ts`'s `stripComments`), so a marker matches genuine
+ * code/data — explanatory prose in a comment never false-positives. */
+function stripComments(src: string): string {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    if (c === '"' || c === "'" || c === '`') {
+      out += c;
+      i++;
+      while (i < n && src[i] !== c) {
+        if (src[i] === '\\') {
+          out += src[i];
+          i++;
+        }
+        if (i < n) {
+          out += src[i];
+          i++;
+        }
+      }
+      if (i < n) {
+        out += src[i];
+        i++;
+      }
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '/') {
+      while (i < n && src[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      i += 2;
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/** typed-native purity markers (#60 m1 owner order): a COVERED go/rust read carries ZERO of
+ * these — the whole point of the migration off `-typed-raw`/`-typed` is zero-boxing. */
+const NATIVE_BOXING_MARKERS: RegExp[] = [/\bobj_native\b/, /\bser_T\d/, /\brun_plan\b/, /\bRawValue\b/];
+
+/** Assert a generated module embeds no IR literal/export and calls no interpreter (comment-stripped). */
+function assertDeInterpreted(code: string): void {
+  for (const marker of IR_EMBED_MARKERS) expect(code).not.toMatch(marker);
+  expect(stripComments(code)).not.toMatch(INTERPRETER_CALL_MARKER);
+}
 
 // ── bigint-safe encode/decode (mirror the harness canonical encoding) ─────────
 type Json = unknown;
@@ -102,12 +170,12 @@ function loadTxVectors(): TxVectorFile['vectors'] {
 const EXEC_VECTORS = loadExecVectors();
 const TX_VECTORS = loadTxVectors();
 
-describe('WS7f codegen — bc shared generator capability', () => {
-  it('drives the de-boxed TYPED endpoint for ts/go/rust; py/php have NO de-box endpoint (NO literal fallback)', () => {
-    // litedbmodel codegen is STATIC de-interpreted codegen (spec §9) with NO fallback (an unspec'd
-    // fallback is invalid). ts/go/rust map to a de-box endpoint bc registers; py/php do NOT — and
-    // litedbmodel does NOT substitute the literal emitter, it hard-errors (bc capability gap).
+describe('WS7f codegen — bc READ emitter capability (#60 m1: typed-native go/rust, typed ts)', () => {
+  it('drives typed-NATIVE for go/rust, typed(boxed) for ts; py/php have NO endpoint (NO literal fallback)', () => {
     const registered = new Set(REGISTERED);
+    expect(CODEGEN_EMITTER.go).toBe('go-typed-native');
+    expect(CODEGEN_EMITTER.rust).toBe('rust-typed-native');
+    expect(CODEGEN_EMITTER.typescript).toBe('typescript-typed');
     for (const language of ['typescript', 'go', 'rust'] as const) {
       const emitter = CODEGEN_EMITTER[language];
       expect(emitter).toBeDefined();
@@ -117,66 +185,73 @@ describe('WS7f codegen — bc shared generator capability', () => {
     expect(CODEGEN_EMITTER.php).toBeUndefined();
     // Requesting codegen for py/php ERRORS (no fallback), naming the capability gap + ESCALATE.
     for (const language of ['python', 'php']) {
-      expect(() => codegenEmitterFor(language, REGISTERED)).toThrow(/no de-boxed typed endpoint|ESCALATE to bc/);
+      expect(() => codegenEmitterFor(language, REGISTERED)).toThrow(/no READ codegen endpoint|ESCALATE to bc/);
     }
   });
 
   it('rejects an unsupported language loudly (fail-closed; escalate-to-bc message)', () => {
     expect(() => codegenEmitterFor('ruby', REGISTERED)).toThrow(/not a supported target/);
-    // A registry missing the de-box emitter for a supported logical language fails closed (no fallback).
+    // A registry missing the endpoint for a supported logical language fails closed (no fallback).
     expect(() => codegenEmitterFor('go', ['typescript'])).toThrow(/ESCALATE to bc/);
+  });
+
+  it('generateCodegenArtifact refuses a WRITE bundle (no readGraph) — writes are not codegen-module cases', () => {
+    expect(() => generateCodegenArtifact({ dialect: 'sqlite', name: 'Create', optionalHeads: [], relations: {} } as SqlBundle, 'typescript', REGISTERED, () => 'INTEGER')).toThrow(
+      /has no readGraph/,
+    );
   });
 });
 
-// The DE-BOX codegen languages (ts/go/rust) over the READ (exec) surface. python/php are the
-// ir/interpret surface (no de-box endpoint — a declared spec choice, not a fallback). A tx (write)
-// bundle's `makeSqlComponentIR` is opaque/untyped and NOT de-boxable by the go/rust raw ABI, so
-// writes are not part of the per-language de-box surface here (the tx codegen companion-plan is
-// covered by the TS-only test below; write execution is proven in the mode-2 thin-runtime leg).
-const DEBOX_LANGS = ['typescript', 'go', 'rust'] as const;
+// ts is exec-checked directly (boxed endpoint, unaffected by the typed-native lowering — it
+// covers every read shape below). go/rust are checked via `structuralResult`, which distinguishes
+// a genuine failure from an EXPECTED typed-native coverage gap (never silently swallowed).
+const NATIVE_LANGS = ['go', 'rust'] as const;
 
-describe('WS7f codegen — per-language STRAIGHT-LINE (de-interpreted) source from the §8 STATIC makeSQL bundle', () => {
+type StructuralResult = { kind: 'ok'; module: bc.GeneratedModule } | { kind: 'uncovered'; error: InstanceType<typeof TypedNativeCoverageError> };
+
+function structuralResult(bundle: SqlBundle, language: string, resolveColumnType: ColumnTypeResolver): StructuralResult {
+  try {
+    const art = generateCodegenArtifact(bundle, language, REGISTERED, resolveColumnType);
+    return { kind: 'ok', module: art.module };
+  } catch (e) {
+    if (e instanceof TypedNativeCoverageError) return { kind: 'uncovered', error: e };
+    throw e;
+  }
+}
+
+describe('WS7f codegen — the FROZEN exec.json vector: ts covers it (boxed); go/rust report the bc#86 gap', () => {
   for (const v of EXEC_VECTORS) {
-    for (const language of DEBOX_LANGS) {
-      it(`${language}: emits de-interpreted static code (fingerprint, NO embedded IR) + static SQL catalog — ${v.name}`, () => {
-        const art = generateCodegenArtifact(v.bundle, language, REGISTERED);
-        expect(art.language).toBe(language);
-        expect(art.module.code.length).toBeGreaterThan(0);
-        // The module was generated from the bundle's portable IR EXACTLY.
-        expect(canon(art.ir)).toBe(canon(bundleToPortableIR(v.bundle)));
-        // The generator's fingerprint recomputes over the source IR and is baked into the code
-        // (the fail-closed skew gate SSoT — computed at generation time, IR not embedded).
-        const recomputed = bc.fingerprintComponentGraph(art.ir);
-        expect(art.module.fingerprint).toBe(recomputed);
-        expect(art.module.code).toContain(recomputed);
-        // De-interpretation (bc#75 anti-sham): the module must NOT embed the IR it compiled away.
-        for (const marker of IR_EMBED_MARKERS) {
-          expect(art.module.code).not.toMatch(marker);
-        }
-        // The companion carries the STATIC makeSQL catalog, byte-identical to the bundle's fields.
-        expect(art.companion.dialect).toBe(v.bundle.dialect);
-        expect([...art.companion.optionalHeads].sort()).toEqual([...v.bundle.optionalHeads].sort());
-        expect(canon(art.companion.relations)).toBe(canon(v.bundle.relations));
-        if (v.bundle.readGraph !== undefined) {
-          expect(canon(art.companion.readGraph)).toBe(canon(v.bundle.readGraph));
-        }
-        if (v.bundle.statement !== undefined) {
-          expect(canon(art.companion.statement)).toBe(canon(v.bundle.statement));
-        }
-        if (v.bundle.transaction !== undefined) {
-          expect(canon(art.companion.transaction)).toBe(canon(v.bundle.transaction));
-        } else {
-          expect(art.companion.transaction).toBeUndefined();
+    const resolveColumnType = schemaColumnTypeResolver(v.schema);
+
+    it(`typescript: emits de-interpreted code (NO embedded IR) + byte-identical companion — ${v.name}`, () => {
+      const art = generateCodegenArtifact(v.bundle, 'typescript', REGISTERED, resolveColumnType);
+      expect(art.language).toBe('typescript');
+      expect(art.module.code.length).toBeGreaterThan(0);
+      assertDeInterpreted(art.module.code);
+      expect(art.companion.dialect).toBe(v.bundle.dialect);
+      expect([...art.companion.optionalHeads].sort()).toEqual([...v.bundle.optionalHeads].sort());
+      expect(canon(art.companion.relations)).toBe(canon(v.bundle.relations));
+      if (v.bundle.readGraph !== undefined) expect(canon(art.companion.readGraph)).toBe(canon(v.bundle.readGraph));
+    });
+
+    for (const language of NATIVE_LANGS) {
+      it(`${language}: this vector's relation rides a '.map' node with a per-element field-access port — NOT typed-native-covered (bc#86 gap, reported not silently passed) — ${v.name}`, () => {
+        const r = structuralResult(v.bundle, language, resolveColumnType);
+        expect(r.kind).toBe('uncovered');
+        if (r.kind === 'uncovered') {
+          expect(r.error.component).toBe('Feed');
+          expect(r.error.reasons.length).toBeGreaterThan(0);
         }
       });
     }
   }
 });
 
-describe('WS7f codegen — in-process equivalence of the codegen artifact vs mode-2 thin-runtime', () => {
+describe('WS7f codegen — in-process equivalence of the TS codegen artifact vs mode-2 thin-runtime', () => {
   for (const v of EXEC_VECTORS) {
     it(`codegen consumer drives the identical static makeSQL path → byte-identical vs executeBundle + vector — ${v.name}`, () => {
-      const art = generateCodegenArtifact(v.bundle, 'typescript', REGISTERED);
+      const resolveColumnType = schemaColumnTypeResolver(v.schema);
+      const art = generateCodegenArtifact(v.bundle, 'typescript', REGISTERED, resolveColumnType);
       const input = decodeValue(v.input) as Record<string, unknown>;
 
       const db1 = seedDb(v.schema);
@@ -193,46 +268,23 @@ describe('WS7f codegen — in-process equivalence of the codegen artifact vs mod
   }
 });
 
-describe('WS7f codegen — tx bundle: companion transaction plan is byte-identical to mode-2', () => {
+describe('WS7f codegen — WRITE (tx) bundles stay on the existing write/tx execution path (#60 m1: NOT codegen-module cases)', () => {
   for (const v of TX_VECTORS) {
-    it(`codegen consumer reconstructs the SAME §8 bundle → executeTransactionBundle byte-identical — ${v.name}`, () => {
-      const art = generateCodegenArtifact(v.bundle, 'typescript', REGISTERED);
+    it(`generateCodegenArtifact refuses this tx bundle; executeTransactionBundle reproduces the vector — ${v.name}`, () => {
+      expect(() => generateCodegenArtifact(v.bundle, 'typescript', REGISTERED, () => 'INTEGER')).toThrow(/has no readGraph/);
+
       const input = decodeValue(v.input) as Record<string, unknown>;
-      // A codegen consumer reassembles the executable §8 bundle from the companion. It MUST equal
-      // the source bundle exactly (the whole point of the IR/catalog split).
-      // Reassemble with the SAME key order the runtime emits (dialect, name, statement/readGraph,
-      // optionalHeads, relations, transaction) so the canonical JSON compares byte-identical.
-      const reassembled: SqlBundle = {
-        dialect: art.companion.dialect,
-        name: v.bundle.name,
-        ...(art.companion.statement !== undefined ? { statement: art.companion.statement } : {}),
-        ...(art.companion.readGraph !== undefined ? { readGraph: art.companion.readGraph } : {}),
-        optionalHeads: [...art.companion.optionalHeads],
-        relations: art.companion.relations,
-        ...(art.companion.transaction !== undefined ? { transaction: art.companion.transaction } : {}),
-      };
-      expect(canon(reassembled)).toBe(canon(v.bundle));
+      const db = seedDb(v.schema);
+      const result = executeTransactionBundle(v.bundle, input as never, { db });
+      db.close();
 
-      const dbCodegen = seedDb(v.schema);
-      const codegenResult = executeTransactionBundle(reassembled, input as never, { db: dbCodegen });
-      const codegenDbState = (v.expectedDbState ?? []).map((s) => ({ query: s.query, rows: dbCodegen.prepare(s.query).all() }));
-      dbCodegen.close();
-
-      const dbRef = seedDb(v.schema);
-      const modeTwo = executeTransactionBundle(v.bundle, input as never, { db: dbRef });
-      dbRef.close();
-
-      expect(canon(codegenResult)).toBe(canon(modeTwo));
-      expect(canon(codegenResult)).toBe(canon(decodeValue(v.expectedResult)));
-      for (const [i, s] of (v.expectedDbState ?? []).entries()) {
-        expect(canon(codegenDbState[i].rows)).toBe(canon(decodeValue(s.rows)));
-      }
+      expect(canon(result)).toBe(canon(decodeValue(v.expectedResult)));
     });
   }
 });
 
 // ── The emitted TS module WRITES + IMPORTS + is de-interpreted (no embedded IR, bc#75) ──
-describe('WS7f codegen — the EMITTED TS straight-line source loads and is de-interpreted', () => {
+describe('WS7f codegen — the EMITTED TS source loads and is de-interpreted', () => {
   let outDir: string;
   beforeAll(() => {
     outDir = mkdtempSync(join(__dirname, '..', '..', '.codegen-out-'));
@@ -242,27 +294,79 @@ describe('WS7f codegen — the EMITTED TS straight-line source loads and is de-i
   });
 
   for (const [i, v] of EXEC_VECTORS.entries()) {
-    it(`emitted .ts module loads (fail-closed checks run), carries IR_FINGERPRINT + does NOT embed the IR — ${v.name}`, async () => {
-      const art = generateCodegenArtifact(v.bundle, 'typescript', REGISTERED);
+    it(`emitted .ts module loads (fail-closed spec-version checks run) + does NOT embed the IR — ${v.name}`, async () => {
+      const resolveColumnType = schemaColumnTypeResolver(v.schema);
+      const art = generateCodegenArtifact(v.bundle, 'typescript', REGISTERED, resolveColumnType);
       const modPath = join(outDir, `behaviors_${i}.generated.ts`);
       writeFileSync(modPath, art.module.code, 'utf8');
 
       // Import the EMITTED module (its load-time fail-closed checks — spec-version envelope pin —
-      // run here). The de-interpreted module exports IR_FINGERPRINT + COMPONENT_NAMES, NOT the IR.
+      // run here). bc 0.5.0 does NOT embed a fingerprint in the module (GenerateResult.fingerprint
+      // is a build-time-only return, compared on the consumer/build side) — assert THAT instead.
       const mod = (await import(pathToFileURL(modPath).href)) as {
-        IR_FINGERPRINT: string;
         COMPONENT_NAMES: readonly string[];
         bind: unknown;
       };
-
-      // The emitted module's generation-time fingerprint equals the fingerprint of the portable IR
-      // the consumer holds (the fail-closed skew gate) — WITHOUT the IR ever being embedded.
-      expect(mod.IR_FINGERPRINT).toBe(bc.fingerprintComponentGraph(bundleToPortableIR(v.bundle)));
       expect(Array.isArray(mod.COMPONENT_NAMES)).toBe(true);
-      // De-interpretation (bc#75): the emitted source embeds no IR literal / no named IR export.
-      for (const marker of IR_EMBED_MARKERS) {
-        expect(art.module.code).not.toMatch(marker);
-      }
+      expect(art.module.fingerprint).toBe(bc.fingerprintComponentGraph(bundleToPortableIR(v.bundle)));
+      assertDeInterpreted(art.module.code);
     });
   }
+});
+
+// ── A COVERED typed-native shape (#60 m1 positive path): a plain single-componentRef Select with
+// only scalar WHERE heads — the frozen exec.json corpus's only vector is NOT this shape (its
+// relation rides a `.map` node), so this proves the positive path independently, in-test. ──
+describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + byte-identity', () => {
+  const SCHEMA = [`CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT)`];
+  const resolveColumnType = schemaColumnTypeResolver(SCHEMA);
+  const L = components();
+  class Reads extends SemanticBehavior {
+    Find($: any) {
+      return L.Select({
+        table: 'posts',
+        select: ['id', 'author_id', 'title', 'status'],
+        where: [whereEq($.author_id, $.author_id)],
+        order: 'id ASC',
+      });
+    }
+  }
+  const contract = publishBehaviors(Reads);
+  const bundle = compileBundle(contract, 'Find', [], 'sqlite', undefined, resolveColumnType);
+
+  for (const language of NATIVE_LANGS) {
+    it(`${language}: covered shape produces a ZERO-boxing typed-native module (no obj_native/ser_T*/run_plan/RawValue)`, () => {
+      const art = generateCodegenArtifact(bundle, language, REGISTERED, resolveColumnType);
+      expect(art.module.code.length).toBeGreaterThan(0);
+      assertDeInterpreted(art.module.code);
+      const stripped = stripComments(art.module.code);
+      for (const marker of NATIVE_BOXING_MARKERS) expect(stripped).not.toMatch(marker);
+    });
+  }
+
+  it('typescript: same covered shape still generates on the boxed endpoint (unaffected by the lowering)', () => {
+    const art = generateCodegenArtifact(bundle, 'typescript', REGISTERED, resolveColumnType);
+    expect(art.module.code.length).toBeGreaterThan(0);
+  });
+
+  it('an IN-list read (array-typed head) is NOT typed-native-coverable for go/rust — bc#86 gap, reported', () => {
+    class InListReads extends SemanticBehavior {
+      ByIds($: any) {
+        return L.Select({
+          table: 'posts',
+          select: ['id', 'title'],
+          where: [whereIn(inColumn($, 'id'), $.ids)],
+          order: 'id ASC',
+        });
+      }
+    }
+    const inListContract = publishBehaviors(InListReads);
+    const inListBundle = compileBundle(inListContract, 'ByIds', [], 'sqlite', undefined, resolveColumnType);
+    for (const language of NATIVE_LANGS) {
+      expect(() => generateCodegenArtifact(inListBundle, language, REGISTERED, resolveColumnType)).toThrow(TypedNativeCoverageError);
+    }
+    // ts (boxed) still covers it.
+    const art = generateCodegenArtifact(inListBundle, 'typescript', REGISTERED, resolveColumnType);
+    expect(art.module.code.length).toBeGreaterThan(0);
+  });
 });

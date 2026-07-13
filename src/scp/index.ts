@@ -250,9 +250,11 @@ export {
   CODEGEN_EMITTER,
   generateCodegenArtifact,
   bundleToPortableIR,
+  lowerReadGraphForTypedNative,
   codegenEmitterFor,
   typedEmitterFor,
   codegenExecuteBundleForTest,
+  TypedNativeCoverageError,
 } from './codegen';
 export type {
   CodegenLanguage,

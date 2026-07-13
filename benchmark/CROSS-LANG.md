@@ -32,7 +32,7 @@ across **all three target dialects** (SQLite / PostgreSQL / MySQL) and five lang
   SAME seeded dataset (8 users / 40 posts / 200 comments). 🔒 The bench CONSUMES generated
   artifacts only — `src/` is byte-unchanged.
 
-_Generated 2026-07-13T04:07:15.241Z — DB-backed warmup 200, 2000 measured iterations;
+_Generated 2026-07-13T07:26:40.244Z — DB-backed warmup 200, 2000 measured iterations;
 micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite._
 
 > ## Comparability disclosure (TRUE, read before the numbers)
@@ -117,10 +117,10 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite._
 
 | Micro case | codegen ÷ sql | ir ÷ sql |
 |---|---|---|
-| find (eq+SKIP+range) | 1.56× | 1.43× |
-| complex WHERE | 1.67× | 1.57× |
-| relation hasMany | 1.25× | 2.00× |
-| write-tx gate-first | 2.97× | 3.84× |
+| find (eq+SKIP+range) | 0.97× | 1.47× |
+| complex WHERE | — | — |
+| relation hasMany | 1.10× | 2.05× |
+| write-tx gate-first | — | — |
 
 ## Micro-bench absolute (client-side p50, µs) — per dialect
 
@@ -130,10 +130,10 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite._
 
 | Micro case | sql (µs) | codegen (µs) | ir (µs) |
 |---|---|---|---|
-| find (eq+SKIP+range) | 9.9 | 15.4 | 14.2 |
-| complex WHERE | 9.8 | 16.5 | 15.4 |
-| relation hasMany | 32.5 | 40.5 | 64.8 |
-| write-tx gate-first | 3.2 | 9.4 | 12.2 |
+| find (eq+SKIP+range) | 9.6 | 9.3 | 14.1 |
+| complex WHERE | — | — | — |
+| relation hasMany | 32.0 | 35.3 | 65.5 |
+| write-tx gate-first | — | — | — |
 
 ## DB-backed absolute latency (p50 ms) — per dialect (REAL PG + MySQL + SQLite)
 
@@ -146,14 +146,14 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite._
 
 | Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
 |---|---|---|---|
-| find (eq+SKIP+range) | 0.0104 | 0.0183 | 0.0158 |
-| complex WHERE | 0.0207 | 0.0344 | 0.0293 |
-| IN-list | 0.0131 | 0.0218 | 0.0175 |
-| relation belongsTo | 0.0108 | 0.0260 | 0.0290 |
-| relation hasMany | 0.0394 | 0.0656 | 0.0756 |
-| relation hasMany-limit | 0.0690 | 0.0983 | 0.1074 |
-| batch insert | 0.0221 | 0.0345 | 0.0354 |
-| write-tx gate-first | 0.0205 | 0.0296 | 0.0318 |
+| find (eq+SKIP+range) | 0.0103 | 0.0131 | 0.0152 |
+| complex WHERE | — | — | — |
+| IN-list | — | — | — |
+| relation belongsTo | 0.0104 | 0.0217 | 0.0285 |
+| relation hasMany | 0.0378 | 0.0603 | 0.0732 |
+| relation hasMany-limit | 0.0626 | 0.0930 | 0.1033 |
+| batch insert | — | — | — |
+| write-tx gate-first | — | — | — |
 
 ## Fairness evidence — queries/op · rows/op (per dialect)
 
@@ -165,21 +165,21 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite._
 | Case | rust/sql | rust/codegen | rust/ir |
 |---|---|---|---|
 | find (eq+SKIP+range) | 1/3 | 1/3 | 1/3 |
-| complex WHERE | 1/5 | 1/5 | 1/5 |
-| IN-list | 1/10 | 1/10 | 1/10 |
+| complex WHERE | — | — | — |
+| IN-list | — | — | — |
 | relation belongsTo | 2/6 | 2/6 | 2/6 |
 | relation hasMany | 2/30 | 2/30 | 2/30 |
 | relation hasMany-limit | 2/20 | 2/20 | 2/20 |
-| batch insert | 1/0 | 1/0 | 1/0 |
-| write-tx gate-first | 4/2 | 4/2 | 4/2 |
+| batch insert | — | — | — |
+| write-tx gate-first | — | — | — |
 
 ## Cold start, memory & artifact size
 
 | Cell | Cold start (ms) | RSS (MB) | Artifact size (MB) |
 |---|---|---|---|
-| rust / sql | 45 | 15.4 | 2.84 |
-| rust / codegen | 38 | 11.3 | 2.64 |
-| rust / ir | 34 | 14.5 | 2.84 |
+| rust / sql | 210 | 12.0 | 2.84 |
+| rust / codegen | 533 | 8.4 | 2.47 |
+| rust / ir | 32 | 12.7 | 2.84 |
 
 ## v1-vs-v2 regression verdict (SQLite micro-bench)
 

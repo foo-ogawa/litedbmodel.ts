@@ -1,4 +1,5 @@
-//! litedbmodel cross-language adapter — Rust CODEGEN cell (dedicated binary; epic #44 perf).
+//! litedbmodel cross-language adapter — Rust CODEGEN cell (dedicated binary; epic #44 perf;
+//! #60 milestone 1 — typed-NATIVE READ codegen).
 //!
 //! OWNER ORDERS (absolute): the codegen path carries NO IR data and parses NO JSON at execution
 //! time — no JSON crate anywhere in this crate (the manifest carries none; the only
@@ -9,18 +10,28 @@
 //! Execution data comes from the GENERATED NATIVE COMPANION (`generated/codegen/rust/companion.rs`
 //! — pre-decoded statement plans / transaction plans / relation batch ops / bench inputs / schema
 //! + seed, emitted by benchmark/crosslang/generate.ts through a CLOSED-SET fail-closed decoder).
-//! The behaviors execute THROUGH the bc-GENERATED straight-line modules
-//! (`generated/codegen/rust/<case>.rs`, RAW ABI `bind_raw`), with this crate's NATIVE handlers at
-//! the makeSQL seam: native statement render (skip → drop, WHERE/AND connector, `?`→`$N`, PG
-//! deferred array-cast, IN-list single-JSON-text param), native gate-first transaction execution,
-//! and native relation batch stitch. ZERO dynamic-JSON walking in the timed op.
+//!
+//! READS execute THROUGH the bc-GENERATED typed-NATIVE modules (`generated/codegen/rust/<case>.rs`,
+//! bc#77/#90 `rust-typed-native` — RUNTIME-FREE: zero boxed `Value`/`RawValue` on the module's own
+//! surface, no bc-runtime import at all in the generated module). This crate implements each
+//! module's `HandlerNR<Comp>` trait: `node_*` builds the render scope from the CONCRETE native
+//! ports struct (a handful of scalars — cheap, not a per-row cost), renders + executes the SAME
+//! native statement-render engine the prior raw-ABI adapter used (`render_read`, unchanged), and
+//! materializes each row DIRECTLY into the module's own concrete `T0` row struct via a per-case
+//! `rusqlite::Row` field read (NO `Value::Obj`/`RawValue::Row` on the row-materialization plane —
+//! genuinely zero-boxing on the read hot path). Only 4 of the 6 read cases are typed-native-covered
+//! (bc#86 gap: `complexWhere`/`inList`'s IN-list has an array-typed head bc's typed-native emitter
+//! has no native port type for) — those 2 cases are NOT wired here (reported, not silently
+//! defaulted to the retired `-typed-raw` path); the harness marks them as an expected gap.
+//!
+//! WRITES (`batchInsert`/`writeTxGate`) are NOT codegen-module cases anymore (#60 m1) — they stay
+//! on this crate's hand-written NATIVE gate-first transaction execution (`exec_tx`), called
+//! DIRECTLY (no bc-generated module wrapper at all now — there is no write codegen module to wrap).
 //!
 //! Fail-closed: an unknown case / dialect / spec shape / driver value PANICS loudly — never a
 //! silent degrade (the companion generation already fail-closed on out-of-set shapes).
 
-use behavior_contracts::{
-    raw_from_value, RawComponentExec, RawOutcome, RawRow, RawValue, Value,
-};
+use behavior_contracts::Value;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -29,23 +40,17 @@ use std::time::Instant;
 #[path = "../../../generated/codegen/rust/companion.rs"]
 mod companion;
 
-// ── bc-GENERATED straight-line modules (each its own compile unit) ─────────────
+// ── bc-GENERATED typed-NATIVE modules (bc#77/#90 rust-typed-native; each its own compile unit) ──
+// Only the 4 typed-native-COVERED read cases (#60 m1; complexWhere/inList are a bc#86 gap — NOT
+// generated, see the module doc above). Writes have NO codegen module anymore (exec_tx, native).
 #[path = "../../../generated/codegen/rust/find.rs"]
 mod cg_find;
-#[path = "../../../generated/codegen/rust/complexWhere.rs"]
-mod cg_complex_where;
-#[path = "../../../generated/codegen/rust/inList.rs"]
-mod cg_in_list;
 #[path = "../../../generated/codegen/rust/belongsTo.rs"]
 mod cg_belongs_to;
 #[path = "../../../generated/codegen/rust/hasMany.rs"]
 mod cg_has_many;
 #[path = "../../../generated/codegen/rust/hasManyLimit.rs"]
 mod cg_has_many_limit;
-#[path = "../../../generated/codegen/rust/batchInsert.rs"]
-mod cg_batch_insert;
-#[path = "../../../generated/codegen/rust/writeTxGate.rs"]
-mod cg_write_tx_gate;
 
 use companion::{CasePlan, Dialect, Gate, InVal, Lit, ReadPlan, Relation, RelKind, Skip, Spec, TxPlan};
 
@@ -55,15 +60,26 @@ type Scope = Vec<(String, Value)>;
 // SQL driver seam (native; mirrors litedbmodel_runtime's Driver semantics)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// A single fetched row's cells, by column name — the typed-native read hot path's ONLY row
+/// abstraction. NO `Value`/`RawValue` boxing: a cell is read directly as its native scalar type
+/// (mirrors `rusqlite::Row::get::<&str, T>`). Implemented once for a REAL sqlite row and once for
+/// the mock driver's in-memory fixture row (both equally "zero-boxing" — the mock never touches
+/// `Value` either).
+trait RowCells {
+    fn get_i64(&self, col: &str) -> i64;
+    fn get_str(&self, col: &str) -> String;
+}
+
 trait Driver {
     /// SELECT/RETURNING: the row list (each row an ordered `Value::Obj`). Used by the WRITE tx
-    /// path + relation stitch (which consume boxed `Value`).
+    /// path + relation stitch (which consume boxed `Value` — those planes are NOT the typed-native
+    /// read hot path this crate migrated off boxing; #60 m1 scoped the zero-boxing claim to reads).
     fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Value>, String>;
-    /// SELECT for the READ codegen hot path: materialize each row DIRECTLY into a native
-    /// `RawValue::Row` (columns → `RawRow` field cells) with NO intermediate `Value::Obj` — the
-    /// generated `marshal_raw_T*` de-boxes straight into the concrete struct. This removes the
-    /// generic-map row materialization + the `raw_from_value` re-walk the boxed path paid per row.
-    fn query_raw(&self, sql: &str, params: &[Value]) -> Result<Vec<RawValue>, String>;
+    /// SELECT for the typed-native READ hot path (#60 m1): visit each fetched row as `&dyn
+    /// RowCells` — the caller (a `HandlerNR::node_*` impl) reads named columns DIRECTLY into the
+    /// module's own concrete `T0` struct fields. NO `Value::Obj`/`RawValue::Row` intermediate is
+    /// ever built on this path — genuinely zero-boxing row materialization.
+    fn query_rows(&self, sql: &str, params: &[Value], visit: &mut dyn FnMut(&dyn RowCells));
     /// Non-returning statement: the affected-row count.
     fn execute(&self, sql: &str, params: &[Value]) -> Result<i64, String>;
 }
@@ -113,15 +129,16 @@ impl SqliteDriver {
     }
 }
 
-/// A sqlite cell → native `RawValue` directly (no `Value` intermediate) for the de-boxed read path.
-fn raw_from_sql_ref(r: rusqlite::types::ValueRef<'_>) -> RawValue {
-    use rusqlite::types::ValueRef as R;
-    match r {
-        R::Null => RawValue::Null,
-        R::Integer(i) => RawValue::Int(i),
-        R::Real(f) => RawValue::Float(f),
-        R::Text(b) => RawValue::Str(String::from_utf8_lossy(b).into_owned()),
-        R::Blob(b) => RawValue::Str(String::from_utf8_lossy(b).into_owned()),
+/// `rusqlite::Row` IS a `RowCells` directly — a typed-native `node_*` handler reads its module's
+/// concrete `T0` fields straight off the live sqlite row (no `Value`/`RawValue` intermediate).
+impl RowCells for rusqlite::Row<'_> {
+    fn get_i64(&self, col: &str) -> i64 {
+        self.get::<&str, i64>(col)
+            .unwrap_or_else(|e| panic!("codegen native: row column '{col}' is not an i64: {e}"))
+    }
+    fn get_str(&self, col: &str) -> String {
+        self.get::<&str, String>(col)
+            .unwrap_or_else(|e| panic!("codegen native: row column '{col}' is not a string: {e}"))
     }
 }
 
@@ -161,30 +178,24 @@ impl Driver for SqliteDriver {
         Ok(out)
     }
 
-    fn query_raw(&self, sql: &str, params: &[Value]) -> Result<Vec<RawValue>, String> {
+    fn query_rows(&self, sql: &str, params: &[Value], visit: &mut dyn FnMut(&dyn RowCells)) {
         let bound: Vec<rusqlite::types::Value> = params.iter().map(to_sql_value).collect();
-        let mut stmt = self.conn.prepare(sql).map_err(|e| e.to_string())?;
-        let col_names: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let mut stmt = self
+            .conn
+            .prepare(sql)
+            .unwrap_or_else(|e| panic!("codegen native: prepare '{sql}' failed: {e}"));
         let refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-        let mut rows = stmt.query(refs.as_slice()).map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
+        let mut rows = stmt
+            .query(refs.as_slice())
+            .unwrap_or_else(|e| panic!("codegen native: query '{sql}' failed: {e}"));
         loop {
             match rows.next() {
-                // Column cells go STRAIGHT into a native RawRow — no Value::Obj is ever built on the
-                // row data plane (the de-box the boxed `query` path only layered back on).
-                Ok(Some(row)) => {
-                    let mut r = RawRow::new();
-                    for (i, name) in col_names.iter().enumerate() {
-                        let cell = row.get_ref(i).map_err(|e| e.to_string())?;
-                        r.set(name.as_str(), raw_from_sql_ref(cell));
-                    }
-                    out.push(RawValue::Row(r));
-                }
+                // The row IS a RowCells — visited DIRECTLY, no Value::Obj/RawValue::Row ever built.
+                Ok(Some(row)) => visit(row),
                 Ok(None) => break,
-                Err(e) => return Err(e.to_string()),
+                Err(e) => panic!("codegen native: row fetch '{sql}' failed: {e}"),
             }
         }
-        Ok(out)
     }
 
     fn execute(&self, sql: &str, params: &[Value]) -> Result<i64, String> {
@@ -246,53 +257,82 @@ fn fixture(sql: &str) -> Vec<Value> {
     Vec::new()
 }
 
-/// Build a native `RawValue::Row` from cells directly (the de-boxed fixture form — no `Value::Obj`).
-fn rrow(pairs: Vec<(&str, RawValue)>) -> RawValue {
-    let mut r = RawRow::new();
-    for (k, v) in pairs {
-        r.set(k, v);
-    }
-    RawValue::Row(r)
+/// A fixture cell — the mock driver's native (non-`Value`) row representation for the typed-native
+/// read hot path. Only the two scalar kinds the bench fixture data needs.
+enum FixtureCell {
+    Int(i64),
+    Str(String),
 }
 
-/// The MICRO-bench read fixtures as native RawValue rows (mirror of `fixture` — SAME data, de-boxed
-/// form). The micro signal measures the codegen client path, so the mock feeds RawValue directly
-/// (no Value::Obj materialization + no `raw_from_value` re-walk the boxed path incurred per row).
-fn fixture_raw(sql: &str) -> Vec<RawValue> {
+/// A fixture row (named cells) — a `RowCells` impl with NO `Value`/`RawValue` anywhere, matching
+/// the REAL sqlite row's zero-boxing property.
+struct FixtureRow(Vec<(&'static str, FixtureCell)>);
+
+impl RowCells for FixtureRow {
+    fn get_i64(&self, col: &str) -> i64 {
+        match self.0.iter().find(|(k, _)| *k == col) {
+            Some((_, FixtureCell::Int(i))) => *i,
+            other => panic!("codegen native: fixture column '{col}' missing/wrong type: {other:?}"),
+        }
+    }
+    fn get_str(&self, col: &str) -> String {
+        match self.0.iter().find(|(k, _)| *k == col) {
+            Some((_, FixtureCell::Str(s))) => s.clone(),
+            other => panic!("codegen native: fixture column '{col}' missing/wrong type: {other:?}"),
+        }
+    }
+}
+impl std::fmt::Debug for FixtureCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FixtureCell::Int(i) => write!(f, "Int({i})"),
+            FixtureCell::Str(s) => write!(f, "Str({s:?})"),
+        }
+    }
+}
+
+fn frow(pairs: Vec<(&'static str, FixtureCell)>) -> FixtureRow {
+    FixtureRow(pairs)
+}
+
+/// The MICRO-bench read fixtures as native fixture rows (mirror of `fixture` — SAME data, zero
+/// boxing). The micro signal measures the codegen client path, so the mock feeds rows directly (no
+/// `Value`/`RawValue` materialization at all).
+fn fixture_rows(sql: &str) -> Vec<FixtureRow> {
     let s = sql.to_lowercase();
     let st = s.trim_start();
     if st.starts_with("select") {
         if s.contains("from comments") {
             return (1..=25)
-                .map(|i| rrow(vec![
-                    ("id", RawValue::Int(i)),
-                    ("post_id", RawValue::Int(((i - 1) % 5) + 1)),
-                    ("body", RawValue::Str(format!("comment-{i}"))),
+                .map(|i| frow(vec![
+                    ("id", FixtureCell::Int(i)),
+                    ("post_id", FixtureCell::Int(((i - 1) % 5) + 1)),
+                    ("body", FixtureCell::Str(format!("comment-{i}"))),
                 ]))
                 .collect();
         }
         if s.contains("from users") {
-            return vec![rrow(vec![("id", RawValue::Int(1)), ("name", RawValue::Str("user-1".into()))])];
+            return vec![frow(vec![("id", FixtureCell::Int(1)), ("name", FixtureCell::Str("user-1".into()))])];
         }
         if s.contains("from posts") || s.contains("from ") {
             return (1..=5)
-                .map(|i| rrow(vec![
-                    ("id", RawValue::Int(i)),
-                    ("author_id", RawValue::Int(1)),
-                    ("title", RawValue::Str(format!("post-{i}"))),
-                    ("status", RawValue::Str("live".into())),
-                    ("views", RawValue::Int(i * 10)),
-                    ("created_at", RawValue::Str("2026-02-01".into())),
+                .map(|i| frow(vec![
+                    ("id", FixtureCell::Int(i)),
+                    ("author_id", FixtureCell::Int(1)),
+                    ("title", FixtureCell::Str(format!("post-{i}"))),
+                    ("status", FixtureCell::Str("live".into())),
+                    ("views", FixtureCell::Int(i * 10)),
+                    ("created_at", FixtureCell::Str("2026-02-01".into())),
                 ]))
                 .collect();
         }
-        return vec![rrow(vec![("1", RawValue::Int(1))])];
+        return vec![frow(vec![("1", FixtureCell::Int(1))])];
     }
     if s.contains("returning") {
-        return vec![rrow(vec![
-            ("id", RawValue::Int(41)),
-            ("author_id", RawValue::Int(1)),
-            ("title", RawValue::Str("txn-post".into())),
+        return vec![frow(vec![
+            ("id", FixtureCell::Int(41)),
+            ("author_id", FixtureCell::Int(1)),
+            ("title", FixtureCell::Str("txn-post".into())),
         ])];
     }
     Vec::new()
@@ -302,8 +342,10 @@ impl Driver for MockDriver {
     fn query(&self, sql: &str, _params: &[Value]) -> Result<Vec<Value>, String> {
         Ok(fixture(sql))
     }
-    fn query_raw(&self, sql: &str, _params: &[Value]) -> Result<Vec<RawValue>, String> {
-        Ok(fixture_raw(sql))
+    fn query_rows(&self, sql: &str, _params: &[Value], visit: &mut dyn FnMut(&dyn RowCells)) {
+        for row in fixture_rows(sql) {
+            visit(&row);
+        }
     }
     fn execute(&self, _sql: &str, _params: &[Value]) -> Result<i64, String> {
         Ok(1)
@@ -336,16 +378,19 @@ impl Driver for CountingDriver<'_> {
         }
         Ok(rows)
     }
-    fn query_raw(&self, sql: &str, params: &[Value]) -> Result<Vec<RawValue>, String> {
+    fn query_rows(&self, sql: &str, params: &[Value], visit: &mut dyn FnMut(&dyn RowCells)) {
         let dml = !is_tx_control(sql);
         if dml {
             self.queries.set(self.queries.get() + 1);
         }
-        let rows = self.inner.query_raw(sql, params)?;
+        let mut n: u64 = 0;
+        self.inner.query_rows(sql, params, &mut |row| {
+            n += 1;
+            visit(row);
+        });
         if dml {
-            self.rows.set(self.rows.get() + rows.len() as u64);
+            self.rows.set(self.rows.get() + n);
         }
-        Ok(rows)
     }
     fn execute(&self, sql: &str, params: &[Value]) -> Result<i64, String> {
         if !is_tx_control(sql) {
@@ -581,79 +626,97 @@ fn render_read(plan: &ReadPlan, scope: &[(String, Value)]) -> (String, Vec<Value
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// NATIVE handlers at the generated modules' makeSQL seam
+// #60 milestone 1 — typed-NATIVE READ handlers (bc#77/#90 HandlerNR<Comp> seam).
+//
+// Each covered case's bc-generated module (find/belongsTo/hasMany/hasManyLimit) declares its OWN
+// `HandlerNR<Comp>` trait + `PortsNR<Comp><node>`/`RawRowNR<Comp><node>`/`InNR<Comp>`/`T0` types (a
+// DISTINCT Rust type per module, even where structurally identical — e.g. belongsTo/hasMany/
+// hasManyLimit all wrap the SAME `Posts` entry). `node_n0` receives the CONCRETE native ports
+// struct directly (already typed scalars — no Value/RawValue on the port), builds the tiny render
+// scope (a handful of fields, not a per-row cost) for the EXISTING native statement-render engine
+// (`render_read`, unchanged), executes via `Driver::query_rows` (the zero-boxing row visitor — NO
+// Value::Obj/RawValue::Row is ever built), and decodes each visited row DIRECTLY into the module's
+// own `T0` struct fields. A macro instantiates one impl per module (they cannot share a body — each
+// `T0`/`PortsNR*`/trait is a distinct generated type), keeping the decode explicit and auditable.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// READ handler: render the primary node's NATIVE statement plan against the evaluated `__scope`,
-/// run REAL SQL, return the rows as `RawValue::Arr(Row..)` for bc's de-box marshallers.
-struct NativeReadHandler<'a> {
-    plan: &'static ReadPlan,
-    driver: &'a dyn Driver,
+/// Render `plan` against a scope built from the covered node's typed ports (cheap — a handful of
+/// scalar clones, not a per-row cost) and fetch rows via the zero-boxing `query_rows` visitor.
+fn render_and_fetch(plan: &ReadPlan, scope: Scope, driver: &dyn Driver, mut decode_row: impl FnMut(&dyn RowCells)) {
+    let (sql, params) = render_read(plan, &scope);
+    driver.query_rows(&sql, &params, &mut decode_row);
 }
 
-impl RawComponentExec for NativeReadHandler<'_> {
-    fn exec_raw(&mut self, c: &str, p: &[(String, Value)], b: Option<&Value>) -> Option<RawOutcome> {
-        self.exec_raw_ctx("", c, p, b)
+/// `find`: HandlerNRFind — one WHERE-bound scalar port per head (author_id/status/since).
+impl HandlerNRFind for (&'static ReadPlan, &dyn Driver) {
+    fn node_n0(&self, ports: &cg_find::PortsNRFindN0, _bound: Option<String>) -> Option<cg_find::RawRowNRFindN0> {
+        let scope: Scope = vec![
+            ("author_id".to_string(), Value::Int(ports.f_author_id)),
+            ("status".to_string(), Value::Str(ports.f_status.clone())),
+            ("since".to_string(), Value::Str(ports.f_since.clone())),
+        ];
+        let mut val = Vec::new();
+        render_and_fetch(self.0, scope, self.1, |row| {
+            val.push(cg_find::T0 {
+                id: row.get_i64("id"),
+                author_id: row.get_i64("author_id"),
+                title: row.get_str("title"),
+                status: row.get_str("status"),
+                views: row.get_i64("views"),
+                created_at: row.get_str("created_at"),
+            });
+        });
+        Some(cg_find::RawRowNRFindN0 { is_error: false, err: String::new(), val })
     }
-    fn exec_raw_ctx(
-        &mut self,
-        _node_id: &str,
-        _component: &str,
-        ports: &[(String, Value)],
-        _bound: Option<&Value>,
-    ) -> Option<RawOutcome> {
-        let scope = match ports.iter().find(|(k, _)| k == "__scope").map(|(_, v)| v) {
-            Some(Value::Obj(pairs)) => pairs.as_slice(),
-            _ => return Some(RawOutcome::Error("codegen: __scope did not evaluate to an object".into())),
-        };
-        let (sql, params) = render_read(self.plan, scope);
-        // De-boxed read: the driver materializes each row STRAIGHT into a native RawValue::Row (no
-        // Value::Obj map, no raw_from_value re-walk) — bc's generated marshal_raw_T* reads it into
-        // the concrete struct directly. This is the row data plane fully de-boxed end-to-end.
-        match self.driver.query_raw(&sql, &params) {
-            Ok(rows) => Some(RawOutcome::Ok(RawValue::Arr(rows))),
-            Err(e) => Some(RawOutcome::Error(e)),
+}
+use cg_find::HandlerNRFind;
+
+/// The `belongsTo`/`hasMany`/`hasManyLimit` cases all wrap the SAME `Posts` entry (a single scalar
+/// `author_id` WHERE port) — each module's types are STRUCTURALLY identical but DISTINCT Rust
+/// types, so one macro arm instantiates the (otherwise-identical) impl per module.
+macro_rules! impl_posts_handler {
+    ($module:ident) => {
+        impl $module::HandlerNRPosts for (&'static ReadPlan, &dyn Driver) {
+            fn node_n0(&self, ports: &$module::PortsNRPostsN0, _bound: Option<String>) -> Option<$module::RawRowNRPostsN0> {
+                let scope: Scope = vec![("author_id".to_string(), Value::Int(ports.f_author_id))];
+                let mut val = Vec::new();
+                render_and_fetch(self.0, scope, self.1, |row| {
+                    val.push($module::T0 { id: row.get_i64("id"), author_id: row.get_i64("author_id"), title: row.get_str("title") });
+                });
+                Some($module::RawRowNRPostsN0 { is_error: false, err: String::new(), val })
+            }
         }
-    }
+    };
 }
+impl_posts_handler!(cg_belongs_to);
+impl_posts_handler!(cg_has_many);
+impl_posts_handler!(cg_has_many_limit);
 
-/// WRITE handler: run the NATIVE gate-first transaction plan and return the TransactionResult as a
-/// native `RawValue::Row` (committed/executed/shortCircuit/entity always present — present-as-null
-/// for an absent optional — plus returnedRows only when a batch RETURNING produced rows), exactly
-/// the shape the generated write module's `marshal_raw_T*` de-box expects.
-struct NativeWriteHandler<'a> {
-    plan: &'static TxPlan,
-    dialect: Dialect,
-    input: &'a [(String, Value)],
-    driver: &'a dyn Driver,
-}
-
-impl RawComponentExec for NativeWriteHandler<'_> {
-    fn exec_raw(&mut self, _c: &str, _p: &[(String, Value)], _b: Option<&Value>) -> Option<RawOutcome> {
-        match exec_tx(self.plan, self.dialect, self.input, self.driver) {
-            Ok(row) => Some(RawOutcome::Ok(row)),
-            Err(e) => Some(RawOutcome::Error(e)),
-        }
-    }
+/// WRITE handler: run the NATIVE gate-first transaction plan and return the TransactionResult
+/// (committed/executed/shortCircuit/entity always present — present-as-null for an absent optional
+/// — plus returnedRows only when a batch RETURNING produced rows) as a plain `Value::Obj`. #60 m1:
+/// writes have NO bc-generated module boundary anymore — `exec_tx` is called DIRECTLY (no
+/// RawComponentExec/bind_raw wrapper; that ABI existed only to satisfy the retired typed-raw
+/// generated write module).
+fn run_write(plan: &'static TxPlan, dialect: Dialect, input: &[(String, Value)], driver: &dyn Driver) -> Value {
+    exec_tx(plan, dialect, input, driver).unwrap_or_else(|e| panic!("codegen: write tx failed: {e}"))
 }
 
 /// NATIVE gate-first transaction execution (mirror of the runtime's executeTransactionBundle for
 /// the companion's closed set): BEGIN → per-statement native param eval + render + execute → gate
 /// short-circuit (ROLLBACK + committed:false result) → entityFrom/binds RETURNING-row scope binds
 /// → batch returnedRows accumulation → COMMIT. A driver failure ROLLBACKs (best-effort) and errors.
-fn exec_tx(
-    plan: &TxPlan,
-    dialect: Dialect,
-    input: &[(String, Value)],
-    driver: &dyn Driver,
-) -> Result<RawValue, String> {
+/// #60 m1: returns a plain `Value::Obj` (no bc-generated write module de-boxes this anymore — the
+/// write path has no codegen-module boundary at all, so there is no ABI shape to match beyond what
+/// the verify/canon leg + the ir-path's `TransactionResult` compare against).
+fn exec_tx(plan: &TxPlan, dialect: Dialect, input: &[(String, Value)], driver: &dyn Driver) -> Result<Value, String> {
     driver.execute("BEGIN", &[])?;
     let mut scope: Scope = input.to_vec();
-    let mut executed: Vec<RawValue> = Vec::new();
+    let mut executed: Vec<Value> = Vec::new();
     let mut entity: Value = Value::Null;
-    let mut returned_rows: Vec<RawValue> = Vec::new();
+    let mut returned_rows: Vec<Value> = Vec::new();
 
-    let mut body = || -> Result<Option<RawValue>, String> {
+    let mut body = || -> Result<Option<Value>, String> {
         for stmt in plan.statements {
             let params: Vec<Value> = stmt.params.iter().map(|s| eval_spec(s, &scope)).collect();
             let sql = render_placeholders(stmt.sql, dialect);
@@ -664,7 +727,7 @@ fn exec_tx(
             } else {
                 (Vec::new(), driver.execute(&sql, &params)?)
             };
-            executed.push(RawValue::Str(stmt.id.to_string()));
+            executed.push(Value::Str(stmt.id.to_string()));
 
             if let Some(gate) = &stmt.gate {
                 let reason = match gate {
@@ -674,20 +737,22 @@ fn exec_tx(
                 };
                 if let Some(reason) = reason {
                     driver.execute("ROLLBACK", &[])?;
-                    let mut sc = RawRow::new();
-                    sc.set("statementId", RawValue::Str(stmt.id.to_string()));
-                    sc.set("reason", RawValue::Str(reason.to_string()));
-                    let mut row = RawRow::new();
-                    row.set("committed", RawValue::Bool(false));
-                    row.set("executed", RawValue::Arr(std::mem::take(&mut executed)));
-                    row.set("shortCircuit", RawValue::Row(sc));
-                    row.set("entity", RawValue::Null);
-                    return Ok(Some(RawValue::Row(row)));
+                    let sc = Value::Obj(vec![
+                        ("statementId".to_string(), Value::Str(stmt.id.to_string())),
+                        ("reason".to_string(), Value::Str(reason.to_string())),
+                    ]);
+                    let row = Value::Obj(vec![
+                        ("committed".to_string(), Value::Bool(false)),
+                        ("executed".to_string(), Value::Arr(std::mem::take(&mut executed))),
+                        ("shortCircuit".to_string(), sc),
+                        ("entity".to_string(), Value::Null),
+                    ]);
+                    return Ok(Some(row));
                 }
             }
 
             if plan.is_batch && !rows.is_empty() {
-                returned_rows.push(RawValue::Arr(rows.iter().map(raw_from_value).collect()));
+                returned_rows.push(Value::Arr(rows.clone()));
             }
             let first_row = rows.into_iter().next();
 
@@ -712,18 +777,16 @@ fn exec_tx(
         Ok(Some(short_circuit)) => Ok(short_circuit),
         Ok(None) => {
             driver.execute("COMMIT", &[])?;
-            let mut row = RawRow::new();
-            row.set("committed", RawValue::Bool(true));
-            row.set("executed", RawValue::Arr(executed));
-            row.set("shortCircuit", RawValue::Null);
-            row.set(
-                "entity",
-                if matches!(entity, Value::Null) { RawValue::Null } else { raw_from_value(&entity) },
-            );
+            let mut fields = vec![
+                ("committed".to_string(), Value::Bool(true)),
+                ("executed".to_string(), Value::Arr(executed)),
+                ("shortCircuit".to_string(), Value::Null),
+                ("entity".to_string(), entity),
+            ];
             if !returned_rows.is_empty() {
-                row.set("returnedRows", RawValue::Arr(returned_rows));
+                fields.push(("returnedRows".to_string(), Value::Arr(returned_rows)));
             }
-            Ok(RawValue::Row(row))
+            Ok(Value::Obj(fields))
         }
         Err(e) => {
             let _ = driver.execute("ROLLBACK", &[]);
@@ -865,13 +928,13 @@ fn stitch_relation_native(rel: &Relation, mut parents: Vec<Value>, driver: &dyn 
 // Case dispatch (through the bc-GENERATED modules — the ONLY exec entry)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// One prepared case: the static companion plan + the input scopes materialized ONCE at load.
+/// One prepared case: the static companion plan + the input scope materialized ONCE at load.
 struct PreparedCase {
     plan: &'static CasePlan,
-    /// The bench input scope (native, from companion InVal data).
+    /// The bench input scope (native, from companion InVal data). #60 m1: writes now call
+    /// `exec_tx` DIRECTLY with this SAME scope (no generated write module — the old `__sql`/
+    /// `__sqlParams`/`__skip` surrogate wiring `wmi` carried is gone, along with that module).
     input: Scope,
-    /// The WRITE module's surrogate input (`__sql`/`__sqlParams`/`__skip`) — empty for reads.
-    wmi: Scope,
 }
 
 fn in_val_to_value(v: &InVal) -> Value {
@@ -892,63 +955,91 @@ fn prepare_case(plan: &'static CasePlan) -> PreparedCase {
         .iter()
         .map(|(k, v)| ((*k).to_string(), in_val_to_value(v)))
         .collect();
-    let wmi: Scope = match plan.write_sql {
-        Some(sql) => vec![
-            ("__sql".to_string(), Value::Str(sql.to_string())),
-            ("__sqlParams".to_string(), Value::Arr(Vec::new())),
-            ("__skip".to_string(), Value::Bool(false)),
-        ],
-        None => Vec::new(),
-    };
-    PreparedCase { plan, input, wmi }
+    PreparedCase { plan, input }
 }
 
-/// Execute ONE case THROUGH its bc-generated module (RAW ABI) with the native handlers. Returns
-/// the produced output `Value` (the verify leg canonicalizes it; the timed loop discards it).
+/// Execute ONE covered read THROUGH its typed-native module's `run_native_raw_struct_<Comp>`
+/// (#60 m1): builds the module's own `InNR<Comp>` from the bench input scope, calls the runner with
+/// this crate's `(&ReadPlan, &dyn Driver)` handler tuple (implements the module's `HandlerNR<Comp>`
+/// — see above), and re-boxes the resulting `Vec<T0>` to `Value::Arr(Value::Obj(...))` ONLY at this
+/// OUTPUT boundary (the verify/canon leg + relation-stitch consume `Value`) — the SQL row
+/// materialization itself never touched `Value`/`RawValue` (query_rows → T0 fields directly).
+macro_rules! call_typed_native_read {
+    ($m:ident :: $runner:ident, $in_:expr, $plan:expr, $driver:expr, [$($field:ident),+ $(,)?]) => {{
+        let handler: (&'static ReadPlan, &dyn Driver) = ($plan.read.expect("read plan"), $driver);
+        let rows = $m::$runner(&handler, $in_).expect("codegen: typed-native read call");
+        rows.into_iter()
+            .map(|row| Value::Obj(vec![$((stringify!($field).to_string(), row_field_to_value(row.$field))),+]))
+            .collect::<Vec<Value>>()
+    }};
+}
+
+/// One `T0` field's native scalar → `Value` (boxed ONLY here, at the output boundary — not on the
+/// SQL row-fetch plane). A tiny closed-set conversion (`i64`/`String` — the only field kinds the
+/// covered corpus's outType produces).
+trait RowFieldToValue {
+    fn row_field_to_value(self) -> Value;
+}
+impl RowFieldToValue for i64 {
+    fn row_field_to_value(self) -> Value {
+        Value::Int(self)
+    }
+}
+impl RowFieldToValue for String {
+    fn row_field_to_value(self) -> Value {
+        Value::Str(self)
+    }
+}
+fn row_field_to_value<T: RowFieldToValue>(v: T) -> Value {
+    v.row_field_to_value()
+}
+
+/// Execute ONE case. Reads route through the typed-native `HandlerNR<Comp>` seam (#60 m1, covered
+/// cases only — find/belongsTo/hasMany/hasManyLimit); writes call the NATIVE gate-first tx executor
+/// directly (no generated-module wrapper — writes have no codegen module anymore).
 fn run_case(pc: &PreparedCase, driver: &dyn Driver) -> Value {
     let plan = pc.plan;
-    macro_rules! call_read {
-        ($m:ident) => {{
-            let handler = NativeReadHandler { plan: plan.read.expect("read plan"), driver };
-            let mut bound = $m::bind_raw(handler);
-            bound.call(plan.entry, &pc.input).expect("codegen: generated read call")
-        }};
-    }
-    macro_rules! call_write {
-        ($m:ident) => {{
-            let handler = NativeWriteHandler {
-                plan: plan.tx.expect("tx plan"),
-                dialect: plan.dialect,
-                input: &pc.input,
-                driver,
-            };
-            let mut bound = $m::bind_raw(handler);
-            bound.call(plan.entry, &pc.wmi).expect("codegen: generated write call")
-        }};
-    }
     match plan.case_id {
-        "find" => call_read!(cg_find),
-        "complexWhere" => call_read!(cg_complex_where),
-        "inList" => call_read!(cg_in_list),
-        "belongsTo" | "hasMany" | "hasManyLimit" => {
-            let parents = match plan.case_id {
-                "belongsTo" => call_read!(cg_belongs_to),
-                "hasMany" => call_read!(cg_has_many),
-                _ => call_read!(cg_has_many_limit),
+        "find" => {
+            let in_ = cg_find::InNRFind {
+                author_id: scope_i64(&pc.input, "author_id"),
+                since: scope_str(&pc.input, "since"),
+                status: scope_str(&pc.input, "status"),
             };
-            let rows = match parents {
-                Value::Arr(r) => r,
-                other => panic!(
-                    "codegen: generated read returned a {} (expected rows) — fail-closed",
-                    type_name(&other)
-                ),
+            Value::Arr(call_typed_native_read!(cg_find::run_native_raw_struct_Find, in_, plan, driver, [id, author_id, title, status, views, created_at]))
+        }
+        "belongsTo" | "hasMany" | "hasManyLimit" => {
+            let in_belongs = cg_belongs_to::InNRPosts { author_id: scope_i64(&pc.input, "author_id") };
+            let in_many = cg_has_many::InNRPosts { author_id: scope_i64(&pc.input, "author_id") };
+            let in_many_limit = cg_has_many_limit::InNRPosts { author_id: scope_i64(&pc.input, "author_id") };
+            let rows = match plan.case_id {
+                "belongsTo" => call_typed_native_read!(cg_belongs_to::run_native_raw_struct_Posts, in_belongs, plan, driver, [id, author_id, title]),
+                "hasMany" => call_typed_native_read!(cg_has_many::run_native_raw_struct_Posts, in_many, plan, driver, [id, author_id, title]),
+                _ => call_typed_native_read!(cg_has_many_limit::run_native_raw_struct_Posts, in_many_limit, plan, driver, [id, author_id, title]),
             };
             let rel = plan.relation.expect("relation op");
             Value::Arr(stitch_relation_native(rel, rows, driver))
         }
-        "batchInsert" => call_write!(cg_batch_insert),
-        "writeTxGate" => call_write!(cg_write_tx_gate),
+        "complexWhere" | "inList" => panic!(
+            "codegen: case '{}' is NOT typed-native-covered (bc#86 gap: an IN-list's array-typed head \
+             has no native port type) — the harness must route this case through db_skip_reason, not run_case",
+            plan.case_id
+        ),
+        "batchInsert" | "writeTxGate" => run_write(plan.tx.expect("tx plan"), plan.dialect, &pc.input, driver),
         other => panic!("unknown codegen case '{other}' (fail-closed)"),
+    }
+}
+
+fn scope_i64(scope: &Scope, key: &str) -> i64 {
+    match scope_get(scope, key) {
+        Some(Value::Int(i)) => *i,
+        other => panic!("codegen native: bench input '{key}' is not an int (fail-closed): {other:?}"),
+    }
+}
+fn scope_str(scope: &Scope, key: &str) -> String {
+    match scope_get(scope, key) {
+        Some(Value::Str(s)) => s.clone(),
+        other => panic!("codegen native: bench input '{key}' is not a string (fail-closed): {other:?}"),
     }
 }
 
@@ -1139,18 +1230,42 @@ fn db_skip_reason(dialect: &str) -> Option<String> {
     }
 }
 
+/// #60 milestone 1: `complexWhere`/`inList` are NOT typed-native-covered (bc#86 gap — an IN-list's
+/// array-typed head has no native scalar port type bc's typed-native emitter can lower to). There
+/// is no generated codegen module for them anymore (retired `-typed-raw` is NOT a fallback) — the
+/// codegen cell reports this as an explicit SKIP (never a silent/incorrect result).
+fn case_skip_reason(case_id: &str) -> Option<&'static str> {
+    match case_id {
+        "complexWhere" | "inList" => Some(
+            "not typed-native-covered (bc#86 gap): this case's WHERE binds an IN-list, whose value \
+             is an ARRAY — bc's typed-native emitter (rust-typed-native) has no native scalar port \
+             type for it, so litedbmodel's codegen-only lowering fails closed at generation. NOT \
+             regenerated on the retired '-typed-raw' path (no silent fallback).",
+        ),
+        _ => None,
+    }
+}
+
+fn write_skipped(case: &str, dialect: &str, reason: &str) {
+    write_line(&format!(
+        "{{\"kind\":\"skipped\",\"case\":{},\"dialect\":{},\"reason\":{}}}",
+        jstr(case),
+        jstr(dialect),
+        jstr(reason)
+    ));
+}
+
 fn handle(kind: &str, line: &str, art: &Artifact) {
     match kind {
         "run" => {
             let case = field_str(line, "case").expect("run: case");
             let dialect = field_str(line, "dialect").unwrap_or_else(|| "sqlite".into());
+            if let Some(reason) = case_skip_reason(&case) {
+                write_skipped(&case, &dialect, reason);
+                return;
+            }
             if let Some(reason) = db_skip_reason(&dialect) {
-                write_line(&format!(
-                    "{{\"kind\":\"skipped\",\"case\":{},\"dialect\":{},\"reason\":{}}}",
-                    jstr(&case),
-                    jstr(&dialect),
-                    jstr(&reason)
-                ));
+                write_skipped(&case, &dialect, &reason);
                 return;
             }
             let warmup = field_u64(line, "warmup").expect("run: warmup");
@@ -1170,13 +1285,12 @@ fn handle(kind: &str, line: &str, art: &Artifact) {
         "throughput" => {
             let case = field_str(line, "case").expect("throughput: case");
             let dialect = field_str(line, "dialect").unwrap_or_else(|| "sqlite".into());
+            if let Some(reason) = case_skip_reason(&case) {
+                write_skipped(&case, &dialect, reason);
+                return;
+            }
             if let Some(reason) = db_skip_reason(&dialect) {
-                write_line(&format!(
-                    "{{\"kind\":\"skipped\",\"case\":{},\"dialect\":{},\"reason\":{}}}",
-                    jstr(&case),
-                    jstr(&dialect),
-                    jstr(&reason)
-                ));
+                write_skipped(&case, &dialect, &reason);
                 return;
             }
             let iters = field_u64(line, "iterations").expect("throughput: iterations");
@@ -1198,6 +1312,10 @@ fn handle(kind: &str, line: &str, art: &Artifact) {
         "micro" => {
             let case = field_str(line, "case").expect("micro: case");
             let dialect = field_str(line, "dialect").unwrap_or_else(|| "sqlite".into());
+            if let Some(reason) = case_skip_reason(&case) {
+                write_skipped(&case, &dialect, reason);
+                return;
+            }
             let warmup = field_u64(line, "warmup").expect("micro: warmup");
             let iters = field_u64(line, "iterations").expect("micro: iterations");
             let mock = MockDriver;
@@ -1219,6 +1337,10 @@ fn handle(kind: &str, line: &str, art: &Artifact) {
         "cost" => {
             let case = field_str(line, "case").expect("cost: case");
             let dialect = field_str(line, "dialect").unwrap_or_else(|| "sqlite".into());
+            if let Some(reason) = case_skip_reason(&case) {
+                write_skipped(&case, &dialect, reason);
+                return;
+            }
             let base = seed_driver();
             let counter = CountingDriver { inner: &base, queries: Cell::new(0), rows: Cell::new(0) };
             let pc = art.case("sqlite", &case);
@@ -1235,6 +1357,10 @@ fn handle(kind: &str, line: &str, art: &Artifact) {
             // Behaviour-equality observation: the codegen output's canonical JSON. The selfcheck
             // driver compares it against lm_bench(ir)'s canonical interpreter output per case.
             let case = field_str(line, "case").expect("verify: case");
+            if let Some(reason) = case_skip_reason(&case) {
+                write_skipped(&case, "sqlite", reason);
+                return;
+            }
             let d = seed_driver();
             let pc = art.case("sqlite", &case);
             let out = run_case(pc, &d);
@@ -1251,9 +1377,13 @@ fn handle(kind: &str, line: &str, art: &Artifact) {
 
 fn main() {
     // The prepared cases (native input scopes + plan refs) — materialized ONCE, outside any
-    // timed loop. Warm each sqlite case once on the mock (module load + first-call cost).
+    // timed loop. Warm each sqlite case once on the mock (module load + first-call cost). Skip a
+    // case case_skip_reason reports (#60 m1: complexWhere/inList are NOT typed-native-covered).
     let art = load_artifact();
     for c in companion::CASE_IDS {
+        if case_skip_reason(c).is_some() {
+            continue;
+        }
         let pc = art.case("sqlite", c);
         run_case(pc, &MockDriver);
     }
