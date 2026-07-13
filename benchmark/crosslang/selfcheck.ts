@@ -120,63 +120,81 @@ function stripCommentsAndStrings(src: string): string {
   }
   return out;
 }
-const CODEGEN_CASES = ['find', 'complexWhere', 'inList', 'belongsTo', 'hasMany', 'hasManyLimit', 'batchInsert', 'writeTxGate'];
+// #60 m1: bc typed-native READ codegen. A COVERED read (find/belongsTo/hasMany/hasManyLimit)
+// generates a de-interpreted module. An UNCOVERED read (complexWhere/inList — bc#86 IN-list
+// array-head gap) fails CLOSED at generation, and WRITES (batchInsert/writeTxGate) are NOT
+// codegen-module cases (#60 m1) — both legitimately have NO generated module. We assert BOTH: the
+// covered modules ARE de-interpreted, AND the no-module cases have NO module (a module appearing
+// for them would mean a silent fallback leaked — the exact sham this gate guards against).
+const COVERED_READ = ['find', 'belongsTo', 'hasMany', 'hasManyLimit'];
+const NO_MODULE_CASES = ['complexWhere', 'inList', 'batchInsert', 'writeTxGate']; // uncovered read (bc#86) + writes
 const GEN_ROOT = resolve(HERE, 'generated', 'codegen');
 const GO_CGMODS = resolve(HERE, '..', '..', 'go', 'lm_bench', 'cgmods');
-console.log('\n=== anti-sham: generated Rust/Go codegen modules are de-interpreted (no run_behavior / no embedded IR) ===');
-const antiShamTargets: { label: string; path: string }[] = [];
-for (const c of CODEGEN_CASES) {
-  antiShamTargets.push({ label: `rust/${c}.rs`, path: resolve(GEN_ROOT, 'rust', `${c}.rs`) });
-  antiShamTargets.push({ label: `go(flat)/${c}.go`, path: resolve(GEN_ROOT, 'go', `${c}.go`) });
-  antiShamTargets.push({ label: `go(pkg)/${c}/gen.go`, path: resolve(GO_CGMODS, c, 'gen.go') });
+const moduleTargets = (c: string): { label: string; path: string }[] => [
+  { label: `rust/${c}.rs`, path: resolve(GEN_ROOT, 'rust', `${c}.rs`) },
+  { label: `go(flat)/${c}.go`, path: resolve(GEN_ROOT, 'go', `${c}.go`) },
+  { label: `go(pkg)/${c}/gen.go`, path: resolve(GO_CGMODS, c, 'gen.go') },
+];
+console.log('\n=== anti-sham: COVERED-read codegen modules are de-interpreted (no run_behavior / no embedded IR) ===');
+for (const c of COVERED_READ) {
+  for (const t of moduleTargets(c)) {
+    let src: string;
+    try { src = readFileSync(t.path, 'utf8'); }
+    catch { failures++; console.log(`  ${t.label.padEnd(28)} MISSING (covered read MUST codegen — regenerate) — ${t.path}`); continue; }
+    const code = stripCommentsAndStrings(src);
+    const callsInterpreter = /\b(run_behavior|RunBehavior|runBehavior)\b/.test(code);
+    // Embedded-IR heuristic: a de-interpreted module carries no baked IR literal (irVersion / a
+    // "components" graph) and — typed-native (bc#77/#90) — no fingerprint constant either.
+    const embedsIr = /\b(irVersion|IR_FINGERPRINT|IRFingerprint)\b/.test(code) || /["']components["']\s*:/.test(code);
+    const ok = !callsInterpreter && !embedsIr;
+    if (!ok) failures++;
+    console.log(`  ${t.label.padEnd(28)} ${ok ? 'OK (no interpreter call, no embedded IR/fingerprint)' : `SHAM: callsInterpreter=${callsInterpreter} embedsIr=${embedsIr}`}`);
+  }
 }
-for (const t of antiShamTargets) {
-  let src: string;
-  try { src = readFileSync(t.path, 'utf8'); }
-  catch { failures++; console.log(`  ${t.label.padEnd(28)} MISSING (regenerate) — ${t.path}`); continue; }
-  const code = stripCommentsAndStrings(src);
-  const callsInterpreter = /\b(run_behavior|RunBehavior|runBehavior)\b/.test(code);
-  // Embedded-IR heuristic: a de-interpreted module carries only IR_FINGERPRINT/IRFingerprint, never a
-  // baked IR literal (irVersion / a "components" graph) that could be interpreted. The straight-line
-  // emitter never emits those tokens as CODE.
-  const embedsIr = /\b(irVersion)\b/.test(code) || /["']components["']\s*:/.test(code);
-  const ok = !callsInterpreter && !embedsIr;
-  if (!ok) failures++;
-  console.log(`  ${t.label.padEnd(28)} ${ok ? 'OK (no interpreter call, no embedded IR)' : `SHAM: callsInterpreter=${callsInterpreter} embedsIr=${embedsIr}`}`);
+console.log('\n=== anti-sham: uncovered-read (bc#86) + write cases have NO generated module (no silent fallback) ===');
+for (const c of NO_MODULE_CASES) {
+  for (const t of moduleTargets(c)) {
+    let present = true;
+    try { readFileSync(t.path, 'utf8'); } catch { present = false; }
+    if (present) { failures++; console.log(`  ${t.label.padEnd(28)} UNEXPECTED — a module exists for a fail-closed/write case (silent fallback leaked)`); }
+    else console.log(`  ${t.label.padEnd(28)} OK (correctly absent — uncovered read fail-closed / write not a codegen case)`);
+  }
 }
 
 
-// ── Anti-sham (adapter wiring): the codegen CELL must invoke the GENERATED function, not the
-// interpreter. Assert the Rust/Go codegen dispatch (`run_codegen` / `runCodegen`) routes reads
-// through the generated module's `bind(...).call(...)` / `Bind(...)[entry](...)` and does NOT call
-// `execute_bundle` / `read_bundle_pooled` / `ExecuteBundle` / `ReadBundle` for the read path.
-// (Write cases legitimately defer to the tx path AFTER the generated module's fail-closed load.)
-console.log('\n=== anti-sham (adapter wiring): codegen cell invokes the generated function, not the interpreter ===');
-const RUST_MAIN = resolve(HERE, 'adapters', 'rust', 'src', 'main.rs');
+// ── Anti-sham (adapter wiring), #60 m1 architecture:
+//  - Rust codegen runs in the DEDICATED, runtime-free `lm_codegen` binary (adapters/rust-codegen):
+//    its covered-read dispatch calls the GENERATED typed-native runner `run_native_raw_struct_<Comp>`
+//    and links NO interpreter (execute_bundle/read_bundle_pooled are absent — serde-free crate).
+//    The old shared `adapters/rust` binary must FAIL CLOSED on impl=codegen (codegen does not live there).
+//  - Go codegen is BLOCKED on bc#102 (go-typed-native emits the runner unexported) — the cell must
+//    FAIL CLOSED (panic naming bc#102), NEVER silently fall back to the interpreter (rt.ExecuteBundle/
+//    rt.ReadBundle) or the retired RAW-ABI path. That honest block is the correct state, not a sham.
+console.log('\n=== anti-sham (adapter wiring): codegen invokes the typed-native runner / fails closed, never the interpreter ===');
+const RUST_CODEGEN = resolve(HERE, 'adapters', 'rust-codegen', 'src', 'main.rs');
+const RUST_SHARED = resolve(HERE, 'adapters', 'rust', 'src', 'main.rs');
 const GO_CELL = resolve(HERE, '..', '..', 'go', 'lm_bench', 'codegen_cell.go');
-function sliceFn(src: string, startNeedle: string): string {
-  const i = src.indexOf(startNeedle);
-  if (i < 0) return '';
-  // grab a generous window (the function body) — enough to cover the read dispatch
-  return src.slice(i, i + 2600);
+{
+  const src = readFileSync(RUST_CODEGEN, 'utf8');
+  const invokesGenerated = /run_native_raw_struct_/.test(src);
+  const linksInterpreter = /\bexecute_bundle\b|\bread_bundle_pooled\b/.test(src);
+  const ok = invokesGenerated && !linksInterpreter;
+  if (!ok) failures++;
+  console.log(`  rust lm_codegen            ${ok ? 'OK (run_native_raw_struct_<Comp>; runtime-free, no interpreter linked)' : `SHAM: generated=${invokesGenerated} interpreterLinked=${linksInterpreter}`}`);
 }
 {
-  const rust = readFileSync(RUST_MAIN, 'utf8');
-  const body = sliceFn(rust, 'fn run_codegen(case: &J, driver: &dyn Driver) {');
-  const invokesGenerated = /\.call\(/.test(body) && /::bind\(/.test(body);
-  const callsInterpreterOnRead = /execute_bundle\b|read_bundle_pooled\b/.test(body);
-  const ok = invokesGenerated && !callsInterpreterOnRead;
-  if (!ok) failures++;
-  console.log(`  rust run_codegen           ${ok ? 'OK (bind(...).call(...); no execute_bundle/read_bundle_pooled on the read path)' : `SHAM: generated=${invokesGenerated} interpreterOnRead=${callsInterpreterOnRead}`}`);
+  const shared = readFileSync(RUST_SHARED, 'utf8');
+  const failsClosed = /impl_ == "codegen"/.test(shared) && /codegen[\s\S]{0,120}panic!/.test(shared);
+  if (!failsClosed) failures++;
+  console.log(`  rust adapters/rust (sql/ir) ${failsClosed ? 'OK (fails closed on impl=codegen — codegen rides lm_codegen)' : 'SHAM: shared adapter does not fail-closed on impl=codegen'}`);
 }
 {
   const go = readFileSync(GO_CELL, 'utf8');
-  const body = sliceFn(go, 'func runCodegen(c *caseArt, db rt.SQLDB) {');
-  const invokesGenerated = /mod\.bind\(/.test(body) && /bound\[mod\.entry\]/.test(body);
-  const callsInterpreterOnRead = /rt\.ExecuteBundle\b|rt\.ReadBundle\b/.test(body);
-  const ok = invokesGenerated && !callsInterpreterOnRead;
+  const failsClosedOnBc102 = /bc#102/.test(go) && /func runCodegenCase[\s\S]{0,400}panic\(/.test(go);
+  const silentInterpreter = /rt\.ExecuteBundle\b|rt\.ReadBundle\b/.test(go);
+  const ok = failsClosedOnBc102 && !silentInterpreter;
   if (!ok) failures++;
-  console.log(`  go   runCodegen            ${ok ? 'OK (mod.bind(...)[entry](...); no ExecuteBundle/ReadBundle on the read path)' : `SHAM: generated=${invokesGenerated} interpreterOnRead=${callsInterpreterOnRead}`}`);
+  console.log(`  go   codegen_cell          ${ok ? 'OK (fails closed on bc#102; no silent interpreter/RAW-ABI fallback)' : `SHAM: failsClosedOnBc102=${failsClosedOnBc102} silentInterpreter=${silentInterpreter}`}`);
 }
 
 if (failures > 0) {

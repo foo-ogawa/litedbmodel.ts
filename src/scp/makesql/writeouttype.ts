@@ -52,7 +52,7 @@ const SHORT_CIRCUIT_TYPE: PortableType = { obj: { statementId: 'string', reason:
 /**
  * The target table + RETURNING columns of ONE `body`-role write statement, extracted STRUCTURALLY
  * from its complete tuned SQL text (the makeSQL `body` op — `INSERT INTO <t> … [RETURNING …]` /
- * `UPDATE <t> …` / `DELETE FROM <t> …`). The MySQL PK-hint comment (`/​*scp:pk=…*​/`) is ignored
+ * `UPDATE <t> …` / `DELETE FROM <t> …`). The MySQL PK-hint comment (the `scp:pk=…` marker) is ignored
  * (it trails the RETURNING and carries no column). Returns `undefined` for a non-body / gate
  * statement's SQL that is not a base write (the caller only inspects `body`-role ops).
  */

@@ -30,6 +30,12 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci --ignore-scripts
+      # `npm ci --ignore-scripts` skips better-sqlite3's native `install`, so the addon
+      # (`better_sqlite3.node`) is absent and selfcheck.ts / the TS bench cells fail with
+      # "Could not locate the bindings file". Rebuild it explicitly (prebuild first, node-gyp
+      # from-source fallback) — same step as conformance.yml.
+      - name: Build the better-sqlite3 native addon (skipped by ignore-scripts)
+        run: npm_config_ignore_scripts=false npm rebuild better-sqlite3 --build-from-source=false || (cd node_modules/better-sqlite3 && npx node-gyp rebuild --release)
       - name: Build SCP dist (consume-only source for the bench)
         run: npm run build:scp
       - name: Drift-check the generated makeSQL bundles
