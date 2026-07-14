@@ -43,16 +43,18 @@ mod companion;
 // ── bc-GENERATED typed-NATIVE modules (bc#77/#90 rust-typed-native; each its own compile unit) ──
 // Only the 4 typed-native-COVERED read cases (#60 m1; complexWhere/inList are a bc#86 gap — NOT
 // generated, see the module doc above). Writes have NO codegen module anymore (exec_tx, native).
-#[path = "../../../generated/codegen/rust/find.rs"]
-mod cg_find;
 #[path = "../../../generated/codegen/rust/belongsTo.rs"]
 mod cg_belongs_to;
+#[path = "../../../generated/codegen/rust/find.rs"]
+mod cg_find;
 #[path = "../../../generated/codegen/rust/hasMany.rs"]
 mod cg_has_many;
 #[path = "../../../generated/codegen/rust/hasManyLimit.rs"]
 mod cg_has_many_limit;
 
-use companion::{CasePlan, Dialect, Gate, InVal, Lit, ReadPlan, Relation, RelKind, Skip, Spec, TxPlan};
+use companion::{
+    CasePlan, Dialect, Gate, InVal, Lit, ReadPlan, RelKind, Relation, Skip, Spec, TxPlan,
+};
 
 type Scope = Vec<(String, Value)>;
 
@@ -121,7 +123,8 @@ struct SqliteDriver {
 impl SqliteDriver {
     fn in_memory(schema: &[&str]) -> Self {
         let conn = rusqlite::Connection::open_in_memory().expect("open sqlite");
-        conn.execute_batch("PRAGMA foreign_keys = ON;").expect("pragma");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("pragma");
         for stmt in schema {
             conn.execute_batch(stmt).expect("schema");
         }
@@ -158,7 +161,8 @@ impl Driver for SqliteDriver {
         let bound: Vec<rusqlite::types::Value> = params.iter().map(to_sql_value).collect();
         let mut stmt = self.conn.prepare(sql).map_err(|e| e.to_string())?;
         let col_names: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
-        let refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let refs: Vec<&dyn rusqlite::ToSql> =
+            bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         let mut rows = stmt.query(refs.as_slice()).map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         loop {
@@ -184,7 +188,8 @@ impl Driver for SqliteDriver {
             .conn
             .prepare(sql)
             .unwrap_or_else(|e| panic!("codegen native: prepare '{sql}' failed: {e}"));
-        let refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let refs: Vec<&dyn rusqlite::ToSql> =
+            bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         let mut rows = stmt
             .query(refs.as_slice())
             .unwrap_or_else(|e| panic!("codegen native: query '{sql}' failed: {e}"));
@@ -200,9 +205,12 @@ impl Driver for SqliteDriver {
 
     fn execute(&self, sql: &str, params: &[Value]) -> Result<i64, String> {
         let bound: Vec<rusqlite::types::Value> = params.iter().map(to_sql_value).collect();
-        let refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let refs: Vec<&dyn rusqlite::ToSql> =
+            bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         let mut stmt = self.conn.prepare(sql).map_err(|e| e.to_string())?;
-        stmt.execute(refs.as_slice()).map(|n| n as i64).map_err(|e| e.to_string())
+        stmt.execute(refs.as_slice())
+            .map(|n| n as i64)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -210,7 +218,12 @@ impl Driver for SqliteDriver {
 struct MockDriver;
 
 fn obj(pairs: &[(&str, Value)]) -> Value {
-    Value::Obj(pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+    Value::Obj(
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect(),
+    )
 }
 
 fn fixture(sql: &str) -> Vec<Value> {
@@ -229,7 +242,10 @@ fn fixture(sql: &str) -> Vec<Value> {
                 .collect();
         }
         if s.contains("from users") {
-            return vec![obj(&[("id", Value::Int(1)), ("name", Value::Str("user-1".into()))])];
+            return vec![obj(&[
+                ("id", Value::Int(1)),
+                ("name", Value::Str("user-1".into())),
+            ])];
         }
         if s.contains("from posts") || s.contains("from ") {
             return (1..=5)
@@ -304,26 +320,33 @@ fn fixture_rows(sql: &str) -> Vec<FixtureRow> {
     if st.starts_with("select") {
         if s.contains("from comments") {
             return (1..=25)
-                .map(|i| frow(vec![
-                    ("id", FixtureCell::Int(i)),
-                    ("post_id", FixtureCell::Int(((i - 1) % 5) + 1)),
-                    ("body", FixtureCell::Str(format!("comment-{i}"))),
-                ]))
+                .map(|i| {
+                    frow(vec![
+                        ("id", FixtureCell::Int(i)),
+                        ("post_id", FixtureCell::Int(((i - 1) % 5) + 1)),
+                        ("body", FixtureCell::Str(format!("comment-{i}"))),
+                    ])
+                })
                 .collect();
         }
         if s.contains("from users") {
-            return vec![frow(vec![("id", FixtureCell::Int(1)), ("name", FixtureCell::Str("user-1".into()))])];
+            return vec![frow(vec![
+                ("id", FixtureCell::Int(1)),
+                ("name", FixtureCell::Str("user-1".into())),
+            ])];
         }
         if s.contains("from posts") || s.contains("from ") {
             return (1..=5)
-                .map(|i| frow(vec![
-                    ("id", FixtureCell::Int(i)),
-                    ("author_id", FixtureCell::Int(1)),
-                    ("title", FixtureCell::Str(format!("post-{i}"))),
-                    ("status", FixtureCell::Str("live".into())),
-                    ("views", FixtureCell::Int(i * 10)),
-                    ("created_at", FixtureCell::Str("2026-02-01".into())),
-                ]))
+                .map(|i| {
+                    frow(vec![
+                        ("id", FixtureCell::Int(i)),
+                        ("author_id", FixtureCell::Int(1)),
+                        ("title", FixtureCell::Str(format!("post-{i}"))),
+                        ("status", FixtureCell::Str("live".into())),
+                        ("views", FixtureCell::Int(i * 10)),
+                        ("created_at", FixtureCell::Str("2026-02-01".into())),
+                    ])
+                })
                 .collect();
         }
         return vec![frow(vec![("1", FixtureCell::Int(1))])];
@@ -361,9 +384,16 @@ struct CountingDriver<'a> {
 
 fn is_tx_control(sql: &str) -> bool {
     let up = sql.trim_start().to_uppercase();
-    ["BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE", "PRAGMA"]
-        .iter()
-        .any(|k| up.starts_with(k))
+    [
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+        "SAVEPOINT",
+        "RELEASE",
+        "PRAGMA",
+    ]
+    .iter()
+    .any(|k| up.starts_with(k))
 }
 
 impl Driver for CountingDriver<'_> {
@@ -414,7 +444,12 @@ fn scope_get<'a>(scope: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
 /// (mirrors bc UNKNOWN_BINDING — never a silent null).
 fn ref_path(scope: &[(String, Value)], path: &[&str]) -> Value {
     let mut cur = scope_get(scope, path[0])
-        .unwrap_or_else(|| panic!("codegen native: unknown binding '{}' (fail-closed)", path[0]))
+        .unwrap_or_else(|| {
+            panic!(
+                "codegen native: unknown binding '{}' (fail-closed)",
+                path[0]
+            )
+        })
         .clone();
     for seg in &path[1..] {
         cur = match cur {
@@ -422,7 +457,9 @@ fn ref_path(scope: &[(String, Value)], path: &[&str]) -> Value {
                 .iter()
                 .find(|(k, _)| k == seg)
                 .map(|(_, v)| v.clone())
-                .unwrap_or_else(|| panic!("codegen native: unknown property '.{seg}' (fail-closed)")),
+                .unwrap_or_else(|| {
+                    panic!("codegen native: unknown property '.{seg}' (fail-closed)")
+                }),
             other => panic!(
                 "codegen native: ref path '.{seg}' into a {} (fail-closed)",
                 type_name(&other)
@@ -642,14 +679,23 @@ fn render_read(plan: &ReadPlan, scope: &[(String, Value)]) -> (String, Vec<Value
 
 /// Render `plan` against a scope built from the covered node's typed ports (cheap — a handful of
 /// scalar clones, not a per-row cost) and fetch rows via the zero-boxing `query_rows` visitor.
-fn render_and_fetch(plan: &ReadPlan, scope: Scope, driver: &dyn Driver, mut decode_row: impl FnMut(&dyn RowCells)) {
+fn render_and_fetch(
+    plan: &ReadPlan,
+    scope: Scope,
+    driver: &dyn Driver,
+    mut decode_row: impl FnMut(&dyn RowCells),
+) {
     let (sql, params) = render_read(plan, &scope);
     driver.query_rows(&sql, &params, &mut decode_row);
 }
 
 /// `find`: HandlerNRFind — one WHERE-bound scalar port per head (author_id/status/since).
 impl HandlerNRFind for (&'static ReadPlan, &dyn Driver) {
-    fn node_n0(&self, ports: &cg_find::PortsNRFindN0, _bound: Option<String>) -> Option<cg_find::RawRowNRFindN0> {
+    fn node_n0(
+        &self,
+        ports: &cg_find::PortsNRFindN0,
+        _bound: Option<String>,
+    ) -> Option<cg_find::RawRowNRFindN0> {
         let scope: Scope = vec![
             ("author_id".to_string(), Value::Int(ports.f_author_id)),
             ("status".to_string(), Value::Str(ports.f_status.clone())),
@@ -666,7 +712,11 @@ impl HandlerNRFind for (&'static ReadPlan, &dyn Driver) {
                 created_at: row.get_str("created_at"),
             });
         });
-        Some(cg_find::RawRowNRFindN0 { is_error: false, err: String::new(), val })
+        Some(cg_find::RawRowNRFindN0 {
+            is_error: false,
+            err: String::new(),
+            val,
+        })
     }
 }
 use cg_find::HandlerNRFind;
@@ -677,13 +727,25 @@ use cg_find::HandlerNRFind;
 macro_rules! impl_posts_handler {
     ($module:ident) => {
         impl $module::HandlerNRPosts for (&'static ReadPlan, &dyn Driver) {
-            fn node_n0(&self, ports: &$module::PortsNRPostsN0, _bound: Option<String>) -> Option<$module::RawRowNRPostsN0> {
+            fn node_n0(
+                &self,
+                ports: &$module::PortsNRPostsN0,
+                _bound: Option<String>,
+            ) -> Option<$module::RawRowNRPostsN0> {
                 let scope: Scope = vec![("author_id".to_string(), Value::Int(ports.f_author_id))];
                 let mut val = Vec::new();
                 render_and_fetch(self.0, scope, self.1, |row| {
-                    val.push($module::T0 { id: row.get_i64("id"), author_id: row.get_i64("author_id"), title: row.get_str("title") });
+                    val.push($module::T0 {
+                        id: row.get_i64("id"),
+                        author_id: row.get_i64("author_id"),
+                        title: row.get_str("title"),
+                    });
                 });
-                Some($module::RawRowNRPostsN0 { is_error: false, err: String::new(), val })
+                Some($module::RawRowNRPostsN0 {
+                    is_error: false,
+                    err: String::new(),
+                    val,
+                })
             }
         }
     };
@@ -698,8 +760,14 @@ impl_posts_handler!(cg_has_many_limit);
 /// writes have NO bc-generated module boundary anymore — `exec_tx` is called DIRECTLY (no
 /// RawComponentExec/bind_raw wrapper; that ABI existed only to satisfy the retired typed-raw
 /// generated write module).
-fn run_write(plan: &'static TxPlan, dialect: Dialect, input: &[(String, Value)], driver: &dyn Driver) -> Value {
-    exec_tx(plan, dialect, input, driver).unwrap_or_else(|e| panic!("codegen: write tx failed: {e}"))
+fn run_write(
+    plan: &'static TxPlan,
+    dialect: Dialect,
+    input: &[(String, Value)],
+    driver: &dyn Driver,
+) -> Value {
+    exec_tx(plan, dialect, input, driver)
+        .unwrap_or_else(|e| panic!("codegen: write tx failed: {e}"))
 }
 
 /// NATIVE gate-first transaction execution (mirror of the runtime's executeTransactionBundle for
@@ -709,7 +777,12 @@ fn run_write(plan: &'static TxPlan, dialect: Dialect, input: &[(String, Value)],
 /// #60 m1: returns a plain `Value::Obj` (no bc-generated write module de-boxes this anymore — the
 /// write path has no codegen-module boundary at all, so there is no ABI shape to match beyond what
 /// the verify/canon leg + the ir-path's `TransactionResult` compare against).
-fn exec_tx(plan: &TxPlan, dialect: Dialect, input: &[(String, Value)], driver: &dyn Driver) -> Result<Value, String> {
+fn exec_tx(
+    plan: &TxPlan,
+    dialect: Dialect,
+    input: &[(String, Value)],
+    driver: &dyn Driver,
+) -> Result<Value, String> {
     driver.execute("BEGIN", &[])?;
     let mut scope: Scope = input.to_vec();
     let mut executed: Vec<Value> = Vec::new();
@@ -743,7 +816,10 @@ fn exec_tx(plan: &TxPlan, dialect: Dialect, input: &[(String, Value)], driver: &
                     ]);
                     let row = Value::Obj(vec![
                         ("committed".to_string(), Value::Bool(false)),
-                        ("executed".to_string(), Value::Arr(std::mem::take(&mut executed))),
+                        (
+                            "executed".to_string(),
+                            Value::Arr(std::mem::take(&mut executed)),
+                        ),
                         ("shortCircuit".to_string(), sc),
                         ("entity".to_string(), Value::Null),
                     ]);
@@ -866,7 +942,11 @@ fn relation_json_array(keys: &[Value]) -> String {
 /// runtime `stitch_relation`): dedupe non-null parent keys (insertion order), resolve the PG
 /// deferred array cast from the REAL keys, `?`→`$N`, bind (PG: ONE array param; mysql/sqlite: ONE
 /// JSON text param), group child rows by target key, distribute per cardinality.
-fn stitch_relation_native(rel: &Relation, mut parents: Vec<Value>, driver: &dyn Driver) -> Vec<Value> {
+fn stitch_relation_native(
+    rel: &Relation,
+    mut parents: Vec<Value>,
+    driver: &dyn Driver,
+) -> Vec<Value> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut keys: Vec<Value> = Vec::new();
     for p in &parents {
@@ -892,9 +972,9 @@ fn stitch_relation_native(rel: &Relation, mut parents: Vec<Value>, driver: &dyn 
         } else {
             vec![Value::Str(relation_json_array(&keys))]
         };
-        let rows = driver
-            .query(&sql, &bound)
-            .unwrap_or_else(|e| panic!("codegen native: relation '{}' batch failed: {e}", rel.name));
+        let rows = driver.query(&sql, &bound).unwrap_or_else(|e| {
+            panic!("codegen native: relation '{}' batch failed: {e}", rel.name)
+        });
         for row in rows {
             let k = match obj_get(&row, rel.target_key) {
                 Some(v) => stringify_key(v),
@@ -1033,13 +1113,17 @@ fn run_case(pc: &PreparedCase, driver: &dyn Driver) -> Value {
 fn scope_i64(scope: &Scope, key: &str) -> i64 {
     match scope_get(scope, key) {
         Some(Value::Int(i)) => *i,
-        other => panic!("codegen native: bench input '{key}' is not an int (fail-closed): {other:?}"),
+        other => {
+            panic!("codegen native: bench input '{key}' is not an int (fail-closed): {other:?}")
+        }
     }
 }
 fn scope_str(scope: &Scope, key: &str) -> String {
     match scope_get(scope, key) {
         Some(Value::Str(s)) => s.clone(),
-        other => panic!("codegen native: bench input '{key}' is not a string (fail-closed): {other:?}"),
+        other => {
+            panic!("codegen native: bench input '{key}' is not a string (fail-closed): {other:?}")
+        }
     }
 }
 
@@ -1105,7 +1189,9 @@ fn field_str(line: &str, key: &str) -> Option<String> {
     let end = rest.find('"')?;
     let val = &rest[..end];
     if val.contains('\\') {
-        panic!("codegen protocol: escaped string in request field '{key}' (unsupported — fail-closed)");
+        panic!(
+            "codegen protocol: escaped string in request field '{key}' (unsupported — fail-closed)"
+        );
     }
     Some(val.to_string())
 }
@@ -1151,7 +1237,11 @@ fn samples_json(samples: &[f64]) -> String {
 
 fn now_ms() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64() * 1000.0
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        * 1000.0
 }
 
 fn collect<F: FnMut()>(warmup: u64, iters: u64, mut op: F) -> Vec<f64> {
@@ -1332,7 +1422,10 @@ fn handle(kind: &str, line: &str, art: &Artifact) {
             ));
         }
         "rss" => {
-            write_line(&format!("{{\"kind\":\"rss\",\"rssBytes\":{}}}", rss_bytes()));
+            write_line(&format!(
+                "{{\"kind\":\"rss\",\"rssBytes\":{}}}",
+                rss_bytes()
+            ));
         }
         "cost" => {
             let case = field_str(line, "case").expect("cost: case");
@@ -1342,7 +1435,11 @@ fn handle(kind: &str, line: &str, art: &Artifact) {
                 return;
             }
             let base = seed_driver();
-            let counter = CountingDriver { inner: &base, queries: Cell::new(0), rows: Cell::new(0) };
+            let counter = CountingDriver {
+                inner: &base,
+                queries: Cell::new(0),
+                rows: Cell::new(0),
+            };
             let pc = art.case("sqlite", &case);
             run_case(pc, &counter);
             write_line(&format!(
@@ -1416,7 +1513,10 @@ fn main() {
                 .map(|s| s.to_string())
                 .or_else(|| e.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "panic".into());
-            write_line(&format!("{{\"kind\":\"error\",\"message\":{}}}", jstr(&msg)));
+            write_line(&format!(
+                "{{\"kind\":\"error\",\"message\":{}}}",
+                jstr(&msg)
+            ));
         }
     }
 }

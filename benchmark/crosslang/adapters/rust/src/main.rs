@@ -687,7 +687,6 @@ fn run_micro(impl_: &str, case: &J, mock: &MockDriver) {
     }
 }
 
-
 // ── verify leg (interpreter canonical observation) ────────────────────────────
 //
 // The codegen cell lives in the DEDICATED serde_json-free `lm_codegen` binary; behaviour equality
@@ -695,8 +694,8 @@ fn run_micro(impl_: &str, case: &J, mock: &MockDriver) {
 // JSON (sorted keys — serde_json over a BTreeMap map), lm_codegen's `verify` answers the codegen
 // output's canonical JSON in the same form, and the selfcheck driver compares them per case.
 
-use litedbmodel_runtime::stitch_relation;
 use litedbmodel_runtime::encode_value;
+use litedbmodel_runtime::stitch_relation;
 
 /// The full-key TransactionResult `Value` (present-as-null for an absent optional field) — the
 /// canonical shape the de-boxed codegen path emits (`ser_T0` always emits every declared field).
@@ -707,11 +706,26 @@ fn normalize_tx_result_value(result: &Value) -> Value {
         Value::Obj(p) => p,
         other => return other.clone(),
     };
-    let get = |k: &str| pairs.iter().find(|(pk, _)| pk == k).map(|(_, v)| v).cloned();
+    let get = |k: &str| {
+        pairs
+            .iter()
+            .find(|(pk, _)| pk == k)
+            .map(|(_, v)| v)
+            .cloned()
+    };
     let mut out = vec![
-        ("committed".to_string(), get("committed").unwrap_or(Value::Bool(false))),
-        ("executed".to_string(), get("executed").unwrap_or(Value::Arr(Vec::new()))),
-        ("shortCircuit".to_string(), get("shortCircuit").unwrap_or(Value::Null)),
+        (
+            "committed".to_string(),
+            get("committed").unwrap_or(Value::Bool(false)),
+        ),
+        (
+            "executed".to_string(),
+            get("executed").unwrap_or(Value::Arr(Vec::new())),
+        ),
+        (
+            "shortCircuit".to_string(),
+            get("shortCircuit").unwrap_or(Value::Null),
+        ),
         ("entity".to_string(), get("entity").unwrap_or(Value::Null)),
     ];
     if let Some(rr) = get("returnedRows") {
@@ -763,7 +777,9 @@ fn run_lm_value(case: &J, driver: &dyn Driver) -> serde_json::Value {
         "batch" => normalize_tx_result_value(
             &execute_transaction_bundle(bundle, &J::Object(Default::default()), driver).unwrap(),
         ),
-        "tx" => normalize_tx_result_value(&execute_transaction_bundle(bundle, input, driver).unwrap()),
+        "tx" => {
+            normalize_tx_result_value(&execute_transaction_bundle(bundle, input, driver).unwrap())
+        }
         "relation" => {
             let with = case["withRelation"].as_str().unwrap();
             let op = &bundle["relations"][with];
