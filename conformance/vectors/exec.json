@@ -264,7 +264,19 @@
           "optionalHeads": [
             "status",
             "limit"
-          ]
+          ],
+          "materializersByNode": {
+            "n0": {
+              "id": "int32",
+              "author_id": "int32",
+              "title": "passthrough",
+              "status": "passthrough"
+            },
+            "n1": {
+              "id": "int32",
+              "name": "passthrough"
+            }
+          }
         },
         "optionalHeads": [
           "status",
@@ -588,7 +600,19 @@
           "optionalHeads": [
             "status",
             "limit"
-          ]
+          ],
+          "materializersByNode": {
+            "n0": {
+              "id": "int32",
+              "author_id": "int32",
+              "title": "passthrough",
+              "status": "passthrough"
+            },
+            "n1": {
+              "id": "int32",
+              "name": "passthrough"
+            }
+          }
         },
         "optionalHeads": [
           "status",

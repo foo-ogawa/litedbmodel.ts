@@ -54,6 +54,12 @@ export const SCHEMA: readonly string[] = [
   // float|bool|null; behavior-contracts#84 deferred), so these two columns are
   // VALUE-PRESERVING string round-trips — the compromise is marked in code, never silent.
   //
+  // int32 vs int64 SPLIT (issue #59 TS read-path de-box): the coverage table has BOTH a
+  // 32-bit `int32_val` (INT → JS number, exact + JSON-safe) AND a 64-bit `int64_val` (BIGINT
+  // → value-preserving decimal STRING, exact + JSON-safe; a JS number rounds past 2^53 and a
+  // JS bigint throws in JSON.stringify — so string, mirroring decimal/date→string). The read
+  // path materializes each by its SQL column type, consistent across all three drivers.
+  //
   // SQLite decimal storage: `dec_val`/`decn_val` map to bc scalar `string` (§4.1 decimal→
   // string), so — matching that representation — the SQLite column is declared **TEXT**,
   // NOT DECIMAL. A DECIMAL/NUMERIC column has SQLite NUMERIC affinity, which coerces the
@@ -61,18 +67,20 @@ export const SCHEMA: readonly string[] = [
   // to exhibit). A TEXT-affinity column stores the exact digit string, so decimal round-
   // trips EXACTLY on SQLite too — the correct SQLite DDL for a string-represented decimal.
   // PG/MySQL keep real DECIMAL/NUMERIC (their drivers already return it as an exact string).
-  // The §4.1 derivation is unaffected: `sqlTypeToBcScalar('TEXT')` = `sqlTypeToBcScalar(
-  // 'DECIMAL')` = `string`.
+  // The `int64_val` SQLite column stays BIGINT (integer affinity is fine; the read path puts
+  // the statement in safeIntegers mode so i64 max arrives as an exact bigint, then stringifies).
   `CREATE TABLE coverage (
      id INTEGER PRIMARY KEY,
-     int_val INTEGER NOT NULL,
+     int32_val INT NOT NULL,
+     int64_val BIGINT NOT NULL,
      real_val REAL NOT NULL,
      dec_val TEXT NOT NULL,
      text_val TEXT NOT NULL,
      bool_val BOOLEAN NOT NULL,
      date_val DATE NOT NULL,
      json_val JSON NOT NULL,
-     intn_val INTEGER,
+     int32n_val INT,
+     int64n_val BIGINT,
      realn_val REAL,
      decn_val TEXT,
      textn_val TEXT,
@@ -89,7 +97,9 @@ export const SCHEMA: readonly string[] = [
 // against `COVERAGE_EXPECTED` per dialect. Boundary values (§59 checklist): i64 max,
 // negative, 0, NULL, decimal precision edge, a real date, true/false, json object AND
 // json array.
-export const I64_MAX = '9223372036854775807'; // 2^63-1 — the i64 upper boundary (kept as string; JS Number can't hold it exactly)
+export const I64_MAX = '9223372036854775807'; // 2^63-1 — the i64 upper boundary (as string; JS Number can't hold it exactly)
+export const I64_MIN = '-9223372036854775808'; // -2^63 — the i64 lower boundary
+export const I32_MAX = 2147483647; // 2^31-1 — the INT4 upper boundary (fits a JS number exactly)
 export const COVERAGE_JSON_OBJECT = { k: 'v', n: 42, nested: { a: [1, 2, 3] } };
 export const COVERAGE_JSON_ARRAY = [1, 'two', { three: 3 }, null];
 
@@ -98,14 +108,16 @@ export const COVERAGE_JSON_ARRAY = [1, 'two', { three: 3 }, null];
 // sides through JSON.parse before comparing (structural equality), catching any drift.
 export interface CoverageRow {
   id: number;
-  int_val: string; // stored/compared as string so i64 max is exact (JS number would round it)
+  int32_val: number; // INT → JS number (exact, JSON-safe): the 32-bit class stays a number
+  int64_val: string; // BIGINT → value-preserving decimal STRING (exact + JSON-safe; i64 max rounds as a number)
   real_val: number;
   dec_val: string; // decimal → string (bc#84 gap: no bc decimal scalar — value/precision-preserving)
   text_val: string;
   bool_val: boolean;
   date_val: string; // date → string (bc#84 gap: no bc date scalar — value-preserving string)
   json_val: unknown;
-  intn_val: string | null;
+  int32n_val: number | null;
+  int64n_val: string | null;
   realn_val: number | null;
   decn_val: string | null;
   textn_val: string | null;
@@ -119,14 +131,16 @@ export interface CoverageRow {
 export const COVERAGE_EXPECTED: readonly CoverageRow[] = [
   {
     id: 1,
-    int_val: I64_MAX, // i64 max boundary
+    int32_val: I32_MAX, // INT4 max — stays an exact JS number
+    int64_val: I64_MAX, // i64 max boundary — exact value-preserving string
     real_val: 3.141592653589793,
     dec_val: '12345678901234.5678', // 18 significant digits — precision edge (would lose digits if boxed to float64)
     text_val: "coverage-text: 'quotes' & symbols ✓",
     bool_val: true,
     date_val: '2026-07-14',
     json_val: COVERAGE_JSON_OBJECT, // json OBJECT
-    intn_val: '-9223372036854775808', // i64 min boundary (negative)
+    int32n_val: -2147483648, // INT4 min (negative) — exact JS number
+    int64n_val: I64_MIN, // i64 min boundary (negative) — exact string
     realn_val: -2.5,
     decn_val: '0.0001', // smallest scale-4 decimal
     textn_val: '',
@@ -136,14 +150,16 @@ export const COVERAGE_EXPECTED: readonly CoverageRow[] = [
   },
   {
     id: 2,
-    int_val: '0', // zero boundary
+    int32_val: 0, // zero boundary (number)
+    int64_val: '0', // zero boundary (string)
     real_val: 0,
     dec_val: '-98765432109876.5432', // negative decimal precision edge
     text_val: 'row2',
     bool_val: false,
     date_val: '2000-02-29', // leap-day date
     json_val: [], // empty json array
-    intn_val: null,
+    int32n_val: null,
+    int64n_val: null,
     realn_val: null,
     decn_val: null,
     textn_val: null,
@@ -155,23 +171,29 @@ export const COVERAGE_EXPECTED: readonly CoverageRow[] = [
 
 // The projected column list for the coverage `find` (every column — full de-box surface).
 export const COVERAGE_COLUMNS = [
-  'id', 'int_val', 'real_val', 'dec_val', 'text_val', 'bool_val', 'date_val', 'json_val',
-  'intn_val', 'realn_val', 'decn_val', 'textn_val', 'booln_val', 'daten_val', 'jsonn_val',
+  'id', 'int32_val', 'int64_val', 'real_val', 'dec_val', 'text_val', 'bool_val', 'date_val', 'json_val',
+  'int32n_val', 'int64n_val', 'realn_val', 'decn_val', 'textn_val', 'booln_val', 'daten_val', 'jsonn_val',
 ] as const;
 
 // The expected bc scalar per coverage column (the §4.1 mapping — what `deriveReadOutTypes`
 // MUST produce, i.e. the concrete native struct field type the codegen path materializes).
 // date/decimal → 'string' are the bc#84-gap value-preserving representations.
+// The expected bc portable scalar per coverage column. Both int32 and int64 are the bc `int`
+// scalar (the width split is a TS READ-PATH materialization concern, not a portable-type one;
+// see COVERAGE_EXPECTED_MATERIALIZE). date/decimal/json → 'string' are the bc#84-gap / JSON-text
+// value-preserving representations.
 export const COVERAGE_EXPECTED_SCALAR: Record<string, 'int' | 'float' | 'string' | 'bool'> = {
   id: 'int',
-  int_val: 'int',
+  int32_val: 'int',
+  int64_val: 'int',
   real_val: 'float',
   dec_val: 'string', // bc#84 gap: no bc decimal scalar — precision-preserving string
   text_val: 'string',
   bool_val: 'bool',
   date_val: 'string', // bc#84 gap: no bc date scalar — value-preserving string
   json_val: 'string', // JSON column → JSON text (string); TS convenience de/serializes
-  intn_val: 'int',
+  int32n_val: 'int',
+  int64n_val: 'int',
   realn_val: 'float',
   decn_val: 'string', // bc#84 gap
   textn_val: 'string',
@@ -180,15 +202,39 @@ export const COVERAGE_EXPECTED_SCALAR: Record<string, 'int' | 'float' | 'string'
   jsonn_val: 'string',
 };
 
-// Bind a coverage row to positional params for an INSERT. `bool` is written as 0/1 (SQLite
-// has no native boolean; PG/MySQL accept 0/1 too), `json` as its canonical text, decimal +
-// i64 as their exact string forms (so the DB stores the exact digits, not a rounded float).
+// The expected TS READ-PATH materialized JS form per column (issue #59 de-box): the split of the
+// `int` scalar into number (INT32) vs string (INT64), plus date→string and bool→boolean. Used by
+// the round-trip verifier to assert each column materializes to the RIGHT JS type on the read path.
+export const COVERAGE_EXPECTED_MATERIALIZE: Record<string, 'number' | 'bigint-string' | 'float' | 'string' | 'bool' | 'json'> = {
+  id: 'number', // INTEGER PK → number (32-bit)
+  int32_val: 'number',
+  int64_val: 'bigint-string', // BIGINT → value-preserving decimal string
+  real_val: 'float',
+  dec_val: 'string',
+  text_val: 'string',
+  bool_val: 'bool',
+  date_val: 'string',
+  json_val: 'json',
+  int32n_val: 'number',
+  int64n_val: 'bigint-string',
+  realn_val: 'float',
+  decn_val: 'string',
+  textn_val: 'string',
+  booln_val: 'bool',
+  daten_val: 'string',
+  jsonn_val: 'json',
+};
+
+// Bind a coverage row to positional params for an INSERT. `bool` is written as 0/1 (SQLite has no
+// native boolean; PG/MySQL accept 0/1 too), `json` as its canonical text, decimal + int64 as their
+// exact string forms (so the DB stores the exact digits, not a rounded float). int32 binds as a
+// plain number (its range is JS-number-exact).
 function coverageRowValues(r: CoverageRow): unknown[] {
   const j = (v: unknown): string | null => (v === null ? null : JSON.stringify(v));
   const b = (v: boolean | null): number | null => (v === null ? null : v ? 1 : 0);
   return [
-    r.id, r.int_val, r.real_val, r.dec_val, r.text_val, b(r.bool_val), r.date_val, j(r.json_val),
-    r.intn_val, r.realn_val, r.decn_val, r.textn_val, b(r.booln_val), r.daten_val, j(r.jsonn_val),
+    r.id, r.int32_val, r.int64_val, r.real_val, r.dec_val, r.text_val, b(r.bool_val), r.date_val, j(r.json_val),
+    r.int32n_val, r.int64n_val, r.realn_val, r.decn_val, r.textn_val, b(r.booln_val), r.daten_val, j(r.jsonn_val),
   ];
 }
 
@@ -570,14 +616,16 @@ export const PG_SCHEMA: readonly string[] = [
   `DROP TABLE IF EXISTS coverage CASCADE`,
   `CREATE TABLE coverage (
      id INTEGER PRIMARY KEY,
-     int_val BIGINT NOT NULL,
+     int32_val INTEGER NOT NULL,
+     int64_val BIGINT NOT NULL,
      real_val DOUBLE PRECISION NOT NULL,
      dec_val NUMERIC(20,4) NOT NULL,
      text_val TEXT NOT NULL,
      bool_val BOOLEAN NOT NULL,
      date_val DATE NOT NULL,
      json_val JSONB NOT NULL,
-     intn_val BIGINT,
+     int32n_val INTEGER,
+     int64n_val BIGINT,
      realn_val DOUBLE PRECISION,
      decn_val NUMERIC(20,4),
      textn_val TEXT,
@@ -606,14 +654,16 @@ export const MYSQL_SCHEMA: readonly string[] = [
   `DROP TABLE IF EXISTS coverage`,
   `CREATE TABLE coverage (
      id INT PRIMARY KEY,
-     int_val BIGINT NOT NULL,
+     int32_val INT NOT NULL,
+     int64_val BIGINT NOT NULL,
      real_val DOUBLE NOT NULL,
      dec_val DECIMAL(20,4) NOT NULL,
      text_val TEXT NOT NULL,
      bool_val BOOLEAN NOT NULL,
      date_val DATE NOT NULL,
      json_val JSON NOT NULL,
-     intn_val BIGINT,
+     int32n_val INT,
+     int64n_val BIGINT,
      realn_val DOUBLE,
      decn_val DECIMAL(20,4),
      textn_val TEXT,

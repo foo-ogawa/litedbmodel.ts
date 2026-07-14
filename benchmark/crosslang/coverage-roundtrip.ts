@@ -2,181 +2,121 @@
 // ALL-TYPE coverage round-trip verifier (issue #59) — typed de-box conversion audit
 // ════════════════════════════════════════════════════════════════════════════
 //
-// This is the correctness instrument #59 asks for: for the ALL-TYPE coverage table
-// (int/real/decimal/text/bool/date/json + a nullable variant of each), verify the typed
-// de-box DATA CONVERSION round-trip end-to-end:
+// Verifies the TS read-path TYPED DE-BOX (owner-approved #59 contract) end-to-end for the
+// ALL-TYPE coverage table across ALL THREE dialects (SQLite in-proc + LIVE Postgres + LIVE
+// MySQL): the DB value → driver wire → materialized JS value → EXPECTED round-trip, asserting
+// each column materializes to BOTH the right JS TYPE and the exact VALUE.
 //
-//     DB value  →  raw wire (driver row)  →  concrete struct materialization  →  expected
+// The TS read-path materialization contract (driven by the SQL column type, #59):
+//   • 32-bit int  (INT/INTEGER/SMALLINT/TINYINT/MEDIUMINT)  → JS number   (exact, JSON-safe)
+//   • 64-bit int  (BIGINT/INT8)                             → JS string   (value-preserving,
+//                     exact + JSON-safe; a number rounds past 2^53, a bigint throws in JSON)
+//   • float       (REAL/DOUBLE/FLOAT)                       → JS number
+//   • decimal     (DECIMAL/NUMERIC)                         → JS string   (precision-preserving)
+//   • text/uuid                                             → JS string
+//   • bool        (BOOLEAN)                                 → JS boolean
+//   • date/time   (DATE/TIMESTAMP/TIMESTAMPTZ/DATETIME/TIME)→ JS string   (TZ-attached; NOT a Date)
+//   • json        (JSON/JSONB)                              → JSON text (string) or driver-parsed
 //
-// across ALL THREE dialects (SQLite in-proc + LIVE Postgres + LIVE MySQL). What this verifier
-// PROVES, stated precisely (it does NOT claim a three-way RUNTIME equivalence it does not run):
+// bc 0.6.0 has NO date/decimal portable scalar (behavior-contracts#84 deferred), so date→string
+// and decimal→string are value-preserving; and BIGINT→string mirrors them (bigint is not
+// JSON-safe). The read path applies these via `materializeCell` driven by the coltype resolver;
+// the drivers are configured (better-sqlite3 safeIntegers, pg date type parsers, mysql2
+// supportBigNumbers+bigNumberStrings+dateStrings) so each value arrives in a coercible form.
 //
-//   • EXPECTED           — the ground-truth values seeded (`COVERAGE_EXPECTED`).
-//   • DYNAMIC (executed) — the value the shipped TS interpreter/ir read path returns (raw
-//                          driver row, via `executeBundle`/`executeBundleAsync`), executed
-//                          against all three LIVE drivers here. This is the plane whose VALUE
-//                          round-trip this harness actually runs and asserts vs EXPECTED.
-//   • GENERATED (native) — verified at the TYPE-DERIVATION level ONLY: `deriveReadOutTypes` +
-//                          `generateCodegenArtifact('rust')` emit `pub struct T0 { int_val:
-//                          i64, real_val: f64, bool_val: bool, dec_val/date_val/json_val:
-//                          String, … }` — the concrete struct field TYPES the codegen path
-//                          materializes into. This harness does NOT execute the native rust/go
-//                          binary for the coverage read; the native VALUE round-trip is
-//                          DEFERRED to the #44 cross-lang re-bench (the rust/go codegen cell).
-//                          So no `generated == dynamic` value equality is asserted — indeed for
-//                          i64 it would be FALSE (native i64 is EXACT; the TS dynamic path
-//                          rounds it to float64 — one of the detected holes below).
-//
-// #59 is a HOLE-HUNTER: it exists to CATCH conversion holes (i64 silently rounded to float,
-// date corrupted/reformatted, decimal precision lost, json string-rep drift, bool
-// mis-materialized, NULL handling). Every hole this finds is REPORTED per column × dialect —
-// never papered over. A DETECTED hole in the TS dynamic read path (i64 rounding, DATE TZ-shift)
-// is surfaced with its accurate cause; it is fixable-but-CONTRACTFUL (a TS read-path type
-// change — safeIntegers/dateStrings — with real blast radius the OWNER is deciding separately),
-// so this harness leaves it surfaced and does NOT flip it. A hole that would be a derivation
-// bug (wrong bc scalar) is a HARD failure.
-//
-// date → string and decimal → string are the OWNER-APPROVED re-scope (#59): bc 0.6.0 has NO
-// date/decimal portable scalar (PORTABLE_SCALAR_TYPES = string|int|float|bool|null;
-// behavior-contracts#84 deferred), so those two columns are VALUE-PRESERVING string
-// round-trips, not type-preserving bc-date assertions. This is asserted explicitly below.
+// Two planes are checked:
+//   • DYNAMIC (executed) — the value the shipped TS read path (`executeBundle` /
+//     `executeBundleAsync`) returns, run against all three LIVE drivers. This is what the harness
+//     executes + asserts vs EXPECTED, per column, for BOTH type and value.
+//   • GENERATED (native) — verified at the TYPE-DERIVATION level only (the emitted rust struct
+//     field types); its native VALUE run is deferred to the #44 cross-lang re-bench.
 
 import Database from 'better-sqlite3';
-import { Pool } from 'pg';
+import { Pool, types as pgTypes } from 'pg';
 import mysql from 'mysql2/promise';
 import * as lm from '../../dist/scp/index.mjs';
 import {
   SCHEMA, PG_SCHEMA, MYSQL_SCHEMA,
   readsContract, COVERAGE_ENTRY, COVERAGE_INPUT, COVERAGE_COLUMNS,
-  COVERAGE_EXPECTED, COVERAGE_EXPECTED_SCALAR, type CoverageRow,
+  COVERAGE_EXPECTED, COVERAGE_EXPECTED_SCALAR, COVERAGE_EXPECTED_MATERIALIZE, type CoverageRow,
   seedCoverage, seedCoverageStatements,
   PG_CONN, PG_BOOT_CONN, PG_SCHEMA_NAME, MYSQL_CONN, MYSQL_BOOT_CONN, MYSQL_DB_NAME,
 } from './domain.js';
 
 type Row = Record<string, unknown>;
-type Scalar = 'int' | 'float' | 'string' | 'bool';
+type MatClass = 'number' | 'bigint-string' | 'float' | 'string' | 'bool' | 'json';
 
-// ── Canonical (information-lossless) normalizers per bc scalar ─────────────────
-// The comparator that decides DYNAMIC (TS read path) ≡ EXPECTED. Each normalizer maps a
-// value (expected OR a raw driver value) to a canonical comparable form for its outType
-// scalar, WITHOUT hiding a real conversion hole:
-//   • int    → the EXACT integer as a decimal string (via BigInt). A driver value that is
-//              a JS number which does NOT round-trip through BigInt exactly (i64 max lost
-//              to float64) is FLAGGED as a hole, not silently accepted.
-//   • float  → JS number (compared with a tiny epsilon).
-//   • bool   → true/false. A driver 0/1 (SQLite/MySQL bool) normalizes to the boolean; a
-//              driver that already gives a boolean (PG) matches directly.
-//   • string → the string form. For date → the ISO calendar date (a driver Date is
-//              rendered to YYYY-MM-DD in UTC so a TZ-shifted Date is DETECTED, not hidden).
-//              For json → structural (JSON.parse both sides) so whitespace/key-order drift
-//              does not false-positive but a real value drift does.
-// A normalizer returns `{ ok: true, canon }` or `{ ok: false, reason }` (an unrecoverable
-// hole — e.g. a float that lost i64 precision).
+// Configure the pg date-family type parsers ONCE (global on the pg module) so DATE/TIMESTAMP
+// arrive as their native textual string (not a JS Date) — the coercible form the read-path
+// materializer expects.
+lm.configurePgDeboxTypeParsers(pgTypes);
 
-interface NormOk { ok: true; canon: string }
-interface NormErr { ok: false; reason: string }
-type Norm = NormOk | NormErr;
+interface Failure { where: string; detail: string }
+const failures: Failure[] = [];
 
 const EPS = 1e-9;
 
-function normInt(v: unknown): Norm {
-  if (v === null) return { ok: true, canon: 'NULL' };
-  if (typeof v === 'bigint') return { ok: true, canon: v.toString() };
-  if (typeof v === 'string') {
-    if (!/^-?\d+$/.test(v)) return { ok: false, reason: `int value is a non-integer string '${v}'` };
-    return { ok: true, canon: BigInt(v).toString() };
+// ── Per-column assertion: the DYNAMIC (materialized) value has the RIGHT JS type AND value ────
+function checkColumn(dialect: string, rowId: number, col: string, got: unknown, expected: unknown): void {
+  const klass = COVERAGE_EXPECTED_MATERIALIZE[col];
+  const fail = (detail: string): void => { failures.push({ where: `${dialect}.${col}.row${rowId}`, detail }); };
+  if (expected === null) {
+    if (got !== null && got !== undefined) fail(`expected NULL, got ${typeof got} ${JSON.stringify(String(got))}`);
+    return;
   }
-  if (typeof v === 'number') {
-    if (!Number.isInteger(v)) return { ok: false, reason: `int value is a non-integer number ${v}` };
-    if (!Number.isSafeInteger(v)) {
-      // The classic i64-rounded-to-float hole: a JS number past 2^53 can no longer
-      // represent the exact integer. Report it — do NOT accept the rounded value.
-      return { ok: false, reason: `int value ${v} exceeds JS safe-integer range (i64 rounded to float64 — precision LOST)` };
+  switch (klass) {
+    case 'number': {
+      if (typeof got !== 'number') return fail(`expected JS number (INT32), got ${typeof got} (${String(got)})`);
+      if (!Number.isInteger(got) || got !== expected) fail(`INT32 value ${got} ≠ expected ${String(expected)}`);
+      return;
     }
-    return { ok: true, canon: BigInt(v).toString() };
-  }
-  return { ok: false, reason: `int value has unexpected JS type ${typeof v}` };
-}
-
-function normFloat(v: unknown): Norm {
-  if (v === null) return { ok: true, canon: 'NULL' };
-  if (typeof v === 'number') return { ok: true, canon: `~${v}` };
-  if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return { ok: true, canon: `~${Number(v)}` };
-  return { ok: false, reason: `float value has unexpected JS type ${typeof v} (${JSON.stringify(v)})` };
-}
-
-function floatEq(a: string, b: string): boolean {
-  if (a === 'NULL' || b === 'NULL') return a === b;
-  return Math.abs(Number(a.slice(1)) - Number(b.slice(1))) < EPS;
-}
-
-function normBool(v: unknown): Norm {
-  if (v === null) return { ok: true, canon: 'NULL' };
-  if (typeof v === 'boolean') return { ok: true, canon: v ? 'true' : 'false' };
-  if (typeof v === 'number' && (v === 0 || v === 1)) return { ok: true, canon: v === 1 ? 'true' : 'false' };
-  if (typeof v === 'bigint' && (v === 0n || v === 1n)) return { ok: true, canon: v === 1n ? 'true' : 'false' };
-  return { ok: false, reason: `bool value not a boolean/0/1 (${typeof v} ${JSON.stringify(v)})` };
-}
-
-// A plain string (text). No reinterpretation.
-function normString(v: unknown): Norm {
-  if (v === null) return { ok: true, canon: 'NULL' };
-  if (typeof v === 'string') return { ok: true, canon: v };
-  if (typeof v === 'bigint') return { ok: true, canon: v.toString() };
-  if (typeof v === 'number') return { ok: true, canon: String(v) };
-  return { ok: false, reason: `string value has unexpected JS type ${typeof v}` };
-}
-
-// decimal → string. Precision-preserving compare: reject if the value is a JS float that
-// dropped digits (SQLite NUMERIC affinity). Compare the exact digit string.
-function normDecimal(v: unknown, expected: string | null): Norm {
-  if (v === null) return { ok: true, canon: 'NULL' };
-  if (typeof v === 'string') return { ok: true, canon: v };
-  if (typeof v === 'number') {
-    // A driver returned the decimal as a float. If the float's shortest decimal string does
-    // NOT equal the expected exact digits, precision was LOST (the SQLite affinity hole).
-    const asStr = String(v);
-    if (expected !== null && asStr !== expected) {
-      return { ok: false, reason: `decimal returned as float64 ${asStr} ≠ exact '${expected}' — PRECISION LOST (NUMERIC affinity)` };
+    case 'bigint-string': {
+      // BIGINT → an EXACT decimal string. The driver must NOT have rounded it.
+      if (typeof got !== 'string') return fail(`expected JS string (BIGINT→string), got ${typeof got} (${String(got)}) — driver returned a non-string; precision would be lost`);
+      if (got !== String(expected)) fail(`BIGINT string '${got}' ≠ expected '${String(expected)}'`);
+      return;
     }
-    return { ok: true, canon: asStr };
-  }
-  return { ok: false, reason: `decimal value has unexpected JS type ${typeof v}` };
-}
-
-// date → string (value-preserving). A driver Date is rendered to its UTC calendar date; a
-// driver string is compared directly. A TZ-shift (Date whose UTC calendar day ≠ expected) is
-// surfaced as a hole, not hidden.
-function normDate(v: unknown, expected: string | null): Norm {
-  if (v === null) return { ok: true, canon: 'NULL' };
-  if (typeof v === 'string') return { ok: true, canon: v.slice(0, 10) };
-  if (v instanceof Date) {
-    const iso = v.toISOString().slice(0, 10);
-    if (expected !== null && iso !== expected) {
-      return { ok: false, reason: `date returned as JS Date ${v.toISOString()} → UTC day ${iso} ≠ expected '${expected}' (TZ shift — date corrupted)` };
+    case 'float': {
+      if (typeof got !== 'number') return fail(`expected JS number (float), got ${typeof got}`);
+      if (Math.abs(got - (expected as number)) >= EPS) fail(`float ${got} ≠ expected ${String(expected)}`);
+      return;
     }
-    return { ok: true, canon: iso };
+    case 'string': {
+      // decimal / text: exact string. (For decimal, precision must survive.)
+      if (typeof got !== 'string') return fail(`expected JS string, got ${typeof got} (${String(got)})`);
+      if (got !== expected) fail(`string '${got}' ≠ expected '${String(expected)}'`);
+      return;
+    }
+    case 'bool': {
+      if (typeof got !== 'boolean') return fail(`expected JS boolean, got ${typeof got} (${String(got)})`);
+      if (got !== expected) fail(`bool ${got} ≠ expected ${String(expected)}`);
+      return;
+    }
+    case 'json': {
+      // JSON text (string) OR a driver-parsed object; compare structurally.
+      const canon = canonicalJson(parseJsonMaybe(got));
+      const want = canonicalJson(expected);
+      if (canon !== want) fail(`json ${canon} ≠ expected ${want}`);
+      return;
+    }
   }
-  return { ok: false, reason: `date value has unexpected JS type ${typeof v}` };
 }
 
-// json → string (JSON text). Structural compare: parse both sides so whitespace/key-order
-// reformatting is not a false positive, but a value drift IS caught. Accepts a driver that
-// auto-parsed JSON (PG/MySQL return object) or returned the text (SQLite).
-function normJson(v: unknown): Norm {
-  if (v === null) return { ok: true, canon: 'NULL' };
-  let parsed: unknown;
-  if (typeof v === 'string') {
-    try { parsed = JSON.parse(v); } catch { return { ok: false, reason: `json string is not valid JSON: ${v}` }; }
-  } else if (typeof v === 'object') {
-    parsed = v; // driver already parsed (PG jsonb / mysql2 json)
-  } else {
-    return { ok: false, reason: `json value has unexpected JS type ${typeof v}` };
-  }
-  return { ok: true, canon: canonicalJson(parsed) };
+// date columns are class 'string' above; assert the calendar date survived (no TZ shift). We
+// compare the leading YYYY-MM-DD so a driver returning `2026-07-14` or `2026-07-14 00:00:00` both
+// pass, but a TZ-shifted `2026-07-13...` fails. Applied for the date columns specifically.
+const DATE_COLS = new Set(['date_val', 'daten_val']);
+function checkDate(dialect: string, rowId: number, col: string, got: unknown, expected: unknown): void {
+  const fail = (detail: string): void => { failures.push({ where: `${dialect}.${col}.row${rowId}`, detail }); };
+  if (expected === null) { if (got !== null && got !== undefined) fail(`expected NULL date, got ${String(got)}`); return; }
+  if (typeof got !== 'string') return fail(`expected date as JS string, got ${typeof got} (${got instanceof Date ? got.toISOString() : String(got)}) — a Date means the driver wasn't de-boxed to string`);
+  if (got.slice(0, 10) !== expected) fail(`date '${got}' (day ${got.slice(0, 10)}) ≠ expected '${String(expected)}'`);
 }
 
-// Stable structural serialization (sorted object keys) so key-order does not matter.
+function parseJsonMaybe(v: unknown): unknown {
+  if (typeof v === 'string') { try { return JSON.parse(v); } catch { return v; } }
+  return v;
+}
 function canonicalJson(v: unknown): string {
   if (v === null || typeof v !== 'object') return JSON.stringify(v);
   if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
@@ -184,72 +124,29 @@ function canonicalJson(v: unknown): string {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson((v as Record<string, unknown>)[k])}`).join(',')}}`;
 }
 
-// Which normalizer a column uses. decimal/date columns use their precision/TZ-aware forms
-// even though their outType scalar is 'string' (the bc#84 value-preserving representations).
-const DECIMAL_COLS = new Set(['dec_val', 'decn_val']);
-const DATE_COLS = new Set(['date_val', 'daten_val']);
-const JSON_COLS = new Set(['json_val', 'jsonn_val']);
-
-function normalizeColumn(col: string, scalar: Scalar, value: unknown, expected: unknown): Norm {
-  if (DECIMAL_COLS.has(col)) return normDecimal(value, (expected as string | null));
-  if (DATE_COLS.has(col)) return normDate(value, (expected as string | null));
-  if (JSON_COLS.has(col)) return normJson(value);
-  switch (scalar) {
-    case 'int': return normInt(value);
-    case 'float': return normFloat(value);
-    case 'bool': return normBool(value);
-    case 'string': return normString(value);
-  }
-}
-
-function eq(scalar: Scalar, col: string, a: string, b: string): boolean {
-  if (scalar === 'float' && !DECIMAL_COLS.has(col)) return floatEq(a, b);
-  return a === b;
-}
-
-// ── Step 1: type-derivation assertion (dialect-independent) ───────────────────
-// The CORE of #59 item 4: `deriveReadOutTypes` MUST map each coverage column to the correct
-// bc scalar — the CONCRETE native struct field type the codegen path materializes. A wrong
-// scalar here is a HARD derivation bug.
-interface Failure { where: string; detail: string; hardBug: boolean }
-const failures: Failure[] = [];
-
+// ── Step 1: outType derivation (dialect-independent; the native struct field type per column) ──
 function assertTypeDerivation(): void {
-  console.log('=== #59 step 1: outType derivation (the native struct field type per column) ===');
+  console.log('=== #59 step 1: outType derivation (GENERATED/native struct field type per column) ===');
   const resolver = lm.schemaColumnTypeResolver(SCHEMA);
   const bundle = lm.compileBundle(readsContract, COVERAGE_ENTRY, [], 'sqlite', undefined, resolver);
-  // The read graph's IR carries the per-node outType (the row obj type). Pull the primary
-  // read node's row obj and check each column's scalar.
-  const ir: any = (bundle as any).readGraph?.ir;
+  const ir: unknown = (bundle as { readGraph?: { ir?: unknown } }).readGraph?.ir;
   const rowObj = findRowObj(ir);
-  if (rowObj === undefined) {
-    failures.push({ where: 'derivation', detail: 'could not locate the coverage read row obj outType in the compiled IR', hardBug: true });
-    console.log('  FAIL: no row obj outType found in IR');
-    return;
-  }
+  if (rowObj === undefined) { failures.push({ where: 'derivation', detail: 'no coverage row obj outType in IR' }); console.log('  FAIL: no row obj outType found'); return; }
   for (const col of COVERAGE_COLUMNS) {
     const want = COVERAGE_EXPECTED_SCALAR[col];
     const got = rowObj[col];
-    const ok = got === want;
-    if (!ok) failures.push({ where: `derivation.${col}`, detail: `outType scalar ${JSON.stringify(got)} ≠ expected '${want}'`, hardBug: true });
-    const gap = DECIMAL_COLS.has(col) ? ' (bc#84 gap: decimal→string, precision-preserving)'
-      : DATE_COLS.has(col) ? ' (bc#84 gap: date→string, value-preserving)'
-      : JSON_COLS.has(col) ? ' (JSON text→string)' : '';
-    console.log(`  ${col.padEnd(11)} → ${String(got).padEnd(7)} [${ok ? 'OK' : 'WRONG SCALAR'}]${gap}`);
+    if (got !== want) failures.push({ where: `derivation.${col}`, detail: `outType scalar ${JSON.stringify(got)} ≠ expected '${want}'` });
+    const mat = COVERAGE_EXPECTED_MATERIALIZE[col];
+    console.log(`  ${col.padEnd(11)} → bc ${String(got).padEnd(7)} [${got === want ? 'OK' : 'WRONG'}]  → TS ${mat}`);
   }
 }
 
-// Walk the portable IR for the SELECT node's `outType` = { obj: { col: scalar, … } } (or
-// wrapped in { arr: … } for a row list). Returns the col→scalar map.
 function findRowObj(ir: unknown): Record<string, string> | undefined {
   let found: Record<string, string> | undefined;
   const visit = (n: unknown): void => {
     if (n === null || typeof n !== 'object') return;
     const o = n as Record<string, unknown>;
-    if ('outType' in o) {
-      const rowObj = unwrapRowObj(o.outType);
-      if (rowObj !== undefined) found = rowObj;
-    }
+    if ('outType' in o) { const r = unwrapRowObj(o.outType); if (r !== undefined) found = r; }
     for (const v of Object.values(o)) visit(v);
   };
   visit(ir);
@@ -257,12 +154,9 @@ function findRowObj(ir: unknown): Record<string, string> | undefined {
 }
 function unwrapRowObj(t: unknown): Record<string, string> | undefined {
   let cur = t;
-  // Unwrap { arr: … } / { opt: … } wrappers to reach the row { obj: {…} }.
   while (cur !== null && typeof cur === 'object' && !('obj' in (cur as object))) {
     const o = cur as Record<string, unknown>;
-    if ('arr' in o) cur = o.arr;
-    else if ('opt' in o) cur = o.opt;
-    else return undefined;
+    if ('arr' in o) cur = o.arr; else if ('opt' in o) cur = o.opt; else return undefined;
   }
   if (cur !== null && typeof cur === 'object' && 'obj' in (cur as object)) {
     const obj = (cur as { obj: Record<string, unknown> }).obj;
@@ -273,65 +167,41 @@ function unwrapRowObj(t: unknown): Record<string, string> | undefined {
   return undefined;
 }
 
-// ── Step 2: DYNAMIC value round-trip per dialect ─────────────────────────────
-// Execute + assert the DYNAMIC plane (the shipped TS read path's returned value) vs EXPECTED,
-// per column, per row, on the LIVE driver. A divergence is reported with its cause and
-// classified (hard bug = wrong scalar / missing row / DB unreachable, vs a DETECTED TS-read
-// hole). The GENERATED (native) plane is proven at the type-derivation level (step 1 + the
-// emitted rust struct); its native VALUE execution is deferred to the #44 re-bench.
-async function verifyDialect(dialect: string, rows: Row[]): Promise<void> {
-  // We execute + assert the DYNAMIC (TS read path) value round-trip vs EXPECTED. The GENERATED
-  // (native) plane is proven at the type-derivation level (step 1 + the emitted rust struct);
-  // its native VALUE execution is deferred to the #44 re-bench, so it is NOT asserted here.
-  console.log(`\n=== #59 step 2 [${dialect}]: DYNAMIC (TS read path) value round-trip vs EXPECTED ===`);
+// ── Step 2: DYNAMIC value + type round-trip per dialect ───────────────────────
+function verifyDialect(dialect: string, rows: Row[]): void {
+  console.log(`\n=== #59 step 2 [${dialect}]: DYNAMIC (TS read path) type+value round-trip vs EXPECTED ===`);
   if (rows.length !== COVERAGE_EXPECTED.length) {
-    failures.push({ where: `${dialect}.rowcount`, detail: `read ${rows.length} rows, expected ${COVERAGE_EXPECTED.length}`, hardBug: true });
-    console.log(`  FAIL: row count ${rows.length} ≠ ${COVERAGE_EXPECTED.length}`);
-    return;
+    failures.push({ where: `${dialect}.rowcount`, detail: `read ${rows.length} rows, expected ${COVERAGE_EXPECTED.length}` });
+    console.log(`  FAIL: row count ${rows.length} ≠ ${COVERAGE_EXPECTED.length}`); return;
   }
   const byId = new Map<number, Row>();
-  for (const r of rows) byId.set(Number((r as any).id), r);
+  for (const r of rows) byId.set(Number((r as { id: unknown }).id), r);
   for (const exp of COVERAGE_EXPECTED) {
     const row = byId.get(exp.id);
-    if (row === undefined) { failures.push({ where: `${dialect}.row${exp.id}`, detail: 'missing', hardBug: true }); continue; }
+    if (row === undefined) { failures.push({ where: `${dialect}.row${exp.id}`, detail: 'missing' }); continue; }
     for (const col of COVERAGE_COLUMNS) {
-      const scalar = COVERAGE_EXPECTED_SCALAR[col];
+      const got = (row as Record<string, unknown>)[col];
       const expected = (exp as unknown as Record<string, unknown>)[col];
-      const driver = (row as Record<string, unknown>)[col];
-      // DYNAMIC: normalize the raw driver value. EXPECTED: normalize the ground truth.
-      const dyn = normalizeColumn(col, scalar, driver, expected);
-      const wan = normalizeColumn(col, scalar, expected, expected);
-      if (!wan.ok) {
-        // The expected value itself failed to normalize — a test-data bug (should never happen).
-        failures.push({ where: `${dialect}.${col}.row${exp.id}`, detail: `expected value un-normalizable: ${wan.reason}`, hardBug: true });
-        continue;
-      }
-      if (!dyn.ok) {
-        // A DRIVER value the TS read path returned that cannot materialize into the derived
-        // scalar without losing information — a DETECTED conversion hole in the TS dynamic
-        // read path (fixable-but-contractful, owner-decided; surfaced, not flipped here).
-        failures.push({ where: `${dialect}.${col}.row${exp.id}`, detail: dyn.reason, hardBug: false });
-        console.log(`  row${exp.id} ${col.padEnd(11)} HOLE (TS dynamic): ${dyn.reason}`);
-        continue;
-      }
-      if (!eq(scalar, col, dyn.canon, wan.canon)) {
-        failures.push({ where: `${dialect}.${col}.row${exp.id}`, detail: `dynamic='${dyn.canon}' expected='${wan.canon}'`, hardBug: false });
-        console.log(`  row${exp.id} ${col.padEnd(11)} DIVERGE dynamic=${dyn.canon} expected=${wan.canon}`);
-      }
+      if (DATE_COLS.has(col)) checkDate(dialect, exp.id, col, got, expected);
+      else checkColumn(dialect, exp.id, col, got, expected);
     }
   }
   const dialectFails = failures.filter((f) => f.where.startsWith(dialect + '.'));
-  const holeCols = new Set(dialectFails.map((f) => f.where.split('.')[1]));
-  const passCols = COVERAGE_COLUMNS.filter((c) => !holeCols.has(c));
-  console.log(`  [${dialect}] PASS (DYNAMIC round-trip equal to EXPECTED): ${passCols.join(', ')}`);
-  console.log(`  [${dialect}] ${COVERAGE_EXPECTED.length} rows × ${COVERAGE_COLUMNS.length} cols — ${dialectFails.length === 0 ? 'ALL columns round-trip equal' : `${dialectFails.length} detected hole(s) on: ${[...holeCols].join(', ')}`}`);
+  if (dialectFails.length === 0) {
+    console.log(`  [${dialect}] ${COVERAGE_EXPECTED.length} rows × ${COVERAGE_COLUMNS.length} cols — ALL materialize to the right JS type AND value (int32→number, int64→string, date→string, bool→boolean, …)`);
+  } else {
+    console.log(`  [${dialect}] ${dialectFails.length} FAILURE(S):`);
+    for (const f of dialectFails) console.log(`    • ${f.where}: ${f.detail}`);
+  }
 }
 
-// ── Live-DB read of the coverage `find` via the SHIPPED SCP path ──────────────
+// ── Live-DB read of the coverage `find` via the SHIPPED SCP path (with de-box drivers) ────────
 function readSqlite(): Row[] {
   const db = new Database(':memory:');
   for (const s of SCHEMA) db.exec(s);
   seedCoverage(db);
+  // The read path itself enables safeIntegers per-statement for BIGINT columns (see
+  // executeReadGraph); no global driver flag needed here.
   const bundle = lm.compileBundle(readsContract, COVERAGE_ENTRY, [], 'sqlite', undefined, lm.schemaColumnTypeResolver(SCHEMA));
   const out = lm.executeBundle(bundle, COVERAGE_INPUT, { db });
   db.close();
@@ -356,7 +226,9 @@ async function readMysql(): Promise<Row[]> {
   const boot = mysql.createPool({ ...MYSQL_BOOT_CONN, connectionLimit: 1 });
   await boot.query(`CREATE DATABASE IF NOT EXISTS ${MYSQL_DB_NAME}`);
   await boot.end();
-  const pool = mysql.createPool({ ...MYSQL_CONN, connectionLimit: 4, multipleStatements: false });
+  // The mysql2 pool MUST carry the de-box options (BIGINT→string, date→string) so the read-path
+  // materializer gets coercible values.
+  const pool = mysql.createPool({ ...MYSQL_CONN, ...lm.mysqlDeboxPoolOptions, connectionLimit: 4, multipleStatements: false });
   for (const s of MYSQL_SCHEMA) await pool.query(s);
   for (const s of seedCoverageStatements('mysql')) await pool.query(s);
   const exec = lm.mysqlPoolExecutor(pool as never);
@@ -372,39 +244,22 @@ async function main(): Promise<void> {
   console.log('════════════════════════════════════════════════════════════════\n');
 
   assertTypeDerivation();
+  verifyDialect('sqlite', readSqlite());
 
-  // SQLite (always available, in-proc).
-  await verifyDialect('sqlite', readSqlite());
+  // Live PG + MySQL (docker). Unreachable ⇒ HARD failure (the round-trip MUST run on real
+  // PG + MySQL) — never silently skipped.
+  try { verifyDialect('postgres', await readPg()); }
+  catch (e) { failures.push({ where: 'postgres.connect', detail: `live PG read failed: ${(e as Error).message}` }); console.log(`\n[postgres] CONNECT/READ FAILED: ${(e as Error).message}`); }
+  try { verifyDialect('mysql', await readMysql()); }
+  catch (e) { failures.push({ where: 'mysql.connect', detail: `live MySQL read failed: ${(e as Error).message}` }); console.log(`\n[mysql] CONNECT/READ FAILED: ${(e as Error).message}`); }
 
-  // Live PG + MySQL (docker). If unreachable, that is a HARD blocker for #59 (the round-trip
-  // MUST be verified on real PG + MySQL), reported as a failure — never silently skipped.
-  const liveDialects = (process.env.COVERAGE_LIVE ?? '1') !== '0';
-  if (liveDialects) {
-    try { await verifyDialect('postgres', await readPg()); }
-    catch (e) { failures.push({ where: 'postgres.connect', detail: `live PG read failed: ${(e as Error).message}`, hardBug: true }); console.log(`\n[postgres] CONNECT/READ FAILED: ${(e as Error).message}`); }
-    try { await verifyDialect('mysql', await readMysql()); }
-    catch (e) { failures.push({ where: 'mysql.connect', detail: `live MySQL read failed: ${(e as Error).message}`, hardBug: true }); console.log(`\n[mysql] CONNECT/READ FAILED: ${(e as Error).message}`); }
-  }
-
-  // ── Verdict ─────────────────────────────────────────────────────────────────
   console.log('\n════════════════════════════════════════════════════════════════');
-  const hard = failures.filter((f) => f.hardBug);
-  const holes = failures.filter((f) => !f.hardBug);
-  if (holes.length > 0) {
-    console.log(`\nDETECTED HOLES in the TS DYNAMIC read path (fixable-but-CONTRACTFUL — a TS read-path type change, safeIntegers/dateStrings, with real blast radius the OWNER is deciding separately; left SURFACED, not flipped here. The native codegen path materializes these exactly — see the emitted rust struct field types — but that native VALUE run is deferred to the #44 re-bench):`);
-    for (const h of holes) console.log(`  • ${h.where}: ${h.detail}`);
-  }
-  if (hard.length > 0) {
-    console.error(`\n❌ ${hard.length} HARD failure(s) (derivation bug / missing row / live-DB unreachable):`);
-    for (const f of hard) console.error(`  • ${f.where}: ${f.detail}`);
+  if (failures.length > 0) {
+    console.error(`\n❌ ${failures.length} FAILURE(S):`);
+    for (const f of failures) console.error(`  • ${f.where}: ${f.detail}`);
     process.exit(1);
   }
-  // The type derivation (the primary #59 assertion) passed, and the executed DYNAMIC value
-  // round-trip on every dialect either agreed with EXPECTED or surfaced a DETECTED TS-read
-  // hole. Holes are ALLOWED (reported, not silent) — a HARD failure is a wrong bc scalar or an
-  // unreachable DB. The GENERATED/native plane is proven at the type-derivation level only
-  // (its native value run is the #44 re-bench).
-  console.log('\n✅ #59 coverage audit: outType derivation CORRECT for all 15 columns (GENERATED/native plane, type-level); DYNAMIC (TS read path) value round-trip executed vs EXPECTED across sqlite/postgres/mysql. Remaining entries above are DETECTED TS-read holes (i64→float, DATE TZ-shift), surfaced pending the owner-decided read-path contract change.');
+  console.log('\n✅ #59 coverage audit PASSED: outType derivation correct for all columns; the TS read-path de-box materializes every column to the right JS type AND exact value across sqlite/postgres/mysql — INT32→number, BIGINT→string (exact, JSON-safe), decimal→string, date→TZ-string, bool→boolean, json→structural. The previous i64-rounding and DATE-TZ-shift holes are GONE.');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

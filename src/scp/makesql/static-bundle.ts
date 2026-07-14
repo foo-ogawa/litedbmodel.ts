@@ -53,8 +53,8 @@ import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
 import { renderPlaceholders, type Dialect } from './handler';
 import { compileWriteNode } from './tx';
 import { assertFindFilterFolded, type FindFilterSource } from '../find-filter-guard';
-import { deriveReadOutTypes } from './outtype';
-import type { ColumnTypeResolver } from '../coltype';
+import { deriveReadOutTypes, deriveReadMaterializers } from './outtype';
+import { materializeCell, type ColumnTypeResolver, type MaterializeClass } from '../coltype';
 import { mapSqliteError } from '../errors';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import { dbCast, dbDynamic, dbImmediate, dbTupleIn } from '../../DBValues';
@@ -1012,6 +1012,15 @@ export interface ReadGraph {
   readonly statementsById: Record<string, readonly StaticStatement[]>;
   /** Input heads normalized to present-as-null (absent-key SKIP; SSoT-driven). */
   readonly optionalHeads: readonly string[];
+  /**
+   * TS read-path MATERIALIZERS (issue #59), per Select node: `column → MaterializeClass`. Present
+   * ONLY when a column-type resolver was supplied at compile (same gate as the `outType`
+   * annotations) — without it the read stays un-materialized (raw driver values), identical to the
+   * pre-#59 behavior. When present, the read handler coerces each raw row cell to the JS form the
+   * SQL column type declares (BIGINT→bigint, INT→number, DATE→string, BOOLEAN→boolean), consistent
+   * across sqlite/pg/mysql.
+   */
+  readonly materializersByNode?: Record<string, Record<string, MaterializeClass>>;
 }
 
 /**
@@ -1057,6 +1066,10 @@ export function compileReadGraph(
   // schema/DDL SoT) is supplied — without it the read graph stays un-annotated (interpret path only;
   // typed codegen then fail-closes downstream, never silently boxes). Any ambiguity throws here.
   const outTypes = resolveColumnType !== undefined ? deriveReadOutTypes(component as never, resolveColumnType) : undefined;
+  // TS read-path materializers (issue #59): per-Select `column → MaterializeClass`, derived from the
+  // SAME column-type SoT. Present only when a resolver is supplied (same gate as outType) — so a
+  // read compiled WITHOUT a resolver stays un-materialized (raw driver values, pre-#59 behavior).
+  const materializers = resolveColumnType !== undefined ? deriveReadMaterializers(component as never, resolveColumnType) : undefined;
 
   const surrogateBody = component.body.map((n) => {
     if ('cond' in n) return n;
@@ -1081,7 +1094,35 @@ export function compileReadGraph(
     ir,
     statementsById,
     optionalHeads: [...optionalHeadsOfComponent(component, dialect)],
+    ...(materializers !== undefined ? { materializersByNode: Object.fromEntries(materializers) } : {}),
   };
+}
+
+/**
+ * Apply a node's per-column materializers (issue #59) to its raw driver rows: coerce each cell to
+ * the JS form its SQL column type declares (BIGINT→bigint, INT→number, DATE→string, BOOLEAN→
+ * boolean). A no-op when the node has no materializer map (read compiled without a column-type
+ * resolver) or a column has no entry (defensive — only projected columns are typed). Mutates + returns
+ * the same row objects (they are freshly produced by the driver, so mutation is safe).
+ */
+function materializeRows(
+  rows: Record<string, unknown>[],
+  cols: Record<string, MaterializeClass> | undefined,
+): Record<string, unknown>[] {
+  if (cols === undefined) return rows;
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      const klass = cols[key];
+      if (klass !== undefined) row[key] = materializeCell(row[key], klass);
+    }
+  }
+  return rows;
+}
+
+/** True iff any projected column of this node is a 64-bit int (needs the driver in exact mode). */
+function hasInt64(cols: Record<string, MaterializeClass>): boolean {
+  for (const k of Object.keys(cols)) if (cols[k] === 'int64') return true;
+  return false;
 }
 
 /**
@@ -1099,9 +1140,19 @@ export function executeReadGraph(graph: ReadGraph, input: Scope, db: SqliteDb): 
       return { error: `static-bundle: node '${ctx.nodeId}' surrogate scope did not evaluate to an object` };
     }
     const { sql, params } = renderStatements(stmts, graph.dialect, scope as Scope);
+    const cols = graph.materializersByNode?.[ctx.nodeId];
     try {
-      const rows = db.prepare(sql).all(...params) as Record<string, unknown>[];
-      return { ok: rows as unknown as Value };
+      const stmt = db.prepare(sql);
+      // When this node projects a 64-bit int (BIGINT) column, put the statement in SQLite's
+      // safe-integer mode so int8 comes back as an EXACT bigint (a JS number would already have
+      // rounded it — the #59 hole). `materializeRows` then narrows int32 columns' bigint→number
+      // and keeps int64 as bigint. Feature-detected: `safeIntegers` exists on better-sqlite3
+      // statements; a mock/other driver without it simply skips (its rows are already exact).
+      if (cols !== undefined && hasInt64(cols) && typeof (stmt as { safeIntegers?: unknown }).safeIntegers === 'function') {
+        (stmt as unknown as { safeIntegers(v: boolean): unknown }).safeIntegers(true);
+      }
+      const rows = stmt.all(...params) as Record<string, unknown>[];
+      return { ok: materializeRows(rows, cols) as unknown as Value };
     } catch (e) {
       return { error: mapSqliteError(e).message };
     }
@@ -1151,7 +1202,12 @@ export async function executeReadGraphAsync(
     const { sql, params } = renderStatements(stmts, graph.dialect, scope as Scope);
     try {
       const rows = await exec(sql, params);
-      return { ok: rows as unknown as Value };
+      // TS read-path materializers (issue #59): PG returns int8 as string (→ bigint) and BOOLEAN
+      // as a JS boolean; MySQL needs `supportBigNumbers + bigNumberStrings` on the pool so BIGINT
+      // arrives as a string (→ bigint). `materializeCell` accepts each driver's form and coerces
+      // to the SQL-type JS form; a still-rounded number for a BIGINT column throws (fail-closed,
+      // never a silent precision loss — see pgPoolExecutor/mysqlPoolExecutor pool-config note).
+      return { ok: materializeRows(rows, graph.materializersByNode?.[ctx.nodeId]) as unknown as Value };
     } catch (e) {
       return { error: mapSqliteError(e).message };
     }

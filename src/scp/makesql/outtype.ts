@@ -20,7 +20,7 @@
 
 import type { PortableType, PortableScalarType } from 'behavior-contracts';
 import type { Component, ComponentRefNode, MapNode } from '../authoring';
-import { sqlTypeToBcScalar, type BcScalar, type ColumnTypeResolver } from '../coltype';
+import { sqlTypeToBcScalar, sqlTypeToMaterializeClass, type BcScalar, type MaterializeClass, type ColumnTypeResolver } from '../coltype';
 import { IN_SENTINEL } from './tx';
 
 /**
@@ -205,4 +205,41 @@ export function deriveReadOutTypes(
     byNode.set(n.id, nodeOutType(n as RefLike, resolveColumnType));
   }
   return { byNode, outputType: outputType(component.output, byNode, `component '${component.name}' output`) };
+}
+
+/**
+ * Per-node TS read-path MATERIALIZER map (issue #59, owner-approved type-honoring de-box): for each
+ * read node, `column → MaterializeClass` (int32/int64/date/bool/passthrough), derived from the SAME
+ * projection + column-type SoT `deriveReadOutTypes` uses. The read handler applies these to each raw
+ * driver row so a BIGINT column returns `bigint` (exact), an INT column stays `number`, a DATE column
+ * returns a TZ-attached string, a BOOLEAN returns a JS boolean — consistently across sqlite/pg/mysql.
+ *
+ * Only Select nodes have a projection; a Count node returns a single scalar `int` (never > i64 in
+ * practice, and always a 32-bit-safe COUNT) so it needs no per-column map (its outType `int` stays a
+ * JS number). A node whose projection cannot be typed throws here exactly as the outType derivation
+ * does (fail-closed) — so an un-typeable read never silently skips materialization.
+ */
+export function deriveReadMaterializers(
+  component: Component,
+  resolveColumnType: ColumnTypeResolver,
+): Map<string, Record<string, MaterializeClass>> {
+  const byNode = new Map<string, Record<string, MaterializeClass>>();
+  for (const n of component.body) {
+    if ('cond' in n) continue;
+    const { component: comp, ports } = nodeRef(n as RefLike);
+    if (comp !== 'Select') continue; // Count → scalar int (JS number); no per-column materialization
+    const table = stringPort(ports, 'table');
+    if (table === undefined) throw new Error(`materializers: node '${n.id}': Select requires a literal 'table' port`);
+    const projection = stringArrayPort(ports, 'select');
+    if (projection === undefined || projection.length === 0) {
+      throw new Error(`materializers: node '${n.id}': Select on '${table}' has no explicit projection — cannot type each column for materialization (no-assume, no-fallback)`);
+    }
+    const cols: Record<string, MaterializeClass> = {};
+    for (const col of projection) {
+      // sqlTypeToMaterializeClass throws on unknown — fail-closed, mirroring the outType derivation.
+      cols[col] = sqlTypeToMaterializeClass(resolveColumnType(table, col));
+    }
+    byNode.set(n.id, cols);
+  }
+  return byNode;
 }
