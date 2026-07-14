@@ -61,18 +61,22 @@ describe('#59 coverage outType derivation — sqlTypeToBcScalar (§4.1, all type
 });
 
 describe('#59 coverage — schemaColumnTypeResolver over the coverage DDL resolves every column', () => {
+  // Mirrors the ACTUAL SQLite coverage DDL (benchmark/crosslang/domain.ts): the decimal
+  // columns are TEXT (not DECIMAL) on SQLite — a string-represented decimal stored in a
+  // TEXT-affinity column so precision round-trips exactly. Both TEXT and DECIMAL derive to
+  // bc `string` (asserted in the dialect-token table above), so the derivation is identical.
   const COVERAGE_DDL = `CREATE TABLE coverage (
      id INTEGER PRIMARY KEY,
      int_val INTEGER NOT NULL,
      real_val REAL NOT NULL,
-     dec_val DECIMAL(20,4) NOT NULL,
+     dec_val TEXT NOT NULL,
      text_val TEXT NOT NULL,
      bool_val BOOLEAN NOT NULL,
      date_val DATE NOT NULL,
      json_val JSON NOT NULL,
      intn_val INTEGER,
      realn_val REAL,
-     decn_val DECIMAL(20,4),
+     decn_val TEXT,
      textn_val TEXT,
      booln_val BOOLEAN,
      daten_val DATE,

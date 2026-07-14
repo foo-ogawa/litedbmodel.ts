@@ -8,33 +8,33 @@
 //
 //     DB value  →  raw wire (driver row)  →  concrete struct materialization  →  expected
 //
-// across ALL THREE dialects (SQLite in-proc + LIVE Postgres + LIVE MySQL), asserting
-// GENERATED ≡ DYNAMIC ≡ EXPECTED:
+// across ALL THREE dialects (SQLite in-proc + LIVE Postgres + LIVE MySQL). What this verifier
+// PROVES, stated precisely (it does NOT claim a three-way RUNTIME equivalence it does not run):
 //
-//   • EXPECTED   — the ground-truth values seeded (`COVERAGE_EXPECTED`).
-//   • GENERATED  — the value materialized INTO the derived native struct field type. The
-//                  codegen (rust/go typed-native) path reads each column DIRECTLY into a
-//                  CONCRETE struct field whose type is `deriveReadOutTypes`' bc scalar
-//                  (int→i64, float→f64, bool→bool, string→String — verified structurally:
-//                  `generateCodegenArtifact('rust')` emits `pub struct T0 { int_val: i64,
-//                  real_val: f64, bool_val: bool, dec_val/date_val/json_val: String, … }`).
-//                  This module MODELS that native struct field via the EXACT-normalizer: we
-//                  assert (a) the derivation produces the CORRECT scalar for every column,
-//                  and (b) the driver value materializes into that scalar EXACTLY (no i64→
-//                  float rounding, no precision loss) — i.e. the value the native i64/bool
-//                  struct field WOULD hold. (The native binary's live execution of the
-//                  coverage read is the separate rust/go codegen-cell re-bench, not run here;
-//                  this verifier executes the TS/dynamic plane against all three live drivers.)
-//   • DYNAMIC    — the value the shipped TS interpreter/ir read path returns (raw driver
-//                  row, passed through `executeBundle`/`executeBundleAsync`).
+//   • EXPECTED           — the ground-truth values seeded (`COVERAGE_EXPECTED`).
+//   • DYNAMIC (executed) — the value the shipped TS interpreter/ir read path returns (raw
+//                          driver row, via `executeBundle`/`executeBundleAsync`), executed
+//                          against all three LIVE drivers here. This is the plane whose VALUE
+//                          round-trip this harness actually runs and asserts vs EXPECTED.
+//   • GENERATED (native) — verified at the TYPE-DERIVATION level ONLY: `deriveReadOutTypes` +
+//                          `generateCodegenArtifact('rust')` emit `pub struct T0 { int_val:
+//                          i64, real_val: f64, bool_val: bool, dec_val/date_val/json_val:
+//                          String, … }` — the concrete struct field TYPES the codegen path
+//                          materializes into. This harness does NOT execute the native rust/go
+//                          binary for the coverage read; the native VALUE round-trip is
+//                          DEFERRED to the #44 cross-lang re-bench (the rust/go codegen cell).
+//                          So no `generated == dynamic` value equality is asserted — indeed for
+//                          i64 it would be FALSE (native i64 is EXACT; the TS dynamic path
+//                          rounds it to float64 — one of the detected holes below).
 //
 // #59 is a HOLE-HUNTER: it exists to CATCH conversion holes (i64 silently rounded to float,
 // date corrupted/reformatted, decimal precision lost, json string-rep drift, bool
 // mis-materialized, NULL handling). Every hole this finds is REPORTED per column × dialect —
-// never papered over. A hole that is a genuine driver/architecture boundary (the TS boxed
-// read path passes driver values through; outType-honoring materialization is the NATIVE
-// codegen's contract — #60) is reported as such with its cause; a hole that would be a
-// derivation bug (wrong bc scalar) is a HARD failure.
+// never papered over. A DETECTED hole in the TS dynamic read path (i64 rounding, DATE TZ-shift)
+// is surfaced with its accurate cause; it is fixable-but-CONTRACTFUL (a TS read-path type
+// change — safeIntegers/dateStrings — with real blast radius the OWNER is deciding separately),
+// so this harness leaves it surfaced and does NOT flip it. A hole that would be a derivation
+// bug (wrong bc scalar) is a HARD failure.
 //
 // date → string and decimal → string are the OWNER-APPROVED re-scope (#59): bc 0.6.0 has NO
 // date/decimal portable scalar (PORTABLE_SCALAR_TYPES = string|int|float|bool|null;
@@ -57,7 +57,7 @@ type Row = Record<string, unknown>;
 type Scalar = 'int' | 'float' | 'string' | 'bool';
 
 // ── Canonical (information-lossless) normalizers per bc scalar ─────────────────
-// The comparator that decides GENERATED ≡ DYNAMIC ≡ EXPECTED. Each normalizer maps a
+// The comparator that decides DYNAMIC (TS read path) ≡ EXPECTED. Each normalizer maps a
 // value (expected OR a raw driver value) to a canonical comparable form for its outType
 // scalar, WITHOUT hiding a real conversion hole:
 //   • int    → the EXACT integer as a decimal string (via BigInt). A driver value that is
@@ -273,12 +273,17 @@ function unwrapRowObj(t: unknown): Record<string, string> | undefined {
   return undefined;
 }
 
-// ── Step 2: value round-trip per dialect ─────────────────────────────────────
-// GENERATED (native struct materialization, modeled by the exact-normalizer) ≡ DYNAMIC
-// (raw driver row) ≡ EXPECTED. We compare EACH column of EACH row; a divergence is reported
-// with its cause and classified (hard derivation bug vs driver-boundary hole).
+// ── Step 2: DYNAMIC value round-trip per dialect ─────────────────────────────
+// Execute + assert the DYNAMIC plane (the shipped TS read path's returned value) vs EXPECTED,
+// per column, per row, on the LIVE driver. A divergence is reported with its cause and
+// classified (hard bug = wrong scalar / missing row / DB unreachable, vs a DETECTED TS-read
+// hole). The GENERATED (native) plane is proven at the type-derivation level (step 1 + the
+// emitted rust struct); its native VALUE execution is deferred to the #44 re-bench.
 async function verifyDialect(dialect: string, rows: Row[]): Promise<void> {
-  console.log(`\n=== #59 step 2 [${dialect}]: value round-trip (generated ≡ dynamic ≡ expected) ===`);
+  // We execute + assert the DYNAMIC (TS read path) value round-trip vs EXPECTED. The GENERATED
+  // (native) plane is proven at the type-derivation level (step 1 + the emitted rust struct);
+  // its native VALUE execution is deferred to the #44 re-bench, so it is NOT asserted here.
+  console.log(`\n=== #59 step 2 [${dialect}]: DYNAMIC (TS read path) value round-trip vs EXPECTED ===`);
   if (rows.length !== COVERAGE_EXPECTED.length) {
     failures.push({ where: `${dialect}.rowcount`, detail: `read ${rows.length} rows, expected ${COVERAGE_EXPECTED.length}`, hardBug: true });
     console.log(`  FAIL: row count ${rows.length} ≠ ${COVERAGE_EXPECTED.length}`);
@@ -296,38 +301,30 @@ async function verifyDialect(dialect: string, rows: Row[]): Promise<void> {
       // DYNAMIC: normalize the raw driver value. EXPECTED: normalize the ground truth.
       const dyn = normalizeColumn(col, scalar, driver, expected);
       const wan = normalizeColumn(col, scalar, expected, expected);
-      // GENERATED: model the native struct field — coerce the driver value into the exact
-      // scalar. For int this is the exact-integer requirement (a rounded float fails here,
-      // exactly as an i64 struct field would NOT be constructible from the lost value).
-      const gen = dyn; // the native materialization consumes the SAME driver row; the
-      // exact-normalizer above already models the struct field's exactness requirement.
       if (!wan.ok) {
         // The expected value itself failed to normalize — a test-data bug (should never happen).
         failures.push({ where: `${dialect}.${col}.row${exp.id}`, detail: `expected value un-normalizable: ${wan.reason}`, hardBug: true });
         continue;
       }
       if (!dyn.ok) {
-        // A DRIVER value that cannot materialize into the derived scalar without losing
-        // information — a genuine conversion hole. Driver-boundary (not a derivation bug):
-        // the TS boxed read path passes driver values through (#60), so this is the TS
-        // driver/config boundary, reported explicitly.
+        // A DRIVER value the TS read path returned that cannot materialize into the derived
+        // scalar without losing information — a DETECTED conversion hole in the TS dynamic
+        // read path (fixable-but-contractful, owner-decided; surfaced, not flipped here).
         failures.push({ where: `${dialect}.${col}.row${exp.id}`, detail: dyn.reason, hardBug: false });
-        console.log(`  row${exp.id} ${col.padEnd(11)} HOLE: ${dyn.reason}`);
+        console.log(`  row${exp.id} ${col.padEnd(11)} HOLE (TS dynamic): ${dyn.reason}`);
         continue;
       }
-      const genOk = gen.ok && eq(scalar, col, gen.canon, wan.canon);
-      const dynOk = eq(scalar, col, dyn.canon, wan.canon);
-      if (!(genOk && dynOk)) {
-        failures.push({ where: `${dialect}.${col}.row${exp.id}`, detail: `gen='${gen.ok ? gen.canon : gen.reason}' dyn='${dyn.canon}' expected='${wan.canon}'`, hardBug: false });
-        console.log(`  row${exp.id} ${col.padEnd(11)} DIVERGE gen=${gen.ok ? gen.canon : gen.reason} dyn=${dyn.canon} exp=${wan.canon}`);
+      if (!eq(scalar, col, dyn.canon, wan.canon)) {
+        failures.push({ where: `${dialect}.${col}.row${exp.id}`, detail: `dynamic='${dyn.canon}' expected='${wan.canon}'`, hardBug: false });
+        console.log(`  row${exp.id} ${col.padEnd(11)} DIVERGE dynamic=${dyn.canon} expected=${wan.canon}`);
       }
     }
   }
   const dialectFails = failures.filter((f) => f.where.startsWith(dialect + '.'));
   const holeCols = new Set(dialectFails.map((f) => f.where.split('.')[1]));
   const passCols = COVERAGE_COLUMNS.filter((c) => !holeCols.has(c));
-  console.log(`  [${dialect}] PASS (round-trip equal, generated ≡ dynamic ≡ expected): ${passCols.join(', ')}`);
-  console.log(`  [${dialect}] ${COVERAGE_EXPECTED.length} rows × ${COVERAGE_COLUMNS.length} cols — ${dialectFails.length === 0 ? 'ALL columns round-trip equal' : `${dialectFails.length} conversion hole(s) on: ${[...holeCols].join(', ')}`}`);
+  console.log(`  [${dialect}] PASS (DYNAMIC round-trip equal to EXPECTED): ${passCols.join(', ')}`);
+  console.log(`  [${dialect}] ${COVERAGE_EXPECTED.length} rows × ${COVERAGE_COLUMNS.length} cols — ${dialectFails.length === 0 ? 'ALL columns round-trip equal' : `${dialectFails.length} detected hole(s) on: ${[...holeCols].join(', ')}`}`);
 }
 
 // ── Live-DB read of the coverage `find` via the SHIPPED SCP path ──────────────
@@ -394,7 +391,7 @@ async function main(): Promise<void> {
   const hard = failures.filter((f) => f.hardBug);
   const holes = failures.filter((f) => !f.hardBug);
   if (holes.length > 0) {
-    console.log(`\nCONVERSION HOLES (driver/architecture boundary — TS boxed read path passes driver values through; native codegen materializes exactly):`);
+    console.log(`\nDETECTED HOLES in the TS DYNAMIC read path (fixable-but-CONTRACTFUL — a TS read-path type change, safeIntegers/dateStrings, with real blast radius the OWNER is deciding separately; left SURFACED, not flipped here. The native codegen path materializes these exactly — see the emitted rust struct field types — but that native VALUE run is deferred to the #44 re-bench):`);
     for (const h of holes) console.log(`  • ${h.where}: ${h.detail}`);
   }
   if (hard.length > 0) {
@@ -402,10 +399,12 @@ async function main(): Promise<void> {
     for (const f of hard) console.error(`  • ${f.where}: ${f.detail}`);
     process.exit(1);
   }
-  // The type derivation (the primary #59 assertion) passed, and the value round-trip on every
-  // dialect either agreed or surfaced a documented driver-boundary hole. Holes are ALLOWED
-  // (they are reported, not silent) — a HARD failure is a wrong bc scalar or an unreachable DB.
-  console.log('\n✅ #59 coverage audit: outType derivation CORRECT for all 15 columns; value round-trip verified across sqlite/postgres/mysql (holes above are reported driver-boundary conversions, not derivation bugs).');
+  // The type derivation (the primary #59 assertion) passed, and the executed DYNAMIC value
+  // round-trip on every dialect either agreed with EXPECTED or surfaced a DETECTED TS-read
+  // hole. Holes are ALLOWED (reported, not silent) — a HARD failure is a wrong bc scalar or an
+  // unreachable DB. The GENERATED/native plane is proven at the type-derivation level only
+  // (its native value run is the #44 re-bench).
+  console.log('\n✅ #59 coverage audit: outType derivation CORRECT for all 15 columns (GENERATED/native plane, type-level); DYNAMIC (TS read path) value round-trip executed vs EXPECTED across sqlite/postgres/mysql. Remaining entries above are DETECTED TS-read holes (i64→float, DATE TZ-shift), surfaced pending the owner-decided read-path contract change.');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

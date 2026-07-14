@@ -53,23 +53,28 @@ export const SCHEMA: readonly string[] = [
   // bc 0.6.0 has NO date/decimal portable scalar (PORTABLE_SCALAR_TYPES = string|int|
   // float|bool|null; behavior-contracts#84 deferred), so these two columns are
   // VALUE-PRESERVING string round-trips — the compromise is marked in code, never silent.
-  // SQLite affinity note: `dec_val`/`decn_val` are DECIMAL (NUMERIC affinity) — SQLite
-  // would coerce an integral-looking decimal to INTEGER, silently DROPPING trailing zeros
-  // (a real precision hole). We store decimals with a non-integral fractional part so the
-  // NUMERIC affinity keeps them as REAL/text faithfully across all three drivers; the
-  // verifier compares the STRING form to catch any precision drift.
+  //
+  // SQLite decimal storage: `dec_val`/`decn_val` map to bc scalar `string` (§4.1 decimal→
+  // string), so — matching that representation — the SQLite column is declared **TEXT**,
+  // NOT DECIMAL. A DECIMAL/NUMERIC column has SQLite NUMERIC affinity, which coerces the
+  // stored value to REAL and DROPS precision on an 18-digit decimal (a hole this table used
+  // to exhibit). A TEXT-affinity column stores the exact digit string, so decimal round-
+  // trips EXACTLY on SQLite too — the correct SQLite DDL for a string-represented decimal.
+  // PG/MySQL keep real DECIMAL/NUMERIC (their drivers already return it as an exact string).
+  // The §4.1 derivation is unaffected: `sqlTypeToBcScalar('TEXT')` = `sqlTypeToBcScalar(
+  // 'DECIMAL')` = `string`.
   `CREATE TABLE coverage (
      id INTEGER PRIMARY KEY,
      int_val INTEGER NOT NULL,
      real_val REAL NOT NULL,
-     dec_val DECIMAL(20,4) NOT NULL,
+     dec_val TEXT NOT NULL,
      text_val TEXT NOT NULL,
      bool_val BOOLEAN NOT NULL,
      date_val DATE NOT NULL,
      json_val JSON NOT NULL,
      intn_val INTEGER,
      realn_val REAL,
-     decn_val DECIMAL(20,4),
+     decn_val TEXT,
      textn_val TEXT,
      booln_val BOOLEAN,
      daten_val DATE,
