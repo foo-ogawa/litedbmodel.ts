@@ -264,51 +264,11 @@ export type ColumnTypeResolver = (table: string, column: string) => string;
 export type MaterializeResolver = (table: string, column: string) => MaterializeClass | undefined;
 
 /**
- * The minimal SQLite introspection surface: `PRAGMA table_info(<t>)` → `{name, type}[]`. Satisfied
- * by better-sqlite3's `Database` (`prepare(sql).all()`), so the production read entry points derive
- * the materialize resolver straight from the live connection — no caller-supplied schema.
- */
-export interface SqliteSchemaIntrospector {
-  prepare(sql: string): { all(...params: unknown[]): unknown[] };
-}
-
-/**
- * Build a DB-introspecting {@link MaterializeResolver} for SQLite from a live connection (issue
- * #59, ALWAYS-ON read de-box). It reads each table's column types via `PRAGMA table_info` (memoized
- * per table) — the DB IS the column-type SoT, so materialization fires for every real read with no
- * caller-supplied resolver. A column whose SQL type does not map to a known class (or a table that
- * cannot be introspected) resolves to `undefined` (tolerant → the raw driver value is kept, never a
- * thrown error on a production read).
- */
-export function sqliteMaterializeResolver(db: SqliteSchemaIntrospector): MaterializeResolver {
-  const cache = new Map<string, Map<string, MaterializeClass | undefined>>();
-  const columnsOf = (table: string): Map<string, MaterializeClass | undefined> => {
-    let cols = cache.get(table);
-    if (cols !== undefined) return cols;
-    cols = new Map();
-    try {
-      // `PRAGMA table_info(?)` does not bind a param; the table name is a bare identifier. It comes
-      // from the compiled read graph (a literal projection table), not user input — quote-escape it.
-      const rows = db.prepare(`PRAGMA table_info("${table.replace(/"/g, '""')}")`).all() as { name?: unknown; type?: unknown }[];
-      for (const r of rows) {
-        if (typeof r.name !== 'string' || typeof r.type !== 'string') continue;
-        cols.set(r.name, materializeClassOrUndefined(r.type));
-      }
-    } catch {
-      // Un-introspectable (e.g. a mock driver / a view): leave the map empty → all passthrough.
-    }
-    cache.set(table, cols);
-    return cols;
-  };
-  return (table, column) => columnsOf(table).get(column);
-}
-
-/**
- * A `table → (column → SQL type)` map (e.g. from `information_schema.columns`, the async PG/MySQL
- * introspection) → a {@link MaterializeResolver}. Tolerant: an unknown `(table, column)` or an
- * un-mappable SQL type resolves to `undefined` (the raw driver value is kept). The async production
- * read path introspects the live DB once, builds this map, and passes it in — so materialization
- * fires with no caller-supplied resolver.
+ * A `table → (column → SQL type)` map (from the STATIC model DDL, via {@link parseSchemaColumnTypes})
+ * → a {@link MaterializeResolver}. Tolerant: an unknown `(table, column)` or an un-mappable SQL type
+ * resolves to `undefined` (the raw driver value is kept). This is the STATIC read-path resolver
+ * `publishBehaviors(cls, { schema })` precomputes ONCE and carries on the contract — pure in-memory
+ * lookups, ZERO per-read DB introspection (litedbmodel's static-resolution core value).
  */
 export function materializeResolverFromColumnMap(
   columnTypes: ReadonlyMap<string, ReadonlyMap<string, string>>,
@@ -326,80 +286,6 @@ export function materializeClassOrUndefined(sqlType: string): MaterializeClass |
   } catch {
     return undefined;
   }
-}
-
-/** An async `(sql, params) → rows` executor (the pooled PG/MySQL seam) — for async introspection. */
-export type AsyncQuery = (sql: string, params: unknown[]) => Promise<Record<string, unknown>[]>;
-
-/**
- * Introspect the LIVE PG / MySQL schema via `information_schema.columns` (the async production
- * column-type SoT) for the given tables, and build a DB-derived {@link MaterializeResolver} (issue
- * #59, ALWAYS-ON read de-box). Runs ONE query bounded to `tables`, so `executeBehaviorAsync`
- * materializes with NO caller-supplied resolver. Tolerant: a table/column not found, or a type that
- * does not map, resolves to `undefined` (raw driver value kept — a real read never fails on it).
- *
- * `information_schema.columns.data_type` gives the canonical base type (`bigint`, `integer`,
- * `boolean`, `date`, `timestamp without time zone`, `numeric`, `double precision`, `character
- * varying`, `json`/`jsonb`, …) on BOTH PG and MySQL. We normalize it to the token
- * {@link sqlTypeToMaterializeClass} understands (strip the PG `without/with time zone` suffix →
- * `TIMESTAMP`/`TIMESTAMPTZ`; `character varying` → `VARCHAR`; `double precision` handled already).
- */
-export async function asyncMaterializeResolver(
-  query: AsyncQuery,
-  tables: readonly string[],
-): Promise<MaterializeResolver> {
-  const columnTypes = new Map<string, Map<string, MaterializeClass | undefined>>();
-  const uniqueTables = [...new Set(tables)];
-  if (uniqueTables.length > 0) {
-    const placeholders = uniqueTables.map((_, i) => `$${i + 1}`).join(', ');
-    // `information_schema` is ANSI on PG; MySQL supports it too but uses `?` placeholders, so the
-    // caller's async executor renders the dialect placeholder form — we pass a `$N` template and let
-    // the pooled executor bind positionally (both drivers accept a positional param list). To stay
-    // driver-neutral we instead fetch ALL columns of the named tables with an IN list.
-    // Select `column_type` too: MySQL reports a BOOLEAN as `data_type=tinyint` but
-    // `column_type=tinyint(1)` — the ONLY way to tell a boolean from a real 1-byte int. PG has no
-    // `column_type` column, so we tolerate its absence (COALESCE-free — just read whichever is present).
-    // Try, in order: MySQL-form (with `column_type`, `?` placeholders) → PG-form (with
-    // `column_type`, `$N`) → PG-form WITHOUT `column_type` (PG's information_schema has no such
-    // column) with `$N`. The MySQL `column_type` distinguishes `tinyint(1)`=BOOLEAN. Each form is
-    // tried independently so a placeholder/column mismatch on one driver falls through to the next
-    // rather than silently dropping `column_type` (the bug that let MySQL BOOLEAN read as int).
-    const ph$ = placeholders;
-    const phQ = uniqueTables.map(() => '?').join(', ');
-    const withCt = (p: string): string => `SELECT table_name AS t, column_name AS c, data_type AS dt, column_type AS ct FROM information_schema.columns WHERE table_name IN (${p})`;
-    const noCt = (p: string): string => `SELECT table_name AS t, column_name AS c, data_type AS dt FROM information_schema.columns WHERE table_name IN (${p})`;
-    let rows: Record<string, unknown>[] = [];
-    for (const candidate of [withCt(phQ), withCt(ph$), noCt(ph$), noCt(phQ)]) {
-      try { rows = await query(candidate, uniqueTables); break; } catch { /* try next form */ }
-    }
-    for (const r of rows) {
-      const t = String(r.t ?? r.table_name ?? '');
-      const c = String(r.c ?? r.column_name ?? '');
-      const dt = String(r.dt ?? r.data_type ?? '');
-      const ct = r.ct ?? r.column_type;
-      if (t === '' || c === '') continue;
-      let cols = columnTypes.get(t);
-      if (cols === undefined) { cols = new Map(); columnTypes.set(t, cols); }
-      // MySQL `tinyint(1)` = BOOLEAN → bool. Otherwise map from the base data_type.
-      const klass = typeof ct === 'string' && ct.trim().toLowerCase() === 'tinyint(1)'
-        ? 'bool'
-        : materializeClassOrUndefined(normalizeInfoSchemaType(dt));
-      cols.set(c, klass as MaterializeClass | undefined);
-    }
-  }
-  return (table, column) => columnTypes.get(table)?.get(column);
-}
-
-/** Normalize an `information_schema.data_type` token to the form {@link sqlTypeToMaterializeClass} maps. */
-function normalizeInfoSchemaType(dataType: string): string {
-  const t = dataType.trim().toLowerCase();
-  if (t === 'timestamp without time zone' || t === 'timestamp') return 'TIMESTAMP';
-  if (t === 'timestamp with time zone') return 'TIMESTAMPTZ';
-  if (t === 'time without time zone' || t === 'time with time zone') return 'TIME';
-  if (t === 'character varying') return 'VARCHAR';
-  if (t === 'character') return 'CHAR';
-  if (t === 'double precision') return 'DOUBLE';
-  return t; // bigint / integer / smallint / boolean / date / numeric / decimal / json / jsonb / text / real …
 }
 
 /**

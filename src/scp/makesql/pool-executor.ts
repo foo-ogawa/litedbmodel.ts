@@ -46,6 +46,15 @@ export interface PgTypesLike {
  * honoring the `date→string` outType and carrying the TZ for timestamptz. int8 already arrives as a
  * string (pg default), so it needs no parser. Idempotent. Call ONCE, before building the pool, from
  * the consumer that owns the `pg` module (`import { types } from 'pg'; configurePgDeboxTypeParsers(types)`).
+ *
+ * WHY the GLOBAL parser (a documented, deliberate exception): `pg`'s default DATE parser builds a JS
+ * `Date` at LOCAL midnight, which shifts the UTC CALENDAR DAY (e.g. `2026-07-14` → a Date whose UTC
+ * day is `2026-07-13`). That loss happens INSIDE the driver, BEFORE the materializer sees the value —
+ * so materializer-side coercion CANNOT recover the correct calendar day from the already-shifted
+ * Date. Reading the native text (this parser) is the only lossless option, and `pg` exposes type
+ * parsers only at module (process-global) scope. It is set ONCE at pool creation, not per read. The
+ * materializer's `Date → ISO string` path remains as a defensive fallback for any driver/config that
+ * still slips a Date through, but the correct-day guarantee for pg DATE comes from this parser.
  */
 export function configurePgDeboxTypeParsers(types: PgTypesLike): void {
   const asString = (v: string): string => v; // identity: keep the driver's native textual form

@@ -35,7 +35,6 @@ import { buildResultSet, type ReadOptions } from './typed-object';
 import type { DialectName } from './dialect';
 import type { FindFilterSource } from './find-filter-guard';
 import type { ColumnTypeResolver, MaterializeResolver } from './coltype';
-import { sqliteMaterializeResolver, asyncMaterializeResolver } from './coltype';
 import {
   compileReadGraph,
   executeReadGraph,
@@ -141,25 +140,6 @@ function primaryNodeOf(component: Component): Component['body'][number] | undefi
   return undefined;
 }
 
-/**
- * The tables a READ component + its relations touch (issue #59): each Select node's literal `table`
- * port + each relation decl's `targetTable`. Used to BOUND the async `information_schema`
- * introspection so `executeBehaviorAsync` auto-derives the materialize resolver without scanning the
- * whole DB. A non-literal `table` port is skipped (its columns just stay un-materialized — tolerant).
- */
-function readTablesOf(component: Component, relations: readonly RelationDecl[] = []): string[] {
-  const tables = new Set<string>();
-  for (const n of component.body) {
-    if ('cond' in n) continue;
-    const ref = 'map' in n ? (n as { map: { component: string; ports: Record<string, unknown> } }).map : (n as { component: string; ports: Record<string, unknown> });
-    if (ref.component !== 'Select') continue;
-    const t = ref.ports['table'];
-    if (typeof t === 'string') tables.add(t);
-  }
-  for (const rel of relations) if (rel.targetTable) tables.add(rel.targetTable);
-  return [...tables];
-}
-
 /** Is a component's primary catalog node a write (Insert/Update/Delete)? */
 function isWriteComponent(component: Component): boolean {
   const p = primaryNodeOf(component);
@@ -180,12 +160,12 @@ export function executeBehavior(
   input: Scope,
   options: ExecuteOptions,
 ): Value {
-  // ALWAYS-ON read de-box (issue #59): auto-derive the materialize resolver from the LIVE SQLite
-  // connection's own schema (PRAGMA table_info — the column-type SoT), so INT→number / BIGINT→string
-  // / DATE→string / BOOLEAN→boolean fires for EVERY read with NO caller-supplied resolver.
-  const matResolver = sqliteMaterializeResolver(options.db);
+  // ALWAYS-ON read de-box (issue #59), STATIC: the materialize resolver is precomputed ONCE from the
+  // model's DDL at registration (`publishBehaviors(cls, { schema })`) and carried on the contract —
+  // pure in-memory map lookups, ZERO per-read DB introspection. So INT→number / BIGINT→string /
+  // DATE→string / BOOLEAN→boolean fires for every read from the model's own type definitions.
   return executeBundle(
-    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, matResolver),
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, contract.materializeResolver),
     input,
     options,
   );
@@ -213,7 +193,9 @@ export function compileBundle(
     if (relationOps[decl.name] !== undefined) {
       throw new Error(`scp runtime: duplicate relation declaration '${decl.name}'`);
     }
-    relationOps[decl.name] = compileRelationOp({ ...decl, dialect: decl.dialect ?? dialectName });
+    // Bake the child column materializers (issue #59) from the STATIC resolver at compile — the
+    // relation batch's child rows then de-box with ZERO introspection (same as the primary read).
+    relationOps[decl.name] = compileRelationOp({ ...decl, dialect: decl.dialect ?? dialectName }, materializeResolver);
   }
 
   if (isWriteComponent(component)) {
@@ -329,17 +311,13 @@ export async function executeBehaviorAsync(
   input: Scope,
   options: AsyncExecuteOptions,
 ): Promise<Value> {
-  // ALWAYS-ON read de-box (issue #59), live PG/MySQL: introspect the DB's own `information_schema`
-  // (the column-type SoT) for the tables this read + its relations touch, and derive the materialize
-  // resolver from it — so BIGINT→string / DATE→string / bool→boolean / INT→number fires with NO
-  // caller-supplied resolver. Bounded to the read's tables (one query). Tolerant: if introspection
-  // fails, columns stay raw (a read still runs). PAIR with the driver de-box config (pg date type
-  // parsers + mysql2 supportBigNumbers/bigNumberStrings/dateStrings) so int8/date arrive coercible.
-  const component = options.entry ? contract.components.find((c) => c.name === options.entry) : contract.components[0];
-  const tables = component !== undefined ? readTablesOf(component, options.relations) : [];
-  const matResolver = await asyncMaterializeResolver(options.exec, tables);
+  // ALWAYS-ON read de-box (issue #59), live PG/MySQL, STATIC: the materialize resolver is precomputed
+  // from the model's DDL at registration and carried on the contract — ZERO per-read introspection
+  // (no information_schema round-trips). PAIR with the per-CONNECTION driver de-box config, set ONCE
+  // at pool creation (mysql2 supportBigNumbers+bigNumberStrings+dateStrings; pg date type parsers) —
+  // see `pgDeboxExecutor` / `mysqlDeboxExecutor`.
   return executeBundleAsync(
-    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, matResolver),
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, contract.materializeResolver),
     input,
     options,
   );
@@ -624,11 +602,10 @@ export function read<R = Record<string, unknown>>(
   input: Scope,
   options: ReadRuntimeOptions<R>,
 ): R[] {
-  // ALWAYS-ON read de-box (issue #59): auto-derive the materialize resolver from the live SQLite
-  // connection so the primary read materializes (INT→number / BIGINT→string / DATE→string / bool).
-  const matResolver = sqliteMaterializeResolver(options.db);
+  // ALWAYS-ON read de-box (issue #59), STATIC: the resolver is precomputed from the model's DDL at
+  // registration and carried on the contract — ZERO per-read introspection.
   return readBundle(
-    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, matResolver),
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, contract.materializeResolver),
     input,
     options,
   );

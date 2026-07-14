@@ -436,7 +436,12 @@ export const writeGateContract = lm.entityWrites<Writes>((w: any) => ({
   }),
 }));
 
-export const readsContract = lm.publishBehaviors(Reads);
+// Register the read model WITH its static DDL schema (issue #59): the contract precomputes the
+// read-path materialize resolver ONCE from these CREATE TABLE tokens, so every read de-boxes
+// (INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean) with ZERO per-read DB introspection.
+// The coverage columns' tokens (INT/BIGINT/DATE/BOOLEAN/TEXT) map to the same materialize class on
+// every dialect, so the single sqlite-shaped SCHEMA is the correct static SoT for all three.
+export const readsContract = lm.publishBehaviors(Reads, { schema: SCHEMA });
 export const writesContract = lm.publishBehaviors(Writes);
 
 // ── Hand-optimized raw-SQL baseline (the 1.0× denominator; NOT a strawman) ──────

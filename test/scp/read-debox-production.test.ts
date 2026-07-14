@@ -11,10 +11,19 @@ import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   SemanticBehavior, components, publishBehaviors, executeBehavior, read,
-  whereEq, whereGe, sqliteMaterializeResolver,
+  whereEq, whereGe, parseSchemaColumnTypes, materializeResolverFromColumnMap,
 } from '../../src/scp';
 
 const L = components();
+
+// The STATIC model DDL SoT — `dec` is TEXT (decimal→string; a SQLite NUMERIC-affinity column would
+// drop precision at STORAGE). Passed to publishBehaviors so the contract precomputes the resolver
+// ONCE (no per-read DB introspection).
+const COV_DDL = `CREATE TABLE cov (id INTEGER PRIMARY KEY, i32 INT, i64 BIGINT, flag BOOLEAN, day DATE, dec TEXT, note TEXT);`;
+const REL_DDL = [
+  `CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT);`,
+  `CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER, big BIGINT, day DATE, flag BOOLEAN);`,
+];
 
 class Reads extends SemanticBehavior {
   All($: { min_id: unknown }) {
@@ -35,9 +44,7 @@ class RelReads extends SemanticBehavior {
 
 function freshDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  // `dec` is TEXT (not DECIMAL): decimal→string maps to bc string, and a SQLite NUMERIC-affinity
-  // column would drop precision at STORAGE — TEXT preserves the exact digits (the #59 audit-1 rule).
-  db.exec(`CREATE TABLE cov (id INTEGER PRIMARY KEY, i32 INT, i64 BIGINT, flag BOOLEAN, day DATE, dec TEXT, note TEXT);`);
+  db.exec(COV_DDL);
   // i64 max bound as a string so SQLite stores the exact 64-bit value (a JS number would round it).
   db.prepare(`INSERT INTO cov VALUES (?,?,?,?,?,?,?)`).run(1, 2147483647, '9223372036854775807', 1, '2026-07-14', '12345678901234.5678', 'hi');
   db.prepare(`INSERT INTO cov VALUES (?,?,?,?,?,?,?)`).run(2, 0, '-9223372036854775808', 0, '2000-02-29', '-0.5', null);
@@ -45,7 +52,9 @@ function freshDb(): InstanceType<typeof Database> {
 }
 
 describe('#59 ALWAYS-ON de-box — executeBehavior (sqlite) with NO caller-supplied resolver', () => {
-  const contract = publishBehaviors(Reads);
+  // The model registers its STATIC schema; the resolver is precomputed on the contract (no
+  // per-read introspection). The caller passes NOTHING extra to executeBehavior.
+  const contract = publishBehaviors(Reads, { schema: [COV_DDL] });
 
   it('materializes INT→number, BIGINT→string(exact), BOOLEAN→boolean, DATE→string', () => {
     const db = freshDb();
@@ -87,12 +96,11 @@ describe('#59 ALWAYS-ON de-box — executeBehavior (sqlite) with NO caller-suppl
 });
 
 describe('#59 ALWAYS-ON de-box — relation child rows materialize (no resolver)', () => {
-  const contract = publishBehaviors(RelReads);
+  const contract = publishBehaviors(RelReads, { schema: REL_DDL });
 
   it('a hasMany relation over a BIGINT/DATE/BOOLEAN child de-boxes the child rows', () => {
     const db = new Database(':memory:');
-    db.exec(`CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT);`);
-    db.exec(`CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER, big BIGINT, day DATE, flag BOOLEAN);`);
+    for (const s of REL_DDL) db.exec(s);
     db.exec(`INSERT INTO parent VALUES (1,'p');`);
     db.prepare(`INSERT INTO child VALUES (?,?,?,?,?)`).run(10, 1, '9223372036854775807', '2026-07-14', 1);
     const REL = {
@@ -109,11 +117,11 @@ describe('#59 ALWAYS-ON de-box — relation child rows materialize (no resolver)
   });
 });
 
-describe('#59 sqliteMaterializeResolver — DB PRAGMA introspection (the auto-derived SoT)', () => {
-  it('derives the class of each column straight from the live connection', () => {
-    const db = new Database(':memory:');
-    db.exec(`CREATE TABLE t (a INTEGER, b BIGINT, c BOOLEAN, d DATE, e DECIMAL(10,2), f TEXT);`);
-    const resolve = sqliteMaterializeResolver(db);
+describe('#59 STATIC resolver — parseSchemaColumnTypes + materializeResolverFromColumnMap (DDL SoT, no DB)', () => {
+  it('derives each column class from the model DDL — pure in-memory, zero DB access', () => {
+    const resolve = materializeResolverFromColumnMap(
+      parseSchemaColumnTypes([`CREATE TABLE t (a INTEGER, b BIGINT, c BOOLEAN, d DATE, e DECIMAL(10,2), f TEXT);`]),
+    );
     expect(resolve('t', 'a')).toBe('int32');
     expect(resolve('t', 'b')).toBe('int64');
     expect(resolve('t', 'c')).toBe('bool');
@@ -122,6 +130,15 @@ describe('#59 sqliteMaterializeResolver — DB PRAGMA introspection (the auto-de
     expect(resolve('t', 'f')).toBe('passthrough');
     expect(resolve('t', 'nonexistent')).toBeUndefined(); // tolerant: unknown → undefined (kept raw)
     expect(resolve('nosuchtable', 'x')).toBeUndefined();
-    db.close();
+  });
+
+  it('the contract carries the precomputed resolver (computed ONCE at publishBehaviors)', () => {
+    const contract = publishBehaviors(Reads, { schema: [COV_DDL] });
+    expect(contract.materializeResolver).toBeDefined();
+    expect(contract.materializeResolver!('cov', 'i64')).toBe('int64');
+    expect(contract.materializeResolver!('cov', 'i32')).toBe('int32');
+    expect(contract.materializeResolver!('cov', 'flag')).toBe('bool');
+    // No schema → no resolver (pre-#59 raw behavior).
+    expect(publishBehaviors(Reads).materializeResolver).toBeUndefined();
   });
 });

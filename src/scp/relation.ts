@@ -28,7 +28,7 @@
 
 import { assembleMakeSQL, type MakeSQL } from './makesql/makesql';
 import { renderPlaceholders, type Dialect } from './makesql/handler';
-import { sqliteMaterializeResolver, materializeCell, type MaterializeClass } from './coltype';
+import { materializeCell, type MaterializeClass, type MaterializeResolver } from './coltype';
 import {
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
@@ -117,13 +117,18 @@ export interface RelationOp {
    */
   readonly sql: string;
   /**
-   * The child (target) table + projected columns (issue #59) — carried so the relation batch's
-   * child rows go through the SAME TS read-path materialization (INT→number / BIGINT→string /
-   * DATE→string / BOOLEAN→boolean) as the primary read. Additive/optional (a bundle compiled before
-   * #59 omits them → the child rows stay raw, pre-#59 behavior).
+   * The child (target) table + projected columns (issue #59) — carried for diagnostics + as the
+   * basis of the baked `materializers` map. Additive/optional.
    */
   readonly targetTable?: string;
   readonly select?: readonly string[];
+  /**
+   * The child columns' STATIC materialize classes (issue #59): `column → MaterializeClass`, baked
+   * at compile from the model's DDL resolver (only non-passthrough entries). The relation batch runs
+   * these over its child rows so a BIGINT/DATE/BOOLEAN child de-boxes identically to the primary
+   * read — with ZERO per-read DB introspection. Absent ⇒ the child rows stay raw (no schema).
+   */
+  readonly materializers?: Readonly<Record<string, MaterializeClass>>;
 }
 
 /** The reserved input head the relation batch query binds its deduped key array to. */
@@ -137,7 +142,7 @@ export const RELATION_KEYS_HEAD = '__keys';
  * LATERAL (PG) / ROW_NUMBER (MySQL·SQLite) form. The SQL text is FIXED (the array binds as one
  * param regardless of length), so it needs no per-input recompile.
  */
-export function compileRelationOp(decl: RelationDecl): RelationOp {
+export function compileRelationOp(decl: RelationDecl, materializeResolver?: MaterializeResolver): RelationOp {
   if (decl.kind !== 'hasMany' && decl.limit !== undefined) {
     throw new Error(`relation '${decl.name}': a per-parent 'limit' is only valid for hasMany (got ${decl.kind})`);
   }
@@ -155,8 +160,21 @@ export function compileRelationOp(decl: RelationDecl): RelationOp {
   // CROSS-DB (V0 R1): carry the target connection tag ONLY when set (a same-DB relation stays
   // untagged, so existing bundles are byte-unchanged — the field is additive/optional).
   const conn = decl.connection !== undefined ? { connection: decl.connection } : {};
-  // Carry the child table + projection so the batch's child rows materialize (issue #59).
-  const target = { targetTable: decl.targetTable, select: [...decl.select] };
+  // Carry the child table + projection AND bake the STATIC child materializers (issue #59) from the
+  // model's DDL resolver — the batch's child rows then de-box with ZERO per-read introspection.
+  const materializers: Record<string, MaterializeClass> = {};
+  if (materializeResolver !== undefined) {
+    for (const c of decl.select) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(c)) continue;
+      const klass = materializeResolver(decl.targetTable, c);
+      if (klass !== undefined && klass !== 'passthrough') materializers[c] = klass;
+    }
+  }
+  const target = {
+    targetTable: decl.targetTable,
+    select: [...decl.select],
+    ...(Object.keys(materializers).length > 0 ? { materializers } : {}),
+  };
   if (composite) {
     return {
       name: decl.name,
@@ -329,12 +347,12 @@ export function runRelationOp(
   const sql = renderPlaceholders(cast, op.dialect);
   if (keys.length === 0) return { sql, keys, batch };
   const tCols = targetKeyCols(op);
-  // Materialize the child rows (issue #59) exactly like the primary read: derive the child columns'
-  // classes from the target table's schema (the DB's own SoT, via PRAGMA), enabling safeIntegers when
-  // the child projects a BIGINT so int8 arrives exact. So a BIGINT/DATE/BOOL child column de-boxes
-  // identically to a top-level read (INT→number / BIGINT→string / DATE→string / bool). SQLite-shaped
-  // driver only; the async PG/MySQL relation path materializes at its own seam.
-  const childCols = relationChildClasses(op, db);
+  // Materialize the child rows (issue #59) exactly like the primary read, using the STATIC
+  // materializers baked onto the op at compile (from the model's DDL — ZERO per-read introspection).
+  // Enable safeIntegers when the child projects a BIGINT so int8 arrives exact. A BIGINT/DATE/BOOL
+  // child column de-boxes identically to a top-level read (INT→number / BIGINT→string / DATE→string
+  // / bool). SQLite-shaped driver; the async PG/MySQL relation path materializes at its own seam.
+  const childCols = op.materializers;
   const int64Child = childCols !== undefined && Object.values(childCols).includes('int64');
   const stmt = db.prepare(sql);
   if (int64Child && typeof (stmt as { safeIntegers?: unknown }).safeIntegers === 'function') {
@@ -349,26 +367,6 @@ export function runRelationOp(
     else list.push(row);
   }
   return { sql, keys, batch };
-}
-
-/**
- * The child columns' {@link MaterializeClass} map for a relation op (issue #59), derived from the
- * TARGET table's schema via the SQLite-shaped driver (PRAGMA introspection — the DB's own
- * column-type SoT). Returns `undefined` when the op carries no `targetTable`/`select` (a pre-#59
- * bundle) or the driver can't introspect — the child rows then stay raw (tolerant). Only
- * non-passthrough classes are kept (int32/int64/date/bool).
- */
-function relationChildClasses(op: RelationOp, db: RelationDriver): Record<string, MaterializeClass> | undefined {
-  if (op.targetTable === undefined || op.select === undefined || op.select.length === 0) return undefined;
-  // The driver is `{ prepare(sql).all() }` — the same surface `sqliteMaterializeResolver` needs.
-  const resolve = sqliteMaterializeResolver(db as unknown as { prepare(sql: string): { all(...p: unknown[]): unknown[] } });
-  const cols: Record<string, MaterializeClass> = {};
-  for (const c of op.select) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(c)) continue;
-    const klass = resolve(op.targetTable, c);
-    if (klass !== undefined && klass !== 'passthrough') cols[c] = klass;
-  }
-  return Object.keys(cols).length > 0 ? cols : undefined;
 }
 
 /** Materialize relation child rows (issue #59): same coercion as the primary read. */

@@ -64,6 +64,7 @@ import {
   type ContractEffect,
 } from './catalog';
 import { assertComponentGraphPortable } from './guard';
+import { parseSchemaColumnTypes, materializeResolverFromColumnMap, type MaterializeResolver } from './coltype';
 
 /**
  * The litedbmodel leaf-component functions for the shared authoring surface —
@@ -129,6 +130,15 @@ export interface BehaviorModelContract {
   readonly components: readonly Component[];
   /** Method name → lowered component + derived effect. */
   readonly methods: Readonly<Record<string, BehaviorMethodSpec>>;
+  /**
+   * The STATIC read-path materialize resolver (issue #59), derived ONCE at registration from the
+   * model's DDL SoT (`publishBehaviors(cls, { schema })`). `(table, column) → MaterializeClass`,
+   * pure in-memory map lookups — ZERO per-read DB introspection. The read entry points
+   * (`executeBehavior`/`executeBehaviorAsync`/`read`) consult it so INT→number / BIGINT→string /
+   * DATE→string / BOOLEAN→boolean de-boxes for every read. Absent when the model registered no
+   * schema (then a read stays un-materialized — pre-#59 raw driver values).
+   */
+  readonly materializeResolver?: MaterializeResolver;
 }
 
 /** Options passed through to bc `compileBehaviors` (additive; all optional). */
@@ -141,6 +151,16 @@ export interface PublishBehaviorsOptions {
   readonly inputPorts?: Record<string, Record<string, PortSchema>>;
   /** Plan concurrency recorded on the lowered components (bc default: 16). */
   readonly concurrency?: number;
+  /**
+   * The model's STATIC SQL schema — the `CREATE TABLE …` DDL statements (the spec §4.1 column-type
+   * SoT). Supplied ONCE at registration; the contract precomputes a {@link MaterializeResolver} from
+   * it (`materializeResolverFromColumnMap(parseSchemaColumnTypes(schema))`) so every read de-boxes
+   * (INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean) with ZERO per-read DB introspection
+   * — column types come from the model definition, not the live DB (litedbmodel's static-resolution
+   * core value). Non-`CREATE TABLE` statements (seed INSERTs, etc.) are ignored, so a mixed
+   * schema+seed list is accepted as-is.
+   */
+  readonly schema?: readonly string[];
 }
 
 /**
@@ -180,11 +200,18 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
     };
   }
 
+  // STATIC read-path materialize resolver (issue #59): parse the model's DDL SoT ONCE at
+  // registration into a `table → (column → SQL type)` map and build a pure in-memory resolver.
+  // A read then de-boxes with ZERO DB introspection (litedbmodel's static-resolution core value).
+  const materializeResolver: MaterializeResolver | undefined =
+    options.schema !== undefined ? materializeResolverFromColumnMap(parseSchemaColumnTypes(options.schema)) : undefined;
+
   return {
     className: (cls as { name?: string }).name ?? '<anonymous>',
     ir,
     components: ir.components,
     methods,
+    ...(materializeResolver !== undefined ? { materializeResolver } : {}),
   };
 }
 

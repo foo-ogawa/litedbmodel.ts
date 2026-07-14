@@ -180,8 +180,8 @@ export type { FindFilterSource } from './find-filter-guard';
 
 // Column type system (spec §4.1; #58): SQL type → bc outType scalar, and the schema/DDL SoT
 // resolver that types a SELECT projection for typed (de-boxed) codegen. Fail-closed throughout.
-export { sqlTypeToBcScalar, sqlTypeToMaterializeClass, materializeCell, materializeClassOrUndefined, parseSchemaColumnTypes, schemaColumnTypeResolver, sqliteMaterializeResolver, asyncMaterializeResolver, materializeResolverFromColumnMap } from './coltype';
-export type { BcScalar, MaterializeClass, ColumnTypeResolver, MaterializeResolver, SqliteSchemaIntrospector, AsyncQuery } from './coltype';
+export { sqlTypeToBcScalar, sqlTypeToMaterializeClass, materializeCell, materializeClassOrUndefined, parseSchemaColumnTypes, schemaColumnTypeResolver, materializeResolverFromColumnMap } from './coltype';
+export type { BcScalar, MaterializeClass, ColumnTypeResolver, MaterializeResolver } from './coltype';
 
 // Thin TS runtime (spec §3 / §10 / §11): validate → SKIP → expand → eval → bind → execute → assembly.
 // `compileBundle` emits the §8 published artifact (Backend-Compiled once, TS-side);
