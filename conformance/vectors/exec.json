@@ -268,13 +268,10 @@
           "materializersByNode": {
             "n0": {
               "id": "int32",
-              "author_id": "int32",
-              "title": "passthrough",
-              "status": "passthrough"
+              "author_id": "int32"
             },
             "n1": {
-              "id": "int32",
-              "name": "passthrough"
+              "id": "int32"
             }
           }
         },
@@ -289,7 +286,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "sqlite",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -297,7 +299,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "sqlite",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -604,13 +612,10 @@
           "materializersByNode": {
             "n0": {
               "id": "int32",
-              "author_id": "int32",
-              "title": "passthrough",
-              "status": "passthrough"
+              "author_id": "int32"
             },
             "n1": {
-              "id": "int32",
-              "name": "passthrough"
+              "id": "int32"
             }
           }
         },
@@ -625,7 +630,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "sqlite",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -633,7 +643,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "sqlite",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },

@@ -54,7 +54,7 @@ import { renderPlaceholders, type Dialect } from './handler';
 import { compileWriteNode } from './tx';
 import { assertFindFilterFolded, type FindFilterSource } from '../find-filter-guard';
 import { deriveReadOutTypes, deriveReadMaterializers } from './outtype';
-import { materializeCell, type ColumnTypeResolver, type MaterializeClass } from '../coltype';
+import { materializeCell, materializeClassOrUndefined, type ColumnTypeResolver, type MaterializeClass, type MaterializeResolver } from '../coltype';
 import { mapSqliteError } from '../errors';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import { dbCast, dbDynamic, dbImmediate, dbTupleIn } from '../../DBValues';
@@ -1035,6 +1035,7 @@ export function compileReadGraph(
   entry?: string,
   findFilterModel?: FindFilterSource,
   resolveColumnType?: ColumnTypeResolver,
+  materializeResolver?: MaterializeResolver,
 ): ReadGraph {
   const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
   if (component === undefined) throw new Error(`static-bundle: entry component '${entry ?? '<first>'}' not found in contract`);
@@ -1066,10 +1067,20 @@ export function compileReadGraph(
   // schema/DDL SoT) is supplied — without it the read graph stays un-annotated (interpret path only;
   // typed codegen then fail-closes downstream, never silently boxes). Any ambiguity throws here.
   const outTypes = resolveColumnType !== undefined ? deriveReadOutTypes(component as never, resolveColumnType) : undefined;
-  // TS read-path materializers (issue #59): per-Select `column → MaterializeClass`, derived from the
-  // SAME column-type SoT. Present only when a resolver is supplied (same gate as outType) — so a
-  // read compiled WITHOUT a resolver stays un-materialized (raw driver values, pre-#59 behavior).
-  const materializers = resolveColumnType !== undefined ? deriveReadMaterializers(component as never, resolveColumnType) : undefined;
+  // TS read-path materializers (issue #59, ALWAYS-ON): per-Select `column → MaterializeClass`. Derived
+  // from a TOLERANT `materializeResolver` — the production read entry points (executeBehavior /
+  // executeBehaviorAsync / read) auto-derive it from the live DB schema (the column-type SoT) and pass
+  // it in, so materialization fires for EVERY real read with NO caller-supplied resolver. It is
+  // DECOUPLED from the codegen `resolveColumnType` (outType) path: passing only the materialize
+  // resolver adds materializers WITHOUT the codegen outType annotations (so a plain read's serialized
+  // bundle shape is unchanged unless a materialize resolver is supplied). A tolerant resolver never
+  // throws — un-typeable columns just stay raw. When the codegen resolver IS supplied but no
+  // materialize resolver is, materializers are ALSO derived from it (so the codegen/bench path that
+  // passes a schema resolver still de-boxes) via a thin adapter.
+  const matResolver: MaterializeResolver | undefined =
+    materializeResolver ??
+    (resolveColumnType !== undefined ? (t, c) => materializeClassOrUndefined(resolveColumnType(t, c)) : undefined);
+  const materializers = matResolver !== undefined ? deriveReadMaterializers(component as never, matResolver) : undefined;
 
   const surrogateBody = component.body.map((n) => {
     if ('cond' in n) return n;
@@ -1108,12 +1119,24 @@ export function compileReadGraph(
 function materializeRows(
   rows: Record<string, unknown>[],
   cols: Record<string, MaterializeClass> | undefined,
+  safeIntegersOn = false,
 ): Record<string, unknown>[] {
-  if (cols === undefined) return rows;
+  if (cols === undefined && !safeIntegersOn) return rows;
   for (const row of rows) {
     for (const key of Object.keys(row)) {
-      const klass = cols[key];
-      if (klass !== undefined) row[key] = materializeCell(row[key], klass);
+      const klass = cols?.[key];
+      if (klass !== undefined) {
+        row[key] = materializeCell(row[key], klass);
+        continue;
+      }
+      // Defensive (SQLite safeIntegers mode): when the statement was put in safe-integer mode for a
+      // BIGINT column, EVERY int column arrives as a bigint — including columns the resolver didn't
+      // type. Narrow a stray bigint back to a number when it fits safely, else to an exact string
+      // (so a value never leaks out as a raw bigint, which is not JSON-safe).
+      if (safeIntegersOn && typeof row[key] === 'bigint') {
+        const v = row[key] as bigint;
+        row[key] = v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v.toString();
+      }
     }
   }
   return rows;
@@ -1145,14 +1168,16 @@ export function executeReadGraph(graph: ReadGraph, input: Scope, db: SqliteDb): 
       const stmt = db.prepare(sql);
       // When this node projects a 64-bit int (BIGINT) column, put the statement in SQLite's
       // safe-integer mode so int8 comes back as an EXACT bigint (a JS number would already have
-      // rounded it — the #59 hole). `materializeRows` then narrows int32 columns' bigint→number
-      // and keeps int64 as bigint. Feature-detected: `safeIntegers` exists on better-sqlite3
-      // statements; a mock/other driver without it simply skips (its rows are already exact).
+      // rounded it — the #59 hole). `materializeRows` then converts int64 bigint→string and narrows
+      // int32 bigint→number (incl. any stray int column). Feature-detected: `safeIntegers` exists on
+      // better-sqlite3 statements; a mock/other driver without it simply skips (rows already exact).
+      let safeIntegersOn = false;
       if (cols !== undefined && hasInt64(cols) && typeof (stmt as { safeIntegers?: unknown }).safeIntegers === 'function') {
         (stmt as unknown as { safeIntegers(v: boolean): unknown }).safeIntegers(true);
+        safeIntegersOn = true;
       }
       const rows = stmt.all(...params) as Record<string, unknown>[];
-      return { ok: materializeRows(rows, cols) as unknown as Value };
+      return { ok: materializeRows(rows, cols, safeIntegersOn) as unknown as Value };
     } catch (e) {
       return { error: mapSqliteError(e).message };
     }

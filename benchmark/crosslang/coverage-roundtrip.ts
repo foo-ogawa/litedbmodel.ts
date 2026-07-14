@@ -32,8 +32,9 @@
 //     field types); its native VALUE run is deferred to the #44 cross-lang re-bench.
 
 import Database from 'better-sqlite3';
-import { Pool, types as pgTypes } from 'pg';
+import pgModule from 'pg';
 import mysql from 'mysql2/promise';
+const { Pool } = pgModule;
 import * as lm from '../../dist/scp/index.mjs';
 import {
   SCHEMA, PG_SCHEMA, MYSQL_SCHEMA,
@@ -44,12 +45,7 @@ import {
 } from './domain.js';
 
 type Row = Record<string, unknown>;
-type MatClass = 'number' | 'bigint-string' | 'float' | 'string' | 'bool' | 'json';
-
-// Configure the pg date-family type parsers ONCE (global on the pg module) so DATE/TIMESTAMP
-// arrive as their native textual string (not a JS Date) — the coercible form the read-path
-// materializer expects.
-lm.configurePgDeboxTypeParsers(pgTypes);
+// (pg date type parsers are registered by `pgDeboxExecutor` inside `readPg`.)
 
 interface Failure { where: string; detail: string }
 const failures: Failure[] = [];
@@ -195,15 +191,16 @@ function verifyDialect(dialect: string, rows: Row[]): void {
   }
 }
 
-// ── Live-DB read of the coverage `find` via the SHIPPED SCP path (with de-box drivers) ────────
+// ── Live-DB read via the PRODUCTION public API (NO caller-supplied resolver) ──────────────────
+// These call `executeBehavior` / `executeBehaviorAsync` exactly as a shipped consumer would — no
+// `compileBundle(..., resolver)`, no hand-applied materializer. The entry points auto-derive the
+// column-type SoT from the live DB (SQLite PRAGMA / PG·MySQL information_schema), so this proves the
+// de-box fires on the shipped API, not just the low-level bench path.
 function readSqlite(): Row[] {
   const db = new Database(':memory:');
   for (const s of SCHEMA) db.exec(s);
   seedCoverage(db);
-  // The read path itself enables safeIntegers per-statement for BIGINT columns (see
-  // executeReadGraph); no global driver flag needed here.
-  const bundle = lm.compileBundle(readsContract, COVERAGE_ENTRY, [], 'sqlite', undefined, lm.schemaColumnTypeResolver(SCHEMA));
-  const out = lm.executeBundle(bundle, COVERAGE_INPUT, { db });
+  const out = lm.executeBehavior(readsContract, COVERAGE_INPUT, { db, entry: COVERAGE_ENTRY });
   db.close();
   return Array.isArray(out) ? (out as Row[]) : [];
 }
@@ -212,13 +209,12 @@ async function readPg(): Promise<Row[]> {
   const boot = new Pool({ ...PG_BOOT_CONN, max: 1 });
   await boot.query(`CREATE SCHEMA IF NOT EXISTS ${PG_SCHEMA_NAME}`);
   await boot.end();
-  const pool = new Pool({ ...PG_CONN, max: 4 });
+  // pgDeboxExecutor: builds the pool + registers the pg date type parsers, then returns the executor.
+  const { pool, exec } = lm.pgDeboxExecutor(pgModule, { ...PG_CONN, max: 4 });
   for (const s of PG_SCHEMA) await pool.query(s);
   for (const s of seedCoverageStatements('postgres')) await pool.query(s);
-  const exec = lm.pgPoolExecutor(pool);
-  const bundle = lm.compileBundle(readsContract, COVERAGE_ENTRY, [], 'postgres', undefined, lm.schemaColumnTypeResolver(PG_SCHEMA));
-  const out = await lm.executeBundleAsync(bundle, COVERAGE_INPUT, { exec, dialect: 'postgres' });
-  await pool.end();
+  const out = await lm.executeBehaviorAsync(readsContract, COVERAGE_INPUT, { exec, entry: COVERAGE_ENTRY, dialect: 'postgres' });
+  await (pool as { end?: () => Promise<void> }).end?.();
   return Array.isArray(out) ? (out as Row[]) : [];
 }
 
@@ -226,15 +222,12 @@ async function readMysql(): Promise<Row[]> {
   const boot = mysql.createPool({ ...MYSQL_BOOT_CONN, connectionLimit: 1 });
   await boot.query(`CREATE DATABASE IF NOT EXISTS ${MYSQL_DB_NAME}`);
   await boot.end();
-  // The mysql2 pool MUST carry the de-box options (BIGINT→string, date→string) so the read-path
-  // materializer gets coercible values.
-  const pool = mysql.createPool({ ...MYSQL_CONN, ...lm.mysqlDeboxPoolOptions, connectionLimit: 4, multipleStatements: false });
+  // mysqlDeboxExecutor: builds the pool WITH the de-box options (BIGINT→string, date→string) baked in.
+  const { pool, exec } = lm.mysqlDeboxExecutor(mysql, { ...MYSQL_CONN, connectionLimit: 4, multipleStatements: false });
   for (const s of MYSQL_SCHEMA) await pool.query(s);
   for (const s of seedCoverageStatements('mysql')) await pool.query(s);
-  const exec = lm.mysqlPoolExecutor(pool as never);
-  const bundle = lm.compileBundle(readsContract, COVERAGE_ENTRY, [], 'mysql', undefined, lm.schemaColumnTypeResolver(MYSQL_SCHEMA));
-  const out = await lm.executeBundleAsync(bundle, COVERAGE_INPUT, { exec, dialect: 'mysql' });
-  await pool.end();
+  const out = await lm.executeBehaviorAsync(readsContract, COVERAGE_INPUT, { exec, entry: COVERAGE_ENTRY, dialect: 'mysql' });
+  await (pool as { end?: () => Promise<void> }).end?.();
   return Array.isArray(out) ? (out as Row[]) : [];
 }
 

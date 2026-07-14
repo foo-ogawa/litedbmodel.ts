@@ -100,6 +100,48 @@ export function pgPoolExecutor(pool: PgPoolLike): SqlExecutorAsync {
  *
  * Recommend `connectionLimit` ≥ the plan's `concurrency` (default 16).
  */
+// ── Production de-box executor factories (issue #59) ──────────────────────────
+// The read-path materializer needs the driver to hand over BIGINT as a string and (ideally) DATE
+// as a string. These factories build a correctly-configured pool AND return its executor in ONE
+// call, so the async production path (`executeBehaviorAsync`) is de-box-correct by construction —
+// not reliant on a caller hand-spreading options. `pg` / `mysql2` are passed in (optional peer
+// deps — this module imports neither), keeping the runtime driver-agnostic.
+
+/** Minimal `pg` module surface: a `Pool` ctor + the global `types.setTypeParser`. */
+export interface PgModuleLike {
+  Pool: new (config: Record<string, unknown>) => PgPoolLike & { end?: () => Promise<void> };
+  types: PgTypesLike;
+}
+
+/** Minimal `mysql2/promise` module surface: `createPool`. */
+export interface Mysql2ModuleLike {
+  createPool(config: Record<string, unknown>): MysqlPoolLike & { end?: () => Promise<void> };
+}
+
+/**
+ * Build a PG pool + executor with the read-path de-box wired IN (issue #59): registers the pg date
+ * type parsers (DATE/TIMESTAMP family → native textual string) globally, then builds the pool.
+ * int8 already arrives as a string on pg. Returns `{ pool, exec }` — pass `exec` to
+ * `executeBehaviorAsync`. This is the production async path's de-box-correct entry (no hand-spread
+ * options).
+ */
+export function pgDeboxExecutor(pg: PgModuleLike, config: Record<string, unknown>): { pool: PgPoolLike & { end?: () => Promise<void> }; exec: SqlExecutorAsync } {
+  configurePgDeboxTypeParsers(pg.types);
+  const pool = new pg.Pool(config);
+  return { pool, exec: pgPoolExecutor(pool) };
+}
+
+/**
+ * Build a MySQL pool + executor with the read-path de-box wired IN (issue #59): the pool carries
+ * {@link mysqlDeboxPoolOptions} (`supportBigNumbers + bigNumberStrings` so BIGINT → exact string,
+ * `dateStrings` so the date family → string) — options that MUST be set at pool construction (a
+ * rounded BIGINT cannot be un-rounded post-hoc). Returns `{ pool, exec }` for `executeBehaviorAsync`.
+ */
+export function mysqlDeboxExecutor(mysql2: Mysql2ModuleLike, config: Record<string, unknown>): { pool: MysqlPoolLike & { end?: () => Promise<void> }; exec: SqlExecutorAsync } {
+  const pool = mysql2.createPool({ ...config, ...mysqlDeboxPoolOptions });
+  return { pool, exec: mysqlPoolExecutor(pool) };
+}
+
 export function mysqlPoolExecutor(pool: MysqlPoolLike): SqlExecutorAsync {
   return async (sql: string, params: unknown[]): Promise<Record<string, unknown>[]> => {
     const [rows] = await pool.query(sql, params);

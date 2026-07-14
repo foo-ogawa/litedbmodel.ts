@@ -34,7 +34,8 @@ import {
 import { buildResultSet, type ReadOptions } from './typed-object';
 import type { DialectName } from './dialect';
 import type { FindFilterSource } from './find-filter-guard';
-import type { ColumnTypeResolver } from './coltype';
+import type { ColumnTypeResolver, MaterializeResolver } from './coltype';
+import { sqliteMaterializeResolver, asyncMaterializeResolver } from './coltype';
 import {
   compileReadGraph,
   executeReadGraph,
@@ -140,6 +141,25 @@ function primaryNodeOf(component: Component): Component['body'][number] | undefi
   return undefined;
 }
 
+/**
+ * The tables a READ component + its relations touch (issue #59): each Select node's literal `table`
+ * port + each relation decl's `targetTable`. Used to BOUND the async `information_schema`
+ * introspection so `executeBehaviorAsync` auto-derives the materialize resolver without scanning the
+ * whole DB. A non-literal `table` port is skipped (its columns just stay un-materialized — tolerant).
+ */
+function readTablesOf(component: Component, relations: readonly RelationDecl[] = []): string[] {
+  const tables = new Set<string>();
+  for (const n of component.body) {
+    if ('cond' in n) continue;
+    const ref = 'map' in n ? (n as { map: { component: string; ports: Record<string, unknown> } }).map : (n as { component: string; ports: Record<string, unknown> });
+    if (ref.component !== 'Select') continue;
+    const t = ref.ports['table'];
+    if (typeof t === 'string') tables.add(t);
+  }
+  for (const rel of relations) if (rel.targetTable) tables.add(rel.targetTable);
+  return [...tables];
+}
+
 /** Is a component's primary catalog node a write (Insert/Update/Delete)? */
 function isWriteComponent(component: Component): boolean {
   const p = primaryNodeOf(component);
@@ -160,7 +180,15 @@ export function executeBehavior(
   input: Scope,
   options: ExecuteOptions,
 ): Value {
-  return executeBundle(compileBundle(contract, options.entry, options.relations, options.dialect), input, options);
+  // ALWAYS-ON read de-box (issue #59): auto-derive the materialize resolver from the LIVE SQLite
+  // connection's own schema (PRAGMA table_info — the column-type SoT), so INT→number / BIGINT→string
+  // / DATE→string / BOOLEAN→boolean fires for EVERY read with NO caller-supplied resolver.
+  const matResolver = sqliteMaterializeResolver(options.db);
+  return executeBundle(
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, matResolver),
+    input,
+    options,
+  );
 }
 
 /**
@@ -175,6 +203,7 @@ export function compileBundle(
   dialectName: DialectName = 'sqlite',
   findFilterModel?: FindFilterSource,
   resolveColumnType?: ColumnTypeResolver,
+  materializeResolver?: MaterializeResolver,
 ): SqlBundle {
   const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
   if (component === undefined) throw new Error(`scp runtime: entry component '${entry ?? '<first>'}' not found in contract`);
@@ -199,7 +228,7 @@ export function compileBundle(
     };
   }
 
-  const readGraph = compileReadGraph(contract, dialectName, entry, findFilterModel, resolveColumnType);
+  const readGraph = compileReadGraph(contract, dialectName, entry, findFilterModel, resolveColumnType, materializeResolver);
   return {
     dialect: dialectName,
     name: readGraph.name,
@@ -300,7 +329,20 @@ export async function executeBehaviorAsync(
   input: Scope,
   options: AsyncExecuteOptions,
 ): Promise<Value> {
-  return executeBundleAsync(compileBundle(contract, options.entry, options.relations, options.dialect), input, options);
+  // ALWAYS-ON read de-box (issue #59), live PG/MySQL: introspect the DB's own `information_schema`
+  // (the column-type SoT) for the tables this read + its relations touch, and derive the materialize
+  // resolver from it — so BIGINT→string / DATE→string / bool→boolean / INT→number fires with NO
+  // caller-supplied resolver. Bounded to the read's tables (one query). Tolerant: if introspection
+  // fails, columns stay raw (a read still runs). PAIR with the driver de-box config (pg date type
+  // parsers + mysql2 supportBigNumbers/bigNumberStrings/dateStrings) so int8/date arrive coercible.
+  const component = options.entry ? contract.components.find((c) => c.name === options.entry) : contract.components[0];
+  const tables = component !== undefined ? readTablesOf(component, options.relations) : [];
+  const matResolver = await asyncMaterializeResolver(options.exec, tables);
+  return executeBundleAsync(
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, matResolver),
+    input,
+    options,
+  );
 }
 
 // ── Write-time relations: Command bundle + 1-tx execution (WS5, #25 — spec §6) ──
@@ -582,7 +624,14 @@ export function read<R = Record<string, unknown>>(
   input: Scope,
   options: ReadRuntimeOptions<R>,
 ): R[] {
-  return readBundle(compileBundle(contract, options.entry, options.relations, options.dialect), input, options);
+  // ALWAYS-ON read de-box (issue #59): auto-derive the materialize resolver from the live SQLite
+  // connection so the primary read materializes (INT→number / BIGINT→string / DATE→string / bool).
+  const matResolver = sqliteMaterializeResolver(options.db);
+  return readBundle(
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, matResolver),
+    input,
+    options,
+  );
 }
 
 /** {@link read} against an already-compiled {@link SqlBundle} (the published §8 artifact). */
