@@ -42,7 +42,182 @@ export const SCHEMA: readonly string[] = [
    );`,
   // Gate guard tables for the write-tx case (spec §6 shape).
   `CREATE TABLE uniq (name TEXT NOT NULL, s0 TEXT, f0 TEXT);`,
+  // ── ALL-TYPE coverage table (issue #59) ────────────────────────────────────
+  // Every §4.1 SQL type + a NULLABLE variant of each, so the typed de-box round-trip
+  // (DB value → wire → concrete struct → expected) is exercised for the FULL type set,
+  // not just int/text/json. The `deriveReadOutTypes` derivation types each column's bc
+  // scalar from THIS DDL (the §4.1 SoT); the round-trip verifier (`coverage-roundtrip.ts`)
+  // asserts each column materializes to the correct bc scalar AND the value survives.
+  //
+  // date → string and decimal → string are INTENTIONAL (owner-approved re-scope; #59):
+  // bc 0.6.0 has NO date/decimal portable scalar (PORTABLE_SCALAR_TYPES = string|int|
+  // float|bool|null; behavior-contracts#84 deferred), so these two columns are
+  // VALUE-PRESERVING string round-trips — the compromise is marked in code, never silent.
+  // SQLite affinity note: `dec_val`/`decn_val` are DECIMAL (NUMERIC affinity) — SQLite
+  // would coerce an integral-looking decimal to INTEGER, silently DROPPING trailing zeros
+  // (a real precision hole). We store decimals with a non-integral fractional part so the
+  // NUMERIC affinity keeps them as REAL/text faithfully across all three drivers; the
+  // verifier compares the STRING form to catch any precision drift.
+  `CREATE TABLE coverage (
+     id INTEGER PRIMARY KEY,
+     int_val INTEGER NOT NULL,
+     real_val REAL NOT NULL,
+     dec_val DECIMAL(20,4) NOT NULL,
+     text_val TEXT NOT NULL,
+     bool_val BOOLEAN NOT NULL,
+     date_val DATE NOT NULL,
+     json_val JSON NOT NULL,
+     intn_val INTEGER,
+     realn_val REAL,
+     decn_val DECIMAL(20,4),
+     textn_val TEXT,
+     booln_val BOOLEAN,
+     daten_val DATE,
+     jsonn_val JSON
+   );`,
 ];
+
+// ── Coverage seed (issue #59): representative + BOUNDARY values for every type ──
+// One "full" row (id=1) with every column non-null at a boundary value, and one
+// "null" row (id=2) whose nullable variants are all NULL (non-null columns still carry
+// their own boundary values). The verifier reads BOTH rows and checks the typed de-box
+// against `COVERAGE_EXPECTED` per dialect. Boundary values (§59 checklist): i64 max,
+// negative, 0, NULL, decimal precision edge, a real date, true/false, json object AND
+// json array.
+export const I64_MAX = '9223372036854775807'; // 2^63-1 — the i64 upper boundary (kept as string; JS Number can't hold it exactly)
+export const COVERAGE_JSON_OBJECT = { k: 'v', n: 42, nested: { a: [1, 2, 3] } };
+export const COVERAGE_JSON_ARRAY = [1, 'two', { three: 3 }, null];
+
+// Canonical JSON text (stable key order) — the value-preserving wire form the verifier
+// compares. DBs may reformat JSON whitespace, so the verifier parses+re-stringifies both
+// sides through JSON.parse before comparing (structural equality), catching any drift.
+export interface CoverageRow {
+  id: number;
+  int_val: string; // stored/compared as string so i64 max is exact (JS number would round it)
+  real_val: number;
+  dec_val: string; // decimal → string (bc#84 gap: no bc decimal scalar — value/precision-preserving)
+  text_val: string;
+  bool_val: boolean;
+  date_val: string; // date → string (bc#84 gap: no bc date scalar — value-preserving string)
+  json_val: unknown;
+  intn_val: string | null;
+  realn_val: number | null;
+  decn_val: string | null;
+  textn_val: string | null;
+  booln_val: boolean | null;
+  daten_val: string | null;
+  jsonn_val: unknown | null;
+}
+
+// Row 1: every column at a boundary/representative value; nullable variants NON-null.
+// Row 2: id=2 with 0 / negative / false boundaries and ALL nullable variants = NULL.
+export const COVERAGE_EXPECTED: readonly CoverageRow[] = [
+  {
+    id: 1,
+    int_val: I64_MAX, // i64 max boundary
+    real_val: 3.141592653589793,
+    dec_val: '12345678901234.5678', // 18 significant digits — precision edge (would lose digits if boxed to float64)
+    text_val: "coverage-text: 'quotes' & symbols ✓",
+    bool_val: true,
+    date_val: '2026-07-14',
+    json_val: COVERAGE_JSON_OBJECT, // json OBJECT
+    intn_val: '-9223372036854775808', // i64 min boundary (negative)
+    realn_val: -2.5,
+    decn_val: '0.0001', // smallest scale-4 decimal
+    textn_val: '',
+    booln_val: false,
+    daten_val: '1970-01-01',
+    jsonn_val: COVERAGE_JSON_ARRAY, // json ARRAY
+  },
+  {
+    id: 2,
+    int_val: '0', // zero boundary
+    real_val: 0,
+    dec_val: '-98765432109876.5432', // negative decimal precision edge
+    text_val: 'row2',
+    bool_val: false,
+    date_val: '2000-02-29', // leap-day date
+    json_val: [], // empty json array
+    intn_val: null,
+    realn_val: null,
+    decn_val: null,
+    textn_val: null,
+    booln_val: null,
+    daten_val: null,
+    jsonn_val: null,
+  },
+];
+
+// The projected column list for the coverage `find` (every column — full de-box surface).
+export const COVERAGE_COLUMNS = [
+  'id', 'int_val', 'real_val', 'dec_val', 'text_val', 'bool_val', 'date_val', 'json_val',
+  'intn_val', 'realn_val', 'decn_val', 'textn_val', 'booln_val', 'daten_val', 'jsonn_val',
+] as const;
+
+// The expected bc scalar per coverage column (the §4.1 mapping — what `deriveReadOutTypes`
+// MUST produce, i.e. the concrete native struct field type the codegen path materializes).
+// date/decimal → 'string' are the bc#84-gap value-preserving representations.
+export const COVERAGE_EXPECTED_SCALAR: Record<string, 'int' | 'float' | 'string' | 'bool'> = {
+  id: 'int',
+  int_val: 'int',
+  real_val: 'float',
+  dec_val: 'string', // bc#84 gap: no bc decimal scalar — precision-preserving string
+  text_val: 'string',
+  bool_val: 'bool',
+  date_val: 'string', // bc#84 gap: no bc date scalar — value-preserving string
+  json_val: 'string', // JSON column → JSON text (string); TS convenience de/serializes
+  intn_val: 'int',
+  realn_val: 'float',
+  decn_val: 'string', // bc#84 gap
+  textn_val: 'string',
+  booln_val: 'bool',
+  daten_val: 'string', // bc#84 gap
+  jsonn_val: 'string',
+};
+
+// Bind a coverage row to positional params for an INSERT. `bool` is written as 0/1 (SQLite
+// has no native boolean; PG/MySQL accept 0/1 too), `json` as its canonical text, decimal +
+// i64 as their exact string forms (so the DB stores the exact digits, not a rounded float).
+function coverageRowValues(r: CoverageRow): unknown[] {
+  const j = (v: unknown): string | null => (v === null ? null : JSON.stringify(v));
+  const b = (v: boolean | null): number | null => (v === null ? null : v ? 1 : 0);
+  return [
+    r.id, r.int_val, r.real_val, r.dec_val, r.text_val, b(r.bool_val), r.date_val, j(r.json_val),
+    r.intn_val, r.realn_val, r.decn_val, r.textn_val, b(r.booln_val), r.daten_val, j(r.jsonn_val),
+  ];
+}
+
+export function seedCoverage(db: InstanceType<typeof Database>): void {
+  const cols = COVERAGE_COLUMNS.join(', ');
+  const ph = COVERAGE_COLUMNS.map(() => '?').join(', ');
+  const ins = db.prepare(`INSERT INTO coverage (${cols}) VALUES (${ph})`);
+  const tx = db.transaction(() => {
+    for (const r of COVERAGE_EXPECTED) ins.run(...coverageRowValues(r));
+  });
+  tx();
+}
+
+// Coverage seed as language-neutral INSERTs (for the PG / MySQL live-DB axis). Decimals /
+// dates / i64 / json are single-quoted literals; NULLs are SQL NULL. Booleans are dialect-
+// aware: PG's BOOLEAN column rejects an integer literal, so PG gets `TRUE`/`FALSE` while
+// MySQL's TINYINT(1)-backed BOOLEAN takes `1`/`0`. The bool columns are the 6th (bool_val)
+// and 13th (booln_val) in COVERAGE_COLUMNS.
+export function seedCoverageStatements(dialect: 'postgres' | 'mysql' = 'mysql'): string[] {
+  const cols = COVERAGE_COLUMNS.join(', ');
+  const boolIdx = new Set([COVERAGE_COLUMNS.indexOf('bool_val'), COVERAGE_COLUMNS.indexOf('booln_val')]);
+  const lit = (v: unknown, i: number): string => {
+    if (v === null) return 'NULL';
+    // coverageRowValues already lowered booleans to 0/1; re-lift to a proper boolean literal
+    // for PG (it will not accept `1`/`0` for a BOOLEAN column).
+    if (boolIdx.has(i) && dialect === 'postgres') return v === 1 || v === true ? 'TRUE' : 'FALSE';
+    if (typeof v === 'number') return String(v);
+    return `'${String(v).replace(/'/g, "''")}'`;
+  };
+  return COVERAGE_EXPECTED.map((r) => {
+    const vals = coverageRowValues(r).map((v, i) => lit(v, i)).join(', ');
+    return `INSERT INTO coverage (${cols}) VALUES (${vals})`;
+  });
+}
 
 // Deterministic seed: 8 users, 40 posts (5 per user), 200 comments (5 per post).
 export function seed(db: InstanceType<typeof Database>): void {
@@ -78,6 +253,7 @@ export function freshDb(): InstanceType<typeof Database> {
   db.pragma('foreign_keys = ON');
   for (const s of SCHEMA) db.exec(s);
   seed(db);
+  seedCoverage(db); // issue #59: the ALL-TYPE coverage table + boundary-value rows
   return db;
 }
 
@@ -128,6 +304,19 @@ export class Reads extends lm.SemanticBehavior {
         lm.whereLike($, 'title', $.titleLike),
         lm.whereIn(lm.inColumn($, 'id'), $.ids),
       ],
+      order: 'id ASC',
+    });
+  }
+
+  // coverage (issue #59): a find over the ALL-TYPE coverage table binding a scalar eq
+  // param (`id`). Projects EVERY column so the typed de-box materializes the full type set
+  // (int/real/decimal/text/bool/date/json + nullable variants) into a concrete row struct.
+  // Scalar-eq only ⇒ typed-native-coverable (no array/IN-list head — #60's uncovered port).
+  CoverageFind($: any) {
+    return L.Select({
+      table: 'coverage',
+      select: [...COVERAGE_COLUMNS],
+      where: [lm.whereGe($.id, $.min_id)],
       order: 'id ASC',
     });
   }
@@ -325,6 +514,12 @@ export const READ_ENTRY: Record<string, string> = {
   hasManyLimit: 'Posts',
 };
 
+// The coverage read (issue #59), kept SEPARATE from the frozen 8-case perf matrix
+// (CROSSLANG_CASE_IDS) — it is a correctness/round-trip case, wired here so a later
+// re-bench (or the `coverage-roundtrip` verifier) resolves the SAME entry + input.
+export const COVERAGE_ENTRY = 'CoverageFind';
+export const COVERAGE_INPUT = { min_id: 1 } as const; // id >= 1 ⇒ both seeded rows
+
 // For the relation cases: which declared relation the read prefetches (`with`).
 export const READ_RELATION: Record<string, { decl: any; withName: string } | undefined> = {
   belongsTo: { decl: REL_BELONGS_TO, withName: 'author' },
@@ -363,6 +558,28 @@ export const PG_SCHEMA: readonly string[] = [
   // int64 arg for a text column ("unable to encode into text format") — INTEGER is correct for
   // every driver since the column only ever stores a numeric author_id.
   `CREATE TABLE uniq (name TEXT NOT NULL, s0 INTEGER, f0 TEXT)`,
+  // Coverage table (issue #59), PG dialect. `NUMERIC` → bc string (precision-preserving),
+  // `DOUBLE PRECISION` → bc float, `BOOLEAN` → bc bool, `DATE` → bc string, `JSONB` → bc
+  // string (JSON text). The DDL token drives the §4.1 scalar; the round-trip verifier
+  // checks each column materializes to the correct bc scalar on the LIVE PG driver.
+  `DROP TABLE IF EXISTS coverage CASCADE`,
+  `CREATE TABLE coverage (
+     id INTEGER PRIMARY KEY,
+     int_val BIGINT NOT NULL,
+     real_val DOUBLE PRECISION NOT NULL,
+     dec_val NUMERIC(20,4) NOT NULL,
+     text_val TEXT NOT NULL,
+     bool_val BOOLEAN NOT NULL,
+     date_val DATE NOT NULL,
+     json_val JSONB NOT NULL,
+     intn_val BIGINT,
+     realn_val DOUBLE PRECISION,
+     decn_val NUMERIC(20,4),
+     textn_val TEXT,
+     booln_val BOOLEAN,
+     daten_val DATE,
+     jsonn_val JSONB
+   )`,
 ];
 export const MYSQL_SCHEMA: readonly string[] = [
   `SET FOREIGN_KEY_CHECKS = 0`,
@@ -376,6 +593,29 @@ export const MYSQL_SCHEMA: readonly string[] = [
   `CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255) NOT NULL, created_at VARCHAR(255) NOT NULL)`,
   // `s0` binds `author_id` (always numeric) — INT, matching the PG schema's fix above.
   `CREATE TABLE uniq (name VARCHAR(255) NOT NULL, s0 INT, f0 VARCHAR(255))`,
+  // Coverage table (issue #59), MySQL dialect. `DECIMAL` → bc string (precision), `DOUBLE`
+  // → bc float, `BOOLEAN` (TINYINT(1) alias) → bc bool, `DATE` → bc string, `JSON` → bc
+  // string. MySQL DECIMAL is the classic single-driver precision hole (mysql2 returns it as
+  // a STRING already, PG as string, SQLite as REAL/text) — the verifier compares the string
+  // form so any drift shows up on the offending driver only.
+  `DROP TABLE IF EXISTS coverage`,
+  `CREATE TABLE coverage (
+     id INT PRIMARY KEY,
+     int_val BIGINT NOT NULL,
+     real_val DOUBLE NOT NULL,
+     dec_val DECIMAL(20,4) NOT NULL,
+     text_val TEXT NOT NULL,
+     bool_val BOOLEAN NOT NULL,
+     date_val DATE NOT NULL,
+     json_val JSON NOT NULL,
+     intn_val BIGINT,
+     realn_val DOUBLE,
+     decn_val DECIMAL(20,4),
+     textn_val TEXT,
+     booln_val BOOLEAN,
+     daten_val DATE,
+     jsonn_val JSON
+   )`,
 ];
 
 // After seeding 40 posts with explicit ids 1..40, advance the PG SERIAL sequence so a

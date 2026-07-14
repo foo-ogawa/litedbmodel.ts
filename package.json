@@ -57,6 +57,8 @@
     "conformance:run": "npm run build:scp && tsx conformance/vectors-run.ts",
     "conformance:codegen": "npm run build:scp && tsx conformance/codegen/codegen-runner.ts",
     "conformance:livedb": "tsx conformance/livedb-run.ts",
+    "bench:coverage:roundtrip": "npm run build:scp && tsx benchmark/crosslang/coverage-roundtrip.ts",
+    "bench:coverage:roundtrip:docker": "npm run docker:livedb:up && sleep 5 && npm run bench:coverage:roundtrip; e=$?; npm run docker:livedb:down; exit $e",
     "docker:livedb:up": "docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml up -d postgres mysql",
     "docker:livedb:down": "docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml down -v",
     "conformance:livedb:docker": "npm run docker:livedb:up && sleep 5 && npm run conformance:gen:livedb && npm run conformance:livedb; e=$?; npm run docker:livedb:down; exit $e"
