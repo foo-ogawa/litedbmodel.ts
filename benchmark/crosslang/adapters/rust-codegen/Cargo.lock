@@ -16,9 +16,9 @@ dependencies = [
 
 [[package]]
 name = "behavior-contracts"
-version = "0.6.0"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "593db921d6d8756d20d0048eec15add9cc6b9da5d1a68d0fd0375f9a8f4aee80"
+checksum = "63d7c130ad1291f941e8deea49534e80cf2ff5099cde9a041dc7f353c4817984"
 
 [[package]]
 name = "bitflags"

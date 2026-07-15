@@ -1,31 +1,34 @@
 /**
  * ALWAYS-ON production read-path de-box (issue #59) — the fix must fire on the SHIPPED API with NO
- * caller-supplied column-type resolver. These tests call `executeBehavior` / `read` (the SQLite
- * production entry points) directly on tables with BIGINT / DATE / BOOLEAN columns and assert the
- * returned rows are already de-boxed: INT→number, BIGINT→string (exact + JSON-safe), DATE→string,
- * BOOLEAN→boolean. This is the exact probe the re-audit ran; it guards against the fix regressing to
- * opt-in (materialization only when a resolver is passed).
+ * caller-supplied column-type resolver and NO schema argument. Column types are declared INLINE on
+ * the model (`static columns`), so `executeBehavior` / `read` (the SQLite production entry points)
+ * de-box every read: INT→number, BIGINT→string (exact + JSON-safe), DATE→string, BOOLEAN→boolean.
+ * Guards against the fix regressing to opt-in (materialization only when a resolver/schema is passed)
+ * or reintroducing per-read DB introspection.
  */
 
 import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   SemanticBehavior, components, publishBehaviors, executeBehavior, read,
-  whereEq, whereGe, parseSchemaColumnTypes, materializeResolverFromColumnMap,
+  whereEq, whereGe, materializeResolverFromColumnMap, columnTypeResolverFromColumnMap,
 } from '../../src/scp';
 
 const L = components();
 
-// The STATIC model DDL SoT — `dec` is TEXT (decimal→string; a SQLite NUMERIC-affinity column would
-// drop precision at STORAGE). Passed to publishBehaviors so the contract precomputes the resolver
-// ONCE (no per-read DB introspection).
-const COV_DDL = `CREATE TABLE cov (id INTEGER PRIMARY KEY, i32 INT, i64 BIGINT, flag BOOLEAN, day DATE, dec TEXT, note TEXT);`;
-const REL_DDL = [
-  `CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT);`,
-  `CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER, big BIGINT, day DATE, flag BOOLEAN);`,
-];
+// The INLINE typed-column declaration — `dec` is TEXT (decimal→string; a SQLite NUMERIC-affinity
+// column would drop precision at STORAGE). Declared as `static columns` on the model; the contract
+// precomputes the resolvers ONCE (no per-read DB introspection, no schema arg).
+const COV_COLUMNS = {
+  cov: { id: 'INTEGER', i32: 'INT', i64: 'BIGINT', flag: 'BOOLEAN', day: 'DATE', dec: 'TEXT', note: 'TEXT' },
+} as const;
+const REL_COLUMNS = {
+  parent: { id: 'INTEGER', name: 'TEXT' },
+  child: { id: 'INTEGER', parent_id: 'INTEGER', big: 'BIGINT', day: 'DATE', flag: 'BOOLEAN' },
+} as const;
 
 class Reads extends SemanticBehavior {
+  static columns = COV_COLUMNS;
   All($: { min_id: unknown }) {
     return L.Select({
       table: 'cov',
@@ -37,24 +40,31 @@ class Reads extends SemanticBehavior {
 }
 
 class RelReads extends SemanticBehavior {
+  static columns = REL_COLUMNS;
   Parents($: { pid: unknown }) {
     return L.Select({ table: 'parent', select: ['id', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' });
   }
 }
 
+class NoColumns extends SemanticBehavior {
+  Q($: { pid: unknown }) {
+    return L.Select({ table: 'parent', select: ['id'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' });
+  }
+}
+
 function freshDb(): InstanceType<typeof Database> {
   const db = new Database(':memory:');
-  db.exec(COV_DDL);
+  db.exec(`CREATE TABLE cov (id INTEGER PRIMARY KEY, i32 INT, i64 BIGINT, flag BOOLEAN, day DATE, dec TEXT, note TEXT);`);
   // i64 max bound as a string so SQLite stores the exact 64-bit value (a JS number would round it).
   db.prepare(`INSERT INTO cov VALUES (?,?,?,?,?,?,?)`).run(1, 2147483647, '9223372036854775807', 1, '2026-07-14', '12345678901234.5678', 'hi');
   db.prepare(`INSERT INTO cov VALUES (?,?,?,?,?,?,?)`).run(2, 0, '-9223372036854775808', 0, '2000-02-29', '-0.5', null);
   return db;
 }
 
-describe('#59 ALWAYS-ON de-box — executeBehavior (sqlite) with NO caller-supplied resolver', () => {
-  // The model registers its STATIC schema; the resolver is precomputed on the contract (no
-  // per-read introspection). The caller passes NOTHING extra to executeBehavior.
-  const contract = publishBehaviors(Reads, { schema: [COV_DDL] });
+describe('#59 ALWAYS-ON de-box — executeBehavior (sqlite), types declared INLINE (no schema arg, no resolver)', () => {
+  // The model declares `static columns`; the resolver is precomputed on the contract. The caller
+  // passes NOTHING extra to executeBehavior.
+  const contract = publishBehaviors(Reads);
 
   it('materializes INT→number, BIGINT→string(exact), BOOLEAN→boolean, DATE→string', () => {
     const db = freshDb();
@@ -95,12 +105,13 @@ describe('#59 ALWAYS-ON de-box — executeBehavior (sqlite) with NO caller-suppl
   });
 });
 
-describe('#59 ALWAYS-ON de-box — relation child rows materialize (no resolver)', () => {
-  const contract = publishBehaviors(RelReads, { schema: REL_DDL });
+describe('#59 ALWAYS-ON de-box — relation child rows materialize (inline columns, no resolver)', () => {
+  const contract = publishBehaviors(RelReads);
 
   it('a hasMany relation over a BIGINT/DATE/BOOLEAN child de-boxes the child rows', () => {
     const db = new Database(':memory:');
-    for (const s of REL_DDL) db.exec(s);
+    db.exec(`CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT);`);
+    db.exec(`CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER, big BIGINT, day DATE, flag BOOLEAN);`);
     db.exec(`INSERT INTO parent VALUES (1,'p');`);
     db.prepare(`INSERT INTO child VALUES (?,?,?,?,?)`).run(10, 1, '9223372036854775807', '2026-07-14', 1);
     const REL = {
@@ -117,11 +128,13 @@ describe('#59 ALWAYS-ON de-box — relation child rows materialize (no resolver)
   });
 });
 
-describe('#59 STATIC resolver — parseSchemaColumnTypes + materializeResolverFromColumnMap (DDL SoT, no DB)', () => {
-  it('derives each column class from the model DDL — pure in-memory, zero DB access', () => {
-    const resolve = materializeResolverFromColumnMap(
-      parseSchemaColumnTypes([`CREATE TABLE t (a INTEGER, b BIGINT, c BOOLEAN, d DATE, e DECIMAL(10,2), f TEXT);`]),
-    );
+describe('#59 STATIC resolvers from an inline column map (pure in-memory, zero DB)', () => {
+  const colMap = new Map<string, Map<string, string>>([
+    ['t', new Map(Object.entries({ a: 'INTEGER', b: 'BIGINT', c: 'BOOLEAN', d: 'DATE', e: 'DECIMAL(10,2)', f: 'TEXT' }))],
+  ]);
+
+  it('materializeResolverFromColumnMap derives each column class (tolerant on unknown)', () => {
+    const resolve = materializeResolverFromColumnMap(colMap);
     expect(resolve('t', 'a')).toBe('int32');
     expect(resolve('t', 'b')).toBe('int64');
     expect(resolve('t', 'c')).toBe('bool');
@@ -132,13 +145,23 @@ describe('#59 STATIC resolver — parseSchemaColumnTypes + materializeResolverFr
     expect(resolve('nosuchtable', 'x')).toBeUndefined();
   });
 
-  it('the contract carries the precomputed resolver (computed ONCE at publishBehaviors)', () => {
-    const contract = publishBehaviors(Reads, { schema: [COV_DDL] });
+  it('columnTypeResolverFromColumnMap returns the declared SQL type; THROWS on undeclared (codegen fail-closed)', () => {
+    const resolve = columnTypeResolverFromColumnMap(colMap);
+    expect(resolve('t', 'b')).toBe('BIGINT');
+    expect(() => resolve('t', 'zzz')).toThrow(/not declared/i);
+    expect(() => resolve('nosuchtable', 'x')).toThrow(/no inline column-type declaration/i);
+  });
+
+  it('the contract carries BOTH resolvers precomputed from the inline `static columns` (ONCE)', () => {
+    const contract = publishBehaviors(Reads);
     expect(contract.materializeResolver).toBeDefined();
     expect(contract.materializeResolver!('cov', 'i64')).toBe('int64');
     expect(contract.materializeResolver!('cov', 'i32')).toBe('int32');
     expect(contract.materializeResolver!('cov', 'flag')).toBe('bool');
-    // No schema → no resolver (pre-#59 raw behavior).
-    expect(publishBehaviors(Reads).materializeResolver).toBeUndefined();
+    expect(contract.resolveColumnType).toBeDefined();
+    expect(contract.resolveColumnType!('cov', 'i64')).toBe('BIGINT');
+    // A model with NO `static columns` → no resolver (a model with no typed reads; raw behavior).
+    expect(publishBehaviors(NoColumns).materializeResolver).toBeUndefined();
+    expect(publishBehaviors(NoColumns).resolveColumnType).toBeUndefined();
   });
 });

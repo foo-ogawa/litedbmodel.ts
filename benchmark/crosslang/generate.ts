@@ -50,11 +50,12 @@ import { decodeNativeCase, rustCompanionSource, goCompanionSource, type NCase } 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..');
 
-// The column-type SoT (spec §4.1): the shared-domain CREATE TABLE DDL, parsed into a
-// `(table, column) → SQL type` resolver. `compileBundle` consults it to derive each read node's
-// `outType`/`outputType` so bc's typed-raw de-box endpoint emits concrete row structs (no dynamic
-// Value boxing) for the READ cases. Unknown/ambiguous columns THROW (no-assume, no-fallback).
-const COLUMN_TYPES = lm.schemaColumnTypeResolver(SCHEMA);
+// The column-type SoT (spec §4.1): the INLINE `static columns` declaration on the model (issue #59),
+// precomputed into a `(table, column) → SQL type` resolver on the contract at registration. The SAME
+// declared types drive both the codegen `outType`/`outputType` (here) and the TS read-path de-box —
+// no external DDL. `compileBundle` consults it to type each read node so bc's typed-raw de-box
+// endpoint emits concrete row structs. Unknown/undeclared columns THROW (no-assume, no-fallback).
+const COLUMN_TYPES = readsContract.resolveColumnType!;
 
 // Languages whose codegen MUST be de-interpreted native code (bc straight-line/typed — no
 // interpreter delegation): `delegatesToRunBehavior` MUST be false. python/php intentionally use

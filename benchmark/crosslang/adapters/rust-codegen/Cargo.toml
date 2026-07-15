@@ -24,7 +24,7 @@ name = "lm_codegen"
 path = "src/main.rs"
 
 [dependencies]
-behavior-contracts = { version = "0.6.0", default-features = false }
+behavior-contracts = { version = "0.7.2", default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [profile.release]

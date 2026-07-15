@@ -7,6 +7,8 @@ github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkp
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/foo-ogawa/behavior-contracts/go v0.6.0 h1:OYccUp7egI0f4KNqI8xCEXW5HdgcjvDLI94Su7eWuJk=
 github.com/foo-ogawa/behavior-contracts/go v0.6.0/go.mod h1:VNAdnyikTGnteW7ymUi60kFTer0KZkpsLUQ5OnQaZgA=
+github.com/foo-ogawa/behavior-contracts/go v0.7.2 h1:8WxycA2tUQi4fbJHhb50tqIt2/qBdHw1sPzoi/vWUes=
+github.com/foo-ogawa/behavior-contracts/go v0.7.2/go.mod h1:VNAdnyikTGnteW7ymUi60kFTer0KZkpsLUQ5OnQaZgA=
 github.com/go-sql-driver/mysql v1.10.0 h1:Q+1LV8DkHJvSYAdR83XzuhDaTykuDx0l6fkXxoWCWfw=
 github.com/go-sql-driver/mysql v1.10.0/go.mod h1:M+cqaI7+xxXGG9swrdeUIoPG3Y3KCkF0pZej+SK+nWk=
 github.com/google/pprof v0.0.0-20240409012703-83162a5b38cd h1:gbpYu9NMq8jhDVbvlGkMFWCjLFlqqEZjEmObmhUy6Vo=

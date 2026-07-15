@@ -64,7 +64,7 @@ import {
   type ContractEffect,
 } from './catalog';
 import { assertComponentGraphPortable } from './guard';
-import { parseSchemaColumnTypes, materializeResolverFromColumnMap, type MaterializeResolver } from './coltype';
+import { materializeResolverFromColumnMap, columnTypeResolverFromColumnMap, type MaterializeResolver, type ColumnTypeResolver } from './coltype';
 
 /**
  * The litedbmodel leaf-component functions for the shared authoring surface —
@@ -132,13 +132,41 @@ export interface BehaviorModelContract {
   readonly methods: Readonly<Record<string, BehaviorMethodSpec>>;
   /**
    * The STATIC read-path materialize resolver (issue #59), derived ONCE at registration from the
-   * model's DDL SoT (`publishBehaviors(cls, { schema })`). `(table, column) → MaterializeClass`,
-   * pure in-memory map lookups — ZERO per-read DB introspection. The read entry points
-   * (`executeBehavior`/`executeBehaviorAsync`/`read`) consult it so INT→number / BIGINT→string /
-   * DATE→string / BOOLEAN→boolean de-boxes for every read. Absent when the model registered no
-   * schema (then a read stays un-materialized — pre-#59 raw driver values).
+   * model's INLINE typed-column declaration (`static columns` — see {@link ModelColumns}).
+   * `(table, column) → MaterializeClass`, pure in-memory map lookups — ZERO per-read DB
+   * introspection. The read entry points (`executeBehavior`/`executeBehaviorAsync`/`read`) consult
+   * it so INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean de-boxes for every read. Absent
+   * only when the model declared no `columns` (a model with no typed reads → raw driver values).
    */
   readonly materializeResolver?: MaterializeResolver;
+  /**
+   * The STATIC codegen column-type resolver (issue #58/#59), derived from the SAME inline `columns`
+   * declaration — `(table, column) → SQL type token`. Feeds `deriveReadOutTypes` so the typed-native
+   * codegen `outType` annotations come from the declaration (not an external DDL). Absent when the
+   * model declared no `columns`.
+   */
+  readonly resolveColumnType?: ColumnTypeResolver;
+}
+
+/**
+ * The INLINE typed-column declaration (issue #59): `table → (column → SQL type token)`, declared
+ * ONCE per table on the behavior model — the BC-native, consumer-inline column-type SoT (bc never
+ * infers types; the author annotates them, exactly as graphddb declares its typed entity columns).
+ * A read's projection resolves each column's type from THIS declaration (no external DDL string, no
+ * DB introspection). The registration precomputes both the codegen `outType` resolver and the TS
+ * read-path materialize resolver from it, so de-box is always-on for every registered model. SQL
+ * type tokens are the §4.1 vocabulary (`INTEGER`/`INT`/`BIGINT`/`REAL`/`DOUBLE`/`DECIMAL(…)`/`TEXT`/
+ * `VARCHAR(…)`/`BOOLEAN`/`DATE`/`TIMESTAMP`/`JSON`/`JSONB`/`UUID`/…).
+ */
+export type ModelColumns = Readonly<Record<string, Readonly<Record<string, string>>>>;
+
+/**
+ * A behavior model class may declare its columns inline via a `static columns` field — the typed
+ * catalog the reads project from. `publishBehaviors` reads it at registration to build the de-box
+ * resolvers. (Optional per class; a model with no typed reads may omit it.)
+ */
+export interface TypedModelClass {
+  readonly columns?: ModelColumns;
 }
 
 /** Options passed through to bc `compileBehaviors` (additive; all optional). */
@@ -152,15 +180,13 @@ export interface PublishBehaviorsOptions {
   /** Plan concurrency recorded on the lowered components (bc default: 16). */
   readonly concurrency?: number;
   /**
-   * The model's STATIC SQL schema — the `CREATE TABLE …` DDL statements (the spec §4.1 column-type
-   * SoT). Supplied ONCE at registration; the contract precomputes a {@link MaterializeResolver} from
-   * it (`materializeResolverFromColumnMap(parseSchemaColumnTypes(schema))`) so every read de-boxes
-   * (INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean) with ZERO per-read DB introspection
-   * — column types come from the model definition, not the live DB (litedbmodel's static-resolution
-   * core value). Non-`CREATE TABLE` statements (seed INSERTs, etc.) are ignored, so a mixed
-   * schema+seed list is accepted as-is.
+   * The model's inline typed-column declaration (issue #59) — see {@link ModelColumns}. Normally
+   * declared as a `static columns` field ON the behavior class (the BC-native shape); this option is
+   * an alternative for callers that build the class dynamically. When both are present the option
+   * takes precedence. Absent from BOTH ⇒ the model has no declared types → reads stay un-materialized
+   * (raw driver values; pre-#59 — a model with no typed reads).
    */
-  readonly schema?: readonly string[];
+  readonly columns?: ModelColumns;
 }
 
 /**
@@ -200,11 +226,18 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
     };
   }
 
-  // STATIC read-path materialize resolver (issue #59): parse the model's DDL SoT ONCE at
-  // registration into a `table → (column → SQL type)` map and build a pure in-memory resolver.
-  // A read then de-boxes with ZERO DB introspection (litedbmodel's static-resolution core value).
+  // STATIC de-box resolvers (issue #59): the column types come from the model's INLINE declaration
+  // (`static columns` on the class, or `options.columns`) — the BC-native, consumer-inline SoT (bc
+  // never infers types). Build the `table → (col → SQL type)` map ONCE at registration into BOTH the
+  // TS read-path materialize resolver AND the codegen outType resolver. A read then de-boxes with
+  // ZERO DB introspection (litedbmodel's static-resolution core value). A model with no declared
+  // `columns` (no typed reads) carries neither (raw driver values — pre-#59).
+  const declaredColumns = options.columns ?? (cls as unknown as TypedModelClass).columns;
+  const columnMap = declaredColumns !== undefined ? toColumnMap(declaredColumns) : undefined;
   const materializeResolver: MaterializeResolver | undefined =
-    options.schema !== undefined ? materializeResolverFromColumnMap(parseSchemaColumnTypes(options.schema)) : undefined;
+    columnMap !== undefined ? materializeResolverFromColumnMap(columnMap) : undefined;
+  const resolveColumnType: ColumnTypeResolver | undefined =
+    columnMap !== undefined ? columnTypeResolverFromColumnMap(columnMap) : undefined;
 
   return {
     className: (cls as { name?: string }).name ?? '<anonymous>',
@@ -212,7 +245,19 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
     components: ir.components,
     methods,
     ...(materializeResolver !== undefined ? { materializeResolver } : {}),
+    ...(resolveColumnType !== undefined ? { resolveColumnType } : {}),
   };
+}
+
+/** Normalize a declared {@link ModelColumns} into the `Map<table, Map<column, sqlType>>` the resolvers use. */
+function toColumnMap(columns: ModelColumns): Map<string, Map<string, string>> {
+  const map = new Map<string, Map<string, string>>();
+  for (const [table, cols] of Object.entries(columns)) {
+    const inner = new Map<string, string>();
+    for (const [col, sqlType] of Object.entries(cols)) inner.set(col, sqlType);
+    map.set(table, inner);
+  }
+  return map;
 }
 
 /**

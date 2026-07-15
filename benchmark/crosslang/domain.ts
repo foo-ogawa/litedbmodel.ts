@@ -329,7 +329,32 @@ export const INPUTS = {
 } as const;
 
 // ── Authored read behaviors (compiled to SqlBundles the ir/codegen cells consume) ──
+// ── Inline typed-column declaration (issue #59) — the BC-native column-type SoT ────
+// Each read/write projects from THESE declared types (bc never infers types; the consumer inline-
+// annotates them, exactly as graphddb declares its typed entity columns). Declared ONCE per table
+// here; the read projections + relation projections + write RETURNING columns resolve their types
+// from this map. The registration precomputes the codegen `outType` resolver AND the TS read-path
+// materialize resolver from it, so de-box is ALWAYS-ON with zero external DDL / zero introspection.
+// The coverage columns exercise the full §4.1 type set; the tokens map to the same class on every
+// dialect (INT→int32, BIGINT→int64, DATE→date, BOOLEAN→bool, TEXT/DECIMAL→string).
+export const MODEL_COLUMNS = {
+  posts: {
+    id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', status: 'TEXT', views: 'INTEGER', created_at: 'TEXT',
+  },
+  users: { id: 'INTEGER', name: 'TEXT', post_count: 'INTEGER' },
+  comments: { id: 'INTEGER', post_id: 'INTEGER', body: 'TEXT', created_at: 'TEXT' },
+  coverage: {
+    id: 'INTEGER', int32_val: 'INT', int64_val: 'BIGINT', real_val: 'REAL', dec_val: 'DECIMAL(20,4)',
+    text_val: 'TEXT', bool_val: 'BOOLEAN', date_val: 'DATE', json_val: 'JSON',
+    int32n_val: 'INT', int64n_val: 'BIGINT', realn_val: 'REAL', decn_val: 'DECIMAL(20,4)',
+    textn_val: 'TEXT', booln_val: 'BOOLEAN', daten_val: 'DATE', jsonn_val: 'JSON',
+  },
+} as const;
+
 export class Reads extends lm.SemanticBehavior {
+  // Inline typed-column declaration (issue #59): the reads project from these declared types.
+  static columns = MODEL_COLUMNS;
+
   // find: eq + SKIP-optional status + range, ORDER BY.
   Find($: any) {
     return L.Select({
@@ -413,6 +438,9 @@ export const REL_HAS_MANY_LIMIT: any = {
 
 // ── Authored write behavior (single base write; gate contract for the tx case) ──
 export class Writes extends lm.SemanticBehavior {
+  // Inline typed-column declaration (issue #59): the write RETURNING columns type from these.
+  static columns = MODEL_COLUMNS;
+
   Create($: any) {
     return L.Insert({
       table: 'posts',
@@ -436,12 +464,11 @@ export const writeGateContract = lm.entityWrites<Writes>((w: any) => ({
   }),
 }));
 
-// Register the read model WITH its static DDL schema (issue #59): the contract precomputes the
-// read-path materialize resolver ONCE from these CREATE TABLE tokens, so every read de-boxes
-// (INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean) with ZERO per-read DB introspection.
-// The coverage columns' tokens (INT/BIGINT/DATE/BOOLEAN/TEXT) map to the same materialize class on
-// every dialect, so the single sqlite-shaped SCHEMA is the correct static SoT for all three.
-export const readsContract = lm.publishBehaviors(Reads, { schema: SCHEMA });
+// Register the models. Column types come from the INLINE `static columns` declaration on each class
+// (issue #59) — the contract precomputes BOTH the codegen outType resolver and the TS read-path
+// materialize resolver from it ONCE, so every read de-boxes (INT→number / BIGINT→string /
+// DATE→string / BOOLEAN→boolean) with ZERO external DDL / ZERO per-read DB introspection.
+export const readsContract = lm.publishBehaviors(Reads);
 export const writesContract = lm.publishBehaviors(Writes);
 
 // ── Hand-optimized raw-SQL baseline (the 1.0× denominator; NOT a strawman) ──────

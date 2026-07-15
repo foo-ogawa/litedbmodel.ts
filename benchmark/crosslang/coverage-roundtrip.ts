@@ -123,8 +123,9 @@ function canonicalJson(v: unknown): string {
 // ── Step 1: outType derivation (dialect-independent; the native struct field type per column) ──
 function assertTypeDerivation(): void {
   console.log('=== #59 step 1: outType derivation (GENERATED/native struct field type per column) ===');
-  const resolver = lm.schemaColumnTypeResolver(SCHEMA);
-  const bundle = lm.compileBundle(readsContract, COVERAGE_ENTRY, [], 'sqlite', undefined, resolver);
+  // The codegen outType resolver comes from the model's INLINE `static columns` declaration (issue
+  // #59), carried on the contract — the SAME declared types the read path de-boxes from.
+  const bundle = lm.compileBundle(readsContract, COVERAGE_ENTRY, [], 'sqlite', undefined, readsContract.resolveColumnType);
   const ir: unknown = (bundle as { readGraph?: { ir?: unknown } }).readGraph?.ir;
   const rowObj = findRowObj(ir);
   if (rowObj === undefined) { failures.push({ where: 'derivation', detail: 'no coverage row obj outType in IR' }); console.log('  FAIL: no row obj outType found'); return; }

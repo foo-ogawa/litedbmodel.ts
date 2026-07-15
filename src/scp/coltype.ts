@@ -264,11 +264,11 @@ export type ColumnTypeResolver = (table: string, column: string) => string;
 export type MaterializeResolver = (table: string, column: string) => MaterializeClass | undefined;
 
 /**
- * A `table → (column → SQL type)` map (from the STATIC model DDL, via {@link parseSchemaColumnTypes})
- * → a {@link MaterializeResolver}. Tolerant: an unknown `(table, column)` or an un-mappable SQL type
- * resolves to `undefined` (the raw driver value is kept). This is the STATIC read-path resolver
- * `publishBehaviors(cls, { schema })` precomputes ONCE and carries on the contract — pure in-memory
- * lookups, ZERO per-read DB introspection (litedbmodel's static-resolution core value).
+ * A `table → (column → SQL type)` map → a {@link MaterializeResolver}. Tolerant: an unknown
+ * `(table, column)` or an un-mappable SQL type resolves to `undefined` (the raw driver value is
+ * kept). This is the STATIC read-path resolver the registration precomputes ONCE from the model's
+ * INLINE `columns` declaration and carries on the contract — pure in-memory lookups, ZERO per-read
+ * DB introspection (litedbmodel's static-resolution core value).
  */
 export function materializeResolverFromColumnMap(
   columnTypes: ReadonlyMap<string, ReadonlyMap<string, string>>,
@@ -276,6 +276,36 @@ export function materializeResolverFromColumnMap(
   return (table, column) => {
     const sqlType = columnTypes.get(table)?.get(column);
     return sqlType === undefined ? undefined : materializeClassOrUndefined(sqlType);
+  };
+}
+
+/**
+ * A `table → (column → SQL type)` map → a fail-closed {@link ColumnTypeResolver} (the codegen
+ * `outType` SoT). THROWS for an unknown `table`/`column` (no-assume, no-fallback — a typed-native
+ * read must not silently box an untyped column). Built from the model's INLINE `columns` declaration
+ * at registration, it replaces the external `schemaColumnTypeResolver(ddl)` as the codegen type
+ * source, so `deriveReadOutTypes` reads the declared types.
+ */
+export function columnTypeResolverFromColumnMap(
+  columnTypes: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): ColumnTypeResolver {
+  return (table, column) => {
+    const cols = columnTypes.get(table);
+    if (cols === undefined) {
+      throw new Error(
+        `litedbmodel type system (spec §4.1): table '${table}' has no inline column-type declaration ` +
+          `(the model's \`columns\` map). Declare it (\`static columns = { ${table}: { … } }\`) so its ` +
+          `SELECT projection can be typed. Known tables: ${[...columnTypes.keys()].join(', ') || '<none>'}. No-assume, no-fallback.`,
+      );
+    }
+    const sqlType = cols.get(column);
+    if (sqlType === undefined) {
+      throw new Error(
+        `litedbmodel type system (spec §4.1): column '${column}' not declared on table '${table}' ` +
+          `(declared: ${[...cols.keys()].join(', ')}). Add it to the model's inline \`columns\`. No-assume, no-fallback.`,
+      );
+    }
+    return sqlType;
   };
 }
 
