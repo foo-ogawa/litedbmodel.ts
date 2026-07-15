@@ -34,7 +34,11 @@
  * port is static, so it keeps bc's fail-closed default.
  */
 
-import { classifyBehaviorEffect, type Catalog, type CatalogEntry, type Component, type PortSchema } from 'behavior-contracts';
+import { classifyBehaviorEffect, type Catalog, type CatalogEntry, type PortSchema } from 'behavior-contracts';
+// bc 0.8.0: the UNBRANDED structural component shape (matches `ir.components[number]` AND bc's
+// `classifyBehaviorEffect`/`referencedComponents` params, both unbranded). See `./authoring`
+// (type-only import — no runtime cycle).
+import type { Component } from './authoring';
 
 /**
  * The catalog-name literal union — one entry per SQL primitive litedbmodel declares:

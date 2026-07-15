@@ -52,7 +52,12 @@
  * fail closed as a bc#86/coverage gap.
  */
 
-import { generateModule, type Component, type ComponentGraphIR, type GeneratedModule, type Scope, type Value, type PortSchema } from 'behavior-contracts';
+import { generateModule, loadCompiledIR, type GeneratedModule, type Scope, type Value, type PortSchema } from 'behavior-contracts';
+// bc 0.8.0: litedbmodel's codegen IR is DERIVED (lowered from a compiled read graph) — an UNBRANDED
+// structural doc. It is re-adopted into the branded compile-seam handle via `loadCompiledIR` right
+// before `generateModule` (which fail-closes on un-tokened IR, SA3/SA7). The node/component types
+// here are the unbranded structural shapes (see `./authoring`).
+import type { Component, ComponentGraphIR } from './authoring';
 import type { SqlBundle, SqliteDb } from './runtime';
 import { executeBundle } from './runtime';
 import type { DialectName } from './dialect';
@@ -649,7 +654,14 @@ export function generateCodegenArtifact(
   const ir = needsHeadLowering(emitter)
     ? lowerReadGraphForTypedNative(bundle.readGraph, resolveColumnType)
     : bundleToPortableIR(bundle);
-  const module = generateModule(ir, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
+  // bc 0.8.0 (scp-only-authoring, SA3/SA7): `generateModule` fail-closes on un-tokened IR
+  // (`NON_COMPILED_IR`). This `ir` is DERIVED from `compileBehaviors`' real read graph (additively
+  // lowered/annotated), so it carries no in-process provenance token. Re-adopt it at this generation
+  // boundary via `loadCompiledIR` — the sanctioned seam that recomputes the canonical fingerprint once
+  // and mints the token (the derived graph IS the compiler's output transformed, never hand-forged raw
+  // IR). This is exactly bc's "codegen fixture / derived IR" boundary case.
+  const compiled = loadCompiledIR(ir);
+  const module = generateModule(compiled, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
   return { language: language as CodegenLanguage, module, companion: companionOf(bundle), bundle };
 }
 
