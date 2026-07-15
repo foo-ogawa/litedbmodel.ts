@@ -207,46 +207,77 @@ export function deriveReadOutTypes(
   return { byNode, outputType: outputType(component.output, byNode, `component '${component.name}' output`) };
 }
 
+/** One read Select node's projection: its node id, table, and the projected column list. */
+export interface ReadProjection {
+  readonly nodeId: string;
+  readonly table: string;
+  readonly columns: readonly string[];
+}
+
 /**
- * Per-node TS read-path MATERIALIZER map (issue #59, owner-approved ALWAYS-ON type-honoring de-box):
- * for each read Select node, `column → MaterializeClass` (int32/int64/date/bool/passthrough). The
- * read handler applies these to each raw driver row so INT→number, BIGINT→string, DATE→TZ-string,
- * BOOLEAN→boolean, decimal/text/json→passthrough — consistently across sqlite/pg/mysql.
- *
- * Driven by a TOLERANT {@link MaterializeResolver} (derived automatically from the DB's own schema —
- * the live column-type SoT — at the production read entry points, so it fires with NO caller-supplied
- * resolver). Tolerant by design: a column the resolver cannot type (unknown table/column, a
- * computed/aliased projection, a view) is OMITTED from the map → the read handler keeps its raw
- * driver value. This must NEVER throw — a production read of a table the resolver can't fully type
- * still succeeds (only the un-typeable columns skip de-box), unlike the fail-closed `outType`
- * derivation (which is codegen-only). Only Select nodes carry a projection; a Count returns a scalar
- * (JS number) and needs no map. Returns an empty map (no entry) for a node with nothing typeable.
+ * The read Select projections of a component (issue #59): each Select node's literal `table` +
+ * explicit `select` column list. A `Count` node (scalar) and a node without a literal table/explicit
+ * projection are skipped (a `SELECT *` / non-literal projection is already a hard error at
+ * {@link deriveReadOutTypes}, spec §4.1 no-assume). Used to VALIDATE that every projected column has
+ * a declared type (fail-closed de-box) and to build the materializer map.
  */
-export function deriveReadMaterializers(
-  component: Component,
-  resolveMaterialize: MaterializeResolver,
-): Map<string, Record<string, MaterializeClass>> {
-  const byNode = new Map<string, Record<string, MaterializeClass>>();
+export function readProjections(component: Component): ReadProjection[] {
+  const out: ReadProjection[] = [];
   for (const n of component.body) {
     if ('cond' in n) continue;
     const { component: comp, ports } = nodeRef(n as RefLike);
-    if (comp !== 'Select') continue; // Count → scalar int (JS number); no per-column materialization
+    if (comp !== 'Select') continue; // Count → scalar int; no projection
     let table: string | undefined;
     let projection: string[] | undefined;
     try {
       table = stringPort(ports, 'table');
       projection = stringArrayPort(ports, 'select');
     } catch {
-      continue; // a non-literal table/projection cannot be typed here — leave it un-materialized (tolerant)
+      continue; // a non-literal table/projection is not a typed-column read here
     }
     if (table === undefined || projection === undefined || projection.length === 0) continue;
+    out.push({ nodeId: n.id, table, columns: projection });
+  }
+  return out;
+}
+
+/** Is `col` a bare column name (not an alias `x AS y` / qualified `t.c` / computed expression)? */
+export function isBareColumn(col: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(col);
+}
+
+/**
+ * Per-node TS read-path MATERIALIZER map (issue #59, owner-approved ALWAYS-ON type-honoring de-box):
+ * for each read Select node, `column → MaterializeClass` (int32/int64/date/bool/passthrough). The
+ * read handler applies these to each raw driver row so INT→number, BIGINT→string, DATE→TZ-string,
+ * BOOLEAN→boolean, decimal/text/json→passthrough — consistently across sqlite/pg/mysql.
+ *
+ * FAIL-CLOSED (reconciled with the codegen resolver — issue #59 audit): a projected BARE column that
+ * the resolver cannot type (undeclared in the model's `static columns`) is a HARD ERROR here, NOT a
+ * silent skip — otherwise the read would return the raw rounded driver value (the i64 hole). The
+ * resolver passed in MUST throw for an undeclared column (built from the fail-closed
+ * `columnTypeResolverFromColumnMap`); this derivation lets that throw propagate. An alias / qualified
+ * / computed projection is NOT a bare column, so it is left un-materialized (a `SELECT *` already
+ * hard-errors at the outType derivation, spec §4.1). Only Select nodes carry a projection; a Count
+ * returns a scalar (JS number) and needs no map. Passthrough classes (float/text/decimal/json) are
+ * omitted from the map (they are a no-op coercion) — but they were STILL type-checked (the resolver
+ * resolved them), so an undeclared passthrough-looking column still throws.
+ */
+export function deriveReadMaterializers(
+  component: Component,
+  resolveMaterialize: MaterializeResolver,
+): Map<string, Record<string, MaterializeClass>> {
+  const byNode = new Map<string, Record<string, MaterializeClass>>();
+  for (const proj of readProjections(component)) {
     const cols: Record<string, MaterializeClass> = {};
-    for (const col of projection) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(col)) continue; // alias/qualified/computed → skip (keep raw)
-      const klass = resolveMaterialize(table, col);
-      if (klass !== undefined && klass !== 'passthrough') cols[col] = klass; // omit passthrough (no-op)
+    for (const col of proj.columns) {
+      if (!isBareColumn(col)) continue; // alias/qualified/computed → not a typed column; leave raw
+      // FAIL-CLOSED: an undeclared bare column makes `resolveMaterialize` throw (naming the
+      // model/table/column) — never a silent skip that would leave a rounded i64 raw.
+      const klass = resolveMaterialize(proj.table, col);
+      if (klass !== undefined && klass !== 'passthrough') cols[col] = klass; // omit passthrough (no-op coercion)
     }
-    if (Object.keys(cols).length > 0) byNode.set(n.id, cols);
+    if (Object.keys(cols).length > 0) byNode.set(proj.nodeId, cols);
   }
   return byNode;
 }

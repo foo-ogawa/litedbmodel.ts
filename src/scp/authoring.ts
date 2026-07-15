@@ -64,7 +64,7 @@ import {
   type ContractEffect,
 } from './catalog';
 import { assertComponentGraphPortable } from './guard';
-import { materializeResolverFromColumnMap, columnTypeResolverFromColumnMap, type MaterializeResolver, type ColumnTypeResolver } from './coltype';
+import { failClosedMaterializeResolverFromColumnMap, columnTypeResolverFromColumnMap, type MaterializeResolver, type ColumnTypeResolver } from './coltype';
 
 /**
  * The litedbmodel leaf-component functions for the shared authoring surface —
@@ -229,18 +229,25 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
   // STATIC de-box resolvers (issue #59): the column types come from the model's INLINE declaration
   // (`static columns` on the class, or `options.columns`) — the BC-native, consumer-inline SoT (bc
   // never infers types). Build the `table → (col → SQL type)` map ONCE at registration into BOTH the
-  // TS read-path materialize resolver AND the codegen outType resolver. A read then de-boxes with
-  // ZERO DB introspection (litedbmodel's static-resolution core value). A model with no declared
-  // `columns` (no typed reads) carries neither (raw driver values — pre-#59).
+  // codegen outType resolver AND the FAIL-CLOSED TS read-path materialize resolver. A read then
+  // de-boxes with ZERO DB introspection (litedbmodel's static-resolution core value).
+  const className = (cls as { name?: string }).name ?? '<anonymous>';
   const declaredColumns = options.columns ?? (cls as unknown as TypedModelClass).columns;
   const columnMap = declaredColumns !== undefined ? toColumnMap(declaredColumns) : undefined;
   const materializeResolver: MaterializeResolver | undefined =
-    columnMap !== undefined ? materializeResolverFromColumnMap(columnMap) : undefined;
+    columnMap !== undefined ? failClosedMaterializeResolverFromColumnMap(columnMap) : undefined;
   const resolveColumnType: ColumnTypeResolver | undefined =
     columnMap !== undefined ? columnTypeResolverFromColumnMap(columnMap) : undefined;
 
+  // FAIL-CLOSED coverage-by-construction (issue #59 audit): every column a READ method projects MUST
+  // have a declared type. Validate NOW, at registration — a read whose projected columns aren't fully
+  // declared cannot be published (so no production read can silently skip de-box and leak a rounded
+  // i64). A model with NO `columns` but a read that projects columns fails here too (columns are
+  // REQUIRED for a typed read). A write / a read that projects no explicit columns is exempt.
+  assertReadColumnsDeclared(className, ir.components, methods, resolveColumnType);
+
   return {
-    className: (cls as { name?: string }).name ?? '<anonymous>',
+    className,
     ir,
     components: ir.components,
     methods,
@@ -258,6 +265,81 @@ function toColumnMap(columns: ModelColumns): Map<string, Map<string, string>> {
     map.set(table, inner);
   }
   return map;
+}
+
+/** A read Select node's literal `table` + explicit `select` column list (issue #59 validation). */
+interface SelectProjection { readonly table: string; readonly columns: readonly string[] }
+
+/** Read a literal string port of a body node, or `undefined` (not a literal). */
+function literalStringPort(ports: Record<string, unknown>, name: string): string | undefined {
+  const v = ports[name];
+  return typeof v === 'string' ? v : undefined;
+}
+
+/** Read a literal `{arr:[str,…]}` string-list port, or `undefined` (not a literal list). */
+function literalStringArrayPort(ports: Record<string, unknown>, name: string): string[] | undefined {
+  const v = ports[name];
+  if (v !== null && typeof v === 'object' && 'arr' in v && Array.isArray((v as { arr: unknown }).arr)) {
+    const arr = (v as { arr: unknown[] }).arr;
+    if (arr.every((e) => typeof e === 'string')) return arr as string[];
+  }
+  return undefined;
+}
+
+/** Extract each `Select` body node's `{ table, columns }` projection (skips Count / non-literal). */
+function selectProjectionsOf(component: Component): SelectProjection[] {
+  const out: SelectProjection[] = [];
+  for (const n of component.body) {
+    if ('cond' in n) continue;
+    const ref = 'map' in n ? (n as MapNode).map : (n as ComponentRefNode);
+    if (ref.component !== 'Select') continue; // Count → scalar; no projection
+    const ports = ref.ports as Record<string, unknown>;
+    const table = literalStringPort(ports, 'table');
+    const columns = literalStringArrayPort(ports, 'select');
+    if (table === undefined || columns === undefined || columns.length === 0) continue;
+    out.push({ table, columns });
+  }
+  return out;
+}
+
+/** Is `col` a bare column name (not an alias / qualified / computed projection)? */
+function isBareColumnName(col: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(col);
+}
+
+/**
+ * FAIL-CLOSED registration guard (issue #59 audit): every BARE column a READ (`query`) method
+ * PROJECTS must have a declared type in the model's inline `columns`. If any projected column has no
+ * declared type, THROW here — a typed read whose projected columns aren't fully declared cannot be
+ * registered, so no production read can silently skip de-box and return a rounded i64. A model that
+ * declares NO `columns` but has a read projecting columns fails too (columns are REQUIRED for a typed
+ * read). Writes and reads with no explicit bare-column projection are exempt (a `SELECT *` already
+ * hard-errors at the outType derivation, spec §4.1).
+ */
+function assertReadColumnsDeclared(
+  className: string,
+  components: readonly Component[],
+  methods: Readonly<Record<string, BehaviorMethodSpec>>,
+  resolveColumnType: ColumnTypeResolver | undefined,
+): void {
+  for (const component of components) {
+    if (methods[component.name]?.effect !== 'query') continue; // reads only (writes exempt)
+    for (const proj of selectProjectionsOf(component)) {
+      const bareColumns = proj.columns.filter(isBareColumnName);
+      if (bareColumns.length === 0) continue; // no typed columns to check (alias/computed only)
+      if (resolveColumnType === undefined) {
+        throw new Error(
+          `scp publishBehaviors: model '${className}' method '${component.name}' reads table ` +
+            `'${proj.table}' projecting typed columns [${bareColumns.join(', ')}] but the model declares ` +
+            `NO \`columns\`. A typed read REQUIRES an inline \`static columns\` declaration so the read-path ` +
+            `de-box (INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean) is always-on — never a ` +
+            `silent raw (rounded i64) result. Declare \`static columns = { ${proj.table}: { … } }\`.`,
+        );
+      }
+      // resolveColumnType THROWS (naming the table/column) for any undeclared projected column.
+      for (const col of bareColumns) resolveColumnType(proj.table, col);
+    }
+  }
 }
 
 /**

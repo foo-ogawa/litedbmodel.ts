@@ -264,11 +264,10 @@ export type ColumnTypeResolver = (table: string, column: string) => string;
 export type MaterializeResolver = (table: string, column: string) => MaterializeClass | undefined;
 
 /**
- * A `table → (column → SQL type)` map → a {@link MaterializeResolver}. Tolerant: an unknown
+ * A `table → (column → SQL type)` map → a TOLERANT {@link MaterializeResolver}: an unknown
  * `(table, column)` or an un-mappable SQL type resolves to `undefined` (the raw driver value is
- * kept). This is the STATIC read-path resolver the registration precomputes ONCE from the model's
- * INLINE `columns` declaration and carries on the contract — pure in-memory lookups, ZERO per-read
- * DB introspection (litedbmodel's static-resolution core value).
+ * kept). Retained for callers that WANT tolerance (e.g. optional/introspection contexts). The
+ * ALWAYS-ON registration path uses the FAIL-CLOSED variant below instead.
  */
 export function materializeResolverFromColumnMap(
   columnTypes: ReadonlyMap<string, ReadonlyMap<string, string>>,
@@ -276,6 +275,27 @@ export function materializeResolverFromColumnMap(
   return (table, column) => {
     const sqlType = columnTypes.get(table)?.get(column);
     return sqlType === undefined ? undefined : materializeClassOrUndefined(sqlType);
+  };
+}
+
+/**
+ * A `table → (column → SQL type)` map → a FAIL-CLOSED {@link MaterializeResolver} (issue #59 audit):
+ * an undeclared `(table, column)` THROWS (naming the model/table/column) — reconciled with the
+ * codegen resolver so the TS read path can NEVER silently skip de-box for an undeclared projected
+ * column (which would leak a rounded i64). A DECLARED column returns its materialize class (incl.
+ * `passthrough` for float/text/decimal/json — a no-op coercion, but it WAS type-checked). This is the
+ * resolver the registration precomputes ONCE from the model's INLINE `columns` declaration and
+ * carries on the contract — pure in-memory lookups, ZERO per-read DB introspection.
+ */
+export function failClosedMaterializeResolverFromColumnMap(
+  columnTypes: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): MaterializeResolver {
+  const resolveSqlType = columnTypeResolverFromColumnMap(columnTypes); // throws on undeclared
+  return (table, column) => {
+    const sqlType = resolveSqlType(table, column); // fail-closed: throws for an undeclared column
+    // A declared column's SQL type must map to a known materialize class (the §4.1 closed set); an
+    // unknown token on a DECLARED column is a hard error too (never a silent skip).
+    return sqlTypeToMaterializeClass(sqlType);
   };
 }
 

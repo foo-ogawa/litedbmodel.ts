@@ -48,6 +48,9 @@ function freshDb(): InstanceType<typeof Database> {
 }
 
 class PostQueries extends SemanticBehavior {
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', status: 'TEXT', created_at: 'TEXT' },
+  };
   Search($: In<{ author_id: number; status?: string; since: string; limit?: number }>) {
     return L.Select({
       table: 'posts',

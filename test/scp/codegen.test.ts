@@ -322,6 +322,7 @@ describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + by
   const resolveColumnType = schemaColumnTypeResolver(SCHEMA);
   const L = components();
   class Reads extends SemanticBehavior {
+    static columns = { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', status: 'TEXT' } };
     Find($: any) {
       return L.Select({
         table: 'posts',
@@ -351,6 +352,7 @@ describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + by
 
   it('an IN-list read (array-typed head) is NOT typed-native-coverable for go/rust — bc#86 gap, reported', () => {
     class InListReads extends SemanticBehavior {
+      static columns = { posts: { id: 'INTEGER', title: 'TEXT' } };
       ByIds($: any) {
         return L.Select({
           table: 'posts',

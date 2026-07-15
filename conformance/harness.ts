@@ -177,6 +177,14 @@ const L = components();
 
 /** Read behavior: SKIP-optional status fragment + relations (belongsTo author, hasMany tags). */
 class Blog extends SemanticBehavior {
+  // Inline typed-column declaration (issue #59): the reads project from these declared types (matches
+  // READ_SCHEMA). Required for a typed read — registration fails closed on an undeclared column.
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', status: 'TEXT', created_at: 'TEXT' },
+    users: { id: 'INTEGER', name: 'TEXT' },
+    tags: { id: 'INTEGER', post_id: 'INTEGER', label: 'TEXT' },
+  };
+
   Feed($: In<{ author_id: number; status?: string; since: string; created_at: string; limit?: number }>) {
     const posts = L.Select({
       table: 'posts',

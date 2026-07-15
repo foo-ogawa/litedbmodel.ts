@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import {
   SemanticBehavior, components, publishBehaviors, executeBehavior, read,
   whereEq, whereGe, materializeResolverFromColumnMap, columnTypeResolverFromColumnMap,
+  failClosedMaterializeResolverFromColumnMap,
 } from '../../src/scp';
 
 const L = components();
@@ -43,12 +44,6 @@ class RelReads extends SemanticBehavior {
   static columns = REL_COLUMNS;
   Parents($: { pid: unknown }) {
     return L.Select({ table: 'parent', select: ['id', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' });
-  }
-}
-
-class NoColumns extends SemanticBehavior {
-  Q($: { pid: unknown }) {
-    return L.Select({ table: 'parent', select: ['id'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' });
   }
 }
 
@@ -152,6 +147,15 @@ describe('#59 STATIC resolvers from an inline column map (pure in-memory, zero D
     expect(() => resolve('nosuchtable', 'x')).toThrow(/no inline column-type declaration/i);
   });
 
+  it('failClosedMaterializeResolverFromColumnMap resolves declared classes and THROWS on undeclared', () => {
+    const resolve = failClosedMaterializeResolverFromColumnMap(colMap);
+    expect(resolve('t', 'b')).toBe('int64');
+    expect(resolve('t', 'a')).toBe('int32');
+    expect(resolve('t', 'e')).toBe('passthrough'); // declared decimal → passthrough (no-op) BUT type-checked
+    expect(() => resolve('t', 'zzz')).toThrow(/not declared/i); // undeclared → THROW (no silent skip)
+    expect(() => resolve('nosuchtable', 'x')).toThrow(/no inline column-type declaration/i);
+  });
+
   it('the contract carries BOTH resolvers precomputed from the inline `static columns` (ONCE)', () => {
     const contract = publishBehaviors(Reads);
     expect(contract.materializeResolver).toBeDefined();
@@ -160,8 +164,47 @@ describe('#59 STATIC resolvers from an inline column map (pure in-memory, zero D
     expect(contract.materializeResolver!('cov', 'flag')).toBe('bool');
     expect(contract.resolveColumnType).toBeDefined();
     expect(contract.resolveColumnType!('cov', 'i64')).toBe('BIGINT');
-    // A model with NO `static columns` → no resolver (a model with no typed reads; raw behavior).
-    expect(publishBehaviors(NoColumns).materializeResolver).toBeUndefined();
-    expect(publishBehaviors(NoColumns).resolveColumnType).toBeUndefined();
+  });
+});
+
+describe('#59 FAIL-CLOSED at registration — a typed read whose projected columns are undeclared THROWS', () => {
+  it('a model with NO `static columns` but a read projecting columns THROWS (columns REQUIRED)', () => {
+    class NoDecl extends SemanticBehavior {
+      Q($: { pid: unknown }) {
+        return L.Select({ table: 'parent', select: ['id', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' });
+      }
+    }
+    expect(() => publishBehaviors(NoDecl)).toThrow(/REQUIRES an inline `static columns`|declares\s+NO `columns`/i);
+  });
+
+  it('a model WITH `static columns` but a projected BIGINT column OMITTED from the map THROWS', () => {
+    class MissingBig extends SemanticBehavior {
+      // `big` (a BIGINT the read projects) is intentionally OMITTED — must fail closed at registration
+      // (never a silent skip that would return a rounded i64 at read time).
+      static columns = { t: { id: 'INTEGER', name: 'TEXT' } };
+      Q($: { pid: unknown }) {
+        return L.Select({ table: 't', select: ['id', 'big', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' });
+      }
+    }
+    expect(() => publishBehaviors(MissingBig)).toThrow(/'big' not declared|not declared on table 't'/i);
+  });
+
+  it('a WRITE-only model needs no `columns` (writes are exempt)', () => {
+    class WriteOnly extends SemanticBehavior {
+      Make($: { title: unknown }) {
+        return (L as never as { Insert(x: unknown): unknown }).Insert({ table: 'posts', 'values.title': $.title, returning: 'id' });
+      }
+    }
+    expect(() => publishBehaviors(WriteOnly)).not.toThrow();
+  });
+
+  it('a fully-declared read registers fine and its production reads de-box (regression guard)', () => {
+    const contract = publishBehaviors(Reads); // Reads declares all its projected cov columns
+    const db = freshDb();
+    const rows = executeBehavior(contract, { min_id: 1 }, { db, entry: 'All' }) as Record<string, unknown>[];
+    db.close();
+    const r1 = rows.find((r) => Number(r.id) === 1)!;
+    expect(r1.i64).toBe('9223372036854775807'); // exact, de-boxed — NOT a rounded number
+    expect(typeof r1.i64).toBe('string');
   });
 });

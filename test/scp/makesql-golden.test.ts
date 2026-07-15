@@ -1274,6 +1274,11 @@ describe('C. Composite STATIC per-parent-LIMIT relation form (#47 last gap)', ()
 describe('D. authoring→bundle path renders V1-SOURCED SQL (V0 R2–R6, all dialects)', () => {
   const L = components();
   class Q extends SemanticBehavior {
+    static columns = {
+      posts: { id: 'INTEGER', author_id: 'INTEGER' },
+      users: { id: 'INTEGER' },
+      recent: { id: 'INTEGER' },
+    };
     // R3-remainder WHERE primitives
     Btw($: In<{ lo: number; hi: number }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereBetween($, 'age', $.lo, $.hi)] }); }
     Lk($: In<{ p: string }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereLike($, 'name', $.p)] }); }

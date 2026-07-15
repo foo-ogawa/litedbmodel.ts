@@ -31,6 +31,10 @@ const L = components();
 
 // ── A read behavior: Select + relation .map (spec §2.4 PostSearch) ────────────────────
 class ReadBehaviors extends SemanticBehavior {
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TEXT' },
+    users: { id: 'INTEGER', name: 'TEXT' },
+  };
   PostSearch($: In<{ authorId: number; status?: string; since: string }>) {
     const posts = L.Select({
       table: 'posts',
@@ -134,6 +138,9 @@ describe('WS2 authoring — effect derivation (graph-derived, never authored)', 
 describe('WS2 single compile path — eager public API ≡ SemanticBehavior declaration', () => {
   // Declaration path: a one-method class equivalent to the eager call below.
   class EagerEquivDecl extends SemanticBehavior {
+    static columns = {
+      posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TEXT' },
+    };
     FindPost($: In<{ authorId: number; since: string }>) {
       return L.Select({
         table: 'posts',
@@ -154,6 +161,7 @@ describe('WS2 single compile path — eager public API ≡ SemanticBehavior decl
         where: [eq($.authorId, $.authorId), ge($.since, $.since)],
         order: 'created_at DESC',
       }),
+      { columns: { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TEXT' } } },
     );
 
     // Byte-identical component IR (the single-compile-path invariant — spec §9).

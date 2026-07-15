@@ -65,6 +65,10 @@ const L = components();
 // FK column via `eq($p.<fk>, …)`; the batch keys come from a parent field (here `id`).
 
 class ReadBehaviors extends SemanticBehavior {
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', since: 'TEXT' },
+    comments: { id: 'INTEGER', post_id: 'INTEGER', body: 'TEXT' },
+  };
   PostSearch($: In<{ authorId: number; status?: string; since: string }>) {
     const posts = L.Select({
       table: 'posts',
@@ -114,6 +118,12 @@ const eagerPostSearch = ($: Recorded, l: typeof L) => {
 };
 const eagerCreatePost = ($: Recorded, l: typeof L) =>
   l.Insert({ table: 'posts', 'values.author_id': $.authorId, 'values.title': $.title, returning: 'id, title' });
+const eagerCols = {
+  columns: {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', since: 'TEXT' },
+    comments: { id: 'INTEGER', post_id: 'INTEGER', body: 'TEXT' },
+  },
+};
 
 const dialect: MakeSQLDialect = 'sqlite';
 const render = (n: MakeSQL) => {
@@ -128,7 +138,7 @@ describe('(a) eager public API ≡ SemanticBehavior declaration — identical ma
   it('read behavior: the primary Select bundle is byte-identical for both authoring paths', () => {
     const scope = { authorId: 10, status: 'active', since: '2020-01-01' };
     const decl = compileAuthoredBehavior(publishBehaviors(ReadBehaviors), scope, dialect, 'PostSearch');
-    const eager = compileAuthoredBehavior(compileEager('PostSearch', eagerPostSearch as any), scope, dialect, 'PostSearch');
+    const eager = compileAuthoredBehavior(compileEager('PostSearch', eagerPostSearch as any, eagerCols), scope, dialect, 'PostSearch');
     expect(eager.primary).toEqual(decl.primary);
     expect(JSON.stringify(eager.primary)).toBe(JSON.stringify(decl.primary));
   });
@@ -143,7 +153,7 @@ describe('(a) eager public API ≡ SemanticBehavior declaration — identical ma
   it('SKIP-optional: eager ≡ declaration for BOTH the present and the absent case', () => {
     for (const scope of [{ authorId: 10, status: 'active', since: 'x' }, { authorId: 10, since: 'x' }]) {
       const decl = compileAuthoredBehavior(publishBehaviors(ReadBehaviors), scope, dialect, 'PostSearch');
-      const eager = compileAuthoredBehavior(compileEager('PostSearch', eagerPostSearch as any), scope, dialect, 'PostSearch');
+      const eager = compileAuthoredBehavior(compileEager('PostSearch', eagerPostSearch as any, eagerCols), scope, dialect, 'PostSearch');
       expect(JSON.stringify(eager.primary)).toBe(JSON.stringify(decl.primary));
     }
   });
@@ -151,7 +161,7 @@ describe('(a) eager public API ≡ SemanticBehavior declaration — identical ma
   it('relation `.map` bundle is byte-identical for both authoring paths', () => {
     const parentRows = [{ id: 1 }, { id: 2 }];
     const declMap = mapNodeOf(publishBehaviors(ReadBehaviors));
-    const eagerMap = mapNodeOf(compileEager('PostSearch', eagerPostSearch as any));
+    const eagerMap = mapNodeOf(compileEager('PostSearch', eagerPostSearch as any, eagerCols));
     const declRel = compileRelationMap(declMap, { parentRows }, dialect, 'id');
     const eagerRel = compileRelationMap(eagerMap, { parentRows }, dialect, 'id');
     expect(JSON.stringify(eagerRel)).toBe(JSON.stringify(declRel));

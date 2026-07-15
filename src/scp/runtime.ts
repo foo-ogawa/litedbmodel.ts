@@ -160,10 +160,12 @@ export function executeBehavior(
   input: Scope,
   options: ExecuteOptions,
 ): Value {
-  // ALWAYS-ON read de-box (issue #59), STATIC: the materialize resolver is precomputed ONCE from the
-  // model's DDL at registration (`publishBehaviors(cls, { schema })`) and carried on the contract —
-  // pure in-memory map lookups, ZERO per-read DB introspection. So INT→number / BIGINT→string /
-  // DATE→string / BOOLEAN→boolean fires for every read from the model's own type definitions.
+  // ALWAYS-ON read de-box (issue #59), STATIC: the FAIL-CLOSED materialize resolver is precomputed
+  // ONCE from the model's INLINE `static columns` declaration at registration and carried on the
+  // contract — pure in-memory map lookups, ZERO per-read DB introspection. Coverage is enforced at
+  // registration (a typed read whose projected columns aren't declared cannot be published), so
+  // INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean fires for every read — never a silent
+  // raw (rounded i64) result from an undeclared column.
   return executeBundle(
     compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, contract.materializeResolver),
     input,
