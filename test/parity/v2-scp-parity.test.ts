@@ -478,6 +478,24 @@ describe('#65 v2 SCP ↔ v1 golden parity — all 19 ORM-bench ops × 3 dialects
     }
   });
 
+  // ── #67 regression guard: the SQLite bundled-JSON upsert (INSERT … SELECT … FROM json_each(?)
+  //    … ON CONFLICT … DO UPDATE) MUST carry a `WHERE true` terminating the SELECT source, or
+  //    SQLite's parser rejects `ON CONFLICT` (`near "DO": syntax error`). String-compare alone let
+  //    this slip; test/parity/orm-execute-parity.test.ts additionally RUNS it on real SQLite. ──
+  describe('[sqlite] #67 — bundled-JSON upsert carries `WHERE true` before ON CONFLICT', () => {
+    // The ops whose SQLite compile takes the json_each ON CONFLICT DO UPDATE path.
+    for (const op of ['Upsert Many (10 records)']) {
+      it(op, () => {
+        const stmts = opBuilders[op]('sqlite');
+        const upsert = stmts.find((s) => /FROM json_each\(\?\)/i.test(s.sql) && /ON CONFLICT/i.test(s.sql));
+        expect(upsert, `${op}: expected a json_each ON CONFLICT statement`).toBeDefined();
+        expect(upsert!.sql, `${op}: json_each upsert must have WHERE true before ON CONFLICT (#67)`).toMatch(
+          /FROM json_each\(\?\)\s+WHERE true\s+ON CONFLICT/i,
+        );
+      });
+    }
+  });
+
   // ── postgres: BYTE-IDENTICAL to the v1 golden (after the documented ?→$N rewrite) ──
   describe('[postgres] v2 SCP SQL is BYTE-IDENTICAL to the v1 golden', () => {
     for (const op of ALL_OPS) {
