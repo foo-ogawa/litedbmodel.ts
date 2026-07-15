@@ -38,10 +38,13 @@ import {
   evaluateExpression,
   type Scope,
   type Value,
-  type Component as BcComponent,
-  type ComponentGraphIR,
 } from 'behavior-contracts';
-import type { Component, ComponentRefNode, MapNode, FanoutNode, BehaviorModelContract } from '../authoring';
+// bc 0.8.0: the read-graph IR litedbmodel carries is DERIVED (spread + additive outType annotation)
+// from `compileBehaviors`' output — an UNBRANDED structural doc. Use the unbranded shapes from
+// `../authoring` (`BcComponent` = the unbranded component shape). The branded compile-seam handle is
+// re-adopted only at the `generateModule` boundary (see `codegen.ts`), never here (the native walker
+// reads structural nodes directly, no bc provenance gate).
+import type { Component, Component as BcComponent, ComponentGraphIR, ComponentRefNode, MapNode, FanoutNode, BehaviorModelContract } from '../authoring';
 import { IN_SENTINEL } from './tx';
 import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
 import { renderPlaceholders, type Dialect } from './handler';

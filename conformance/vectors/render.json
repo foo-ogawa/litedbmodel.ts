@@ -19,6 +19,16 @@
                 {
                   "component": "Select",
                   "id": "n0",
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  },
                   "ports": {
                     "limit": {
                       "coalesce": [
@@ -143,6 +153,14 @@
                         ]
                       }
                     }
+                  },
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "id": "int",
+                        "name": "string"
+                      }
+                    }
                   }
                 }
               ],
@@ -193,6 +211,30 @@
                     1
                   ]
                 ]
+              },
+              "outputType": {
+                "obj": {
+                  "authors": {
+                    "arr": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    }
+                  },
+                  "posts": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  }
+                }
               }
             }
           ]
@@ -325,6 +367,16 @@
                 {
                   "component": "Select",
                   "id": "n0",
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  },
                   "ports": {
                     "limit": {
                       "coalesce": [
@@ -449,6 +501,14 @@
                         ]
                       }
                     }
+                  },
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "id": "int",
+                        "name": "string"
+                      }
+                    }
                   }
                 }
               ],
@@ -499,6 +559,30 @@
                     1
                   ]
                 ]
+              },
+              "outputType": {
+                "obj": {
+                  "authors": {
+                    "arr": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    }
+                  },
+                  "posts": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  }
+                }
               }
             }
           ]
@@ -630,6 +714,14 @@
                 {
                   "component": "Select",
                   "id": "n0",
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "id": "int",
+                        "title": "string"
+                      }
+                    }
+                  },
                   "ports": {
                     "order": "id ASC",
                     "select": {
@@ -684,6 +776,14 @@
                     0
                   ]
                 ]
+              },
+              "outputType": {
+                "arr": {
+                  "obj": {
+                    "id": "int",
+                    "title": "string"
+                  }
+                }
               }
             }
           ]
@@ -845,6 +945,16 @@
                 {
                   "component": "Select",
                   "id": "n0",
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  },
                   "ports": {
                     "limit": {
                       "coalesce": [
@@ -969,6 +1079,14 @@
                         ]
                       }
                     }
+                  },
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "id": "int",
+                        "name": "string"
+                      }
+                    }
                   }
                 }
               ],
@@ -1019,6 +1137,30 @@
                     1
                   ]
                 ]
+              },
+              "outputType": {
+                "obj": {
+                  "authors": {
+                    "arr": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    }
+                  },
+                  "posts": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  }
+                }
               }
             }
           ]
@@ -1151,6 +1293,16 @@
                 {
                   "component": "Select",
                   "id": "n0",
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  },
                   "ports": {
                     "limit": {
                       "coalesce": [
@@ -1275,6 +1427,14 @@
                         ]
                       }
                     }
+                  },
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "id": "int",
+                        "name": "string"
+                      }
+                    }
                   }
                 }
               ],
@@ -1325,6 +1485,30 @@
                     1
                   ]
                 ]
+              },
+              "outputType": {
+                "obj": {
+                  "authors": {
+                    "arr": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    }
+                  },
+                  "posts": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  }
+                }
               }
             }
           ]
@@ -1456,6 +1640,14 @@
                 {
                   "component": "Select",
                   "id": "n0",
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "id": "int",
+                        "title": "string"
+                      }
+                    }
+                  },
                   "ports": {
                     "order": "id ASC",
                     "select": {
@@ -1510,6 +1702,14 @@
                     0
                   ]
                 ]
+              },
+              "outputType": {
+                "arr": {
+                  "obj": {
+                    "id": "int",
+                    "title": "string"
+                  }
+                }
               }
             }
           ]
@@ -1675,6 +1875,16 @@
                 {
                   "component": "Select",
                   "id": "n0",
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  },
                   "ports": {
                     "limit": {
                       "coalesce": [
@@ -1799,6 +2009,14 @@
                         ]
                       }
                     }
+                  },
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "id": "int",
+                        "name": "string"
+                      }
+                    }
                   }
                 }
               ],
@@ -1849,6 +2067,30 @@
                     1
                   ]
                 ]
+              },
+              "outputType": {
+                "obj": {
+                  "authors": {
+                    "arr": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    }
+                  },
+                  "posts": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  }
+                }
               }
             }
           ]
@@ -1981,6 +2223,16 @@
                 {
                   "component": "Select",
                   "id": "n0",
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  },
                   "ports": {
                     "limit": {
                       "coalesce": [
@@ -2105,6 +2357,14 @@
                         ]
                       }
                     }
+                  },
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "id": "int",
+                        "name": "string"
+                      }
+                    }
                   }
                 }
               ],
@@ -2155,6 +2415,30 @@
                     1
                   ]
                 ]
+              },
+              "outputType": {
+                "obj": {
+                  "authors": {
+                    "arr": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    }
+                  },
+                  "posts": {
+                    "arr": {
+                      "obj": {
+                        "author_id": "int",
+                        "id": "int",
+                        "status": "string",
+                        "title": "string"
+                      }
+                    }
+                  }
+                }
               }
             }
           ]
@@ -2286,6 +2570,14 @@
                 {
                   "component": "Select",
                   "id": "n0",
+                  "outType": {
+                    "arr": {
+                      "obj": {
+                        "id": "int",
+                        "title": "string"
+                      }
+                    }
+                  },
                   "ports": {
                     "order": "id ASC",
                     "select": {
@@ -2340,6 +2632,14 @@
                     0
                   ]
                 ]
+              },
+              "outputType": {
+                "arr": {
+                  "obj": {
+                    "id": "int",
+                    "title": "string"
+                  }
+                }
               }
             }
           ]

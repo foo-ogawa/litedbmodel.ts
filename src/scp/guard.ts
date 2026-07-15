@@ -9,7 +9,11 @@
  * plus the operator-set check.
  */
 
-import { assertPortable, FORBIDDEN_OBJECT_KEY, PORTABLE_EXPR_OPERATORS, PortabilityError, type Component, type ComponentGraphIR } from 'behavior-contracts';
+import { assertPortable, FORBIDDEN_OBJECT_KEY, PORTABLE_EXPR_OPERATORS, PortabilityError } from 'behavior-contracts';
+// bc 0.8.0: use the UNBRANDED structural node/graph shapes (litedbmodel walks the graph
+// structurally; the branded compile-seam handle is a superset and assigns into these). See the
+// aliases in `./authoring` (type-only import — no runtime cycle).
+import type { Component, ComponentGraphIR } from './authoring';
 
 /** A bc Expression IR node (closed operator set). Structural alias — a JSON expression tree. */
 export type ExprNode = unknown;
