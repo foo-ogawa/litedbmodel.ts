@@ -61,13 +61,21 @@ scan "cells: fingerprint/IR 参照なし" \
 scan "cells+generated: interpreter 呼び出しなし（call 形）" \
   "run_behavior\(|RunBehavior\(|runBehavior\(" "$RUST_CG" "$TS_CELL" "$GO_CELL" "$GEN"
 
-echo "── 4. rust-codegen クレートの依存に serde_json なし ──"
-if [ -d benchmark/crosslang/adapters/rust-codegen ]; then
-  if (cd benchmark/crosslang/adapters/rust-codegen && cargo tree 2>/dev/null | grep -q serde); then
-    echo "✗ rust-codegen: cargo tree に serde 系が存在"
+echo "── 4. rust-codegen クレート自前ソースに serde CODE なし（ドライバ推移 serde は可）──"
+# OWNER RE-SCOPE (#63): purity は litedbmodel 自前コードのみを対象とする。実 DB ドライバ
+# (tokio-postgres/sqlx/pgx 等) が serde を推移的に引くのは可 — 各言語の高速・一般的ドライバを使う。
+# 旧実装は `cargo tree | grep serde`（依存ツリー全体）で、ドライバの推移 serde まで弾いていた（過剰）。
+# 正しい不変条件は「この crate の自前 src に serde CODE (`serde_json::` / `use serde…`) が無い」こと。
+# コメント行はストリップして本文コードのみ判定（doc prose の "serde-free" が誤検知しないように）。
+if [ -d "$RUST_CG" ]; then
+  hits=$(grep -rnE "serde_json::|serde_json!|use serde(_json)?(::|;| )" "$RUST_CG" 2>/dev/null \
+    | grep -vE ':[0-9]+:[[:space:]]*(//|///|//!|\*)')
+  if [ -n "$hits" ]; then
+    echo "✗ rust-codegen: 自前 src に serde CODE が存在"
+    echo "$hits" | head -10
     FAIL=1
   else
-    echo "✓ rust-codegen: cargo tree に serde 系なし"
+    echo "✓ rust-codegen: 自前 src に serde CODE なし（ドライバ推移 serde は許容）"
   fi
 fi
 
@@ -117,13 +125,13 @@ if [ -n "$hits" ]; then
 else
   echo "✓ rust runtime src: no serde_json/serde code"
 fi
-# The runtime crate's cargo tree (normal edges = the shipped lib) must NOT contain serde_json.
-if (cd rust && cargo tree -p litedbmodel_runtime -i serde_json --edges normal 2>/dev/null | grep -q serde_json); then
-  echo "✗ rust runtime: cargo tree (normal edges) contains serde_json"
-  FAIL=1
-else
-  echo "✓ rust runtime: cargo tree (normal edges) has no serde_json"
-fi
+# OWNER RE-SCOPE (#63): the earlier `cargo tree -i serde_json` (dependency-tree) assertion is
+# DROPPED — it is a whole-tree check that would wrongly fail once the runtime links a real DB driver
+# (tokio-postgres/sqlx), whose transitive serde_json is EXPLICITLY ALLOWED (driver serde is fine;
+# purity is about litedbmodel's OWN code). The meaningful, retained invariant is the OWN-SOURCE check
+# above (no `serde_json::`/`use serde…` CODE in the runtime crate source) + the Cargo.toml
+# `behavior-contracts default-features=false` pin (drops bc's `ir` feature). That is what guarantees
+# litedbmodel's own exec/codegen never marshals via serde — the transitive driver edge does not.
 
 echo ""
 if [ "$FAIL" -ne 0 ]; then
