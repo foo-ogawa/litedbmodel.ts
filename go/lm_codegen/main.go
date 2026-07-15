@@ -144,13 +144,6 @@ func seedDriver() *sql.DB {
 	return db
 }
 
-// countingDB wraps a cgcell.CgDB, counting DML statements + rows (the fairness cost probe).
-type countingDB struct {
-	inner   cgcell.CgDB
-	queries int64
-	rows    int64
-}
-
 func isTxControl(q string) bool {
 	up := strings.ToUpper(strings.TrimSpace(q))
 	for _, k := range []string{"BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE", "PRAGMA"} {
@@ -161,19 +154,11 @@ func isTxControl(q string) bool {
 	return false
 }
 
-func (c *countingDB) Query(q string, args ...any) (*sql.Rows, error) {
-	if !isTxControl(q) {
-		c.queries++
-	}
-	return c.inner.Query(q, args...)
-}
-func (c *countingDB) Exec(q string, args ...any) (sql.Result, error) {
-	if !isTxControl(q) {
-		c.queries++
-	}
-	return c.inner.Exec(q, args...)
-}
-func (c *countingDB) Begin() (*sql.Tx, error) { return c.inner.Begin() }
+// ── cost-probe adapters (fakedriver.go's trace driver seeds + runs via these; main owns the
+// cgplans/cgcell imports so fakedriver.go stays decoupled from them) ──
+func cgplansSchema() []string             { return cgplans.Schema }
+func cgplansSeed() []string               { return cgplans.Seed }
+func runCodegenForCost(caseID string, db *sql.DB) { cgcell.RunCodegen("sqlite", caseID, db) }
 
 // ── canonical JSON observation (verify leg) — hand-written, key-sorted ──────────
 
@@ -344,12 +329,12 @@ func handle(kind, line string) {
 		if !ok {
 			dialect = "sqlite"
 		}
-		base := seedDriver()
-		defer base.Close()
-		counter := &countingDB{inner: base}
-		cgcell.RunCodegen("sqlite", caseID, counter)
+		// Trace-driver cost probe: counts DML statements AND rows read at the driver level (the prior
+		// countingDB wrapped *sql.DB and never saw rows.Next() → rows/op was always 0). rows/op now
+		// matches the sql baseline (the fairness invariant).
+		q, r := costViaTrace(caseID)
 		writeLine(fmt.Sprintf("{\"kind\":\"cost\",\"case\":%s,\"dialect\":%s,\"queries\":%d,\"rows\":%d}",
-			jstr(caseID), jstr(dialect), counter.queries, counter.rows))
+			jstr(caseID), jstr(dialect), q, r))
 	case "verify":
 		caseID, _ := fieldStr(line, "case")
 		db := seedDriver()

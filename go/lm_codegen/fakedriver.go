@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"sync"
+
+	sqlite "modernc.org/sqlite"
 )
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -112,4 +114,115 @@ func openMockDB() *sql.DB {
 	mockOnce.Do(func() { sql.Register("lm_codegen_mock", mockDriver{}) })
 	db, _ := sql.Open("lm_codegen_mock", "")
 	return db
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Trace driver — the fairness cost probe (queries/op + rows/op).
+// ════════════════════════════════════════════════════════════════════════════
+//
+// A DRIVER-LEVEL passthrough over modernc sqlite that counts DML statements + rows read (tx-control
+// excluded), mirroring lm_bench/fakedriver.go's traceDriver. The prior `countingDB` wrapped at the
+// `*sql.DB` API level, so it could count Query()/Exec() calls but NEVER saw `rows.Next()` — rows/op
+// rendered as 0, and Begin() was an untraced passthrough. Wrapping at the driver conn level fixes
+// both: rows are counted at driver.Rows.Next() (the real number the caller reads), and the write-tx
+// path (statements on a *sql.Tx over the SAME pinned conn) is traced too. Carries ONLY
+// database/sql/driver + modernc — NO encoding/json, NO litedbmodel_runtime (purity preserved).
+type traceCounters struct {
+	queries int
+	rows    int
+}
+
+var (
+	cgTraceCtr  *traceCounters
+	cgTraceOnce sync.Once
+	cgTraceLock sync.Mutex
+)
+
+type traceDriver struct{ inner driver.Driver }
+type traceConn struct{ inner driver.Conn }
+type traceStmt struct {
+	inner driver.Stmt
+	dml   bool
+}
+type traceRows struct{ inner driver.Rows }
+
+func (d traceDriver) Open(name string) (driver.Conn, error) {
+	c, err := d.inner.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return traceConn{inner: c}, nil
+}
+func (c traceConn) Prepare(query string) (driver.Stmt, error) {
+	s, err := c.inner.Prepare(query)
+	if err != nil {
+		return nil, err
+	}
+	return &traceStmt{inner: s, dml: !isTxControl(query)}, nil
+}
+func (c traceConn) Close() error              { return c.inner.Close() }
+func (c traceConn) Begin() (driver.Tx, error) { return c.inner.Begin() } //nolint:staticcheck
+
+func (s *traceStmt) Close() error  { return s.inner.Close() }
+func (s *traceStmt) NumInput() int { return s.inner.NumInput() }
+func (s *traceStmt) Exec(args []driver.Value) (driver.Result, error) {
+	if s.dml {
+		cgTraceCtr.queries++
+	}
+	return s.inner.Exec(args) //nolint:staticcheck
+}
+func (s *traceStmt) Query(args []driver.Value) (driver.Rows, error) {
+	if s.dml {
+		cgTraceCtr.queries++
+	}
+	r, err := s.inner.Query(args) //nolint:staticcheck
+	if err != nil || !s.dml {
+		return r, err
+	}
+	return &traceRows{inner: r}, nil
+}
+func (r *traceRows) Columns() []string { return r.inner.Columns() }
+func (r *traceRows) Close() error      { return r.inner.Close() }
+func (r *traceRows) Next(dest []driver.Value) error {
+	err := r.inner.Next(dest)
+	if err == nil {
+		cgTraceCtr.rows++
+	}
+	return err
+}
+
+// costViaTrace runs ONE codegen case through the trace driver, returning (queries, rows) — the
+// fairness cost. Seeds from the native companion (cgplans), resets the counter after seeding, pins
+// ONE conn so the write-tx conn's statements are seen, and drives cgcell.RunCodegen (the SAME path
+// the timed cell runs). rows/op now reflects the real rows the codegen read materializes.
+func costViaTrace(caseID string) (int, int) {
+	cgTraceOnce.Do(func() {
+		sql.Register("lm_codegen_trace", traceDriver{inner: &sqlite.Driver{}})
+	})
+	cgTraceLock.Lock()
+	defer cgTraceLock.Unlock()
+	cgTraceCtr = &traceCounters{}
+
+	db, err := sql.Open("lm_codegen_trace", ":memory:")
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1) // pin ONE conn so the counter sees every statement (incl. the tx conn)
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		panic(err)
+	}
+	for _, s := range cgplansSchema() {
+		if _, err := db.Exec(s); err != nil {
+			panic(err)
+		}
+	}
+	for _, s := range cgplansSeed() {
+		if _, err := db.Exec(s); err != nil {
+			panic(err)
+		}
+	}
+	cgTraceCtr = &traceCounters{} // reset AFTER seeding so seed inserts aren't counted
+	runCodegenForCost(caseID, db)
+	return cgTraceCtr.queries, cgTraceCtr.rows
 }

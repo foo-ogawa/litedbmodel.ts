@@ -256,28 +256,28 @@ func intArgs(n int) []any {
 func runSQL(caseID string, db execQuerier) {
 	switch caseID {
 	case "find":
-		drain(db.Query("SELECT id, author_id, title, status, views, created_at FROM posts WHERE author_id = ? AND status = ? AND created_at >= ? ORDER BY id ASC", 1, "live", "2026-02-01"))
+		_ = materialize(db.Query("SELECT id, author_id, title, status, views, created_at FROM posts WHERE author_id = ? AND status = ? AND created_at >= ? ORDER BY id ASC", 1, "live", "2026-02-01"))
 	case "complexWhere":
 		args := append([]any{1, "2026-02-01", "post-%"}, intArgs(5)...)
-		drain(db.Query("SELECT id, author_id, title, status, views FROM posts WHERE author_id = ? AND created_at >= ? AND title LIKE ? AND id IN (?, ?, ?, ?, ?) ORDER BY id ASC", args...))
+		_ = materialize(db.Query("SELECT id, author_id, title, status, views FROM posts WHERE author_id = ? AND created_at >= ? AND title LIKE ? AND id IN (?, ?, ?, ?, ?) ORDER BY id ASC", args...))
 	case "inList":
 		ph := strings.Join(repeat("?", 10), ", ")
-		drain(db.Query("SELECT id, title FROM posts WHERE id IN ("+ph+") ORDER BY id ASC", intArgs(10)...))
+		_ = materialize(db.Query("SELECT id, title FROM posts WHERE id IN ("+ph+") ORDER BY id ASC", intArgs(10)...))
 	case "belongsTo":
 		r0, e0 := db.Query("SELECT id, author_id, title FROM posts WHERE author_id = ? ORDER BY id ASC", 1)
 		aids := dedup(scanInts(r0, e0, "author_id"))
 		ph := strings.Join(repeat("?", len(aids)), ", ")
-		drain(db.Query("SELECT id, name FROM users WHERE id IN ("+ph+")", toAny(aids)...))
+		_ = materialize(db.Query("SELECT id, name FROM users WHERE id IN ("+ph+")", toAny(aids)...))
 	case "hasMany":
 		r0, e0 := db.Query("SELECT id, author_id, title FROM posts WHERE author_id = ? ORDER BY id ASC", 1)
 		ids := scanInts(r0, e0, "id")
 		ph := strings.Join(repeat("?", len(ids)), ", ")
-		drain(db.Query("SELECT id, post_id, body FROM comments WHERE post_id IN ("+ph+")", toAny(ids)...))
+		_ = materialize(db.Query("SELECT id, post_id, body FROM comments WHERE post_id IN ("+ph+")", toAny(ids)...))
 	case "hasManyLimit":
 		r0, e0 := db.Query("SELECT id, author_id, title FROM posts WHERE author_id = ? ORDER BY id ASC", 1)
 		ids := scanInts(r0, e0, "id")
 		ph := strings.Join(repeat("?", len(ids)), ", ")
-		drain(db.Query("SELECT id, post_id, body FROM (SELECT id, post_id, body, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id DESC) rn FROM comments WHERE post_id IN ("+ph+")) WHERE rn <= 3", toAny(ids)...))
+		_ = materialize(db.Query("SELECT id, post_id, body FROM (SELECT id, post_id, body, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id DESC) rn FROM comments WHERE post_id IN ("+ph+")) WHERE rn <= 3", toAny(ids)...))
 	case "batchInsert":
 		cols := []string{"author_id", "title", "status", "views", "created_at"}
 		vals := make([]string, 10)
@@ -578,6 +578,49 @@ func drain(rows *sql.Rows, err error) {
 	defer rows.Close()
 	for rows.Next() {
 	}
+}
+
+// materialize scans EVERY row into a bc.Obj (one field per column), returning the []bc.Value the
+// codegen cell also produces. This is the raw-SQL baseline's row-hydration work — the SAME
+// materialization the litedbmodel codegen/ir cells do (bc.NewObj + Set per column) and the SAME as
+// the rust baseline's `.all()` (→ Vec<Value>). Before this, the baseline `drain()`d (scanned +
+// DISCARDED, building no object), so the go/sql baseline was artificially cheap → it inflated the
+// go codegen ÷ sql ratio (apples-to-oranges vs rust, whose baseline materializes). Fixed: fair.
+func materialize(rows *sql.Rows, err error) []bc.Value {
+	must(err)
+	defer rows.Close()
+	cols, cerr := rows.Columns()
+	must(cerr)
+	out := []bc.Value{}
+	for rows.Next() {
+		raw := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range raw {
+			ptrs[i] = &raw[i]
+		}
+		must(rows.Scan(ptrs...))
+		o := bc.NewObj()
+		for i, c := range cols {
+			// Box each column into the canonical bc scalar the codegen cell's Set(...) produces:
+			// int64 for integral columns (id/author_id/post_id/views), string otherwise. modernc
+			// sqlite hands back int64 / string / []byte — normalize []byte→string like a Scan into
+			// a typed struct string field would.
+			switch v := raw[i].(type) {
+			case int64:
+				o.Set(c, v)
+			case []byte:
+				o.Set(c, string(v))
+			case string:
+				o.Set(c, v)
+			case nil:
+				o.Set(c, nil)
+			default:
+				o.Set(c, fmt.Sprintf("%v", v))
+			}
+		}
+		out = append(out, o)
+	}
+	return out
 }
 func mustExec(_ sql.Result, err error) { must(err) }
 func hasRow(rows *sql.Rows, err error) bool {
