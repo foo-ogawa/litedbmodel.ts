@@ -47,8 +47,8 @@ pub use runtime::{
     render_read_primary_bundle, ENTITY_ROOT,
 };
 pub use static_bundle::{
-    dispatch_read_nodes_parallel, execute_read_graph, execute_read_graph_pooled,
-    execute_read_graph_via_bc_for_test, render_placeholders, render_read_primary,
-    render_statements, render_tx_op, RenderedSql, NODE_COMPONENT, SCOPE_PORT,
+    dispatch_read_nodes_parallel, execute_read_graph, execute_read_graph_orchestrator_for_test,
+    execute_read_graph_pooled, render_placeholders, render_read_primary, render_statements,
+    render_tx_op, RenderedSql, NODE_COMPONENT, SCOPE_PORT,
 };
 pub use value::{decode_scope, decode_value, encode_value, Scope};

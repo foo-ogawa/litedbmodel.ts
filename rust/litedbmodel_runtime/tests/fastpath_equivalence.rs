@@ -5,13 +5,13 @@
 //! node's static statements, and returning its rows DIRECTLY, skipping bc `run_behavior`'s plan
 //! machinery. The general bc path is the correctness oracle: this test drives the SAME graph BOTH
 //! ways — the fast-path (`execute_read_graph`) and forced-through-bc
-//! (`execute_read_graph_via_bc_for_test`) — over a real in-memory SQLite driver, and asserts the two
+//! (`execute_read_graph_orchestrator_for_test`) — over a real in-memory SQLite driver, and asserts the two
 //! results are byte-identical for every corpus-relevant read shape (WHERE present, SKIP-dropped
 //! fragment + coalesced LIMIT, and a single-JSON IN-list param).
 
 use behavior_contracts::{deep_equals, Value};
 use litedbmodel_runtime::{
-    encode_value, execute_read_graph, execute_read_graph_via_bc_for_test, SqliteDriver,
+    encode_value, execute_read_graph, execute_read_graph_orchestrator_for_test, SqliteDriver,
 };
 use serde_json::json;
 
@@ -117,7 +117,7 @@ fn assert_fastpath_equals_bc(
 
     let via_fast = execute_read_graph(graph, &input_scope, &driver_fast)
         .unwrap_or_else(|e| panic!("[{label}] fast-path failed: {e:?}"));
-    let via_bc = execute_read_graph_via_bc_for_test(graph, &input_scope, &driver_bc)
+    let via_bc = execute_read_graph_orchestrator_for_test(graph, &input_scope, &driver_bc)
         .unwrap_or_else(|e| panic!("[{label}] bc path failed: {e:?}"));
 
     assert!(

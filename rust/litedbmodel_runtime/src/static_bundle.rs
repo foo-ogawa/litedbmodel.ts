@@ -21,7 +21,7 @@
 //! array as-is (a text[] param); mysql/sqlite JSON-encode it to a single param (server-side
 //! expansion). This mirrors the TS `evalSpec`.
 
-use behavior_contracts::{evaluate_expression, run_behavior, ComponentExec, ExecOutcome, Value};
+use behavior_contracts::{evaluate_expression, ExecOutcome, Value};
 use serde_json::Value as J;
 
 use crate::driver::Driver;
@@ -366,14 +366,6 @@ pub(crate) fn to_driver_param(v: &Value) -> Value {
     }
 }
 
-/// The makeSQL handler registry: one render→execute handler behind the `__makeSqlNode` catalog
-/// leaf; the per-node static statements are keyed by nodeId.
-struct ReadGraphHandlers<'a> {
-    driver: &'a dyn Driver,
-    graph: &'a J,
-    dialect: String,
-}
-
 /// Render one read node's static statements against `scope` and execute them on `driver`.
 ///
 /// The ONE render→execute step behind a `__makeSqlNode`. Shared by the serial handler
@@ -405,44 +397,6 @@ fn render_and_execute_node(
     match stmt.all(&params) {
         Ok(rows) => ExecOutcome::Ok(Value::Arr(rows)),
         Err(e) => ExecOutcome::Error(e.message),
-    }
-}
-
-impl ReadGraphHandlers<'_> {
-    fn render_and_execute(&self, node_id: &str, scope: &[(String, Value)]) -> ExecOutcome {
-        render_and_execute_node(self.driver, self.graph, &self.dialect, node_id, scope)
-    }
-}
-
-impl ComponentExec for ReadGraphHandlers<'_> {
-    fn exec(
-        &mut self,
-        _component: &str,
-        _ports: &[(String, Value)],
-        _bound: Option<&Value>,
-    ) -> Option<ExecOutcome> {
-        // run_behavior always dispatches through exec_ctx (we need the node id → statements).
-        Some(ExecOutcome::Error(
-            "static-bundle: makeSQL handler requires the node identity (exec_ctx)".into(),
-        ))
-    }
-
-    fn exec_ctx(
-        &mut self,
-        node_id: &str,
-        _component: &str,
-        ports: &[(String, Value)],
-        _bound: Option<&Value>,
-    ) -> Option<ExecOutcome> {
-        let scope = match ports.iter().find(|(k, _)| k == SCOPE_PORT).map(|(_, v)| v) {
-            Some(Value::Obj(pairs)) => pairs.as_slice(),
-            _ => {
-                return Some(ExecOutcome::Error(format!(
-                    "static-bundle: node '{node_id}' surrogate scope did not evaluate to an object"
-                )))
-            }
-        };
-        Some(self.render_and_execute(node_id, scope))
     }
 }
 
@@ -482,15 +436,45 @@ pub fn execute_read_graph(
 
     // NATIVE (interpreter-free) read-graph orchestration for the map/multi-node/output shapes: walk
     // the static component body (componentRef / cond / relationKind:single map) + assemble the Φ
-    // output, WITHOUT bc run_behavior. Byte-identical to the retired run_behavior path for the closed
-    // read-graph set the makeSQL corpus emits. A shape it does not reproduce falls through (below).
-    if let Some(comp) = component_for(ir, name) {
-        if orchestrator_supports(comp) {
-            return orchestrate_read_graph_serial(graph, comp, &normalized, &dialect, driver);
-        }
+    // output, WITHOUT any IR interpreter. Byte-identical to the retired run_behavior path for the
+    // closed read-graph set the makeSQL corpus emits. FAIL-CLOSED on any richer shape — the IR
+    // interpreter (run_behavior) is DELETED (native-only); an out-of-set read graph errors loudly
+    // rather than silently falling back to interpretation.
+    let comp = component_for(ir, name)
+        .ok_or_else(|| plain_failure("scp runtime: read graph has no entry component"))?;
+    if !orchestrator_supports(comp) {
+        return Err(plain_failure(
+            "scp runtime: read graph carries a shape the NATIVE orchestrator does not cover \
+             (only componentRef / cond / relationKind:single map are native-covered). The IR \
+             interpreter is retired (native-only) — this shape must be added to the native \
+             orchestrator, never interpreted.",
+        ));
     }
+    orchestrate_read_graph_serial(graph, comp, &normalized, &dialect, driver)
+}
 
-    execute_read_graph_via_bc(graph, ir, dialect, name, &normalized, driver)
+/// The GENERAL native serial orchestrator forced (no single-ref fast-path), exposed `#[doc(hidden)]`
+/// so the fast-path-equivalence test can assert the fast-path shortcut is byte-identical to the
+/// general native orchestrator (the native oracle that replaced the retired `run_behavior` one).
+#[doc(hidden)]
+pub fn execute_read_graph_orchestrator_for_test(
+    graph: &J,
+    input: &Scope,
+    driver: &dyn Driver,
+) -> Result<Value, SqlFailure> {
+    let ir = graph
+        .get("ir")
+        .ok_or_else(|| plain_failure("scp runtime: readGraph has no ir"))?;
+    let dialect = graph
+        .get("dialect")
+        .and_then(|d| d.as_str())
+        .unwrap_or("")
+        .to_string();
+    let name = graph.get("name").and_then(|n| n.as_str());
+    let normalized = normalize_read_graph_input(graph, input);
+    let comp = component_for(ir, name)
+        .ok_or_else(|| plain_failure("scp runtime: read graph has no entry component"))?;
+    orchestrate_read_graph_serial(graph, comp, &normalized, &dialect, driver)
 }
 
 /// Serial NATIVE read-graph orchestration (interpreter-free): the `&dyn Driver` twin of
@@ -638,48 +622,6 @@ fn render_node_ports_serial(
         ExecOutcome::Ok(v) => Ok(v),
         ExecOutcome::Error(e) => Err(e),
     }
-}
-
-/// The authoritative bc `run_behavior` read path (the fast-path's oracle). Exposed `#[doc(hidden)]`
-/// so the behavior-equality test can force the SAME graph through bc and assert the fast-path result
-/// is byte-identical. Production callers use [`execute_read_graph`], which fast-paths first.
-#[doc(hidden)]
-pub fn execute_read_graph_via_bc_for_test(
-    graph: &J,
-    input: &Scope,
-    driver: &dyn Driver,
-) -> Result<Value, SqlFailure> {
-    let ir = graph
-        .get("ir")
-        .ok_or_else(|| plain_failure("scp runtime: readGraph has no ir"))?;
-    let dialect = graph
-        .get("dialect")
-        .and_then(|d| d.as_str())
-        .unwrap_or("")
-        .to_string();
-    let name = graph.get("name").and_then(|n| n.as_str());
-    let normalized = normalize_read_graph_input(graph, input);
-    execute_read_graph_via_bc(graph, ir, dialect, name, &normalized, driver)
-}
-
-/// Drive the read graph through bc `run_behavior` + the makeSQL handler (no fast-path). This is the
-/// correctness oracle: bc owns map iteration / wire binding / Φ output; the handler renders each
-/// node's static statements against the evaluated `__scope` and runs REAL SQL.
-fn execute_read_graph_via_bc(
-    graph: &J,
-    ir: &J,
-    dialect: String,
-    name: Option<&str>,
-    normalized: &Scope,
-    driver: &dyn Driver,
-) -> Result<Value, SqlFailure> {
-    let mut handlers = ReadGraphHandlers {
-        driver,
-        graph,
-        dialect,
-    };
-    run_behavior(ir, &mut handlers, normalized, name)
-        .map_err(|e| re_error_to_sql_failure(&e.to_string()))
 }
 
 /// If the entry component is a single `componentRef` body node `X` with `output == {ref:[X]}`,
