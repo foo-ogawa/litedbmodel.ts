@@ -38,13 +38,17 @@ async function loadGenerated(caseId: string): Promise<GeneratedModule> {
   return (await import(new URL(`${caseId}.ts`, GEN_DIR).href)) as unknown as GeneratedModule;
 }
 
-// Build the `__makeSqlNode` handler for a single-node read graph: bc calls this per SQL
-// node with the evaluated `__scope`; we render the node's assembled statement via the
-// SAME `renderReadPrimary` litedbmodel's runtime uses and execute it on the db. This is
-// what makes the generated module GENUINELY run SQL (vs the decorative verify).
-function makeReadHandler(readGraph: any, db: any): Record<string, any> {
-  const handler = (ports: Record<string, any>) => {
-    const scope = ports.__scope ?? {};
+// Build the `Select` handler for the generated read module (#12 real-Select-node IR): the
+// straight-line module resolves its handler by the COMPONENT NAME (`handlers["Select"]`) and
+// invokes it as `h$Select(ports, { nodeId, component })`. We render the node's primary
+// statement via the SAME `renderReadPrimary` litedbmodel's runtime uses — against the CASE
+// SCOPE — and execute it on the db, returning `{ ok: rows }` (the module's boundary-handler
+// contract). This mirrors the rust/go codegen cells, whose `Handler_<Comp>` likewise rebuilds
+// the render scope from the port scalars and runs the SAME native render+execute the ir path
+// runs. The `ports` the module recomputes are equivalent to the scope; we render from the
+// scope directly, so the SQL text + params are byte-identical to the ir/DB-backed path.
+function makeReadHandler(readGraph: any, scope: any, db: any): Record<string, any> {
+  const handler = () => {
     const { sql, params } = lm.renderReadPrimary(readGraph, scope);
     // Both the real better-sqlite3 db AND the micro mock db expose the sync
     // `prepare(sql).all(...params)` surface; use it uniformly (the DB-backed PG/MySQL
@@ -52,7 +56,7 @@ function makeReadHandler(readGraph: any, db: any): Record<string, any> {
     const rows = db.prepare(sql).all(...params);
     return { ok: rows };
   };
-  return { __makeSqlNode: handler };
+  return { Select: handler };
 }
 
 export interface CodegenRunner {
@@ -85,7 +89,7 @@ export const codegenCell: CodegenRunner = {
     const mod = MODULES.get(c.case);
     if (!mod) throw new Error(`codegen: generated module for ${c.case} not preloaded`);
     // READ + read-relation primary: execute THROUGH the generated module's bind().
-    const bound = mod.bind(makeReadHandler(c.bundle.readGraph, db));
+    const bound = mod.bind(makeReadHandler(c.bundle.readGraph, c.input, db));
     const entry = mod.COMPONENT_NAMES[0];
     const run = bound[entry];
     if (c.kind === 'read') return () => run(c.input);

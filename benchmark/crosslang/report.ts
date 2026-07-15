@@ -65,6 +65,8 @@ function methodology(m: MatrixResult): string {
     `_Generated ${m.generatedAt} — DB-backed warmup ${m.warmup}, ${m.iterations} measured iterations;`,
     `micro-bench ${m.microIterations} iterations (the load-bearing signal). Dialects: ${m.dialects.join(', ')}._`,
     '',
+    '_Environment: **native arm64 (Apple Silicon)** — go arm64, node arm64, rust `aarch64-apple-darwin` (NOT x86_64/Rosetta)._',
+    '',
     comparabilityDisclosure(),
   ].join('\n');
 }
