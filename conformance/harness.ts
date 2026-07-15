@@ -491,7 +491,7 @@ export function generateCorpus(): Suite[] {
 
   return [
     { suite: 'render', corpusVersion: CORPUS_VERSION, note: 'READ primaries + WRITE statements × 3 dialects × SKIP/IN edge cases — static makeSQL render golden (byte-true to the original builders).', vectors: render },
-    { suite: 'exec', corpusVersion: CORPUS_VERSION, note: 'Read bundles executed against seeded SQLite via bc runBehavior: SKIP + belongsTo/hasMany relations (batched op).', vectors: exec },
+    { suite: 'exec', corpusVersion: CORPUS_VERSION, note: 'Read bundles executed against seeded SQLite via the native read-graph walker: SKIP + belongsTo/hasMany relations (batched op).', vectors: exec },
     { suite: 'tx', corpusVersion: CORPUS_VERSION, note: 'Write-time-relations gate-first transaction bundles: commit + gate short-circuit + composite tx-DAG.', vectors: tx },
     { suite: 'dialect', corpusVersion: CORPUS_VERSION, note: 'Dialect primitive orderByNulls: PG/SQLite native NULLS, MySQL IS NULL emulation.', vectors: dialect },
   ];

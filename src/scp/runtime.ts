@@ -96,8 +96,9 @@ export interface ExecuteOptions {
  * per-language runtime (bc + a SQL handler) can execute WITHOUT re-implementing litedbmodel's
  * compile.
  *
- *  - READ (`readGraph` present): the surrogate `ComponentGraphIR` + per-node makeSQL statement
- *    templates; bc `runBehavior` owns orchestration, the makeSQL handler renders + executes.
+ *  - READ (`readGraph` present): the REAL Select-node `ComponentGraphIR` + per-node makeSQL statement
+ *    templates; a native read-graph walker owns orchestration (never bc `runBehavior`), rendering +
+ *    executing each node's statements.
  *  - WRITE (`statement` present): the single base-write makeSQL template; for a Command with
  *    write-time relations, `transaction` carries the derived gate-first plan.
  *  - `relations` — STATIC read-relation batch ops (spec §8 relation ops), keyed by name.

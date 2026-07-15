@@ -1013,7 +1013,12 @@ export function compileReadGraph(
   if (findFilterModel !== undefined) {
     for (const n of component.body) {
       if ('cond' in n) continue;
-      const ref = 'map' in n ? (n as MapNode).map : (n as ComponentRefNode);
+      if (isFanout(n)) {
+        // bc 0.7.3+ `FanoutNode`. litedbmodel never emits fanout — reject fail-closed rather
+        // than mis-read it as a Select/Count ref and skip the FIND_FILTER fold check.
+        throw new Error(`static-bundle: read component '${component.name}' node '${n.id}' is a fanout node, not supported by litedbmodel (bc FanoutNode)`);
+      }
+      const ref = 'map' in n ? n.map : n;
       if (ref.component !== 'Select' && ref.component !== 'Count') continue;
       assertFindFilterFolded(findFilterModel, authoredWhereKeysOf(ref.ports as Record<string, unknown>));
     }
@@ -1022,7 +1027,12 @@ export function compileReadGraph(
   const statementsById: Record<string, readonly StaticStatement[]> = {};
   for (const n of component.body) {
     if ('cond' in n) continue;
-    statementsById[n.id] = compileNodeStatements(n as RefLike, dialect);
+    if (isFanout(n)) {
+      // bc 0.7.3+ `FanoutNode`. litedbmodel never emits fanout — reject fail-closed rather
+      // than feed it to `compileNodeStatements` as a catalog ref.
+      throw new Error(`static-bundle: read component '${component.name}' node '${n.id}' is a fanout node, not supported by litedbmodel (bc FanoutNode)`);
+    }
+    statementsById[n.id] = compileNodeStatements(n, dialect);
   }
 
   // SINGLE column-type resolution (issue #59 audit — unified read+codegen): `deriveReadOutTypes`
@@ -1351,7 +1361,8 @@ function optionalHeadsOfComponent(component: Component, dialect: Dialect): Set<s
   for (const n of component.body) skipGuardHeads(n, optional);
   for (const n of component.body) {
     if ('cond' in n) continue;
-    const stmts = compileNodeStatements(n as RefLike, dialect);
+    if (isFanout(n)) continue; // bc FanoutNode: litedbmodel never emits it; carries no ref-opt heads.
+    const stmts = compileNodeStatements(n, dialect);
     for (const stmt of stmts) {
       for (const p of stmt.params) collectRefOptHeads(p, optional);
       if (stmt.skip !== undefined) collectRefOptHeads(stmt.skip, optional);

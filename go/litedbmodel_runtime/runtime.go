@@ -38,7 +38,7 @@ const entityRoot = "__entity"
 var returningRe = regexp.MustCompile(`(?i)\breturning\b`)
 
 // SqlBundle is the parsed makeSQL published bundle. A READ bundle carries a `readGraph` (the
-// surrogate ComponentGraphIR + per-node static statement templates); a WRITE bundle carries a
+// REAL Select-node ComponentGraphIR + per-node static statement templates); a WRITE bundle carries a
 // gate-first `transaction` plan. The heavy fields stay as raw bc JNodes so their Expression-IR slots
 // are evaluated by bc (not pre-decoded), byte-true to the TS SqlBundle.
 type SqlBundle struct {
@@ -91,10 +91,10 @@ func BundleFromJObj(obj *bc.JObj) (*SqlBundle, error) {
 // ── Public runtime entrypoint ─────────────────────────────────────────────────
 
 // ExecuteBundle executes a read/exec SqlBundle end-to-end (runtime.ts executeBundle): a read bundle
-// carries a `readGraph` (the surrogate ComponentGraphIR + static statements); bc RunBehavior drives
-// map/Φ/wiring and the makeSQL handler renders + executes each node against REAL SQL. This is the
-// SAME code path a consumer runtime follows — it consumes ONLY the serialized bundle + bc
-// runtime-core, never re-running litedbmodel's Backend-Compile.
+// carries a `readGraph` (the REAL Select-node ComponentGraphIR + static statements); a CLOSED-SET
+// native walker drives map/Φ/wiring (never bc.RunBehavior) and renders + executes each node against
+// REAL SQL. This is the SAME code path a consumer runtime follows — it consumes ONLY the serialized
+// bundle + bc runtime-core, never re-running litedbmodel's Backend-Compile.
 func ExecuteBundle(bundle *SqlBundle, input *bc.Obj, db SQLDB) (bc.Value, error) {
 	if bundle.ReadGraph == nil {
 		return nil, fmt.Errorf("scp runtime: bundle '%s' carries no read graph (single-statement writes ride the write path)", bundle.Name)

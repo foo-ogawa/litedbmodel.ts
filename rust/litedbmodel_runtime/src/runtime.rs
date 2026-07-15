@@ -63,13 +63,13 @@ pub fn render_read_primary_bundle(read_graph: &J, input: &J) -> Result<J, String
     ]))
 }
 
-/// Execute a §8 read/exec SqlBundle end-to-end (bc `run_behavior` + the makeSQL handler).
+/// Execute a §8 read/exec SqlBundle end-to-end (native read-graph walker + per-statement render).
 ///
 /// The SAME code path a consumer runtime follows: it consumes ONLY the serialized bundle + bc
 /// runtime-core, never re-running litedbmodel's Backend-Compile. A read bundle carries a
-/// `readGraph` (the surrogate IR + static statements): bc drives map/Φ/wiring and the makeSQL
-/// handler renders + executes each node. Returns the component's Φ output — byte-identical to the
-/// TS `executeBundle`.
+/// `readGraph` (the REAL Select-node IR + static statements): a CLOSED-SET native walker drives
+/// map/Φ/wiring (never bc `run_behavior`) and renders + executes each node's statements. Returns
+/// the component's Φ output — byte-identical to the TS `executeBundle`.
 pub fn execute_bundle(bundle: &J, input: &J, driver: &dyn Driver) -> Result<Value, SqlFailure> {
     let read_graph = bundle.get("readGraph").filter(|g| !g.is_null()).ok_or_else(|| {
         let name = bundle.get("name").and_then(|n| n.as_str()).unwrap_or("");

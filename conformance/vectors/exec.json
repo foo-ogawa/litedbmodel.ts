@@ -1,7 +1,7 @@
 {
   "suite": "exec",
   "corpusVersion": 3,
-  "note": "Read bundles executed against seeded SQLite via bc runBehavior: SKIP + belongsTo/hasMany relations (batched op).",
+  "note": "Read bundles executed against seeded SQLite via the native read-graph walker: SKIP + belongsTo/hasMany relations (batched op).",
   "vectors": [
     {
       "name": "Feed: status present + belongsTo/hasMany relations",

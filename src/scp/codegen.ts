@@ -12,8 +12,8 @@
  *     concrete `HandlerNR<Comp>`/`InNR<Comp>`/`PortsNR<Comp><node>`/`RawRowNR<Comp><node>` structs,
  *     ZERO boxed `Value`/`RawValue`, ZERO IR baked into the module), the CODEGEN-ONLY lowering
  *     below ({@link lowerReadGraphForTypedNative}) makes the read's shape structurally ELIGIBLE
- *     (splits the surrogate `__scope` boxed-obj port into individual scalar ref ports + types the
- *     component's `inputPorts` from the schema) before handing it to bc. For a WRITE bundle, or a
+ *     (derives each real Select-node's referenced heads from its statements → individual scalar ref
+ *     ports + types the component's `inputPorts` from the schema) before handing it to bc. For a WRITE bundle, or a
  *     READ shape typed-native does not (yet) cover, codegen uses bc's existing de-interpreted
  *     STRAIGHT-LINE endpoint (`<lang>-straightline`, bc#75) — see {@link typedEmitterFor}.
  *  2. **SQL catalog companion** — the pure-JSON STATIC makeSQL catalog (per-node statement
@@ -24,9 +24,9 @@
  *
  * This lowering exists SOLELY for the codegen emitter call — it builds a NEW, separate
  * `ComponentGraphIR` from the bundle's `readGraph`; it never mutates `SqlBundle`/`ReadGraph` and
- * never touches the shared `readGraph`/`executeReadGraph` the ir/interpret exec surface (and the
- * frozen conformance corpus) depend on. Those keep consuming the ORIGINAL boxed-`__scope`-port
- * surrogate IR ({@link bundleToPortableIR}), completely unaffected by anything in this file.
+ * never touches the shared `readGraph`/`executeReadGraph` the native exec surface (and the
+ * frozen conformance corpus) depend on. Those keep consuming the REAL Select-node
+ * `readGraph.ir`, completely unaffected by anything in this file.
  *
  * ## Behavior-identical to the thin-runtime (mode-2), by construction
  *
@@ -447,13 +447,13 @@ function arrayHeadNameOf(param: unknown): string | undefined {
 }
 
 /**
- * Lower a read bundle's surrogate `ComponentGraphIR` into a NEW, CODEGEN-ONLY IR eligible for bc's
- * typed-native endpoint (#60 milestone 1): split the single `__scope: {obj:{...}}` boxed port into
- * individual scalar `{ref:[head]}` ports, and type the component's `inputPorts` from the schema
- * (via {@link deriveHeadTypesFromStatements}). Throws {@link TypedNativeCoverageError} if any
- * referenced head cannot be natively typed (e.g. an IN-list's array head) — NO silent `unknown`
- * port, NO fallback. Does NOT mutate `bundle`/`bundle.readGraph` (a fresh IR object is returned);
- * the ir/interpret exec surface's `executeReadGraph` keeps consuming the ORIGINAL `readGraph.ir`.
+ * Lower a read bundle's REAL Select-node `ComponentGraphIR` into a NEW, CODEGEN-ONLY IR eligible
+ * for bc's typed-native endpoint (#60 milestone 1): derive each node's referenced heads from its
+ * `statementsById` fragments and emit individual native-scalar `{ref:[head]}` ports, typing the
+ * component's `inputPorts` from the schema (via {@link deriveHeadTypesFromStatements}). Throws
+ * {@link TypedNativeCoverageError} if any referenced head cannot be natively typed (e.g. an IN-list's
+ * array head) — NO silent `unknown` port, NO fallback. Does NOT mutate `bundle`/`bundle.readGraph`
+ * (a fresh IR object is returned); the native `executeReadGraph` keeps consuming the real `readGraph.ir`.
  *
  * Scope: bc's typed-native predicate itself still governs `map`/`cond`/relationKind/policy
  * coverage (this lowering does not special-case those — `generateModule` fails closed on them with
@@ -590,8 +590,8 @@ export function codegenEmitterFor(language: string, registered: readonly string[
 }
 
 /** Does a resolved emitter id end in bc's typed-native suffix (`-typed-native`)? Only THOSE
- * emitters need (and are eligible for) the `__scope`-obj-splitting lowering — a boxed endpoint
- * (`typescript-typed`) accepts the ORIGINAL surrogate IR just fine (it consumes a boxed `Value`
+ * emitters need (and are eligible for) the native-scalar-port lowering — a boxed endpoint
+ * (`typescript-typed`) accepts the REAL Select-node IR just fine (it consumes a boxed `Value`
  * port either way), so lowering it would needlessly narrow TS's coverage (e.g. `whereIn`'s
  * array-typed head, which typed-native cannot cover but the boxed TS endpoint handles today). */
 function isTypedNativeEmitter(emitter: string): boolean {
