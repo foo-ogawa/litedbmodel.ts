@@ -8,16 +8,16 @@ namespace LiteDbModel\Runtime;
  * litedbmodel v2 SCP — PHP runtime (WS7d, #33; static-makeSQL flip, epic #43/#45).
  *
  * The PHP leg of the litedbmodel v2 SCP multi-language runtime. It interprets the
- * language-neutral §8 published STATIC makeSQL `SqlBundle` (a read `readGraph` = a bc
- * surrogate `ComponentGraphIR` + per-node STATIC statement templates, or a write
+ * language-neutral §8 published STATIC makeSQL `SqlBundle` (a read `readGraph` = `compileBehaviors`'
+ * REAL `Select`/map `ComponentGraphIR` + per-node STATIC statement templates, or a write
  * `transaction` plan of gate-first makeSQL statements, dialect-tagged) and executes it against
  * a PDO SQL driver, semantics-identical to the TS reference (`src/scp/runtime.ts` +
  * `src/scp/makesql/*`).
  *
- * It is a THIN runtime: the generic component-graph execution (`runBehavior` — plan-stage
- * execution / Skip propagation / Policy Kind / map iteration / Φ output assembly) and all
- * Expression-IR evaluation are delegated to the VENDORED behavior-contracts PHP port
- * (`src/BehaviorContracts/`); the static makeSQL assemble/render/execute lives in
+ * It is a THIN runtime: the read-graph execution (plan-stage / map iteration / wiring / Φ output
+ * assembly) is the NATIVE walker in {@link StaticBundle} (#12 — no bc `runBehavior`); only the
+ * deferred Expression-IR value-specs + skip are evaluated by the VENDORED behavior-contracts PHP
+ * port (`src/BehaviorContracts/` `ExprEval`); the static makeSQL assemble/render/execute lives in
  * {@link StaticBundle} + {@link WriteRuntime}. This runtime is the thin FACADE that dispatches a
  * bundle to the read graph executor or the gate-first write transaction. The reduced
  * fragment-tree render path (`Render::renderOperation`) is RETIRED for the SQL path — makeSQL is
@@ -43,7 +43,7 @@ namespace LiteDbModel\Runtime;
 final class Runtime
 {
     /** Version mirrored from package.json by scripts/sync-versions.mjs (SSoT). */
-    public const VERSION = '2.0.2';
+    public const VERSION = '2.1.0';
 
     /**
      * Render the PRIMARY read node's statements of a `ReadGraph` against a scope for a dialect →
@@ -67,11 +67,11 @@ final class Runtime
 
     /**
      * Execute a §8 read/exec `SqlBundle` end-to-end (runtime.ts `executeBundle`): delegate to
-     * {@link StaticBundle::executeReadGraph}, which feeds bc `runBehavior` the read graph's
-     * surrogate component (plan / map / wire / output orchestration) with a makeSQL handler that
-     * renders each node's static statement templates against the evaluated `__scope` and runs
-     * REAL SQL via PDO. Consumes ONLY the serialized bundle + vendored bc runtime-core — never
-     * re-deriving litedbmodel's Backend-Compile.
+     * {@link StaticBundle::executeReadGraph}, the NATIVE read-graph walker (#12 — NO bc
+     * `runBehavior`) which owns the plan / map / wire / output orchestration itself, renders each
+     * node's static statement templates against the walk scope, and runs REAL SQL via PDO.
+     * Consumes ONLY the serialized bundle + vendored bc `ExprEval` (deferred params + skip) —
+     * never re-deriving litedbmodel's Backend-Compile.
      *
      * @param \stdClass $bundle the §8 published bundle (json_decode(.., false) shape).
      * @param array<string,mixed> $input the bound input scope.

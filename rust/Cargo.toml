@@ -15,9 +15,11 @@ serde = { version = "1", features = ["derive"] }
 # preserve_order keeps JSON object key insertion order, required for the canonical fragment/param
 # ordering to survive a round-trip through the §8 bundle.
 serde_json = { version = "1", features = ["preserve_order"] }
-# behavior-contracts (crates.io): the shared common core the SCP runtime delegates the CLOSED
-# Expression-IR evaluation to, mirroring the TS reference's npm dependency. Published crate — NO
-# local `path = "../.."` (the no-local-deps gate forbids it).
-behavior-contracts = "0.5.0"
+# behavior-contracts (crates.io): the shared common core. The rust runtime is NATIVE-ONLY (#8) — it
+# uses ONLY bc's feature-free surface (`Value`/`deep_equals`/`ExecOutcome`/plan primitives), NOT the
+# serde_json-based `ir` feature (`evaluate_expression`/`run_behavior`, retired). `default-features =
+# false` drops bc's default `ir` feature so `cargo tree -i serde_json` from the runtime is EMPTY.
+# Published crate — NO local `path = "../.."` (the no-local-deps gate forbids it).
+behavior-contracts = { version = "0.8.0", default-features = false }
 # In-process SQLite for the conformance bar (bundled amalgamation → no system dep).
 rusqlite = { version = "0.32", features = ["bundled"] }

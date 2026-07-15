@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace LiteDbModel\Runtime;
 
-use LiteDbModel\Runtime\BehaviorContracts\Behavior;
 use LiteDbModel\Runtime\BehaviorContracts\ExprEval;
 
 /**
@@ -12,10 +11,11 @@ use LiteDbModel\Runtime\BehaviorContracts\ExprEval;
  *
  * Byte-for-byte port of the TS `src/scp/makesql/static-bundle.ts` + `makesql.ts` + `handler.ts`
  * runtime halves — the SOLE makeSQL read/render path. It consumes the PRE-COMPILED, portable
- * artifacts the corpus ships (a read `ReadGraph` = a bc `ComponentGraphIR` of `__makeSqlNode`
- * surrogate nodes + per-node STATIC statement templates), and EXECUTES them via the VENDORED
- * behavior-contracts PHP port (`Behavior::runBehavior` drives map / Φ-merge / wiring;
- * `ExprEval::evaluate` resolves the deferred value-specs + skip). It re-implements NO generic
+ * artifacts the corpus ships (a read `ReadGraph` = `compileBehaviors`' REAL `Select`/map
+ * `ComponentGraphIR` + per-node STATIC statement templates keyed by node id; #12 — no surrogate),
+ * and EXECUTES them via the NATIVE read-graph walker (owns map / Φ-merge / wiring; NO bc
+ * `runBehavior`) + the vendored behavior-contracts PHP port `ExprEval::evaluate` for the deferred
+ * value-specs + skip. It re-implements NO generic
  * evaluator and does NO SQL re-derivation — every statement's `sql` is fixed text; the runtime only
  * evaluates its deferred params + skip, resolves the WHERE connector from the present set, assembles
  * + renders placeholders, and binds.
@@ -33,12 +33,6 @@ use LiteDbModel\Runtime\BehaviorContracts\ExprEval;
  */
 final class StaticBundle
 {
-    /** The synthetic port that carries a SQL node's render scope (TS SCOPE_PORT). */
-    public const SCOPE_PORT = '__scope';
-
-    /** The makeSQL catalog leaf name every rewritten SQL node references (TS NODE_COMPONENT). */
-    public const NODE_COMPONENT = '__makeSqlNode';
-
     // ── makeSQL assembly (port of makesql.ts assembleMakeSQL / composeMakeSQL) ──
 
     /**
@@ -385,55 +379,134 @@ final class StaticBundle
     // ── ReadGraph execution (port of static-bundle.ts executeReadGraph) ─────────
 
     /**
-     * Execute a compiled ReadGraph via bc `runBehavior` + a makeSQL handler: bc drives map iteration
-     * / wire binding / Φ output; the handler renders each node's static statements against the
-     * evaluated `__scope` and runs REAL SQL via PDO. Returns the component's Φ output. Byte-true to
-     * the TS executeReadGraph — the "bc composes, makeSQL executes" design.
+     * Render node `$nodeId`'s `statementsById` fragments against `$scope` and execute on PDO.
+     * The ONE render→execute step of the native walker (#12): SQL text comes from the fragments,
+     * only the deferred params + skip are evaluated against the walk scope. Returns the row list.
+     *
+     * @param array<string,mixed> $scope
+     * @return list<mixed>
+     */
+    private static function renderExecuteNode(\stdClass $graph, string $nodeId, array $scope, \PDO $db): array
+    {
+        $dialectName = (string) $graph->dialect;
+        $byId = $graph->statementsById ?? null;
+        if (!($byId instanceof \stdClass) || !property_exists($byId, $nodeId)) {
+            throw new \RuntimeException("static-bundle: no statements for node '{$nodeId}'");
+        }
+        $stmts = is_array($byId->{$nodeId}) ? array_values($byId->{$nodeId}) : [];
+        $rendered = self::renderStatements($stmts, $dialectName, $scope);
+        $params = array_map(static function (mixed $v) use ($dialectName): mixed {
+            if (is_bool($v)) {
+                return $v ? 1 : 0;
+            }
+            // A postgres IN-list / relation-batch array param (`= ANY($1)` / `= ANY($1::int[])`):
+            // PDO cannot bind a PHP array to a single placeholder, so encode it to the PG array
+            // literal text form (`{1,3}`) the server parses. The no-cast `= ANY($1)` still lets PG
+            // infer the element type from the column (int / uuid / empty), so this is a pure
+            // BINDING adaptation — no SQL-form change (#46).
+            if ($dialectName === 'postgres' && is_array($v)) {
+                return self::pgArrayLiteral($v);
+            }
+            return $v;
+        }, $rendered['params']);
+        try {
+            $stmt = $db->prepare($rendered['sql']);
+            $stmt->execute(array_values($params));
+            $rows = $stmt->fetchAll(\PDO::FETCH_OBJ);
+            return is_array($rows) ? array_values($rows) : [];
+        } catch (\PDOException $e) {
+            throw SqlFailure::fromPdo($e);
+        }
+    }
+
+    /**
+     * Execute a compiled ReadGraph via the NATIVE walker (#12): NO bc `runBehavior`.
+     *
+     * Walks `compileBehaviors`' REAL `Select`/`Count`/map node IR in `plan.groups` stage order —
+     * computing each node's rows from its `statementsById` fragments (rendered against the walk scope)
+     * and committing `nodeId => value` — then evaluates the component `output` Φ expression.
+     * litedbmodel owns map iteration / wire binding / Φ output; no `__makeSqlNode`/`__scope` surrogate.
+     * The SAME native model the TS/rust/go/python runtimes follow — interpreter-free.
      *
      * @param array<string,mixed> $input
      */
     public static function executeReadGraph(\stdClass $graph, array $input, \PDO $db): mixed
     {
-        $dialectName = (string) $graph->dialect;
-        $handle = static function (array $ports, array $ctx) use ($graph, $db, $dialectName): array {
-            $nodeId = (string) ($ctx['nodeId'] ?? '');
-            $byId = $graph->statementsById ?? null;
-            if (!($byId instanceof \stdClass) || !property_exists($byId, $nodeId)) {
-                return ['error' => "static-bundle: no statements for node '{$nodeId}'"];
-            }
-            $scopeVal = $ports[self::SCOPE_PORT] ?? null;
-            if (!($scopeVal instanceof \stdClass)) {
-                return ['error' => "static-bundle: node '{$nodeId}' surrogate scope did not evaluate to an object"];
-            }
-            $stmts = is_array($byId->{$nodeId}) ? array_values($byId->{$nodeId}) : [];
-            $rendered = self::renderStatements($stmts, $dialectName, get_object_vars($scopeVal));
-            $params = array_map(static function (mixed $v) use ($dialectName): mixed {
-                if (is_bool($v)) {
-                    return $v ? 1 : 0;
-                }
-                // A postgres IN-list / relation-batch array param (`= ANY($1)` / `= ANY($1::int[])`):
-                // PDO cannot bind a PHP array to a single placeholder, so encode it to the PG array
-                // literal text form (`{1,3}`) the server parses. The no-cast `= ANY($1)` still lets PG
-                // infer the element type from the column (int / uuid / empty), so this is a pure
-                // BINDING adaptation — no SQL-form change (#46).
-                if ($dialectName === 'postgres' && is_array($v)) {
-                    return self::pgArrayLiteral($v);
-                }
-                return $v;
-            }, $rendered['params']);
-            try {
-                $stmt = $db->prepare($rendered['sql']);
-                $stmt->execute(array_values($params));
-                $rows = $stmt->fetchAll(\PDO::FETCH_OBJ);
-                return ['ok' => is_array($rows) ? array_values($rows) : []];
-            } catch (\PDOException $e) {
-                return ['error' => SqlFailure::fromPdo($e)->getMessage()];
-            }
-        };
-
-        $handlers = [self::NODE_COMPONENT => $handle];
+        $component = $graph->ir->components[0];
+        $body = is_array($component->body ?? null) ? $component->body : [];
+        $output = $component->output ?? null;
         $normalized = self::normalizeInput($graph, $input);
-        return Behavior::runBehavior($graph->ir, $handlers, $normalized, (string) $graph->name);
+
+        /** @var list<array{0:string,1:mixed}> $results */
+        $results = [];
+        foreach (self::planStages($component, count($body)) as $stage) {
+            $base = $normalized;
+            foreach ($results as [$nid, $val]) {
+                $base[$nid] = $val;
+            }
+            sort($stage); // ascending body index — deterministic failure precedence
+            foreach ($stage as $idx) {
+                $node = $body[$idx];
+                $val = self::computeReadNode($graph, $node, $base, $db);
+                $results[] = [(string) $node->id, $val];
+                $base[(string) $node->id] = $val;
+            }
+        }
+        $scope = $normalized;
+        foreach ($results as [$nid, $val]) {
+            $scope[$nid] = $val;
+        }
+        return ExprEval::evaluate($output, $scope);
+    }
+
+    /**
+     * The plan stages (`groups`) as body-index lists, or one-node-per-stage in body order.
+     *
+     * @return list<list<int>>
+     */
+    private static function planStages(\stdClass $component, int $bodyLen): array
+    {
+        $plan = $component->plan ?? null;
+        if ($plan instanceof \stdClass && is_array($plan->groups ?? null)) {
+            $stages = [];
+            foreach ($plan->groups as $st) {
+                if (is_array($st)) {
+                    $stages[] = array_values(array_filter($st, 'is_int'));
+                }
+            }
+            return $stages;
+        }
+        return array_map(static fn (int $i): array => [$i], range(0, $bodyLen - 1));
+    }
+
+    /**
+     * Compute ONE read-graph body node's value: a `cond` join, a `map` (per-element render+execute
+     * under the `as` binding), or a componentRef (render+execute).
+     *
+     * @param array<string,mixed> $base
+     */
+    private static function computeReadNode(\stdClass $graph, \stdClass $node, array $base, \PDO $db): mixed
+    {
+        if (property_exists($node, 'cond')) {
+            return ExprEval::evaluate($node->cond, $base);
+        }
+        $nodeId = (string) ($node->id ?? '');
+        if (property_exists($node, 'map')) {
+            $m = $node->map;
+            $over = ExprEval::evaluate($m->over ?? null, $base);
+            if (!is_array($over)) {
+                throw new \RuntimeException("static-bundle: map '{$nodeId}': 'over' is not an array");
+            }
+            $asName = (string) ($m->as ?? '$');
+            $out = [];
+            foreach ($over as $el) {
+                $elemScope = $base;
+                $elemScope[$asName] = $el;
+                $out[] = self::renderExecuteNode($graph, $nodeId, $elemScope, $db);
+            }
+            return $out;
+        }
+        return self::renderExecuteNode($graph, $nodeId, $base, $db);
     }
 
     // ── Tx op render (port of tx.ts renderStatement) ───────────────────────────

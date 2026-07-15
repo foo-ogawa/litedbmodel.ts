@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
+	conf "github.com/foo-ogawa/litedbmodel/go/conformance"
 
 	_ "modernc.org/sqlite"
 )
@@ -151,12 +152,12 @@ func TestExecuteBundleStatusPresentAndAbsent(t *testing.T) {
 	db := seedFeed(t)
 	defer db.Close()
 
-	got := EncodeConformanceJSON(mustRun(t, bundle, scope("author_id", float64(7), "status", "live"), db))
+	got := conf.EncodeConformanceJSON(mustRun(t, bundle, scope("author_id", float64(7), "status", "live"), db))
 	if got != `[{"id":1,"author_id":7,"status":"live"}]` {
 		t.Errorf("status present: got %s", got)
 	}
 
-	got2 := EncodeConformanceJSON(mustRun(t, bundle, scope("author_id", float64(7)), db))
+	got2 := conf.EncodeConformanceJSON(mustRun(t, bundle, scope("author_id", float64(7)), db))
 	if got2 != `[{"id":1,"author_id":7,"status":"live"},{"id":2,"author_id":7,"status":"draft"}]` {
 		t.Errorf("status absent (SKIP drop): got %s", got2)
 	}
@@ -281,19 +282,19 @@ func TestExecuteTransactionUnknownGateFailsClosed(t *testing.T) {
 // ── conformance value codec round-trip ────────────────────────────────────────
 
 func TestConformanceCodec(t *testing.T) {
-	if got := EncodeConformanceJSON(int64(5)); got != `{"$bigint":"5"}` {
+	if got := conf.EncodeConformanceJSON(int64(5)); got != `{"$bigint":"5"}` {
 		t.Errorf("int64 encode: got %s", got)
 	}
-	if got := EncodeConformanceJSON(float64(7)); got != `7` {
+	if got := conf.EncodeConformanceJSON(float64(7)); got != `7` {
 		t.Errorf("whole float encode: got %s", got)
 	}
 	n, _ := bc.ParseJSONOrdered([]byte(`{"$bigint":"4"}`))
-	v, _ := DecodeConformanceValue(n)
+	v, _ := conf.DecodeConformanceValue(n)
 	if v != int64(4) {
 		t.Errorf("$bigint decode: got %T %v", v, v)
 	}
 	n2, _ := bc.ParseJSONOrdered([]byte(`7`))
-	v2, _ := DecodeConformanceValue(n2)
+	v2, _ := conf.DecodeConformanceValue(n2)
 	if v2 != float64(7) {
 		t.Errorf("bare-int decode: got %T %v", v2, v2)
 	}

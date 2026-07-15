@@ -17,7 +17,6 @@ package litedbmodel_runtime
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -25,6 +24,47 @@ import (
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
 )
+
+// jsonEscapeString writes a JSON string literal NATIVELY (JS JSON.stringify form) — no encoding/json.
+// The exec path (IN-list JSON params, emit payload text) must carry no JSON library, so string/key
+// escaping is hand-written: `"`/`\` and the C0 control chars escape; unicode is left raw (matching
+// JSON.stringify's default, byte-true to the TS reference + the codegen cell's jsonEscapeInto).
+func jsonEscapeString(s string) string {
+	var sb strings.Builder
+	sb.Grow(len(s) + 2)
+	sb.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			sb.WriteString(`\"`)
+		case '\\':
+			sb.WriteString(`\\`)
+		case '\n':
+			sb.WriteString(`\n`)
+		case '\r':
+			sb.WriteString(`\r`)
+		case '\t':
+			sb.WriteString(`\t`)
+		case '\b':
+			sb.WriteString(`\b`)
+		case '\f':
+			sb.WriteString(`\f`)
+		default:
+			if r < 0x20 {
+				sb.WriteString(`\u`)
+				h := strconv.FormatInt(int64(r), 16)
+				for len(h) < 4 {
+					h = "0" + h
+				}
+				sb.WriteString(h)
+			} else {
+				sb.WriteRune(r)
+			}
+		}
+	}
+	sb.WriteByte('"')
+	return sb.String()
+}
 
 // SQLDB is the minimal database/sql surface the runtime needs (a *sql.DB or *sql.Tx satisfies it).
 type SQLDB interface {
@@ -68,8 +108,7 @@ func jsStringify(v bc.Value) string {
 		}
 		return "false"
 	case string:
-		b, _ := json.Marshal(t)
-		return string(b)
+		return jsonEscapeString(t)
 	case int64:
 		return strconv.FormatInt(t, 10)
 	case float64:
@@ -83,8 +122,7 @@ func jsStringify(v bc.Value) string {
 	case *bc.Obj:
 		parts := make([]string, 0, t.Len())
 		for _, k := range t.Keys {
-			kb, _ := json.Marshal(k)
-			parts = append(parts, string(kb)+":"+jsStringify(t.Vals[k]))
+			parts = append(parts, jsonEscapeString(k)+":"+jsStringify(t.Vals[k]))
 		}
 		return "{" + strings.Join(parts, ",") + "}"
 	default:

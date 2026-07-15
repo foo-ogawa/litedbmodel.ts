@@ -1,30 +1,24 @@
 /**
- * makeSQL × behavior-contracts integration + real better-sqlite3 execution.
+ * makeSQL statement assembly + real better-sqlite3 execution (native path).
  *
- * Proves the LOCKED model's bc claim (spec §11): the `makeSQL` catalog leaf rides bc's
- * `runBehavior` — bc does composition / value-eval / plan / envelope; litedbmodel
- * supplies ONLY the catalog entry + handler + compile. We:
+ * Proves the makeSQL model (spec §11): litedbmodel compiles a query to a `makeSQL` statement
+ * (byte-tuned SQL text + deferred params), assembles it (drop-on-skip, splice nested makeSQL),
+ * renders placeholders, and runs it on a REAL driver — the NATIVE execution model every language
+ * runtime uses (#12: NO bc `runBehavior`, NO `makeSQL`-catalog surrogate). We:
  *
- *   1. build the single-`makeSQL` component IR and pass it through bc's Portability
- *      Guard (`assertPortableComponentGraph`) — the graph is portable;
- *   2. run it on the shared `runBehavior` with the `makeSQL` handler bound to a REAL
- *      better-sqlite3 driver, and assert the rows match a direct query (result parity);
- *   3. exercise nested-`makeSQL` subquery params (splice) and `skip` (drop) end-to-end.
+ *   1. compile a SELECT + WHERE, assemble + render + execute on real better-sqlite3, and assert
+ *      the rows match a direct query (result parity);
+ *   2. exercise nested-`makeSQL` subquery params (splice) and `skip` (drop) end-to-end.
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any -- bc runtime/driver seams need casts */
+/* eslint-disable @typescript-eslint/no-explicit-any -- driver seams need casts */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
-import { runBehavior, assertPortableComponentGraph, type Handlers } from 'behavior-contracts';
 import {
   compileSelect,
   compileWhere,
-  makeSqlComponentIR,
-  makeSqlInput,
-  makeSqlHandlerSync,
   assembleMakeSQL,
   renderPlaceholders,
-  MAKESQL,
   type MakeSQL,
 } from '../../src/scp/makesql';
 
@@ -46,31 +40,22 @@ function sqliteExec(sql: string, params: unknown[]): Record<string, unknown>[] {
   return db.prepare(sql).all(...(params as any[])) as Record<string, unknown>[];
 }
 
-/** Run a compiled makeSQL bundle through bc's runBehavior with the makeSQL handler. */
-function runViaBc(node: MakeSQL): Record<string, unknown>[] {
-  const ir = makeSqlComponentIR('Query');
-  assertPortableComponentGraph(ir); // bc Portability Guard passes on our graph.
-  const handlers: Handlers = { [MAKESQL]: makeSqlHandlerSync(sqliteExec, 'sqlite') };
-  const out = runBehavior(ir, handlers, makeSqlInput(node) as any, 'Query');
-  return out as unknown as Record<string, unknown>[];
+/** Assemble a compiled makeSQL statement → render placeholders → run on SQLite (the native path). */
+function runNative(node: MakeSQL): Record<string, unknown>[] {
+  const asm = assembleMakeSQL(node);
+  return sqliteExec(renderPlaceholders(asm.sql, 'sqlite'), asm.params);
 }
 
-describe('makeSQL rides behavior-contracts runBehavior (SQLite real exec)', () => {
-  it('SELECT + WHERE composes, value-evals, executes — rows match a direct query', () => {
+describe('makeSQL statement assembles + executes on SQLite (native, no runBehavior)', () => {
+  it('SELECT + WHERE assembles, executes — rows match a direct query', () => {
     const node = compileSelect({
       dialect: 'sqlite',
       tableName: 'users',
       conditions: { status: 'active' },
       order: 'id ASC',
     });
-    const viaBc = runViaBc(node);
-
-    // Direct reference query (byte-identical SQL/params via assemble+render).
-    const asm = assembleMakeSQL(node);
-    const direct = sqliteExec(renderPlaceholders(asm.sql, 'sqlite'), asm.params);
-
-    expect(viaBc).toEqual(direct);
-    expect(viaBc.map((r) => r.name)).toEqual(['alice', 'carol']);
+    const rows = runNative(node);
+    expect(rows.map((r) => r.name)).toEqual(['alice', 'carol']);
   });
 
   it('nested-makeSQL subquery param splices its SQL + params inline', () => {
@@ -83,26 +68,14 @@ describe('makeSQL rides behavior-contracts runBehavior (SQLite real exec)', () =
     expect(asm.sql).toBe('SELECT * FROM users WHERE id IN (SELECT user_id FROM orders WHERE total >= ?) ORDER BY id ASC');
     expect(asm.params).toEqual([100]);
 
-    const rows = runViaBc(outer);
+    const rows = runNative(outer);
     expect(rows.map((r) => r.name)).toEqual(['alice', 'carol']); // users with an order >= 100
   });
 
-  it('skip drops the component entirely (sql AND params) — handler contributes nothing', () => {
-    const skipped: MakeSQL = { sql: 'SELECT * FROM users', params: [], skip: true };
-    const rows = runViaBc(skipped);
-    expect(rows).toEqual([]); // skipped ⇒ no execution, empty result
-
-    // And an optional WHERE member that is skipped contributes no text/param:
+  it('skip drops the statement entirely (sql AND params) — contributes nothing', () => {
+    // An optional WHERE member that is skipped contributes no text/param:
     const optional = compileWhere({ status: 'active' }, 'sqlite');
     const asm = assembleMakeSQL({ ...optional, skip: true });
     expect(asm).toEqual({ sql: '', params: [] });
-  });
-
-  it('the makeSQL IR is a single catalog leaf referencing only the makeSQL component', () => {
-    const ir = makeSqlComponentIR('Query');
-    expect(ir.components).toHaveLength(1);
-    const body = ir.components[0].body as any[];
-    expect(body).toHaveLength(1);
-    expect(body[0].component).toBe(MAKESQL); // the ONLY catalog vocabulary
   });
 });

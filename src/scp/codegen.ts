@@ -12,8 +12,8 @@
  *     concrete `HandlerNR<Comp>`/`InNR<Comp>`/`PortsNR<Comp><node>`/`RawRowNR<Comp><node>` structs,
  *     ZERO boxed `Value`/`RawValue`, ZERO IR baked into the module), the CODEGEN-ONLY lowering
  *     below ({@link lowerReadGraphForTypedNative}) makes the read's shape structurally ELIGIBLE
- *     (splits the surrogate `__scope` boxed-obj port into individual scalar ref ports + types the
- *     component's `inputPorts` from the schema) before handing it to bc. For a WRITE bundle, or a
+ *     (derives each real Select-node's referenced heads from its statements → individual scalar ref
+ *     ports + types the component's `inputPorts` from the schema) before handing it to bc. For a WRITE bundle, or a
  *     READ shape typed-native does not (yet) cover, codegen uses bc's existing de-interpreted
  *     STRAIGHT-LINE endpoint (`<lang>-straightline`, bc#75) — see {@link typedEmitterFor}.
  *  2. **SQL catalog companion** — the pure-JSON STATIC makeSQL catalog (per-node statement
@@ -24,9 +24,9 @@
  *
  * This lowering exists SOLELY for the codegen emitter call — it builds a NEW, separate
  * `ComponentGraphIR` from the bundle's `readGraph`; it never mutates `SqlBundle`/`ReadGraph` and
- * never touches the shared `readGraph`/`executeReadGraph` the ir/interpret exec surface (and the
- * frozen conformance corpus) depend on. Those keep consuming the ORIGINAL boxed-`__scope`-port
- * surrogate IR ({@link bundleToPortableIR}), completely unaffected by anything in this file.
+ * never touches the shared `readGraph`/`executeReadGraph` the native exec surface (and the
+ * frozen conformance corpus) depend on. Those keep consuming the REAL Select-node
+ * `readGraph.ir`, completely unaffected by anything in this file.
  *
  * ## Behavior-identical to the thin-runtime (mode-2), by construction
  *
@@ -40,15 +40,26 @@
  * ## No literal-bake / no boxed fallback
  *
  * typed-native fails CLOSED on an uncovered shape (a `map`/`cond` relation kind it does not cover,
- * or an input head that cannot lower to a native scalar — e.g. an IN-list's array-typed head).
- * Such a shape is NOT silently regenerated on the boxed `-typed`/`-typed-raw` emitter — it THROWS,
- * naming the exact gap, so it can be tracked as a bc coverage gap (bc#86) rather than masked.
+ * or an input head that cannot lower to a native port). Such a shape is NOT silently regenerated on
+ * the boxed `-typed`/`-typed-raw` emitter — it THROWS, naming the exact gap, so it can be tracked as
+ * a bc coverage gap rather than masked.
+ *
+ * IN-list / array-bound WHERE heads (the `whereIn` `{__jsonArray:{ref:[head]},dialect}` param) are
+ * now COVERED via bc#110 (native array/list port for a componentRef input port): the lowering
+ * resolves the IN-list column's element scalar and emits a native ARRAY input port
+ * (`{type:'array', elemType}` → `Vec<ElemT>`/`[]ElemT`), so `complexWhere`/`inList` reach the
+ * zero-boxing native hot path (no serde_json/encoding-json, no boxed `Value`). They no longer
+ * fail closed as a bc#86/coverage gap.
  */
 
-import { generateModule, type Component, type ComponentGraphIR, type GeneratedModule, type Scope, type Value, type PortSchema } from 'behavior-contracts';
+import { generateModule, loadCompiledIR, type GeneratedModule, type Scope, type Value, type PortSchema } from 'behavior-contracts';
+// bc 0.8.0: litedbmodel's codegen IR is DERIVED (lowered from a compiled read graph) — an UNBRANDED
+// structural doc. It is re-adopted into the branded compile-seam handle via `loadCompiledIR` right
+// before `generateModule` (which fail-closes on un-tokened IR, SA3/SA7). The node/component types
+// here are the unbranded structural shapes (see `./authoring`).
+import type { Component, ComponentGraphIR } from './authoring';
 import type { SqlBundle, SqliteDb } from './runtime';
 import { executeBundle } from './runtime';
-import { makeSqlComponentIR } from './makesql/ir';
 import type { DialectName } from './dialect';
 import type { RelationOp } from './relation';
 import type { ReadGraph, StaticStatement } from './makesql/static-bundle';
@@ -133,27 +144,24 @@ export interface CodegenArtifact {
 }
 
 /**
- * The portable {@link ComponentGraphIR} view of a §8 bundle: a read bundle's surrogate IR (each
- * SQL node → a `makeSQL` node), or the single `makeSQL` component IR for a write. This is the
- * ORIGINAL boxed-`__scope`-port form the ir/interpret exec surface's `executeReadGraph` also
- * consumes (via `bundle.readGraph.ir` directly) — {@link generateCodegenArtifact} does NOT use
- * this for a READ bundle (it uses the codegen-only lowered form, {@link lowerReadGraphForTypedNative});
- * this function is kept for callers that want the untouched portable IR (e.g. diagnostics, the
- * write path, or a future straight-line fallback caller).
+ * The portable {@link ComponentGraphIR} view of a §8 READ bundle: `compileBehaviors`' real-node
+ * read-graph IR (the de-surrogated `Select`/`Count`/map nodes; #12) — the SAME IR the native exec
+ * surface (`executeReadGraph`) walks (via `bundle.readGraph.ir` directly). litedbmodel constructs NO
+ * `ComponentGraphIR` literal here; it returns the compiler's own output. {@link generateCodegenArtifact}
+ * does NOT use this for a typed-native READ target (that uses the codegen-only lowered form,
+ * {@link lowerReadGraphForTypedNative}); this is the portable IR for a boxed READ endpoint / fingerprint.
+ *
+ * WRITE bundles have NO portable component-graph IR (they carry a single compiled `statement`, not a
+ * component graph — and are NOT codegen-module cases: {@link generateCodegenArtifact} rejects them).
+ * There is therefore no hand-built `makeSQL` write surrogate anymore (#12) — a write bundle throws.
  */
 export function bundleToPortableIR(bundle: SqlBundle): ComponentGraphIR {
   if (bundle.readGraph !== undefined) return bundle.readGraph.ir;
-  const ir = makeSqlComponentIR(bundle.name);
-  // A WRITE bundle's typed de-box (spec §4.1/§9): attach the derived `outputType` (the
-  // TransactionResult typed shape) to the single `makeSQL` node's `outType` + the component's
-  // `outputType` — exactly how the read graph annotates its surrogate IR. Without it, bc's typed
-  // emitters would hard-fail ("nothing to de-box"), which is the correct fail-closed signal; a
-  // resolver-less write bundle (no `outputType`) stays un-annotated (interpret/boxed only, as before).
-  if (bundle.outputType === undefined) return ir;
-  const c = ir.components[0];
-  const body = c.body.map((n, i) => (i === 0 ? { ...n, outType: bundle.outputType } : n));
-  const component = { ...c, body, outputType: bundle.outputType } as unknown as Component;
-  return { ...ir, components: [component] };
+  throw new Error(
+    `litedbmodel codegen: bundle '${bundle.name}' has no readGraph — a WRITE bundle carries a single ` +
+      `compiled makeSQL statement, not a portable component-graph IR, and is not a codegen-module case ` +
+      `(#12: the hand-built makeSQL write surrogate IR is eliminated; writes ride the write/tx exec path).`,
+  );
 }
 
 /** The STATIC makeSQL execution catalog carried alongside the generated module. */
@@ -170,27 +178,22 @@ function companionOf(bundle: SqlBundle): SqlCatalogCompanion {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// #60 milestone 1 — CODEGEN-ONLY typed-native lowering.
+// #60 milestone 1 — CODEGEN-ONLY typed-native lowering (#12: from the real-node read graph).
 //
 // bc's typed-native coverage predicate (`coverageRejectReason`, bc#86/#89) requires EVERY
-// componentRef port to be STATICALLY resolvable to a native scalar/string-array/number-literal —
-// the surrogate read graph's single `__scope: {obj:{...}}` port is a BOXED obj literal, which is
-// never statically resolvable (it fails `portIsStatic`), so bc hard-fails ("does not lower to a
-// native Rust type") on EVERY read, covered or not, before this lowering. Splitting `__scope` into
-// individual scalar ref ports (one per referenced head) makes the shape ELIGIBLE; typing the
-// component's `inputPorts` (bc's authoring default is `unknown` for every scanned `$.head`) then
-// lets each port lower to a CONCRETE Rust/Go field instead of falling through to `Value`.
+// componentRef port to be STATICALLY resolvable to a native scalar/string-array/number-literal.
+// The de-surrogated read graph's real `Select`/`Count`/map nodes carry boxed authoring ports
+// (`where:{arr:[…]}`, `table`, `select`) that are not that shape, so bc would hard-fail on them.
+// This lowering rebuilds a NEW, CODEGEN-ONLY component whose body nodes carry ONLY individual
+// native-scalar `{ref:[head]}` ports (one per input head the node's compiled statements bind,
+// derived from `statementsById`) + typed `inputPorts` — the shape bc's typed-native emitter needs.
 //
 // This is a NEW, throwaway `ComponentGraphIR` built FROM the bundle's `readGraph` fields
-// (`ir`/`statementsById`, both already computed by the EXISTING `compileReadGraph` — untouched
-// here) — it is never written back onto `SqlBundle`/`ReadGraph`, never serialized, and the
-// ir/interpret exec surface (`executeReadGraph`) never sees it (it keeps reading `readGraph.ir`,
-// the boxed-`__scope` form, directly). Purely a generation-time input to `generateModule`.
+// (`ir` topology + `statementsById`, both already computed by the EXISTING `compileReadGraph` —
+// untouched here) — it is never written back onto `SqlBundle`/`ReadGraph`, never serialized, and
+// the native exec surface (`executeReadGraph`) never sees it (it walks the real-node `readGraph.ir`
+// directly). Purely a generation-time input to `generateModule`.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-
-/** The makeSQL surrogate node's synthetic port name (mirrors `static-bundle.ts`'s private `SCOPE_PORT`
- * — duplicated as a literal here rather than exported, keeping this a codegen-only concern). */
-const SCOPE_PORT = '__scope';
 
 /** A head could not be typed for typed-native codegen — the read is NOT typed-native-coverable. */
 export class TypedNativeCoverageError extends Error {
@@ -222,6 +225,13 @@ const WHERE_FRAGMENT_COLUMN = /^([A-Za-z_][A-Za-z0-9_]*)\s+(?:=|<>|<=|>=|<|>|LIK
  * reported as unresolvable rather than mis-parsed). */
 const SELECT_FROM_TABLE = /\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)\b/i;
 
+/** Extract the LHS column of an IN-list / array-bound WHERE fragment — the closed set of texts
+ * {@link inListFragment} emits across dialects, all of the form `<col> IN (…)` (sqlite `json_each`,
+ * mysql `JSON_TABLE`) or `<col> = ANY(?)` (postgres). The single array param binds a `?` inside; the
+ * column names the type to resolve the ELEMENT scalar from (spec §4.1 schema SoT). Any other shape
+ * returns undefined (fail-closed). */
+const IN_LIST_COLUMN = /^([A-Za-z_][A-Za-z0-9_]*)\s+(?:IN\s*\(|=\s*ANY\s*\()/i;
+
 /**
  * Derive each input head's bc scalar type from a read node's compiled {@link StaticStatement}s
  * (spec §4.1 schema SoT), for bc's typed-native codegen (#60 m1). Works from the ALREADY-COMPILED
@@ -229,16 +239,29 @@ const SELECT_FROM_TABLE = /\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)\b/i;
  * instead of re-walking the authored component — so this lowering needs NO extra input beyond
  * what `SqlBundle`/`ReadGraph` already expose (no change to `compileReadGraph`/`ReadGraph`).
  *
- * Returns the typed heads found, PLUS `unresolved` — heads referenced by a param that is NOT a
- * bare single-segment `{ref:[head]}` (e.g. `whereIn`'s `{__jsonArray:{ref:[…]},dialect}` array
- * param) or whose owning fragment's SQL text isn't the closed `<col> <op> ?` shape. A non-empty
- * `unresolved` means the read is NOT typed-native-coverable (fail-closed at the caller).
+ * Returns three sets:
+ *  - `byHead` — heads bound by a bare single-segment `{ref:[head]}` scalar param, typed to their
+ *    column's bc scalar (`int`/`float`/`string`/`bool`).
+ *  - `arrayHeads` — heads bound by an IN-list / array param (`whereIn`'s
+ *    `{__jsonArray:{ref:[head]},dialect}`), typed to their column's ELEMENT scalar. bc#110 gives
+ *    typed-native a native array port (`Vec<ElemT>`/`[]ElemT`) for such a head, so it is now
+ *    COVERED (no longer fail-closed) — the caller emits it as a native array input port.
+ *  - `unresolved` — heads whose owning fragment's SQL text isn't a shape this deriver covers (the
+ *    closed `<col> <op> ?` scalar shape or the `<col> IN (…)`/`<col> = ANY(?)` array shape). A
+ *    non-empty `unresolved` means the read is NOT typed-native-coverable (fail-closed at the caller).
+ *
+ * `elementVar` (map nodes only): the map's `as` binding (`$e0`). A param whose ref's FIRST segment
+ * is the element var (`{ref:['$e0','author_id']}`) is a map-ELEMENT field access, NOT a component
+ * input head — bc types it from the map's `over` element struct (the prior node's row), so this
+ * deriver neither types nor rejects it (it is fully covered by bc's `coveredMapNode` element typing).
  */
 function deriveHeadTypesFromStatements(
   statements: readonly StaticStatement[],
   resolveColumnType: ColumnTypeResolver,
-): { byHead: Map<string, BcScalar>; unresolved: Map<string, string> } {
+  elementVar?: string,
+): { byHead: Map<string, BcScalar>; arrayHeads: Map<string, BcScalar>; unresolved: Map<string, string> } {
   const byHead = new Map<string, BcScalar>();
+  const arrayHeads = new Map<string, BcScalar>();
   const unresolved = new Map<string, string>();
 
   // The head statement (`SELECT … FROM <table>`) — always statements[0] (compileSelectNode always
@@ -248,13 +271,64 @@ function deriveHeadTypesFromStatements(
   const table = tableMatch?.[1];
 
   for (const stmt of statements) {
-    if (stmt.whereFragment !== true) continue;
+    // The LIMIT clause (` LIMIT ?`) is NOT a whereFragment — its param is `coalesce(refOpt(limit), N)`
+    // (optional head + a static default). bc's typed-native emitter binds `limit` as a native scalar
+    // port (its `portIsStatic` accepts the bare ref + number-literal default), so type the head from
+    // the schema-less LIMIT contract: `limit`-family heads are always an integer row count. The
+    // element-var guard applies here too (a map child never has a LIMIT-bound element ref today, but
+    // stay uniform). Anything OTHER than the closed `coalesce([refOpt([head]), <int>])` shape is left
+    // untyped here (the surrogate-scope reconciliation below fail-closes on an un-typed referenced head).
+    if (stmt.whereFragment !== true) {
+      for (const param of stmt.params) {
+        const lh = limitHeadNameOf(param);
+        if (lh === undefined) continue;
+        if (elementVar !== undefined && lh === elementVar) continue;
+        const prior = byHead.get(lh);
+        if (prior !== undefined && prior !== 'int') {
+          unresolved.set(lh, `input head '${lh}' resolves to conflicting scalar types ('${prior}' vs 'int' from a LIMIT clause) across statements`);
+          continue;
+        }
+        byHead.set(lh, 'int');
+      }
+      continue;
+    }
     for (const param of stmt.params) {
       const path = refPathOf(param);
+      // A map-ELEMENT field access (`{ref:['$e0','author_id']}`, first segment = the map `as` var) is
+      // NOT a component input head — bc types it from the map's `over` element struct. Neither type
+      // nor reject it here (fully covered by bc's `coveredMapNode` element-field lowering).
+      if (path !== undefined && elementVar !== undefined && path[0] === elementVar) continue;
       if (path === undefined || path.length !== 1) {
-        // Not a bare single-segment ref (e.g. the `whereIn` `__jsonArray` array param, or a nested
-        // literal): if it names a head at all, surface it; otherwise it simply isn't head-typable
-        // here (a literal has no head to report).
+        // An IN-list / array-bound WHERE head — `whereIn`'s `{__jsonArray:{ref:[head]},dialect}`
+        // param (single-array param, one `?` inside the `IN (…)`/`= ANY(?)` subquery). bc#110 gives
+        // typed-native a native ARRAY port for this shape (`Vec<ElemT>`/`[]ElemT`), so resolve the
+        // column's ELEMENT scalar (spec §4.1 SoT) and record it as an array head — no longer
+        // fail-closed. Any other non-scalar/nested-literal param stays unresolved (fail-closed).
+        const arrHead = arrayHeadNameOf(param);
+        if (arrHead !== undefined) {
+          if (table === undefined) {
+            unresolved.set(arrHead, `input head '${arrHead}': could not resolve the owning table from the SELECT head SQL ('${head?.sql ?? '<none>'}')`);
+            continue;
+          }
+          const cm = IN_LIST_COLUMN.exec(stmt.sql.trim());
+          if (cm === null) {
+            unresolved.set(
+              arrHead,
+              `input head '${arrHead}': IN-list WHERE fragment SQL '${stmt.sql}' is not the closed '<col> IN (…)'/'<col> = ANY(?)' shape this codegen-only deriver covers`,
+            );
+            continue;
+          }
+          const elemType = sqlTypeToBcScalar(resolveColumnType(table, cm[1]));
+          const priorElem = arrayHeads.get(arrHead);
+          if (priorElem !== undefined && priorElem !== elemType) {
+            unresolved.set(arrHead, `input head '${arrHead}' resolves to conflicting array element scalar types ('${priorElem}' vs '${elemType}') across statements`);
+            continue;
+          }
+          arrayHeads.set(arrHead, elemType);
+          continue;
+        }
+        // Not a bare single-segment ref and not a recognized array head (e.g. a nested literal): if
+        // it names a head at all, surface it; otherwise it simply isn't head-typable here.
         const named = headNameOf(param);
         if (named !== undefined) {
           unresolved.set(
@@ -289,7 +363,14 @@ function deriveHeadTypesFromStatements(
       byHead.set(headName, scalar);
     }
   }
-  return { byHead, unresolved };
+  // A head bound BOTH as a scalar and as an array across fragments is not a coherent native port —
+  // fail-closed rather than silently pick one (never occurs for the covered shapes, defensive).
+  for (const head of arrayHeads.keys()) {
+    if (byHead.has(head)) {
+      unresolved.set(head, `input head '${head}' is bound both as a scalar and as an array param — no single native port type`);
+    }
+  }
+  return { byHead, arrayHeads, unresolved };
 }
 
 /** A statement param's bare ref path (`{ref:[…]}`/`{refOpt:[…]}`), or undefined if it isn't one. */
@@ -314,14 +395,70 @@ function headNameOf(param: unknown): string | undefined {
   return undefined;
 }
 
+/** The distinct map-ELEMENT field names a node's statements bind via `{ref:[elementVar, field]}`
+ * (first-seen order). These are the map child's element-field ports (`$e0.author_id`): bc's
+ * typed-native map lowering types each from the `over` element struct's field. Only single-field
+ * accesses (`[elementVar, field]`, length 2) are collected — a deeper element path is not a covered
+ * native port here (fail-closed downstream if one appears). */
+function elementFieldRefs(statements: readonly StaticStatement[], elementVar: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const stmt of statements) {
+    for (const param of stmt.params) {
+      const path = refPathOf(param);
+      if (path === undefined || path.length !== 2 || path[0] !== elementVar) continue;
+      const field = path[1];
+      if (!seen.has(field)) {
+        seen.add(field);
+        out.push(field);
+      }
+    }
+  }
+  return out;
+}
+
+/** The head a LIMIT param (`coalesce([{refOpt:[head]}, <int-literal>])`) binds — the closed shape
+ * `compileSelectNode` emits for an optional `limit` with a static default (`coalesce(opt($.limit), N)`).
+ * Returns the head name for that exact shape, else undefined (any other shape is not a LIMIT head this
+ * deriver types). bc's typed-native emitter binds it as a native scalar port (bare ref + number literal
+ * default are both `portIsStatic`). */
+function limitHeadNameOf(param: unknown): string | undefined {
+  if (param === null || typeof param !== 'object' || Array.isArray(param)) return undefined;
+  const obj = param as Record<string, unknown>;
+  const args = obj.coalesce;
+  if (!Array.isArray(args) || args.length !== 2) return undefined;
+  const [refPart, dflt] = args;
+  // The default must be a static integer literal (`coalesce(opt($.limit), 20)`).
+  if (typeof dflt !== 'number' || !Number.isInteger(dflt)) return undefined;
+  if (refPart === null || typeof refPart !== 'object' || Array.isArray(refPart)) return undefined;
+  const rp = refPart as Record<string, unknown>;
+  const keys = Object.keys(rp);
+  if (keys.length !== 1 || (keys[0] !== 'ref' && keys[0] !== 'refOpt')) return undefined;
+  const path = rp[keys[0]];
+  if (!Array.isArray(path) || path.length !== 1 || typeof path[0] !== 'string') return undefined;
+  return path[0];
+}
+
+/** The head an IN-list / array param (`{__jsonArray:{ref:[head]},dialect}`) binds — ONLY the covered
+ * single-segment `{ref:[head]}` inner shape (bc#110's native array port requires a single-segment,
+ * non-opt ref). A multi-segment / opt / non-ref inner is NOT this covered array shape → undefined
+ * (the caller then treats it as an unresolved non-scalar param, fail-closed). */
+function arrayHeadNameOf(param: unknown): string | undefined {
+  if (param === null || typeof param !== 'object' || Array.isArray(param)) return undefined;
+  const obj = param as Record<string, unknown>;
+  if (!('__jsonArray' in obj)) return undefined;
+  const inner = refPathOf(obj.__jsonArray);
+  return inner !== undefined && inner.length === 1 ? inner[0] : undefined;
+}
+
 /**
- * Lower a read bundle's surrogate `ComponentGraphIR` into a NEW, CODEGEN-ONLY IR eligible for bc's
- * typed-native endpoint (#60 milestone 1): split the single `__scope: {obj:{...}}` boxed port into
- * individual scalar `{ref:[head]}` ports, and type the component's `inputPorts` from the schema
- * (via {@link deriveHeadTypesFromStatements}). Throws {@link TypedNativeCoverageError} if any
- * referenced head cannot be natively typed (e.g. an IN-list's array head) — NO silent `unknown`
- * port, NO fallback. Does NOT mutate `bundle`/`bundle.readGraph` (a fresh IR object is returned);
- * the ir/interpret exec surface's `executeReadGraph` keeps consuming the ORIGINAL `readGraph.ir`.
+ * Lower a read bundle's REAL Select-node `ComponentGraphIR` into a NEW, CODEGEN-ONLY IR eligible
+ * for bc's typed-native endpoint (#60 milestone 1): derive each node's referenced heads from its
+ * `statementsById` fragments and emit individual native-scalar `{ref:[head]}` ports, typing the
+ * component's `inputPorts` from the schema (via {@link deriveHeadTypesFromStatements}). Throws
+ * {@link TypedNativeCoverageError} if any referenced head cannot be natively typed (e.g. an IN-list's
+ * array head) — NO silent `unknown` port, NO fallback. Does NOT mutate `bundle`/`bundle.readGraph`
+ * (a fresh IR object is returned); the native `executeReadGraph` keeps consuming the real `readGraph.ir`.
  *
  * Scope: bc's typed-native predicate itself still governs `map`/`cond`/relationKind/policy
  * coverage (this lowering does not special-case those — `generateModule` fails closed on them with
@@ -332,20 +469,21 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
   const reasons: string[] = [];
   const components = ir.components.map((c) => {
     const inputPortTypes = new Map<string, BcScalar>();
+    // IN-list / array-bound heads (bc#110): the head's native ELEMENT scalar (the port lowers to
+    // `Vec<ElemT>`/`[]ElemT`, fed natively — NO json.Marshal/serde_json on the hot path).
+    const inputPortElemTypes = new Map<string, BcScalar>();
     const body = c.body.map((n) => {
       if ('cond' in n) return n;
       const isMapNode = 'map' in n;
-      const ref = isMapNode ? (n as unknown as { map: { ports: Record<string, unknown> } }).map : (n as unknown as { ports: Record<string, unknown> });
-      const scopeVal = ref.ports[SCOPE_PORT];
-      if (scopeVal === undefined || typeof scopeVal !== 'object' || scopeVal === null || !('obj' in scopeVal)) {
-        // Not the makeSQL surrogate shape this lowering targets (defensive — every read-graph body
-        // node IS this shape by construction) — leave the node untouched; bc's own coverage check
-        // will report it if it is genuinely uncovered.
-        return n;
-      }
-      const obj = (scopeVal as { obj: Record<string, unknown> }).obj;
       const stmts = readGraph.statementsById[n.id] ?? [];
-      const { byHead, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType);
+      // A map node binds an ELEMENT var (`as: '$e0'`) — its child statements reference the mapped
+      // parent row via `{ref:['$e0', <field>]}`. That is a map-element field access (bc types it from
+      // the map's `over` element struct), NOT a component input head, so hand the element var to the
+      // deriver to exclude it from head typing/rejection.
+      const elementVar = isMapNode
+        ? ((n as unknown as { map: { as?: string } }).map.as ?? undefined)
+        : undefined;
+      const { byHead, arrayHeads, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType, elementVar);
       for (const [, reason] of unresolved) reasons.push(`node '${n.id}': ${reason}`);
       for (const [head, scalar] of byHead) {
         const prior = inputPortTypes.get(head);
@@ -355,16 +493,31 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
         }
         inputPortTypes.set(head, scalar);
       }
-      // Every head the surrogate scope references must have been typed above (byHead) — a head
-      // present in `obj` but absent from `byHead`/`unresolved` indicates a param shape this
-      // deriver's statement walk did not visit (e.g. a non-WHERE port); report it too rather than
-      // silently emitting an untyped scalar ref port.
-      const newPorts: Record<string, unknown> = {};
-      for (const head of Object.keys(obj)) {
-        if (!byHead.has(head) && !unresolved.has(head)) {
-          reasons.push(`node '${n.id}': input head '${head}' referenced by the surrogate scope but not resolved by any WHERE fragment — cannot type it for native codegen`);
+      for (const [head, elem] of arrayHeads) {
+        const prior = inputPortElemTypes.get(head);
+        if (prior !== undefined && prior !== elem) {
+          reasons.push(`input head '${head}' resolves to conflicting array element scalar types ('${prior}' vs '${elem}') across nodes`);
           continue;
         }
+        inputPortElemTypes.set(head, elem);
+      }
+      // #12 (de-surrogated): the codegen IR is rebuilt from the real node's `statementsById`-derived
+      // head set (`byHead` ∪ `arrayHeads`) — the SAME native-scalar `{ref:[head]}` port shape bc's
+      // typed-native emitter consumes. There is no `__scope` obj to walk anymore; the referenced-head
+      // set IS what `deriveHeadTypesFromStatements` found (an `unresolved` head already pushed a
+      // reason above, fail-closed). A covered array head is emitted as the SAME single-segment
+      // `{ref:[head]}` port (bc#110's array-port lowering keys off the inputPorts array schema).
+      const newPorts: Record<string, unknown> = {};
+      // A map node's child statements reference the mapped parent row via `{ref:['$e0', <field>]}`.
+      // bc's typed-native map lowering types a port `{ref:['$e0', <field>]}` from the OVER element
+      // struct's FIELD (a native scalar) — so emit one native-scalar element-FIELD port per field the
+      // child statements bind (`{ref:['$e0', author_id]}` → port `author_id`). Non-element component
+      // heads (if any) are typed/emitted normally below.
+      if (isMapNode && elementVar !== undefined) {
+        const fields = elementFieldRefs(stmts, elementVar);
+        for (const field of fields) newPorts[field] = { ref: [elementVar, field] };
+      }
+      for (const head of [...byHead.keys(), ...arrayHeads.keys()]) {
         newPorts[head] = { ref: [head] };
       }
       return isMapNode
@@ -387,6 +540,15 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
     for (const [name, scalar] of inputPortTypes) {
       const schema = (c.inputPorts ?? {})[name];
       inputPorts[name] = schema === undefined ? { required: true, type: scalar } : { ...schema, type: scalar };
+    }
+    // IN-list / array-bound heads (bc#110): a native ARRAY input port carrying the ELEMENT scalar as
+    // `elemType`. bc's typed-native emitter lowers this to `Vec<ElemT>`/`[]ElemT` fed natively from
+    // the input struct field — NO boxed `Value`, NO serde_json/encoding-json on the read hot path.
+    // bc does NOT infer element types (consumer-interface C3), so litedbmodel supplies `elemType`
+    // from the schema SoT (the IN-list column's resolved scalar).
+    for (const [name, elem] of inputPortElemTypes) {
+      const schema = (c.inputPorts ?? {})[name];
+      inputPorts[name] = { ...(schema ?? { required: true }), type: 'array', elemType: elem };
     }
     return { ...c, body, inputPorts } as unknown as Component;
   });
@@ -432,24 +594,40 @@ export function codegenEmitterFor(language: string, registered: readonly string[
   return typedEmitterFor(language, registered);
 }
 
-/** Does a resolved emitter id end in bc's typed-native suffix (`-typed-native`)? Only THOSE
- * emitters need (and are eligible for) the `__scope`-obj-splitting lowering — a boxed endpoint
- * (`typescript-typed`) accepts the ORIGINAL surrogate IR just fine (it consumes a boxed `Value`
- * port either way), so lowering it would needlessly narrow TS's coverage (e.g. `whereIn`'s
- * array-typed head, which typed-native cannot cover but the boxed TS endpoint handles today). */
-function isTypedNativeEmitter(emitter: string): boolean {
-  return emitter.endsWith('-typed-native');
+/**
+ * Every litedbmodel READ codegen endpoint consumes the SAME native-scalar-port lowering — NOT
+ * just the `-typed-native` (go/rust) ones. Rationale (#12 regression fix):
+ *
+ * Post-#12 the read graph is the REAL de-surrogated `Select`-node IR, whose `where` port array
+ * carries a fragment for EVERY authored `whereX($.col, …)` — including one whose LHS `$.col` is a
+ * WHERE COLUMN-NAME MARKER, never a bound input value (`whereGe($.created_at, $.since)` accesses
+ * `$.created_at` only to NAME the column; only `$.since` is bound). Handing that raw IR to bc's
+ * emitter emits a `ref(["created_at"], scope)` read + a `created_at` input-struct field, so the
+ * bound module throws `unknown binding: created_at` at execution (the scope has no `created_at`).
+ * The go/rust `-typed-native` path never hit this because it is fed
+ * {@link lowerReadGraphForTypedNative}, which rebuilds each node's ports from the GENUINE bound
+ * heads (`statementsById`), dropping the column-name markers. TS was on the raw IR
+ * ({@link bundleToPortableIR}) → it kept the marker → it broke.
+ *
+ * The lowering is therefore the correct input for the boxed `typescript-typed` endpoint too: it
+ * feeds bc EXACTLY the genuine bound heads (equivalent-in-spirit to what go/rust consume), and
+ * bc#110's native array port means the array-typed heads (`complexWhere`/`inList`) lower cleanly —
+ * the old "lowering would narrow TS's array coverage" concern is stale. Only WRITE bundles (no
+ * `readGraph`) never reach this path. */
+function needsHeadLowering(_emitter: string): boolean {
+  return true;
 }
 
 /**
- * Generate the mode-3 READ codegen artifact for ONE §8 READ bundle in ONE target language. For a
- * typed-NATIVE target (go/rust, bc#77/#90), lowers the bundle's surrogate read graph into the
- * typed-native-eligible IR ({@link lowerReadGraphForTypedNative}) first — REAL static native
- * source, RUNTIME-FREE, no baked-IR interpret path. For any OTHER registered endpoint (currently
- * only TS's boxed `typescript-typed`, which has no typed-native counterpart yet), the ORIGINAL
- * portable IR ({@link bundleToPortableIR}) is used unchanged — the lowering is typed-native-only
- * and would needlessly narrow a boxed endpoint's existing coverage. litedbmodel supplies the
- * input (portable IR + catalog); bc owns the emitter.
+ * Generate the mode-3 READ codegen artifact for ONE §8 READ bundle in ONE target language. Lowers
+ * the bundle's real Select-node read graph into the native-scalar-port IR
+ * ({@link lowerReadGraphForTypedNative}) FIRST — for go/rust's typed-NATIVE endpoint (bc#77/#90,
+ * RUNTIME-FREE) AND for TS's boxed `typescript-typed` endpoint alike. Both consume the SAME
+ * genuine-bound-head shape: the lowering derives each node's ports from its compiled
+ * `statementsById` fragments, so a WHERE COLUMN-NAME MARKER head (`whereGe($.created_at, $.since)`
+ * — `$.created_at` names the column, is never bound) is EXCLUDED from the emitted ports/input
+ * struct, exactly as go/rust already handled it (#12 regression: TS previously fed the raw IR and
+ * emitted a stray `created_at` binding → `unknown binding: created_at` at execution).
  *
  * WRITE bundles are OUT OF SCOPE (#60 milestone 1: writes stay on the existing write/tx execution
  * path, never a codegen module) — throws if `bundle.readGraph` is absent.
@@ -471,10 +649,19 @@ export function generateCodegenArtifact(
   const emitter = typedEmitterFor(language, registeredLanguages);
   // The portable IR exists ONLY transiently here as the generator's input — it is NOT part of the
   // codegen OUTPUT (no artifact field, no file, no binary; the codegen path never reads IR data).
-  const ir = isTypedNativeEmitter(emitter)
+  // ALL read endpoints (go/rust typed-native AND TS boxed typescript-typed) are fed the SAME
+  // genuine-bound-head lowering (#12 regression fix — see needsHeadLowering).
+  const ir = needsHeadLowering(emitter)
     ? lowerReadGraphForTypedNative(bundle.readGraph, resolveColumnType)
     : bundleToPortableIR(bundle);
-  const module = generateModule(ir, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
+  // bc 0.8.0 (scp-only-authoring, SA3/SA7): `generateModule` fail-closes on un-tokened IR
+  // (`NON_COMPILED_IR`). This `ir` is DERIVED from `compileBehaviors`' real read graph (additively
+  // lowered/annotated), so it carries no in-process provenance token. Re-adopt it at this generation
+  // boundary via `loadCompiledIR` — the sanctioned seam that recomputes the canonical fingerprint once
+  // and mints the token (the derived graph IS the compiler's output transformed, never hand-forged raw
+  // IR). This is exactly bc's "codegen fixture / derived IR" boundary case.
+  const compiled = loadCompiledIR(ir);
+  const module = generateModule(compiled, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
   return { language: language as CodegenLanguage, module, companion: companionOf(bundle), bundle };
 }
 

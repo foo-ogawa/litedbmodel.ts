@@ -1,6 +1,6 @@
 [package]
 name = "litedbmodel_runtime"
-version = "2.0.2"
+version = "2.1.0"
 edition.workspace = true
 license.workspace = true
 description = "Thin multi-language runtime for litedbmodel v2 SCP §8 bundles (Rust port). Interprets the published SqlBundle and executes it against a SQL driver — semantics-identical to the TS reference. Delegates Expression-IR evaluation to the behavior-contracts crate."
@@ -13,9 +13,11 @@ keywords = ["orm", "sql", "ir", "runtime", "conformance"]
 categories = ["database", "api-bindings"]
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
-behavior-contracts = { workspace = true }
+# NATIVE-ONLY (#8): the runtime carries NO external JSON crate. The published bundle is pure JSON, but
+# the runtime parses it through its OWN native JSON parser (`node::Node::parse`) and evaluates the
+# deferred param slots through its OWN native closed-set evaluator (`node::eval_expr`) — bc's
+# external-JSON-crate `ir` feature (`evaluate_expression`/`run_behavior`) is NOT used. `cargo tree -i external-crate` from this crate is EMPTY (default-features=false drops bc's external-crate-pulling `ir`).
+behavior-contracts = { workspace = true, default-features = false }
 # In-process SQLite driver for the conformance bar (real execution — the sanctioned in-proc
 # substitute for docker; #34 AC). `bundled` builds the SQLite amalgamation so no system libsqlite
 # is required. This is the runnable seam; PG/MySQL drivers plug into the same `Driver` trait later.
@@ -43,3 +45,7 @@ futures-util = { version = "0.3", optional = true }
 
 [features]
 livedb = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:sqlx", "dep:tokio", "dep:futures-util", "dep:rust_decimal", "dep:chrono"]
+
+# NO external JSON crate anywhere (not even dev): the integration tests + the micro_perf example build their
+# bundle/graph fixtures through the runtime's OWN native JSON parser (`Node::parse`) — the `json!`
+# macro is retired. a repo-wide grep for that crate over rust/litedbmodel_runtime is EMPTY (src + tests + manifest).

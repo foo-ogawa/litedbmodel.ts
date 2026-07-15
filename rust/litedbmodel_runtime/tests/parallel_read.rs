@@ -18,8 +18,14 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use behavior_contracts::Value;
+use litedbmodel_runtime::Node;
 use litedbmodel_runtime::{dispatch_read_nodes_parallel, Driver, PreparedStatement, RunInfo};
-use serde_json::json;
+
+/// Build a native `Node` fixture from a JSON string literal — the runtime's OWN native JSON parser
+/// (the runtime + these tests carry NO external JSON crate).
+fn nj(s: &str) -> Node {
+    Node::parse(s).expect("test fixture JSON parses")
+}
 
 /// A Sync driver that sleeps `latency` on each query and tracks concurrent in-flight count.
 struct LatencyDriver {
@@ -82,19 +88,20 @@ impl PreparedStatement for LatencyStmt<'_> {
     }
 }
 
-/// A synthetic read graph of N sibling nodes, each a trivial static `SELECT <i>` statement.
-fn sibling_graph(n: usize) -> serde_json::Value {
-    let mut statements = serde_json::Map::new();
+/// A synthetic read graph of N sibling nodes, each a trivial static `SELECT <i>` statement (native).
+fn sibling_graph(n: usize) -> Node {
+    let mut stmts = String::new();
     for i in 0..n {
-        statements.insert(
-            format!("rel{i}"),
-            json!([{ "sql": format!("SELECT {i}"), "params": [] }]),
-        );
+        if i > 0 {
+            stmts.push(',');
+        }
+        stmts.push_str(&format!(
+            r#""rel{i}": [{{"sql": "SELECT {i}", "params": []}}]"#
+        ));
     }
-    json!({
-        "dialect": "sqlite",
-        "statementsById": statements,
-    })
+    nj(&format!(
+        r#"{{"dialect": "sqlite", "statementsById": {{{stmts}}}}}"#
+    ))
 }
 
 #[test]
@@ -133,7 +140,7 @@ fn sibling_relations_dispatch_concurrently() {
     // 3. Determinism: assembled results are in declaration order regardless of finish order.
     assert_eq!(results.len(), N);
     for (i, r) in results.iter().enumerate() {
-        let want = json!([{ "sql": format!("SELECT {i}") }]);
+        let want = nj(&format!(r#"[{{"sql": "SELECT {i}"}}]"#));
         let got = litedbmodel_runtime::encode_value(r);
         assert_eq!(got, want, "node rel{i} out of order or wrong");
     }

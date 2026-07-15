@@ -9,9 +9,14 @@
 use behavior_contracts::{deep_equals, Value};
 use litedbmodel_runtime::{
     dialect_for, execute_bundle, execute_transaction_bundle, render_placeholders,
-    render_read_primary, render_statements, Driver, SqliteDriver,
+    render_read_primary, render_statements, Driver, Node, SqliteDriver,
 };
-use serde_json::json;
+
+/// Build a native `Node` fixture from a JSON string literal — the runtime's OWN native JSON parser
+/// (the runtime + these tests carry NO external JSON crate). `nj(r#"{…}"#)` replaces the old `json!(…)`.
+fn nj(s: &str) -> Node {
+    Node::parse(s).expect("test fixture JSON parses")
+}
 
 fn scope(pairs: &[(&str, Value)]) -> Vec<(String, Value)> {
     pairs
@@ -28,21 +33,31 @@ fn assert_val(got: Option<&Value>, want: &Value) {
     }
 }
 
-/// The canonical Feed read node's static statement templates (SELECT + WHERE + LIMIT).
-fn feed_statements() -> Vec<serde_json::Value> {
-    vec![
-        json!({"sql": "SELECT id, author_id, title, status FROM posts", "params": []}),
-        json!({"sql": "author_id = ?", "params": [{"ref": ["author_id"]}], "whereFragment": true}),
-        json!({
-            "sql": "status = ?",
-            "params": [{"ref": ["status"]}],
-            "whereFragment": true,
-            "skip": {"not": [{"ne": [{"refOpt": ["status"]}, null]}]}
-        }),
-        json!({"sql": " ORDER BY id ASC", "params": []}),
-        json!({"sql": " LIMIT ?", "params": [{"coalesce": [{"refOpt": ["limit"]}, 20]}]}),
-    ]
+/// The canonical Feed read node's static statement templates (SELECT + WHERE + LIMIT) — native Nodes.
+fn feed_statements() -> Vec<Node> {
+    match nj(r#"[
+        {"sql": "SELECT id, author_id, title, status FROM posts", "params": []},
+        {"sql": "author_id = ?", "params": [{"ref": ["author_id"]}], "whereFragment": true},
+        {"sql": "status = ?", "params": [{"ref": ["status"]}], "whereFragment": true,
+         "skip": {"not": [{"ne": [{"refOpt": ["status"]}, null]}]}},
+        {"sql": " ORDER BY id ASC", "params": []},
+        {"sql": " LIMIT ?", "params": [{"coalesce": [{"refOpt": ["limit"]}, 20]}]}
+    ]"#)
+    {
+        Node::Array(a) => a,
+        _ => unreachable!(),
+    }
 }
+
+/// The Feed statements JSON (as a raw string) — for embedding inline in a read-graph fixture.
+const FEED_STATEMENTS_JSON: &str = r#"[
+    {"sql": "SELECT id, author_id, title, status FROM posts", "params": []},
+    {"sql": "author_id = ?", "params": [{"ref": ["author_id"]}], "whereFragment": true},
+    {"sql": "status = ?", "params": [{"ref": ["status"]}], "whereFragment": true,
+     "skip": {"not": [{"ne": [{"refOpt": ["status"]}, null]}]}},
+    {"sql": " ORDER BY id ASC", "params": []},
+    {"sql": " LIMIT ?", "params": [{"coalesce": [{"refOpt": ["limit"]}, 20]}]}
+]"#;
 
 #[test]
 fn render_all_fragments_present() {
@@ -92,14 +107,15 @@ fn render_postgres_dollar_placeholders() {
 
 #[test]
 fn render_in_list_single_json_param_sqlite() {
-    let stmts = vec![
-        json!({"sql": "SELECT id FROM posts", "params": []}),
-        json!({
-            "sql": "id IN (SELECT value FROM json_each(?))",
-            "params": [{"__jsonArray": {"ref": ["ids"]}, "dialect": "sqlite"}],
-            "whereFragment": true
-        }),
-    ];
+    let stmts = match nj(r#"[
+        {"sql": "SELECT id FROM posts", "params": []},
+        {"sql": "id IN (SELECT value FROM json_each(?))",
+         "params": [{"__jsonArray": {"ref": ["ids"]}, "dialect": "sqlite"}], "whereFragment": true}
+    ]"#)
+    {
+        Node::Array(a) => a,
+        _ => unreachable!(),
+    };
     let s = scope(&[(
         "ids",
         Value::Arr(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
@@ -128,13 +144,13 @@ fn render_placeholder_rewrite_quote_aware() {
 
 #[test]
 fn render_read_primary_picks_first_body_node() {
-    let graph = json!({
-        "dialect": "sqlite",
-        "name": "Feed",
-        "statementsById": {"n0": feed_statements()},
-        "optionalHeads": ["status", "limit"],
-        "ir": {"irVersion": 1, "exprVersion": 2, "components": [{"name": "Feed", "body": [{"id": "n0"}]}]}
-    });
+    let graph = nj(&format!(
+        r#"{{"dialect": "sqlite", "name": "Feed",
+             "statementsById": {{"n0": {stmts}}},
+             "optionalHeads": ["status", "limit"],
+             "ir": {{"irVersion": 1, "exprVersion": 2, "components": [{{"name": "Feed", "body": [{{"id": "n0"}}]}}]}}}}"#,
+        stmts = FEED_STATEMENTS_JSON,
+    ));
     // status + limit omitted → normalized present-as-null → skip drop + coalesce default.
     let r = render_read_primary(&graph, &scope(&[("author_id", Value::Int(7))])).unwrap();
     assert_eq!(
@@ -184,7 +200,7 @@ fn execute_read_bundle_end_to_end() {
     let driver = SqliteDriver::in_memory(&schema).unwrap();
     // A single-node static-makeSQL read bundle: bc drives the surrogate `__makeSqlNode` node, the
     // makeSQL handler renders its statements + executes REAL SQL, Φ maps the rows to `posts`.
-    let bundle = json!({
+    let bundle = nj(r#"{
         "dialect": "sqlite",
         "name": "Feed",
         "readGraph": {
@@ -216,8 +232,8 @@ fn execute_read_bundle_end_to_end() {
         },
         "optionalHeads": [],
         "relations": {}
-    });
-    let out = execute_bundle(&bundle, &json!({"author_id": 7}), &driver).unwrap();
+    }"#);
+    let out = execute_bundle(&bundle, &nj(r#"{"author_id": 7}"#), &driver).unwrap();
     let posts = out.obj_get("posts").expect("posts key");
     match posts {
         Value::Arr(rows) => assert_eq!(rows.len(), 2),
@@ -225,8 +241,8 @@ fn execute_read_bundle_end_to_end() {
     }
 }
 
-fn write_bundle() -> serde_json::Value {
-    json!({
+fn write_bundle() -> Node {
+    nj(r#"{
         "dialect": "sqlite",
         "name": "Create",
         "optionalHeads": [],
@@ -245,7 +261,7 @@ fn write_bundle() -> serde_json::Value {
                 }
             ]
         }
-    })
+    }"#)
 }
 
 fn tx_schema() -> Vec<String> {
@@ -261,7 +277,7 @@ fn transaction_commits_on_gate_pass() {
     let driver = SqliteDriver::in_memory(&tx_schema()).unwrap();
     let out = execute_transaction_bundle(
         &write_bundle(),
-        &json!({"author_id": 7, "title": "New Post"}),
+        &nj(r#"{"author_id": 7, "title": "New Post"}"#),
         &driver,
     )
     .unwrap();
@@ -275,7 +291,7 @@ fn transaction_short_circuits_on_missing_requires() {
     let driver = SqliteDriver::in_memory(&tx_schema()).unwrap();
     let out = execute_transaction_bundle(
         &write_bundle(),
-        &json!({"author_id": 999, "title": "Orphan"}),
+        &nj(r#"{"author_id": 999, "title": "Orphan"}"#),
         &driver,
     )
     .unwrap();
@@ -294,10 +310,22 @@ fn transaction_short_circuits_on_missing_requires() {
 #[test]
 fn transaction_unknown_gate_fails_closed() {
     let driver = SqliteDriver::in_memory(&tx_schema()).unwrap();
-    let mut bundle = write_bundle();
-    // Tag the requires gate with a bogus rule the runtime does not recognize.
-    bundle["transaction"]["statements"][0]["gate"] = json!("someFutureGateRuleThatDoesNotExist");
-    let res = execute_transaction_bundle(&bundle, &json!({"author_id": 7, "title": "X"}), &driver);
+    // The write bundle with the requires gate tagged with a bogus rule the runtime does not recognize
+    // (built natively — the same tx as write_bundle() but `gate` = an unknown rule).
+    let bundle = nj(r#"{
+        "dialect": "sqlite", "name": "Create", "optionalHeads": [], "relations": {},
+        "transaction": {
+            "phase": "create", "entityFrom": "tx_body_1",
+            "statements": [
+                {"id": "tx_requires_0", "role": "gate:requires", "gate": "someFutureGateRuleThatDoesNotExist",
+                 "op": {"sql": "SELECT 1 FROM users WHERE id = ?", "params": [{"ref": ["author_id"]}]}},
+                {"id": "tx_body_1", "role": "body",
+                 "op": {"sql": "INSERT INTO posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title", "params": [{"ref": ["author_id"]}, {"ref": ["title"]}]}}
+            ]
+        }
+    }"#);
+    let res =
+        execute_transaction_bundle(&bundle, &nj(r#"{"author_id": 7, "title": "X"}"#), &driver);
     assert!(
         res.is_err(),
         "an unknown gate rule must fail closed (Err), not commit"

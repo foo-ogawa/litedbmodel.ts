@@ -25,10 +25,11 @@ import (
 	"strings"
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
+	conf "github.com/foo-ogawa/litedbmodel/go/conformance"
 	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
 )
 
-const supportedCorpusVersion = 2
+const supportedCorpusVersion = 3
 
 const (
 	pgSchema = "scp_go"
@@ -98,7 +99,7 @@ func encodeTxResult(r rt.TransactionResult) string {
 	if r.Entity == nil {
 		parts = append(parts, "\"entity\":null")
 	} else {
-		parts = append(parts, "\"entity\":"+rt.EncodeConformanceJSON(r.Entity))
+		parts = append(parts, "\"entity\":"+conf.EncodeConformanceJSON(r.Entity))
 	}
 	execParts := make([]string, len(r.Executed))
 	for i, e := range r.Executed {
@@ -111,7 +112,7 @@ func encodeTxResult(r rt.TransactionResult) string {
 		for i, g := range r.ReturnedRows {
 			rowParts := make([]string, len(g))
 			for j, row := range g {
-				rowParts[j] = rt.EncodeConformanceJSON(row)
+				rowParts[j] = conf.EncodeConformanceJSON(row)
 			}
 			groups[i] = "[" + strings.Join(rowParts, ",") + "]"
 		}
@@ -144,7 +145,7 @@ func queryToJSON(db *sql.DB, query string) (string, error) {
 		for i, c := range cols {
 			obj.Set(c, rt.ScanConformanceValue(raw[i]))
 		}
-		rowParts = append(rowParts, rt.EncodeConformanceJSON(obj))
+		rowParts = append(rowParts, conf.EncodeConformanceJSON(obj))
 	}
 	if err := rows.Err(); err != nil {
 		return "", err
@@ -153,7 +154,7 @@ func queryToJSON(db *sql.DB, query string) (string, error) {
 }
 
 func inputScope(inputN bc.JNode) (*bc.Obj, error) {
-	v, err := rt.DecodeConformanceValue(inputN)
+	v, err := conf.DecodeConformanceValue(inputN)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +225,7 @@ func runExec(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj) (bool, string) {
 	if err != nil {
 		return false, "execute threw: " + err.Error()
 	}
-	got := rt.EncodeConformanceJSON(result)
+	got := conf.EncodeConformanceJSON(result)
 	want := canonicalJSON(mustGet(v, "expectedResult"))
 	if got == want {
 		return true, ""
@@ -264,7 +265,7 @@ func runRead(db *sql.DB, bundleObj *bc.JObj, v *bc.JObj, expectedKey string) (bo
 	if err != nil {
 		return false, "read threw: " + err.Error()
 	}
-	got := rt.EncodeConformanceJSON(result)
+	got := conf.EncodeConformanceJSON(result)
 	want := canonicalJSON(mustGet(v, expectedKey))
 	if got == want {
 		return true, ""
@@ -309,7 +310,7 @@ func runCrossDb(db *sql.DB, secondary *sql.DB, secondaryMysql bool, bundleObj *b
 	if err != nil {
 		return false, "cross-DB read threw: " + err.Error()
 	}
-	got := rt.EncodeConformanceJSON(result)
+	got := conf.EncodeConformanceJSON(result)
 	want := canonicalJSON(mustGet(v, expectedKey))
 	if got == want {
 		return true, ""

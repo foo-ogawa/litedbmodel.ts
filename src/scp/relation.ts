@@ -28,6 +28,8 @@
 
 import { assembleMakeSQL, type MakeSQL } from './makesql/makesql';
 import { renderPlaceholders, type Dialect } from './makesql/handler';
+import { materializeCell, sqlTypeToMaterializeClass, type MaterializeClass, type ColumnTypeResolver } from './coltype';
+import { parseProjectionColumn } from './makesql/outtype';
 import {
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
@@ -115,6 +117,19 @@ export interface RelationOp {
    * param. Value-length-independent either way, so `sql` is fixed.
    */
   readonly sql: string;
+  /**
+   * The child (target) table + projected columns (issue #59) — carried for diagnostics + as the
+   * basis of the baked `materializers` map. Additive/optional.
+   */
+  readonly targetTable?: string;
+  readonly select?: readonly string[];
+  /**
+   * The child columns' STATIC materialize classes (issue #59): `column → MaterializeClass`, baked
+   * at compile from the model's DDL resolver (only non-passthrough entries). The relation batch runs
+   * these over its child rows so a BIGINT/DATE/BOOLEAN child de-boxes identically to the primary
+   * read — with ZERO per-read DB introspection. Absent ⇒ the child rows stay raw (no schema).
+   */
+  readonly materializers?: Readonly<Record<string, MaterializeClass>>;
 }
 
 /** The reserved input head the relation batch query binds its deduped key array to. */
@@ -128,7 +143,7 @@ export const RELATION_KEYS_HEAD = '__keys';
  * LATERAL (PG) / ROW_NUMBER (MySQL·SQLite) form. The SQL text is FIXED (the array binds as one
  * param regardless of length), so it needs no per-input recompile.
  */
-export function compileRelationOp(decl: RelationDecl): RelationOp {
+export function compileRelationOp(decl: RelationDecl, resolveColumnType?: ColumnTypeResolver): RelationOp {
   if (decl.kind !== 'hasMany' && decl.limit !== undefined) {
     throw new Error(`relation '${decl.name}': a per-parent 'limit' is only valid for hasMany (got ${decl.kind})`);
   }
@@ -146,6 +161,27 @@ export function compileRelationOp(decl: RelationDecl): RelationOp {
   // CROSS-DB (V0 R1): carry the target connection tag ONLY when set (a same-DB relation stays
   // untagged, so existing bundles are byte-unchanged — the field is additive/optional).
   const conn = decl.connection !== undefined ? { connection: decl.connection } : {};
+  // Carry the child table + projection AND bake the STATIC child materializers (issue #59) using the
+  // SHARED `parseProjectionColumn` + the SINGLE column-type resolver — the SAME resolution the primary
+  // read uses (no separate bare-regex pass). Every projection shape (bare / qualified `t.col` /
+  // aliased `col AS b`) resolves + fail-closes identically; a `*` / computed / undeclared column
+  // THROWS. The batch's child rows then de-box with ZERO per-read introspection.
+  const materializers: Record<string, MaterializeClass> = {};
+  if (resolveColumnType !== undefined) {
+    const at = `relation '${decl.name}'`;
+    for (const c of decl.select) {
+      const entry = parseProjectionColumn(c, decl.targetTable, at); // `*`/computed → throw
+      if (entry.kind === 'computed') continue; // a relation child rarely projects computed; leave raw
+      const sqlType = resolveColumnType(entry.qualifier ?? decl.targetTable, entry.underlying); // undeclared → throw
+      const klass = sqlTypeToMaterializeClass(sqlType);
+      if (klass !== 'passthrough') materializers[entry.outputKey] = klass;
+    }
+  }
+  const target = {
+    targetTable: decl.targetTable,
+    select: [...decl.select],
+    ...(Object.keys(materializers).length > 0 ? { materializers } : {}),
+  };
   if (composite) {
     return {
       name: decl.name,
@@ -155,6 +191,7 @@ export function compileRelationOp(decl: RelationDecl): RelationOp {
       dialect,
       ...conn,
       sql,
+      ...target,
     };
   }
   return {
@@ -165,6 +202,7 @@ export function compileRelationOp(decl: RelationDecl): RelationOp {
     dialect,
     ...conn,
     sql,
+    ...target,
   };
 }
 
@@ -316,7 +354,19 @@ export function runRelationOp(
   const sql = renderPlaceholders(cast, op.dialect);
   if (keys.length === 0) return { sql, keys, batch };
   const tCols = targetKeyCols(op);
-  const rows = db.prepare(sql).all(...bindKeys(op, keys)) as Record<string, unknown>[];
+  // Materialize the child rows (issue #59) exactly like the primary read, using the STATIC
+  // materializers baked onto the op at compile (from the model's DDL — ZERO per-read introspection).
+  // Enable safeIntegers when the child projects a BIGINT so int8 arrives exact. A BIGINT/DATE/BOOL
+  // child column de-boxes identically to a top-level read (INT→number / BIGINT→string / DATE→string
+  // / bool). SQLite-shaped driver; the async PG/MySQL relation path materializes at its own seam.
+  const childCols = op.materializers;
+  const int64Child = childCols !== undefined && Object.values(childCols).includes('int64');
+  const stmt = db.prepare(sql);
+  if (int64Child && typeof (stmt as { safeIntegers?: unknown }).safeIntegers === 'function') {
+    (stmt as unknown as { safeIntegers(v: boolean): unknown }).safeIntegers(true);
+  }
+  const rawRows = stmt.all(...bindKeys(op, keys)) as Record<string, unknown>[];
+  const rows = materializeChildRows(rawRows, childCols, int64Child);
   for (const row of rows) {
     const k = keyIdentity(tCols.map((c) => row[c]));
     const list = batch.get(k);
@@ -324,6 +374,27 @@ export function runRelationOp(
     else list.push(row);
   }
   return { sql, keys, batch };
+}
+
+/** Materialize relation child rows (issue #59): same coercion as the primary read. */
+function materializeChildRows(
+  rows: Record<string, unknown>[],
+  cols: Record<string, MaterializeClass> | undefined,
+  safeIntegersOn: boolean,
+): Record<string, unknown>[] {
+  if (cols === undefined && !safeIntegersOn) return rows;
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      const klass = cols?.[key];
+      if (klass !== undefined) { row[key] = materializeCell(row[key], klass); continue; }
+      // Defensive: under safeIntegers, an untyped int child column arrives as bigint — narrow it.
+      if (safeIntegersOn && typeof row[key] === 'bigint') {
+        const v = row[key] as bigint;
+        row[key] = v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v.toString();
+      }
+    }
+  }
+  return rows;
 }
 
 /**

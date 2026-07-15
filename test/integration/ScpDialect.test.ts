@@ -110,6 +110,14 @@ const POST_GUIDS = [
 // ── The authored behaviors (declaration surface — dialect-neutral IR) ──────────
 
 class PostQueries extends SemanticBehavior {
+  // Inline typed-column declaration (issue #59): the reads project from these declared types
+  // (matches the scp_posts / scp_typed DDL below). Required for a typed read — registration fails
+  // closed on an undeclared projected column.
+  static columns = {
+    [T_POSTS]: { id: 'INTEGER', user_id: 'INTEGER', title: 'VARCHAR(255)', content: 'TEXT', view_count: 'INTEGER', guid: 'UUID' },
+    [T_TYPED]: { big: 'BIGINT', txt: 'TEXT', flag: 'BOOLEAN', ts: 'TIMESTAMP', amt: 'DECIMAL(10,2)', label: 'TEXT' },
+  };
+
   ByUser($: In<{ user_id: number }>) {
     return L.Select({
       table: T_POSTS,

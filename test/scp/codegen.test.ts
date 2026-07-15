@@ -5,17 +5,26 @@
  * Proves the AC "生成コード出力が thin-runtime と byte 一致" for the READ codegen surface:
  *
  *  - **go/rust** drive bc's typed-NATIVE endpoint (bc#77/#90, RUNTIME-FREE): litedbmodel's
- *    codegen-only lowering ({@link lowerReadGraphForTypedNative}) splits the surrogate read
- *    graph's boxed `__scope` port into individual scalar ref ports and types the component's
+ *    codegen-only lowering ({@link lowerReadGraphForTypedNative}) rebuilds each real Select-node's
+ *    ports from its compiled `statementsById` genuine bound heads into individual scalar ref ports
+ *    (#12: no surrogate `__scope` obj anymore) and types the component's
  *    `inputPorts` from the schema (spec §4.1), so a COVERED read shape produces a module with
  *    ZERO boxing markers (`obj_native`/`ser_T*`/`run_plan`/`RawValue`) and NO embedded IR. An
- *    UNCOVERED shape (e.g. an IN-list's array-typed head, or a relation expressed via a `.map`
- *    node with per-element field-access ports) THROWS `TypedNativeCoverageError` — a bc#86
- *    coverage gap, reported explicitly, never silently regenerated on a boxed fallback.
+ *    IN-list / array-bound WHERE head is now COVERED via bc#110 (native array/list port → a
+ *    `Vec<ElemT>`/`[]ElemT` input port, no serde_json/encoding-json boxing). A relation expressed via
+ *    a `.map` node with per-element field-access ports (`{ref:['$e0','author_id']}`) is now COVERED via
+ *    bc 0.7.3's map/fanout support + the lowering's map element-FIELD ports + LIMIT-clause head typing.
+ *    A genuinely uncovered shape still THROWS `TypedNativeCoverageError` — reported explicitly, never
+ *    silently regenerated on a boxed fallback.
  *  - **typescript** stays on the boxed `typescript-typed` endpoint (bc has not registered a
- *    `typescript-typed-native` endpoint yet) — unaffected by the lowering (it uses the ORIGINAL
- *    portable IR), so it covers every shape go/rust do NOT (e.g. the frozen `exec.json` vector's
- *    `.map`-relation shape, and an IN-list read).
+ *    `typescript-typed-native` endpoint yet), but is now fed the SAME genuine-bound-head lowering
+ *    ({@link lowerReadGraphForTypedNative}) go/rust consume (#12 regression fix): post-#12 the real
+ *    Select-node read graph carries a fragment for every authored `whereX($.col, …)`, including a
+ *    WHERE COLUMN-NAME MARKER head (`whereGe($.created_at, $.since)` — `$.created_at` names the
+ *    column, is never a bound value). Handing that raw IR to the emitter emitted a stray
+ *    `created_at` input binding → `unknown binding: created_at` at execution. The lowering rebuilds
+ *    each node's ports from the GENUINE bound heads, dropping the marker, so the emitted TS module
+ *    runs (the array-typed heads lower cleanly via bc#110).
  *  - **In-process byte-identity**: `codegenExecuteBundleForTest` (a codegen consumer reading the
  *    companion) drives the IDENTICAL static-makeSQL render/execute path `executeBundle` uses — its
  *    output equals mode-2 `executeBundle` AND the frozen vector's `expectedResult`, EXACTLY.
@@ -36,7 +45,7 @@ import {
   executeBundle,
   executeTransactionBundle,
   generateCodegenArtifact,
-  bundleToPortableIR,
+  lowerReadGraphForTypedNative,
   codegenExecuteBundleForTest,
   CODEGEN_EMITTER,
   codegenEmitterFor,
@@ -219,7 +228,7 @@ function structuralResult(bundle: SqlBundle, language: string, resolveColumnType
   }
 }
 
-describe('WS7f codegen — the FROZEN exec.json vector: ts covers it (boxed); go/rust report the bc#86 gap', () => {
+describe('WS7f codegen — the FROZEN exec.json vector: ts (boxed) AND go/rust (typed-native) all cover it (bc 0.7.3 map)', () => {
   for (const v of EXEC_VECTORS) {
     const resolveColumnType = schemaColumnTypeResolver(v.schema);
 
@@ -235,12 +244,18 @@ describe('WS7f codegen — the FROZEN exec.json vector: ts covers it (boxed); go
     });
 
     for (const language of NATIVE_LANGS) {
-      it(`${language}: this vector's relation rides a '.map' node with a per-element field-access port — NOT typed-native-covered (bc#86 gap, reported not silently passed) — ${v.name}`, () => {
+      // bc 0.7.3 + the litedbmodel codegen lowering (LIMIT-clause head typing + map-element FIELD
+      // ports, `{ref:['$e0','author_id']}`) now cover this vector's `.map`-relation shape as a
+      // RUNTIME-FREE typed-native module (the prior bc#86 gap is closed). The read primary (n0) + the
+      // per-element map child (n1, `authors`) both lower to concrete `HandlerNR<Feed>` node methods
+      // returning typed rows — zero boxed Value, no interpreter delegation.
+      it(`${language}: the '.map'-relation shape IS typed-native-covered (bc 0.7.3 map) — zero-boxing, de-interpreted — ${v.name}`, () => {
         const r = structuralResult(v.bundle, language, resolveColumnType);
-        expect(r.kind).toBe('uncovered');
-        if (r.kind === 'uncovered') {
-          expect(r.error.component).toBe('Feed');
-          expect(r.error.reasons.length).toBeGreaterThan(0);
+        expect(r.kind).toBe('ok');
+        if (r.kind === 'ok') {
+          assertDeInterpreted(r.module.code);
+          const stripped = stripComments(r.module.code);
+          for (const marker of NATIVE_BOXING_MARKERS) expect(stripped).not.toMatch(marker);
         }
       });
     }
@@ -308,20 +323,32 @@ describe('WS7f codegen — the EMITTED TS source loads and is de-interpreted', (
         bind: unknown;
       };
       expect(Array.isArray(mod.COMPONENT_NAMES)).toBe(true);
-      expect(art.module.fingerprint).toBe(bc.fingerprintComponentGraph(bundleToPortableIR(v.bundle)));
+      // #12 regression fix: the TS `typescript-typed` codegen input is now the SAME genuine-bound-head
+      // lowering go/rust consume ({@link lowerReadGraphForTypedNative}) — dropping the WHERE-fragment
+      // column-name marker heads that broke the emitted module (`unknown binding: created_at`). The
+      // module fingerprint therefore covers the LOWERED IR, not the raw portable IR, so assert against
+      // that (the SAME input generateCodegenArtifact feeds the emitter).
+      // bc 0.8.0 (SA3/SA7): the derived codegen IR is un-tokened, so `fingerprintComponentGraph`
+      // (provenance-gated) requires re-adopting it via `loadCompiledIR` first — the SAME seam
+      // `generateCodegenArtifact` uses before `generateModule`. The token is invisible to the
+      // fingerprint (non-enumerable symbol), so the value equals the artifact's fingerprint.
+      expect(art.module.fingerprint).toBe(
+        bc.fingerprintComponentGraph(bc.loadCompiledIR(lowerReadGraphForTypedNative(v.bundle.readGraph!, resolveColumnType))),
+      );
       assertDeInterpreted(art.module.code);
     });
   }
 });
 
 // ── A COVERED typed-native shape (#60 m1 positive path): a plain single-componentRef Select with
-// only scalar WHERE heads — the frozen exec.json corpus's only vector is NOT this shape (its
-// relation rides a `.map` node), so this proves the positive path independently, in-test. ──
+// only scalar WHERE heads. The frozen exec.json corpus's `.map`-relation vector is ALSO covered now
+// (bc 0.7.3 map + lowering); this block additionally proves the plain single-node positive path. ──
 describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + byte-identity', () => {
   const SCHEMA = [`CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT)`];
   const resolveColumnType = schemaColumnTypeResolver(SCHEMA);
   const L = components();
   class Reads extends SemanticBehavior {
+    static columns = { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', status: 'TEXT' } };
     Find($: any) {
       return L.Select({
         table: 'posts',
@@ -349,8 +376,9 @@ describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + by
     expect(art.module.code.length).toBeGreaterThan(0);
   });
 
-  it('an IN-list read (array-typed head) is NOT typed-native-coverable for go/rust — bc#86 gap, reported', () => {
+  it('an IN-list read (array-typed head) IS typed-native-covered for go/rust via bc#110 (native array port; no serde_json/encoding-json, no boxing)', () => {
     class InListReads extends SemanticBehavior {
+      static columns = { posts: { id: 'INTEGER', title: 'TEXT' } };
       ByIds($: any) {
         return L.Select({
           table: 'posts',
@@ -362,10 +390,24 @@ describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + by
     }
     const inListContract = publishBehaviors(InListReads);
     const inListBundle = compileBundle(inListContract, 'ByIds', [], 'sqlite', undefined, resolveColumnType);
+    // The native array-bind mechanism must be a native Vec<ElemT>/[]ElemT port — NEVER a
+    // serde_json/encoding-json marshal of the array on the hot path (that is the boxing this closes).
+    const NATIVE_ARRAY_PORT: Record<string, RegExp> = { go: /\[\]int64\b/, rust: /Vec<i64>/ };
+    const JSON_HOTPATH_MARKERS: RegExp[] = [/serde_json/, /encoding\/json/, /json\.Marshal/, /json\.Unmarshal/];
     for (const language of NATIVE_LANGS) {
-      expect(() => generateCodegenArtifact(inListBundle, language, REGISTERED, resolveColumnType)).toThrow(TypedNativeCoverageError);
+      const art = generateCodegenArtifact(inListBundle, language, REGISTERED, resolveColumnType);
+      expect(art.module.code.length).toBeGreaterThan(0);
+      assertDeInterpreted(art.module.code);
+      const stripped = stripComments(art.module.code);
+      // Zero boxing on the hot path (same gate as the covered scalar reads).
+      for (const marker of NATIVE_BOXING_MARKERS) expect(stripped).not.toMatch(marker);
+      // The IN-list array head lowers to a CONCRETE native array port fed natively (bc#110)…
+      expect(art.module.code).toMatch(NATIVE_ARRAY_PORT[language]);
+      // …and NO JSON-marshal of the array appears on the generated read hot path (proves the port
+      // feeds the driver's native array bind, not a serde_json/json.Marshal boxing).
+      for (const marker of JSON_HOTPATH_MARKERS) expect(art.module.code).not.toMatch(marker);
     }
-    // ts (boxed) still covers it.
+    // ts (boxed) still covers it too.
     const art = generateCodegenArtifact(inListBundle, 'typescript', REGISTERED, resolveColumnType);
     expect(art.module.code.length).toBeGreaterThan(0);
   });

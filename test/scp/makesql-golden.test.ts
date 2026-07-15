@@ -363,7 +363,9 @@ function goldenInsertJson(
     const upd = opts.onConflictUpdate === 'all' ? cols : opts.onConflictUpdate;
     sql = dialect === 'mysql'
       ? `INSERT INTO ${list} ${source} ON DUPLICATE KEY UPDATE ${upd.map((c) => `${c} = VALUES(${c})`).join(', ')}`
-      : `INSERT INTO ${list} ${source} ON CONFLICT (${opts.onConflict.join(', ')}) DO UPDATE SET ${upd.map((c) => `${c} = excluded.${c}`).join(', ')}`;
+      // #67: SQLite requires `WHERE true` between the SELECT source and ON CONFLICT in an
+      // INSERT…SELECT…upsert (else `near "DO": syntax error`) — mirror the fixed sqliteInsertJson.
+      : `INSERT INTO ${list} ${source} WHERE true ON CONFLICT (${opts.onConflict.join(', ')}) DO UPDATE SET ${upd.map((c) => `${c} = excluded.${c}`).join(', ')}`;
   } else {
     sql = `INSERT INTO ${list} ${source}`;
   }
@@ -1274,6 +1276,11 @@ describe('C. Composite STATIC per-parent-LIMIT relation form (#47 last gap)', ()
 describe('D. authoring→bundle path renders V1-SOURCED SQL (V0 R2–R6, all dialects)', () => {
   const L = components();
   class Q extends SemanticBehavior {
+    static columns = {
+      posts: { id: 'INTEGER', author_id: 'INTEGER' },
+      users: { id: 'INTEGER', name: 'TEXT' }, // `Jn` projects users.name (JOIN column)
+      recent: { id: 'INTEGER' },
+    };
     // R3-remainder WHERE primitives
     Btw($: In<{ lo: number; hi: number }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereBetween($, 'age', $.lo, $.hi)] }); }
     Lk($: In<{ p: string }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereLike($, 'name', $.p)] }); }

@@ -183,6 +183,33 @@ final class Plan
     }
 
     /**
+     * finalTree — states を index→port の result tree（Φ 合流の観測形）へ整形する。
+     * ok → 値 / skipped → 未生成表現（single=null / connection=空 connection）。
+     * conformance vector はこの tree を期待値と byte 比較する（canonicalJson 経由）。
+     *
+     * @param array<int,?array<string,mixed>> $states runPlan が返す states。
+     * @param array<int,array<string,mixed>> $ops operation 定義（index 順）。
+     * @return array<string,mixed> id → 値/未生成表現。
+     */
+    public static function finalTree(array $states, array $ops): array
+    {
+        $tree = [];
+        foreach ($states as $i => $s) {
+            if ($s === null) {
+                continue;
+            }
+            $id = (string) $ops[$i]['id'];
+            if (($s['status'] ?? null) === 'ok') {
+                $tree[$id] = $s['value'];
+            } elseif (($s['status'] ?? null) === 'skipped') {
+                $tree[$id] = self::unproducedValue($ops[$i]['relationKind'] ?? null);
+            }
+            // failed は runPlan が投げているのでここに到達しない。
+        }
+        return $tree;
+    }
+
+    /**
      * 各 index がちょうど 1 stage に属し、全 op が被覆されることを検査（§1）。
      *
      * @param array<int,int[]> $stages

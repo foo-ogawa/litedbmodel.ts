@@ -34,7 +34,11 @@
  * port is static, so it keeps bc's fail-closed default.
  */
 
-import { classifyBehaviorEffect, type Catalog, type CatalogEntry, type Component, type PortSchema } from 'behavior-contracts';
+import { classifyBehaviorEffect, type Catalog, type CatalogEntry, type PortSchema } from 'behavior-contracts';
+// bc 0.8.0: the UNBRANDED structural component shape (matches `ir.components[number]` AND bc's
+// `classifyBehaviorEffect`/`referencedComponents` params, both unbranded). See `./authoring`
+// (type-only import — no runtime cycle).
+import type { Component } from './authoring';
 
 /**
  * The catalog-name literal union — one entry per SQL primitive litedbmodel declares:
@@ -136,7 +140,10 @@ export const LITEDBMODEL_CATALOG: Catalog = {
   // Only `table` (required) + the optional `where` fragment tree — v1's count carries no
   // projection/order/limit/offset (it counts the filtered rows). Output is a one-row `[{count}]`
   // list (the `items` shape, like every read); the consumer reads `count` — v1's `parseInt(count)`.
-  Count: entry('Count', { table: P('string', true), where: P('fragment') }, 'items', true),
+  // bc 0.8.0 (SA5): Count's output element type is STATICALLY determined (`int` — the counted rows),
+  // so it declares a catalog `elemType` and needs no per-call `.as` (unlike Select, whose row shape is
+  // per-projection). `baseOutTypeFromEntry` bakes node.outType = {arr:'int'} (items shape) at record.
+  Count: { ...entry('Count', { table: P('string', true), where: P('fragment') }, 'items', true), elemType: 'int' },
   // Writes yield the RETURNING row list (`items`); a single-row write collapses at the
   // consumer boundary, same as reads.
   Insert: entry('Insert', WRITE_PORTS, 'items', true),
@@ -216,6 +223,14 @@ export function assertComponentsInCatalog(components: readonly Component[]): voi
   for (const c of components) {
     for (const n of c.body) {
       if ('cond' in n) continue;
+      if ('fanout' in n) {
+        // bc 0.7.3+ `FanoutNode` (connection fan-out / batched BatchGet). litedbmodel authors
+        // only Select/Count/map/cond via LITEDBMODEL_CATALOG and never emits fanout, so a
+        // fanout node here means an unsupported graph reached the emitter — reject fail-closed
+        // rather than mis-validate it as a component ref.
+        errs.push(`${c.name}/${n.id}: fanout node is not supported by litedbmodel (bc FanoutNode)`);
+        continue;
+      }
       const ref = 'map' in n ? n.map : n;
       const entryDef = LITEDBMODEL_CATALOG[ref.component];
       if (entryDef === undefined) {

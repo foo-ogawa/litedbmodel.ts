@@ -47,7 +47,7 @@ from litedbmodel_runtime import (  # noqa: E402
 from litedbmodel_runtime.driver import SqliteDriver  # noqa: E402
 
 # The corpus schema version this runner supports (pin — bumped on additive refreeze).
-SUPPORTED_CORPUS_VERSION = 2
+SUPPORTED_CORPUS_VERSION = 3
 
 
 def _vectors_dir() -> Path:

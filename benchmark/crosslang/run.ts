@@ -1,15 +1,14 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Cross-language benchmark ENTRY (epic #44) — generate → run matrix → write report.
+// Cross-language benchmark ENTRY (epic #63) — generate → run matrix → write report.
 // ════════════════════════════════════════════════════════════════════════════
 //
 //   npx tsx benchmark/crosslang/run.ts                     # full run, writes CROSS-LANG.md
-//   BENCH_ITER=500 BENCH_MICRO_ITER=5000 npx tsx …/run.ts  # quick
-//   CROSSLANG_CASES=find,inList npx tsx …/run.ts           # a case subset
+//   BENCH_ITER=100 npx tsx …/run.ts                        # quick
+//   CROSSLANG_CASES=findAll,create npx tsx …/run.ts        # an op subset
 //   CROSSLANG_ONLY=ts npx tsx …/run.ts                     # a language subset
 //
-// SQLite is in-process (better-sqlite3) — no docker needed for the primary run.
-// The generated bundle artifact (generated/bundles.json) must exist first
-// (`npx tsx benchmark/crosslang/generate.ts`); this entry regenerates it.
+// SQLite is in-process; PG :5433 + MySQL :3307 are the dockerized live DBs. The shared
+// orm-plan.json artifact (the 19 ORM ops × 3 dialects) is regenerated first.
 
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -40,8 +39,6 @@ function config(): HarnessConfig {
     iterations: iter,
     warmup,
     throughputIterations: Number(process.env.BENCH_TP_ITER ?? Math.min(iter, 2000)),
-    microIterations: Number(process.env.BENCH_MICRO_ITER ?? DEFAULT_CONFIG.microIterations),
-    microWarmup: Number(process.env.BENCH_MICRO_WARMUP ?? DEFAULT_CONFIG.microWarmup),
     cases,
     dialects,
   };
@@ -49,11 +46,11 @@ function config(): HarnessConfig {
 
 async function main(): Promise<void> {
   const cfg = config();
-  console.error(`Cross-language bench — iterations=${cfg.iterations} warmup=${cfg.warmup} micro=${cfg.microIterations} cases=${cfg.cases?.length} dialects=${cfg.dialects?.join(',')}\n`);
+  console.error(`Cross-language bench (#63) — iterations=${cfg.iterations} warmup=${cfg.warmup} ops=${cfg.cases?.length} dialects=${cfg.dialects?.join(',')}\n`);
 
-  // Regenerate the shared bundle artifact (consume-only compile — src untouched).
-  console.error('Generating makeSQL bundles (generated/bundles.json)…');
-  execFileSync('npx', ['tsx', 'benchmark/crosslang/generate.ts'], { cwd: REPO, stdio: 'inherit' });
+  // Regenerate the shared 19-op plan artifact (consume-only compile — src untouched).
+  console.error('Generating the ORM-plan artifact (generated/orm-plan.json)…');
+  execFileSync('npx', ['tsx', 'benchmark/crosslang/gen-orm-plan.ts'], { cwd: REPO, stdio: 'inherit' });
 
   const result = await runMatrix(cfg);
   mkdirSync(dirname(OUT_JSON), { recursive: true });

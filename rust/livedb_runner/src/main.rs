@@ -18,13 +18,51 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use litedbmodel_runtime::livedb::{MysqlDriver, PostgresDriver};
-use litedbmodel_runtime::value::encode_value;
 use litedbmodel_runtime::{
-    execute_bundle_pooled, execute_transaction_bundle, read_bundle_pooled, Driver,
+    encode_value, execute_bundle_pooled, execute_transaction_bundle, read_bundle_pooled, Driver,
+    Node,
 };
 use serde_json::{json, Value as J};
 
-const SUPPORTED_CORPUS_VERSION: i64 = 2;
+// The runtime is NATIVE-ONLY (serde_json-free): its exec API takes/returns its own `Node`. This
+// livedb runner parses the corpus with serde_json (its own dep — allowed), converts each bundle/input
+// to a `Node` at the runtime boundary, and converts a `Node` result back for the comparison.
+fn to_node(v: &J) -> Node {
+    match v {
+        J::Null => Node::Null,
+        J::Bool(b) => Node::Bool(*b),
+        J::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Node::Int(i)
+            } else {
+                Node::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        J::String(s) => Node::Str(s.clone()),
+        J::Array(a) => Node::Array(a.iter().map(to_node).collect()),
+        J::Object(o) => Node::Object(o.iter().map(|(k, val)| (k.clone(), to_node(val))).collect()),
+    }
+}
+
+fn node_to_json(n: &Node) -> J {
+    match n {
+        Node::Null => J::Null,
+        Node::Bool(b) => J::Bool(*b),
+        Node::Int(i) => J::Number((*i).into()),
+        Node::Float(f) => serde_json::Number::from_f64(*f)
+            .map(J::Number)
+            .unwrap_or(J::Null),
+        Node::Str(s) => J::String(s.clone()),
+        Node::Array(a) => J::Array(a.iter().map(node_to_json).collect()),
+        Node::Object(o) => J::Object(
+            o.iter()
+                .map(|(k, v)| (k.clone(), node_to_json(v)))
+                .collect(),
+        ),
+    }
+}
+
+const SUPPORTED_CORPUS_VERSION: i64 = 3;
 const PG_SCHEMA: &str = "scp_rust";
 const MYSQL_DB: &str = "scp_rust";
 
@@ -157,9 +195,9 @@ fn run_exec(driver: &(dyn Driver + Sync), bundle: &J, v: &J) -> Result<(), Strin
     // The PRODUCTION live PG/MySQL read path: the pooled executor fans out independent sibling read
     // nodes of a plan stage concurrently (capped at the plan concurrency); a single-relation read
     // graph runs serially, byte-identical to `execute_bundle` (#40).
-    let result = execute_bundle_pooled(bundle, &input, driver)
+    let result = execute_bundle_pooled(&to_node(bundle), &to_node(&input), driver)
         .map_err(|e| format!("execute threw: {}", e.message))?;
-    let got = encode_value(&result);
+    let got = node_to_json(&encode_value(&result));
     if eq(&got, &v["expectedResult"]) {
         Ok(())
     } else {
@@ -188,9 +226,15 @@ fn run_read(
         })
         .unwrap_or_default();
     let empty = std::collections::HashMap::new();
-    let result = read_bundle_pooled(bundle, &input, driver, &with_names, &empty)
-        .map_err(|e| format!("read threw: {}", e.message))?;
-    let got = encode_value(&result);
+    let result = read_bundle_pooled(
+        &to_node(bundle),
+        &to_node(&input),
+        driver,
+        &with_names,
+        &empty,
+    )
+    .map_err(|e| format!("read threw: {}", e.message))?;
+    let got = node_to_json(&encode_value(&result));
     if eq(&got, &v[expected_key]) {
         Ok(())
     } else {
@@ -228,9 +272,15 @@ fn run_crossdb(
     let mut connections: std::collections::HashMap<String, &(dyn Driver + Sync)> =
         std::collections::HashMap::new();
     connections.insert(tag, secondary);
-    let result = read_bundle_pooled(bundle, &input, driver, &with_names, &connections)
-        .map_err(|e| format!("cross-DB read threw: {}", e.message))?;
-    let got = encode_value(&result);
+    let result = read_bundle_pooled(
+        &to_node(bundle),
+        &to_node(&input),
+        driver,
+        &with_names,
+        &connections,
+    )
+    .map_err(|e| format!("cross-DB read threw: {}", e.message))?;
+    let got = node_to_json(&encode_value(&result));
     if eq(&got, &v[expected_key]) {
         Ok(())
     } else {
@@ -245,9 +295,9 @@ fn run_tx(
     tx_expected_key: &str,
 ) -> Result<(), String> {
     let input = numeric_canon(&v["input"]);
-    let result = execute_transaction_bundle(bundle, &input, driver)
+    let result = execute_transaction_bundle(&to_node(bundle), &to_node(&input), driver)
         .map_err(|e| format!("tx threw: {}", e.message))?;
-    let got = encode_value(&result);
+    let got = node_to_json(&encode_value(&result));
     // A write may GENUINELY diverge by dialect (DELETE…RETURNING returns rows on PG, [] on MySQL);
     // the mysql leg then carries `expectedResultMysql`. Fall back to the shared `expectedResult`.
     let expected = v.get(tx_expected_key).unwrap_or(&v["expectedResult"]);
@@ -261,7 +311,11 @@ fn run_tx(
             let rows = stmt
                 .all(&[])
                 .map_err(|e| format!("db-state '{query}' threw: {}", e.message))?;
-            let got_rows = J::Array(rows.iter().map(encode_value).collect());
+            let got_rows = J::Array(
+                rows.iter()
+                    .map(|v| node_to_json(&encode_value(v)))
+                    .collect(),
+            );
             if !eq(&got_rows, &s["rows"]) {
                 return Err(format!("db-state '{query}': {got_rows} != {}", s["rows"]));
             }

@@ -58,3 +58,4 @@ python/build/
 # stray preview/diagram artifacts (playwright-mcp, diagram-contracts previews) — never commit
 .playwright-mcp/
 /*.png
+/go/lm_bench/lm_orm/lm_orm

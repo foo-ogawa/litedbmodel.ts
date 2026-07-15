@@ -81,9 +81,6 @@ export {
   rowsHaveDbToken,
 } from './json-batch';
 
-// bc IR wiring (a query rides runBehavior as a makeSQL component).
-export { makeSqlComponentIR, makeSqlInput } from './ir';
-
 // Write-time relations → makeSQL transaction plan + 1-tx runtime (epic #43/#45 Phase B).
 export {
   deriveTransactionPlan,
@@ -139,5 +136,5 @@ export type { StaticBundle, StaticStatement, ValueSpec, ReadGraph, SqlExecutorAs
 
 // Pooled async executor factories (PG / MySQL) that turn the plan's concurrency into real parallel
 // read-relation DB I/O behind the async seam (#40).
-export { pgPoolExecutor, mysqlPoolExecutor } from './pool-executor';
-export type { PgPoolLike, MysqlPoolLike } from './pool-executor';
+export { pgPoolExecutor, mysqlPoolExecutor, configurePgDeboxTypeParsers, mysqlDeboxPoolOptions, pgDeboxExecutor, mysqlDeboxExecutor } from './pool-executor';
+export type { PgPoolLike, MysqlPoolLike, PgTypesLike, PgModuleLike, Mysql2ModuleLike } from './pool-executor';

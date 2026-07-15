@@ -6,10 +6,10 @@ static-makeSQL artifacts the corpus ships (pure JSON: a read ``ReadGraph`` = a b
 gate-first makeSQL statements) and executes them against a SQL driver — SEMANTICS-IDENTICAL to the
 TS reference (``src/scp/runtime.ts`` + ``src/scp/makesql/*``).
 
-It re-implements NO generic execution/expression evaluation: bc's ``run_behavior`` owns the
-plan/map/wire/output orchestration and its ``evaluate_expression`` owns the CLOSED Expression-IR
-(ref/refOpt/coalesce/eq/…, the SKIP guards + deferred value-specs). This module adds ONLY the
-SQL-backend concerns (spec §11): assemble the static makeSQL statements per dialect → bind params →
+It re-implements NO generic expression evaluation: the NATIVE read-graph walker (#12) owns the
+plan/map/wire/output orchestration and bc's ``evaluate_expression`` owns the CLOSED Expression-IR
+(ref/refOpt/coalesce/eq/…, the SKIP guards + deferred value-specs) — NO bc ``run_behavior``. This
+module adds ONLY the SQL-backend concerns (spec §11): assemble the static makeSQL statements per dialect → bind params →
 execute REAL SQL → row→result assembly; and, for a Command bundle, the gate-first write transaction
 (``execute_transaction_bundle``). This mirrors the TS runtime's division of labor exactly (bc-core
 + a makeSQL handler). The reduced fragment-tree render path (``render.py``) is RETIRED for the SQL
@@ -25,7 +25,6 @@ from .dialect import dialect_for
 from .driver import Driver
 from .errors import SqlFailure, map_sqlite_error
 from .static_bundle import (
-    SCOPE_PORT,
     assemble_make_sql,
     execute_read_graph,
     render_placeholders,
@@ -40,7 +39,6 @@ _RETURNING_RE = re.compile(r"\breturning\b", re.IGNORECASE)
 _SELECT_RE = re.compile(r"\bselect\b", re.IGNORECASE)
 
 __all__ = [
-    "SCOPE_PORT",
     "ENTITY_ROOT",
     "execute_bundle",
     "execute_transaction_bundle",
@@ -73,7 +71,7 @@ def _to_driver_param_tx(v: Any) -> Any:
 
 
 def execute_bundle(bundle: Mapping[str, Any], input_scope: Mapping[str, Any], driver: Driver) -> Any:
-    """Execute a read/exec SqlBundle end-to-end (bc run_behavior + makeSQL handler).
+    """Execute a read/exec SqlBundle end-to-end (native read-graph walker; no bc run_behavior).
 
     The SAME code path a consumer runtime follows: it consumes ONLY the serialized bundle + bc
     runtime-core, never re-running litedbmodel's Backend-Compile. A read bundle carries a

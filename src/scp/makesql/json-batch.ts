@@ -157,7 +157,12 @@ export function sqliteInsertJson(opts: JsonInsertOptions): MakeSQL {
   } else if (onConflict && onConflictUpdate) {
     const updateCols = onConflictUpdate === 'all' ? columns : onConflictUpdate;
     const updateClauses = updateCols.map((c) => `${c} = excluded.${c}`);
-    sql = `INSERT INTO ${tableName} (${columns.join(', ')}) ${source} ON CONFLICT (${onConflict.join(', ')}) DO UPDATE SET ${updateClauses.join(', ')}`;
+    // SQLite grammar disambiguation (#67): in an `INSERT … SELECT … ON CONFLICT … DO UPDATE`, the
+    // parser cannot tell whether `ON CONFLICT` binds to the SELECT's source or is the upsert clause
+    // unless a `WHERE` terminates the SELECT — without it SQLite raises `near "DO": syntax error`.
+    // A `WHERE true` is the standard, semantically-neutral terminator (SQLite docs "Parsing Ambiguity").
+    // Only this SELECT-sourced upsert path needs it; `INSERT OR IGNORE` and the plain INSERT do not.
+    sql = `INSERT INTO ${tableName} (${columns.join(', ')}) ${source} WHERE true ON CONFLICT (${onConflict.join(', ')}) DO UPDATE SET ${updateClauses.join(', ')}`;
   } else {
     sql = `INSERT INTO ${tableName} (${columns.join(', ')}) ${source}`;
   }

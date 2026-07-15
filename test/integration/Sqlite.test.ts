@@ -507,7 +507,10 @@ describe('SQLite Driver', () => {
       expect(found!.bool_val).toBe(true);
       expect(found!.text_val).toBe('long text content');
       expect(found!.varchar_val).toBe('short varchar');
-      expect(found!.timestamp_val?.toISOString()).toBe(testDate.toISOString());
+      // v2 read contract (issue #9): datetime → a TZ-attached STRING (not a JS Date). It round-trips
+      // to the same instant; parse it back to compare.
+      expect(typeof found!.timestamp_val).toBe('string');
+      expect(new Date(found!.timestamp_val as unknown as string).toISOString()).toBe(testDate.toISOString());
     });
 
     it('should persist and retrieve JSON types correctly via create/find', async () => {
@@ -614,7 +617,9 @@ describe('SQLite Driver', () => {
       expect(found!.bool_val).toBe(true);
       expect(found!.text_val).toBe('updated text');
       expect(found!.varchar_val).toBe('updated');
-      expect(found!.timestamp_val?.toISOString()).toBe(updatedDate.toISOString());
+      // v2 read contract (issue #9): datetime → TZ-attached string; parse back to compare instants.
+      expect(typeof found!.timestamp_val).toBe('string');
+      expect(new Date(found!.timestamp_val as unknown as string).toISOString()).toBe(updatedDate.toISOString());
       expect(found!.json_val).toEqual({ key: 'updated' });
     });
 
@@ -677,7 +682,9 @@ describe('SQLite Driver', () => {
       });
       const id1 = result1!.values[0][0] as number;
       const found1 = await SqliteAllTypes.findOne([[SqliteAllTypes.id, id1]]);
-      expect(found1!.timestamp_val?.toISOString()).toBe(specificDate.toISOString());
+      // v2 read contract (issue #9): datetime → TZ-attached string; parse back to compare instants.
+      expect(typeof found1!.timestamp_val).toBe('string');
+      expect(new Date(found1!.timestamp_val as unknown as string).toISOString()).toBe(specificDate.toISOString());
 
       // Test null datetime (typed column preserves null)
       const result2 = await DBModel.transaction(async () => {
@@ -694,7 +701,9 @@ describe('SQLite Driver', () => {
       });
       const id3 = result3!.values[0][0] as number;
       const found3 = await SqliteAllTypes.findOne([[SqliteAllTypes.id, id3]]);
-      expect(found3!.timestamp_val?.toISOString()).toBe(minDate.toISOString());
+      // v2 read contract (issue #9): datetime → TZ-attached string; parse back to compare instants.
+      expect(typeof found3!.timestamp_val).toBe('string');
+      expect(new Date(found3!.timestamp_val as unknown as string).toISOString()).toBe(minDate.toISOString());
     });
   });
 

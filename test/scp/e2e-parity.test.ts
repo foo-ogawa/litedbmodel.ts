@@ -55,6 +55,9 @@ function freshDb(): InstanceType<typeof Database> {
 // ── The authored behavior (declaration surface) ───────────────────────────────
 
 class PostSearch extends SemanticBehavior {
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', status: 'TEXT', created_at: 'TEXT' },
+  };
   Find($: In<{ author_id: number; status?: string; since: string }>) {
     return L.Select({
       table: 'posts',
@@ -156,6 +159,7 @@ describe('WS3 α parity — eager path executes identically to the declaration p
     const decl = publishBehaviors(PostSearch);
     const eager = compileEager('ByIds', ($: Recorded, l) =>
       l.Select({ table: 'posts', select: ['id', 'title'], where: [whereIn(inColumn($, 'id'), $.ids)], order: 'id ASC' }),
+      { columns: { posts: { id: 'INTEGER', title: 'TEXT' } } },
     );
 
     // Byte-identical component IR (spec §9 single-compile-path invariant).

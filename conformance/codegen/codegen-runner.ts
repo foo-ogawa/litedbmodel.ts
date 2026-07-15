@@ -77,7 +77,7 @@ const NATIVE_LANGS = ['go', 'rust'];
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..');
 const VECTORS_DIR = process.env.LITEDBMODEL_VECTORS ?? join(REPO, 'conformance', 'vectors');
-const SUPPORTED_CORPUS_VERSION = 2;
+const SUPPORTED_CORPUS_VERSION = 3;
 const REGISTERED = registeredLanguages();
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

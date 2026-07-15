@@ -67,19 +67,32 @@ describe('decorators', () => {
       expect(instance.amount).toBe(123.45);
     });
 
-    it('@column.bigint should convert to bigint', () => {
+    it('@column.bigint should convert to an EXACT decimal string (v2 read contract, issue #9)', () => {
+      // v1 realigned to the v2 read type contract: BIGINT/INT8 → JS STRING (no i64 rounding, JSON-safe),
+      // NOT a JS bigint. The driver hands the exact decimal string over (pg int8 / mysql2 bigNumberStrings
+      // / better-sqlite3 safeIntegers→bigint→string); the materializer keeps it exact.
       @model('test')
       class TestModel extends DBModel {
         @column.bigint() large_id?: bigint;
       }
 
       const instance = new TestModel();
-      (instance as any).large_id = '9007199254740993';
+      (instance as any).large_id = '9007199254740993'; // > 2^53: a JS number would round this
       instance.typeCastFromDB();
-      expect(instance.large_id).toBe(BigInt('9007199254740993'));
+      expect(instance.large_id).toBe('9007199254740993');
+      // i64 max round-trips EXACTLY as a string (the whole point of #9).
+      (instance as any).large_id = '9223372036854775807';
+      instance.typeCastFromDB();
+      expect(instance.large_id).toBe('9223372036854775807');
+      // A bigint from a safe-integer driver also materializes to the exact string.
+      (instance as any).large_id = 9007199254740993n;
+      instance.typeCastFromDB();
+      expect(instance.large_id).toBe('9007199254740993');
     });
 
-    it('@column.datetime should convert to Date', () => {
+    it('@column.datetime should convert to a TZ-attached string (v2 read contract, issue #9)', () => {
+      // v1 realigned to the v2 read type contract: the date/timestamp family → a TZ-attached STRING,
+      // NOT a TZ-shifted JS Date. A driver already returning the native textual form passes through.
       @model('test')
       class TestModel extends DBModel {
         @column.datetime() created_at?: Date;
@@ -88,8 +101,13 @@ describe('decorators', () => {
       const instance = new TestModel();
       (instance as any).created_at = '2024-01-01T12:00:00Z';
       instance.typeCastFromDB();
-      expect(instance.created_at).toBeInstanceOf(Date);
-      expect(instance.created_at?.getFullYear()).toBe(2024);
+      expect(typeof instance.created_at).toBe('string');
+      expect(instance.created_at as unknown).toBe('2024-01-01T12:00:00Z');
+      // A stray JS Date (a driver not put in string mode) is rendered to a lossless ISO instant.
+      (instance as any).created_at = new Date('2024-01-01T12:00:00Z');
+      instance.typeCastFromDB();
+      expect(typeof instance.created_at).toBe('string');
+      expect(instance.created_at as unknown).toBe('2024-01-01T12:00:00.000Z');
     });
 
     it('@column.date should convert to YYYY-MM-DD string', () => {
@@ -257,7 +275,9 @@ describe('decorators', () => {
       const instance = new TestModel();
       (instance as any).created_at = '2024-01-01';
       instance.typeCastFromDB();
-      expect(instance.created_at).toBeInstanceOf(Date);
+      // v2 read contract (issue #9): the native textual form passes through as a string, not a Date.
+      expect(typeof instance.created_at).toBe('string');
+      expect(instance.created_at as unknown).toBe('2024-01-01');
     });
   });
 
@@ -291,20 +311,30 @@ describe('decorators', () => {
       expect(instance.dt).toBeUndefined();
     });
 
-    it('should handle invalid values', () => {
+    it('should handle invalid @column.number as null but FAIL-CLOSED on a non-integer BIGINT (issue #9)', () => {
       @model('test')
       class TestModel extends DBModel {
         @column.number() num?: number;
-        @column.bigint() big?: bigint;
       }
 
       const instance = new TestModel();
       (instance as any).num = 'not a number';
-      (instance as any).big = 'invalid';
       instance.typeCastFromDB();
-      // Invalid values return null (conversion failed), null values preserved
+      // @column.number keeps its lenient legacy behavior: an unparseable value → null.
       expect(instance.num).toBeNull();
-      expect(instance.big).toBeNull();
+    });
+
+    it('@column.bigint is fail-closed on a non-integer driver value (v2 read contract, issue #9)', () => {
+      // Aligned to v2: a BIGINT column whose driver cell is not an integer is a driver-contract
+      // violation — a hard error, NOT a silently-nulled value (which would mask precision loss).
+      @model('test')
+      class TestModel extends DBModel {
+        @column.bigint() big?: bigint;
+      }
+
+      const instance = new TestModel();
+      (instance as any).big = 'invalid';
+      expect(() => instance.typeCastFromDB()).toThrow(/materialize int64/);
     });
   });
 

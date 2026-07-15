@@ -62,7 +62,7 @@ import {
 // ── Corpus versioning (SSoT — bumped on any additive refreeze, PROTOCOL-style) ──
 
 /** The conformance corpus schema version. A consumer runner fail-closes on a mismatch. */
-export const CORPUS_VERSION = 2 as const;
+export const CORPUS_VERSION = 3 as const;
 
 export const ALL_DIALECTS: readonly DialectName[] = ['sqlite', 'postgres', 'mysql'] as const;
 
@@ -177,6 +177,14 @@ const L = components();
 
 /** Read behavior: SKIP-optional status fragment + relations (belongsTo author, hasMany tags). */
 class Blog extends SemanticBehavior {
+  // Inline typed-column declaration (issue #59): the reads project from these declared types (matches
+  // READ_SCHEMA). Required for a typed read — registration fails closed on an undeclared column.
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', status: 'TEXT', created_at: 'TEXT' },
+    users: { id: 'INTEGER', name: 'TEXT' },
+    tags: { id: 'INTEGER', post_id: 'INTEGER', label: 'TEXT' },
+  };
+
   Feed($: In<{ author_id: number; status?: string; since: string; created_at: string; limit?: number }>) {
     const posts = L.Select({
       table: 'posts',
@@ -483,7 +491,7 @@ export function generateCorpus(): Suite[] {
 
   return [
     { suite: 'render', corpusVersion: CORPUS_VERSION, note: 'READ primaries + WRITE statements × 3 dialects × SKIP/IN edge cases — static makeSQL render golden (byte-true to the original builders).', vectors: render },
-    { suite: 'exec', corpusVersion: CORPUS_VERSION, note: 'Read bundles executed against seeded SQLite via bc runBehavior: SKIP + belongsTo/hasMany relations (batched op).', vectors: exec },
+    { suite: 'exec', corpusVersion: CORPUS_VERSION, note: 'Read bundles executed against seeded SQLite via the native read-graph walker: SKIP + belongsTo/hasMany relations (batched op).', vectors: exec },
     { suite: 'tx', corpusVersion: CORPUS_VERSION, note: 'Write-time-relations gate-first transaction bundles: commit + gate short-circuit + composite tx-DAG.', vectors: tx },
     { suite: 'dialect', corpusVersion: CORPUS_VERSION, note: 'Dialect primitive orderByNulls: PG/SQLite native NULLS, MySQL IS NULL emulation.', vectors: dialect },
   ];

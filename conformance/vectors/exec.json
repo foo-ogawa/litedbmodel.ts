@@ -1,7 +1,7 @@
 {
   "suite": "exec",
-  "corpusVersion": 2,
-  "note": "Read bundles executed against seeded SQLite via bc runBehavior: SKIP + belongsTo/hasMany relations (batched op).",
+  "corpusVersion": 3,
+  "note": "Read bundles executed against seeded SQLite via the native read-graph walker: SKIP + belongsTo/hasMany relations (batched op).",
   "vectors": [
     {
       "name": "Feed: status present + belongsTo/hasMany relations",
@@ -20,34 +20,8 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
-                    "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
-                          },
-                          "status": {
-                            "ref": [
-                              "status"
-                            ]
-                          },
-                          "since": {
-                            "ref": [
-                              "since"
-                            ]
-                          },
-                          "limit": {
-                            "ref": [
-                              "limit"
-                            ]
-                          }
-                        }
-                      }
-                    },
                     "outType": {
                       "arr": {
                         "obj": {
@@ -57,13 +31,96 @@
                           "status": "string"
                         }
                       }
+                    },
+                    "ports": {
+                      "limit": {
+                        "coalesce": [
+                          {
+                            "refOpt": [
+                              "limit"
+                            ]
+                          },
+                          20
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "cond": [
+                              {
+                                "ne": [
+                                  {
+                                    "refOpt": [
+                                      "status"
+                                    ]
+                                  },
+                                  null
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  },
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  }
+                                ]
+                              },
+                              null
+                            ]
+                          },
+                          {
+                            "ge": [
+                              {
+                                "ref": [
+                                  "created_at"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "since"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
                     }
                   },
                   {
                     "id": "n1",
                     "map": {
                       "as": "$e0",
-                      "component": "__makeSqlNode",
+                      "component": "Select",
                       "over": {
                         "ref": [
                           "n0"
@@ -71,14 +128,32 @@
                       },
                       "parent": "n0",
                       "ports": {
-                        "__scope": {
-                          "obj": {
-                            "$e0": {
-                              "ref": [
-                                "$e0"
+                        "select": {
+                          "arr": [
+                            "id",
+                            "name"
+                          ]
+                        },
+                        "table": "users",
+                        "where": {
+                          "arr": [
+                            {
+                              "eq": [
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "id"
+                                  ]
+                                },
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "author_id"
+                                  ]
+                                }
                               ]
                             }
-                          }
+                          ]
                         }
                       }
                     },
@@ -264,7 +339,16 @@
           "optionalHeads": [
             "status",
             "limit"
-          ]
+          ],
+          "materializersByNode": {
+            "n0": {
+              "id": "int32",
+              "author_id": "int32"
+            },
+            "n1": {
+              "id": "int32"
+            }
+          }
         },
         "optionalHeads": [
           "status",
@@ -277,7 +361,15 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "sqlite",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ],
+            "materializers": {
+              "id": "int32"
+            }
           },
           "tags": {
             "name": "tags",
@@ -285,7 +377,17 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "sqlite",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ],
+            "materializers": {
+              "id": "int32",
+              "post_id": "int32"
+            }
           }
         }
       },
@@ -344,34 +446,8 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
-                    "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
-                          },
-                          "status": {
-                            "ref": [
-                              "status"
-                            ]
-                          },
-                          "since": {
-                            "ref": [
-                              "since"
-                            ]
-                          },
-                          "limit": {
-                            "ref": [
-                              "limit"
-                            ]
-                          }
-                        }
-                      }
-                    },
                     "outType": {
                       "arr": {
                         "obj": {
@@ -381,13 +457,96 @@
                           "status": "string"
                         }
                       }
+                    },
+                    "ports": {
+                      "limit": {
+                        "coalesce": [
+                          {
+                            "refOpt": [
+                              "limit"
+                            ]
+                          },
+                          20
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "cond": [
+                              {
+                                "ne": [
+                                  {
+                                    "refOpt": [
+                                      "status"
+                                    ]
+                                  },
+                                  null
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  },
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  }
+                                ]
+                              },
+                              null
+                            ]
+                          },
+                          {
+                            "ge": [
+                              {
+                                "ref": [
+                                  "created_at"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "since"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
                     }
                   },
                   {
                     "id": "n1",
                     "map": {
                       "as": "$e0",
-                      "component": "__makeSqlNode",
+                      "component": "Select",
                       "over": {
                         "ref": [
                           "n0"
@@ -395,14 +554,32 @@
                       },
                       "parent": "n0",
                       "ports": {
-                        "__scope": {
-                          "obj": {
-                            "$e0": {
-                              "ref": [
-                                "$e0"
+                        "select": {
+                          "arr": [
+                            "id",
+                            "name"
+                          ]
+                        },
+                        "table": "users",
+                        "where": {
+                          "arr": [
+                            {
+                              "eq": [
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "id"
+                                  ]
+                                },
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "author_id"
+                                  ]
+                                }
                               ]
                             }
-                          }
+                          ]
                         }
                       }
                     },
@@ -588,7 +765,16 @@
           "optionalHeads": [
             "status",
             "limit"
-          ]
+          ],
+          "materializersByNode": {
+            "n0": {
+              "id": "int32",
+              "author_id": "int32"
+            },
+            "n1": {
+              "id": "int32"
+            }
+          }
         },
         "optionalHeads": [
           "status",
@@ -601,7 +787,15 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "sqlite",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ],
+            "materializers": {
+              "id": "int32"
+            }
           },
           "tags": {
             "name": "tags",
@@ -609,7 +803,17 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "sqlite",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ],
+            "materializers": {
+              "id": "int32",
+              "post_id": "int32"
+            }
           }
         }
       },

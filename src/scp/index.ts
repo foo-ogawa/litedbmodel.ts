@@ -58,8 +58,6 @@ export {
   compileCompositeKeyUnlimited,
   compileCompositeKeyStaticUnlimited,
   compileCompositeKeyLimited,
-  makeSqlComponentIR,
-  makeSqlInput,
   compileAuthoredBehavior,
   compileAuthoredNode,
   compileRelationMap,
@@ -74,6 +72,10 @@ export {
   renderReadPrimary,
   pgPoolExecutor,
   mysqlPoolExecutor,
+  configurePgDeboxTypeParsers,
+  mysqlDeboxPoolOptions,
+  pgDeboxExecutor,
+  mysqlDeboxExecutor,
 } from './makesql';
 export type {
   MakeSQL,
@@ -93,6 +95,9 @@ export type {
   ReadGraph,
   PgPoolLike,
   MysqlPoolLike,
+  PgTypesLike,
+  PgModuleLike,
+  Mysql2ModuleLike,
 } from './makesql';
 
 // Catalog (spec §11 item 1)
@@ -131,6 +136,8 @@ export type {
   BehaviorMethodSpec,
   BehaviorModelContract,
   PublishBehaviorsOptions,
+  ModelColumns,
+  TypedModelClass,
   EagerBehavior,
   Component,
   ComponentGraphIR,
@@ -173,8 +180,8 @@ export type { FindFilterSource } from './find-filter-guard';
 
 // Column type system (spec §4.1; #58): SQL type → bc outType scalar, and the schema/DDL SoT
 // resolver that types a SELECT projection for typed (de-boxed) codegen. Fail-closed throughout.
-export { sqlTypeToBcScalar, parseSchemaColumnTypes, schemaColumnTypeResolver } from './coltype';
-export type { BcScalar, ColumnTypeResolver } from './coltype';
+export { sqlTypeToBcScalar, sqlTypeToMaterializeClass, materializeCell, materializeClassOrUndefined, parseSchemaColumnTypes, schemaColumnTypeResolver, materializeResolverFromColumnMap, failClosedMaterializeResolverFromColumnMap, columnTypeResolverFromColumnMap } from './coltype';
+export type { BcScalar, MaterializeClass, ColumnTypeResolver, MaterializeResolver } from './coltype';
 
 // Thin TS runtime (spec §3 / §10 / §11): validate → SKIP → expand → eval → bind → execute → assembly.
 // `compileBundle` emits the §8 published artifact (Backend-Compiled once, TS-side);
@@ -239,7 +246,11 @@ export type { CompositeWriteEntry } from './runtime';
 // to a gate-free tx plan (executed by the SAME multi-statement tx loop in all 5 runtimes). The
 // batch SQL is byte-copied from the v1 builders (compileInsertMany/compileUpdateMany/compileDeleteMany).
 export { compileCreateManyBundle, compileUpdateManyBundle, compileDeleteManyBundle } from './runtime';
-export { compileDeleteMany } from './makesql';
+export { compileDeleteMany, compileInsertMany } from './makesql';
+// dbCast: the column-type cast marker the makeSQL compilers thread into WHERE/SET (spec §4.1).
+// Re-exported so a bundle consumer builds the SAME DBCast instance the inlined compilers recognise
+// (a standalone dist/DBValues copy is a DIFFERENT class → the compiler would not honour the cast).
+export { dbCast, dbCastIn } from '../DBValues';
 
 // Mode-3 codegen (WS7f, #35 — spec §9 exec-mode 3): supply the litedbmodel SQL catalog to bc's
 // shared generator; emit per-language STATIC straight-line source (de-interpreted, bc#75 — real

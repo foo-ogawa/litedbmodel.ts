@@ -1,15 +1,13 @@
 # Transient run output
 .crosslang-results.json
-# v1 baseline install (npm alias) — reinstalled via v1ts/package.json
-v1ts/node_modules/
-# Compiled adapter binaries + build dirs
+# Compiled rust adapter (the lm_orm ORM-plan executor) build dir
 adapters/rust/target/
-adapters/go/go_bench
-adapters/v1rs/target/
 # Python bytecode
 adapters/python/__pycache__/
 **/__pycache__/
 
-# Generated build output — regenerated at run time by generate.ts / run.ts (NEVER commit; the
-# committed copies were stale/confusing per the #44 owner). bundles.json + codegen/{ts,py,go,rust,php}.
-generated/
+# Generated build output — regenerated at run time (NEVER commit). Ignore everything under
+# generated/ EXCEPT the committed, drift-checked #63 orm-plan.json artifact (the language-neutral
+# SSoT every runtime consumes).
+generated/*
+!generated/orm-plan.json

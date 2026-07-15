@@ -96,8 +96,9 @@ export interface ExecuteOptions {
  * per-language runtime (bc + a SQL handler) can execute WITHOUT re-implementing litedbmodel's
  * compile.
  *
- *  - READ (`readGraph` present): the surrogate `ComponentGraphIR` + per-node makeSQL statement
- *    templates; bc `runBehavior` owns orchestration, the makeSQL handler renders + executes.
+ *  - READ (`readGraph` present): the REAL Select-node `ComponentGraphIR` + per-node makeSQL statement
+ *    templates; a native read-graph walker owns orchestration (never bc `runBehavior`), rendering +
+ *    executing each node's statements.
  *  - WRITE (`statement` present): the single base-write makeSQL template; for a Command with
  *    write-time relations, `transaction` carries the derived gate-first plan.
  *  - `relations` — STATIC read-relation batch ops (spec §8 relation ops), keyed by name.
@@ -123,9 +124,9 @@ export interface SqlBundle {
    * Codegen typed-de-box `outputType` for a WRITE bundle (spec §4.1 / §9): the bc portable type of
    * the write's {@link TransactionResult} (entity / returnedRows rows typed via the schema SoT). A
    * READ bundle carries its outType/outputType inside `readGraph.ir` instead; a write bundle has no
-   * such surrogate, so its output type rides HERE and is attached to the write's `makeSqlComponentIR`
-   * node/component by {@link bundleToPortableIR}. Present ONLY when a column-type resolver was
-   * supplied at compile (additive/back-compat: absent → the write IR stays un-annotated, as before).
+   * component-graph IR (#12: the makeSQL write surrogate is eliminated — writes ride the write/tx exec
+   * path, not a codegen module), so its output type rides HERE on the bundle/companion. Present ONLY
+   * when a column-type resolver was supplied at compile (additive/back-compat: absent → un-annotated).
    */
   readonly outputType?: unknown;
 }
@@ -160,7 +161,17 @@ export function executeBehavior(
   input: Scope,
   options: ExecuteOptions,
 ): Value {
-  return executeBundle(compileBundle(contract, options.entry, options.relations, options.dialect), input, options);
+  // ALWAYS-ON read de-box (issue #59), STATIC: the FAIL-CLOSED materialize resolver is precomputed
+  // ONCE from the model's INLINE `static columns` declaration at registration and carried on the
+  // contract — pure in-memory map lookups, ZERO per-read DB introspection. Coverage is enforced at
+  // registration (a typed read whose projected columns aren't declared cannot be published), so
+  // INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean fires for every read — never a silent
+  // raw (rounded i64) result from an undeclared column.
+  return executeBundle(
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, contract.resolveColumnType),
+    input,
+    options,
+  );
 }
 
 /**
@@ -184,7 +195,10 @@ export function compileBundle(
     if (relationOps[decl.name] !== undefined) {
       throw new Error(`scp runtime: duplicate relation declaration '${decl.name}'`);
     }
-    relationOps[decl.name] = compileRelationOp({ ...decl, dialect: decl.dialect ?? dialectName });
+    // Bake the child column materializers (issue #59) from the SINGLE static column-type resolver at
+    // compile — the relation batch's child rows then de-box with ZERO introspection, via the SAME
+    // resolution the primary read uses (no separate materializer pass).
+    relationOps[decl.name] = compileRelationOp({ ...decl, dialect: decl.dialect ?? dialectName }, resolveColumnType);
   }
 
   if (isWriteComponent(component)) {
@@ -300,7 +314,16 @@ export async function executeBehaviorAsync(
   input: Scope,
   options: AsyncExecuteOptions,
 ): Promise<Value> {
-  return executeBundleAsync(compileBundle(contract, options.entry, options.relations, options.dialect), input, options);
+  // ALWAYS-ON read de-box (issue #59), live PG/MySQL, STATIC: the materialize resolver is precomputed
+  // from the model's DDL at registration and carried on the contract — ZERO per-read introspection
+  // (no information_schema round-trips). PAIR with the per-CONNECTION driver de-box config, set ONCE
+  // at pool creation (mysql2 supportBigNumbers+bigNumberStrings+dateStrings; pg date type parsers) —
+  // see `pgDeboxExecutor` / `mysqlDeboxExecutor`.
+  return executeBundleAsync(
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, contract.resolveColumnType),
+    input,
+    options,
+  );
 }
 
 // ── Write-time relations: Command bundle + 1-tx execution (WS5, #25 — spec §6) ──
@@ -312,7 +335,13 @@ export async function executeBehaviorAsync(
  */
 function baseWriteNodeOf(component: Component): Component['body'][number] {
   const writes = component.body.filter(
-    (n) => !('cond' in n) && !('map' in n) && (n.component === 'Insert' || n.component === 'Update' || n.component === 'Delete'),
+    // `fanout` (bc 0.7.3+ FanoutNode) is excluded from narrowing here: litedbmodel never emits
+    // it, and it carries no base write op, so it can never be a write node.
+    (n) =>
+      !('cond' in n) &&
+      !('map' in n) &&
+      !('fanout' in n) &&
+      (n.component === 'Insert' || n.component === 'Update' || n.component === 'Delete'),
   );
   if (writes.length === 0) {
     throw new Error(`scp write: Command '${component.name}' has no base write (Insert/Update/Delete) node`);
@@ -582,7 +611,13 @@ export function read<R = Record<string, unknown>>(
   input: Scope,
   options: ReadRuntimeOptions<R>,
 ): R[] {
-  return readBundle(compileBundle(contract, options.entry, options.relations, options.dialect), input, options);
+  // ALWAYS-ON read de-box (issue #59), STATIC: the resolver is precomputed from the model's DDL at
+  // registration and carried on the contract — ZERO per-read introspection.
+  return readBundle(
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, contract.resolveColumnType),
+    input,
+    options,
+  );
 }
 
 /** {@link read} against an already-compiled {@link SqlBundle} (the published §8 artifact). */

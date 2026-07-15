@@ -75,6 +75,10 @@ function seedDb(): InstanceType<typeof Database> {
 // A read behavior exercising a SKIP-optional fragment (so the round-trip proves the
 // fragment tree + refOpt param slots survive serialization) plus a relation .map.
 class PostSearch extends SemanticBehavior {
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', status: 'TEXT', created_at: 'TEXT' },
+    users: { id: 'INTEGER', name: 'TEXT' },
+  };
   Feed($: In<{ author_id: number; status?: string; since: string }>) {
     const posts = L.Select({
       table: 'posts',

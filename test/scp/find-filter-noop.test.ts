@@ -154,6 +154,7 @@ const Lg = components();
 
 // A read behavior whose Select is SCOPED (folds the soft-delete + tenant keys into the WHERE).
 class ScopedRead extends SemanticBehavior {
+  static columns = { docs: { id: 'INTEGER', title: 'TEXT', status: 'TEXT' } };
   Docs($: In<{ tenant_id: number; deleted_at: null; status: string }>) {
     return Lg.Select({
       table: 'docs',
@@ -165,6 +166,7 @@ class ScopedRead extends SemanticBehavior {
 
 // A read behavior whose Select DROPS the model scope (only the author's own predicate) — a leak.
 class UnscopedRead extends SemanticBehavior {
+  static columns = { docs: { id: 'INTEGER', title: 'TEXT', status: 'TEXT' } };
   Docs($: In<{ status: string }>) {
     return Lg.Select({ table: 'docs', select: ['id', 'title'], where: [eq($.status, $.status)] });
   }

@@ -70,6 +70,9 @@ function freshDb(): InstanceType<typeof Database> {
 // ── Behaviors (authoring surface) ─────────────────────────────────────────────
 
 class PostQueries extends SemanticBehavior {
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', status: 'TEXT', created_at: 'TEXT' },
+  };
   // eq + SKIP-optional (absent-via-refOpt) + range + ORDER BY + LIMIT (coalesce default).
   Search($: In<{ author_id: number; status?: string; since: string; limit?: number }>) {
     return L.Select({
@@ -235,6 +238,10 @@ describe('WS3 runtime — Insert / Update / Delete (real SQLite)', () => {
 
 describe('WS3 runtime — relation .map (bc drives iteration; runtime executes SQL)', () => {
   class WithAuthor extends SemanticBehavior {
+    static columns = {
+      posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT' },
+      users: { id: 'INTEGER', name: 'TEXT' },
+    };
     Feed($: In<{ author_id: number }>) {
       const posts = L.Select({
         table: 'posts',

@@ -2,8 +2,8 @@
  * Phase A (epic #43/#45) — the AUTHORING → `makeSQL` bundle wiring.
  *
  * Proves the authoring surface (declared / eager behaviors) compiles to `makeSQL`
- * bundles for the primary read/write path, executed via bc `runBehavior` + the makeSQL
- * handler. Four legs, per the goal:
+ * bundles for the primary read/write path, executed by assembling + rendering + running
+ * the makeSQL statement directly (the native path — no bc `runBehavior`). Four legs:
  *
  *   (a) EAGER ≡ DECLARATION — the eager public-API path (`compileEager`) and the
  *       declaration path (`publishBehaviors`) produce a BYTE-IDENTICAL makeSQL bundle
@@ -14,9 +14,8 @@
  *       hasMany-limit relation byte-matches the v1 `LazyRelationContext` capture (its
  *       single-JSON-param rewrite on SQLite). Golden is CAPTURED FROM THE ORIGINALS,
  *       never v2-to-v2.
- *   (c) REAL-DB EXECUTION — the primary bundle rides bc `runBehavior` + `makeSqlHandlerSync`
- *       against REAL better-sqlite3 and returns the SAME rows as a direct query (result
- *       parity; no skip-on-DB-absent — SQLite is always in-process).
+ *   (c) REAL-DB EXECUTION — the assembled primary makeSQL statement runs on REAL better-sqlite3
+ *       (native: assemble → render → run) and returns the expected rows (result parity).
  *   (d) PURE-JSON BUNDLE — the compiled bundle survives `JSON.parse(JSON.stringify(...))`
  *       and assembles identically (multi-language target). PG bundle byte-matches v1 PG.
  *
@@ -27,7 +26,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- capturing-model harness + bc/driver seams need casts */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
-import { runBehavior, assertPortableComponentGraph, type Handlers } from 'behavior-contracts';
 import { DBModel } from '../../src/DBModel';
 import { LazyRelationContext } from '../../src/LazyRelation';
 import { DBConditions } from '../../src/DBConditions';
@@ -48,10 +46,6 @@ import {
   compileRelationMap,
   assembleMakeSQL,
   renderPlaceholders,
-  makeSqlComponentIR,
-  makeSqlInput,
-  makeSqlHandlerSync,
-  MAKESQL,
   type MakeSQL,
   type MakeSQLDialect,
 } from '../../src/scp';
@@ -65,6 +59,10 @@ const L = components();
 // FK column via `eq($p.<fk>, …)`; the batch keys come from a parent field (here `id`).
 
 class ReadBehaviors extends SemanticBehavior {
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', since: 'TEXT' },
+    comments: { id: 'INTEGER', post_id: 'INTEGER', body: 'TEXT' },
+  };
   PostSearch($: In<{ authorId: number; status?: string; since: string }>) {
     const posts = L.Select({
       table: 'posts',
@@ -114,6 +112,12 @@ const eagerPostSearch = ($: Recorded, l: typeof L) => {
 };
 const eagerCreatePost = ($: Recorded, l: typeof L) =>
   l.Insert({ table: 'posts', 'values.author_id': $.authorId, 'values.title': $.title, returning: 'id, title' });
+const eagerCols = {
+  columns: {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', since: 'TEXT' },
+    comments: { id: 'INTEGER', post_id: 'INTEGER', body: 'TEXT' },
+  },
+};
 
 const dialect: MakeSQLDialect = 'sqlite';
 const render = (n: MakeSQL) => {
@@ -128,7 +132,7 @@ describe('(a) eager public API ≡ SemanticBehavior declaration — identical ma
   it('read behavior: the primary Select bundle is byte-identical for both authoring paths', () => {
     const scope = { authorId: 10, status: 'active', since: '2020-01-01' };
     const decl = compileAuthoredBehavior(publishBehaviors(ReadBehaviors), scope, dialect, 'PostSearch');
-    const eager = compileAuthoredBehavior(compileEager('PostSearch', eagerPostSearch as any), scope, dialect, 'PostSearch');
+    const eager = compileAuthoredBehavior(compileEager('PostSearch', eagerPostSearch as any, eagerCols), scope, dialect, 'PostSearch');
     expect(eager.primary).toEqual(decl.primary);
     expect(JSON.stringify(eager.primary)).toBe(JSON.stringify(decl.primary));
   });
@@ -143,7 +147,7 @@ describe('(a) eager public API ≡ SemanticBehavior declaration — identical ma
   it('SKIP-optional: eager ≡ declaration for BOTH the present and the absent case', () => {
     for (const scope of [{ authorId: 10, status: 'active', since: 'x' }, { authorId: 10, since: 'x' }]) {
       const decl = compileAuthoredBehavior(publishBehaviors(ReadBehaviors), scope, dialect, 'PostSearch');
-      const eager = compileAuthoredBehavior(compileEager('PostSearch', eagerPostSearch as any), scope, dialect, 'PostSearch');
+      const eager = compileAuthoredBehavior(compileEager('PostSearch', eagerPostSearch as any, eagerCols), scope, dialect, 'PostSearch');
       expect(JSON.stringify(eager.primary)).toBe(JSON.stringify(decl.primary));
     }
   });
@@ -151,7 +155,7 @@ describe('(a) eager public API ≡ SemanticBehavior declaration — identical ma
   it('relation `.map` bundle is byte-identical for both authoring paths', () => {
     const parentRows = [{ id: 1 }, { id: 2 }];
     const declMap = mapNodeOf(publishBehaviors(ReadBehaviors));
-    const eagerMap = mapNodeOf(compileEager('PostSearch', eagerPostSearch as any));
+    const eagerMap = mapNodeOf(compileEager('PostSearch', eagerPostSearch as any, eagerCols));
     const declRel = compileRelationMap(declMap, { parentRows }, dialect, 'id');
     const eagerRel = compileRelationMap(eagerMap, { parentRows }, dialect, 'id');
     expect(JSON.stringify(eagerRel)).toBe(JSON.stringify(declRel));
@@ -232,9 +236,12 @@ describe('(b) emitted SQL is v1-tuned — byte-matches the ORIGINAL builders', (
 });
 
 // ===========================================================================
-// (c) REAL-DB EXECUTION — primary bundle via bc runBehavior + makeSqlHandlerSync.
+// (c) REAL-DB EXECUTION — the assembled primary makeSQL statement runs on better-sqlite3.
+// (#12: the makeSQL bundle is executed by assembling + rendering + running its SQL directly —
+// the native model every runtime uses — NOT via a bc `makeSQL`-catalog + `runBehavior` surrogate,
+// which is retired.)
 // ===========================================================================
-describe('(c) authored bundle rides bc runBehavior + makeSQL handler (real better-sqlite3)', () => {
+describe('(c) authored makeSQL statement executes on real better-sqlite3 (native, no runBehavior)', () => {
   let db: Database.Database;
   beforeAll(() => {
     db = new Database(':memory:');
@@ -252,31 +259,27 @@ describe('(c) authored bundle rides bc runBehavior + makeSQL handler (real bette
   const sqliteExec = (sql: string, params: unknown[]) =>
     db.prepare(sql).all(...(params as any[])) as Record<string, unknown>[];
 
-  function runViaBc(node: MakeSQL): Record<string, unknown>[] {
-    const ir = makeSqlComponentIR('Query');
-    assertPortableComponentGraph(ir); // bc Portability Guard passes on our graph
-    const handlers: Handlers = { [MAKESQL]: makeSqlHandlerSync(sqliteExec, 'sqlite') };
-    return runBehavior(ir, handlers, makeSqlInput(node) as any, 'Query') as unknown as Record<string, unknown>[];
+  /** Assemble a compiled makeSQL node → render placeholders → run on SQLite (the native path). */
+  function runNative(node: MakeSQL): Record<string, unknown>[] {
+    const asm = assembleMakeSQL(node);
+    return sqliteExec(renderPlaceholders(asm.sql, 'sqlite'), asm.params);
   }
 
-  it('primary Select executes via runBehavior and matches a direct query (SKIP absent)', () => {
+  it('primary Select assembles + executes and matches a direct query (SKIP absent)', () => {
     // author_id=10, since>=2020 keeps posts 1 & 3.
     const node = compileAuthoredBehavior(publishBehaviors(ReadBehaviors), { authorId: 10, since: '2020-01-01' }, 'sqlite', 'PostSearch').primary;
-    const viaBc = runViaBc(node);
-    const asm = assembleMakeSQL(node);
-    const direct = sqliteExec(renderPlaceholders(asm.sql, 'sqlite'), asm.params);
-    expect(viaBc).toEqual(direct);
-    expect(viaBc.map((r) => r.id)).toEqual([1, 3]);
+    const rows = runNative(node);
+    expect(rows.map((r) => r.id)).toEqual([1, 3]);
   });
 
-  it('hasMany relation batch executes via runBehavior and returns the parent comments', () => {
+  it('hasMany relation batch assembles + executes and returns the parent comments', () => {
     const parentRows = [{ id: 1 }, { id: 3 }];
     const rel = compileRelationMap(mapNodeOf(publishBehaviors(ReadBehaviors)), { parentRows }, 'sqlite', 'id');
-    const rows = runViaBc(rel);
+    const rows = runNative(rel);
     expect(rows.map((r) => r.body).sort()).toEqual(['c1', 'c2', 'c3']);
   });
 
-  it('INSERT executes via runBehavior and RETURNING round-trips through better-sqlite3', () => {
+  it('INSERT assembles + executes and RETURNING round-trips through better-sqlite3', () => {
     const node = compileAuthoredBehavior(publishBehaviors(WriteBehaviors), { authorId: 10, title: 'New' }, 'sqlite', 'CreatePost').primary;
     const asm = assembleMakeSQL(node);
     const rows = db.prepare(renderPlaceholders(asm.sql, 'sqlite')).all(...(asm.params as any[])) as any[];

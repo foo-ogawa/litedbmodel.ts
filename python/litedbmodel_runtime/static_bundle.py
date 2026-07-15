@@ -2,10 +2,11 @@
 
 Byte-for-byte port of the TS ``src/scp/makesql/static-bundle.ts`` + ``makesql.ts`` + ``handler.ts``
 runtime halves — the SOLE makeSQL read/render path. It consumes the PRE-COMPILED, portable
-artifacts the corpus ships (a read ``ReadGraph`` = a bc ``ComponentGraphIR`` of ``__makeSqlNode``
-surrogate nodes + per-node STATIC statement templates), and EXECUTES them via the shared
-``behavior-contracts`` core (``run_behavior`` drives map / Φ-merge / wiring; ``evaluate_expression``
-resolves the deferred value-specs + skip). This module re-implements NO generic evaluator and does
+artifacts the corpus ships (a read ``ReadGraph`` = ``compileBehaviors``' REAL ``Select``/``Count``/map
+``ComponentGraphIR`` + per-node STATIC statement templates keyed by the real node id; #12 — no
+``__makeSqlNode``/``__scope`` surrogate), and EXECUTES them via the NATIVE read-graph walker (owns map /
+Φ-merge / wiring; NO bc ``run_behavior``) + bc ``evaluate_expression`` for the deferred value-specs +
+skip. This module re-implements NO generic evaluator and does
 NO SQL re-derivation — every statement's ``sql`` is fixed text already; the runtime only evaluates
 its deferred params + skip, resolves the WHERE connector from the present set, assembles + renders
 placeholders, and binds.
@@ -26,18 +27,14 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Mapping, Sequence
 
-from behavior_contracts import evaluate_expression, run_behavior
+from behavior_contracts import evaluate_expression
 
 from .dialect import Dialect, dialect_for
 from .driver import Driver
 from .errors import SqlFailure, map_sqlite_error
-
-# The synthetic port that carries a SQL node's render scope (mirrors TS SCOPE_PORT).
-SCOPE_PORT = "__scope"
-# The makeSQL catalog leaf name every rewritten SQL node references (mirrors TS NODE_COMPONENT).
-NODE_COMPONENT = "__makeSqlNode"
 
 _RETURNING_RE = re.compile(r"\breturning\b", re.IGNORECASE)
 
@@ -262,7 +259,7 @@ def render_read_primary(graph: Mapping[str, Any], input_scope: Mapping[str, Any]
     """Render the PRIMARY read node's statements of a ReadGraph → dialect SQL text + params.
 
     Byte-for-byte port of the TS ``renderReadPrimary``: the primary node is the first body node in
-    the surrogate IR order (map nodes reference it). Optional heads are normalized to present-as-null
+    the real-node IR order (map nodes reference it). Optional heads are normalized to present-as-null
     first (absent-key SKIP), so an omitted optional head renders the SAME text a runtime would.
     """
     statements_by_id: Mapping[str, Any] = graph["statementsById"]
@@ -279,37 +276,99 @@ def render_read_primary(graph: Mapping[str, Any], input_scope: Mapping[str, Any]
 # ── ReadGraph execution (port of static-bundle.ts executeReadGraph) ────────────
 
 
-def execute_read_graph(graph: Mapping[str, Any], input_scope: Mapping[str, Any], driver: Driver) -> Any:
-    """Execute a compiled ReadGraph via bc ``run_behavior`` + a makeSQL handler.
+def _plan_stages(component: Mapping[str, Any]) -> List[List[int]]:
+    """The plan stages (``groups``) as body-index lists, or one-node-per-stage in body order."""
+    plan = component.get("plan")
+    if isinstance(plan, Mapping):
+        groups = plan.get("groups")
+        if isinstance(groups, list):
+            return [[i for i in st if isinstance(i, int)] for st in groups if isinstance(st, list)]
+    return [[i] for i in range(len(component.get("body", [])))]
 
-    Byte-for-byte port of the TS ``executeReadGraph``: bc drives map iteration / wire binding /
-    Φ output; the handler renders each node's static statements against the evaluated ``__scope``
-    and runs REAL SQL. Returns the component's Φ output. This is the design's "bc composes,
-    makeSQL executes" — the SAME path the TS runtime follows.
-    """
+
+def _plan_concurrency(component: Mapping[str, Any]) -> int:
+    """The plan's ``concurrency`` bound (default 1 — serial when absent/<=1), for the fan-out."""
+    plan = component.get("plan")
+    if isinstance(plan, Mapping):
+        c = plan.get("concurrency")
+        if isinstance(c, int) and c >= 1:
+            return c
+    return 1
+
+
+def _render_execute_node(
+    graph: Mapping[str, Any], node_id: str, scope: Mapping[str, Any], driver: Driver
+) -> List[Any]:
+    """Render node ``node_id``'s ``statementsById`` fragments against ``scope`` and run them."""
     statements_by_id: Mapping[str, Any] = graph["statementsById"]
-    dialect_name: str = graph["dialect"]
+    stmts = statements_by_id.get(node_id)
+    if stmts is None:
+        raise ValueError(f"static-bundle: no statements for node '{node_id}'")
+    rendered = render_statements(stmts, graph["dialect"], scope)
+    try:
+        return driver.prepare(rendered["sql"]).all(rendered["params"])
+    except Exception as e:  # driver error → mapped SqlFailure
+        raise map_sqlite_error(e)
 
-    def handle(ports: Mapping[str, Any], ctx: Mapping[str, Any]) -> Mapping[str, Any]:
-        node_id = ctx["nodeId"]
-        stmts = statements_by_id.get(node_id)
-        if stmts is None:
-            return {"error": f"static-bundle: no statements for node '{node_id}'"}
-        scope = ports.get(SCOPE_PORT)
-        if not isinstance(scope, dict):
-            return {"error": f"static-bundle: node '{node_id}' surrogate scope did not evaluate to an object"}
-        rendered = render_statements(stmts, dialect_name, scope)
-        try:
-            rows = driver.prepare(rendered["sql"]).all(rendered["params"])
-            return {"ok": rows}
-        except Exception as e:  # driver error → mapped {error}
-            return {"error": str(map_sqlite_error(e))}
 
-    handlers = {NODE_COMPONENT: handle}
-    ir = graph["ir"]
+def _compute_read_node(
+    graph: Mapping[str, Any], node: Mapping[str, Any], base: Mapping[str, Any], driver: Driver
+) -> Any:
+    """Compute ONE read-graph body node's value: a ``cond`` join, a ``map`` (per-element
+    render+execute under the ``as`` binding), or a componentRef (render+execute)."""
+    if "cond" in node:
+        return evaluate_expression(node["cond"], base)
+    node_id = node.get("id", "")
+    if "map" in node:
+        m = node["map"]
+        over = evaluate_expression(m.get("over"), base)
+        if not isinstance(over, list):
+            raise ValueError(f"static-bundle: map '{node_id}': 'over' is not an array")
+        as_name = m.get("as") or "$"
+        out: List[Any] = []
+        for el in over:
+            elem_scope = dict(base)
+            elem_scope[as_name] = el
+            out.append(_render_execute_node(graph, node_id, elem_scope, driver))
+        return out
+    return _render_execute_node(graph, node_id, base, driver)
+
+
+def execute_read_graph(graph: Mapping[str, Any], input_scope: Mapping[str, Any], driver: Driver) -> Any:
+    """Execute a compiled ReadGraph via the NATIVE walker (#12): no bc ``run_behavior``.
+
+    Walks ``compileBehaviors``' REAL ``Select``/``Count``/map node IR in ``plan.groups`` stage order —
+    computing each node's rows from its ``statementsById`` fragments (rendered against the walk scope)
+    and committing ``nodeId -> value`` — then evaluates the component ``output`` Φ expression.
+    litedbmodel owns map iteration / wire binding / Φ output; NO ``__makeSqlNode``/``__scope``
+    surrogate. The SAME native model the TS/rust/go/php runtimes follow — interpreter-free.
+    """
+    component = graph["ir"]["components"][0]
+    body = component.get("body", [])
+    output = component.get("output")
+    concurrency = _plan_concurrency(component)
     normalized = _normalize_optional_heads(list(graph.get("optionalHeads", [])), input_scope)
     try:
-        return run_behavior(ir, handlers, normalized, graph["name"])
+        results: List[tuple] = []
+        for stage in _plan_stages(component):
+            base = dict(normalized)
+            for nid, val in results:
+                base[nid] = val
+            ordered = sorted(stage)  # ascending body index — deterministic commit order
+            # Independent siblings of a stage run in bounded parallel (capped at the plan concurrency;
+            # concurrency <= 1 or a single member ⇒ serial); each dispatched on its own pooled
+            # connection against the driver. Results commit in ascending body index (deterministic).
+            if concurrency > 1 and len(ordered) > 1:
+                with ThreadPoolExecutor(max_workers=min(concurrency, len(ordered))) as pool:
+                    vals = list(pool.map(lambda idx: _compute_read_node(graph, body[idx], base, driver), ordered))
+            else:
+                vals = [_compute_read_node(graph, body[idx], base, driver) for idx in ordered]
+            for idx, val in zip(ordered, vals):
+                results.append((body[idx]["id"], val))
+        scope = dict(normalized)
+        for nid, val in results:
+            scope[nid] = val
+        return evaluate_expression(output, scope)
     except Exception as e:
         raise _re_error_to_sql_failure(e)
 

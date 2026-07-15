@@ -45,7 +45,7 @@ require $root . '/php/src/Runtime.php';
 use LiteDbModel\Runtime\Runtime;
 
 /** The corpus schema version this runner supports (pin — bumped on additive refreeze). */
-const SUPPORTED_CORPUS_VERSION = 2;
+const SUPPORTED_CORPUS_VERSION = 3;
 
 $vectorsDir = getenv('LITEDBMODEL_VECTORS');
 if ($vectorsDir === false || $vectorsDir === '') {

@@ -1,22 +1,21 @@
 // Package litedbmodel_runtime is the Go leg of the litedbmodel v2 SCP multi-language runtime
 // (WS7c, #32).
 //
-// It interprets the language-neutral §8 published bundle (SqlBundle: sql + fragment tree +
+// It consumes the language-neutral §8 published bundle (SqlBundle: sql + fragment tree +
 // closed-set Expression-IR param slots + transaction plan, dialect-tagged) and executes it against
-// a database/sql driver, semantics-identical to the TS reference (src/scp). The generic
-// Expression-IR evaluation + the plan/map/wire/output orchestration are delegated to the shared
-// common core behavior-contracts (Go module), mirroring the TS reference's npm dependency — this
-// package re-implements NO generic evaluator and NO generic executor.
+// a database/sql driver, semantics-identical to the TS reference (src/scp). It is NATIVE: the
+// read-graph orchestration (which node runs, map iteration, wire binding, output assembly) is a
+// CLOSED-SET native walker (executeReadGraphNative) — NOT bc.RunBehavior (the generic IR
+// interpreter, retired). The only bc dependency on the exec path is the per-statement typed-param
+// evaluation (bc.EvaluateExpression resolves each deferred `{ref:…}`/`coalesce`/`__jsonArray` slot);
+// every statement's SQL is fixed text carried verbatim.
 //
-// Execution pipeline (spec §3), byte-true to runtime.ts:
+// Execution pipeline (spec §3):
 //
-//	validate → fragment select (SKIP) → array expand → Expression eval → bind → SQL execute → assembly
+//	validate → fragment select (SKIP) → array expand → param eval + bind → SQL execute → native assembly
 //
-// bc's RunBehavior owns the orchestration (which node runs when, map iteration, wire binding,
-// output merge). The bundle's surrogate component collapses every catalog node's SQL-structural
-// ports to ONE synthetic `__scope` port (a bc `{obj:…}`), so bc evaluates that in ITS scope and
-// hands the runtime a plain scope; the handler renders the pre-compiled op against it. No
-// SQL-structural port is ever evaluated by bc.
+// #12: the read graph carries compileBehaviors' REAL Select/Count/map nodes; the native walker
+// renders each node's pre-compiled statementsById against the walk scope directly (no `__scope`).
 
 package litedbmodel_runtime
 
@@ -30,10 +29,7 @@ import (
 
 // Version is synced from package.json by scripts/sync-versions.mjs (Go = VCS tag, not a manifest
 // field, so this constant is the in-source mirror the CI tag check compares against).
-const Version = "2.0.2"
-
-// scopePort is the synthetic port that carries a SQL node's render scope (runtime.ts SCOPE_PORT).
-const scopePort = "__scope"
+const Version = "2.1.0"
 
 // entityRoot is the body-write RETURNING row exposed to later tx stages under `$.entity.*`
 // (writes.ts ENTITY_ROOT).
@@ -42,7 +38,7 @@ const entityRoot = "__entity"
 var returningRe = regexp.MustCompile(`(?i)\breturning\b`)
 
 // SqlBundle is the parsed makeSQL published bundle. A READ bundle carries a `readGraph` (the
-// surrogate ComponentGraphIR + per-node static statement templates); a WRITE bundle carries a
+// REAL Select-node ComponentGraphIR + per-node static statement templates); a WRITE bundle carries a
 // gate-first `transaction` plan. The heavy fields stay as raw bc JNodes so their Expression-IR slots
 // are evaluated by bc (not pre-decoded), byte-true to the TS SqlBundle.
 type SqlBundle struct {
@@ -95,10 +91,10 @@ func BundleFromJObj(obj *bc.JObj) (*SqlBundle, error) {
 // ── Public runtime entrypoint ─────────────────────────────────────────────────
 
 // ExecuteBundle executes a read/exec SqlBundle end-to-end (runtime.ts executeBundle): a read bundle
-// carries a `readGraph` (the surrogate ComponentGraphIR + static statements); bc RunBehavior drives
-// map/Φ/wiring and the makeSQL handler renders + executes each node against REAL SQL. This is the
-// SAME code path a consumer runtime follows — it consumes ONLY the serialized bundle + bc
-// runtime-core, never re-running litedbmodel's Backend-Compile.
+// carries a `readGraph` (the REAL Select-node ComponentGraphIR + static statements); a CLOSED-SET
+// native walker drives map/Φ/wiring (never bc.RunBehavior) and renders + executes each node against
+// REAL SQL. This is the SAME code path a consumer runtime follows — it consumes ONLY the serialized
+// bundle + bc runtime-core, never re-running litedbmodel's Backend-Compile.
 func ExecuteBundle(bundle *SqlBundle, input *bc.Obj, db SQLDB) (bc.Value, error) {
 	if bundle.ReadGraph == nil {
 		return nil, fmt.Errorf("scp runtime: bundle '%s' carries no read graph (single-statement writes ride the write path)", bundle.Name)

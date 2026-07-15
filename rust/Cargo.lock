@@ -86,12 +86,9 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "behavior-contracts"
-version = "0.5.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "119b7a6d7c1d6a9d66b9fc187a6926d18fff2d2a7c375d482c195ac4e5ca36f9"
-dependencies = [
- "serde_json",
-]
+checksum = "edfd54c2657f7e7a40ef546ba3f4e5d13ed5ecf2b5cdb7c66c73f80b172eb387"
 
 [[package]]
 name = "bitflags"
@@ -943,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "litedbmodel_runtime"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "behavior-contracts",
  "chrono",
@@ -951,8 +948,6 @@ dependencies = [
  "futures-util",
  "rusqlite",
  "rust_decimal",
- "serde",
- "serde_json",
  "sqlx",
  "tokio",
  "tokio-postgres",
@@ -966,7 +961,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "livedb_runner"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "litedbmodel_runtime",
  "serde_json",
@@ -2111,7 +2106,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vectors_runner"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "litedbmodel_runtime",
  "serde_json",

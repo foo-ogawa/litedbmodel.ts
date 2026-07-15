@@ -9,7 +9,11 @@
  * plus the operator-set check.
  */
 
-import { assertPortable, FORBIDDEN_OBJECT_KEY, PORTABLE_EXPR_OPERATORS, PortabilityError, type Component, type ComponentGraphIR } from 'behavior-contracts';
+import { assertPortable, FORBIDDEN_OBJECT_KEY, PORTABLE_EXPR_OPERATORS, PortabilityError } from 'behavior-contracts';
+// bc 0.8.0: use the UNBRANDED structural node/graph shapes (litedbmodel walks the graph
+// structurally; the branded compile-seam handle is a superset and assigns into these). See the
+// aliases in `./authoring` (type-only import — no runtime cycle).
+import type { Component, ComponentGraphIR } from './authoring';
 
 /** A bc Expression IR node (closed operator set). Structural alias — a JSON expression tree. */
 export type ExprNode = unknown;
@@ -96,6 +100,11 @@ export function assertComponentPortable(component: Component): void {
       assertExprPortable(n.cond.if, `${at}/${n.id}.cond.if`);
       assertExprPortable(n.cond.then, `${at}/${n.id}.cond.then`);
       assertExprPortable(n.cond.else, `${at}/${n.id}.cond.else`);
+    } else if ('fanout' in n) {
+      // bc 0.7.3+ `FanoutNode` (connection fan-out). litedbmodel never emits fanout, so a
+      // fanout node here is an unsupported graph — reject fail-closed rather than treat it as
+      // a component ref with `.ports`.
+      throw new Error(`${at}/${n.id}: fanout node is not supported by litedbmodel (bc FanoutNode)`);
     } else {
       assertPortsPortable(n.ports, `${at}/${n.id}.ports`);
     }

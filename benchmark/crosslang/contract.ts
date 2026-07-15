@@ -1,107 +1,58 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Cross-language benchmark adapter CONTRACT (litedbmodel epic #44)
+// Cross-language benchmark adapter CONTRACT (litedbmodel epic #63)
 // ════════════════════════════════════════════════════════════════════════════
 //
 // SINGLE source of truth for the subprocess protocol every language adapter
 // (TS / Python / PHP / Rust / Go) implements. The cross-language harness
-// (harness.ts) spawns ONE subprocess per (language × impl) cell, speaks this
-// line-delimited JSON (NDJSON) protocol over stdin/stdout, and aggregates the
-// returned metrics. Same shape as graphddb#307's contract; generalized to the
-// litedbmodel impl axis (sql / codegen / ir / dynamic / prepared).
+// (harness.ts) spawns ONE production cell per language, speaks this line-delimited
+// JSON (NDJSON) protocol over stdin/stdout, and aggregates the returned metrics.
 //
-// Wire format: the harness writes ONE request object per line to the child's
-// stdin and reads ONE response object per line from its stdout. stderr is
-// diagnostics. The FIRST stdout line a fresh child writes MUST be `ready`
-// (the cold-start boundary the harness times). A child exits 0 on `shutdown`.
+// ONE production path (epic #63): each language's THIN GENERIC RUNTIME executes the
+// SAME 19 ORM-comparison ops (== the #64 v1 SQL golden == #65 v2 SCP parity ==
+// benchmark.ts litedbmodel column), driver-included, DB-backed on all three real
+// dialects. There is NO impl axis (the old sql/codegen/ir/dynamic/prepared surfaces)
+// and NO I/O-excluded micro/mock axis — both are gone (V8-JIT/timing-confounded and
+// off the production path).
+//
+// Wire format: the harness writes ONE request object per line to the child's stdin
+// and reads ONE response object per line from its stdout. stderr is diagnostics. The
+// FIRST stdout line a fresh child writes MUST be `ready`. A child exits 0 on `shutdown`.
 
-// ── The impl axis (litedbmodel exec surfaces — issue #44) ────────────────────
-//   sql       — hand-optimized raw SQL via better-sqlite3 direct (baseline 1.0×)
-//   codegen   — codegen-static: IR baked as a native literal + fingerprint-verified
-//               at module load, then executed via the static makeSQL catalog. All langs.
-//   ir        — dynamic-JSON: load the makeSQL bundle JSON + run via the shared runtime
-//               (bc run_behavior + makeSQL handler). The non-TS reality. All langs.
-//   dynamic   — TS only: DBModel.find/create == executeBehavior (recompile per call).
-//   prepared  — TS only: compileBundle once → executeBundle many.
-//   v1        — TS only: shipped litedbmodel@1.2.10 eager path (DBConditions direct) — regression gate.
-export type Impl = 'sql' | 'codegen' | 'ir' | 'dynamic' | 'prepared' | 'v1';
+import { ORM_OP_IDS, ORM_OP_LABEL, ORM_WRITE_OP_IDS, ORM_DIALECTS, type OrmDialect } from './orm-plan.js';
 
-// ── Case ids the cross-lang matrix runs ─────────────────────────────────────
-// 8 representative litedbmodel access patterns across read / relation / write /
-// transaction axes. Each id maps 1:1 onto a method every adapter implements.
-export const CROSSLANG_CASE_IDS = [
-  'find', //           SELECT: eq + SKIP-optional present + range, ORDER BY
-  'complexWhere', //   SELECT: eq + range + LIKE + IN (multiple predicate kinds)
-  'inList', //         SELECT: IN-list (single-JSON param)
-  'belongsTo', //      relation: posts → author (parent + one batched query)
-  'hasMany', //        relation: posts → comments (batch by parent key, N+1 avoided)
-  'hasManyLimit', //   relation: posts → recent comments (per-parent LIMIT)
-  'batchInsert', //    createMany: one logical op → grouped INSERT in one tx
-  'writeTxGate', //    write-tx: gate-first create (requires + unique + body + derive), one tx
-] as const;
+// ── The op axis — the 19 ORM-comparison ops (no subset) ──────────────────────
+export const CROSSLANG_CASE_IDS = ORM_OP_IDS;
+export type CrosslangCaseId = string;
+export const CROSSLANG_CASE_LABELS: Record<string, string> = ORM_OP_LABEL;
 
-export type CrosslangCaseId = (typeof CROSSLANG_CASE_IDS)[number];
-
-export const CROSSLANG_CASE_LABELS: Record<CrosslangCaseId, string> = {
-  find: 'find (eq+SKIP+range)',
-  complexWhere: 'complex WHERE',
-  inList: 'IN-list',
-  belongsTo: 'relation belongsTo',
-  hasMany: 'relation hasMany',
-  hasManyLimit: 'relation hasMany-limit',
-  batchInsert: 'batch insert',
-  writeTxGate: 'write-tx gate-first',
-};
-
-// Cases whose logical op is a WRITE (the harness asserts queries/op parity for these,
+// Ops whose logical op is a WRITE (the harness asserts queries/op parity for these,
 // rows/op parity for reads).
-export const CROSSLANG_WRITE_CASES = new Set<CrosslangCaseId>(['batchInsert', 'writeTxGate']);
+export const CROSSLANG_WRITE_CASES: ReadonlySet<string> = ORM_WRITE_OP_IDS;
 
-// ── Micro-bench case ids (I/O-EXCLUDED — the load-bearing signal) ────────────
-// A subset exercising distinct client-side code paths: a point/list read hydrate,
-// a relation build+hydrate, and a marshaling-only write. The SQL driver is mocked
-// (fixed rows, no round-trip) so the timed op is ONLY the client-side path
-// (compile/render/param-eval/bind/`?`→`$N`/hydration).
-export const CROSSLANG_MICRO_CASE_IDS = [
-  'find', //         render WHERE + bind + hydrate a bounded row set
-  'complexWhere', // render a multi-predicate WHERE + bind + hydrate
-  'hasMany', //      build the relation plan + hydrate parent + child rows
-  'writeTxGate', //  derive gate-first plan + render statements (write path)
-] as const;
-
-export type CrosslangMicroCaseId = (typeof CROSSLANG_MICRO_CASE_IDS)[number];
-
-// ── The dialect axis (litedbmodel's 3 targets — validity gap #1, #44) ────────
-// The compiled bundle renders DIFFERENT SQL/placeholder/array forms per dialect
-// (`?`→`$N` for postgres, single-JSON-array IN-list forms for mysql/sqlite), so the
-// CLIENT-PATH cost itself is dialect-dependent. Every micro case runs against ALL
-// three bundles; every DB-backed case runs against the matching REAL database.
-export const CROSSLANG_DIALECTS = ['sqlite', 'postgres', 'mysql'] as const;
-export type CrosslangDialect = (typeof CROSSLANG_DIALECTS)[number];
+// ── The dialect axis (the three real targets) ────────────────────────────────
+export const CROSSLANG_DIALECTS = ORM_DIALECTS;
+export type CrosslangDialect = OrmDialect;
 
 // ── Protocol messages (harness → child) ──────────────────────────────────────
-// Every case-scoped request now carries the target `dialect`: the child selects the
-// matching per-dialect bundle (micro + DB-backed) and, for DB-backed, the matching
-// real database. `sql`/`v1` cells honor sqlite only (a hand-SQL baseline is dialect-
-// specific by construction); they report an explicit skip for pg/mysql DB-backed.
+// Every case-scoped request carries the target `dialect`: the child runs the op's plan
+// (from the shared orm-plan.json artifact) against the matching REAL database.
 export type Request =
   | { kind: 'run'; case: CrosslangCaseId; dialect: CrosslangDialect; warmup: number; iterations: number }
   | { kind: 'throughput'; case: CrosslangCaseId; dialect: CrosslangDialect; iterations: number; concurrency: number }
-  | { kind: 'micro'; case: CrosslangMicroCaseId; dialect: CrosslangDialect; warmup: number; iterations: number }
-  | { kind: 'rss' }
   | { kind: 'cost'; case: CrosslangCaseId; dialect: CrosslangDialect }
+  | { kind: 'rss' }
   | { kind: 'shutdown' };
 
 // ── Protocol messages (child → harness) ──────────────────────────────────────
-// A `skipped` response is an HONEST per-cell "did not run" (e.g. a language with no
-// live PG driver, or the sql baseline on a non-sqlite DB-backed cell) — rendered as an
-// explicit note, never silently dropped.
+// A `skipped` response is an HONEST per-cell "did not run" (e.g. a language with no live
+// PG driver, or an op a language genuinely cannot run) — rendered as an explicit note,
+// never silently dropped.
 export type Response =
-  | { kind: 'ready'; language: string; impl: Impl; readyAtEpochMs: number }
+  | { kind: 'ready'; language: string; impl: string; readyAtEpochMs: number }
   | { kind: 'run'; case: CrosslangCaseId; dialect: CrosslangDialect; samplesMs: number[] }
   | { kind: 'throughput'; case: CrosslangCaseId; dialect: CrosslangDialect; elapsedMs: number; completed: number }
-  | { kind: 'micro'; case: CrosslangMicroCaseId; dialect: CrosslangDialect; samplesMs: number[] }
-  | { kind: 'rss'; rssBytes: number }
   | { kind: 'cost'; case: CrosslangCaseId; dialect: CrosslangDialect; queries: number; rows: number }
+  | { kind: 'rss'; rssBytes: number }
   | { kind: 'skipped'; case: string; dialect: CrosslangDialect; reason: string }
   | { kind: 'error'; message: string; stack?: string };
 

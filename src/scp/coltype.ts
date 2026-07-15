@@ -82,12 +82,269 @@ export function sqlTypeToBcScalar(sqlType: string): BcScalar {
 }
 
 /**
+ * The TS read-path MATERIALIZATION class for a SQL column (issue #59, owner-approved
+ * type-honoring de-box). The bc `outType` scalar (`int`/`float`/`string`/`bool`) is the PORTABLE
+ * type the native codegen materializes; but on the TS/driver read path we additionally split the
+ * `int` scalar by SQL WIDTH and coerce `date`/`bool` to their exact JS form, because a JS `number`
+ * cannot hold an i64 and the drivers otherwise return a JS `Date` / `0|1` that violate the
+ * declared `string`/`bool` outType. A materialization class is:
+ *
+ *   - `'int32'`  — 32-bit int family (INT/INTEGER/SMALLINT/TINYINT/MEDIUMINT/INT2/INT4). Its full
+ *                  range fits in a JS `number` exactly, so it materializes to `number` (fast,
+ *                  arith/JSON-friendly). This is the UNCHANGED, already-correct behavior.
+ *   - `'int64'`  — 64-bit int (BIGINT/INT8). Exceeds `Number.MAX_SAFE_INTEGER`, so a JS `number`
+ *                  would round it. Materializes to a value-preserving decimal STRING (e.g.
+ *                  `"9223372036854775807"`) — EXACT and JSON-safe (a JS `bigint` throws in
+ *                  `JSON.stringify`, so string is the JSON-friendly exact form, mirroring the
+ *                  decimal→string / date→string mappings). This is the ONLY int class whose JS
+ *                  type changes (#59 fix).
+ *   - `'date'`   — DATE/TIMESTAMP/TIMESTAMPTZ/DATETIME/TIME. The bc outType is `string`; drivers
+ *                  return a JS `Date` (TZ-shifted). Materializes to a TZ-attached STRING (the
+ *                  driver's textual form), honoring the `string` outType (#59 fix; overrides the
+ *                  old v2 "date→JS Date on TS" mapping).
+ *   - `'bool'`   — BOOLEAN/BOOL. Drivers may return `0`/`1`; materializes to a JS `boolean`.
+ *   - `'passthrough'` — every other class (float, text, decimal-as-string, json, uuid): the driver
+ *                  value already matches the outType, so no coercion.
+ */
+export type MaterializeClass = 'int32' | 'int64' | 'date' | 'bool' | 'passthrough';
+
+/**
+ * Derive the TS read-path {@link MaterializeClass} for a SQL type (spec §4.1 owner de-box). Uses
+ * the SAME normalization + closed-set discipline as {@link sqlTypeToBcScalar} (unknown ⇒ throw),
+ * so a column that types for the bc scalar also types for materialization (and vice-versa). The
+ * `int` scalar splits int32/int64 by width; `date`/`bool` get their own class; everything else is
+ * `passthrough`.
+ */
+export function sqlTypeToMaterializeClass(sqlType: string): MaterializeClass {
+  const t = sqlType
+    .trim()
+    .toUpperCase()
+    .replace(/\(.*\)/, '')
+    .replace(/\b(UNSIGNED|ZEROFILL|PRECISION)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  switch (t) {
+    // 32-bit int family: JS number holds the full range exactly.
+    case 'INTEGER':
+    case 'INT':
+    case 'SMALLINT':
+    case 'TINYINT':
+    case 'MEDIUMINT':
+    case 'INT2':
+    case 'INT4':
+      return 'int32';
+    // 64-bit int: needs JS bigint for exactness.
+    case 'BIGINT':
+    case 'INT8':
+      return 'int64';
+    case 'BOOLEAN':
+    case 'BOOL':
+      return 'bool';
+    case 'DATE':
+    case 'TIMESTAMP':
+    case 'TIMESTAMPTZ':
+    case 'DATETIME':
+    case 'TIME':
+      return 'date';
+    // float / decimal(→string) / text / json / uuid — driver value already matches the outType.
+    case 'REAL':
+    case 'FLOAT':
+    case 'DOUBLE':
+    case 'FLOAT4':
+    case 'FLOAT8':
+    case 'DECIMAL':
+    case 'NUMERIC':
+    case 'MONEY':
+    case 'TEXT':
+    case 'VARCHAR':
+    case 'CHAR':
+    case 'CHARACTER':
+    case 'CHARACTER VARYING':
+    case 'CLOB':
+    case 'UUID':
+    case 'JSON':
+    case 'JSONB':
+      return 'passthrough';
+    default:
+      throw new Error(
+        `litedbmodel type system (spec §4.1): no materialization class for SQL type '${sqlType}' ` +
+          `(normalized '${t}'). Add it to the §4.1 table or fix the column — ambiguous/unknown types ` +
+          `are a hard error (no-assume, no-fallback), never defaulted.`,
+      );
+  }
+}
+
+/**
+ * Coerce ONE raw driver cell to the JS form its {@link MaterializeClass} declares (issue #59 TS
+ * read-path de-box). NULL passes through (nullable columns). This is driver-agnostic: it accepts
+ * whatever form each driver returned for the class and normalizes it —
+ *   - `int64`: a string (pg int8 / mysql2 bigNumberStrings), a bigint (better-sqlite3 safeIntegers),
+ *              or a safe JS number → an EXACT decimal STRING (JSON-safe, value-preserving). An
+ *              already-rounded unsafe JS number is a hard error (precision was lost upstream).
+ *   - `int32`: a bigint (a driver in safe-integer mode) or string → `number`; a number stays.
+ *   - `date` : a JS Date → its textual form; a string stays (already the textual form).
+ *   - `bool` : `0`/`1`/`0n`/`1n` → boolean; a boolean stays.
+ *   - `passthrough`: unchanged.
+ */
+export function materializeCell(value: unknown, klass: MaterializeClass): unknown {
+  if (value === null || value === undefined) return value;
+  switch (klass) {
+    case 'int64': {
+      // BIGINT → a value-preserving decimal STRING (exact + JSON-safe; a JS bigint throws in
+      // JSON.stringify, a JS number rounds past 2^53). Accept each driver's exact form.
+      if (typeof value === 'bigint') return value.toString();
+      if (typeof value === 'string') {
+        if (!/^-?\d+$/.test(value)) throw new Error(`materialize int64: driver returned a non-integer string '${value}'`);
+        return value; // already the exact decimal string (pg int8 / mysql2 bigNumberStrings)
+      }
+      if (typeof value === 'number') {
+        if (!Number.isInteger(value)) throw new Error(`materialize int64: driver returned a non-integer number ${value} for a 64-bit int column`);
+        // A JS number past 2^53 already lost precision at the driver boundary; that is exactly the
+        // hole this de-box closes, so a number here means the driver was NOT put in exact mode.
+        if (!Number.isSafeInteger(value)) {
+          throw new Error(
+            `materialize int64: driver returned an UNSAFE JS number ${value} for a 64-bit int column — ` +
+              `precision was already lost before materialization (the driver must return int8 as string/bigint, ` +
+              `not a rounded double). Configure the driver (better-sqlite3 safeIntegers / mysql2 supportBigNumbers+bigNumberStrings / pg int8-as-string).`,
+          );
+        }
+        return value.toString(); // a small BIGINT value that fit safely — stringify for a uniform exact string
+      }
+      throw new Error(`materialize int64: unexpected driver JS type ${typeof value}`);
+    }
+    case 'int32': {
+      if (typeof value === 'number') return value;
+      if (typeof value === 'bigint') return Number(value);
+      if (typeof value === 'string' && /^-?\d+$/.test(value)) return Number(value);
+      throw new Error(`materialize int32: unexpected driver JS type ${typeof value} (${String(value)})`);
+    }
+    case 'date': {
+      if (typeof value === 'string') return value;
+      if (value instanceof Date) return dateToTzString(value);
+      throw new Error(`materialize date: unexpected driver JS type ${typeof value}`);
+    }
+    case 'bool': {
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'number') return value !== 0;
+      if (typeof value === 'bigint') return value !== 0n;
+      // A driver in TEXT mode (or the legacy v1 DBModel read path, issue #9) may hand a BOOLEAN over as
+      // its textual form: pg's `t`/`f`, or `true`/`false`/`1`/`0`. Normalize those to a JS boolean too,
+      // so a single coercion path serves both the v2 native-driver read and the v1 text-mode read.
+      if (typeof value === 'string') {
+        const s = value.trim().toLowerCase();
+        if (s === 't' || s === 'true' || s === '1') return true;
+        if (s === 'f' || s === 'false' || s === '0') return false;
+      }
+      throw new Error(`materialize bool: unexpected driver JS type ${typeof value} (${String(value)})`);
+    }
+    case 'passthrough':
+      return value;
+  }
+}
+
+/**
+ * Render a JS `Date` (a driver that was NOT configured for date-as-string) to a TZ-attached
+ * string. A `Date` has no calendar-vs-timestamp distinction, so we emit the full ISO-8601 instant
+ * (UTC, `Z`-suffixed) — a lossless, TZ-carrying textual form. The PREFERRED path is to configure
+ * the driver to return the native textual form directly (pg `setTypeParser`, mysql2 `dateStrings`);
+ * this fallback guarantees a STRING is returned even if a driver slips a Date through.
+ */
+function dateToTzString(d: Date): string {
+  return d.toISOString();
+}
+
+/**
  * A column-type resolver: `(table, column) → SQL type token`. It is the SoT (spec §4.1: the
  * `schema.sql` DDL) a codegen `outType` derivation consults to type each SELECT projection column.
  * MUST throw (never return a default) when a `table.column` is unknown — an unmappable column is a
  * hard error (no-assume, no-fallback), never a silent boxed fallback.
  */
 export type ColumnTypeResolver = (table: string, column: string) => string;
+
+/**
+ * A resolver that yields the TS read-path {@link MaterializeClass} of a `(table, column)`, or
+ * `undefined` when the column's type is unknown/untypeable. Unlike {@link ColumnTypeResolver} this
+ * is TOLERANT (never throws for an unknown column) — it drives the ALWAYS-ON production read-path
+ * materialization (issue #59), which must degrade to leaving an untyped column as the raw driver
+ * value rather than failing a real read. It is derived automatically from the DB's own schema (the
+ * live column-type SoT), so it fires for EVERY production read with no caller-supplied resolver.
+ */
+export type MaterializeResolver = (table: string, column: string) => MaterializeClass | undefined;
+
+/**
+ * A `table → (column → SQL type)` map → a TOLERANT {@link MaterializeResolver}: an unknown
+ * `(table, column)` or an un-mappable SQL type resolves to `undefined` (the raw driver value is
+ * kept). Retained for callers that WANT tolerance (e.g. optional/introspection contexts). The
+ * ALWAYS-ON registration path uses the FAIL-CLOSED variant below instead.
+ */
+export function materializeResolverFromColumnMap(
+  columnTypes: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): MaterializeResolver {
+  return (table, column) => {
+    const sqlType = columnTypes.get(table)?.get(column);
+    return sqlType === undefined ? undefined : materializeClassOrUndefined(sqlType);
+  };
+}
+
+/**
+ * A `table → (column → SQL type)` map → a FAIL-CLOSED {@link MaterializeResolver} (issue #59 audit):
+ * an undeclared `(table, column)` THROWS (naming the model/table/column) — reconciled with the
+ * codegen resolver so the TS read path can NEVER silently skip de-box for an undeclared projected
+ * column (which would leak a rounded i64). A DECLARED column returns its materialize class (incl.
+ * `passthrough` for float/text/decimal/json — a no-op coercion, but it WAS type-checked). This is the
+ * resolver the registration precomputes ONCE from the model's INLINE `columns` declaration and
+ * carries on the contract — pure in-memory lookups, ZERO per-read DB introspection.
+ */
+export function failClosedMaterializeResolverFromColumnMap(
+  columnTypes: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): MaterializeResolver {
+  const resolveSqlType = columnTypeResolverFromColumnMap(columnTypes); // throws on undeclared
+  return (table, column) => {
+    const sqlType = resolveSqlType(table, column); // fail-closed: throws for an undeclared column
+    // A declared column's SQL type must map to a known materialize class (the §4.1 closed set); an
+    // unknown token on a DECLARED column is a hard error too (never a silent skip).
+    return sqlTypeToMaterializeClass(sqlType);
+  };
+}
+
+/**
+ * A `table → (column → SQL type)` map → a fail-closed {@link ColumnTypeResolver} (the codegen
+ * `outType` SoT). THROWS for an unknown `table`/`column` (no-assume, no-fallback — a typed-native
+ * read must not silently box an untyped column). Built from the model's INLINE `columns` declaration
+ * at registration, it replaces the external `schemaColumnTypeResolver(ddl)` as the codegen type
+ * source, so `deriveReadOutTypes` reads the declared types.
+ */
+export function columnTypeResolverFromColumnMap(
+  columnTypes: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): ColumnTypeResolver {
+  return (table, column) => {
+    const cols = columnTypes.get(table);
+    if (cols === undefined) {
+      throw new Error(
+        `litedbmodel type system (spec §4.1): table '${table}' has no inline column-type declaration ` +
+          `(the model's \`columns\` map). Declare it (\`static columns = { ${table}: { … } }\`) so its ` +
+          `SELECT projection can be typed. Known tables: ${[...columnTypes.keys()].join(', ') || '<none>'}. No-assume, no-fallback.`,
+      );
+    }
+    const sqlType = cols.get(column);
+    if (sqlType === undefined) {
+      throw new Error(
+        `litedbmodel type system (spec §4.1): column '${column}' not declared on table '${table}' ` +
+          `(declared: ${[...cols.keys()].join(', ')}). Add it to the model's inline \`columns\`. No-assume, no-fallback.`,
+      );
+    }
+    return sqlType;
+  };
+}
+
+/** {@link sqlTypeToMaterializeClass} but TOLERANT: returns `undefined` for an unknown SQL type. */
+export function materializeClassOrUndefined(sqlType: string): MaterializeClass | undefined {
+  try {
+    return sqlTypeToMaterializeClass(sqlType);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Parse a list of `CREATE TABLE` DDL statements into a `table → (column → SQL type)` map. This is

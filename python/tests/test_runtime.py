@@ -2,15 +2,16 @@
 
 These exercise the static-makeSQL SQL-backend runtime against a REAL in-proc sqlite3 driver,
 independent of the frozen corpus, to prove:
-  - read bundle → bc run_behavior (plan/map/wire/output) + a makeSQL handler → assembled Φ output;
+  - read bundle → the NATIVE read-graph walker (plan/map/wire/output owned by litedbmodel; #12 —
+    no bc run_behavior, no surrogate) → assembled Φ output;
   - write bundle → gate-first transaction (commit; requires short-circuit ROLLBACK; idempotent
     duplicate short-circuit) with `$.entity` RETURNING exposure + emit-payload JSON serialization;
-  - bc-core is CONSUMED (the surrogate `__scope` port is evaluated by bc, the map orchestration is
-    bc's) — not reimplemented.
+  - bc-core is CONSUMED only for the deferred value-specs + skip (`evaluate_expression`) — the map
+    orchestration is the walker's, not reimplemented per node.
 
-The bundle is the LOCKED static-makeSQL shape: a read carries a `readGraph` (a bc surrogate
-`ComponentGraphIR` of `__makeSqlNode` nodes + per-node STATIC `{sql, params, skip?, whereFragment?}`
-statement templates); a write carries a `transaction` plan of `{sql, params}` makeSQL ops.
+The bundle is the LOCKED static-makeSQL shape: a read carries a `readGraph` (`compileBehaviors`'
+REAL `Select`/map `ComponentGraphIR` + per-node STATIC `{sql, params, skip?, whereFragment?}`
+statement templates keyed by node id); a write carries a `transaction` plan of `{sql, params}` ops.
 """
 
 from __future__ import annotations
@@ -63,20 +64,10 @@ def _read_bundle():
                         "name": "Feed",
                         "inputPorts": {"author_id": {"required": True}, "status": {"required": True}},
                         "body": [
-                            {
-                                "id": "n0",
-                                "component": "__makeSqlNode",
-                                "ports": {"__scope": {"obj": {"author_id": {"ref": ["author_id"]}, "status": {"ref": ["status"]}}}},
-                            },
+                            {"id": "n0"},
                             {
                                 "id": "n1",
-                                "map": {
-                                    "over": {"ref": ["n0"]},
-                                    "as": "$e0",
-                                    "component": "__makeSqlNode",
-                                    "parent": "n0",
-                                    "ports": {"__scope": {"obj": {"$e0": {"ref": ["$e0"]}}}},
-                                },
+                                "map": {"over": {"ref": ["n0"]}, "as": "$e0", "parent": "n0"},
                             },
                         ],
                         "output": {"obj": {"posts": {"ref": ["n0"]}, "authors": {"ref": ["n1"]}}},

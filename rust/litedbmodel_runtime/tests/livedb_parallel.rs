@@ -16,8 +16,14 @@
 
 use std::time::{Duration, Instant};
 
+use litedbmodel_runtime::Node;
 use litedbmodel_runtime::{dispatch_read_nodes_parallel, MysqlDriver, PostgresDriver, Scope};
-use serde_json::json;
+
+/// Build a native `Node` fixture from a JSON string literal — the runtime's OWN native JSON parser
+/// (the runtime + these tests carry NO external JSON crate).
+fn nj(s: &str) -> Node {
+    Node::parse(s).expect("test fixture JSON parses")
+}
 
 fn enabled() -> bool {
     std::env::var("LITEDBMODEL_LIVEDB_PARALLEL").as_deref() == Ok("1")
@@ -31,15 +37,19 @@ fn env(k: &str, d: &str) -> String {
 }
 
 /// A read graph of N sibling nodes, each a query that sleeps `sleep_expr` server-side then SELECTs.
-fn sleepy_graph(n: usize, sleep_expr: &str) -> serde_json::Value {
-    let mut statements = serde_json::Map::new();
+fn sleepy_graph(n: usize, sleep_expr: &str) -> Node {
+    let mut stmts = String::new();
     for i in 0..n {
-        statements.insert(
-            format!("rel{i}"),
-            json!([{ "sql": format!("SELECT {sleep_expr} AS slept, {i} AS v"), "params": [] }]),
-        );
+        if i > 0 {
+            stmts.push(',');
+        }
+        stmts.push_str(&format!(
+            r#""rel{i}": [{{"sql": "SELECT {sleep_expr} AS slept, {i} AS v", "params": []}}]"#
+        ));
     }
-    json!({ "dialect": "sqlite", "statementsById": statements })
+    nj(&format!(
+        r#"{{"dialect": "sqlite", "statementsById": {{{stmts}}}}}"#
+    ))
 }
 
 fn nodes(n: usize) -> Vec<(String, Scope)> {

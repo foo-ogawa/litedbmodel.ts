@@ -34,7 +34,7 @@
  */
 
 import { evaluateExpression, type Scope, type Value } from 'behavior-contracts';
-import type { Component, ComponentRefNode, MapNode } from '../authoring';
+import type { Component, ComponentRefNode, MapNode, FanoutNode } from '../authoring';
 import type { BehaviorModelContract } from '../authoring';
 import { IN_SENTINEL } from './tx';
 import type { ConditionObject, ConditionValue } from '../../DBConditions';
@@ -59,6 +59,11 @@ type RefLike = ComponentRefNode | MapNode;
 
 function isMap(n: Component['body'][number]): n is MapNode {
   return 'map' in n;
+}
+
+/** A bc 0.7.3+ `FanoutNode` (connection fan-out). litedbmodel never emits these. */
+function isFanout(n: Component['body'][number]): n is FanoutNode {
+  return 'fanout' in n;
 }
 
 /** The catalog-name + ports of a `componentRef`/`map` body node (uniform view). */
@@ -468,6 +473,11 @@ export function compileAuthoredBehavior(
   let primaryNode: ComponentRefNode | undefined;
   for (const n of component.body) {
     if ('cond' in n) continue; // pure Expression node (a shared SKIP guard), no SQL.
+    if (isFanout(n)) {
+      // bc 0.7.3+ `FanoutNode`. litedbmodel never emits fanout — reject fail-closed rather
+      // than mistake it for the primary catalog `componentRef`.
+      throw new Error(`authoring-compile: behavior '${component.name}' node '${n.id}' is a fanout node, not supported by litedbmodel (bc FanoutNode)`);
+    }
     if (isMap(n)) {
       relations.push(n);
       continue;
@@ -520,6 +530,7 @@ function normalizeInput(component: Component, input: Scope): Scope {
  */
 function skipGuardHeads(n: Component['body'][number], into: Set<string>): void {
   if ('cond' in n) return; // a shared pure Expression node, not a catalog SQL node
+  if (isFanout(n)) return; // bc FanoutNode carries no where-ports SKIP guard (litedbmodel never emits it)
   const ports = isMap(n) ? n.map.ports : n.ports;
   const where = ports.where;
   if (typeof where !== 'object' || where === null || !('arr' in where)) return;

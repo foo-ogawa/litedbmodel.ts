@@ -19,11 +19,17 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use behavior_contracts::Value;
+use litedbmodel_runtime::Node;
 use litedbmodel_runtime::{
     encode_value, execute_read_graph, execute_read_graph_pooled, Driver, PreparedStatement,
     RunInfo, Scope,
 };
-use serde_json::{json, Value as J};
+
+/// Build a native `Node` fixture from a JSON string literal — the runtime's OWN native JSON parser
+/// (the runtime + these tests carry NO external JSON crate).
+fn nj(s: &str) -> Node {
+    Node::parse(s).expect("test fixture JSON parses")
+}
 
 /// A Sync driver: per-query it can sleep a per-SQL latency, and tracks concurrent in-flight count.
 /// `delays` maps a SQL string to its sleep; a missing key uses `default_latency`.
@@ -91,40 +97,34 @@ impl PreparedStatement for LatencyStmt<'_> {
 
 /// A full read GRAPH (surrogate bc IR + per-node statements + plan) of N independent sibling
 /// `__makeSqlNode`s in ONE plan stage, each a trivial `SELECT <i>`, Φ-merged under `rel<i>`.
-fn sibling_graph(n: usize, concurrency: i64) -> J {
-    let mut statements = serde_json::Map::new();
-    let mut body = Vec::new();
-    let mut output = serde_json::Map::new();
+fn sibling_graph(n: usize, concurrency: i64) -> Node {
+    let mut statements = String::new();
+    let mut body = String::new();
+    let mut output = String::new();
+    let mut group = String::new();
     for i in 0..n {
-        let id = format!("rel{i}");
-        statements.insert(
-            id.clone(),
-            json!([{ "sql": format!("SELECT {i}"), "params": [] }]),
-        );
-        body.push(json!({
-            "id": id,
-            "component": "__makeSqlNode",
-            "ports": { "__scope": { "obj": {} } }
-        }));
-        output.insert(id.clone(), json!({ "ref": [id] }));
-    }
-    json!({
-        "dialect": "sqlite",
-        "name": "Siblings",
-        "statementsById": statements,
-        "optionalHeads": [],
-        "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [{
-                "name": "Siblings",
-                "inputPorts": {},
-                "body": body,
-                "output": { "obj": output },
-                "plan": { "concurrency": concurrency, "groups": [(0..n).collect::<Vec<_>>()] }
-            }]
+        if i > 0 {
+            statements.push(',');
+            body.push(',');
+            output.push(',');
+            group.push(',');
         }
-    })
+        statements.push_str(&format!(
+            r#""rel{i}": [{{"sql": "SELECT {i}", "params": []}}]"#
+        ));
+        body.push_str(&format!(r#"{{"id": "rel{i}", "component": "__makeSqlNode", "ports": {{"__scope": {{"obj": {{}}}}}}}}"#));
+        output.push_str(&format!(r#""rel{i}": {{"ref": ["rel{i}"]}}"#));
+        group.push_str(&format!("{i}"));
+    }
+    nj(&format!(
+        r#"{{"dialect": "sqlite", "name": "Siblings",
+             "statementsById": {{{statements}}}, "optionalHeads": [],
+             "ir": {{"irVersion": 1, "exprVersion": 2, "components": [{{
+                 "name": "Siblings", "inputPorts": {{}}, "body": [{body}],
+                 "output": {{"obj": {{{output}}}}},
+                 "plan": {{"concurrency": {concurrency}, "groups": [[{group}]]}}
+             }}]}}}}"#
+    ))
 }
 
 /// A non-latency, single-connection serial driver echoing the SQL (the serial-path oracle).
