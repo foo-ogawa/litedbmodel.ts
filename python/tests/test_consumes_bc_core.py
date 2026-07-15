@@ -1,10 +1,11 @@
 """Guardrail test (WS7b, #31): bc runtime-core is CONSUMED, not reimplemented.
 
-The hard rule: the Python runtime delegates the CLOSED Expression-IR evaluation + the
-plan/map/wire/output orchestration to behavior-contracts (the published PyPI package), exactly
-like the TS reference imports `behavior-contracts` from npm. This asserts the runtime modules
-actually import bc's `run_behavior` / `evaluate_expression` (no local generic evaluator), and
-that the declared dependency is the PyPI package spec with NO local `../` path.
+The hard rule: the Python runtime delegates the CLOSED Expression-IR evaluation to
+behavior-contracts (the published PyPI package), exactly like the TS reference imports
+`behavior-contracts` from npm — no local generic expression evaluator. (#12: the read-graph
+plan/map/wire/output orchestration is now the crate's OWN NATIVE walker, not bc `run_behavior` —
+mirroring the rust/go native walkers.) This asserts the runtime consumes bc's `evaluate_expression`,
+does NOT call `run_behavior` on the exec path, and pins the PyPI dep with NO local `../` path.
 """
 
 from __future__ import annotations
@@ -29,7 +30,14 @@ def _imports_from(module: str) -> set[str]:
 def test_static_bundle_consumes_bc_evaluate_expression():
     names = _imports_from("static_bundle.py")
     assert "evaluate_expression" in names
-    assert "run_behavior" in names
+
+
+def test_static_bundle_does_not_call_run_behavior_on_exec_path():
+    # #12: the native read-graph walker replaced bc `run_behavior` on EVERY exec path — the runtime
+    # neither imports nor calls it (the CLOSED expression eval still rides bc `evaluate_expression`).
+    src = (PKG / "static_bundle.py").read_text(encoding="utf-8") + (PKG / "runtime.py").read_text(encoding="utf-8")
+    assert "run_behavior(" not in src, "runtime must not call bc run_behavior on the exec path (#12)"
+    assert "run_behavior" not in _imports_from("static_bundle.py")
 
 
 def test_no_local_generic_evaluator_reimplemented():

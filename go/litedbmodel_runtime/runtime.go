@@ -14,9 +14,8 @@
 //
 //	validate → fragment select (SKIP) → array expand → param eval + bind → SQL execute → native assembly
 //
-// The bundle's surrogate component collapses every catalog node's SQL-structural ports to ONE
-// synthetic `__scope` port (a bc `{obj:…}`); the native walker builds that render scope and renders
-// each pre-compiled statement against it. No SQL-structural port is interpreted.
+// #12: the read graph carries compileBehaviors' REAL Select/Count/map nodes; the native walker
+// renders each node's pre-compiled statementsById against the walk scope directly (no `__scope`).
 
 package litedbmodel_runtime
 
@@ -31,9 +30,6 @@ import (
 // Version is synced from package.json by scripts/sync-versions.mjs (Go = VCS tag, not a manifest
 // field, so this constant is the in-source mirror the CI tag check compares against).
 const Version = "2.0.2"
-
-// scopePort is the synthetic port that carries a SQL node's render scope (runtime.ts SCOPE_PORT).
-const scopePort = "__scope"
 
 // entityRoot is the body-write RETURNING row exposed to later tx stages under `$.entity.*`
 // (writes.ts ENTITY_ROOT).

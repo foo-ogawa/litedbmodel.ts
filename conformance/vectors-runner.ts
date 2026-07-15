@@ -35,7 +35,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const VECTORS_DIR = process.env.LITEDBMODEL_VECTORS ?? join(HERE, 'vectors');
 
 /** The corpus schema version this runner supports (pin — bumped on additive refreeze). */
-const SUPPORTED_CORPUS_VERSION = 2;
+const SUPPORTED_CORPUS_VERSION = 3;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;

@@ -195,12 +195,11 @@ export function deriveWriteOutputType(plan: TransactionPlan, resolve: ColumnType
 }
 
 /**
- * Attach the derived write output type to a write {@link SqlBundle} as `outType` (on the surrogate
- * write IR's single `makeSQL` node) + `outputType` (on the component), matching how the read de-box
- * annotates its surrogate IR. Returns a NEW bundle carrying an `outputType` field the codegen path
- * reads (the makeSqlComponentIR surrogate node picks it up in {@link ../codegen.bundleToPortableIR}).
- * A bundle with no transaction plan (a plain single-statement write with no tx) throws — this de-box
- * is for the write-Command / batch bundles the bench/conformance codegen surface covers.
+ * Attach the derived write output type to a write {@link SqlBundle} as an `outputType` field the
+ * codegen companion carries (#12: writes have no component-graph IR — the makeSQL write surrogate is
+ * eliminated — so the TransactionResult type rides the bundle/companion directly, not an IR node).
+ * Returns a NEW bundle carrying the `outputType`. A bundle with no transaction plan (a plain
+ * single-statement write with no tx) throws — this de-box is for the write-Command / batch bundles.
  */
 export function annotateWriteBundleOutType(bundle: SqlBundle, resolve: ColumnTypeResolver): SqlBundle {
   if (bundle.transaction === undefined) {

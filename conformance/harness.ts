@@ -62,7 +62,7 @@ import {
 // ── Corpus versioning (SSoT — bumped on any additive refreeze, PROTOCOL-style) ──
 
 /** The conformance corpus schema version. A consumer runner fail-closes on a mismatch. */
-export const CORPUS_VERSION = 2 as const;
+export const CORPUS_VERSION = 3 as const;
 
 export const ALL_DIALECTS: readonly DialectName[] = ['sqlite', 'postgres', 'mysql'] as const;
 

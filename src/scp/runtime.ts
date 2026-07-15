@@ -123,9 +123,9 @@ export interface SqlBundle {
    * Codegen typed-de-box `outputType` for a WRITE bundle (spec §4.1 / §9): the bc portable type of
    * the write's {@link TransactionResult} (entity / returnedRows rows typed via the schema SoT). A
    * READ bundle carries its outType/outputType inside `readGraph.ir` instead; a write bundle has no
-   * such surrogate, so its output type rides HERE and is attached to the write's `makeSqlComponentIR`
-   * node/component by {@link bundleToPortableIR}. Present ONLY when a column-type resolver was
-   * supplied at compile (additive/back-compat: absent → the write IR stays un-annotated, as before).
+   * component-graph IR (#12: the makeSQL write surrogate is eliminated — writes ride the write/tx exec
+   * path, not a codegen module), so its output type rides HERE on the bundle/companion. Present ONLY
+   * when a column-type resolver was supplied at compile (additive/back-compat: absent → un-annotated).
    */
   readonly outputType?: unknown;
 }

@@ -42,7 +42,7 @@ from litedbmodel_runtime import (  # noqa: E402
     read_bundle,
 )
 
-SUPPORTED_CORPUS_VERSION = 2
+SUPPORTED_CORPUS_VERSION = 3
 # A distinct namespace per language so 4 languages share ONE docker stack without cross-talk.
 PG_SCHEMA = os.environ.get("LIVEDB_PG_SCHEMA", "scp_py")
 MYSQL_DB = os.environ.get("LIVEDB_MYSQL_DB", "scp_py")

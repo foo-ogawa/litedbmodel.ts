@@ -58,8 +58,6 @@ export {
   compileCompositeKeyUnlimited,
   compileCompositeKeyStaticUnlimited,
   compileCompositeKeyLimited,
-  makeSqlComponentIR,
-  makeSqlInput,
   compileAuthoredBehavior,
   compileAuthoredNode,
   compileRelationMap,

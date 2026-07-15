@@ -62,7 +62,7 @@ fn node_to_json(n: &Node) -> J {
     }
 }
 
-const SUPPORTED_CORPUS_VERSION: i64 = 2;
+const SUPPORTED_CORPUS_VERSION: i64 = 3;
 const PG_SCHEMA: &str = "scp_rust";
 const MYSQL_DB: &str = "scp_rust";
 
