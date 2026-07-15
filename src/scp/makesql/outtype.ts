@@ -20,7 +20,7 @@
 
 import type { PortableType, PortableScalarType } from 'behavior-contracts';
 import type { Component, ComponentRefNode, MapNode } from '../authoring';
-import { sqlTypeToBcScalar, type BcScalar, type MaterializeClass, type ColumnTypeResolver, type MaterializeResolver } from '../coltype';
+import { sqlTypeToBcScalar, sqlTypeToMaterializeClass, type BcScalar, type MaterializeClass, type ColumnTypeResolver } from '../coltype';
 import { IN_SENTINEL } from './tx';
 
 /**
@@ -76,12 +76,87 @@ function stringArrayPort(ports: Record<string, unknown>, name: string): string[]
 }
 
 /**
- * The row `obj` type of a SELECT projection: `{obj:{col: <bcScalar>, …}}`. Each column is typed by
- * resolving its SQL type from the schema SoT and mapping via {@link sqlTypeToBcScalar}. A `*` or
- * absent projection, a computed/aliased/qualified column, or a duplicate column is a HARD ERROR —
- * such a projection cannot be de-boxed into a concrete struct (no-assume, no-fallback).
+ * A parsed `select`-list entry (issue #59). Either a SCHEMA-COLUMN reference (bare / qualified /
+ * aliased — resolvable to a declared column type + a driver-row output key) OR a COMPUTED expression
+ * (a function / aggregate / literal / cast — no underlying schema column). `*` is neither; it throws
+ * (the concrete column list is unknown, so nothing can be typed).
  */
-function rowObjType(table: string, projection: readonly string[] | undefined, resolveColumnType: ColumnTypeResolver, at: string): PortableType {
+export type ProjectionEntry =
+  | {
+      readonly kind: 'column';
+      /** The bare column name (qualifier + alias stripped) — what the type resolver is keyed on. */
+      readonly underlying: string;
+      /** The property name the driver row carries (the alias, else the bare column). */
+      readonly outputKey: string;
+      /** The qualifier table if the projection was `qual.col` (a JOIN column), else `undefined` — the
+       *  column's type resolves against THIS table, not the node's base table. */
+      readonly qualifier?: string;
+    }
+  | { readonly kind: 'computed'; readonly text: string };
+
+/**
+ * The SINGLE projection-column parser (issue #59) — shared by BOTH the codegen `outType` derivation
+ * and the TS read-path materializer derivation so the two CANNOT diverge (the recurring source of
+ * silent-rounding leaks). Classifies ONE `select`-list entry:
+ *   - bare `col`                        → `{ kind:'column', underlying:'col', outputKey:'col' }`.
+ *   - qualified `t.col`                 → strip qualifier → `underlying:'col', outputKey:'col'`.
+ *   - aliased `col AS b` / `t.col AS b` → `underlying:'col', outputKey:'b'` (the driver row key).
+ *   - computed `COUNT(*)`, `NOW()`, `x::uuid`, `x+1`, aliased or not → `{ kind:'computed', text }`.
+ *   - `*` / `t.*`                       → HARD ERROR (the concrete column list is unknown).
+ * A SCHEMA-column entry MUST be typed against the declaration (a caller resolves + fail-closes on an
+ * undeclared column → never a silent rounded-i64 leak). A COMPUTED entry has no schema column to
+ * round: the read path leaves it raw; the codegen path (which needs every struct field typed) rejects
+ * it. This ONE parser guarantees every shape is classified identically for both paths.
+ */
+export function parseProjectionColumn(col: string, table: string, at: string): ProjectionEntry {
+  const raw = col.trim();
+  if (raw === '*' || raw.endsWith('.*')) {
+    throw new Error(
+      `outtype: ${at}: SELECT on '${table}' projects '${raw}' (a wildcard). A typed de-box needs the ` +
+        `concrete column list to build the row struct + type each column — spec §4.1 is column-typed. ` +
+        `Project explicit columns (no-assume, no-fallback).`,
+    );
+  }
+  // Split off an `AS <alias>` (case-insensitive; alias must be a bare identifier).
+  let expr = raw;
+  let alias: string | undefined;
+  const asMatch = /^(.*?)\s+AS\s+([A-Za-z_][A-Za-z0-9_]*)$/i.exec(raw);
+  if (asMatch !== null) {
+    expr = asMatch[1].trim();
+    alias = asMatch[2];
+  }
+  // A bare or qualified column reference — `col` or `qual.col` (identifiers only) — is a SCHEMA
+  // column. The qualifier (if present) names the column's OWNER table (a JOIN column), against which
+  // its type resolves; without a qualifier the column belongs to the node's base table.
+  const refMatch = /^(?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)$/.exec(expr);
+  if (refMatch !== null) {
+    const qualifier = refMatch[1];
+    const underlying = refMatch[2];
+    return { kind: 'column', underlying, outputKey: alias ?? underlying, ...(qualifier !== undefined ? { qualifier } : {}) };
+  }
+  // Anything else (a function call `f(x)`, an aggregate `COUNT(*)`, a cast `x::uuid`, arithmetic, a
+  // literal) is a COMPUTED expression — no underlying schema column, so it cannot round an i64. The
+  // read path leaves it raw; the codegen path rejects it (it needs a concrete field type).
+  return { kind: 'computed', text: raw };
+}
+
+/**
+ * The row `obj` type of a SELECT projection: `{obj:{outputKey: <bcScalar>, …}}`. Each column is
+ * resolved ONCE via the SHARED {@link parseProjectionColumn} (bare / qualified / aliased) and its SQL
+ * type (from the schema SoT) yields BOTH the bc scalar (this outType, for codegen) AND — written into
+ * the `materializers` accumulator — the TS read-path {@link MaterializeClass} (INT32/INT64/date/bool).
+ * This is the SINGLE column-type resolution the whole read pipeline consumes: codegen reads the
+ * `obj`; the runtime read path reads `materializers`. They cannot diverge — they are two projections
+ * of the ONE resolution. A `*` / absent projection, a computed column, a duplicate OUTPUT key, or an
+ * undeclared underlying column is a HARD ERROR (no-assume, no-fallback) — for BOTH consumers.
+ */
+function rowObjType(
+  table: string,
+  projection: readonly string[] | undefined,
+  resolveColumnType: ColumnTypeResolver,
+  at: string,
+  materializers: Record<string, MaterializeClass>,
+): PortableType {
   if (projection === undefined || projection.length === 0) {
     throw new Error(
       `outtype: ${at}: SELECT on '${table}' has no explicit column projection ('*' / empty). A typed ` +
@@ -91,48 +166,68 @@ function rowObjType(table: string, projection: readonly string[] | undefined, re
   }
   const obj: Record<string, PortableType> = {};
   for (const col of projection) {
-    // Reject anything that is not a bare column name — an alias (`x AS y`), a qualified name
-    // (`t.c`), or a computed expression cannot be typed from the schema alone.
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(col)) {
+    const entry = parseProjectionColumn(col, table, at);
+    // A computed expression has no concrete struct field type — HARD ERROR (spec §4.1 no-assume).
+    // The read path never reaches a separate lenient pass now; `*`/computed fail here for BOTH.
+    if (entry.kind === 'computed') {
       throw new Error(
-        `outtype: ${at}: projected column '${col}' on '${table}' is not a bare column name (alias / ` +
-          `qualified / computed). Typed de-box (spec §4.1) requires bare schema columns so each maps ` +
-          `to a SQL type. No-assume, no-fallback.`,
+        `outtype: ${at}: projected expression '${entry.text}' on '${table}' is computed (function / ` +
+          `aggregate / cast / literal) and cannot be typed into a concrete row struct field. Typed ` +
+          `de-box (spec §4.1) requires bare/qualified/aliased schema columns. No-assume, no-fallback.`,
       );
     }
-    if (col in obj) throw new Error(`outtype: ${at}: duplicate projected column '${col}' on '${table}'`);
-    // sqlTypeToBcScalar throws on an unknown/ambiguous SQL type — fail-closed by construction.
-    obj[col] = toPortableScalar(sqlTypeToBcScalar(resolveColumnType(table, col)), table, col);
+    const { underlying, outputKey, qualifier } = entry;
+    if (outputKey in obj) throw new Error(`outtype: ${at}: duplicate projected column key '${outputKey}' on '${table}'`);
+    // Resolve against the qualifier's table (a JOIN column) if present, else the node's base table.
+    const owner = qualifier ?? table;
+    // ONE resolution of the SQL type → both the bc scalar AND the materialize class. resolveColumnType
+    // throws on an undeclared column, sqlType* throw on an unknown SQL type — fail-closed by
+    // construction on the UNDERLYING column, keyed by the OUTPUT column (the driver's row key).
+    const sqlType = resolveColumnType(owner, underlying);
+    obj[outputKey] = toPortableScalar(sqlTypeToBcScalar(sqlType), owner, underlying);
+    const klass = sqlTypeToMaterializeClass(sqlType);
+    if (klass !== 'passthrough') materializers[outputKey] = klass; // omit passthrough (no-op coercion)
   }
   return { obj };
 }
 
+/** A Select/Count node's outType + (for Select) the per-output-column read-path materializer map. */
+interface NodeTypes {
+  readonly outType: PortableType;
+  /** `outputKey → MaterializeClass` (non-passthrough only). Empty for a Count / passthrough-only row. */
+  readonly materializers: Record<string, MaterializeClass>;
+}
+
 /**
- * The `outType` of ONE read body node. A `Select` returns a ROW LIST → `{arr:rowObj}`. A `Count`
- * returns a single `int`. A `.map` node runs its inner component PER element of the iterated list,
- * so its result is `{arr:<per-element outType>}` (the per-element type being the inner node's own
- * outType — for a `.map` over a Select-per-element that is `{arr:{arr:rowObj}}`). An unrecognized
- * component throws (typed codegen covers only the SQL read catalog).
+ * The outType + read-path materializers of ONE read body node — derived from the SINGLE column-type
+ * resolution ({@link rowObjType}). A `Select` returns a ROW LIST → `{arr:rowObj}`; a `Count` a single
+ * `int` (a scalar, no per-column map). A `.map` node wraps its per-element Select result. An
+ * unrecognized component throws (typed read de-box covers only the SQL read catalog).
  */
-export function nodeOutType(node: RefLike, resolveColumnType: ColumnTypeResolver): PortableType {
+function nodeTypes(node: RefLike, resolveColumnType: ColumnTypeResolver): NodeTypes {
   const { component, ports } = nodeRef(node);
   const at = `node '${node.id}'`;
-  if (component === 'Count') return 'int';
+  if (component === 'Count') return { outType: 'int', materializers: {} };
   if (component === 'Select') {
     const table = stringPort(ports, 'table');
     if (table === undefined) throw new Error(`outtype: ${at}: Select node requires a literal 'table' port`);
     const projection = stringArrayPort(ports, 'select');
-    const row = rowObjType(table, projection, resolveColumnType, at);
-    // A `.map` node iterates a list and invokes the inner component per element; the node result is
-    // the list of per-element results. Here the inner is a Select → per element a row LIST, so the
-    // map node's outType is `{arr:{arr:rowObj}}`. A non-map Select node returns the row list `{arr:rowObj}`.
-    if (isMap(node)) return { arr: { arr: row } };
-    return { arr: row };
+    const materializers: Record<string, MaterializeClass> = {};
+    const row = rowObjType(table, projection, resolveColumnType, at, materializers);
+    // A `.map` node iterates a list and invokes the inner component per element (row LIST per element
+    // → `{arr:{arr:rowObj}}`); a plain Select node returns the row list `{arr:rowObj}`.
+    const outType: PortableType = isMap(node) ? { arr: { arr: row } } : { arr: row };
+    return { outType, materializers };
   }
   throw new Error(
-    `outtype: ${at}: component '${component}' has no typed outType (typed read codegen covers Select/Count only). ` +
+    `outtype: ${at}: component '${component}' has no typed outType (typed read de-box covers Select/Count only). ` +
       `A write / unknown node cannot be de-boxed here — no-assume, no-fallback.`,
   );
+}
+
+/** The outType of ONE read body node (thin wrapper over {@link nodeTypes} for external callers). */
+export function nodeOutType(node: RefLike, resolveColumnType: ColumnTypeResolver): PortableType {
+  return nodeTypes(node, resolveColumnType).outType;
 }
 
 /**
@@ -198,86 +293,16 @@ function outputType(output: unknown, byNode: Map<string, PortableType>, at: stri
 export function deriveReadOutTypes(
   component: Component,
   resolveColumnType: ColumnTypeResolver,
-): { byNode: Map<string, PortableType>; outputType: PortableType } {
+): { byNode: Map<string, PortableType>; outputType: PortableType; materializersByNode: Map<string, Record<string, MaterializeClass>> } {
   const byNode = new Map<string, PortableType>();
+  const materializersByNode = new Map<string, Record<string, MaterializeClass>>();
   for (const n of component.body) {
     if ('cond' in n) continue; // a cond node carries no SELECT projection; it is typed by its branch
-    byNode.set(n.id, nodeOutType(n as RefLike, resolveColumnType));
+    // ONE resolution per node → the outType (codegen) AND the read-path materializers (runtime).
+    const t = nodeTypes(n as RefLike, resolveColumnType);
+    byNode.set(n.id, t.outType);
+    if (Object.keys(t.materializers).length > 0) materializersByNode.set(n.id, t.materializers);
   }
-  return { byNode, outputType: outputType(component.output, byNode, `component '${component.name}' output`) };
+  return { byNode, outputType: outputType(component.output, byNode, `component '${component.name}' output`), materializersByNode };
 }
 
-/** One read Select node's projection: its node id, table, and the projected column list. */
-export interface ReadProjection {
-  readonly nodeId: string;
-  readonly table: string;
-  readonly columns: readonly string[];
-}
-
-/**
- * The read Select projections of a component (issue #59): each Select node's literal `table` +
- * explicit `select` column list. A `Count` node (scalar) and a node without a literal table/explicit
- * projection are skipped (a `SELECT *` / non-literal projection is already a hard error at
- * {@link deriveReadOutTypes}, spec §4.1 no-assume). Used to VALIDATE that every projected column has
- * a declared type (fail-closed de-box) and to build the materializer map.
- */
-export function readProjections(component: Component): ReadProjection[] {
-  const out: ReadProjection[] = [];
-  for (const n of component.body) {
-    if ('cond' in n) continue;
-    const { component: comp, ports } = nodeRef(n as RefLike);
-    if (comp !== 'Select') continue; // Count → scalar int; no projection
-    let table: string | undefined;
-    let projection: string[] | undefined;
-    try {
-      table = stringPort(ports, 'table');
-      projection = stringArrayPort(ports, 'select');
-    } catch {
-      continue; // a non-literal table/projection is not a typed-column read here
-    }
-    if (table === undefined || projection === undefined || projection.length === 0) continue;
-    out.push({ nodeId: n.id, table, columns: projection });
-  }
-  return out;
-}
-
-/** Is `col` a bare column name (not an alias `x AS y` / qualified `t.c` / computed expression)? */
-export function isBareColumn(col: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(col);
-}
-
-/**
- * Per-node TS read-path MATERIALIZER map (issue #59, owner-approved ALWAYS-ON type-honoring de-box):
- * for each read Select node, `column → MaterializeClass` (int32/int64/date/bool/passthrough). The
- * read handler applies these to each raw driver row so INT→number, BIGINT→string, DATE→TZ-string,
- * BOOLEAN→boolean, decimal/text/json→passthrough — consistently across sqlite/pg/mysql.
- *
- * FAIL-CLOSED (reconciled with the codegen resolver — issue #59 audit): a projected BARE column that
- * the resolver cannot type (undeclared in the model's `static columns`) is a HARD ERROR here, NOT a
- * silent skip — otherwise the read would return the raw rounded driver value (the i64 hole). The
- * resolver passed in MUST throw for an undeclared column (built from the fail-closed
- * `columnTypeResolverFromColumnMap`); this derivation lets that throw propagate. An alias / qualified
- * / computed projection is NOT a bare column, so it is left un-materialized (a `SELECT *` already
- * hard-errors at the outType derivation, spec §4.1). Only Select nodes carry a projection; a Count
- * returns a scalar (JS number) and needs no map. Passthrough classes (float/text/decimal/json) are
- * omitted from the map (they are a no-op coercion) — but they were STILL type-checked (the resolver
- * resolved them), so an undeclared passthrough-looking column still throws.
- */
-export function deriveReadMaterializers(
-  component: Component,
-  resolveMaterialize: MaterializeResolver,
-): Map<string, Record<string, MaterializeClass>> {
-  const byNode = new Map<string, Record<string, MaterializeClass>>();
-  for (const proj of readProjections(component)) {
-    const cols: Record<string, MaterializeClass> = {};
-    for (const col of proj.columns) {
-      if (!isBareColumn(col)) continue; // alias/qualified/computed → not a typed column; leave raw
-      // FAIL-CLOSED: an undeclared bare column makes `resolveMaterialize` throw (naming the
-      // model/table/column) — never a silent skip that would leave a rounded i64 raw.
-      const klass = resolveMaterialize(proj.table, col);
-      if (klass !== undefined && klass !== 'passthrough') cols[col] = klass; // omit passthrough (no-op coercion)
-    }
-    if (Object.keys(cols).length > 0) byNode.set(proj.nodeId, cols);
-  }
-  return byNode;
-}

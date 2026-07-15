@@ -291,7 +291,10 @@
             "select": [
               "id",
               "name"
-            ]
+            ],
+            "materializers": {
+              "id": "int32"
+            }
           },
           "tags": {
             "name": "tags",
@@ -305,7 +308,11 @@
               "id",
               "post_id",
               "label"
-            ]
+            ],
+            "materializers": {
+              "id": "int32",
+              "post_id": "int32"
+            }
           }
         }
       },
@@ -635,7 +642,10 @@
             "select": [
               "id",
               "name"
-            ]
+            ],
+            "materializers": {
+              "id": "int32"
+            }
           },
           "tags": {
             "name": "tags",
@@ -649,7 +659,11 @@
               "id",
               "post_id",
               "label"
-            ]
+            ],
+            "materializers": {
+              "id": "int32",
+              "post_id": "int32"
+            }
           }
         }
       },

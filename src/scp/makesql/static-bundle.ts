@@ -53,8 +53,8 @@ import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
 import { renderPlaceholders, type Dialect } from './handler';
 import { compileWriteNode } from './tx';
 import { assertFindFilterFolded, type FindFilterSource } from '../find-filter-guard';
-import { deriveReadOutTypes, deriveReadMaterializers } from './outtype';
-import { materializeCell, materializeClassOrUndefined, type ColumnTypeResolver, type MaterializeClass, type MaterializeResolver } from '../coltype';
+import { deriveReadOutTypes } from './outtype';
+import { materializeCell, type ColumnTypeResolver, type MaterializeClass } from '../coltype';
 import { mapSqliteError } from '../errors';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import { dbCast, dbDynamic, dbImmediate, dbTupleIn } from '../../DBValues';
@@ -1035,7 +1035,6 @@ export function compileReadGraph(
   entry?: string,
   findFilterModel?: FindFilterSource,
   resolveColumnType?: ColumnTypeResolver,
-  materializeResolver?: MaterializeResolver,
 ): ReadGraph {
   const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
   if (component === undefined) throw new Error(`static-bundle: entry component '${entry ?? '<first>'}' not found in contract`);
@@ -1061,31 +1060,22 @@ export function compileReadGraph(
     statementsById[n.id] = compileNodeStatements(n as RefLike, dialect);
   }
 
-  // Typed-codegen `outType`/`outputType` annotations (spec §4.1; #58/#56). Derived from the ORIGINAL
-  // body (real `table`/`select` ports) so bc's typed-raw de-box emitters can materialize concrete
-  // row structs instead of hard-failing ("nothing to de-box"). Only when a column-type resolver (the
-  // schema/DDL SoT) is supplied — without it the read graph stays un-annotated (interpret path only;
-  // typed codegen then fail-closes downstream, never silently boxes). Any ambiguity throws here.
-  const outTypes = resolveColumnType !== undefined ? deriveReadOutTypes(component as never, resolveColumnType) : undefined;
-  // TS read-path materializers (issue #59, ALWAYS-ON): per-Select `column → MaterializeClass`. Derived
-  // from a TOLERANT `materializeResolver` — the production read entry points (executeBehavior /
-  // executeBehaviorAsync / read) auto-derive it from the live DB schema (the column-type SoT) and pass
-  // it in, so materialization fires for EVERY real read with NO caller-supplied resolver. It is
-  // DECOUPLED from the codegen `resolveColumnType` (outType) path: passing only the materialize
-  // resolver adds materializers WITHOUT the codegen outType annotations (so a plain read's serialized
-  // bundle shape is unchanged unless a materialize resolver is supplied). A tolerant resolver never
-  // throws — un-typeable columns just stay raw. When the codegen resolver IS supplied but no
-  // materialize resolver is, materializers are ALSO derived from it (so the codegen/bench path that
-  // passes a schema resolver still de-boxes) via a thin adapter.
-  const matResolver: MaterializeResolver | undefined =
-    materializeResolver ??
-    (resolveColumnType !== undefined ? (t, c) => materializeClassOrUndefined(resolveColumnType(t, c)) : undefined);
-  const materializers = matResolver !== undefined ? deriveReadMaterializers(component as never, matResolver) : undefined;
+  // SINGLE column-type resolution (issue #59 audit — unified read+codegen): `deriveReadOutTypes`
+  // resolves every projected column of the read ONCE (via the SHARED projection parser, all shapes:
+  // bare / qualified / aliased; `*` / computed / undeclared → HARD ERROR, spec §4.1) and returns BOTH
+  // the codegen `outType`/`outputType` annotations AND the TS read-path `materializersByNode` — two
+  // projections of the ONE resolution, so they cannot diverge (there is no second, weaker read-path
+  // pass). The column types come from the model's inline `static columns` (carried on the contract as
+  // `resolveColumnType`, always present for a read model), so this runs for EVERY read: codegen writes
+  // the outType IR annotations, the runtime read path consumes the materializers. Any ambiguity /
+  // undeclared column / `*` / computed projection throws here.
+  const readTypes = resolveColumnType !== undefined ? deriveReadOutTypes(component as never, resolveColumnType) : undefined;
+  const materializers = readTypes?.materializersByNode;
 
   const surrogateBody = component.body.map((n) => {
     if ('cond' in n) return n;
     const stmts = statementsById[n.id];
-    const outType = outTypes?.byNode.get(n.id);
+    const outType = readTypes?.byNode.get(n.id);
     const outAnn = outType !== undefined ? { outType } : {};
     if ('map' in n) {
       return { ...n, ...outAnn, map: { ...n.map, component: NODE_COMPONENT, ports: { [SCOPE_PORT]: scopePort(stmts) } } };
@@ -1095,7 +1085,7 @@ export function compileReadGraph(
   const surrogate = {
     ...component,
     body: surrogateBody,
-    ...(outTypes !== undefined ? { outputType: outTypes.outputType } : {}),
+    ...(readTypes !== undefined ? { outputType: readTypes.outputType } : {}),
   } as unknown as BcComponent;
   const ir: ComponentGraphIR = { irVersion: 1, exprVersion: 2, components: [surrogate] };
 
@@ -1105,7 +1095,7 @@ export function compileReadGraph(
     ir,
     statementsById,
     optionalHeads: [...optionalHeadsOfComponent(component, dialect)],
-    ...(materializers !== undefined ? { materializersByNode: Object.fromEntries(materializers) } : {}),
+    ...(materializers !== undefined && materializers.size > 0 ? { materializersByNode: Object.fromEntries(materializers) } : {}),
   };
 }
 

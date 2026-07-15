@@ -1276,7 +1276,7 @@ describe('D. authoring→bundle path renders V1-SOURCED SQL (V0 R2–R6, all dia
   class Q extends SemanticBehavior {
     static columns = {
       posts: { id: 'INTEGER', author_id: 'INTEGER' },
-      users: { id: 'INTEGER' },
+      users: { id: 'INTEGER', name: 'TEXT' }, // `Jn` projects users.name (JOIN column)
       recent: { id: 'INTEGER' },
     };
     // R3-remainder WHERE primitives

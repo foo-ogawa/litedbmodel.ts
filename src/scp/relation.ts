@@ -28,7 +28,8 @@
 
 import { assembleMakeSQL, type MakeSQL } from './makesql/makesql';
 import { renderPlaceholders, type Dialect } from './makesql/handler';
-import { materializeCell, type MaterializeClass, type MaterializeResolver } from './coltype';
+import { materializeCell, sqlTypeToMaterializeClass, type MaterializeClass, type ColumnTypeResolver } from './coltype';
+import { parseProjectionColumn } from './makesql/outtype';
 import {
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
@@ -142,7 +143,7 @@ export const RELATION_KEYS_HEAD = '__keys';
  * LATERAL (PG) / ROW_NUMBER (MySQL·SQLite) form. The SQL text is FIXED (the array binds as one
  * param regardless of length), so it needs no per-input recompile.
  */
-export function compileRelationOp(decl: RelationDecl, materializeResolver?: MaterializeResolver): RelationOp {
+export function compileRelationOp(decl: RelationDecl, resolveColumnType?: ColumnTypeResolver): RelationOp {
   if (decl.kind !== 'hasMany' && decl.limit !== undefined) {
     throw new Error(`relation '${decl.name}': a per-parent 'limit' is only valid for hasMany (got ${decl.kind})`);
   }
@@ -160,14 +161,20 @@ export function compileRelationOp(decl: RelationDecl, materializeResolver?: Mate
   // CROSS-DB (V0 R1): carry the target connection tag ONLY when set (a same-DB relation stays
   // untagged, so existing bundles are byte-unchanged — the field is additive/optional).
   const conn = decl.connection !== undefined ? { connection: decl.connection } : {};
-  // Carry the child table + projection AND bake the STATIC child materializers (issue #59) from the
-  // model's DDL resolver — the batch's child rows then de-box with ZERO per-read introspection.
+  // Carry the child table + projection AND bake the STATIC child materializers (issue #59) using the
+  // SHARED `parseProjectionColumn` + the SINGLE column-type resolver — the SAME resolution the primary
+  // read uses (no separate bare-regex pass). Every projection shape (bare / qualified `t.col` /
+  // aliased `col AS b`) resolves + fail-closes identically; a `*` / computed / undeclared column
+  // THROWS. The batch's child rows then de-box with ZERO per-read introspection.
   const materializers: Record<string, MaterializeClass> = {};
-  if (materializeResolver !== undefined) {
+  if (resolveColumnType !== undefined) {
+    const at = `relation '${decl.name}'`;
     for (const c of decl.select) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(c)) continue;
-      const klass = materializeResolver(decl.targetTable, c);
-      if (klass !== undefined && klass !== 'passthrough') materializers[c] = klass;
+      const entry = parseProjectionColumn(c, decl.targetTable, at); // `*`/computed → throw
+      if (entry.kind === 'computed') continue; // a relation child rarely projects computed; leave raw
+      const sqlType = resolveColumnType(entry.qualifier ?? decl.targetTable, entry.underlying); // undeclared → throw
+      const klass = sqlTypeToMaterializeClass(sqlType);
+      if (klass !== 'passthrough') materializers[entry.outputKey] = klass;
     }
   }
   const target = {

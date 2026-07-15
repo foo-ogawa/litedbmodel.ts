@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import {
-  SemanticBehavior, components, publishBehaviors, executeBehavior, read,
+  SemanticBehavior, components, publishBehaviors, executeBehavior, read, compileBundle,
   whereEq, whereGe, materializeResolverFromColumnMap, columnTypeResolverFromColumnMap,
   failClosedMaterializeResolverFromColumnMap,
 } from '../../src/scp';
@@ -206,5 +206,115 @@ describe('#59 FAIL-CLOSED at registration — a typed read whose projected colum
     const r1 = rows.find((r) => Number(r.id) === 1)!;
     expect(r1.i64).toBe('9223372036854775807'); // exact, de-boxed — NOT a rounded number
     expect(typeof r1.i64).toBe('string');
+  });
+});
+
+describe('#59 ALL projection shapes — bare/qualified/aliased de-box; * hard-errors; undeclared THROWS (no bare-only escape hatch)', () => {
+  function bigDb(): InstanceType<typeof Database> {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE t (id INTEGER PRIMARY KEY, big BIGINT);`);
+    db.prepare(`INSERT INTO t VALUES (?,?)`).run(1, '9223372036854775807');
+    return db;
+  }
+
+  it('QUALIFIED `t.big` (declared BIGINT) → materializes to EXACT string, NOT a rounded number', () => {
+    class Qual extends SemanticBehavior {
+      static columns = { t: { id: 'INTEGER', big: 'BIGINT' } };
+      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['id', 't.big'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+    }
+    const db = bigDb();
+    const r = (executeBehavior(publishBehaviors(Qual), { min: 1 }, { db, entry: 'Q' }) as Record<string, unknown>[])[0];
+    db.close();
+    expect(typeof r.big).toBe('string');
+    expect(r.big).toBe('9223372036854775807'); // exact — the qualified shape is NOT a silent-raw hole
+  });
+
+  it('ALIASED `big AS b` (declared BIGINT) → row key `b` materializes to EXACT string', () => {
+    class Alias extends SemanticBehavior {
+      static columns = { t: { id: 'INTEGER', big: 'BIGINT' } };
+      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['id', 'big AS b'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+    }
+    const db = bigDb();
+    const r = (executeBehavior(publishBehaviors(Alias), { min: 1 }, { db, entry: 'Q' }) as Record<string, unknown>[])[0];
+    db.close();
+    expect(typeof r.b).toBe('string');
+    expect(r.b).toBe('9223372036854775807');
+    expect('big' in r).toBe(false); // the driver returns the row under the ALIAS, not the underlying name
+  });
+
+  it('`SELECT *` HARD-ERRORS at registration (a typed read must project explicit columns)', () => {
+    class Star extends SemanticBehavior {
+      static columns = { t: { id: 'INTEGER', big: 'BIGINT' } };
+      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['*'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+    }
+    expect(() => publishBehaviors(Star)).toThrow(/wildcard|projects '\*'/i);
+  });
+
+  it('UNDECLARED column in QUALIFIED form (`t.big`, big undeclared) THROWS', () => {
+    class QualUndecl extends SemanticBehavior {
+      static columns = { t: { id: 'INTEGER' } };
+      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['id', 't.big'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+    }
+    expect(() => publishBehaviors(QualUndecl)).toThrow(/'big' not declared/i);
+  });
+
+  it('UNDECLARED column in ALIASED form (`big AS b`, big undeclared) THROWS', () => {
+    class AliasUndecl extends SemanticBehavior {
+      static columns = { t: { id: 'INTEGER' } };
+      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['id', 'big AS b'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+    }
+    expect(() => publishBehaviors(AliasUndecl)).toThrow(/'big' not declared/i);
+  });
+
+  it('a QUALIFIED JOIN column resolves against ITS OWN table (qualifier), not the base table', () => {
+    class Jn extends SemanticBehavior {
+      static columns = { posts: { id: 'INTEGER', big: 'BIGINT' }, users: { id: 'INTEGER', name: 'TEXT' } };
+      Q($: { min: unknown }) { return L.Select({ table: 'posts', select: ['posts.id', 'posts.big AS pb', 'users.name'], where: [whereGe(($ as never)['id'], $.min)], order: 'posts.id ASC' }); }
+    }
+    // Registers fine (users.name resolves against `users`, not `posts`). The materializer keys the
+    // aliased BIGINT under `pb` and leaves users.name passthrough.
+    const contract = publishBehaviors(Jn);
+    expect(contract.materializeResolver!('posts', 'big')).toBe('int64');
+    expect(contract.materializeResolver!('users', 'name')).toBe('passthrough');
+  });
+
+  it('a COMPUTED projection (`COUNT(*) as n`) is allowed (no schema column to round) — left raw', () => {
+    class Agg extends SemanticBehavior {
+      static columns = { t: { id: 'INTEGER', big: 'BIGINT' } };
+      Q(_$: Record<string, never>) { return L.Select({ table: 't', select: ['id', 'COUNT(*) as n'], group: 'id' }); }
+    }
+    // A computed/aggregate projection has no underlying schema column → not the i64 hole; registers fine.
+    expect(() => publishBehaviors(Agg)).not.toThrow();
+  });
+
+  it('SINGLE SOURCE: the read materializers are the SAME resolution as the codegen outType (not a second pass)', () => {
+    class R extends SemanticBehavior {
+      static columns = { t: { id: 'INTEGER', big: 'BIGINT', flag: 'BOOLEAN' } };
+      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['id', 'big AS b', 'flag'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+    }
+    const contract = publishBehaviors(R);
+    // ONE compile with the contract's resolveColumnType → the bundle carries BOTH the codegen outType
+    // IR annotations AND the read-path materializersByNode, derived from the SAME deriveReadOutTypes.
+    const bundle = compileBundle(contract, 'Q', [], 'sqlite', undefined, contract.resolveColumnType) as {
+      readGraph?: { ir: unknown; materializersByNode?: Record<string, Record<string, string>> };
+    };
+    const rg = bundle.readGraph!;
+    // The materializer map (read path) is keyed by OUTPUT column and typed identically to the outType.
+    const mat = rg.materializersByNode!;
+    const node = Object.values(mat)[0];
+    // Keyed by OUTPUT column: id→int32, big AS b→int64 (under alias `b`), flag→bool.
+    expect(node).toEqual({ id: 'int32', b: 'int64', flag: 'bool' });
+    // Walk the outType row obj (codegen) and confirm it types the SAME output keys.
+    let rowObj: Record<string, unknown> | undefined;
+    const visit = (n: unknown): void => {
+      if (n === null || typeof n !== 'object') return;
+      const o = n as Record<string, unknown>;
+      if ('outType' in o) { let t: unknown = o.outType; while (t && typeof t === 'object' && !('obj' in (t as object))) t = (t as { arr?: unknown; opt?: unknown }).arr ?? (t as { opt?: unknown }).opt; if (t && typeof t === 'object' && 'obj' in (t as object)) rowObj = (t as { obj: Record<string, unknown> }).obj; }
+      for (const v of Object.values(o)) visit(v);
+    };
+    visit(rg.ir);
+    // Same output keys in both (codegen outType + read materializers come from one resolution).
+    expect(Object.keys(rowObj!).sort()).toEqual(['b', 'flag', 'id']); // big AS b → key 'b'
+    expect(rowObj!.id).toBe('int'); expect(rowObj!.b).toBe('int'); expect(rowObj!.flag).toBe('bool');
   });
 });

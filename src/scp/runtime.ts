@@ -34,7 +34,7 @@ import {
 import { buildResultSet, type ReadOptions } from './typed-object';
 import type { DialectName } from './dialect';
 import type { FindFilterSource } from './find-filter-guard';
-import type { ColumnTypeResolver, MaterializeResolver } from './coltype';
+import type { ColumnTypeResolver } from './coltype';
 import {
   compileReadGraph,
   executeReadGraph,
@@ -167,7 +167,7 @@ export function executeBehavior(
   // INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean fires for every read — never a silent
   // raw (rounded i64) result from an undeclared column.
   return executeBundle(
-    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, contract.materializeResolver),
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, contract.resolveColumnType),
     input,
     options,
   );
@@ -185,7 +185,6 @@ export function compileBundle(
   dialectName: DialectName = 'sqlite',
   findFilterModel?: FindFilterSource,
   resolveColumnType?: ColumnTypeResolver,
-  materializeResolver?: MaterializeResolver,
 ): SqlBundle {
   const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
   if (component === undefined) throw new Error(`scp runtime: entry component '${entry ?? '<first>'}' not found in contract`);
@@ -195,9 +194,10 @@ export function compileBundle(
     if (relationOps[decl.name] !== undefined) {
       throw new Error(`scp runtime: duplicate relation declaration '${decl.name}'`);
     }
-    // Bake the child column materializers (issue #59) from the STATIC resolver at compile — the
-    // relation batch's child rows then de-box with ZERO introspection (same as the primary read).
-    relationOps[decl.name] = compileRelationOp({ ...decl, dialect: decl.dialect ?? dialectName }, materializeResolver);
+    // Bake the child column materializers (issue #59) from the SINGLE static column-type resolver at
+    // compile — the relation batch's child rows then de-box with ZERO introspection, via the SAME
+    // resolution the primary read uses (no separate materializer pass).
+    relationOps[decl.name] = compileRelationOp({ ...decl, dialect: decl.dialect ?? dialectName }, resolveColumnType);
   }
 
   if (isWriteComponent(component)) {
@@ -212,7 +212,7 @@ export function compileBundle(
     };
   }
 
-  const readGraph = compileReadGraph(contract, dialectName, entry, findFilterModel, resolveColumnType, materializeResolver);
+  const readGraph = compileReadGraph(contract, dialectName, entry, findFilterModel, resolveColumnType);
   return {
     dialect: dialectName,
     name: readGraph.name,
@@ -319,7 +319,7 @@ export async function executeBehaviorAsync(
   // at pool creation (mysql2 supportBigNumbers+bigNumberStrings+dateStrings; pg date type parsers) —
   // see `pgDeboxExecutor` / `mysqlDeboxExecutor`.
   return executeBundleAsync(
-    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, contract.materializeResolver),
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, contract.resolveColumnType),
     input,
     options,
   );
@@ -607,7 +607,7 @@ export function read<R = Record<string, unknown>>(
   // ALWAYS-ON read de-box (issue #59), STATIC: the resolver is precomputed from the model's DDL at
   // registration and carried on the contract — ZERO per-read introspection.
   return readBundle(
-    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, undefined, contract.materializeResolver),
+    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, contract.resolveColumnType),
     input,
     options,
   );

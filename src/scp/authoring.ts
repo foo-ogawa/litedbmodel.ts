@@ -65,6 +65,7 @@ import {
 } from './catalog';
 import { assertComponentGraphPortable } from './guard';
 import { failClosedMaterializeResolverFromColumnMap, columnTypeResolverFromColumnMap, type MaterializeResolver, type ColumnTypeResolver } from './coltype';
+import { parseProjectionColumn } from './makesql/outtype';
 
 /**
  * The litedbmodel leaf-component functions for the shared authoring surface —
@@ -302,19 +303,15 @@ function selectProjectionsOf(component: Component): SelectProjection[] {
   return out;
 }
 
-/** Is `col` a bare column name (not an alias / qualified / computed projection)? */
-function isBareColumnName(col: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(col);
-}
-
 /**
- * FAIL-CLOSED registration guard (issue #59 audit): every BARE column a READ (`query`) method
- * PROJECTS must have a declared type in the model's inline `columns`. If any projected column has no
- * declared type, THROW here — a typed read whose projected columns aren't fully declared cannot be
- * registered, so no production read can silently skip de-box and return a rounded i64. A model that
- * declares NO `columns` but has a read projecting columns fails too (columns are REQUIRED for a typed
- * read). Writes and reads with no explicit bare-column projection are exempt (a `SELECT *` already
- * hard-errors at the outType derivation, spec §4.1).
+ * FAIL-CLOSED registration guard (issue #59 audit): every column a READ (`query`) method PROJECTS —
+ * in ANY shape (bare `col`, qualified `t.col`, aliased `col AS b`) — must resolve to a declared type
+ * in the model's inline `columns`. Uses the SHARED {@link parseProjectionColumn} (the SAME projection
+ * parser the read-path materializer + codegen outType derivations use), so no projection shape can
+ * escape validation. A `*` / computed projection, an undeclared underlying column, or a read with NO
+ * `columns` declared at all, THROWS here — a typed read whose projected columns aren't fully declared
+ * cannot be registered, so no production read can silently skip de-box and return a rounded i64.
+ * Writes are exempt.
  */
 function assertReadColumnsDeclared(
   className: string,
@@ -325,19 +322,26 @@ function assertReadColumnsDeclared(
   for (const component of components) {
     if (methods[component.name]?.effect !== 'query') continue; // reads only (writes exempt)
     for (const proj of selectProjectionsOf(component)) {
-      const bareColumns = proj.columns.filter(isBareColumnName);
-      if (bareColumns.length === 0) continue; // no typed columns to check (alias/computed only)
+      const at = `model '${className}' method '${component.name}'`;
+      // SHARED parse (all shapes): `*` → throw; computed → no schema column (skip); bare/qualified/
+      // aliased schema column → must be declared (against its OWNER table = qualifier ?? base table).
+      const schemaCols = proj.columns
+        .map((col) => parseProjectionColumn(col, proj.table, at))
+        .filter((e): e is { kind: 'column'; underlying: string; outputKey: string; qualifier?: string } => e.kind === 'column')
+        .map((e) => ({ table: e.qualifier ?? proj.table, column: e.underlying }));
+      if (schemaCols.length === 0) continue; // only computed projections — nothing to type
       if (resolveColumnType === undefined) {
+        // A read projecting schema columns with NO `columns` declared → fail closed (columns REQUIRED).
         throw new Error(
-          `scp publishBehaviors: model '${className}' method '${component.name}' reads table ` +
-            `'${proj.table}' projecting typed columns [${bareColumns.join(', ')}] but the model declares ` +
-            `NO \`columns\`. A typed read REQUIRES an inline \`static columns\` declaration so the read-path ` +
+          `scp publishBehaviors: ${at} reads projecting typed columns ` +
+            `[${schemaCols.map((s) => `${s.table}.${s.column}`).join(', ')}] but the model declares NO ` +
+            `\`columns\`. A typed read REQUIRES an inline \`static columns\` declaration so the read-path ` +
             `de-box (INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean) is always-on — never a ` +
-            `silent raw (rounded i64) result. Declare \`static columns = { ${proj.table}: { … } }\`.`,
+            `silent raw (rounded i64) result. Declare the model's \`static columns\`.`,
         );
       }
-      // resolveColumnType THROWS (naming the table/column) for any undeclared projected column.
-      for (const col of bareColumns) resolveColumnType(proj.table, col);
+      // resolveColumnType THROWS (naming the table/column) for any undeclared UNDERLYING column.
+      for (const s of schemaCols) resolveColumnType(s.table, s.column);
     }
   }
 }
