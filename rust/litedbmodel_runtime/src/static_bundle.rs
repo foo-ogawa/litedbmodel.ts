@@ -480,7 +480,164 @@ pub fn execute_read_graph(
         }
     }
 
+    // NATIVE (interpreter-free) read-graph orchestration for the map/multi-node/output shapes: walk
+    // the static component body (componentRef / cond / relationKind:single map) + assemble the Φ
+    // output, WITHOUT bc run_behavior. Byte-identical to the retired run_behavior path for the closed
+    // read-graph set the makeSQL corpus emits. A shape it does not reproduce falls through (below).
+    if let Some(comp) = component_for(ir, name) {
+        if orchestrator_supports(comp) {
+            return orchestrate_read_graph_serial(graph, comp, &normalized, &dialect, driver);
+        }
+    }
+
     execute_read_graph_via_bc(graph, ir, dialect, name, &normalized, driver)
+}
+
+/// Serial NATIVE read-graph orchestration (interpreter-free): the `&dyn Driver` twin of
+/// [`orchestrate_read_graph`] — walks the component body in `plan.groups` stage order (serial within
+/// and across stages), computing each node via [`exec_read_node_serial`], then assembles the Φ output
+/// from the committed node results. No bc run_behavior, no run_plan_parallel — the parallel pooled
+/// variant ([`orchestrate_read_graph`]) is used only by [`execute_read_graph_pooled`] when a stage is
+/// genuinely a fan-out; the conformance/SQLite path uses this serial form.
+fn orchestrate_read_graph_serial(
+    graph: &J,
+    comp: &J,
+    input: &Scope,
+    dialect: &str,
+    driver: &dyn Driver,
+) -> Result<Value, SqlFailure> {
+    let body = comp
+        .get("body")
+        .and_then(|b| b.as_array())
+        .ok_or_else(|| plain_failure("scp runtime: read graph component has no body"))?;
+    let output = comp.get("output").cloned().unwrap_or(J::Null);
+    let plan = comp.get("plan").filter(|p| !p.is_null());
+    let stages: Vec<Vec<usize>> = match plan
+        .and_then(|p| p.get("groups"))
+        .and_then(|g| g.as_array())
+    {
+        Some(groups) => groups
+            .iter()
+            .map(|st| {
+                st.as_array()
+                    .map(|m| {
+                        m.iter()
+                            .filter_map(|i| i.as_u64().map(|x| x as usize))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect(),
+        None => (0..body.len()).map(|i| vec![i]).collect(),
+    };
+
+    let mut results: Vec<(String, Value)> = Vec::new();
+    for stage in &stages {
+        // Commit stage members in ascending body index (deterministic failure precedence).
+        let mut ordered = stage.clone();
+        ordered.sort_unstable();
+        let base: Scope = {
+            let mut s = input.clone();
+            s.extend(results.iter().cloned());
+            s
+        };
+        for &idx in &ordered {
+            let node = &body[idx];
+            let id = node
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            match exec_read_node_serial(driver, graph, dialect, node, &base) {
+                ExecOutcome::Ok(v) => results.push((id, v)),
+                ExecOutcome::Error(e) => return Err(re_error_to_sql_failure(&e)),
+            }
+        }
+    }
+
+    let scope: Scope = {
+        let mut s = input.clone();
+        s.extend(results.iter().cloned());
+        s
+    };
+    evaluate_expression(&output, &scope).map_err(|e| re_error_to_sql_failure(&e.message))
+}
+
+/// The `&dyn Driver` (serial) twin of [`exec_read_node`]: compute ONE read-graph body node's value —
+/// a `cond` join, a `componentRef` render+execute, or a simple `map` (per-element render+execute under
+/// the `as` binding, collected in order). Byte-identical to bc run_behavior for these shapes.
+fn exec_read_node_serial(
+    driver: &dyn Driver,
+    graph: &J,
+    dialect: &str,
+    node: &J,
+    base: &Scope,
+) -> ExecOutcome {
+    if let Some(c) = node.get("cond") {
+        let cond_expr = serde_json::json!({ "cond": [c.get("if"), c.get("then"), c.get("else")] });
+        return match evaluate_expression(&cond_expr, base) {
+            Ok(v) => ExecOutcome::Ok(v),
+            Err(e) => ExecOutcome::Error(e.message),
+        };
+    }
+    let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    if let Some(m) = node.get("map") {
+        let over = match evaluate_expression(m.get("over").unwrap_or(&J::Null), base) {
+            Ok(v) => v,
+            Err(e) => return ExecOutcome::Error(e.message),
+        };
+        let arr = match over {
+            Value::Arr(a) => a,
+            _ => return ExecOutcome::Error(format!("map '{node_id}': 'over' is not an array")),
+        };
+        let as_name = m.get("as").and_then(|v| v.as_str()).unwrap_or("$");
+        let ports_j = m
+            .get("ports")
+            .cloned()
+            .unwrap_or(J::Object(Default::default()));
+        let mut out: Vec<Value> = Vec::with_capacity(arr.len());
+        for el in &arr {
+            let mut scope = base.clone();
+            scope.push((as_name.to_string(), el.clone()));
+            match render_node_ports_serial(driver, graph, dialect, node_id, &ports_j, &scope) {
+                Ok(v) => out.push(v),
+                Err(e) => return ExecOutcome::Error(e),
+            }
+        }
+        return ExecOutcome::Ok(Value::Arr(out));
+    }
+    let ports_j = node
+        .get("ports")
+        .cloned()
+        .unwrap_or(J::Object(Default::default()));
+    match render_node_ports_serial(driver, graph, dialect, node_id, &ports_j, base) {
+        Ok(v) => ExecOutcome::Ok(v),
+        Err(e) => ExecOutcome::Error(e),
+    }
+}
+
+/// The `&dyn Driver` twin of [`render_node_ports`]: eval the `__scope` port then render + execute.
+fn render_node_ports_serial(
+    driver: &dyn Driver,
+    graph: &J,
+    dialect: &str,
+    node_id: &str,
+    ports_j: &J,
+    scope: &Scope,
+) -> Result<Value, String> {
+    let ports = eval_ports(ports_j, scope)?;
+    let node_scope = match ports.iter().find(|(k, _)| k == SCOPE_PORT).map(|(_, v)| v) {
+        Some(Value::Obj(pairs)) => pairs.clone(),
+        _ => {
+            return Err(format!(
+                "static-bundle: node '{node_id}' surrogate scope did not evaluate to an object"
+            ))
+        }
+    };
+    match render_and_execute_node(driver, graph, dialect, node_id, &node_scope) {
+        ExecOutcome::Ok(v) => Ok(v),
+        ExecOutcome::Error(e) => Err(e),
+    }
 }
 
 /// The authoritative bc `run_behavior` read path (the fast-path's oracle). Exposed `#[doc(hidden)]`
