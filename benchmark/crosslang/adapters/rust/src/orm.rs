@@ -9,7 +9,7 @@
 //! serde_json IS used here — this is the ir/exec cell (allowed by the purity gate, which only gates
 //! litedbmodel's OWN runtime source + the separate rust-codegen crate). The runtime's own native
 //! `Node`/`Value` codec parses the artifact + params (decode_value); serde_json only carries the
-//! NDJSON stdio protocol, exactly like the sibling `lm_bench` binary.
+//! NDJSON stdio protocol (serde_json is the transport, not an IR/exec dependency).
 //!
 //! Spawn convention (harness registry): the release binary
 //!     benchmark/crosslang/adapters/rust/target/release/lm_orm [--smoke]

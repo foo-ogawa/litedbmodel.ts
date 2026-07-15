@@ -128,19 +128,13 @@ jobs:
       - name: Go — warm private module graph (retry transient auth)
         if: matrix.lang == 'go'
         uses: ./.github/actions/warm-go-module
-      - name: Go — build (shipped/committed packages only)
+      - name: Go — build + vet (all packages)
         if: matrix.lang == 'go'
-        # Scope: build every SHIPPED/committed Go package, NOT the codegen bench. `go build ./...`
-        # would also walk go/lm_bench/** and go/lm_codegen (the crosslang codegen bench), whose
-        # cgcell package imports the bc-GENERATED per-case modules under go/lm_bench/cgmods/** —
-        # materialized at bench time by benchmark/crosslang/generate.ts and GITIGNORED (never
-        # committed). In a fresh CI checkout those packages are absent, so under -mod=mod Go falls
-        # back to litedbmodel@latest (which predates them) and the build fails ("does not contain
-        # package …/cgmods/…"). That is a DEV-bench artifact gap, not a shipped-runtime breakage.
-        # This mirrors rust, whose codegen bench is a separate crate (benchmark/crosslang/
-        # adapters/rust-codegen) that `cd rust && cargo check` never touches. The dev bench stays
-        # buildable after `npx tsx benchmark/crosslang/generate.ts` regenerates cgmods.
-        run: cd go && go build ./litedbmodel_runtime/... ./conformance/... ./livedb_runner/... ./vectors_runner/...
+        # #63 cleanup: the retired codegen bench (go/lm_bench cgcell·cgplans + go/lm_codegen, which
+        # imported the GITIGNORED generated cgmods/**) is DELETED, so `go build ./...` / `go vet ./...`
+        # now walk every committed package cleanly — including the #63 ORM-plan executor
+        # (go/lm_bench/lm_orm), a self-contained package with no generated-artifact dependency.
+        run: cd go && go build ./... && go vet ./...
       - name: Rust — check
         if: matrix.lang == 'rust'
         run: cd rust && cargo check
