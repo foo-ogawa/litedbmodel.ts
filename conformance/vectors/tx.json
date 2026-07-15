@@ -1,6 +1,6 @@
 {
   "suite": "tx",
-  "corpusVersion": 2,
+  "corpusVersion": 3,
   "note": "Write-time-relations gate-first transaction bundles: commit + gate short-circuit + composite tx-DAG.",
   "vectors": [
     {

@@ -93,13 +93,27 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const LIVEDB_DIR = join(HERE, 'vectors-livedb');
 const SQLITE_VECTORS_DIR = join(HERE, 'vectors');
 
-export const LIVEDB_CORPUS_VERSION = 2 as const;
+export const LIVEDB_CORPUS_VERSION = 3 as const;
 
 const L = components();
 
 // ── Fixtures — MIRROR of harness.ts's exec/tx fixtures (kept identical by the cross-check) ──
 
 class Blog extends SemanticBehavior {
+  // Inline typed-column declaration (issue #59): the reads project from these declared types, so the
+  // always-on read-path de-box resolves every projected column (a typed read fails closed on an
+  // undeclared column). Types are dialect-neutral SQL tokens (the SAME column resolves across pg/mysql/
+  // sqlite — the corpus is dialect-invariant). Computed projections (`COUNT(*) as n`) carry no schema
+  // column and need no entry; the `live_posts` CTE virtual table projects `id, title` (int/text).
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', status: 'TEXT', created_at: 'TEXT' },
+    users: { id: 'INTEGER', name: 'TEXT' },
+    docs: { doc_id: 'TEXT', title: 'TEXT' },
+    docs2: { tenant_id: 'INTEGER', doc_id: 'INTEGER', owner_id: 'INTEGER', title: 'TEXT' },
+    typed: { big: 'INTEGER', txt: 'TEXT', flag: 'INTEGER', ts: 'TEXT', amt: 'REAL', label: 'TEXT' },
+    live_posts: { id: 'INTEGER', title: 'TEXT' },
+  };
+
   Feed($: In<{ author_id: number; status?: string; since: string; created_at: string; limit?: number }>) {
     const posts = L.Select({
       table: 'posts',

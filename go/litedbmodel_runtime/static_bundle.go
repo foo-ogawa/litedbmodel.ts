@@ -2,7 +2,7 @@
 //
 // Byte-for-byte port of the TS src/scp/makesql/static-bundle.ts + makesql.ts + handler.ts runtime
 // halves — the SOLE makeSQL read/render path. It consumes the PRE-COMPILED, portable artifacts the
-// corpus ships (a read ReadGraph = a bc ComponentGraphIR of `__makeSqlNode` surrogate nodes +
+// corpus ships (a read ReadGraph = compileBehaviors' REAL Select/Count/map ComponentGraphIR +
 // per-node STATIC statement templates), and EXECUTES them via the shared behavior-contracts Go
 // core (RunBehavior drives map / Φ-merge / wiring; EvaluateExpression resolves the deferred
 // value-specs + skip). This file re-implements NO generic evaluator and does NO SQL re-derivation —
@@ -431,7 +431,7 @@ func (g *ReadGraph) primaryNodeID() (string, error) {
 // ── ReadGraph execution (NATIVE, interpreter-free — executeReadGraphNative below) ──
 
 // RenderExecuteNode renders ONE read node's static statements against `scope` and runs REAL SQL on
-// `db`, returning the row list. It is the render→execute SSoT behind the `__makeSqlNode` handler
+// `db`, returning the row list. It is the render->execute SSoT for a real Select/Count/map node (#12)
 // (ExecCtx above). Exported so the codegen bench cell's generated-module handler runs the SAME
 // render+execute the interpreter handler runs — the ONLY difference being that the generated
 // de-interpreted module (NOT RunBehavior) drives the call. Byte-identical rows to the ir path.

@@ -36,16 +36,10 @@
 
 import {
   evaluateExpression,
-  runBehavior,
-  runBehaviorAsync,
   type Scope,
   type Value,
   type Component as BcComponent,
   type ComponentGraphIR,
-  type Handlers,
-  type AsyncHandlers,
-  type HandlerCtx,
-  type ExecOutcome,
 } from 'behavior-contracts';
 import type { Component, ComponentRefNode, MapNode, BehaviorModelContract } from '../authoring';
 import { IN_SENTINEL } from './tx';
@@ -935,59 +929,14 @@ export function executeStaticWrite(bundle: StaticBundle, input: Scope, db: Sqlit
 }
 
 // ============================================================================
-// Step 0 — the bc-runBehavior read executor: bc composes (map / Φ-merge / wiring),
-// makeSQL executes. A read behavior method whose output is a Φ-merge of SQL nodes
-// (`{obj:{posts:ref[n0], authors:map(n0)}}`) is executed by rewriting each SQL node
-// to a `makeSQL` node carrying a synthetic `__scope` port and running bc `runBehavior`
-// with a handler that renders that node's static statements against the evaluated scope.
-// This gives map iteration + Φ output + wiring FOR FREE (bc owns orchestration).
+// #12 — the NATIVE read-graph walker (interpreter-free): litedbmodel composes map /
+// Φ-merge / wiring ITSELF over `compileBehaviors`' REAL `Select`/`Count`/map node IR
+// (no `__makeSqlNode`/`__scope` surrogate, no bc `runBehavior`). Each body node's SQL
+// comes from its `statementsById[id]` fragment templates (rendered against the walk
+// scope); topology (`map.over`/`as`, `plan.groups`, `output` Φ) is read off the real
+// nodes. This mirrors the rust/go/py/php native walkers — one shared orchestration model
+// across all 5 runtimes, `runBehavior` invoked on NONE of them.
 // ============================================================================
-
-/** The synthetic port that carries a SQL node's render scope (bc evaluates it in-scope). */
-const SCOPE_PORT = '__scope';
-/** The makeSQL catalog leaf name every rewritten SQL node references. */
-const NODE_COMPONENT = '__makeSqlNode';
-
-/** Collect every ref/refOpt path HEAD used inside an Expression IR node. */
-function collectAllHeads(node: unknown, heads: Set<string>): void {
-  if (node === null || typeof node !== 'object') return;
-  if (Array.isArray(node)) {
-    for (const el of node) collectAllHeads(el, heads);
-    return;
-  }
-  const keys = Object.keys(node);
-  if (keys.length === 1 && (keys[0] === 'ref' || keys[0] === 'refOpt')) {
-    const path = (node as Record<string, unknown>)[keys[0]];
-    if (Array.isArray(path) && typeof path[0] === 'string') heads.add(path[0] as string);
-    return;
-  }
-  for (const k of keys) collectAllHeads((node as Record<string, unknown>)[k], heads);
-}
-
-/** Every binding head a node's compiled statements reference (params + skip). */
-function statementHeads(statements: readonly StaticStatement[]): Set<string> {
-  const heads = new Set<string>();
-  for (const stmt of statements) {
-    for (const p of stmt.params) collectAllHeads(p, heads);
-    if (stmt.skip !== undefined) collectAllHeads(stmt.skip, heads);
-  }
-  return heads;
-}
-
-/**
- * Build the surrogate `__scope` port for a node: a bc `{obj:{…}}` re-exporting each referenced
- * head as `{ref:[head]}` (excluding the IN-sentinel column marker). bc evaluates this in ITS
- * scope (so `input`, sibling wire results and the `map` element `as` all resolve), then the
- * handler renders the node's static statements against the resulting plain scope.
- */
-function scopePort(statements: readonly StaticStatement[]): unknown {
-  const obj: Record<string, unknown> = {};
-  for (const head of statementHeads(statements)) {
-    if (head === IN_SENTINEL) continue;
-    obj[head] = { ref: [head] };
-  }
-  return { obj };
-}
 
 /** Compile ONE authored SQL node (Select or CRUD write) into its static statements. */
 function compileNodeStatements(node: RefLike, dialect: Dialect): StaticStatement[] {
@@ -998,17 +947,20 @@ function compileNodeStatements(node: RefLike, dialect: Dialect): StaticStatement
 }
 
 /**
- * The compiled, portable READ graph of a behavior method: the surrogate bc `ComponentGraphIR`
- * (each SQL node → a `makeSQL` node with one `__scope` port; wiring / map / Φ output preserved)
- * plus the per-node static statement templates and the optional heads. Pure JSON —
- * `JSON.stringify` round-trips, so a per-language runtime executes it with bc + a SQL driver.
+ * The compiled, portable READ graph of a behavior method (#12 de-surrogated): `compileBehaviors`'
+ * REAL `ComponentGraphIR` — the authored `Select`/`Count`/map nodes with their own ports (only
+ * additively annotated with read `outType`/`outputType`), NOT a hand-built `__makeSqlNode`/`__scope`
+ * surrogate — plus the per-node static `makeSQL` statement templates (opaque, v1-`DBConditions`-
+ * sourced SQL TEXT) keyed by the real body-node id, and the optional heads. Pure JSON —
+ * `JSON.stringify` round-trips, so every language runtime walks this real-node IR natively (topology
+ * from the real nodes, SQL from `statementsById`) with a SQL driver — never bc `runBehavior`.
  */
 export interface ReadGraph {
   readonly dialect: Dialect;
   readonly name: string;
-  /** The surrogate bc IR (catalog nodes → `makeSQL` `__scope`-port nodes). */
+  /** `compileBehaviors`' real `ComponentGraphIR` (real `Select`/`Count`/map nodes; outType-annotated). */
   readonly ir: ComponentGraphIR;
-  /** Per-node static `makeSQL` statement templates, keyed by body node id. */
+  /** Per-node static `makeSQL` statement templates (v1-sourced SQL text), keyed by real body node id. */
   readonly statementsById: Record<string, readonly StaticStatement[]>;
   /** Input heads normalized to present-as-null (absent-key SKIP; SSoT-driven). */
   readonly optionalHeads: readonly string[];
@@ -1024,10 +976,12 @@ export interface ReadGraph {
 }
 
 /**
- * Compile a READ behavior method into a portable {@link ReadGraph}: rewrite each authored SQL
- * body node to a `makeSQL` node carrying a synthetic `__scope` port (bc evaluates it in-scope),
- * and compile each node's static statements ONCE. SYMBOLIC — no concrete input. bc will own map
- * iteration / wire binding / Φ output at execute time; the handler renders each node's statements.
+ * Compile a READ behavior method into a portable {@link ReadGraph} (#12 de-surrogated): keep
+ * `compileBehaviors`' REAL `Select`/`Count`/map body nodes (only additively annotate each with its
+ * read `outType`), and compile each node's static `makeSQL` statements ONCE into the `statementsById`
+ * sidecar (keyed by the real body-node id). SYMBOLIC — no concrete input. The native walker
+ * ({@link executeReadGraph}) owns map iteration / wire binding / Φ output at execute time, rendering
+ * each node's statements against the walk scope — never bc `runBehavior`, never a `__scope` surrogate.
  */
 export function compileReadGraph(
   contract: BehaviorModelContract,
@@ -1072,22 +1026,28 @@ export function compileReadGraph(
   const readTypes = resolveColumnType !== undefined ? deriveReadOutTypes(component as never, resolveColumnType) : undefined;
   const materializers = readTypes?.materializersByNode;
 
-  const surrogateBody = component.body.map((n) => {
+  // #12 (de-surrogation): the read-graph IR is `compileBehaviors`' REAL component — the authored
+  // `Select`/`Count`/map nodes with their own `table`/`select`/`where`/… ports, NOT a hand-built
+  // `__makeSqlNode` + `__scope` surrogate. litedbmodel constructs NO `ComponentGraphIR`/`BodyNode`
+  // literal here: it only ADDITIVELY annotates each node with its read `outType` (issue #59) and the
+  // component with its `outputType` — the node SHAPE/ports are `compileBehaviors`' output untouched.
+  // The compiled SQL fragment templates ride the sidecar `statementsById` (opaque, v1-`DBConditions`-
+  // sourced TEXT), keyed by the SAME real body-node id; every language runtime walks this real-node
+  // IR natively (topology from the real nodes; SQL from `statementsById[id]`), never bc `runBehavior`.
+  const annotatedBody = component.body.map((n) => {
     if ('cond' in n) return n;
-    const stmts = statementsById[n.id];
     const outType = readTypes?.byNode.get(n.id);
-    const outAnn = outType !== undefined ? { outType } : {};
-    if ('map' in n) {
-      return { ...n, ...outAnn, map: { ...n.map, component: NODE_COMPONENT, ports: { [SCOPE_PORT]: scopePort(stmts) } } };
-    }
-    return { ...n, ...outAnn, component: NODE_COMPONENT, ports: { [SCOPE_PORT]: scopePort(stmts) } };
+    return outType !== undefined ? { ...n, outType } : n;
   });
-  const surrogate = {
+  const irComponent = {
     ...component,
-    body: surrogateBody,
+    body: annotatedBody,
     ...(readTypes !== undefined ? { outputType: readTypes.outputType } : {}),
   } as unknown as BcComponent;
-  const ir: ComponentGraphIR = { irVersion: 1, exprVersion: 2, components: [surrogate] };
+  // Preserve `compileBehaviors`' OWN IR envelope (irVersion/exprVersion + any other metadata) — the
+  // read graph IR is the compiler's output with ONLY the single entry component swapped for its
+  // outType-annotated twin (additive). litedbmodel fabricates no `ComponentGraphIR`/`BodyNode`.
+  const ir: ComponentGraphIR = { ...contract.ir, components: [irComponent] };
 
   return {
     dialect,
@@ -1138,47 +1098,130 @@ function hasInt64(cols: Record<string, MaterializeClass>): boolean {
   return false;
 }
 
+// ── Native read-graph orchestration primitives (shared by sync/async walkers) ──
+
+/** The read-graph body node shape the native walker recognizes (a real `compileBehaviors` node). */
+type ReadBodyNode = {
+  id: string;
+  component?: string;
+  ports?: Record<string, unknown>;
+  cond?: unknown;
+  map?: { as?: string; over?: unknown; ports?: Record<string, unknown> };
+};
+
+/** The plan stages (`groups`) as body-index lists, or one-node-per-stage in declaration order. */
+function planStages(component: BcComponent): number[][] {
+  const plan = (component as unknown as { plan?: { groups?: unknown } }).plan;
+  const groups = plan?.groups;
+  if (Array.isArray(groups)) {
+    return groups.map((st) => (Array.isArray(st) ? st.filter((i): i is number => typeof i === 'number') : []));
+  }
+  return component.body.map((_n, i) => [i]);
+}
+
+/** The plan's `concurrency` bound (default 1 — serial when absent/≤1), for the async fan-out. */
+function planConcurrency(component: BcComponent): number {
+  const plan = (component as unknown as { plan?: { concurrency?: unknown } }).plan;
+  const c = plan?.concurrency;
+  return typeof c === 'number' && c >= 1 ? c : 1;
+}
+
 /**
- * Execute a compiled {@link ReadGraph} via bc `runBehavior` + a makeSQL handler: bc drives map
- * iteration / wire binding / Φ output; the handler renders each node's static statements against
- * the evaluated `__scope` and runs REAL SQLite. Returns the component's Φ output. This is the
- * design's "bc composes, makeSQL executes" — the SAME path a per-language runtime follows.
+ * Bounded-parallel map preserving INPUT ORDER in the result. At most `limit` tasks run at once
+ * (`limit <= 1` ⇒ strictly serial). Deterministic: the output array is indexed by input position,
+ * regardless of completion order — mirrors bc `runPlanAsync`'s in-order commit, so the async walker's
+ * assembled result equals the serial walker's byte-for-byte.
+ */
+async function boundedMap<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  const cap = Math.max(1, Math.floor(limit));
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(cap, items.length) }, () => worker()));
+  return out;
+}
+
+/** Render + execute a node's `statementsById` fragments against `scope`, sync driver, with #59 de-box. */
+function execReadNodeSync(graph: ReadGraph, nodeId: string, scope: Scope, db: SqliteDb): Value {
+  const stmts = graph.statementsById[nodeId];
+  if (stmts === undefined) throw new Error(`static-bundle: no statements for node '${nodeId}'`);
+  const { sql, params } = renderStatements(stmts, graph.dialect, scope);
+  const cols = graph.materializersByNode?.[nodeId];
+  try {
+    const stmt = db.prepare(sql);
+    // A BIGINT-projecting node runs in SQLite safe-integer mode so int8 comes back as an EXACT
+    // bigint (a JS number would round it — the #59 hole); `materializeRows` then narrows/stringifies.
+    let safeIntegersOn = false;
+    if (cols !== undefined && hasInt64(cols) && typeof (stmt as { safeIntegers?: unknown }).safeIntegers === 'function') {
+      (stmt as unknown as { safeIntegers(v: boolean): unknown }).safeIntegers(true);
+      safeIntegersOn = true;
+    }
+    const rows = stmt.all(...params) as Record<string, unknown>[];
+    return materializeRows(rows, cols, safeIntegersOn) as unknown as Value;
+  } catch (e) {
+    throw mapSqliteError(e);
+  }
+}
+
+/** Compute ONE read-graph body node's value against `base`: a `cond` join, a `map` (per-element
+ * render+execute under the `as` binding), or a componentRef (render+execute). Sync driver. */
+function computeReadNodeSync(graph: ReadGraph, node: ReadBodyNode, base: Scope, db: SqliteDb): Value {
+  if (node.cond !== undefined) return evaluateExpression(node.cond, base) as Value;
+  if (node.map !== undefined) {
+    const over = evaluateExpression(node.map.over, base);
+    if (!Array.isArray(over)) throw new Error(`static-bundle: map '${node.id}': 'over' is not an array`);
+    const asName = node.map.as ?? '$';
+    const out: Value[] = [];
+    for (const el of over) {
+      out.push(execReadNodeSync(graph, node.id, { ...base, [asName]: el as Value }, db));
+    }
+    return out as unknown as Value;
+  }
+  return execReadNodeSync(graph, node.id, base, db);
+}
+
+/** Normalize omitted OPTIONAL heads to present-as-null (absent-key SKIP; SSoT-driven). */
+function normalizeReadInput(graph: ReadGraph, input: Scope): Scope {
+  const out: Scope = { ...input };
+  for (const head of graph.optionalHeads) if (!(head in out)) out[head] = null;
+  return out;
+}
+
+/**
+ * Execute a compiled {@link ReadGraph} via the NATIVE walker (#12): walk `compileBehaviors`' REAL
+ * `Select`/`Count`/map node IR in `plan.groups` stage order — computing each node's rows from its
+ * `statementsById` fragments (rendered against the walk scope) and committing `(nodeId → value)` —
+ * then evaluate the component's `output` Φ expression. NO bc `runBehavior`, NO `__makeSqlNode`
+ * surrogate; litedbmodel owns map iteration / wire binding / Φ output. This is the SAME native
+ * orchestration model the rust/go/py/php runtimes follow — one shape, all 5 languages, interpreter-free.
  */
 export function executeReadGraph(graph: ReadGraph, input: Scope, db: SqliteDb): Value {
-  const handle = (ports: Record<string, Value>, ctx: HandlerCtx): ExecOutcome => {
-    const stmts = graph.statementsById[ctx.nodeId];
-    if (stmts === undefined) return { error: `static-bundle: no statements for node '${ctx.nodeId}'` };
-    const scope = ports[SCOPE_PORT];
-    if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) {
-      return { error: `static-bundle: node '${ctx.nodeId}' surrogate scope did not evaluate to an object` };
-    }
-    const { sql, params } = renderStatements(stmts, graph.dialect, scope as Scope);
-    const cols = graph.materializersByNode?.[ctx.nodeId];
-    try {
-      const stmt = db.prepare(sql);
-      // When this node projects a 64-bit int (BIGINT) column, put the statement in SQLite's
-      // safe-integer mode so int8 comes back as an EXACT bigint (a JS number would already have
-      // rounded it — the #59 hole). `materializeRows` then converts int64 bigint→string and narrows
-      // int32 bigint→number (incl. any stray int column). Feature-detected: `safeIntegers` exists on
-      // better-sqlite3 statements; a mock/other driver without it simply skips (rows already exact).
-      let safeIntegersOn = false;
-      if (cols !== undefined && hasInt64(cols) && typeof (stmt as { safeIntegers?: unknown }).safeIntegers === 'function') {
-        (stmt as unknown as { safeIntegers(v: boolean): unknown }).safeIntegers(true);
-        safeIntegersOn = true;
-      }
-      const rows = stmt.all(...params) as Record<string, unknown>[];
-      return { ok: materializeRows(rows, cols, safeIntegersOn) as unknown as Value };
-    } catch (e) {
-      return { error: mapSqliteError(e).message };
-    }
-  };
-  const handlers: Handlers = { [NODE_COMPONENT]: handle };
-
-  const normalized: Scope = { ...input };
-  for (const head of graph.optionalHeads) if (!(head in normalized)) normalized[head] = null;
+  const component = graph.ir.components[0];
+  const body = component.body as unknown as ReadBodyNode[];
+  const output = (component as unknown as { output?: unknown }).output ?? null;
+  const normalized = normalizeReadInput(graph, input);
 
   try {
-    return runBehavior(graph.ir, handlers, normalized, graph.name);
+    const results: [string, Value][] = [];
+    for (const stage of planStages(component)) {
+      // Commit stage members in ascending body index (deterministic failure precedence).
+      const ordered = [...stage].sort((a, b) => a - b);
+      const base: Scope = { ...normalized };
+      for (const [id, v] of results) base[id] = v;
+      for (const idx of ordered) {
+        const node = body[idx];
+        base[node.id] = results[results.push([node.id, computeReadNodeSync(graph, node, base, db)]) - 1][1];
+      }
+    }
+    const scope: Scope = { ...normalized };
+    for (const [id, v] of results) scope[id] = v;
+    return evaluateExpression(output, scope) as Value;
   } catch (e) {
     throw reErrorToSqlFailure(e);
   }
@@ -1187,53 +1230,70 @@ export function executeReadGraph(graph: ReadGraph, input: Scope, db: SqliteDb): 
 /** An async driver seam: run a rendered `{ sql, params }` and resolve to result rows (#40). */
 export type SqlExecutorAsync = (sql: string, params: unknown[]) => Promise<Record<string, unknown>[]>;
 
+/** Render + execute a node's `statementsById` fragments against `scope`, async driver, with #59 de-box. */
+async function execReadNodeAsync(graph: ReadGraph, nodeId: string, scope: Scope, exec: SqlExecutorAsync): Promise<Value> {
+  const stmts = graph.statementsById[nodeId];
+  if (stmts === undefined) throw new Error(`static-bundle: no statements for node '${nodeId}'`);
+  const { sql, params } = renderStatements(stmts, graph.dialect, scope);
+  try {
+    const rows = await exec(sql, params);
+    // #59 materializers: the pooled PG/MySQL drivers are configured so int8/BIGINT arrive as a string
+    // (→ bigint) and BOOLEAN as a JS boolean; `materializeCell` coerces each to the SQL-type JS form.
+    return materializeRows(rows, graph.materializersByNode?.[nodeId]) as unknown as Value;
+  } catch (e) {
+    throw mapSqliteError(e);
+  }
+}
+
+/** Async twin of {@link computeReadNodeSync}: dispatches a map stage's per-element queries in bounded
+ * parallel (the live PG/MySQL fan-out, capped at `concurrency`); a componentRef runs one query; a
+ * `cond` is pure. */
+async function computeReadNodeAsync(graph: ReadGraph, node: ReadBodyNode, base: Scope, exec: SqlExecutorAsync, concurrency: number): Promise<Value> {
+  if (node.cond !== undefined) return evaluateExpression(node.cond, base) as Value;
+  if (node.map !== undefined) {
+    const over = evaluateExpression(node.map.over, base);
+    if (!Array.isArray(over)) throw new Error(`static-bundle: map '${node.id}': 'over' is not an array`);
+    const asName = node.map.as ?? '$';
+    return (await boundedMap(over, concurrency, (el) =>
+      execReadNodeAsync(graph, node.id, { ...base, [asName]: el as Value }, exec),
+    )) as unknown as Value;
+  }
+  return execReadNodeAsync(graph, node.id, base, exec);
+}
+
 /**
- * Async twin of {@link executeReadGraph} — the PG / MySQL execution model (#40).
- *
- * Byte-identical composition (SAME IR, SAME per-node SQL text + params, SAME Φ output), but bc's
- * `runBehaviorAsync` drives it: the makeSQL handler returns a Promise, and bc dispatches the
- * INDEPENDENT sibling nodes of a plan stage on `runPlanAsync`'s bounded-parallel path (bc#23),
- * bounded by the plan's `concurrency` (default 16). Against a pooled async driver (`pg` / `mysql2`,
- * each `exec` call resolving on its own pooled connection), that becomes REAL parallel read-relation
- * DB I/O — the plan's declared concurrency finally cashes out as concurrent dispatch. The result is
- * deterministic (bc commits stage outcomes in declaration order), so it equals the serial
- * `executeReadGraph` output exactly; only the wall-clock changes.
- *
- * The conformance bar stays on the SYNC in-proc better-sqlite3 path (`executeReadGraph`); this async
- * path is the live PG/MySQL execution model and is proven by the latency-injecting concurrency test.
+ * Async twin of {@link executeReadGraph} — the live PG / MySQL execution model (#40). Byte-identical
+ * composition (SAME real-node IR, SAME per-node SQL text + params, SAME Φ output); within a plan stage
+ * the INDEPENDENT sibling nodes are dispatched concurrently against the pooled async executor (each
+ * `exec` resolving on its own pooled connection), and a map node's per-element queries fan out in
+ * bounded parallel. The result is deterministic (stage outcomes commit in declaration order), so it
+ * equals the serial `executeReadGraph` output exactly; only the wall-clock changes.
  */
 export async function executeReadGraphAsync(
   graph: ReadGraph,
   input: Scope,
   exec: SqlExecutorAsync,
 ): Promise<Value> {
-  const handle = async (ports: Record<string, Value>, ctx: HandlerCtx): Promise<ExecOutcome> => {
-    const stmts = graph.statementsById[ctx.nodeId];
-    if (stmts === undefined) return { error: `static-bundle: no statements for node '${ctx.nodeId}'` };
-    const scope = ports[SCOPE_PORT];
-    if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) {
-      return { error: `static-bundle: node '${ctx.nodeId}' surrogate scope did not evaluate to an object` };
-    }
-    const { sql, params } = renderStatements(stmts, graph.dialect, scope as Scope);
-    try {
-      const rows = await exec(sql, params);
-      // TS read-path materializers (issue #59): PG returns int8 as string (→ bigint) and BOOLEAN
-      // as a JS boolean; MySQL needs `supportBigNumbers + bigNumberStrings` on the pool so BIGINT
-      // arrives as a string (→ bigint). `materializeCell` accepts each driver's form and coerces
-      // to the SQL-type JS form; a still-rounded number for a BIGINT column throws (fail-closed,
-      // never a silent precision loss — see pgPoolExecutor/mysqlPoolExecutor pool-config note).
-      return { ok: materializeRows(rows, graph.materializersByNode?.[ctx.nodeId]) as unknown as Value };
-    } catch (e) {
-      return { error: mapSqliteError(e).message };
-    }
-  };
-  const handlers: AsyncHandlers = { [NODE_COMPONENT]: handle };
-
-  const normalized: Scope = { ...input };
-  for (const head of graph.optionalHeads) if (!(head in normalized)) normalized[head] = null;
+  const component = graph.ir.components[0];
+  const body = component.body as unknown as ReadBodyNode[];
+  const output = (component as unknown as { output?: unknown }).output ?? null;
+  const concurrency = planConcurrency(component);
+  const normalized = normalizeReadInput(graph, input);
 
   try {
-    return await runBehaviorAsync(graph.ir, handlers, normalized, graph.name);
+    const results: [string, Value][] = [];
+    for (const stage of planStages(component)) {
+      const ordered = [...stage].sort((a, b) => a - b);
+      const base: Scope = { ...normalized };
+      for (const [id, v] of results) base[id] = v;
+      // Independent siblings of a stage run in bounded parallel (capped at the plan concurrency;
+      // concurrency ≤ 1 ⇒ serial); committed in ascending body index order for determinism.
+      const vals = await boundedMap(ordered, concurrency, (idx) => computeReadNodeAsync(graph, body[idx], base, exec, concurrency));
+      ordered.forEach((idx, i) => results.push([body[idx].id, vals[i]]));
+    }
+    const scope: Scope = { ...normalized };
+    for (const [id, v] of results) scope[id] = v;
+    return evaluateExpression(output, scope) as Value;
   } catch (e) {
     throw reErrorToSqlFailure(e);
   }
@@ -1262,7 +1322,7 @@ export function executeReadBehavior(
  */
 export function renderReadPrimary(graph: ReadGraph, input: Scope): { sql: string; params: unknown[] } {
   const ids = Object.keys(graph.statementsById);
-  // The primary node is the first body node in the surrogate IR order (map nodes reference it).
+  // The primary node is the first body node in the real-node IR order (map nodes reference it).
   const bodyIds = graph.ir.components[0].body.map((n) => n.id).filter((id) => ids.includes(id));
   const primaryId = bodyIds[0];
   if (primaryId === undefined) throw new Error('static-bundle: read graph has no primary node to render');

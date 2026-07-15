@@ -3,8 +3,9 @@
 //! Byte-for-byte port of the TS `src/scp/makesql/static-bundle.ts` + `makesql.ts` + `handler.ts`
 //! runtime halves — the SOLE makeSQL read/render path — mirroring the audited Python/Go/PHP sibling
 //! ports. It consumes the PRE-COMPILED, portable artifacts the corpus ships (a read `ReadGraph` = a
-//! `__makeSqlNode` surrogate component-graph + per-node STATIC statement templates), and executes
-//! them NATIVELY (#8): the read-graph orchestration (map iteration / Φ-merge / output assembly) is a
+//! REAL `Select`/`Count`/map component-graph + per-node STATIC statement templates keyed by the
+//! real node id (#12 - no `__makeSqlNode`/`__scope` surrogate), and executes
+//! them NATIVELY (#8/#12): the read-graph orchestration (map iteration / Φ-merge / output assembly) is a
 //! CLOSED-SET native walker (`execute_read_graph` → `orchestrate_read_graph_serial`, NOT the retired
 //! bc `run_behavior` IR interpreter), and the deferred param slots + skip resolve through the crate's
 //! OWN native evaluator ([`crate::node::eval_expr`], NOT bc's external JSON crate-based `evaluate_expression`).
@@ -394,7 +395,8 @@ pub(crate) fn to_driver_param(v: &Value) -> Value {
 
 /// Render one read node's static statements against `scope` and execute them on `driver`.
 ///
-/// The ONE render→execute step behind a `__makeSqlNode`. Shared by the serial handler
+/// The ONE render→execute step for a real `Select`/`Count`/map node (#12): its SQL comes from
+/// `statementsById[id]`, rendered against the walk `scope` directly (no `__scope`). Shared by the serial handler
 /// ([`ReadGraphHandlers`]) and the parallel dispatch path ([`dispatch_read_nodes_parallel`]) so both
 /// produce byte-identical SQL + params — the parallel path only changes WHICH thread runs this, not
 /// WHAT it runs. Takes `driver` by `&dyn Driver` so a `Sync` pooled driver can service concurrent
@@ -426,10 +428,11 @@ fn render_and_execute_node(
     }
 }
 
-/// Execute a compiled ReadGraph via bc `run_behavior` + a makeSQL handler: bc drives map iteration /
-/// wire binding / Φ output; the handler renders each node's static statements against the evaluated
-/// `__scope` and runs REAL SQL. Returns the component's Φ output. Byte-true to the TS
-/// executeReadGraph — the "bc composes, makeSQL executes" design.
+/// Execute a compiled ReadGraph via the NATIVE walker (#12): walk `compileBehaviors`' REAL
+/// `Select`/`Count`/map node IR — computing each node's rows from `statementsById[id]` (rendered
+/// against the walk scope) and assembling the component `output` Φ. NO bc `run_behavior`, NO
+/// `__makeSqlNode`/`__scope` surrogate; litedbmodel owns map iteration / wire binding / Φ output.
+/// Byte-identical to the TS executeReadGraph — the SAME native model across all 5 runtimes.
 pub fn execute_read_graph(
     graph: &J,
     input: &Scope,
@@ -447,13 +450,11 @@ pub fn execute_read_graph(
     let normalized = normalize_read_graph_input(graph, input);
 
     // FAST-PATH: a component that is a SINGLE `componentRef` body node whose Φ output is exactly
-    // `{ref:[<that node>]}` is what every read graph in the corpus is. bc `run_behavior` would, for
-    // this shape, eval the node ports, dispatch exec_ctx once, and return the node's rows verbatim
-    // as the output — but at the cost of cloning the whole body IR, building OpSpecs, and threading
-    // an input.to_vec() base-scope through the plan machinery. We reproduce the SAME result directly
-    // (eval `__scope` ports → render+execute → its rows), byte-identical, skipping that plumbing.
-    // Any other shape (multiple nodes, a map/cond node, a non-trivial output) falls through to the
-    // authoritative bc `run_behavior` path unchanged.
+    // `{ref:[<that node>]}` (the single-relation read-graph shape). We render+execute that node's
+    // `statementsById[id]` against the normalized input and return its rows verbatim as the output —
+    // byte-identical to the general native orchestrator, skipping the stage/plan plumbing. Any other
+    // shape (multiple nodes, a map/cond node, a non-trivial output) falls through to the general
+    // native orchestrator below.
     if let Some(node) = single_ref_node(ir, name) {
         if let Some(out) = fast_single_node(driver, graph, &dialect, node, &normalized) {
             return out;
@@ -600,53 +601,21 @@ fn exec_read_node_serial(
             _ => return ExecOutcome::Error(format!("map '{node_id}': 'over' is not an array")),
         };
         let as_name = m.get("as").and_then(|v| v.as_str()).unwrap_or("$");
-        let ports_j = m
-            .get("ports")
-            .cloned()
-            .unwrap_or(J::Object(Default::default()));
         let mut out: Vec<Value> = Vec::with_capacity(arr.len());
         for el in &arr {
             let mut scope = base.clone();
             scope.push((as_name.to_string(), el.clone()));
-            match render_node_ports_serial(driver, graph, dialect, node_id, &ports_j, &scope) {
-                Ok(v) => out.push(v),
-                Err(e) => return ExecOutcome::Error(e),
+            // #12: render the real node's `statementsById[id]` fragments directly against the walk
+            // scope (map element binding included) — no `__scope` surrogate port to evaluate.
+            match render_and_execute_node(driver, graph, dialect, node_id, &scope) {
+                ExecOutcome::Ok(v) => out.push(v),
+                ExecOutcome::Error(e) => return ExecOutcome::Error(e),
             }
         }
         return ExecOutcome::Ok(Value::Arr(out));
     }
-    let ports_j = node
-        .get("ports")
-        .cloned()
-        .unwrap_or(J::Object(Default::default()));
-    match render_node_ports_serial(driver, graph, dialect, node_id, &ports_j, base) {
-        Ok(v) => ExecOutcome::Ok(v),
-        Err(e) => ExecOutcome::Error(e),
-    }
-}
-
-/// The `&dyn Driver` twin of [`render_node_ports`]: eval the `__scope` port then render + execute.
-fn render_node_ports_serial(
-    driver: &dyn Driver,
-    graph: &J,
-    dialect: &str,
-    node_id: &str,
-    ports_j: &J,
-    scope: &Scope,
-) -> Result<Value, String> {
-    let ports = eval_ports(ports_j, scope)?;
-    let node_scope = match ports.iter().find(|(k, _)| k == SCOPE_PORT).map(|(_, v)| v) {
-        Some(Value::Obj(pairs)) => pairs.clone(),
-        _ => {
-            return Err(format!(
-                "static-bundle: node '{node_id}' surrogate scope did not evaluate to an object"
-            ))
-        }
-    };
-    match render_and_execute_node(driver, graph, dialect, node_id, &node_scope) {
-        ExecOutcome::Ok(v) => Ok(v),
-        ExecOutcome::Error(e) => Err(e),
-    }
+    // componentRef (#12): render the real node's statements directly against `base` (no `__scope`).
+    render_and_execute_node(driver, graph, dialect, node_id, base)
 }
 
 /// If the entry component is a single `componentRef` body node `X` with `output == {ref:[X]}`,
@@ -675,8 +644,9 @@ fn single_ref_node<'a>(ir: &'a J, name: Option<&str>) -> Option<&'a J> {
     }
 }
 
-/// Evaluate the single node's `__scope` ports against `scope`, render + execute its statements, and
-/// return the rows — the byte-identical result bc would produce for `output={ref:[node]}`.
+/// Render + execute the single node's statements against `scope` and return the rows — the
+/// byte-identical result for `output={ref:[node]}` (#12: render the real node's `statementsById[id]`
+/// directly against the walk scope, no `__scope` surrogate).
 fn fast_single_node(
     driver: &dyn Driver,
     graph: &J,
@@ -685,17 +655,7 @@ fn fast_single_node(
     scope: &Scope,
 ) -> Option<Result<Value, SqlFailure>> {
     let node_id = node.get("id").and_then(|v| v.as_str())?;
-    let ports_j = node.get("ports")?;
-    let ports = match eval_ports(ports_j, scope) {
-        Ok(p) => p,
-        Err(e) => return Some(Err(re_error_to_sql_failure(&e))),
-    };
-    let node_scope = match ports.iter().find(|(k, _)| k == SCOPE_PORT).map(|(_, v)| v) {
-        Some(Value::Obj(pairs)) => pairs.as_slice(),
-        // A surrogate scope that is not an object is a wiring bug — defer to bc for its exact error.
-        _ => return None,
-    };
-    match render_and_execute_node(driver, graph, dialect, node_id, node_scope) {
+    match render_and_execute_node(driver, graph, dialect, node_id, scope) {
         ExecOutcome::Ok(v) => Some(Ok(v)),
         ExecOutcome::Error(e) => Some(Err(re_error_to_sql_failure(&e))),
     }
@@ -933,10 +893,10 @@ fn orchestrate_read_graph(
     evaluate_expression(&output, &scope).map_err(|e| re_error_to_sql_failure(&e.message))
 }
 
-/// Compute ONE read-graph body node's value against `base` scope, mirroring bc `run_behavior`:
+/// Compute ONE read-graph body node's value against `base` scope (#12 native walker):
 /// a `cond` evaluates its `{cond:[if,then,else]}`; a `componentRef` renders + executes its
-/// `__scope`-port statements; a simple `map` iterates `over`, rendering + executing per element
-/// under the `as` binding, and collects the per-element rows in order (byte-identical to bc).
+/// `statementsById[id]` fragments against `base`; a simple `map` iterates `over`, rendering +
+/// executing per element under the `as` binding, collecting the per-element rows in order.
 fn exec_read_node(
     driver: &(dyn Driver + Sync),
     graph: &J,
@@ -963,72 +923,22 @@ fn exec_read_node(
             _ => return ExecOutcome::Error(format!("map '{node_id}': 'over' is not an array")),
         };
         let as_name = m.get("as").and_then(|v| v.as_str()).unwrap_or("$");
-        let ports_j = m
-            .get("ports")
-            .cloned()
-            .unwrap_or(J::Object(Default::default()));
         let mut out: Vec<Value> = Vec::with_capacity(arr.len());
         for el in &arr {
             let mut scope = base.clone();
             scope.push((as_name.to_string(), el.clone()));
-            match render_node_ports(driver, graph, dialect, node_id, &ports_j, &scope) {
-                Ok(v) => out.push(v),
-                Err(e) => return ExecOutcome::Error(e),
+            // #12: render the real node's `statementsById[id]` fragments directly against the walk
+            // scope (the map element binding included) — no `__scope` surrogate port to evaluate.
+            match render_and_execute_node(driver, graph, dialect, node_id, &scope) {
+                ExecOutcome::Ok(v) => out.push(v),
+                ExecOutcome::Error(e) => return ExecOutcome::Error(e),
             }
         }
         return ExecOutcome::Ok(Value::Arr(out));
     }
 
-    // componentRef: evaluate the `__scope` port in `base`, then render + execute.
-    let ports_j = node
-        .get("ports")
-        .cloned()
-        .unwrap_or(J::Object(Default::default()));
-    match render_node_ports(driver, graph, dialect, node_id, &ports_j, base) {
-        Ok(v) => ExecOutcome::Ok(v),
-        Err(e) => ExecOutcome::Error(e),
-    }
-}
-
-/// Evaluate a makeSQL node's ports (the surrogate `__scope`) against `scope`, then render + execute
-/// its static statements — the SAME render→execute the serial handler runs, so SQL + params match.
-fn render_node_ports(
-    driver: &(dyn Driver + Sync),
-    graph: &J,
-    dialect: &str,
-    node_id: &str,
-    ports_j: &J,
-    scope: &Scope,
-) -> Result<Value, String> {
-    let ports = eval_ports(ports_j, scope)?;
-    let node_scope = match ports.iter().find(|(k, _)| k == SCOPE_PORT).map(|(_, v)| v) {
-        Some(Value::Obj(pairs)) => pairs.clone(),
-        _ => {
-            return Err(format!(
-                "static-bundle: node '{node_id}' surrogate scope did not evaluate to an object"
-            ))
-        }
-    };
-    match render_and_execute_node(driver, graph, dialect, node_id, &node_scope) {
-        ExecOutcome::Ok(v) => Ok(v),
-        ExecOutcome::Error(e) => Err(e),
-    }
-}
-
-/// Evaluate a bc `{obj:{…}}` (or any Expression) ports node to a flat `[(port, Value)]` (mirrors
-/// bc `eval_ports`): each port value is a deferred Expression IR resolved against `scope`.
-fn eval_ports(ports: &J, scope: &Scope) -> Result<Vec<(String, Value)>, String> {
-    let obj = ports
-        .as_object()
-        .ok_or_else(|| "static-bundle: node ports must be an object".to_string())?;
-    let mut out = Vec::with_capacity(obj.len());
-    for (k, v) in obj {
-        out.push((
-            k.clone(),
-            evaluate_expression(v, scope).map_err(|e| e.message)?,
-        ));
-    }
-    Ok(out)
+    // componentRef (#12): render the real node's statements directly against `base` (no `__scope`).
+    render_and_execute_node(driver, graph, dialect, node_id, base)
 }
 
 // ── Parallel read-relation dispatch (executor-layer fan-out; #40) ──────────────

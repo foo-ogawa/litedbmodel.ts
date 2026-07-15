@@ -29,7 +29,7 @@ import (
 	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
 )
 
-const supportedCorpusVersion = 2
+const supportedCorpusVersion = 3
 
 const (
 	pgSchema = "scp_go"

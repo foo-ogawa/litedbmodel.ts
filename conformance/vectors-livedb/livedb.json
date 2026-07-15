@@ -1,6 +1,6 @@
 {
   "suite": "livedb",
-  "corpusVersion": 2,
+  "corpusVersion": 3,
   "note": "Live-DB corpus (v2 makeSQL flip): exec/tx STATIC bundles (readGraph + statementsById / transaction plan) compiled for postgres + mysql, executed against REAL dockerized PG + MySQL by each language runtime; expectedResult/expectedDbState are the byte-true SQLite reference (dialect-invariant §10 promise). Includes #46 IN-list cases (int / empty / uuid) + relation batches so every language binds the no-cast `= ANY($1)` + `= ANY($1::int[])` on live PG. Adds read-RELATION EXECUTION vectors (#43): the parent row list + batch-loaded/hydrated belongsTo/hasMany/hasMany-limit bundle.relations, byte-true to the TS readBundle eager path. Adds WRITE-path completeness vectors (#47 write side): createMany (homogeneous + heterogeneous column-set groups), updateMany, deleteMany, bare UPDATE/DELETE, DELETE RETURNING (per-dialect: MySQL emul returns []), tx idempotency/unique/edge/composite-DAG short-circuit + effects, and UUID-PK + composite-PK INSERT RETURNING (MySQL emul re-selects by the REAL PK). All ride the gate-free/gate-first TransactionPlan (kind:tx), byte-true to the SQLite reference.",
   "vectors": [
     {
@@ -24,32 +24,89 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
-                          },
-                          "status": {
-                            "ref": [
-                              "status"
-                            ]
-                          },
-                          "since": {
-                            "ref": [
-                              "since"
-                            ]
-                          },
-                          "limit": {
-                            "ref": [
+                      "limit": {
+                        "coalesce": [
+                          {
+                            "refOpt": [
                               "limit"
                             ]
+                          },
+                          20
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "cond": [
+                              {
+                                "ne": [
+                                  {
+                                    "refOpt": [
+                                      "status"
+                                    ]
+                                  },
+                                  null
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  },
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  }
+                                ]
+                              },
+                              null
+                            ]
+                          },
+                          {
+                            "ge": [
+                              {
+                                "ref": [
+                                  "created_at"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "since"
+                                ]
+                              }
+                            ]
                           }
-                        }
+                        ]
                       }
                     }
                   },
@@ -57,7 +114,7 @@
                     "id": "n1",
                     "map": {
                       "as": "$e0",
-                      "component": "__makeSqlNode",
+                      "component": "Select",
                       "over": {
                         "ref": [
                           "n0"
@@ -65,14 +122,32 @@
                       },
                       "parent": "n0",
                       "ports": {
-                        "__scope": {
-                          "obj": {
-                            "$e0": {
-                              "ref": [
-                                "$e0"
+                        "select": {
+                          "arr": [
+                            "id",
+                            "name"
+                          ]
+                        },
+                        "table": "users",
+                        "where": {
+                          "arr": [
+                            {
+                              "eq": [
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "id"
+                                  ]
+                                },
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "author_id"
+                                  ]
+                                }
                               ]
                             }
-                          }
+                          ]
                         }
                       }
                     }
@@ -237,7 +312,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
-            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -245,7 +325,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -262,32 +348,89 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
-                          },
-                          "status": {
-                            "ref": [
-                              "status"
-                            ]
-                          },
-                          "since": {
-                            "ref": [
-                              "since"
-                            ]
-                          },
-                          "limit": {
-                            "ref": [
+                      "limit": {
+                        "coalesce": [
+                          {
+                            "refOpt": [
                               "limit"
                             ]
+                          },
+                          20
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "cond": [
+                              {
+                                "ne": [
+                                  {
+                                    "refOpt": [
+                                      "status"
+                                    ]
+                                  },
+                                  null
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  },
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  }
+                                ]
+                              },
+                              null
+                            ]
+                          },
+                          {
+                            "ge": [
+                              {
+                                "ref": [
+                                  "created_at"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "since"
+                                ]
+                              }
+                            ]
                           }
-                        }
+                        ]
                       }
                     }
                   },
@@ -295,7 +438,7 @@
                     "id": "n1",
                     "map": {
                       "as": "$e0",
-                      "component": "__makeSqlNode",
+                      "component": "Select",
                       "over": {
                         "ref": [
                           "n0"
@@ -303,14 +446,32 @@
                       },
                       "parent": "n0",
                       "ports": {
-                        "__scope": {
-                          "obj": {
-                            "$e0": {
-                              "ref": [
-                                "$e0"
+                        "select": {
+                          "arr": [
+                            "id",
+                            "name"
+                          ]
+                        },
+                        "table": "users",
+                        "where": {
+                          "arr": [
+                            {
+                              "eq": [
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "id"
+                                  ]
+                                },
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "author_id"
+                                  ]
+                                }
                               ]
                             }
-                          }
+                          ]
                         }
                       }
                     }
@@ -475,7 +636,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -483,7 +649,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -562,32 +734,89 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
-                          },
-                          "status": {
-                            "ref": [
-                              "status"
-                            ]
-                          },
-                          "since": {
-                            "ref": [
-                              "since"
-                            ]
-                          },
-                          "limit": {
-                            "ref": [
+                      "limit": {
+                        "coalesce": [
+                          {
+                            "refOpt": [
                               "limit"
                             ]
+                          },
+                          20
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "cond": [
+                              {
+                                "ne": [
+                                  {
+                                    "refOpt": [
+                                      "status"
+                                    ]
+                                  },
+                                  null
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  },
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  }
+                                ]
+                              },
+                              null
+                            ]
+                          },
+                          {
+                            "ge": [
+                              {
+                                "ref": [
+                                  "created_at"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "since"
+                                ]
+                              }
+                            ]
                           }
-                        }
+                        ]
                       }
                     }
                   },
@@ -595,7 +824,7 @@
                     "id": "n1",
                     "map": {
                       "as": "$e0",
-                      "component": "__makeSqlNode",
+                      "component": "Select",
                       "over": {
                         "ref": [
                           "n0"
@@ -603,14 +832,32 @@
                       },
                       "parent": "n0",
                       "ports": {
-                        "__scope": {
-                          "obj": {
-                            "$e0": {
-                              "ref": [
-                                "$e0"
+                        "select": {
+                          "arr": [
+                            "id",
+                            "name"
+                          ]
+                        },
+                        "table": "users",
+                        "where": {
+                          "arr": [
+                            {
+                              "eq": [
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "id"
+                                  ]
+                                },
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "author_id"
+                                  ]
+                                }
                               ]
                             }
-                          }
+                          ]
                         }
                       }
                     }
@@ -775,7 +1022,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
-            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -783,7 +1035,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -800,32 +1058,89 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
-                          },
-                          "status": {
-                            "ref": [
-                              "status"
-                            ]
-                          },
-                          "since": {
-                            "ref": [
-                              "since"
-                            ]
-                          },
-                          "limit": {
-                            "ref": [
+                      "limit": {
+                        "coalesce": [
+                          {
+                            "refOpt": [
                               "limit"
                             ]
+                          },
+                          20
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "cond": [
+                              {
+                                "ne": [
+                                  {
+                                    "refOpt": [
+                                      "status"
+                                    ]
+                                  },
+                                  null
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  },
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  }
+                                ]
+                              },
+                              null
+                            ]
+                          },
+                          {
+                            "ge": [
+                              {
+                                "ref": [
+                                  "created_at"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "since"
+                                ]
+                              }
+                            ]
                           }
-                        }
+                        ]
                       }
                     }
                   },
@@ -833,7 +1148,7 @@
                     "id": "n1",
                     "map": {
                       "as": "$e0",
-                      "component": "__makeSqlNode",
+                      "component": "Select",
                       "over": {
                         "ref": [
                           "n0"
@@ -841,14 +1156,32 @@
                       },
                       "parent": "n0",
                       "ports": {
-                        "__scope": {
-                          "obj": {
-                            "$e0": {
-                              "ref": [
-                                "$e0"
+                        "select": {
+                          "arr": [
+                            "id",
+                            "name"
+                          ]
+                        },
+                        "table": "users",
+                        "where": {
+                          "arr": [
+                            {
+                              "eq": [
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "id"
+                                  ]
+                                },
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "author_id"
+                                  ]
+                                }
                               ]
                             }
-                          }
+                          ]
                         }
                       }
                     }
@@ -1013,7 +1346,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -1021,7 +1359,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -1113,32 +1457,89 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
-                          },
-                          "status": {
-                            "ref": [
-                              "status"
-                            ]
-                          },
-                          "since": {
-                            "ref": [
-                              "since"
-                            ]
-                          },
-                          "limit": {
-                            "ref": [
+                      "limit": {
+                        "coalesce": [
+                          {
+                            "refOpt": [
                               "limit"
                             ]
+                          },
+                          20
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "cond": [
+                              {
+                                "ne": [
+                                  {
+                                    "refOpt": [
+                                      "status"
+                                    ]
+                                  },
+                                  null
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  },
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  }
+                                ]
+                              },
+                              null
+                            ]
+                          },
+                          {
+                            "ge": [
+                              {
+                                "ref": [
+                                  "created_at"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "since"
+                                ]
+                              }
+                            ]
                           }
-                        }
+                        ]
                       }
                     }
                   },
@@ -1146,7 +1547,7 @@
                     "id": "n1",
                     "map": {
                       "as": "$e0",
-                      "component": "__makeSqlNode",
+                      "component": "Select",
                       "over": {
                         "ref": [
                           "n0"
@@ -1154,14 +1555,32 @@
                       },
                       "parent": "n0",
                       "ports": {
-                        "__scope": {
-                          "obj": {
-                            "$e0": {
-                              "ref": [
-                                "$e0"
+                        "select": {
+                          "arr": [
+                            "id",
+                            "name"
+                          ]
+                        },
+                        "table": "users",
+                        "where": {
+                          "arr": [
+                            {
+                              "eq": [
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "id"
+                                  ]
+                                },
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "author_id"
+                                  ]
+                                }
                               ]
                             }
-                          }
+                          ]
                         }
                       }
                     }
@@ -1326,7 +1745,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
-            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -1334,7 +1758,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -1351,32 +1781,89 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
-                            ]
-                          },
-                          "status": {
-                            "ref": [
-                              "status"
-                            ]
-                          },
-                          "since": {
-                            "ref": [
-                              "since"
-                            ]
-                          },
-                          "limit": {
-                            "ref": [
+                      "limit": {
+                        "coalesce": [
+                          {
+                            "refOpt": [
                               "limit"
                             ]
+                          },
+                          20
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "cond": [
+                              {
+                                "ne": [
+                                  {
+                                    "refOpt": [
+                                      "status"
+                                    ]
+                                  },
+                                  null
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  },
+                                  {
+                                    "ref": [
+                                      "status"
+                                    ]
+                                  }
+                                ]
+                              },
+                              null
+                            ]
+                          },
+                          {
+                            "ge": [
+                              {
+                                "ref": [
+                                  "created_at"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "since"
+                                ]
+                              }
+                            ]
                           }
-                        }
+                        ]
                       }
                     }
                   },
@@ -1384,7 +1871,7 @@
                     "id": "n1",
                     "map": {
                       "as": "$e0",
-                      "component": "__makeSqlNode",
+                      "component": "Select",
                       "over": {
                         "ref": [
                           "n0"
@@ -1392,14 +1879,32 @@
                       },
                       "parent": "n0",
                       "ports": {
-                        "__scope": {
-                          "obj": {
-                            "$e0": {
-                              "ref": [
-                                "$e0"
+                        "select": {
+                          "arr": [
+                            "id",
+                            "name"
+                          ]
+                        },
+                        "table": "users",
+                        "where": {
+                          "arr": [
+                            {
+                              "eq": [
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "id"
+                                  ]
+                                },
+                                {
+                                  "ref": [
+                                    "$e0",
+                                    "author_id"
+                                  ]
+                                }
                               ]
                             }
-                          }
+                          ]
                         }
                       }
                     }
@@ -1564,7 +2069,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -1572,7 +2082,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -1653,17 +2169,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "ids": {
-                            "ref": [
-                              "ids"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -1739,17 +2273,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "ids": {
-                            "ref": [
-                              "ids"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -1862,17 +2414,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "ids": {
-                            "ref": [
-                              "ids"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -1948,17 +2518,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "ids": {
-                            "ref": [
-                              "ids"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -2065,17 +2653,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "ids": {
-                            "ref": [
-                              "ids"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "doc_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "doc_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -2151,17 +2757,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "ids": {
-                            "ref": [
-                              "ids"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "doc_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "doc_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "ids"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -2277,17 +2901,34 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "keys": {
-                            "ref": [
-                              "keys"
+                      "order": "label ASC",
+                      "select": {
+                        "arr": [
+                          "label"
+                        ]
+                      },
+                      "table": "typed",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "big"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "keys"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -2363,17 +3004,34 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "keys": {
-                            "ref": [
-                              "keys"
+                      "order": "label ASC",
+                      "select": {
+                        "arr": [
+                          "label"
+                        ]
+                      },
+                      "table": "typed",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "big"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "keys"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -2479,17 +3137,34 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "keys": {
-                            "ref": [
-                              "keys"
+                      "order": "label ASC",
+                      "select": {
+                        "arr": [
+                          "label"
+                        ]
+                      },
+                      "table": "typed",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "txt"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "keys"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -2565,17 +3240,34 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "keys": {
-                            "ref": [
-                              "keys"
+                      "order": "label ASC",
+                      "select": {
+                        "arr": [
+                          "label"
+                        ]
+                      },
+                      "table": "typed",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "txt"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "keys"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -2680,17 +3372,34 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "keys": {
-                            "ref": [
-                              "keys"
+                      "order": "label ASC",
+                      "select": {
+                        "arr": [
+                          "label"
+                        ]
+                      },
+                      "table": "typed",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "flag"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "keys"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -2766,17 +3475,34 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "keys": {
-                            "ref": [
-                              "keys"
+                      "order": "label ASC",
+                      "select": {
+                        "arr": [
+                          "label"
+                        ]
+                      },
+                      "table": "typed",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "flag"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "keys"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -2882,17 +3608,34 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "keys": {
-                            "ref": [
-                              "keys"
+                      "order": "label ASC",
+                      "select": {
+                        "arr": [
+                          "label"
+                        ]
+                      },
+                      "table": "typed",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "ts"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "keys"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -2968,17 +3711,34 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "keys": {
-                            "ref": [
-                              "keys"
+                      "order": "label ASC",
+                      "select": {
+                        "arr": [
+                          "label"
+                        ]
+                      },
+                      "table": "typed",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "ts"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "keys"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -3084,17 +3844,34 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "keys": {
-                            "ref": [
-                              "keys"
+                      "order": "label ASC",
+                      "select": {
+                        "arr": [
+                          "label"
+                        ]
+                      },
+                      "table": "typed",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "amt"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "keys"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -3170,17 +3947,34 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "keys": {
-                            "ref": [
-                              "keys"
+                      "order": "label ASC",
+                      "select": {
+                        "arr": [
+                          "label"
+                        ]
+                      },
+                      "table": "typed",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@in",
+                                  "amt"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "keys"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -3281,12 +4075,10 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Count",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
-                      }
+                      "table": "posts"
                     }
                   }
                 ],
@@ -3334,12 +4126,10 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Count",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
-                      }
+                      "table": "posts"
                     }
                   }
                 ],
@@ -3435,17 +4225,27 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Count",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -3510,17 +4310,27 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Count",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -3633,17 +4443,27 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Count",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -3708,17 +4528,27 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Count",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -3829,12 +4659,18 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
-                      }
+                      "group": "author_id",
+                      "order": "author_id ASC",
+                      "select": {
+                        "arr": [
+                          "author_id",
+                          "COUNT(*) as n"
+                        ]
+                      },
+                      "table": "posts"
                     }
                   }
                 ],
@@ -3890,12 +4726,18 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
-                      }
+                      "group": "author_id",
+                      "order": "author_id ASC",
+                      "select": {
+                        "arr": [
+                          "author_id",
+                          "COUNT(*) as n"
+                        ]
+                      },
+                      "table": "posts"
                     }
                   }
                 ],
@@ -4005,22 +4847,44 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "lo": {
-                            "ref": [
-                              "lo"
-                            ]
-                          },
-                          "hi": {
-                            "ref": [
-                              "hi"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@between",
+                                  "id"
+                                ]
+                              },
+                              {
+                                "arr": [
+                                  {
+                                    "ref": [
+                                      "lo"
+                                    ]
+                                  },
+                                  {
+                                    "ref": [
+                                      "hi"
+                                    ]
+                                  }
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -4102,22 +4966,44 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "lo": {
-                            "ref": [
-                              "lo"
-                            ]
-                          },
-                          "hi": {
-                            "ref": [
-                              "hi"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@between",
+                                  "id"
+                                ]
+                              },
+                              {
+                                "arr": [
+                                  {
+                                    "ref": [
+                                      "lo"
+                                    ]
+                                  },
+                                  {
+                                    "ref": [
+                                      "hi"
+                                    ]
+                                  }
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -4252,17 +5138,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "pat": {
-                            "ref": [
-                              "pat"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@like",
+                                  "title",
+                                  "LIKE"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "pat"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -4335,17 +5240,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "pat": {
-                            "ref": [
-                              "pat"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@like",
+                                  "title",
+                                  "LIKE"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "pat"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -4465,11 +5389,47 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@tuple",
+                                  "author_id",
+                                  "id"
+                                ]
+                              },
+                              {
+                                "arr": [
+                                  {
+                                    "arr": [
+                                      7,
+                                      1
+                                    ]
+                                  },
+                                  {
+                                    "arr": [
+                                      7,
+                                      2
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -4537,11 +5497,47 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@tuple",
+                                  "author_id",
+                                  "id"
+                                ]
+                              },
+                              {
+                                "arr": [
+                                  {
+                                    "arr": [
+                                      7,
+                                      1
+                                    ]
+                                  },
+                                  {
+                                    "arr": [
+                                      7,
+                                      2
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -4660,11 +5656,32 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@immediate",
+                                  "author_id",
+                                  "7"
+                                ]
+                              },
+                              null
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -4727,11 +5744,32 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@immediate",
+                                  "author_id",
+                                  "7"
+                                ]
+                              },
+                              null
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -4847,17 +5885,37 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "v": {
-                            "ref": [
-                              "v"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "doc_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@cast",
+                                  "doc_id",
+                                  "uuid",
+                                  "="
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "v"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -4930,17 +5988,37 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "v": {
-                            "ref": [
-                              "v"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "doc_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@cast",
+                                  "doc_id",
+                                  "uuid",
+                                  "="
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "v"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -5046,17 +6124,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "forUpdate": "true",
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -5129,17 +6225,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "forUpdate": "true",
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -5263,11 +6377,41 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@subquery",
+                                  "author_id",
+                                  "IN"
+                                ]
+                              },
+                              {
+                                "obj": {
+                                  "params": {
+                                    "arr": [
+                                      "Ada"
+                                    ]
+                                  },
+                                  "sql": "SELECT id FROM users WHERE name = ?"
+                                }
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -5332,11 +6476,41 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@subquery",
+                                  "author_id",
+                                  "IN"
+                                ]
+                              },
+                              {
+                                "obj": {
+                                  "params": {
+                                    "arr": [
+                                      "Ada"
+                                    ]
+                                  },
+                                  "sql": "SELECT id FROM users WHERE name = ?"
+                                }
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -5452,11 +6626,41 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@subquery",
+                                  "author_id",
+                                  "NOT IN"
+                                ]
+                              },
+                              {
+                                "obj": {
+                                  "params": {
+                                    "arr": [
+                                      "Ada"
+                                    ]
+                                  },
+                                  "sql": "SELECT id FROM users WHERE name = ?"
+                                }
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -5521,11 +6725,41 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@subquery",
+                                  "author_id",
+                                  "NOT IN"
+                                ]
+                              },
+                              {
+                                "obj": {
+                                  "params": {
+                                    "arr": [
+                                      "Ada"
+                                    ]
+                                  },
+                                  "sql": "SELECT id FROM users WHERE name = ?"
+                                }
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -5637,11 +6871,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@exists",
+                                  "EXISTS"
+                                ]
+                              },
+                              {
+                                "obj": {
+                                  "sql": "SELECT 1 FROM comments WHERE comments.post_id = posts.id"
+                                }
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -5704,11 +6962,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@exists",
+                                  "EXISTS"
+                                ]
+                              },
+                              {
+                                "obj": {
+                                  "sql": "SELECT 1 FROM comments WHERE comments.post_id = posts.id"
+                                }
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -5822,11 +7104,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@exists",
+                                  "NOT EXISTS"
+                                ]
+                              },
+                              {
+                                "obj": {
+                                  "sql": "SELECT 1 FROM comments WHERE comments.post_id = posts.id"
+                                }
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -5889,11 +7195,35 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@exists",
+                                  "NOT EXISTS"
+                                ]
+                              },
+                              {
+                                "obj": {
+                                  "sql": "SELECT 1 FROM comments WHERE comments.post_id = posts.id"
+                                }
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -6003,12 +7333,18 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
-                      }
+                      "join": "JOIN users ON users.id = posts.author_id",
+                      "order": "posts.id ASC",
+                      "select": {
+                        "arr": [
+                          "posts.id",
+                          "users.name"
+                        ]
+                      },
+                      "table": "posts"
                     }
                   }
                 ],
@@ -6060,12 +7396,18 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
-                      }
+                      "join": "JOIN users ON users.id = posts.author_id",
+                      "order": "posts.id ASC",
+                      "select": {
+                        "arr": [
+                          "posts.id",
+                          "users.name"
+                        ]
+                      },
+                      "table": "posts"
                     }
                   }
                 ],
@@ -6172,12 +7514,28 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
-                      }
+                      "cte": {
+                        "obj": {
+                          "name": "live_posts",
+                          "sql": "SELECT id, title FROM posts WHERE status = ?"
+                        }
+                      },
+                      "cteParams": {
+                        "arr": [
+                          "live"
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "live_posts"
                     }
                   }
                 ],
@@ -6231,12 +7589,28 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
-                      }
+                      "cte": {
+                        "obj": {
+                          "name": "live_posts",
+                          "sql": "SELECT id, title FROM posts WHERE status = ?"
+                        }
+                      },
+                      "cteParams": {
+                        "arr": [
+                          "live"
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "live_posts"
                     }
                   }
                 ],
@@ -6341,12 +7715,18 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
-                      }
+                      "append": "HAVING COUNT(*) > 1 ORDER BY author_id ASC",
+                      "group": "author_id",
+                      "select": {
+                        "arr": [
+                          "author_id",
+                          "COUNT(*) as n"
+                        ]
+                      },
+                      "table": "posts"
                     }
                   }
                 ],
@@ -6402,12 +7782,18 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
-                      }
+                      "append": "HAVING COUNT(*) > 1 ORDER BY author_id ASC",
+                      "group": "author_id",
+                      "select": {
+                        "arr": [
+                          "author_id",
+                          "COUNT(*) as n"
+                        ]
+                      },
+                      "table": "posts"
                     }
                   }
                 ],
@@ -6510,11 +7896,30 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "name"
+                        ]
+                      },
+                      "table": "users",
+                      "where": {
+                        "arr": [
+                          {
+                            "ne": [
+                              {
+                                "ref": [
+                                  "name"
+                                ]
+                              },
+                              null
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -6577,11 +7982,30 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "name"
+                        ]
+                      },
+                      "table": "users",
+                      "where": {
+                        "arr": [
+                          {
+                            "ne": [
+                              {
+                                "ref": [
+                                  "name"
+                                ]
+                              },
+                              null
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -6695,11 +8119,30 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "name"
+                        ]
+                      },
+                      "table": "users",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "name"
+                                ]
+                              },
+                              null
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -6762,11 +8205,30 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "name"
+                        ]
+                      },
+                      "table": "users",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "name"
+                                ]
+                              },
+                              null
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -6876,11 +8338,41 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@subquery",
+                                  "(posts.author_id, posts.id)",
+                                  "IN"
+                                ]
+                              },
+                              {
+                                "obj": {
+                                  "params": {
+                                    "arr": [
+                                      "Ada"
+                                    ]
+                                  },
+                                  "sql": "SELECT users.id, 1 FROM users WHERE users.name = ?"
+                                }
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -6945,11 +8437,41 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {}
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "@subquery",
+                                  "(posts.author_id, posts.id)",
+                                  "IN"
+                                ]
+                              },
+                              {
+                                "obj": {
+                                  "params": {
+                                    "arr": [
+                                      "Ada"
+                                    ]
+                                  },
+                                  "sql": "SELECT users.id, 1 FROM users WHERE users.name = ?"
+                                }
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   }
@@ -7066,17 +8588,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -7137,7 +8678,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
-            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "comments": {
             "name": "comments",
@@ -7145,7 +8691,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC"
+            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -7153,7 +8705,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -7170,17 +8728,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -7241,7 +8818,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "comments": {
             "name": "comments",
@@ -7249,7 +8831,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC"
+            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -7257,7 +8845,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -7364,17 +8958,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -7435,7 +9048,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
-            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "comments": {
             "name": "comments",
@@ -7443,7 +9061,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC"
+            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -7451,7 +9075,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -7468,17 +9098,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -7539,7 +9188,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "comments": {
             "name": "comments",
@@ -7547,7 +9201,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC"
+            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -7555,7 +9215,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -7684,17 +9350,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -7755,7 +9440,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
-            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "comments": {
             "name": "comments",
@@ -7763,7 +9453,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC"
+            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -7771,7 +9467,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -7788,17 +9490,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -7859,7 +9580,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "comments": {
             "name": "comments",
@@ -7867,7 +9593,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC"
+            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -7875,7 +9607,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -8009,17 +9747,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -8080,7 +9837,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
-            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "comments": {
             "name": "comments",
@@ -8088,7 +9850,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC"
+            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -8096,7 +9864,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -8113,17 +9887,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -8184,7 +9977,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "comments": {
             "name": "comments",
@@ -8192,7 +9990,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC"
+            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -8200,7 +10004,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -8388,17 +10198,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -8459,7 +10288,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
-            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "comments": {
             "name": "comments",
@@ -8467,7 +10301,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC"
+            "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -8475,7 +10315,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
-            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags"
+            "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -8492,17 +10338,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -8563,7 +10428,12 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           },
           "comments": {
             "name": "comments",
@@ -8571,7 +10441,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC"
+            "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
+            "targetTable": "comments",
+            "select": [
+              "id",
+              "post_id",
+              "body"
+            ]
           },
           "tags": {
             "name": "tags",
@@ -8579,7 +10455,13 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
+            "targetTable": "tags",
+            "select": [
+              "id",
+              "post_id",
+              "label"
+            ]
           }
         }
       },
@@ -8645,17 +10527,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "tenant_id": {
-                            "ref": [
-                              "tenant_id"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "tenant_id",
+                          "doc_id",
+                          "owner_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs2",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -8722,7 +10623,13 @@
               "uid"
             ],
             "dialect": "postgres",
-            "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid"
+            "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid",
+            "targetTable": "users2",
+            "select": [
+              "tenant_id",
+              "uid",
+              "name"
+            ]
           },
           "revisions": {
             "name": "revisions",
@@ -8736,7 +10643,13 @@
               "doc_id"
             ],
             "dialect": "postgres",
-            "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC"
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC",
+            "targetTable": "revs",
+            "select": [
+              "tenant_id",
+              "doc_id",
+              "rev"
+            ]
           }
         }
       },
@@ -8753,17 +10666,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "tenant_id": {
-                            "ref": [
-                              "tenant_id"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "tenant_id",
+                          "doc_id",
+                          "owner_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs2",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -8830,7 +10762,13 @@
               "uid"
             ],
             "dialect": "mysql",
-            "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)"
+            "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)",
+            "targetTable": "users2",
+            "select": [
+              "tenant_id",
+              "uid",
+              "name"
+            ]
           },
           "revisions": {
             "name": "revisions",
@@ -8844,7 +10782,13 @@
               "doc_id"
             ],
             "dialect": "mysql",
-            "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC"
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC",
+            "targetTable": "revs",
+            "select": [
+              "tenant_id",
+              "doc_id",
+              "rev"
+            ]
           }
         }
       },
@@ -8988,17 +10932,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "tenant_id": {
-                            "ref": [
-                              "tenant_id"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "tenant_id",
+                          "doc_id",
+                          "owner_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs2",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -9065,7 +11028,13 @@
               "uid"
             ],
             "dialect": "postgres",
-            "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid"
+            "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid",
+            "targetTable": "users2",
+            "select": [
+              "tenant_id",
+              "uid",
+              "name"
+            ]
           },
           "revisions": {
             "name": "revisions",
@@ -9079,7 +11048,13 @@
               "doc_id"
             ],
             "dialect": "postgres",
-            "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC"
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC",
+            "targetTable": "revs",
+            "select": [
+              "tenant_id",
+              "doc_id",
+              "rev"
+            ]
           }
         }
       },
@@ -9096,17 +11071,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "tenant_id": {
-                            "ref": [
-                              "tenant_id"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "tenant_id",
+                          "doc_id",
+                          "owner_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs2",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -9173,7 +11167,13 @@
               "uid"
             ],
             "dialect": "mysql",
-            "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)"
+            "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)",
+            "targetTable": "users2",
+            "select": [
+              "tenant_id",
+              "uid",
+              "name"
+            ]
           },
           "revisions": {
             "name": "revisions",
@@ -9187,7 +11187,13 @@
               "doc_id"
             ],
             "dialect": "mysql",
-            "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC"
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC",
+            "targetTable": "revs",
+            "select": [
+              "tenant_id",
+              "doc_id",
+              "rev"
+            ]
           }
         }
       },
@@ -9285,17 +11291,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "tenant_id": {
-                            "ref": [
-                              "tenant_id"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "tenant_id",
+                          "doc_id",
+                          "owner_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs2",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -9362,7 +11387,13 @@
               "uid"
             ],
             "dialect": "postgres",
-            "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid"
+            "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid",
+            "targetTable": "users2",
+            "select": [
+              "tenant_id",
+              "uid",
+              "name"
+            ]
           },
           "revisions": {
             "name": "revisions",
@@ -9376,7 +11407,13 @@
               "doc_id"
             ],
             "dialect": "postgres",
-            "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC"
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC",
+            "targetTable": "revs",
+            "select": [
+              "tenant_id",
+              "doc_id",
+              "rev"
+            ]
           }
         }
       },
@@ -9393,17 +11430,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "tenant_id": {
-                            "ref": [
-                              "tenant_id"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "tenant_id",
+                          "doc_id",
+                          "owner_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs2",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -9470,7 +11526,13 @@
               "uid"
             ],
             "dialect": "mysql",
-            "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)"
+            "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)",
+            "targetTable": "users2",
+            "select": [
+              "tenant_id",
+              "uid",
+              "name"
+            ]
           },
           "revisions": {
             "name": "revisions",
@@ -9484,7 +11546,13 @@
               "doc_id"
             ],
             "dialect": "mysql",
-            "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC"
+            "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC",
+            "targetTable": "revs",
+            "select": [
+              "tenant_id",
+              "doc_id",
+              "rev"
+            ]
           }
         }
       },
@@ -9543,17 +11611,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "tenant_id": {
-                            "ref": [
-                              "tenant_id"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "tenant_id",
+                          "doc_id",
+                          "owner_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs2",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -9620,7 +11707,13 @@
               "doc_id"
             ],
             "dialect": "postgres",
-            "sql": "SELECT revs.* FROM unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _keys(key0, key1) CROSS JOIN LATERAL (SELECT * FROM revs WHERE revs.tenant_id = _keys.key0 AND revs.doc_id = _keys.key1 ORDER BY rev DESC LIMIT 1) revs"
+            "sql": "SELECT revs.* FROM unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _keys(key0, key1) CROSS JOIN LATERAL (SELECT * FROM revs WHERE revs.tenant_id = _keys.key0 AND revs.doc_id = _keys.key1 ORDER BY rev DESC LIMIT 1) revs",
+            "targetTable": "revs",
+            "select": [
+              "tenant_id",
+              "doc_id",
+              "rev"
+            ]
           }
         }
       },
@@ -9637,17 +11730,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "tenant_id": {
-                            "ref": [
-                              "tenant_id"
+                      "order": "doc_id ASC",
+                      "select": {
+                        "arr": [
+                          "tenant_id",
+                          "doc_id",
+                          "owner_id",
+                          "title"
+                        ]
+                      },
+                      "table": "docs2",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "tenant_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -9714,7 +11826,13 @@
               "doc_id"
             ],
             "dialect": "mysql",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY tenant_id, doc_id ORDER BY rev DESC) AS _rn FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)) SELECT * FROM ranked WHERE _rn <= 1"
+            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY tenant_id, doc_id ORDER BY rev DESC) AS _rn FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)) SELECT * FROM ranked WHERE _rn <= 1",
+            "targetTable": "revs",
+            "select": [
+              "tenant_id",
+              "doc_id",
+              "rev"
+            ]
           }
         }
       },
@@ -9830,17 +11948,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -9902,7 +12039,12 @@
             "targetKey": "id",
             "dialect": "mysql",
             "connection": "authors_db",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)"
+            "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           }
         }
       },
@@ -9919,17 +12061,36 @@
               {
                 "body": [
                   {
-                    "component": "__makeSqlNode",
+                    "component": "Select",
                     "id": "n0",
                     "ports": {
-                      "__scope": {
-                        "obj": {
-                          "author_id": {
-                            "ref": [
-                              "author_id"
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "author_id",
+                          "title",
+                          "status"
+                        ]
+                      },
+                      "table": "posts",
+                      "where": {
+                        "arr": [
+                          {
+                            "eq": [
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "author_id"
+                                ]
+                              }
                             ]
                           }
-                        }
+                        ]
                       }
                     }
                   }
@@ -9991,7 +12152,12 @@
             "targetKey": "id",
             "dialect": "postgres",
             "connection": "authors_db",
-            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)"
+            "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
+            "targetTable": "users",
+            "select": [
+              "id",
+              "name"
+            ]
           }
         }
       },

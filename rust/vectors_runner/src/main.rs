@@ -71,7 +71,7 @@ fn node_to_json(n: &Node) -> J {
 }
 
 /// The corpus schema version this runner supports (pin — bumped on additive refreeze).
-const SUPPORTED_CORPUS_VERSION: i64 = 2;
+const SUPPORTED_CORPUS_VERSION: i64 = 3;
 
 fn vectors_dir() -> PathBuf {
     if let Ok(env) = std::env::var("LITEDBMODEL_VECTORS") {

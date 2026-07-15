@@ -81,9 +81,6 @@ export {
   rowsHaveDbToken,
 } from './json-batch';
 
-// bc IR wiring (a query rides runBehavior as a makeSQL component).
-export { makeSqlComponentIR, makeSqlInput } from './ir';
-
 // Write-time relations → makeSQL transaction plan + 1-tx runtime (epic #43/#45 Phase B).
 export {
   deriveTransactionPlan,

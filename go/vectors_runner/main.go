@@ -35,7 +35,7 @@ import (
 )
 
 // supportedCorpusVersion is the corpus schema version this runner pins (bumped on additive refreeze).
-const supportedCorpusVersion = 2
+const supportedCorpusVersion = 3
 
 type tally struct {
 	Pass int

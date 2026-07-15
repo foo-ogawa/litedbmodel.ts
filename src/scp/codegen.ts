@@ -55,7 +55,6 @@
 import { generateModule, type Component, type ComponentGraphIR, type GeneratedModule, type Scope, type Value, type PortSchema } from 'behavior-contracts';
 import type { SqlBundle, SqliteDb } from './runtime';
 import { executeBundle } from './runtime';
-import { makeSqlComponentIR } from './makesql/ir';
 import type { DialectName } from './dialect';
 import type { RelationOp } from './relation';
 import type { ReadGraph, StaticStatement } from './makesql/static-bundle';
@@ -140,27 +139,24 @@ export interface CodegenArtifact {
 }
 
 /**
- * The portable {@link ComponentGraphIR} view of a §8 bundle: a read bundle's surrogate IR (each
- * SQL node → a `makeSQL` node), or the single `makeSQL` component IR for a write. This is the
- * ORIGINAL boxed-`__scope`-port form the ir/interpret exec surface's `executeReadGraph` also
- * consumes (via `bundle.readGraph.ir` directly) — {@link generateCodegenArtifact} does NOT use
- * this for a READ bundle (it uses the codegen-only lowered form, {@link lowerReadGraphForTypedNative});
- * this function is kept for callers that want the untouched portable IR (e.g. diagnostics, the
- * write path, or a future straight-line fallback caller).
+ * The portable {@link ComponentGraphIR} view of a §8 READ bundle: `compileBehaviors`' real-node
+ * read-graph IR (the de-surrogated `Select`/`Count`/map nodes; #12) — the SAME IR the native exec
+ * surface (`executeReadGraph`) walks (via `bundle.readGraph.ir` directly). litedbmodel constructs NO
+ * `ComponentGraphIR` literal here; it returns the compiler's own output. {@link generateCodegenArtifact}
+ * does NOT use this for a typed-native READ target (that uses the codegen-only lowered form,
+ * {@link lowerReadGraphForTypedNative}); this is the portable IR for a boxed READ endpoint / fingerprint.
+ *
+ * WRITE bundles have NO portable component-graph IR (they carry a single compiled `statement`, not a
+ * component graph — and are NOT codegen-module cases: {@link generateCodegenArtifact} rejects them).
+ * There is therefore no hand-built `makeSQL` write surrogate anymore (#12) — a write bundle throws.
  */
 export function bundleToPortableIR(bundle: SqlBundle): ComponentGraphIR {
   if (bundle.readGraph !== undefined) return bundle.readGraph.ir;
-  const ir = makeSqlComponentIR(bundle.name);
-  // A WRITE bundle's typed de-box (spec §4.1/§9): attach the derived `outputType` (the
-  // TransactionResult typed shape) to the single `makeSQL` node's `outType` + the component's
-  // `outputType` — exactly how the read graph annotates its surrogate IR. Without it, bc's typed
-  // emitters would hard-fail ("nothing to de-box"), which is the correct fail-closed signal; a
-  // resolver-less write bundle (no `outputType`) stays un-annotated (interpret/boxed only, as before).
-  if (bundle.outputType === undefined) return ir;
-  const c = ir.components[0];
-  const body = c.body.map((n, i) => (i === 0 ? { ...n, outType: bundle.outputType } : n));
-  const component = { ...c, body, outputType: bundle.outputType } as unknown as Component;
-  return { ...ir, components: [component] };
+  throw new Error(
+    `litedbmodel codegen: bundle '${bundle.name}' has no readGraph — a WRITE bundle carries a single ` +
+      `compiled makeSQL statement, not a portable component-graph IR, and is not a codegen-module case ` +
+      `(#12: the hand-built makeSQL write surrogate IR is eliminated; writes ride the write/tx exec path).`,
+  );
 }
 
 /** The STATIC makeSQL execution catalog carried alongside the generated module. */
@@ -177,27 +173,22 @@ function companionOf(bundle: SqlBundle): SqlCatalogCompanion {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// #60 milestone 1 — CODEGEN-ONLY typed-native lowering.
+// #60 milestone 1 — CODEGEN-ONLY typed-native lowering (#12: from the real-node read graph).
 //
 // bc's typed-native coverage predicate (`coverageRejectReason`, bc#86/#89) requires EVERY
-// componentRef port to be STATICALLY resolvable to a native scalar/string-array/number-literal —
-// the surrogate read graph's single `__scope: {obj:{...}}` port is a BOXED obj literal, which is
-// never statically resolvable (it fails `portIsStatic`), so bc hard-fails ("does not lower to a
-// native Rust type") on EVERY read, covered or not, before this lowering. Splitting `__scope` into
-// individual scalar ref ports (one per referenced head) makes the shape ELIGIBLE; typing the
-// component's `inputPorts` (bc's authoring default is `unknown` for every scanned `$.head`) then
-// lets each port lower to a CONCRETE Rust/Go field instead of falling through to `Value`.
+// componentRef port to be STATICALLY resolvable to a native scalar/string-array/number-literal.
+// The de-surrogated read graph's real `Select`/`Count`/map nodes carry boxed authoring ports
+// (`where:{arr:[…]}`, `table`, `select`) that are not that shape, so bc would hard-fail on them.
+// This lowering rebuilds a NEW, CODEGEN-ONLY component whose body nodes carry ONLY individual
+// native-scalar `{ref:[head]}` ports (one per input head the node's compiled statements bind,
+// derived from `statementsById`) + typed `inputPorts` — the shape bc's typed-native emitter needs.
 //
 // This is a NEW, throwaway `ComponentGraphIR` built FROM the bundle's `readGraph` fields
-// (`ir`/`statementsById`, both already computed by the EXISTING `compileReadGraph` — untouched
-// here) — it is never written back onto `SqlBundle`/`ReadGraph`, never serialized, and the
-// ir/interpret exec surface (`executeReadGraph`) never sees it (it keeps reading `readGraph.ir`,
-// the boxed-`__scope` form, directly). Purely a generation-time input to `generateModule`.
+// (`ir` topology + `statementsById`, both already computed by the EXISTING `compileReadGraph` —
+// untouched here) — it is never written back onto `SqlBundle`/`ReadGraph`, never serialized, and
+// the native exec surface (`executeReadGraph`) never sees it (it walks the real-node `readGraph.ir`
+// directly). Purely a generation-time input to `generateModule`.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-
-/** The makeSQL surrogate node's synthetic port name (mirrors `static-bundle.ts`'s private `SCOPE_PORT`
- * — duplicated as a literal here rather than exported, keeping this a codegen-only concern). */
-const SCOPE_PORT = '__scope';
 
 /** A head could not be typed for typed-native codegen — the read is NOT typed-native-coverable. */
 export class TypedNativeCoverageError extends Error {
@@ -479,15 +470,6 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
     const body = c.body.map((n) => {
       if ('cond' in n) return n;
       const isMapNode = 'map' in n;
-      const ref = isMapNode ? (n as unknown as { map: { ports: Record<string, unknown> } }).map : (n as unknown as { ports: Record<string, unknown> });
-      const scopeVal = ref.ports[SCOPE_PORT];
-      if (scopeVal === undefined || typeof scopeVal !== 'object' || scopeVal === null || !('obj' in scopeVal)) {
-        // Not the makeSQL surrogate shape this lowering targets (defensive — every read-graph body
-        // node IS this shape by construction) — leave the node untouched; bc's own coverage check
-        // will report it if it is genuinely uncovered.
-        return n;
-      }
-      const obj = (scopeVal as { obj: Record<string, unknown> }).obj;
       const stmts = readGraph.statementsById[n.id] ?? [];
       // A map node binds an ELEMENT var (`as: '$e0'`) — its child statements reference the mapped
       // parent row via `{ref:['$e0', <field>]}`. That is a map-element field access (bc types it from
@@ -514,32 +496,23 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
         }
         inputPortElemTypes.set(head, elem);
       }
-      // Every head the surrogate scope references must have been typed above (byHead/arrayHeads) — a
-      // head present in `obj` but absent from all of byHead/arrayHeads/unresolved indicates a param
-      // shape this deriver's statement walk did not visit (e.g. a non-WHERE port); report it too
-      // rather than silently emitting an untyped scalar ref port. A covered array head is emitted as
-      // the SAME single-segment `{ref:[head]}` port (bc#110's array-port lowering keys off the
-      // inputPorts array schema, not a distinct port shape — `classifyExpr` sees a plain ref).
+      // #12 (de-surrogated): the codegen IR is rebuilt from the real node's `statementsById`-derived
+      // head set (`byHead` ∪ `arrayHeads`) — the SAME native-scalar `{ref:[head]}` port shape bc's
+      // typed-native emitter consumes. There is no `__scope` obj to walk anymore; the referenced-head
+      // set IS what `deriveHeadTypesFromStatements` found (an `unresolved` head already pushed a
+      // reason above, fail-closed). A covered array head is emitted as the SAME single-segment
+      // `{ref:[head]}` port (bc#110's array-port lowering keys off the inputPorts array schema).
       const newPorts: Record<string, unknown> = {};
-      // A map node's surrogate `__scope` obj is `{ $e0: {ref:['$e0']} }` — the WHOLE element. bc's
-      // typed-native map lowering types a port `{ref:['$e0', <field>]}` from the OVER element struct's
-      // FIELD (a native scalar), but CANNOT lower `{ref:['$e0']}` (the whole boxed element). So for a
-      // map node, replace the whole-element port with one native-scalar element-FIELD port per field
-      // the child statements actually bind (`{ref:['$e0', author_id]}` → port `author_id`). The handler
-      // reads these typed fields to build the child render scope. Non-element component heads (if any)
-      // are still typed/emitted normally below.
+      // A map node's child statements reference the mapped parent row via `{ref:['$e0', <field>]}`.
+      // bc's typed-native map lowering types a port `{ref:['$e0', <field>]}` from the OVER element
+      // struct's FIELD (a native scalar) — so emit one native-scalar element-FIELD port per field the
+      // child statements bind (`{ref:['$e0', author_id]}` → port `author_id`). Non-element component
+      // heads (if any) are typed/emitted normally below.
       if (isMapNode && elementVar !== undefined) {
         const fields = elementFieldRefs(stmts, elementVar);
         for (const field of fields) newPorts[field] = { ref: [elementVar, field] };
       }
-      for (const head of Object.keys(obj)) {
-        // The map element var (`$e0`) whole-element port was replaced by per-field element ports above
-        // — drop the whole-element key (bc cannot lower a boxed whole-element ref).
-        if (elementVar !== undefined && head === elementVar) continue;
-        if (!byHead.has(head) && !arrayHeads.has(head) && !unresolved.has(head)) {
-          reasons.push(`node '${n.id}': input head '${head}' referenced by the surrogate scope but not resolved by any WHERE fragment — cannot type it for native codegen`);
-          continue;
-        }
+      for (const head of [...byHead.keys(), ...arrayHeads.keys()]) {
         newPorts[head] = { ref: [head] };
       }
       return isMapNode

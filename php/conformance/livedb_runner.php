@@ -39,7 +39,7 @@ use LiteDbModel\Runtime\LiveDb;
 use LiteDbModel\Runtime\Relation;
 use LiteDbModel\Runtime\Runtime;
 
-const SUPPORTED_CORPUS_VERSION = 2;
+const SUPPORTED_CORPUS_VERSION = 3;
 const PG_SCHEMA = 'scp_php';
 const MYSQL_DB = 'scp_php';
 
