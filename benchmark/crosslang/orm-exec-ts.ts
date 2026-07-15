@@ -32,8 +32,17 @@ let SEQ = 0;
 function nextSeq(): number {
   return SEQ++;
 }
+// Replace the `{{SEQ}}` unique-email marker with the per-invocation counter — recursively, because a
+// batch write (createMany/upsertMany) carries its records as an ARRAY param (pg UNNEST) or a JSON
+// STRING param (sqlite json_each / mysql JSON_TABLE), and the marker lives INSIDE those. Without
+// recursion the batch emails stay literal `{{SEQ}}` and collide on the second invocation.
+function substOne(p: unknown, seq: number): unknown {
+  if (typeof p === 'string') return p.includes('{{SEQ}}') ? p.replace(/\{\{SEQ\}\}/g, String(seq)) : p;
+  if (Array.isArray(p)) return p.map((e) => substOne(e, seq));
+  return p;
+}
 function subst(params: readonly unknown[], seq: number): unknown[] {
-  return params.map((p) => (typeof p === 'string' && p.includes('{{SEQ}}') ? p.replace(/\{\{SEQ\}\}/g, String(seq)) : p));
+  return params.map((p) => substOne(p, seq));
 }
 
 // bc/driver value coercion: bigint→Number (safe for the bench's int ids).
