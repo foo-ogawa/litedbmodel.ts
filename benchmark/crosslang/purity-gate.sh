@@ -30,6 +30,12 @@ TS_CELL=benchmark/crosslang/adapters/ts/codegen-cell.ts
 GO_CELL=go/lm_bench/codegen_cell.go
 GO_PLANS=go/lm_bench/cgplans
 GO_MODS=go/lm_bench/cgmods
+# The NATIVE-ONLY runtimes (epic #44 native-only, #8): rust/go run every read/write via generated
+# native code (static SQL text + typed param binding). The IR interpreter (bc run_behavior /
+# RunBehavior) is DELETED from both; rust drops serde_json, go drops encoding/json OPERATIONS from
+# the exec path. This gate FAILS if either is reintroduced.
+RUST_RT=rust/litedbmodel_runtime/src
+GO_RT=go/litedbmodel_runtime
 
 echo "── 1. codegen 出力に IR データ / fingerprint が無い ──"
 scan "generated: IR fingerprint 定数なし" \
@@ -59,9 +65,40 @@ if [ -d benchmark/crosslang/adapters/rust-codegen ]; then
   fi
 fi
 
+# scan_nontest — like scan, but ignores *_test.go / tests/ files AND comment lines (a reintroduction
+# in production CODE is the failure; test scaffolding + doc comments may legitimately name the symbol).
+# Strips full-line `//`/`*`/`#` comments and matches the pattern only against remaining code.
+scan_nontest() {
+  local label="$1" pattern="$2"; shift 2
+  local hits
+  hits=$(grep -rnE "$pattern" "$@" 2>/dev/null \
+    | grep -vE '_test\.go|/tests/' \
+    | grep -vE ':[0-9]+:[[:space:]]*(//|\*|#|///|//!)')
+  if [ -n "$hits" ]; then
+    echo "✗ $label"
+    echo "$hits" | head -10
+    FAIL=1
+  else
+    echo "✓ $label"
+  fi
+}
+
+echo "── 5. NATIVE-ONLY runtimes: NO IR interpreter (run_behavior) on the exec path ──"
+# The rust/go runtimes must NEVER call the bc IR interpreter — every read/write runs native. A CALL
+# form (`run_behavior(` / `RunBehavior(`) in production runtime code is a reintroduction → FAIL.
+scan_nontest "rust runtime: no run_behavior call" "run_behavior[[:space:]]*\(" "$RUST_RT"
+scan_nontest "go runtime: no RunBehavior call" "RunBehavior[[:space:]]*\(" "$GO_RT"
+
+echo "── 6. NATIVE-ONLY runtimes: NO JSON operations on the exec path ──"
+# The go runtime exec path must carry no encoding/json OPERATIONS (json.Marshal/Unmarshal/Decoder/
+# Encoder). The json.Number TYPE (bc.ParseJSONOrdered's number output) is a decode-path type, not an
+# operation — allowed; the operations are what would re-serialize/parse IR/results by JSON library.
+scan_nontest "go runtime: no json.Marshal/Unmarshal/Decoder/Encoder" \
+  "json\.(Marshal|Unmarshal|NewDecoder|NewEncoder)[[:space:]]*\(" "$GO_RT"
+
 echo ""
 if [ "$FAIL" -ne 0 ]; then
-  echo "PURITY GATE: FAIL — codegen 面に IR/JSON 残骸あり（上記）。残骸ゼロまで完了ではない。"
+  echo "PURITY GATE: FAIL — codegen/runtime 面に IR/JSON 残骸あり（上記）。残骸ゼロまで完了ではない。"
   exit 1
 fi
-echo "PURITY GATE: PASS — codegen 面に IR/JSON 残骸ゼロ。"
+echo "PURITY GATE: PASS — codegen/runtime 面に IR interpreter/JSON-op 残骸ゼロ。"

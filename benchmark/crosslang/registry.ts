@@ -2,9 +2,11 @@
 // Cross-language cell REGISTRY (epic #44) — the (language × impl) matrix.
 // ════════════════════════════════════════════════════════════════════════════
 //
-//   TS   : sql / codegen / ir / dynamic / prepared        (5 cells)
-//   Python/Rust/PHP/Go : sql / codegen / ir               (3 each = 12 cells)
-//   → 17 cells, + v1 comparison rows (v1-ts; v1-rs if the old .rs builds).
+//   TS      : sql / codegen / ir / dynamic / prepared     (5 cells)
+//   Python/PHP : sql / codegen / ir                        (3 each = 6 cells)
+//   Rust/Go : sql / codegen  (NATIVE-ONLY — no ir cell,    (2 each = 4 cells)
+//             the IR interpreter is deleted from their runtimes, #8)
+//   → 15 cells, + v1 comparison rows (v1-ts; v1-rs if the old .rs builds).
 //
 // A cell says how to SPAWN its adapter subprocess. Compiled cells (Rust/Go) are
 // built first; if the build fails the cell carries a `buildError` and the harness
@@ -52,11 +54,14 @@ function go(impl: string): CellSpec {
 export const MATRIX: CellSpec[] = [
   // TS — the 5-mode reference.
   ts('sql'), ts('codegen'), ts('ir'), ts('dynamic'), ts('prepared'),
-  // Python / PHP / Rust / Go — sql / codegen / ir.
+  // Python / PHP — sql / codegen / ir (the ir/interpret exec surface is their by-design mode).
   py('sql'), py('codegen'), py('ir'),
   php('sql'), php('codegen'), php('ir'),
-  rust('sql'), rust('codegen'), rust('ir'),
-  go('sql'), go('codegen'), go('ir'),
+  // Rust / Go — NATIVE-ONLY: { sql, codegen } (NO `ir` cell). The IR interpreter is DELETED from
+  // the rust/go runtimes (epic #44 native-only, #8) — every read/write runs generated native code
+  // (static SQL text + typed param binding), so there is no interpreter path to bench.
+  rust('sql'), rust('codegen'),
+  go('sql'), go('codegen'),
   // v1 regression baselines.
   { language: 'v1-ts', impl: 'v1', spawn: { command: 'npx', args: ['tsx', TS_RUNNER, '--impl=v1'] } },
   { language: 'v1-rs', impl: 'ir', spawn: { command: V1RS_BIN, args: ['--impl=ir'] }, note: 'old litedbmodel.rs (async+deadpool) — built separately' },
