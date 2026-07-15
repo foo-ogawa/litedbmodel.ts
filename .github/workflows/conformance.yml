@@ -68,7 +68,7 @@ jobs:
       # consumes the shared behavior-contracts core — install both the local runtime package and
       # the published bc core so `python3` legs run instead of exiting 1 with an ImportError.
       - name: Install the Python runtime + behavior-contracts core (for the py legs)
-        # `./python`'s pyproject pins `behavior-contracts==0.2.0` as a hard dep, so this pulls the
+        # `./python`'s pyproject pins `behavior-contracts==0.8.0` as a hard dep, so this pulls the
         # bc core too. Without it the py vectors runner + codegen py-exec exit 1 on ImportError.
         run: python3 -m pip install ./python
       # The repo `.npmrc` sets `ignore-scripts=true`, so `npm ci` skips
@@ -218,13 +218,13 @@ jobs:
       - name: Install Node deps + Python DB drivers + PHP deps
         run: |
           npm ci --ignore-scripts
-          npm install behavior-contracts@0.2.0 --no-save
+          npm install behavior-contracts@0.8.0 --no-save
           # `ignore-scripts=false` override is required: a bare `npm rebuild`
           # honours the repo `.npmrc` ignore-scripts and reports success WITHOUT
           # building the addon (see conformance-ts). Force the install script to
           # run so `better_sqlite3.node` is actually produced.
           npm_config_ignore_scripts=false npm rebuild better-sqlite3 --build-from-source=false || (cd node_modules/better-sqlite3 && npx node-gyp rebuild --release)
-          python3 -m pip install "psycopg[binary]" pymysql behavior-contracts==0.2.0
+          python3 -m pip install "psycopg[binary]" pymysql behavior-contracts==0.8.0
           composer -d php install
       - name: Build the SCP dist artifact (consumed by the corpus generator)
         run: npm run build:scp
