@@ -22,11 +22,11 @@
 
 use behavior_contracts::Value;
 use litedbmodel_runtime::livedb::{MysqlDriver, PostgresDriver};
+use litedbmodel_runtime::Node as J;
 use litedbmodel_runtime::{
     decode_scope, execute_bundle, execute_transaction_bundle, read_bundle_pooled, Driver,
     PreparedStatement, RunInfo, SqliteDriver,
 };
-use litedbmodel_runtime::Node as J;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -148,7 +148,10 @@ struct Artifact {
 fn cases_map(block: &J) -> HashMap<String, J> {
     let mut cases = HashMap::new();
     for c in block.get("cases").unwrap().as_array().unwrap() {
-        cases.insert(c.get("case").unwrap().as_str().unwrap().to_string(), c.clone());
+        cases.insert(
+            c.get("case").unwrap().as_str().unwrap().to_string(),
+            c.clone(),
+        );
     }
     cases
 }
@@ -349,7 +352,12 @@ fn run_lm(case: &J, d: &dyn Driver) {
         }
         "relation" => {
             // Relations run on the SAME seeded driver via a single-threaded Sync view.
-            let with_name = case.get("withRelation").unwrap().as_str().unwrap().to_string();
+            let with_name = case
+                .get("withRelation")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string();
             let sd = SyncDriverRef(d);
             let conns: HashMap<String, &(dyn Driver + Sync)> = HashMap::new();
             read_bundle_pooled(bundle, input, &sd, &[with_name], &conns).unwrap();
@@ -459,7 +467,12 @@ fn run_lm_counting(case: &J, d: &CountingDriver) {
             execute_transaction_bundle(bundle, input, d).unwrap();
         }
         "relation" => {
-            let with_name = case.get("withRelation").unwrap().as_str().unwrap().to_string();
+            let with_name = case
+                .get("withRelation")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string();
             let conns: HashMap<String, &(dyn Driver + Sync)> = HashMap::new();
             read_bundle_pooled(bundle, input, d, &[with_name], &conns).unwrap();
         }
@@ -680,7 +693,12 @@ fn run_micro(impl_: &str, case: &J, mock: &MockDriver) {
                 execute_transaction_bundle(bundle, input, mock).unwrap();
             }
             "relation" => {
-                let with_name = case.get("withRelation").unwrap().as_str().unwrap().to_string();
+                let with_name = case
+                    .get("withRelation")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string();
                 let conns: HashMap<String, &(dyn Driver + Sync)> = HashMap::new();
                 read_bundle_pooled(bundle, input, mock, &[with_name], &conns).unwrap();
             }
