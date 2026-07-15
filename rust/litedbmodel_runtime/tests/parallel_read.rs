@@ -18,25 +18,13 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use behavior_contracts::Value;
+use litedbmodel_runtime::Node;
 use litedbmodel_runtime::{dispatch_read_nodes_parallel, Driver, PreparedStatement, RunInfo};
-use serde_json::json;
 
-/// Convert a serde_json test fixture to the runtime's native `Node` (the runtime is serde_json-free).
-fn to_node(v: &serde_json::Value) -> litedbmodel_runtime::Node {
-    use litedbmodel_runtime::Node;
-    match v {
-        serde_json::Value::Null => Node::Null,
-        serde_json::Value::Bool(b) => Node::Bool(*b),
-        serde_json::Value::Number(n) => n
-            .as_i64()
-            .map(Node::Int)
-            .unwrap_or_else(|| Node::Float(n.as_f64().unwrap_or(0.0))),
-        serde_json::Value::String(s) => Node::Str(s.clone()),
-        serde_json::Value::Array(a) => Node::Array(a.iter().map(to_node).collect()),
-        serde_json::Value::Object(o) => {
-            Node::Object(o.iter().map(|(k, val)| (k.clone(), to_node(val))).collect())
-        }
-    }
+/// Build a native `Node` fixture from a JSON string literal — the runtime's OWN native JSON parser
+/// (the runtime + these tests carry NO external JSON crate).
+fn nj(s: &str) -> Node {
+    Node::parse(s).expect("test fixture JSON parses")
 }
 
 /// A Sync driver that sleeps `latency` on each query and tracks concurrent in-flight count.
@@ -100,19 +88,20 @@ impl PreparedStatement for LatencyStmt<'_> {
     }
 }
 
-/// A synthetic read graph of N sibling nodes, each a trivial static `SELECT <i>` statement.
-fn sibling_graph(n: usize) -> serde_json::Value {
-    let mut statements = serde_json::Map::new();
+/// A synthetic read graph of N sibling nodes, each a trivial static `SELECT <i>` statement (native).
+fn sibling_graph(n: usize) -> Node {
+    let mut stmts = String::new();
     for i in 0..n {
-        statements.insert(
-            format!("rel{i}"),
-            json!([{ "sql": format!("SELECT {i}"), "params": [] }]),
-        );
+        if i > 0 {
+            stmts.push(',');
+        }
+        stmts.push_str(&format!(
+            r#""rel{i}": [{{"sql": "SELECT {i}", "params": []}}]"#
+        ));
     }
-    json!({
-        "dialect": "sqlite",
-        "statementsById": statements,
-    })
+    nj(&format!(
+        r#"{{"dialect": "sqlite", "statementsById": {{{stmts}}}}}"#
+    ))
 }
 
 #[test]
@@ -127,8 +116,8 @@ fn sibling_relations_dispatch_concurrently() {
         (0..N).map(|i| (format!("rel{i}"), Vec::new())).collect();
 
     let t0 = Instant::now();
-    let results = dispatch_read_nodes_parallel(&driver, &to_node(&graph), "sqlite", &nodes, 16)
-        .expect("dispatch ok");
+    let results =
+        dispatch_read_nodes_parallel(&driver, &graph, "sqlite", &nodes, 16).expect("dispatch ok");
     let elapsed = t0.elapsed();
 
     // 1. Wall-clock overlap: N=8 × 60ms serial = 480ms; concurrent ≈ 60ms. Allow generous slack
@@ -151,7 +140,7 @@ fn sibling_relations_dispatch_concurrently() {
     // 3. Determinism: assembled results are in declaration order regardless of finish order.
     assert_eq!(results.len(), N);
     for (i, r) in results.iter().enumerate() {
-        let want = to_node(&json!([{ "sql": format!("SELECT {i}") }]));
+        let want = nj(&format!(r#"[{{"sql": "SELECT {i}"}}]"#));
         let got = litedbmodel_runtime::encode_value(r);
         assert_eq!(got, want, "node rel{i} out of order or wrong");
     }
@@ -172,8 +161,7 @@ fn concurrency_one_stays_serial() {
     let nodes: Vec<(String, Vec<(String, Value)>)> =
         (0..N).map(|i| (format!("rel{i}"), Vec::new())).collect();
 
-    dispatch_read_nodes_parallel(&driver, &to_node(&graph), "sqlite", &nodes, 1)
-        .expect("dispatch ok");
+    dispatch_read_nodes_parallel(&driver, &graph, "sqlite", &nodes, 1).expect("dispatch ok");
     assert_eq!(
         driver.peak_in_flight.load(Ordering::SeqCst),
         1,

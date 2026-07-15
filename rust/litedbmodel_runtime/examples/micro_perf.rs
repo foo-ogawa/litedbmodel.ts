@@ -13,25 +13,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use behavior_contracts::Value;
+use litedbmodel_runtime::Node;
 use litedbmodel_runtime::{
     execute_bundle, read_bundle_pooled, Driver, PreparedStatement, SqliteDriver,
 };
-use serde_json::Value as J;
 
-/// Convert a serde_json fixture to the runtime's native `Node` (the runtime is serde_json-free).
-fn to_node(v: &J) -> litedbmodel_runtime::Node {
-    use litedbmodel_runtime::Node;
-    match v {
-        J::Null => Node::Null,
-        J::Bool(b) => Node::Bool(*b),
-        J::Number(n) => n
-            .as_i64()
-            .map(Node::Int)
-            .unwrap_or_else(|| Node::Float(n.as_f64().unwrap_or(0.0))),
-        J::String(s) => Node::Str(s.clone()),
-        J::Array(a) => Node::Array(a.iter().map(to_node).collect()),
-        J::Object(o) => Node::Object(o.iter().map(|(k, val)| (k.clone(), to_node(val))).collect()),
-    }
+/// Field access on a native `Node` object — `.get(k)` unwrapped (the bundles.json shape is fixed).
+/// The runtime + this example carry NO external JSON crate: the artifact is parsed via `Node::parse`.
+fn g<'a>(n: &'a Node, k: &str) -> &'a Node {
+    n.get(k)
+        .unwrap_or_else(|| panic!("micro_perf: missing artifact key '{k}'"))
 }
 
 // ── counting allocator ────────────────────────────────────────────────────────
@@ -63,10 +54,10 @@ impl Driver for SyncDriverRef<'_> {
 }
 unsafe impl Sync for SyncDriverRef<'_> {}
 
-fn cases(block: &J) -> HashMap<String, J> {
+fn cases(block: &Node) -> HashMap<String, Node> {
     let mut m = HashMap::new();
-    for c in block["cases"].as_array().unwrap() {
-        m.insert(c["case"].as_str().unwrap().to_string(), c.clone());
+    for c in g(block, "cases").as_array().unwrap() {
+        m.insert(g(c, "case").as_str().unwrap().to_string(), c.clone());
     }
     m
 }
@@ -103,21 +94,21 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "benchmark/crosslang/generated/bundles.json".to_string());
     let raw = std::fs::read_to_string(&path).expect("read bundles.json");
-    let j: J = serde_json::from_str(&raw).expect("parse bundles.json");
+    let j: Node = Node::parse(&raw).expect("parse bundles.json");
 
-    let schema: Vec<String> = j["schema"]
+    let schema: Vec<String> = g(&j, "schema")
         .as_array()
         .unwrap()
         .iter()
         .map(|s| s.as_str().unwrap().to_string())
         .collect();
-    let seed_stmts: Vec<String> = j["seed"]
+    let seed_stmts: Vec<String> = g(&j, "seed")
         .as_array()
         .unwrap()
         .iter()
         .map(|s| s.as_str().unwrap().to_string())
         .collect();
-    let sqlite_cases = cases(&j["dialects"]["sqlite"]);
+    let sqlite_cases = cases(g(g(&j, "dialects"), "sqlite"));
 
     let driver = SqliteDriver::in_memory(&schema).expect("schema");
     seed(&driver, &seed_stmts);
@@ -128,20 +119,19 @@ fn main() {
     // find — a plain read (execute_bundle). This is the single-componentRef fast-path shape.
     let find = &sqlite_cases["find"];
     let (fus, fal) = measure(WARM, ITERS, || {
-        let out =
-            execute_bundle(&to_node(&find["bundle"]), &to_node(&find["input"]), &driver).unwrap();
+        let out = execute_bundle(g(find, "bundle"), g(find, "input"), &driver).unwrap();
         std::hint::black_box(&out);
     });
 
     // hasMany — a relation read (read_bundle_pooled): primary read + batched relation load.
     let hm = &sqlite_cases["hasMany"];
-    let hm_with = hm["withRelation"].as_str().unwrap().to_string();
+    let hm_with = g(hm, "withRelation").as_str().unwrap().to_string();
     let sync = SyncDriverRef(&driver);
     let conns: HashMap<String, &(dyn Driver + Sync)> = HashMap::new();
     let (hus, hal) = measure(WARM, ITERS, || {
         let out: Value = read_bundle_pooled(
-            &to_node(&hm["bundle"]),
-            &to_node(&hm["input"]),
+            g(hm, "bundle"),
+            g(hm, "input"),
             &sync,
             std::slice::from_ref(&hm_with),
             &conns,

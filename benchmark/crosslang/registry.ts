@@ -31,6 +31,12 @@ const RUST_BIN = process.env.RUST_BENCH_BIN ?? 'benchmark/crosslang/adapters/rus
 // parses JSON or touches IR data at execution time.
 const RUST_CODEGEN_BIN = process.env.RUST_CODEGEN_BENCH_BIN ?? 'benchmark/crosslang/adapters/rust-codegen/target/release/lm_codegen';
 const GO_BIN = process.env.GO_BENCH_BIN ?? 'benchmark/crosslang/adapters/go/go_bench';
+// The go codegen cell is a SEPARATE binary (owner order, mirroring rust-codegen): its build links
+// NEITHER litedbmodel_runtime NOR (directly) encoding/json — the generated typed-native modules + the
+// generated native companion (cgplans, incl. SCHEMA/SEED) + database/sql only. It never parses the
+// JSON artifact or touches IR data at execution time. (bc-go transitively imports encoding/json for
+// its parser; that is unavoidable for any bc consumer and is not litedbmodel's codegen path.)
+const GO_CODEGEN_BIN = process.env.GO_CODEGEN_BENCH_BIN ?? 'benchmark/crosslang/adapters/go-codegen/lm_codegen';
 const V1RS_BIN = process.env.V1RS_BENCH_BIN ?? 'benchmark/crosslang/adapters/v1rs/target/release/v1rs_bench';
 
 function ts(impl: string): CellSpec {
@@ -48,6 +54,11 @@ function rust(impl: string): CellSpec {
   return { language: 'rust', impl, spawn: { command, args: [`--impl=${impl}`] } };
 }
 function go(impl: string): CellSpec {
+  // codegen rides the dedicated JSON-free/rt-free binary (lm_codegen, no --impl arg — it IS codegen);
+  // sql rides the shared go_bench adapter.
+  if (impl === 'codegen') {
+    return { language: 'go', impl, spawn: { command: GO_CODEGEN_BIN, args: [] } };
+  }
   return { language: 'go', impl, spawn: { command: GO_BIN, args: [`--impl=${impl}`] } };
 }
 

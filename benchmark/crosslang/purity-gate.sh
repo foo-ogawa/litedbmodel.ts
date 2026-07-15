@@ -27,7 +27,10 @@ scan() { # scan <label> <pattern> <path...>
 GEN=benchmark/crosslang/generated/codegen
 RUST_CG=benchmark/crosslang/adapters/rust-codegen/src
 TS_CELL=benchmark/crosslang/adapters/ts/codegen-cell.ts
-GO_CELL=go/lm_bench/codegen_cell.go
+# The go codegen cell logic lives in the importable `cgcell` package; the dedicated json-free/rt-free
+# binary is `go/lm_codegen`.
+GO_CELL=go/lm_bench/cgcell/cell.go
+GO_CODEGEN_BIN_SRC=go/lm_codegen/main.go
 GO_PLANS=go/lm_bench/cgplans
 GO_MODS=go/lm_bench/cgmods
 # The NATIVE-ONLY runtimes (epic #44 native-only, #8): rust/go run every read/write via generated
@@ -43,9 +46,12 @@ scan "generated: IR fingerprint 定数なし" \
 scan "generated: 埋め込み IR なし" \
   "\"components\"[[:space:]]*:|\"wires\"[[:space:]]*:|bundleToPortableIR" "$GEN" "$GO_MODS" "$GO_PLANS"
 
-echo "── 2. codegen 実行系に JSON ライブラリなし ──"
+echo "── 2. codegen 実行系に JSON ライブラリ / 実行系 runtime なし ──"
 scan "rust-codegen: serde_json なし" "serde_json|json!" "$RUST_CG"
-scan "go codegen: encoding/json import なし" "\"encoding/json\"" "$GO_CELL" "$GO_PLANS" "$GO_MODS"
+scan "go codegen cell/binary: encoding/json import なし" "\"encoding/json\"" "$GO_CELL" "$GO_CODEGEN_BIN_SRC" "$GO_PLANS" "$GO_MODS"
+# The dedicated go lm_codegen binary + the cgcell package must NOT import litedbmodel_runtime (the
+# codegen path links NO interpreter/exec crate — mirrors rust-codegen's serde-free crate isolation).
+scan "go codegen cell/binary: no litedbmodel_runtime import" "litedbmodel/go/litedbmodel_runtime" "$GO_CELL" "$GO_CODEGEN_BIN_SRC"
 scan "generated rust: serde_json なし" "serde_json" "$GEN/rust"
 
 echo "── 3. codegen 実行系に IR 参照 / interpreter 呼び出しなし ──"

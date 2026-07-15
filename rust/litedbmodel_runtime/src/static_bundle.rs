@@ -7,11 +7,11 @@
 //! them NATIVELY (#8): the read-graph orchestration (map iteration / Φ-merge / output assembly) is a
 //! CLOSED-SET native walker (`execute_read_graph` → `orchestrate_read_graph_serial`, NOT the retired
 //! bc `run_behavior` IR interpreter), and the deferred param slots + skip resolve through the crate's
-//! OWN native evaluator ([`crate::node::eval_expr`], NOT bc's serde_json-based `evaluate_expression`).
+//! OWN native evaluator ([`crate::node::eval_expr`], NOT bc's external JSON crate-based `evaluate_expression`).
 //! This module re-implements NO generic evaluator BEYOND that closed native set and does NO SQL
 //! re-derivation — every statement's `sql` is fixed text; the runtime only evaluates its deferred
 //! params + skip, resolves the WHERE connector from the present set, assembles + renders
-//! placeholders, and binds. The runtime carries NO serde_json.
+//! placeholders, and binds. The runtime carries NO external JSON crate.
 //!
 //! A statement template (StaticStatement) is `{sql, params, skip?, whereFragment?}`:
 //! - `sql` — complete tuned dialect text (`?` placeholders), value-independent.
@@ -165,7 +165,7 @@ fn eval_spec(spec: &J, scope: &[(String, Value)]) -> Result<Value, String> {
                 })
                 .collect(),
         );
-        // Native JS-JSON.stringify compaction (serde_json-free): the single IN-list string param.
+        // Native JS-JSON.stringify compaction (JSON-library-free): the single IN-list string param.
         return Ok(Value::Str(compact_value(&encoded)));
     }
     evaluate_expression(spec, scope).map_err(|e| e.message)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	cgcell "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgcell"
 	sqlite "modernc.org/sqlite"
 )
 
@@ -210,7 +211,7 @@ func costViaTrace(impl, caseID string, a *artifact) (int, int) {
 	if impl == "sql" {
 		runSQL(caseID, db)
 	} else if impl == "codegen" {
-		runCodegen("sqlite", caseID, db)
+	cgcell.RunCodegen("sqlite", caseID, db)
 	} else {
 		runLM(a.Cases[caseID], db)
 	}

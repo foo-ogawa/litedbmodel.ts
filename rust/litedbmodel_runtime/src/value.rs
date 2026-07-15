@@ -1,7 +1,7 @@
 //! litedbmodel v2 SCP — the bound-scope helpers over the native [`Node`] model.
 //!
-//! The runtime is NATIVE-ONLY (#8): it carries NO serde_json. The JSON ⇄ `Value` conversion + the
-//! `{"$bigint":"<dec>"}` conformance codec live in [`crate::node`] (native, serde_json-free); this
+//! The runtime is NATIVE-ONLY (#8): it carries NO external JSON crate. The JSON ⇄ `Value` conversion + the
+//! `{"$bigint":"<dec>"}` conformance codec live in [`crate::node`] (native, JSON-library-free); this
 //! module only adds the flat-scope helpers over that model. bc's numeric model has a single i64 int,
 //! so a param TS tagged `$bigint` and one it left a plain number both decode to `Value::Int`
 //! (value-equal) — the SQL text stays byte-asserted and params compare by value.

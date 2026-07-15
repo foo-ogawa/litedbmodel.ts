@@ -13,11 +13,10 @@ keywords = ["orm", "sql", "ir", "runtime", "conformance"]
 categories = ["database", "api-bindings"]
 
 [dependencies]
-# NATIVE-ONLY (#8): the runtime carries NO serde_json / serde. The published bundle is pure JSON, but
+# NATIVE-ONLY (#8): the runtime carries NO external JSON crate. The published bundle is pure JSON, but
 # the runtime parses it through its OWN native JSON parser (`node::Node::parse`) and evaluates the
 # deferred param slots through its OWN native closed-set evaluator (`node::eval_expr`) — bc's
-# serde_json-based `ir` feature (`evaluate_expression`/`run_behavior`) is NOT used. `cargo tree -i
-# serde_json` from this crate is EMPTY (default-features=false drops bc's serde_json-pulling `ir`).
+# external-JSON-crate `ir` feature (`evaluate_expression`/`run_behavior`) is NOT used. `cargo tree -i external-crate` from this crate is EMPTY (default-features=false drops bc's external-crate-pulling `ir`).
 behavior-contracts = { workspace = true, default-features = false }
 # In-process SQLite driver for the conformance bar (real execution — the sanctioned in-proc
 # substitute for docker; #34 AC). `bundled` builds the SQLite amalgamation so no system libsqlite
@@ -47,10 +46,6 @@ futures-util = { version = "0.3", optional = true }
 [features]
 livedb = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:sqlx", "dep:tokio", "dep:futures-util", "dep:rust_decimal", "dep:chrono"]
 
-# TEST-ONLY: the integration tests build their bundle/graph fixtures with the `json!` macro for
-# readability, then convert to the runtime's native `Node` at the boundary (a local `to_node`
-# helper). This is a DEV dependency — it is NOT part of the shipped runtime lib's dependency tree
-# (`cargo tree -i serde_json --edges normal` from the crate is EMPTY), so it cannot reintroduce
-# serde_json into the runtime's EXECUTION path. The runtime SOURCE (`src/`) carries no serde_json.
-[dev-dependencies]
-serde_json = { version = "1", features = ["preserve_order"] }
+# NO external JSON crate anywhere (not even dev): the integration tests + the micro_perf example build their
+# bundle/graph fixtures through the runtime's OWN native JSON parser (`Node::parse`) — the `json!`
+# macro is retired. a repo-wide grep for that crate over rust/litedbmodel_runtime is EMPTY (src + tests + manifest).

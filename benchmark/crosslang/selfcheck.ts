@@ -168,13 +168,16 @@ for (const c of NO_MODULE_CASES) {
 //    its covered-read dispatch calls the GENERATED typed-native runner `run_native_raw_struct_<Comp>`
 //    and links NO interpreter (execute_bundle/read_bundle_pooled are absent — serde-free crate).
 //    The old shared `adapters/rust` binary must FAIL CLOSED on impl=codegen (codegen does not live there).
-//  - Go codegen is BLOCKED on bc#102 (go-typed-native emits the runner unexported) — the cell must
-//    FAIL CLOSED (panic naming bc#102), NEVER silently fall back to the interpreter (rt.ExecuteBundle/
-//    rt.ReadBundle) or the retired RAW-ABI path. That honest block is the correct state, not a sham.
-console.log('\n=== anti-sham (adapter wiring): codegen invokes the typed-native runner / fails closed, never the interpreter ===');
+//  - Go codegen runs in the DEDICATED, rt-free/json-free `lm_codegen` binary (go/lm_codegen): its
+//    covered-read dispatch (package go/lm_bench/cgcell) calls the GENERATED typed-native runner
+//    `RunNativeRawStruct_<Comp>` (bc 0.7.3 fixes bc#102 — the runner is now EXPORTED) and imports
+//    NEITHER litedbmodel_runtime NOR encoding/json (directly). It NEVER falls back to the interpreter
+//    (rt.ExecuteBundle/rt.ReadBundle) or the retired RAW-ABI path.
+console.log('\n=== anti-sham (adapter wiring): codegen invokes the typed-native runner / never the interpreter ===');
 const RUST_CODEGEN = resolve(HERE, 'adapters', 'rust-codegen', 'src', 'main.rs');
 const RUST_SHARED = resolve(HERE, 'adapters', 'rust', 'src', 'main.rs');
-const GO_CELL = resolve(HERE, '..', '..', 'go', 'lm_bench', 'codegen_cell.go');
+const GO_CELL = resolve(HERE, '..', '..', 'go', 'lm_bench', 'cgcell', 'cell.go');
+const GO_CODEGEN_MAIN = resolve(HERE, '..', '..', 'go', 'lm_codegen', 'main.go');
 {
   const src = readFileSync(RUST_CODEGEN, 'utf8');
   const invokesGenerated = /run_native_raw_struct_/.test(src);
@@ -190,12 +193,25 @@ const GO_CELL = resolve(HERE, '..', '..', 'go', 'lm_bench', 'codegen_cell.go');
   console.log(`  rust adapters/rust (sql/ir) ${failsClosed ? 'OK (fails closed on impl=codegen — codegen rides lm_codegen)' : 'SHAM: shared adapter does not fail-closed on impl=codegen'}`);
 }
 {
+  // The go codegen CELL (cgcell) invokes the generated typed-native runner + never the interpreter.
   const go = readFileSync(GO_CELL, 'utf8');
-  const failsClosedOnBc102 = /bc#102/.test(go) && /func runCodegenCase[\s\S]{0,400}panic\(/.test(go);
-  const silentInterpreter = /rt\.ExecuteBundle\b|rt\.ReadBundle\b/.test(go);
-  const ok = failsClosedOnBc102 && !silentInterpreter;
+  const invokesGenerated = /RunNativeRawStruct_/.test(go);
+  const silentInterpreter = /rt\.ExecuteBundle\b|rt\.ReadBundle\b|litedbmodel_runtime/.test(
+    go.replace(/\/\/[^\n]*/g, ''), // strip line comments (the doc prose names the symbols)
+  );
+  const ok = invokesGenerated && !silentInterpreter;
   if (!ok) failures++;
-  console.log(`  go   codegen_cell          ${ok ? 'OK (fails closed on bc#102; no silent interpreter/RAW-ABI fallback)' : `SHAM: failsClosedOnBc102=${failsClosedOnBc102} silentInterpreter=${silentInterpreter}`}`);
+  console.log(`  go   cgcell                ${ok ? 'OK (RunNativeRawStruct_<Comp>; no interpreter/RAW-ABI fallback)' : `SHAM: generated=${invokesGenerated} silentInterpreter=${silentInterpreter}`}`);
+}
+{
+  // The dedicated go lm_codegen BINARY imports neither litedbmodel_runtime nor encoding/json (direct).
+  const main = readFileSync(GO_CODEGEN_MAIN, 'utf8');
+  const importBlock = /import \(([\s\S]*?)\)/.exec(main)?.[1] ?? '';
+  const linksRuntime = /litedbmodel_runtime/.test(importBlock);
+  const linksJson = /"encoding\/json"/.test(importBlock);
+  const ok = !linksRuntime && !linksJson;
+  if (!ok) failures++;
+  console.log(`  go   lm_codegen binary     ${ok ? 'OK (imports neither litedbmodel_runtime nor encoding/json)' : `SHAM: runtime=${linksRuntime} json=${linksJson}`}`);
 }
 
 if (failures > 0) {

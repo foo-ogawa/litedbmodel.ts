@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	cgcell "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgcell"
 	conf "github.com/foo-ogawa/litedbmodel/go/conformance"
 	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
 
@@ -384,7 +385,7 @@ func main() {
 	if impl == "codegen" {
 		mock := openMockDB()
 		for _, c := range cgplans.CaseIDs {
-			runCodegen("sqlite", c, mock)
+		cgcell.RunCodegen("sqlite", c, mock)
 		}
 		mock.Close()
 	}
@@ -456,7 +457,7 @@ func handle(req map[string]any, impl string, art *artifact) {
 				if impl == "sql" {
 					runSQL(caseID, db)
 				} else if impl == "codegen" {
-					runCodegen(dialect, caseID, db)
+				cgcell.RunCodegen(dialect, caseID, db)
 				} else {
 					runLM(c, db)
 				}
@@ -483,7 +484,7 @@ func handle(req map[string]any, impl string, art *artifact) {
 				if impl == "sql" {
 					runSQL(caseID, db)
 				} else if impl == "codegen" {
-					runCodegen(dialect, caseID, db)
+				cgcell.RunCodegen(dialect, caseID, db)
 				} else {
 					runLM(c, db)
 				}
@@ -523,7 +524,7 @@ func handle(req map[string]any, impl string, art *artifact) {
 			if impl == "sql" {
 				runSQL(caseID, mock)
 			} else if impl == "codegen" {
-				runCodegen(dialect, caseID, mock)
+			cgcell.RunCodegen(dialect, caseID, mock)
 			} else {
 				runLM(c, mock)
 			}
@@ -656,7 +657,7 @@ func repeat(s string, n int) []string {
 func runCodegenValueStr(a *artifact, caseID string) string {
 	raw := seedDB(a)
 	defer raw.Close()
-	out := runCodegenCase("sqlite", caseID, raw)
+	out := cgcell.RunCodegenCase("sqlite", caseID, raw)
 	return conf.EncodeConformanceJSON(coerceIntsValue(out))
 }
 

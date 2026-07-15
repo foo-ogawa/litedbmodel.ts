@@ -1,15 +1,14 @@
-//! litedbmodel v2 SCP — the runtime's NATIVE JSON value model + expression evaluator (serde_json-free).
+//! litedbmodel v2 SCP — the runtime's NATIVE JSON value model + expression evaluator (JSON-library-free).
 //!
-//! The rust runtime is NATIVE-ONLY (#8): it carries NO `serde_json` and does NOT depend on bc's
-//! `ir` feature (`evaluate_expression`/`run_behavior`, both serde_json-based, are retired). The
-//! published bundle is a pure-JSON artifact, but the runtime never parses/serializes JSON with a
-//! library — the RUNNER binary parses the wire bytes (it may use serde_json) and converts them into
-//! this crate's own [`Node`] tree at the boundary ([`Node::from_serde`] behind the runner's own
-//! feature); the runtime then walks + evaluates `Node`s natively.
+//! The rust runtime is NATIVE-ONLY (#8): it carries NO external JSON crate and does NOT depend on bc's
+//! `ir` feature (`evaluate_expression`/`run_behavior`, both JSON-crate-based, are retired). The
+//! published bundle is a pure-JSON artifact, but the runtime parses it through its OWN native parser
+//! ([`Node::parse`], a hand-written recursive-descent JSON reader) into this crate's own [`Node`] tree,
+//! then walks + evaluates `Node`s natively. No external JSON crate is linked, at any layer.
 //!
-//! [`Node`] mirrors the small `serde_json::Value` API surface the runtime used (`get`/`as_str`/
-//! `as_array`/`as_i64`/`as_u64`/`is_null`/`as_object`) so the migration is mechanical, and adds the
-//! NATIVE closed-set expression evaluator ([`eval_expr`]) that replaces `bc::evaluate_expression`.
+//! [`Node`] provides a small `get`/`as_str`/`as_array`/`as_i64`/`as_u64`/`is_null`/`as_object` API so
+//! the migration off the old external-JSON-value type was mechanical, and adds the NATIVE closed-set
+//! expression evaluator ([`eval_expr`]) that replaces bc's `evaluate_expression`.
 //! The evaluated operators are exactly the closed set the litedbmodel corpora use for deferred param
 //! slots / skip / map-`over` / component `output`:
 //!   `ref` · `refOpt` · `coalesce` · `ne`/`eq` · `not` · `and`/`or` · `arr` · `obj` · `cond` ·
@@ -21,7 +20,7 @@
 use behavior_contracts::{deep_equals, Value};
 use std::fmt::Write as _;
 
-/// A native, order-preserving JSON value (serde_json-free). Numbers keep the int/float distinction
+/// A native, order-preserving JSON value (JSON-library-free). Numbers keep the int/float distinction
 /// (a bare integral JSON number is `Int`, matching the runtime's `decode_value`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
@@ -36,7 +35,7 @@ pub enum Node {
 }
 
 impl Node {
-    /// Object field by key (mirrors `serde_json::Value::get(&str)`), or `None`.
+    /// Object field by key (mirrors `the JSON value type's get(&str)`), or `None`.
     pub fn get(&self, key: &str) -> Option<&Node> {
         match self {
             Node::Object(pairs) => pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v),
@@ -140,8 +139,8 @@ fn write_node_compact(n: &Node, out: &mut String) {
     }
 }
 
-// ── NATIVE JSON parser (serde_json-free) — the runner decodes the wire bundle through THIS ───────
-// The runtime carries NO serde_json (not even an optional dep): the runners parse the wire bundle
+// ── NATIVE JSON parser (JSON-library-free) — the runner decodes the wire bundle through THIS ───────
+// The runtime carries NO external JSON crate (not even an optional dep): the runners parse the wire bundle
 // bytes into a [`Node`] through this hand-written recursive-descent parser. Object key order is
 // preserved (insertion order), numbers keep the int/float split, and the standard JSON escapes are
 // decoded. Fail-closed on malformed input (never a silent partial parse).
@@ -380,10 +379,10 @@ impl Parser<'_> {
     }
 }
 
-// ── value ⇄ Node conversion + the $bigint conformance codec (serde_json-free) ────────────────────
+// ── value ⇄ Node conversion + the $bigint conformance codec (JSON-library-free) ────────────────────
 
 /// Decode a bundle/scope [`Node`] into the bc runtime [`Value`] (native port of the retired
-/// serde_json `decode_value`): `{"$bigint":"<dec>"}` → int; a bare integral number → int, a
+/// the retired external-crate `decode_value`): `{"$bigint":"<dec>"}` → int; a bare integral number → int, a
 /// fractional one → float; recurse arrays/objects (insertion order preserved). Fails loudly on a
 /// `$bigint` string that is not a valid i64 (no silent fallback).
 pub fn decode_value(x: &Node) -> Result<Value, String> {
@@ -418,7 +417,7 @@ pub fn decode_value(x: &Node) -> Result<Value, String> {
     }
 }
 
-/// Encode a bc runtime [`Value`] into a native [`Node`] (native port of the retired serde_json
+/// Encode a bc runtime [`Value`] into a native [`Node`] (native port of the retired external-JSON-crate
 /// `encode_value`): ints round-trip as plain JSON numbers (the corpus is within the JS safe-integer
 /// range, so the reference's decoded `$bigint`→number form matches).
 pub fn encode_value(v: &Value) -> Node {
@@ -446,10 +445,10 @@ impl<'a, I: Iterator<Item = &'a Value>> EncodeAll for I {
     }
 }
 
-// ── native JSON compaction (JS JSON.stringify form — no serde_json) ──────────────────────────────
+// ── native JSON compaction (JS JSON.stringify form — no external JSON crate) ──────────────────────────────
 
 /// Serialize a [`Value`] with no inter-token spaces (JS `JSON.stringify` form) — the IN-list single
-/// param encoder. Native writer (no serde_json): `"`/`\`/control chars escape, unicode left raw,
+/// param encoder. Native writer (no external JSON crate): `"`/`\`/control chars escape, unicode left raw,
 /// a whole-valued float prints as an integer.
 pub fn compact_value(v: &Value) -> String {
     let mut out = String::new();

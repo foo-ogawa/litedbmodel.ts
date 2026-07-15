@@ -16,7 +16,9 @@ interface ManifestPin {
 // Each language's bc version SoT (the version string is capture group 1).
 const PINS: readonly ManifestPin[] = [
   { label: 'npm (ts)', file: 'package.json', re: /"behavior-contracts":\s*"[\^~]?([0-9][0-9A-Za-z.\-+]*)"/ },
-  { label: 'crates (rust runtime)', file: 'rust/Cargo.toml', re: /^behavior-contracts\s*=\s*"([0-9][0-9A-Za-z.\-+]*)"/m },
+  // The rust runtime is NATIVE-ONLY: it pins bc via the inline-table form with default-features =
+  // false (drops bc's serde_json-pulling `ir` feature), so the version lives inside the table.
+  { label: 'crates (rust runtime)', file: 'rust/Cargo.toml', re: /^behavior-contracts\s*=\s*\{\s*version\s*=\s*"([0-9][0-9A-Za-z.\-+]*)"/m },
   { label: 'crates (rust bench adapter)', file: 'benchmark/crosslang/adapters/rust/Cargo.toml', re: /^behavior-contracts\s*=\s*"([0-9][0-9A-Za-z.\-+]*)"/m },
   // The dedicated JSON-free codegen adapter crate (default-features = false; version is in the inline table).
   { label: 'crates (rust codegen adapter)', file: 'benchmark/crosslang/adapters/rust-codegen/Cargo.toml', re: /^behavior-contracts\s*=\s*\{\s*version\s*=\s*"([0-9][0-9A-Za-z.\-+]*)"/m },

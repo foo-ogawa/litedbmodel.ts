@@ -19,7 +19,7 @@
 //
 // Fail-closed: an unknown case / spec kind / non-scalar driver arg PANICS loudly — never a silent
 // degrade (companion generation already fail-closed on out-of-set shapes).
-package main
+package cgcell
 
 import (
 	"database/sql"
@@ -45,9 +45,9 @@ import (
 	cgInList "github.com/foo-ogawa/litedbmodel/go/lm_bench/cgmods/inList"
 )
 
-// cgDB is the SQL driver seam the codegen cell drives (a *sql.DB satisfies it — the real seeded
+// CgDB is the SQL driver seam the codegen cell drives (a *sql.DB satisfies it — the real seeded
 // sqlite, the mock micro driver, and the trace cost probe all ride database/sql).
-type cgDB interface {
+type CgDB interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 	Exec(query string, args ...any) (sql.Result, error)
 	Begin() (*sql.Tx, error)
@@ -382,7 +382,7 @@ func rowsToObjs(cols []string, data [][]any) []bc.Value {
 // present-as-null for an absent optional — plus returnedRows only when a batch RETURNING produced
 // rows), the SAME canonical shape the ir path's txResultToObj produces. #60 m1: writes have no codegen
 // module de-box (no RawValue ABI) — this is called directly and its *bc.Obj is the verify output.
-func execTxNative(plan *cgplans.TxPlan, dialect cgplans.Dialect, input *bc.Obj, db cgDB) bc.Value {
+func execTxNative(plan *cgplans.TxPlan, dialect cgplans.Dialect, input *bc.Obj, db CgDB) bc.Value {
 	tx, err := db.Begin()
 	must(err)
 	done := false
@@ -527,7 +527,7 @@ func stringifyKeyNative(v bc.Value) string {
 // non-null parent keys (insertion order), bind (mysql/sqlite: ONE JSON text param; PG cannot
 // bind arrays through database/sql — fail-closed, and the go bench's PG legs are protocol-level
 // skips), group child rows by target key, distribute per cardinality.
-func stitchNative(rel *cgplans.Relation, parents []bc.Value, db cgDB) []bc.Value {
+func stitchNative(rel *cgplans.Relation, parents []bc.Value, db CgDB) []bc.Value {
 	seen := make(map[string]bool, len(parents))
 	keys := make([]bc.Value, 0, len(parents))
 	for _, p := range parents {
@@ -594,7 +594,7 @@ func stitchNative(rel *cgplans.Relation, parents []bc.Value, db cgDB) []bc.Value
 // as ordered column-name → cell pairs (native; no *Obj/Value boxing on the module's own surface —
 // each per-module handler decodes these directly into its concrete T0 struct). Shared by every
 // Handler_<Comp> below so all covered reads run the SAME native render+execute the ir path runs.
-func nativeReadRows(plan *cgplans.ReadPlan, scope *bc.Obj, db cgDB) ([]string, [][]any) {
+func nativeReadRows(plan *cgplans.ReadPlan, scope *bc.Obj, db CgDB) ([]string, [][]any) {
 	query, args := renderReadNative(plan, scope)
 	return queryNative(db, query, args)
 }
@@ -638,7 +638,7 @@ func scopeObj(pairs ...[2]any) *bc.Obj {
 
 type findHandler struct {
 	plan *cgplans.ReadPlan
-	db   cgDB
+	db   CgDB
 }
 
 func (h findHandler) Node_Find_n0(ports cgFind.PortsNR_Find_n0, _ *string) (cgFind.Row_Find_n0, bool) {
@@ -659,7 +659,7 @@ func (h findHandler) Node_Find_n0(ports cgFind.PortsNR_Find_n0, _ *string) (cgFi
 // Each module declares a DISTINCT (though structurally identical) type set, so one handler per module.
 type postsBelongsToHandler struct {
 	plan *cgplans.ReadPlan
-	db   cgDB
+	db   CgDB
 }
 
 func (h postsBelongsToHandler) Node_Posts_n0(ports cgBelongsTo.PortsNR_Posts_n0, _ *string) (cgBelongsTo.Row_Posts_n0, bool) {
@@ -674,7 +674,7 @@ func (h postsBelongsToHandler) Node_Posts_n0(ports cgBelongsTo.PortsNR_Posts_n0,
 
 type postsHasManyHandler struct {
 	plan *cgplans.ReadPlan
-	db   cgDB
+	db   CgDB
 }
 
 func (h postsHasManyHandler) Node_Posts_n0(ports cgHasMany.PortsNR_Posts_n0, _ *string) (cgHasMany.Row_Posts_n0, bool) {
@@ -689,7 +689,7 @@ func (h postsHasManyHandler) Node_Posts_n0(ports cgHasMany.PortsNR_Posts_n0, _ *
 
 type postsHasManyLimitHandler struct {
 	plan *cgplans.ReadPlan
-	db   cgDB
+	db   CgDB
 }
 
 func (h postsHasManyLimitHandler) Node_Posts_n0(ports cgHasManyLimit.PortsNR_Posts_n0, _ *string) (cgHasManyLimit.Row_Posts_n0, bool) {
@@ -704,7 +704,7 @@ func (h postsHasManyLimitHandler) Node_Posts_n0(ports cgHasManyLimit.PortsNR_Pos
 
 type inListHandler struct {
 	plan *cgplans.ReadPlan
-	db   cgDB
+	db   CgDB
 }
 
 func (h inListHandler) Node_ByIds_n0(ports cgInList.PortsNR_ByIds_n0, _ *string) (cgInList.Row_ByIds_n0, bool) {
@@ -723,7 +723,7 @@ func (h inListHandler) Node_ByIds_n0(ports cgInList.PortsNR_ByIds_n0, _ *string)
 
 type complexWhereHandler struct {
 	plan *cgplans.ReadPlan
-	db   cgDB
+	db   CgDB
 }
 
 func (h complexWhereHandler) Node_ComplexWhere_n0(ports cgComplexWhere.PortsNR_ComplexWhere_n0, _ *string) (cgComplexWhere.Row_ComplexWhere_n0, bool) {
@@ -761,7 +761,7 @@ func postsRowsToValues[T any](rows []T, id func(T) int64, aid func(T) int64, tit
 // through RunNativeRawStruct_<Comp> with this cell's Handler_<Comp> (native render+execute+scan into the
 // module's concrete T0); relations stitch via stitchNative; writes call execTxNative directly (no write
 // codegen module — #60 m1). Fail-closed on an unknown case.
-func runCodegenCase(dialect, caseID string, db cgDB) bc.Value {
+func RunCodegenCase(dialect, caseID string, db CgDB) bc.Value {
 	pc := preparedFor(dialect, caseID)
 	switch caseID {
 	case "find":
@@ -865,6 +865,13 @@ func scopeI64Arr(scope *bc.Obj, key string) []int64 {
 }
 
 // runCodegen is the timed codegen op (output discarded).
-func runCodegen(dialect, caseID string, db cgDB) {
-	_ = runCodegenCase(dialect, caseID, db)
+func RunCodegen(dialect, caseID string, db CgDB) {
+	_ = RunCodegenCase(dialect, caseID, db)
+}
+
+// must panics on a non-nil error (fail-closed — the codegen path surfaces any driver error loudly).
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
 }

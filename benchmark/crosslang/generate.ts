@@ -379,7 +379,7 @@ function main(): void {
   const nativeByDialect: Record<string, NCase[]> = {};
   for (const d of CROSSLANG_DIALECTS) nativeByDialect[d] = dialects[d].cases.map((c) => decodeNativeCase(c as never));
   const rustCompanion = rustCompanionSource(nativeByDialect, SCHEMA as readonly string[], seed);
-  const goCompanion = goCompanionSource(nativeByDialect);
+  const goCompanion = goCompanionSource(nativeByDialect, SCHEMA as readonly string[], seed);
 
   const writeNativeCompanions = (): void => {
     mkdirSync(dirname(RUST_COMPANION), { recursive: true });
