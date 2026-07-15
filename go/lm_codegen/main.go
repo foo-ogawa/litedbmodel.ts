@@ -303,8 +303,25 @@ func handle(kind, line string) {
 			writeSkipped(caseID, dialect, r)
 			return
 		}
-		db := seedDriver()
-		defer db.Close()
+		// The go micro (client-path) mock rides `database/sql` on the in-proc sqlite driver, whose
+		// arg-conversion layer rejects the PG/MySQL IN-list array param ([]Value) + `= ANY`/`JSON_TABLE`
+		// SQL shape — so the non-sqlite micro cannot run through this mock harness. Skipped honestly,
+		// exactly like the go/sql (lm_bench) cell + the comparability disclosure (the SQLite micro
+		// client-path IS measured); never a silent drop, never a fail-closed crash.
+		if kind == "micro" && dialect != "sqlite" {
+			writeSkipped(caseID, dialect, "go codegen micro mock rides database/sql; its arg layer rejects the "+dialect+" IN-list array param ([]Value) — non-sqlite micro not run through the mock")
+			return
+		}
+		// micro = I/O-EXCLUDED client-path: ride the MOCK driver (fixed rows, no real round-trip) so the
+		// timed op is ONLY render + typed param bind + row hydrate — parity with go/sql's openMockDB() and
+		// every other cell's mocked micro. run/throughput = DB-backed: ride the REAL in-proc sqlite driver.
+		var db *sql.DB
+		if kind == "micro" {
+			db = openMockDB()
+		} else {
+			db = seedDriver()
+			defer db.Close()
+		}
 		if kind == "throughput" {
 			iters, _ := fieldU64(line, "iterations")
 			t0 := time.Now()

@@ -26,7 +26,7 @@ use litedbmodel_runtime::{
     decode_scope, execute_bundle, execute_transaction_bundle, read_bundle_pooled, Driver,
     PreparedStatement, RunInfo, SqliteDriver,
 };
-use serde_json::Value as J;
+use litedbmodel_runtime::Node as J;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -147,29 +147,33 @@ struct Artifact {
 
 fn cases_map(block: &J) -> HashMap<String, J> {
     let mut cases = HashMap::new();
-    for c in block["cases"].as_array().unwrap() {
-        cases.insert(c["case"].as_str().unwrap().to_string(), c.clone());
+    for c in block.get("cases").unwrap().as_array().unwrap() {
+        cases.insert(c.get("case").unwrap().as_str().unwrap().to_string(), c.clone());
     }
     cases
 }
 
 fn load_artifact(path: &str) -> Artifact {
     let raw = std::fs::read_to_string(path).expect("read bundles.json");
-    let j: J = serde_json::from_str(&raw).expect("parse bundles.json");
-    let schema = j["schema"]
+    let j: J = J::parse(&raw).expect("parse bundles.json");
+    let schema = j
+        .get("schema")
+        .unwrap()
         .as_array()
         .unwrap()
         .iter()
         .map(|s| s.as_str().unwrap().to_string())
         .collect();
-    let seed = j["seed"]
+    let seed = j
+        .get("seed")
+        .unwrap()
         .as_array()
         .unwrap()
         .iter()
         .map(|s| s.as_str().unwrap().to_string())
         .collect();
     let mut cases_by_dialect = HashMap::new();
-    for (d, block) in j["dialects"].as_object().unwrap() {
+    for (d, block) in j.get("dialects").unwrap().as_object().unwrap().iter() {
         cases_by_dialect.insert(d.clone(), cases_map(block));
     }
     let cases = cases_by_dialect.get("sqlite").cloned().unwrap();
@@ -333,9 +337,9 @@ fn obj_int(v: &Value, key: &str) -> Option<i64> {
 // Generic over `&dyn Driver` so the SAME op runs against SqliteDriver / PostgresDriver /
 // MysqlDriver (#53 — the live PG/MySQL wiring).
 fn run_lm(case: &J, d: &dyn Driver) {
-    let bundle = &case["bundle"];
-    let kind = case["kind"].as_str().unwrap();
-    let input = &case["input"];
+    let bundle = case.get("bundle").unwrap();
+    let kind = case.get("kind").unwrap().as_str().unwrap();
+    let input = case.get("input").unwrap_or(&J::NULL);
     match kind {
         "batch" => {
             execute_transaction_bundle(bundle, &J::Object(Default::default()), d).unwrap();
@@ -345,7 +349,7 @@ fn run_lm(case: &J, d: &dyn Driver) {
         }
         "relation" => {
             // Relations run on the SAME seeded driver via a single-threaded Sync view.
-            let with_name = case["withRelation"].as_str().unwrap().to_string();
+            let with_name = case.get("withRelation").unwrap().as_str().unwrap().to_string();
             let sd = SyncDriverRef(d);
             let conns: HashMap<String, &(dyn Driver + Sync)> = HashMap::new();
             read_bundle_pooled(bundle, input, &sd, &[with_name], &conns).unwrap();
@@ -444,9 +448,9 @@ fn run_sql_counting(case: &str, d: &CountingDriver) {
     run_sql_generic(case, d);
 }
 fn run_lm_counting(case: &J, d: &CountingDriver) {
-    let bundle = &case["bundle"];
-    let kind = case["kind"].as_str().unwrap();
-    let input = &case["input"];
+    let bundle = case.get("bundle").unwrap();
+    let kind = case.get("kind").unwrap().as_str().unwrap();
+    let input = case.get("input").unwrap_or(&J::NULL);
     match kind {
         "batch" => {
             execute_transaction_bundle(bundle, &J::Object(Default::default()), d).unwrap();
@@ -455,7 +459,7 @@ fn run_lm_counting(case: &J, d: &CountingDriver) {
             execute_transaction_bundle(bundle, input, d).unwrap();
         }
         "relation" => {
-            let with_name = case["withRelation"].as_str().unwrap().to_string();
+            let with_name = case.get("withRelation").unwrap().as_str().unwrap().to_string();
             let conns: HashMap<String, &(dyn Driver + Sync)> = HashMap::new();
             read_bundle_pooled(bundle, input, d, &[with_name], &conns).unwrap();
         }
@@ -661,13 +665,13 @@ unsafe impl Sync for MockDriver {}
 
 fn run_micro(impl_: &str, case: &J, mock: &MockDriver) {
     if impl_ == "sql" {
-        run_sql_generic(case["case"].as_str().unwrap(), mock);
+        run_sql_generic(case.get("case").unwrap().as_str().unwrap(), mock);
     } else if impl_ == "codegen" {
         panic!("lm_bench serves sql/ir only; the codegen cell rides the dedicated lm_codegen binary (fail-closed)");
     } else {
-        let kind = case["kind"].as_str().unwrap();
-        let bundle = &case["bundle"];
-        let input = &case["input"];
+        let kind = case.get("kind").unwrap().as_str().unwrap();
+        let bundle = case.get("bundle").unwrap();
+        let input = case.get("input").unwrap_or(&J::NULL);
         match kind {
             "batch" => {
                 execute_transaction_bundle(bundle, &J::Object(Default::default()), mock).unwrap();
@@ -676,7 +680,7 @@ fn run_micro(impl_: &str, case: &J, mock: &MockDriver) {
                 execute_transaction_bundle(bundle, input, mock).unwrap();
             }
             "relation" => {
-                let with_name = case["withRelation"].as_str().unwrap().to_string();
+                let with_name = case.get("withRelation").unwrap().as_str().unwrap().to_string();
                 let conns: HashMap<String, &(dyn Driver + Sync)> = HashMap::new();
                 read_bundle_pooled(bundle, input, mock, &[with_name], &conns).unwrap();
             }
@@ -739,17 +743,17 @@ fn normalize_tx_result_value(result: &Value) -> Value {
 /// serde_json's `to_string` alone is insertion-ordered when the tree enables preserve_order).
 fn canon_json(v: &J) -> String {
     match v {
-        J::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
+        J::Object(pairs) => {
+            let mut sorted: Vec<&(String, J)> = pairs.iter().collect();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
             let mut out = String::from("{");
-            for (i, k) in keys.iter().enumerate() {
+            for (i, (k, val)) in sorted.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
-                out.push_str(&serde_json::to_string(k).unwrap());
+                out.push_str(&J::Str((*k).clone()).to_json_string());
                 out.push(':');
-                out.push_str(&canon_json(&map[*k]));
+                out.push_str(&canon_json(val));
             }
             out.push('}');
             out
@@ -765,14 +769,14 @@ fn canon_json(v: &J) -> String {
             out.push(']');
             out
         }
-        other => serde_json::to_string(other).unwrap(),
+        other => other.to_json_string(),
     }
 }
 
-fn run_lm_value(case: &J, driver: &dyn Driver) -> serde_json::Value {
-    let bundle = &case["bundle"];
-    let kind = case["kind"].as_str().unwrap();
-    let input = &case["input"];
+fn run_lm_value(case: &J, driver: &dyn Driver) -> J {
+    let bundle = case.get("bundle").unwrap();
+    let kind = case.get("kind").unwrap().as_str().unwrap();
+    let input = case.get("input").unwrap_or(&J::NULL);
     let out: Value = match kind {
         "batch" => normalize_tx_result_value(
             &execute_transaction_bundle(bundle, &J::Object(Default::default()), driver).unwrap(),
@@ -781,8 +785,8 @@ fn run_lm_value(case: &J, driver: &dyn Driver) -> serde_json::Value {
             normalize_tx_result_value(&execute_transaction_bundle(bundle, input, driver).unwrap())
         }
         "relation" => {
-            let with = case["withRelation"].as_str().unwrap();
-            let op = &bundle["relations"][with];
+            let with = case.get("withRelation").unwrap().as_str().unwrap();
+            let op = bundle.get("relations").unwrap().get(with).unwrap();
             let base = execute_bundle(bundle, input, driver).unwrap();
             let rows = match base {
                 Value::Arr(r) => r,
@@ -796,7 +800,10 @@ fn run_lm_value(case: &J, driver: &dyn Driver) -> serde_json::Value {
 }
 
 // ── protocol I/O ──────────────────────────────────────────────────────────────
-fn write_line(v: &J) {
+// The stdio protocol (ready / run / error / result messages) is NOT runtime-facing JSON — it is
+// carried by serde_json (built via `serde_json::json!`), independent of the runtime's native `J`
+// (= `litedbmodel_runtime::Node`) used for the bundle artifact.
+fn write_line(v: &serde_json::Value) {
     let mut out = std::io::stdout();
     out.write_all(serde_json::to_string(v).unwrap().as_bytes())
         .unwrap();
@@ -843,7 +850,7 @@ fn main() {
         if line.is_empty() {
             continue;
         }
-        let req: J = match serde_json::from_str(line) {
+        let req: serde_json::Value = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => {
                 write_line(
@@ -911,7 +918,7 @@ fn with_live_driver<F: FnOnce(&dyn Driver)>(dialect: &str, art: &Artifact, op: F
     }
 }
 
-fn handle(kind: &str, req: &J, impl_: &str, art: &Artifact) {
+fn handle(kind: &str, req: &serde_json::Value, impl_: &str, art: &Artifact) {
     match kind {
         "run" => {
             let case = req["case"].as_str().unwrap();

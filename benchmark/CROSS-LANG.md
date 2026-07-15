@@ -24,15 +24,19 @@ across **all three target dialects** (SQLite / PostgreSQL / MySQL) and five lang
   de-interpreted native source — IR NOT embedded, only its fingerprint for the fail-closed skew
   gate) executed via `bind(handlers)`.
   `ir` = the makeSQL bundle loaded FROM JSON + run through the shared runtime
-  (bc `run_behavior` + makeSQL handler) — the non-TS reality. `dynamic` (TS) =
+  (bc `run_behavior` + makeSQL handler) — the TS / Python / PHP interpret reality. `dynamic` (TS) =
   `executeBehavior` (recompile per call). `prepared` (TS) = compile once → execute many.
+  **Rust / Go carry NO `ir` cell** — their IR interpreter is DELETED (#8, native-only): every
+  read/write runs generated native code, so `codegen` is their ONLY litedbmodel exec surface.
+  **Python / PHP carry NO `codegen` cell** — they are not codegen-MODULE languages (generate.ts
+  emits generated modules only for {ts, go, rust}), so `ir` is their by-design exec surface.
 - **Shared harness + domain.** One TS harness spawns each `(language × impl)` adapter and
   drives it over a line-delimited JSON contract; adapters return RAW samples, the harness
   owns all percentile/throughput math. Every adapter runs the SAME 8 patterns against the
   SAME seeded dataset (8 users / 40 posts / 200 comments). 🔒 The bench CONSUMES generated
   artifacts only — `src/` is byte-unchanged.
 
-_Generated 2026-07-13T10:00:25.455Z — DB-backed warmup 200, 2000 measured iterations;
+_Generated 2026-07-15T06:30:42.515Z — DB-backed warmup 200, 2000 measured iterations;
 micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgres, mysql._
 
 > ## Comparability disclosure (TRUE, read before the numbers)
@@ -56,19 +60,25 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 > |---|---|---|---|
 > | TypeScript | better-sqlite3 (sync runtime) | `pg` Pool (async `executeBundleAsync`) | `mysql2` pool (async) |
 > | Python | stdlib `sqlite3` (sync runtime) | `psycopg` 3 pooled (sync runtime) | `PyMySQL` pooled (sync runtime) |
-> | Rust | `rusqlite` (sync runtime) | `tokio-postgres`+`deadpool` (`ir` only, #53) | `sqlx` `MySqlPool` (`ir` only, #53) |
-> | Go | `modernc.org/sqlite` (sync runtime) | `pgx` stdlib `database/sql` (`ir` only, #53) | `go-sql-driver` RETURNING-emulated (`ir` only, #53) |
+> | Rust | `rusqlite` (sync runtime) | — (no `ir` cell — native-only, #8) | — (no `ir` cell — native-only, #8) |
+> | Go | `modernc.org/sqlite` (sync runtime) | — (no `ir` cell — native-only, #8) | — (no `ir` cell — native-only, #8) |
 > | PHP | PDO sqlite (sync runtime) | `LiveDb::postgres` PDO pgsql (`ir` only, #53) | `LiveDb::mysql` PDO RETURNING-emulated (`ir` only, #53) |
 >
-> ALL FIVE languages' `ir` cell now hits REAL dockerized PG + MySQL (#53). TS PG/MySQL rides
-> the ASYNC production path (`executeBundleAsync` + pool executors; writes via a manual tx over
-> `renderTxStatement`, MySQL RETURNING emulated by re-select) because Node has no synchronous
-> PG/MySQL driver; Python/Rust/Go/PHP ride their shipped SYNC live drivers (the SAME
-> `PostgresDriver`/`MysqlDriver` / `OpenPostgres`/`OpenMysql` / `LiveDb::postgres`/`LiveDb::mysql`
-> seam each runtime's conformance `livedb_runner` already proves against these same containers)
-> through the standard `ir` runtime call (`executeBundle`/`execute_bundle`/`ExecuteBundle`/
-> `Runtime::executeBundle`). Each language's live legs write into an ISOLATED per-bench schema
-> (`scp_<lang>_bench`, distinct from conformance's `scp_<lang>`) so the two never collide.
+> The `ir` cell hits REAL dockerized PG + MySQL (#53) for the THREE languages that HAVE an `ir`
+> cell — **TypeScript, Python, PHP**. TS PG/MySQL rides the ASYNC production path
+> (`executeBundleAsync` + pool executors; writes via a manual tx over `renderTxStatement`, MySQL
+> RETURNING emulated by re-select) because Node has no synchronous PG/MySQL driver; Python/PHP
+> ride their shipped SYNC live drivers (the SAME `PostgresDriver`/`MysqlDriver` /
+> `LiveDb::postgres`/`LiveDb::mysql` seam each runtime's conformance `livedb_runner` already
+> proves against these same containers) through the standard `ir` runtime call
+> (`executeBundle`/`execute_bundle`). Each language's live legs write into an ISOLATED per-bench
+> schema (`scp_<lang>_bench`, distinct from conformance's `scp_<lang>`) so the two never collide.
+>
+> **Rust and Go carry NO `ir` cell** (the IR interpreter is DELETED from their runtimes, #8): their
+> ONLY litedbmodel surface is `codegen` (generated native code). `codegen` is wired to the in-proc
+> sqlite driver only, so Rust/Go are SQLite-only by construction — a native-only design, not a gap.
+> (The independent `v1-rs` runner carries its OWN sqlx live wiring, so its PG/MySQL DB-backed DOES
+> run — the sole Rust-family leg that reaches the dockerized PG/MySQL.)
 >
 > `sql` (the hand-written raw-SQL baseline) and `codegen` (the generated-module cell) stay
 > SQLite-only for every language, by construction, not a gap: `sql` is deliberately
@@ -82,44 +92,37 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 > the PG/MySQL IN-list array param + `= ANY`/`JSON_TABLE` SQL — so their non-SQLite micro is an
 > explicit per-cell SKIP (shown as `skip` in the micro tables), never a silent drop. The
 > 3-dialect cross-language client-path comparison therefore stands on TS/Python/Rust; Go/PHP
-> contribute the SQLite client-path + their full SQLite DB-backed surface. (The old independent
+> contribute the SQLite client-path + their full SQLite DB-backed surface. (The independent
 > `v1-rs` Rust runner carries its OWN sqlx live wiring, so its PG/MySQL DB-backed DOES run.)
 >
-> **3. `codegen` GENUINELY executes THROUGH the bc-generated STRAIGHT-LINE module for the
-> languages that HAVE one — and that is exactly why the Rust/Go numbers moved.** TS/Rust/Go
-> (generate.ts's CODEGEN_LANGS) IMPORT the bc-GENERATED module + fail-closed-verify
+> **3. `codegen` GENUINELY executes THROUGH the bc-generated STRAIGHT-LINE module — and it is
+> now the FASTER litedbmodel read surface (codegen < ir), approaching the raw-SQL baseline.**
+> TS/Rust/Go (generate.ts's CODEGEN_LANGS) IMPORT the bc-GENERATED module + fail-closed-verify
 > (recompute `fingerprint(live IR)` == baked `IR_FINGERPRINT`) + execute THROUGH the module's
-> `bind(handler).call(entry, input)` — a DISTINCT code entry from `ir`'s
-> `executeBundle`/`execute_bundle`/`ExecuteBundle`, with NO `run_behavior` tree-walk (the
-> anti-sham gates in selfcheck.ts assert both: the generated MODULES carry no interpreter
-> call / no embedded IR, AND the Rust/Go codegen CELLS invoke the generated function, not the
-> interpreter, on the read path). Python/PHP are declared NOT codegen-module languages (no
-> generated file exists for them — a design choice, not a gap): their codegen cell verifies
-> the bundle's fingerprint once at cold start, then executes via the SAME runtime call `ir`
-> uses, so `codegen ≈ ir` for Python/PHP is honest and expected, not a sham. The earlier
-> Rust/Go "codegen ≈ ir (slightly slower)" numbers WERE a sham: those cells called the SAME
-> `execute_bundle` the ir cell calls, with only a decorative resident-bundle "verify" —
-> codegen was literally an alias of ir there. With the REAL
-> generated code wired in, codegen is now measured HIGHER than ir in Rust/Go.
+> generated typed-native entry (`bind(handler).call(entry, input)` in TS; `run_native_raw_struct_<Comp>` /
+> `RunNativeRawStruct_<Comp>` in Rust/Go) — a DISTINCT code entry from `ir`'s
+> `executeBundle`/`execute_bundle`/`ExecuteBundle`, with NO `run_behavior` tree-walk. The
+> anti-sham gates in selfcheck.ts assert both: the generated MODULES carry no interpreter call /
+> no embedded IR, AND the codegen CELLS invoke the generated function, not the interpreter, on
+> the read path. Under bc 0.7.x typed-native lowering the generated read modules are de-boxed
+> straight-line SQL render + typed param bind (no per-call `obj{…}` re-evaluation through the
+> interpreter), so **codegen is measured BELOW `ir` for all six COVERED reads** (`find`,
+> `complexWhere`, `inList`, `belongsTo`, `hasMany`, `hasManyLimit`) — read each language's
+> `impl ÷ sql` micro table: codegen sits between the raw-SQL baseline (1.00×) and `ir`.
 >
-> **Why de-interpretation does NOT win for these makeSQL behaviors (the honest result).** A
-> litedbmodel read/write behavior compiles to essentially ONE handler op — `__makeSqlNode` /
-> `makeSQL` — whose only port is an `obj{…}` expression. In bc#75 obj-CONSTRUCTION is NOT
-> de-interpreted: `primitives::obj` / `PrimObj` / `cgp.obj` all call the interpreter `evaluate`
-> internally (only static `ref`/`concat` leaves are de-interpreted). So the generated straight-line
-> code still evaluates the load-bearing port through the interpreter, AND additionally rebuilds the
-> `json!({…})` / `JObjOf(…)` expression literal on EVERY call. That extra work is pure loss in the
-> compiled langs, whose interpreter `run_behavior` orchestration is already cheap (no GC / native):
-> **Rust codegen ≈ 4–6× the raw-SQL baseline vs ir ≈ 1.3×; Go codegen ≈ 6–19× vs ir ≈ 4–6×.**
-> (In TS the interpreter's per-op orchestration is dear enough that removing the tree-walk
-> still nets a win, so TS codegen < ir — the language-dependent split is real, not noise. Python/PHP
-> codegen is ALSO measured slightly below ir, but that is NOT a de-interpretation win — they have
-> no generated module to de-interpret; codegen there is the same runtime call as ir plus a
-> one-time cold-start fingerprint check, so the two numbers are expected to track closely.)
-> Behaviour is EQUAL either way (codegen output == ir output, same rows/values — asserted by the
-> `verify` selfcheck for all 8 cases in Rust + Go). NET: for litedbmodel's makeSQL surface the
-> Rust/Go codegen endpoint is NOT yet a de-interpretation win — the win needs bc to de-interpret
-> obj-construction (and #76 handler de-boxing); until then `ir` is the faster Rust/Go surface.
+> **Coverage caveat — the two WRITE cases (`batchInsert`, `writeTxGate`) are NOT codegen-module
+> cases (#60 m1):** no generated write module exists yet, so for writes the codegen cell falls
+> back to the SAME runtime call `ir` uses plus a one-time cold-start fingerprint check. codegen
+> ≈ ir (or marginally above, by the fingerprint cost) on those two writes is therefore honest and
+> expected — the `codegen < ir` win is asserted only for the six covered READS. Behaviour is EQUAL
+> either way (codegen output == ir output, same rows/values — asserted by the `verify` selfcheck
+> for all 8 cases in Rust + Go, and the queries/op · rows/op fairness table below).
+>
+> **Rust and Go have NO `ir` cell to compare against** — their IR interpreter is DELETED (#8),
+> so `codegen` is their sole surface. Their gap-to-baseline is read directly against the raw-SQL
+> `sql` baseline (and, for the true gap-to-v1, against the `v1-rs` apples-to-apples runner below).
+> **Python and PHP have NO `codegen` cell** (not codegen-module languages) — their measured
+> surface is `ir`, the honest non-codegen interpret path.
 
 ## Per-dialect relative overhead — `impl ÷ sql` (I/O-excluded micro, PRIMARY signal)
 
@@ -132,46 +135,46 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 | Micro case | codegen ÷ sql | ir ÷ sql | dynamic ÷ sql | prepared ÷ sql |
 |---|---|---|---|---|
-| find (eq+SKIP+range) | 2.41× | 3.18× | 10.48× | 3.00× |
-| complex WHERE | 2.88× | 3.46× | 12.22× | 3.38× |
-| relation hasMany | 1.45× | 5.20× | 8.00× | 5.27× |
-| write-tx gate-first | 2.02× | 2.00× | 3.91× | 2.03× |
+| find (eq+SKIP+range) | 2.54× | 3.77× | 15.47× | 4.08× |
+| complex WHERE | 3.04× | 4.08× | 16.24× | 4.27× |
+| relation hasMany | 1.56× | 6.63× | 11.24× | 6.96× |
+| write-tx gate-first | 2.03× | 2.03× | 4.13× | 2.11× |
 
 ##### Python
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | 40.06× | 38.97× |
-| complex WHERE | 42.96× | 42.33× |
-| relation hasMany | 29.86× | 29.54× |
-| write-tx gate-first | 8.61× | 8.96× |
+| Micro case | ir ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | 40.88× |
+| complex WHERE | 46.27× |
+| relation hasMany | 29.74× |
+| write-tx gate-first | 9.40× |
 
 ##### PHP
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | 4.71× | 4.71× |
-| complex WHERE | 4.49× | 4.39× |
-| relation hasMany | 5.08× | 5.03× |
-| write-tx gate-first | 1.27× | 1.30× |
+| Micro case | ir ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | 5.02× |
+| complex WHERE | 4.55× |
+| relation hasMany | 5.21× |
+| write-tx gate-first | 1.32× |
 
 ##### Rust
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | 0.96× | 1.42× |
-| complex WHERE | — | 1.55× |
-| relation hasMany | 1.09× | 2.01× |
-| write-tx gate-first | 1.44× | 3.79× |
+| Micro case | codegen ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | 0.98× |
+| complex WHERE | 0.97× |
+| relation hasMany | 1.07× |
+| write-tx gate-first | 1.47× |
 
 ##### Go
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | — | 5.69× |
-| complex WHERE | — | 5.64× |
-| relation hasMany | — | 4.08× |
-| write-tx gate-first | — | 4.18× |
+| Micro case | codegen ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | 3.44× |
+| complex WHERE | 3.00× |
+| relation hasMany | 3.22× |
+| write-tx gate-first | 1.88× |
 
 #### PostgreSQL
 
@@ -186,39 +189,39 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 ##### Python
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | — | — |
-| complex WHERE | — | — |
-| relation hasMany | — | — |
-| write-tx gate-first | — | — |
+| Micro case | ir ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | — |
+| complex WHERE | — |
+| relation hasMany | — |
+| write-tx gate-first | — |
 
 ##### PHP
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | — | — |
-| complex WHERE | — | — |
-| relation hasMany | — | — |
-| write-tx gate-first | — | — |
+| Micro case | ir ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | — |
+| complex WHERE | — |
+| relation hasMany | — |
+| write-tx gate-first | — |
 
 ##### Rust
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | — | — |
-| complex WHERE | — | — |
-| relation hasMany | — | — |
-| write-tx gate-first | — | — |
+| Micro case | codegen ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | — |
+| complex WHERE | — |
+| relation hasMany | — |
+| write-tx gate-first | — |
 
 ##### Go
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | — | — |
-| complex WHERE | — | — |
-| relation hasMany | — | — |
-| write-tx gate-first | — | — |
+| Micro case | codegen ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | — |
+| complex WHERE | — |
+| relation hasMany | — |
+| write-tx gate-first | — |
 
 #### MySQL
 
@@ -233,39 +236,39 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 ##### Python
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | — | — |
-| complex WHERE | — | — |
-| relation hasMany | — | — |
-| write-tx gate-first | — | — |
+| Micro case | ir ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | — |
+| complex WHERE | — |
+| relation hasMany | — |
+| write-tx gate-first | — |
 
 ##### PHP
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | — | — |
-| complex WHERE | — | — |
-| relation hasMany | — | — |
-| write-tx gate-first | — | — |
+| Micro case | ir ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | — |
+| complex WHERE | — |
+| relation hasMany | — |
+| write-tx gate-first | — |
 
 ##### Rust
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | — | — |
-| complex WHERE | — | — |
-| relation hasMany | — | — |
-| write-tx gate-first | — | — |
+| Micro case | codegen ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | — |
+| complex WHERE | — |
+| relation hasMany | — |
+| write-tx gate-first | — |
 
 ##### Go
 
-| Micro case | codegen ÷ sql | ir ÷ sql |
-|---|---|---|
-| find (eq+SKIP+range) | — | — |
-| complex WHERE | — | — |
-| relation hasMany | — | — |
-| write-tx gate-first | — | — |
+| Micro case | codegen ÷ sql |
+|---|---|
+| find (eq+SKIP+range) | — |
+| complex WHERE | — |
+| relation hasMany | — |
+| write-tx gate-first | — |
 
 ## Micro-bench absolute (client-side p50, µs) — per dialect
 
@@ -275,46 +278,46 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 | Micro case | sql (µs) | codegen (µs) | ir (µs) | dynamic (µs) | prepared (µs) |
 |---|---|---|---|---|---|
-| find (eq+SKIP+range) | 1.1 | 2.7 | 3.6 | 11.8 | 3.4 |
-| complex WHERE | 1.1 | 3.1 | 3.8 | 13.2 | 3.7 |
-| relation hasMany | 2.3 | 3.3 | 11.9 | 18.3 | 12.1 |
-| write-tx gate-first | 3.8 | 7.7 | 7.6 | 14.8 | 7.7 |
+| find (eq+SKIP+range) | 1.1 | 2.8 | 4.1 | 16.8 | 4.4 |
+| complex WHERE | 1.1 | 3.3 | 4.4 | 17.6 | 4.6 |
+| relation hasMany | 2.3 | 3.5 | 14.9 | 25.3 | 15.7 |
+| write-tx gate-first | 3.8 | 7.7 | 7.7 | 15.7 | 8.0 |
 
 ##### Python — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | 1.0 | 38.4 | 37.3 |
-| complex WHERE | 1.0 | 43.0 | 42.3 |
-| relation hasMany | 2.4 | 70.9 | 70.2 |
-| write-tx gate-first | 4.5 | 39.1 | 40.7 |
+| Micro case | sql (µs) | ir (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | 1.0 | 39.2 |
+| complex WHERE | 1.0 | 44.4 |
+| relation hasMany | 2.4 | 70.6 |
+| write-tx gate-first | 4.5 | 42.7 |
 
 ##### PHP — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | 5.1 | 24.0 | 24.0 |
-| complex WHERE | 6.1 | 27.5 | 26.9 |
-| relation hasMany | 7.5 | 38.3 | 37.9 |
-| write-tx gate-first | 8.6 | 10.9 | 11.1 |
+| Micro case | sql (µs) | ir (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | 5.0 | 25.3 |
+| complex WHERE | 6.2 | 28.1 |
+| relation hasMany | 7.7 | 40.2 |
+| write-tx gate-first | 8.8 | 11.7 |
 
 ##### Rust — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | 9.4 | 9.0 | 13.4 |
-| complex WHERE | 9.7 | skip | 15.1 |
-| relation hasMany | 31.7 | 34.6 | 63.6 |
-| write-tx gate-first | 3.1 | 4.5 | 11.8 |
+| Micro case | sql (µs) | codegen (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | 10.0 | 9.8 |
+| complex WHERE | 10.0 | 9.7 |
+| relation hasMany | 34.0 | 36.3 |
+| write-tx gate-first | 3.2 | 4.7 |
 
 ##### Go — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | 1.5 | — | 8.5 |
-| complex WHERE | 1.6 | — | 9.2 |
-| relation hasMany | 5.8 | — | 23.5 |
-| write-tx gate-first | 3.9 | — | 16.4 |
+| Micro case | sql (µs) | codegen (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | 1.5 | 5.2 |
+| complex WHERE | 1.8 | 5.3 |
+| relation hasMany | 6.0 | 19.2 |
+| write-tx gate-first | 3.8 | 7.1 |
 
 #### PostgreSQL
 
@@ -322,46 +325,46 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 | Micro case | sql (µs) | codegen (µs) | ir (µs) | dynamic (µs) | prepared (µs) |
 |---|---|---|---|---|---|
-| find (eq+SKIP+range) | skip | 4.6 | 5.5 | 11.6 | 5.2 |
-| complex WHERE | skip | 4.8 | 5.2 | 13.1 | 5.6 |
-| relation hasMany | skip | 3.3 | 14.2 | 18.9 | 14.6 |
-| write-tx gate-first | skip | 11.9 | 11.5 | 18.5 | 11.3 |
+| find (eq+SKIP+range) | skip | 4.9 | 6.1 | 16.2 | 6.2 |
+| complex WHERE | skip | 5.5 | 6.1 | 17.7 | 6.7 |
+| relation hasMany | skip | 3.7 | 17.4 | 26.5 | 17.3 |
+| write-tx gate-first | skip | 11.3 | 11.6 | 19.1 | 12.3 |
 
 ##### Python — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | 52.1 | 51.5 |
-| complex WHERE | skip | 52.7 | 52.6 |
-| relation hasMany | skip | 87.4 | 87.0 |
-| write-tx gate-first | skip | 66.6 | 66.5 |
+| Micro case | sql (µs) | ir (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | 56.0 |
+| complex WHERE | skip | 58.5 |
+| relation hasMany | skip | 88.6 |
+| write-tx gate-first | skip | 73.9 |
 
 ##### PHP — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | skip | skip |
-| complex WHERE | skip | skip | skip |
-| relation hasMany | skip | skip | skip |
-| write-tx gate-first | skip | skip | skip |
+| Micro case | sql (µs) | ir (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | skip |
+| complex WHERE | skip | skip |
+| relation hasMany | skip | skip |
+| write-tx gate-first | skip | skip |
 
 ##### Rust — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | 9.4 | 14.0 |
-| complex WHERE | skip | skip | 15.3 |
-| relation hasMany | skip | 35.1 | 65.0 |
-| write-tx gate-first | skip | 5.8 | 13.2 |
+| Micro case | sql (µs) | codegen (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | 10.2 |
+| complex WHERE | skip | 9.9 |
+| relation hasMany | skip | 37.4 |
+| write-tx gate-first | skip | 6.0 |
 
 ##### Go — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | — | skip |
-| complex WHERE | skip | — | skip |
-| relation hasMany | skip | — | skip |
-| write-tx gate-first | skip | — | skip |
+| Micro case | sql (µs) | codegen (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | skip |
+| complex WHERE | skip | skip |
+| relation hasMany | skip | skip |
+| write-tx gate-first | skip | skip |
 
 #### MySQL
 
@@ -369,46 +372,46 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 | Micro case | sql (µs) | codegen (µs) | ir (µs) | dynamic (µs) | prepared (µs) |
 |---|---|---|---|---|---|
-| find (eq+SKIP+range) | skip | 2.7 | 3.5 | 11.3 | 3.2 |
-| complex WHERE | skip | 3.1 | 3.9 | 13.1 | 3.8 |
-| relation hasMany | skip | 2.4 | 11.5 | 18.5 | 11.6 |
-| write-tx gate-first | skip | 7.6 | 7.6 | 14.3 | 7.9 |
+| find (eq+SKIP+range) | skip | 2.8 | 4.1 | 16.4 | 4.2 |
+| complex WHERE | skip | 3.1 | 4.7 | 17.4 | 4.9 |
+| relation hasMany | skip | 2.3 | 14.9 | 25.5 | 15.7 |
+| write-tx gate-first | skip | 7.8 | 8.2 | 15.0 | 7.7 |
 
 ##### Python — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | 36.2 | 36.4 |
-| complex WHERE | skip | 41.4 | 41.5 |
-| relation hasMany | skip | 68.2 | 67.7 |
-| write-tx gate-first | skip | 37.8 | 38.1 |
+| Micro case | sql (µs) | ir (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | 39.6 |
+| complex WHERE | skip | 45.0 |
+| relation hasMany | skip | 72.9 |
+| write-tx gate-first | skip | 42.6 |
 
 ##### PHP — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | skip | skip |
-| complex WHERE | skip | skip | skip |
-| relation hasMany | skip | skip | skip |
-| write-tx gate-first | skip | skip | skip |
+| Micro case | sql (µs) | ir (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | skip |
+| complex WHERE | skip | skip |
+| relation hasMany | skip | skip |
+| write-tx gate-first | skip | skip |
 
 ##### Rust — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | 9.0 | 13.8 |
-| complex WHERE | skip | skip | 15.5 |
-| relation hasMany | skip | 34.3 | 63.8 |
-| write-tx gate-first | skip | 4.5 | 12.0 |
+| Micro case | sql (µs) | codegen (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | 9.7 |
+| complex WHERE | skip | 9.8 |
+| relation hasMany | skip | 36.0 |
+| write-tx gate-first | skip | 4.7 |
 
 ##### Go — micro p50 (µs)
 
-| Micro case | sql (µs) | codegen (µs) | ir (µs) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | — | skip |
-| complex WHERE | skip | — | skip |
-| relation hasMany | skip | — | skip |
-| write-tx gate-first | skip | — | skip |
+| Micro case | sql (µs) | codegen (µs) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | skip |
+| complex WHERE | skip | skip |
+| relation hasMany | skip | skip |
+| write-tx gate-first | skip | skip |
 
 ## DB-backed absolute latency (p50 ms) — per dialect (REAL PG + MySQL + SQLite)
 
@@ -421,68 +424,66 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 | Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) | dynamic (p50 ms) | prepared (p50 ms) |
 |---|---|---|---|---|---|
-| find (eq+SKIP+range) | 0.0186 | 0.0244 | 0.0272 | 0.0362 | 0.0262 |
-| complex WHERE | 0.0385 | 0.0499 | 0.0513 | 0.0591 | 0.0531 |
-| IN-list | 0.0187 | 0.0237 | 0.0240 | 0.0290 | 0.0248 |
-| relation belongsTo | 0.0209 | 0.0316 | 0.0385 | 0.0442 | 0.0385 |
-| relation hasMany | 0.0518 | 0.0577 | 0.0670 | 0.0717 | 0.0651 |
-| relation hasMany-limit | 0.0845 | 0.1032 | 0.1116 | 0.1155 | 0.1141 |
-| batch insert | 0.0272 | 0.0456 | 0.0441 | 0.0572 | 0.0445 |
-| write-tx gate-first | 0.0399 | 0.0456 | 0.0467 | 0.0555 | 0.0464 |
+| find (eq+SKIP+range) | 0.0190 | 0.0252 | 0.0276 | 0.0430 | 0.0310 |
+| complex WHERE | 0.0384 | 0.0520 | 0.0505 | 0.0659 | 0.0545 |
+| IN-list | 0.0188 | 0.0238 | 0.0246 | 0.0330 | 0.0257 |
+| relation belongsTo | 0.0218 | 0.0325 | 0.0384 | 0.0509 | 0.0400 |
+| relation hasMany | 0.0520 | 0.0620 | 0.0714 | 0.0825 | 0.0721 |
+| relation hasMany-limit | 0.0839 | 0.1122 | 0.1122 | 0.1316 | 0.1218 |
+| batch insert | 0.0272 | 0.0465 | 0.0461 | 0.0577 | 0.0463 |
+| write-tx gate-first | 0.0420 | 0.0481 | 0.0457 | 0.0578 | 0.0487 |
 
 ##### Python — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | 0.0109 | 0.0479 | 0.0488 |
-| complex WHERE | 0.0385 | 0.0921 | 0.0900 |
-| IN-list | 0.0198 | 0.0493 | 0.0521 |
-| relation belongsTo | 0.0322 | 0.0971 | 0.0973 |
-| relation hasMany | 0.0894 | 0.1685 | 0.1666 |
-| relation hasMany-limit | 0.1476 | 0.2336 | 0.2313 |
-| batch insert | 0.0113 | 0.0657 | 0.0666 |
-| write-tx gate-first | 0.0641 | 0.1093 | 0.1044 |
+| Case | sql (p50 ms) | ir (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | 0.0110 | 0.0503 |
+| complex WHERE | 0.0397 | 0.0908 |
+| IN-list | 0.0201 | 0.0507 |
+| relation belongsTo | 0.0333 | 0.1029 |
+| relation hasMany | 0.0950 | 0.1676 |
+| relation hasMany-limit | 0.1532 | 0.2417 |
+| batch insert | 0.0118 | 0.0687 |
+| write-tx gate-first | 0.0625 | 0.1118 |
 
 ##### PHP — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | 0.0099 | 0.0295 | 0.0298 |
-| complex WHERE | 0.0198 | 0.0424 | 0.0432 |
-| IN-list | 0.0120 | 0.0272 | 0.0255 |
-| relation belongsTo | 0.0109 | 0.0375 | 0.0362 |
-| relation hasMany | 0.0345 | 0.0710 | 0.0675 |
-| relation hasMany-limit | 0.0643 | 0.1054 | 0.0998 |
-| batch insert | 0.0143 | 0.0352 | 0.0335 |
-| write-tx gate-first | 0.0189 | 0.0357 | 0.0356 |
+| Case | sql (p50 ms) | ir (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | 0.0098 | 0.0310 |
+| complex WHERE | 0.0194 | 0.0448 |
+| IN-list | 0.0119 | 0.0269 |
+| relation belongsTo | 0.0109 | 0.0388 |
+| relation hasMany | 0.0362 | 0.0712 |
+| relation hasMany-limit | 0.0677 | 0.1075 |
+| batch insert | 0.0152 | 0.0360 |
+| write-tx gate-first | 0.0196 | 0.0376 |
 
 ##### Rust — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | 0.0102 | 0.0125 | 0.0146 |
-| complex WHERE | 0.0199 | skip | 0.0282 |
-| IN-list | 0.0125 | skip | 0.0172 |
-| relation belongsTo | 0.0109 | 0.0213 | 0.0285 |
-| relation hasMany | 0.0389 | 0.0591 | 0.0704 |
-| relation hasMany-limit | 0.0634 | 0.0911 | 0.1028 |
-| batch insert | 0.0201 | 0.0312 | 0.0333 |
-| write-tx gate-first | 0.0201 | 0.0231 | 0.0298 |
-
-> _skip — codegen: not typed-native-covered (bc#86 gap): this case's WHERE binds an IN-list, whose value is an ARRAY — bc's typed-native emitter (rust-typed-native) has no native scalar port type for it, so litedbmodel's codegen-only lowering fails closed at generation. NOT regenerated on the retired '-typed-raw' path (no silent fallback)._
+| Case | sql (p50 ms) | codegen (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | 0.0106 | 0.0138 |
+| complex WHERE | 0.0210 | 0.0278 |
+| IN-list | 0.0126 | 0.0164 |
+| relation belongsTo | 0.0106 | 0.0215 |
+| relation hasMany | 0.0405 | 0.0641 |
+| relation hasMany-limit | 0.0656 | 0.0979 |
+| batch insert | 0.0213 | 0.0320 |
+| write-tx gate-first | 0.0210 | 0.0244 |
 
 ##### Go — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | 0.0159 | — | 0.0250 |
-| complex WHERE | 0.0318 | — | 0.0459 |
-| IN-list | 0.0182 | — | 0.0270 |
-| relation belongsTo | 0.0171 | — | 0.0315 |
-| relation hasMany | 0.0552 | — | 0.0793 |
-| relation hasMany-limit | 0.1069 | — | 0.1422 |
-| batch insert | 0.0249 | — | 0.0759 |
-| write-tx gate-first | 0.0286 | — | 0.0451 |
+| Case | sql (p50 ms) | codegen (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | 0.0168 | 0.0188 |
+| complex WHERE | 0.0341 | 0.0418 |
+| IN-list | 0.0198 | 0.0252 |
+| relation belongsTo | 0.0181 | 0.0284 |
+| relation hasMany | 0.0565 | 0.0718 |
+| relation hasMany-limit | 0.1098 | 0.1345 |
+| batch insert | 0.0253 | 0.0667 |
+| write-tx gate-first | 0.0287 | 0.0361 |
 
 #### PostgreSQL
 
@@ -490,14 +491,14 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 | Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) | dynamic (p50 ms) | prepared (p50 ms) |
 |---|---|---|---|---|---|
-| find (eq+SKIP+range) | skip | skip | 0.2429 | skip | skip |
-| complex WHERE | skip | skip | 0.2470 | skip | skip |
-| IN-list | skip | skip | 0.2229 | skip | skip |
-| relation belongsTo | skip | skip | 0.4280 | skip | skip |
-| relation hasMany | skip | skip | 0.4468 | skip | skip |
-| relation hasMany-limit | skip | skip | 0.5062 | skip | skip |
-| batch insert | skip | skip | 0.6176 | skip | skip |
-| write-tx gate-first | skip | skip | 1.1574 | skip | skip |
+| find (eq+SKIP+range) | skip | skip | 0.2578 | skip | skip |
+| complex WHERE | skip | skip | 0.2732 | skip | skip |
+| IN-list | skip | skip | 0.2505 | skip | skip |
+| relation belongsTo | skip | skip | 0.5124 | skip | skip |
+| relation hasMany | skip | skip | 0.4300 | skip | skip |
+| relation hasMany-limit | skip | skip | 1.0070 | skip | skip |
+| batch insert | skip | skip | 0.6933 | skip | skip |
+| write-tx gate-first | skip | skip | 1.3518 | skip | skip |
 
 > _skip — sql: sql baseline is hand-written sqlite SQL — not run against postgres (dialect-specific by construction)_
 > _skip — codegen: codegen generated-module cell is wired to the in-proc sqlite driver; PG/MySQL DB-backed not wired for the generated cell_
@@ -506,66 +507,65 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 ##### Python — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | 0.7031 | 0.5275 |
-| complex WHERE | skip | 1.0173 | 0.7140 |
-| IN-list | skip | 1.0771 | 0.6059 |
-| relation belongsTo | skip | 0.7704 | 0.8950 |
-| relation hasMany | skip | 1.9077 | 1.2831 |
-| relation hasMany-limit | skip | 1.3867 | 1.3714 |
-| batch insert | skip | 0.9843 | 0.9543 |
-| write-tx gate-first | skip | 1.6335 | 1.5785 |
+| Case | sql (p50 ms) | ir (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | 0.6374 |
+| complex WHERE | skip | 0.7381 |
+| IN-list | skip | 1.7849 |
+| relation belongsTo | skip | 0.9929 |
+| relation hasMany | skip | 1.6249 |
+| relation hasMany-limit | skip | 2.0010 |
+| batch insert | skip | 2.3545 |
+| write-tx gate-first | skip | 4.2735 |
 
 > _skip — sql: sql baseline is hand-written sqlite SQL — not run against postgres_
 
 ##### PHP — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | skip | 0.5771 |
-| complex WHERE | skip | skip | 0.5781 |
-| IN-list | skip | skip | 0.5147 |
-| relation belongsTo | skip | skip | 1.0873 |
-| relation hasMany | skip | skip | 1.1155 |
-| relation hasMany-limit | skip | skip | 1.1838 |
-| batch insert | skip | skip | 0.9510 |
-| write-tx gate-first | skip | skip | 2.4701 |
+| Case | sql (p50 ms) | ir (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | 0.7759 |
+| complex WHERE | skip | 0.7711 |
+| IN-list | skip | 0.6808 |
+| relation belongsTo | skip | 1.2622 |
+| relation hasMany | skip | 1.7205 |
+| relation hasMany-limit | skip | 2.0467 |
+| batch insert | skip | 1.8441 |
+| write-tx gate-first | skip | 3.6782 |
 
 > _skip — sql: sql baseline is hand-written sqlite SQL — not run against postgres (dialect-specific by construction)_
-> _skip — codegen: codegen generated-module cell is wired to the in-proc sqlite driver; PG/MySQL DB-backed not wired for the generated cell — not run against postgres_
 
 ##### Rust — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | skip | 0.4852 |
-| complex WHERE | skip | skip | 0.4851 |
-| IN-list | skip | skip | 0.4635 |
-| relation belongsTo | skip | skip | 0.9104 |
-| relation hasMany | skip | skip | 0.9450 |
-| relation hasMany-limit | skip | skip | 1.0037 |
-| batch insert | skip | skip | 0.8718 |
-| write-tx gate-first | skip | skip | 2.1071 |
+| Case | sql (p50 ms) | codegen (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | skip |
+| complex WHERE | skip | skip |
+| IN-list | skip | skip |
+| relation belongsTo | skip | skip |
+| relation hasMany | skip | skip |
+| relation hasMany-limit | skip | skip |
+| batch insert | skip | skip |
+| write-tx gate-first | skip | skip |
 
 > _skip — sql: sql baseline is hand-written sqlite SQL — not run against postgres (dialect-specific by construction)_
 > _skip — codegen: rust codegen cell drives the in-proc sqlite driver only; live postgres DB-backed not wired for the generated cell_
-> _skip — codegen: not typed-native-covered (bc#86 gap): this case's WHERE binds an IN-list, whose value is an ARRAY — bc's typed-native emitter (rust-typed-native) has no native scalar port type for it, so litedbmodel's codegen-only lowering fails closed at generation. NOT regenerated on the retired '-typed-raw' path (no silent fallback)._
 
 ##### Go — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | — | 0.1894 |
-| complex WHERE | skip | — | 0.2068 |
-| IN-list | skip | — | 0.1931 |
-| relation belongsTo | skip | — | 0.3733 |
-| relation hasMany | skip | — | 0.3423 |
-| relation hasMany-limit | skip | — | 0.4408 |
-| batch insert | skip | — | 0.5706 |
-| write-tx gate-first | skip | — | 1.0597 |
+| Case | sql (p50 ms) | codegen (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | skip |
+| complex WHERE | skip | skip |
+| IN-list | skip | skip |
+| relation belongsTo | skip | skip |
+| relation hasMany | skip | skip |
+| relation hasMany-limit | skip | skip |
+| batch insert | skip | skip |
+| write-tx gate-first | skip | skip |
 
 > _skip — sql: sql baseline is hand-written sqlite SQL — not run against postgres (dialect-specific by construction)_
+> _skip — codegen: go codegen cell drives the in-proc sqlite driver only; live postgres DB-backed not wired_
 
 #### MySQL
 
@@ -573,14 +573,14 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 | Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) | dynamic (p50 ms) | prepared (p50 ms) |
 |---|---|---|---|---|---|
-| find (eq+SKIP+range) | skip | skip | 0.2694 | skip | skip |
-| complex WHERE | skip | skip | 0.3047 | skip | skip |
-| IN-list | skip | skip | 0.2817 | skip | skip |
-| relation belongsTo | skip | skip | 0.5186 | skip | skip |
-| relation hasMany | skip | skip | 0.5533 | skip | skip |
-| relation hasMany-limit | skip | skip | 0.5948 | skip | skip |
-| batch insert | skip | skip | 0.8016 | skip | skip |
-| write-tx gate-first | skip | skip | 1.6718 | skip | skip |
+| find (eq+SKIP+range) | skip | skip | 0.3439 | skip | skip |
+| complex WHERE | skip | skip | 0.3436 | skip | skip |
+| IN-list | skip | skip | 0.3228 | skip | skip |
+| relation belongsTo | skip | skip | 0.5215 | skip | skip |
+| relation hasMany | skip | skip | 0.5877 | skip | skip |
+| relation hasMany-limit | skip | skip | 0.8749 | skip | skip |
+| batch insert | skip | skip | 0.8668 | skip | skip |
+| write-tx gate-first | skip | skip | 1.7399 | skip | skip |
 
 > _skip — sql: sql baseline is hand-written sqlite SQL — not run against mysql (dialect-specific by construction)_
 > _skip — codegen: codegen generated-module cell is wired to the in-proc sqlite driver; PG/MySQL DB-backed not wired for the generated cell_
@@ -589,66 +589,65 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 ##### Python — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | 0.4215 | 0.3982 |
-| complex WHERE | skip | 0.4757 | 0.5380 |
-| IN-list | skip | 0.3785 | 0.3759 |
-| relation belongsTo | skip | 0.6454 | 0.6514 |
-| relation hasMany | skip | 1.0844 | 0.9680 |
-| relation hasMany-limit | skip | 2.2360 | 1.2037 |
-| batch insert | skip | 0.7607 | 0.8113 |
-| write-tx gate-first | skip | 1.7158 | 1.7165 |
+| Case | sql (p50 ms) | ir (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | 1.0083 |
+| complex WHERE | skip | 1.4657 |
+| IN-list | skip | 1.1578 |
+| relation belongsTo | skip | 0.9511 |
+| relation hasMany | skip | 1.2560 |
+| relation hasMany-limit | skip | 2.2666 |
+| batch insert | skip | 1.4234 |
+| write-tx gate-first | skip | 4.3171 |
 
 > _skip — sql: sql baseline is hand-written sqlite SQL — not run against mysql_
 
 ##### PHP — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | skip | 0.4250 |
-| complex WHERE | skip | skip | 0.4375 |
-| IN-list | skip | skip | 0.4298 |
-| relation belongsTo | skip | skip | 0.8184 |
-| relation hasMany | skip | skip | 0.8785 |
-| relation hasMany-limit | skip | skip | 0.9974 |
-| batch insert | skip | skip | 0.8722 |
-| write-tx gate-first | skip | skip | 2.4112 |
+| Case | sql (p50 ms) | ir (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | 0.6590 |
+| complex WHERE | skip | 0.9937 |
+| IN-list | skip | 0.6968 |
+| relation belongsTo | skip | 1.5874 |
+| relation hasMany | skip | 1.2558 |
+| relation hasMany-limit | skip | 1.4264 |
+| batch insert | skip | 1.3283 |
+| write-tx gate-first | skip | 4.5946 |
 
 > _skip — sql: sql baseline is hand-written sqlite SQL — not run against mysql (dialect-specific by construction)_
-> _skip — codegen: codegen generated-module cell is wired to the in-proc sqlite driver; PG/MySQL DB-backed not wired for the generated cell — not run against mysql_
 
 ##### Rust — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | skip | 0.4527 |
-| complex WHERE | skip | skip | 0.4567 |
-| IN-list | skip | skip | 0.4408 |
-| relation belongsTo | skip | skip | 0.8503 |
-| relation hasMany | skip | skip | 0.9268 |
-| relation hasMany-limit | skip | skip | 0.9510 |
-| batch insert | skip | skip | 0.8927 |
-| write-tx gate-first | skip | skip | 1.6226 |
+| Case | sql (p50 ms) | codegen (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | skip |
+| complex WHERE | skip | skip |
+| IN-list | skip | skip |
+| relation belongsTo | skip | skip |
+| relation hasMany | skip | skip |
+| relation hasMany-limit | skip | skip |
+| batch insert | skip | skip |
+| write-tx gate-first | skip | skip |
 
 > _skip — sql: sql baseline is hand-written sqlite SQL — not run against mysql (dialect-specific by construction)_
 > _skip — codegen: rust codegen cell drives the in-proc sqlite driver only; live mysql DB-backed not wired for the generated cell_
-> _skip — codegen: not typed-native-covered (bc#86 gap): this case's WHERE binds an IN-list, whose value is an ARRAY — bc's typed-native emitter (rust-typed-native) has no native scalar port type for it, so litedbmodel's codegen-only lowering fails closed at generation. NOT regenerated on the retired '-typed-raw' path (no silent fallback)._
 
 ##### Go — DB-backed p50 (ms)
 
-| Case | sql (p50 ms) | codegen (p50 ms) | ir (p50 ms) |
-|---|---|---|---|
-| find (eq+SKIP+range) | skip | — | 0.4052 |
-| complex WHERE | skip | — | 0.4286 |
-| IN-list | skip | — | 0.4155 |
-| relation belongsTo | skip | — | 0.8014 |
-| relation hasMany | skip | — | 0.9122 |
-| relation hasMany-limit | skip | — | 0.9232 |
-| batch insert | skip | — | 0.8680 |
-| write-tx gate-first | skip | — | 2.4295 |
+| Case | sql (p50 ms) | codegen (p50 ms) |
+|---|---|---|
+| find (eq+SKIP+range) | skip | skip |
+| complex WHERE | skip | skip |
+| IN-list | skip | skip |
+| relation belongsTo | skip | skip |
+| relation hasMany | skip | skip |
+| relation hasMany-limit | skip | skip |
+| batch insert | skip | skip |
+| write-tx gate-first | skip | skip |
 
 > _skip — sql: sql baseline is hand-written sqlite SQL — not run against mysql (dialect-specific by construction)_
+> _skip — codegen: go codegen cell drives the in-proc sqlite driver only; live mysql DB-backed not wired_
 
 ## Fairness evidence — queries/op · rows/op (per dialect)
 
@@ -657,66 +656,62 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 #### SQLite — queries/op · rows/op
 
-| Case | ts/sql | ts/codegen | ts/ir | ts/dynamic | ts/prepared | python/sql | python/codegen | python/ir | php/sql | php/codegen | php/ir | rust/sql | rust/codegen | rust/ir | go/sql | go/ir | v1-ts/v1 | v1-rs/ir |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| find (eq+SKIP+range) | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 |
-| complex WHERE | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | — | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 |
-| IN-list | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | — | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 |
-| relation belongsTo | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 |
-| relation hasMany | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 |
-| relation hasMany-limit | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 |
-| batch insert | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 |
-| write-tx gate-first | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 |
+| Case | ts/sql | ts/codegen | ts/ir | ts/dynamic | ts/prepared | python/sql | python/ir | php/sql | php/ir | rust/sql | rust/codegen | go/sql | go/codegen | v1-ts/v1 | v1-rs/ir |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| find (eq+SKIP+range) | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/0 | 1/3 | 1/3 |
+| complex WHERE | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/0 | 1/5 | 1/5 |
+| IN-list | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/0 | 1/10 | 1/10 |
+| relation belongsTo | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/0 | 2/6 | 2/6 |
+| relation hasMany | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/0 | 2/30 | 2/30 |
+| relation hasMany-limit | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/0 | 2/20 | 2/20 |
+| batch insert | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 0/0 | 1/0 | 1/0 |
+| write-tx gate-first | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 0/0 | 4/2 | 4/2 |
 
 #### PostgreSQL — queries/op · rows/op
 
-| Case | ts/ir | python/codegen | python/ir | php/ir | rust/ir | go/ir | v1-rs/ir |
-|---|---|---|---|---|---|---|---|
-| find (eq+SKIP+range) | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 |
-| complex WHERE | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 |
-| IN-list | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 |
-| relation belongsTo | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 |
-| relation hasMany | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 |
-| relation hasMany-limit | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 |
-| batch insert | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 |
-| write-tx gate-first | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 |
+| Case | ts/ir | python/ir | php/ir | v1-rs/ir |
+|---|---|---|---|---|
+| find (eq+SKIP+range) | 1/3 | 1/3 | 1/3 | 1/3 |
+| complex WHERE | 1/5 | 1/5 | 1/5 | 1/5 |
+| IN-list | 1/10 | 1/10 | 1/10 | 1/10 |
+| relation belongsTo | 2/6 | 2/6 | 2/6 | 2/6 |
+| relation hasMany | 2/30 | 2/30 | 2/30 | 2/30 |
+| relation hasMany-limit | 2/20 | 2/20 | 2/20 | 2/20 |
+| batch insert | 1/0 | 1/0 | 1/0 | 1/0 |
+| write-tx gate-first | 4/2 | 4/2 | 4/2 | 4/2 |
 
 #### MySQL — queries/op · rows/op
 
-| Case | ts/ir | python/codegen | python/ir | php/ir | rust/ir | go/ir | v1-rs/ir |
-|---|---|---|---|---|---|---|---|
-| find (eq+SKIP+range) | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 | 1/3 |
-| complex WHERE | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 | 1/5 |
-| IN-list | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 | 1/10 |
-| relation belongsTo | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 | 2/6 |
-| relation hasMany | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 | 2/30 |
-| relation hasMany-limit | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 | 2/20 |
-| batch insert | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 | 1/0 |
-| write-tx gate-first | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 | 4/2 |
+| Case | ts/ir | python/ir | php/ir | v1-rs/ir |
+|---|---|---|---|---|
+| find (eq+SKIP+range) | 1/3 | 1/3 | 1/3 | 1/3 |
+| complex WHERE | 1/5 | 1/5 | 1/5 | 1/5 |
+| IN-list | 1/10 | 1/10 | 1/10 | 1/10 |
+| relation belongsTo | 2/6 | 2/6 | 2/6 | 2/6 |
+| relation hasMany | 2/30 | 2/30 | 2/30 | 2/30 |
+| relation hasMany-limit | 2/20 | 2/20 | 2/20 | 2/20 |
+| batch insert | 1/0 | 1/0 | 1/0 | 1/0 |
+| write-tx gate-first | 4/2 | 4/2 | 4/2 | 4/2 |
 
 ## Cold start, memory & artifact size
 
 | Cell | Cold start (ms) | RSS (MB) | Artifact size (MB) |
 |---|---|---|---|
-| ts / sql | 1223 | 215.8 | — |
-| ts / codegen | 1162 | 223.5 | — |
-| ts / ir | 1134 | 405.3 | — |
-| ts / dynamic | 1327 | 372.0 | — |
-| ts / prepared | 1117 | 372.2 | — |
-| python / sql | 222 | 25.5 | — |
-| python / codegen | 147 | 48.5 | — |
-| python / ir | 157 | 51.3 | — |
-| php / sql | 438 | 4.0 | — |
-| php / codegen | 147 | 4.0 | — |
-| php / ir | 152 | 4.0 | — |
-| rust / sql | 47 | 16.9 | 5.89 |
-| rust / codegen | 31 | 12.7 | 2.47 |
-| rust / ir | 34 | 23.7 | 5.89 |
-| go / sql | 1213 | 26.6 | 19.72 |
-| go / codegen | FAILED: timed out after 180000ms waiting for adapter response | — | — |
-| go / ir | 93 | 33.0 | 19.72 |
-| v1-ts / v1 | 1295 | 209.6 | — |
-| v1-rs / ir | 40 | 17.1 | 4.09 |
+| ts / sql | 1939 | 195.5 | — |
+| ts / codegen | 1753 | 212.6 | — |
+| ts / ir | 1400 | 351.3 | — |
+| ts / dynamic | 1569 | 362.7 | — |
+| ts / prepared | 1996 | 360.0 | — |
+| python / sql | 645 | 24.4 | — |
+| python / ir | 165 | 42.0 | — |
+| php / sql | 327 | 4.0 | — |
+| php / ir | 201 | 4.0 | — |
+| rust / sql | 211 | 14.9 | 5.83 |
+| rust / codegen | 94 | 13.2 | 2.49 |
+| go / sql | 82 | 26.8 | 19.81 |
+| go / codegen | 282 | 0.0 | 9.21 |
+| v1-ts / v1 | 2140 | 207.7 | — |
+| v1-rs / ir | 99 | 15.4 | 4.09 |
 
 ## v1-vs-v2 regression verdict (SQLite micro-bench)
 
@@ -724,10 +719,10 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 | Micro case | v1-ts (µs) | v2 codegen (µs) | v2 ir (µs) | v2 prepared (µs) | v2/v1 (best) | verdict |
 |---|---|---|---|---|---|---|
-| find (eq+SKIP+range) | 1.7 | 2.7 | 3.6 | 3.4 | 1.59× | ❌ REGRESSION |
-| complex WHERE | 1.9 | 3.1 | 3.8 | 3.7 | 1.67× | ❌ REGRESSION |
-| relation hasMany | 2.4 | 3.3 | 11.9 | 12.1 | 1.38× | ✅ PASS |
-| write-tx gate-first | 3.7 | 7.7 | 7.6 | 7.7 | 2.02× | ❌ REGRESSION |
+| find (eq+SKIP+range) | 1.7 | 2.8 | 4.1 | 4.4 | 1.57× | ❌ REGRESSION |
+| complex WHERE | 1.9 | 3.3 | 4.4 | 4.6 | 1.72× | ❌ REGRESSION |
+| relation hasMany | 2.6 | 3.5 | 14.9 | 15.7 | 1.36× | ✅ PASS |
+| write-tx gate-first | 4.0 | 7.7 | 7.7 | 8.0 | 1.95× | ❌ REGRESSION |
 
 > Best-of-{codegen,ir,prepared} v2 surface ÷ v1-ts, SQLite micro p50. Gate: ≤ 1.5×.
 
@@ -738,10 +733,10 @@ micro-bench 20000 iterations (the load-bearing signal). Dialects: sqlite, postgr
 
 | Micro case | v1-rs (µs) | v2 sql (µs) | v2 ir (µs) | v2 codegen (µs) | sql ×v1-rs | ir ×v1-rs | codegen ×v1-rs |
 |---|---|---|---|---|---|---|---|
-| find (eq+SKIP+range) | 8.6 | 9.4 | 13.4 | 9.0 | 1.10× | 1.56× | 1.05× |
-| complex WHERE | 13.5 | 9.7 | 15.1 | — | 0.72× | 1.12× | — |
-| relation hasMany | 42.8 | 31.7 | 63.6 | 34.6 | 0.74× | 1.49× | 0.81× |
-| write-tx gate-first | 3.4 | 3.1 | 11.8 | 4.5 | 0.91× | 3.46× | 1.32× |
+| find (eq+SKIP+range) | 8.7 | 10.0 | — | 9.8 | 1.14× | — | 1.12× |
+| complex WHERE | 13.0 | 10.0 | — | 9.7 | 0.77× | — | 0.74× |
+| relation hasMany | 43.0 | 34.0 | — | 36.3 | 0.79× | — | 0.84× |
+| write-tx gate-first | 3.5 | 3.2 | — | 4.7 | 0.92× | — | 1.35× |
 
 > `×v1-rs` = v2 Rust surface ÷ v1-rs, SQLite micro p50. v1-rs is the achievable in-proc-SQLite
 > comparison of the OLD hand-written runtime. Residual over v1-rs = SQL render (`?`→`$N` /

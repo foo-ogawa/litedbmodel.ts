@@ -3,10 +3,14 @@
 // ════════════════════════════════════════════════════════════════════════════
 //
 //   TS      : sql / codegen / ir / dynamic / prepared     (5 cells)
-//   Python/PHP : sql / codegen / ir                        (3 each = 6 cells)
+//   Python/PHP : sql / ir     (NO codegen — Python/PHP are     (2 each = 4 cells)
+//             NOT codegen-MODULE languages: generate.ts's CODEGEN_LANGS is
+//             {ts,go,rust}, so a py/php "codegen" cell was only ir + a
+//             one-time fingerprint check — not a distinct exec surface. Dropped
+//             per the owner-corrected #44 matrix.)
 //   Rust/Go : sql / codegen  (NATIVE-ONLY — no ir cell,    (2 each = 4 cells)
 //             the IR interpreter is deleted from their runtimes, #8)
-//   → 15 cells, + v1 comparison rows (v1-ts; v1-rs if the old .rs builds).
+//   → 13 cells, + v1 comparison rows (v1-ts; v1-rs if the old .rs builds).
 //
 // A cell says how to SPAWN its adapter subprocess. Compiled cells (Rust/Go) are
 // built first; if the build fails the cell carries a `buildError` and the harness
@@ -65,9 +69,12 @@ function go(impl: string): CellSpec {
 export const MATRIX: CellSpec[] = [
   // TS — the 5-mode reference.
   ts('sql'), ts('codegen'), ts('ir'), ts('dynamic'), ts('prepared'),
-  // Python / PHP — sql / codegen / ir (the ir/interpret exec surface is their by-design mode).
-  py('sql'), py('codegen'), py('ir'),
-  php('sql'), php('codegen'), php('ir'),
+  // Python / PHP — sql / ir ONLY (the ir/interpret exec surface is their by-design mode).
+  // No codegen cell: Python/PHP are NOT codegen-MODULE languages (generate.ts's CODEGEN_LANGS
+  // is {ts,go,rust}), so a py/php "codegen" cell was only `ir` + a one-time fingerprint check —
+  // not a distinct exec surface. Dropped per the owner-corrected #44 matrix.
+  py('sql'), py('ir'),
+  php('sql'), php('ir'),
   // Rust / Go — NATIVE-ONLY: { sql, codegen } (NO `ir` cell). The IR interpreter is DELETED from
   // the rust/go runtimes (epic #44 native-only, #8) — every read/write runs generated native code
   // (static SQL text + typed param binding), so there is no interpreter path to bench.
