@@ -25,7 +25,6 @@ from .dialect import dialect_for
 from .driver import Driver
 from .errors import SqlFailure, map_sqlite_error
 from .static_bundle import (
-    SCOPE_PORT,
     assemble_make_sql,
     execute_read_graph,
     render_placeholders,
@@ -40,7 +39,6 @@ _RETURNING_RE = re.compile(r"\breturning\b", re.IGNORECASE)
 _SELECT_RE = re.compile(r"\bselect\b", re.IGNORECASE)
 
 __all__ = [
-    "SCOPE_PORT",
     "ENTITY_ROOT",
     "execute_bundle",
     "execute_transaction_bundle",

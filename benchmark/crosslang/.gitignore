@@ -6,6 +6,7 @@ v1ts/node_modules/
 adapters/rust/target/
 adapters/rust-codegen/target/
 adapters/go/go_bench
+adapters/go-codegen/lm_codegen
 adapters/v1rs/target/
 # Python bytecode
 adapters/python/__pycache__/

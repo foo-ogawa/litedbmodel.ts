@@ -36,11 +36,6 @@ from .dialect import Dialect, dialect_for
 from .driver import Driver
 from .errors import SqlFailure, map_sqlite_error
 
-# The synthetic port that carries a SQL node's render scope (mirrors TS SCOPE_PORT).
-SCOPE_PORT = "__scope"
-# The makeSQL catalog leaf name every rewritten SQL node references (mirrors TS NODE_COMPONENT).
-NODE_COMPONENT = "__makeSqlNode"
-
 _RETURNING_RE = re.compile(r"\breturning\b", re.IGNORECASE)
 
 

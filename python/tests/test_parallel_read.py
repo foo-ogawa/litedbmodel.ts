@@ -19,9 +19,6 @@ import time
 
 from litedbmodel_runtime.static_bundle import execute_read_graph
 
-SCOPE_PORT = "__scope"
-NODE_COMPONENT = "__makeSqlNode"
-
 
 class _LatencyPrepared:
     def __init__(self, driver: "_LatencyDriver", sql: str) -> None:
@@ -58,13 +55,17 @@ class _LatencyDriver:
 
 
 def _sibling_graph(n: int, concurrency: int = 16) -> dict:
-    """A read graph of n independent sibling nodes in ONE plan stage, each a trivial SELECT."""
+    """A read graph of n independent sibling nodes in ONE plan stage, each a trivial SELECT.
+
+    Each body node is a REAL ``compileBehaviors`` Select node — just an ``id`` the native walker
+    renders + executes from ``statementsById`` (#12: no ``__makeSqlNode``/``__scope`` surrogate).
+    """
     body = []
     output_obj = {}
     statements_by_id = {}
     for i in range(n):
         node_id = f"rel{i}"
-        body.append({"id": node_id, "component": NODE_COMPONENT, "ports": {SCOPE_PORT: {"obj": {}}}})
+        body.append({"id": node_id})
         output_obj[node_id] = {"ref": [node_id]}
         statements_by_id[node_id] = [{"sql": f"SELECT {i}", "params": []}]
     return {

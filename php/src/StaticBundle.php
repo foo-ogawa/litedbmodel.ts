@@ -11,10 +11,11 @@ use LiteDbModel\Runtime\BehaviorContracts\ExprEval;
  *
  * Byte-for-byte port of the TS `src/scp/makesql/static-bundle.ts` + `makesql.ts` + `handler.ts`
  * runtime halves — the SOLE makeSQL read/render path. It consumes the PRE-COMPILED, portable
- * artifacts the corpus ships (a read `ReadGraph` = a bc `ComponentGraphIR` of `__makeSqlNode`
- * surrogate nodes + per-node STATIC statement templates), and EXECUTES them via the VENDORED
- * behavior-contracts PHP port (`Behavior::runBehavior` drives map / Φ-merge / wiring;
- * `ExprEval::evaluate` resolves the deferred value-specs + skip). It re-implements NO generic
+ * artifacts the corpus ships (a read `ReadGraph` = `compileBehaviors`' REAL `Select`/map
+ * `ComponentGraphIR` + per-node STATIC statement templates keyed by node id; #12 — no surrogate),
+ * and EXECUTES them via the NATIVE read-graph walker (owns map / Φ-merge / wiring; NO bc
+ * `runBehavior`) + the vendored behavior-contracts PHP port `ExprEval::evaluate` for the deferred
+ * value-specs + skip. It re-implements NO generic
  * evaluator and does NO SQL re-derivation — every statement's `sql` is fixed text; the runtime only
  * evaluates its deferred params + skip, resolves the WHERE connector from the present set, assembles
  * + renders placeholders, and binds.
@@ -32,12 +33,6 @@ use LiteDbModel\Runtime\BehaviorContracts\ExprEval;
  */
 final class StaticBundle
 {
-    /** The synthetic port that carries a SQL node's render scope (TS SCOPE_PORT). */
-    public const SCOPE_PORT = '__scope';
-
-    /** The makeSQL catalog leaf name every rewritten SQL node references (TS NODE_COMPONENT). */
-    public const NODE_COMPONENT = '__makeSqlNode';
-
     // ── makeSQL assembly (port of makesql.ts assembleMakeSQL / composeMakeSQL) ──
 
     /**

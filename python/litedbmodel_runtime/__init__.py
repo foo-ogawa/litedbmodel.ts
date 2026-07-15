@@ -16,8 +16,6 @@ from .dialect import SQLITE, POSTGRES, MYSQL, Dialect, dialect_for, to_dollar_pl
 from .driver import Driver, MysqlDriver, PostgresDriver, PreparedStatement, RunInfo, SqliteDriver
 from .errors import SqlFailure, map_sqlite_error
 from .static_bundle import (
-    NODE_COMPONENT,
-    SCOPE_PORT,
     assemble_make_sql,
     compose_make_sql,
     execute_read_graph,
@@ -38,7 +36,7 @@ from .relation import (
     run_relation_op,
 )
 
-__version__ = "2.0.2"
+__version__ = "2.1.0"
 
 __all__ = [
     "__version__",
@@ -60,8 +58,6 @@ __all__ = [
     "SqlFailure",
     "map_sqlite_error",
     # static makeSQL bundle runtime (the sole read/render path)
-    "NODE_COMPONENT",
-    "SCOPE_PORT",
     "assemble_make_sql",
     "compose_make_sql",
     "execute_read_graph",
