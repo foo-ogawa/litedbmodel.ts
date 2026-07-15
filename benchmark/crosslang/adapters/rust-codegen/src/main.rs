@@ -19,10 +19,10 @@
 //! native statement-render engine the prior raw-ABI adapter used (`render_read`, unchanged), and
 //! materializes each row DIRECTLY into the module's own concrete `T0` row struct via a per-case
 //! `rusqlite::Row` field read (NO `Value::Obj`/`RawValue::Row` on the row-materialization plane —
-//! genuinely zero-boxing on the read hot path). Only 4 of the 6 read cases are typed-native-covered
-//! (bc#86 gap: `complexWhere`/`inList`'s IN-list has an array-typed head bc's typed-native emitter
-//! has no native port type for) — those 2 cases are NOT wired here (reported, not silently
-//! defaulted to the retired `-typed-raw` path); the harness marks them as an expected gap.
+//! genuinely zero-boxing on the read hot path). ALL 6 read cases are typed-native-covered (#60):
+//! `complexWhere`/`inList`'s IN-list array head now lowers to a native `Vec<i64>` input port via
+//! bc#110 — the array crosses to a boxed `Value` ONLY at the driver-bind seam (`json_each`/
+//! `JSON_TABLE` json-text or PG `= ANY($1)` array param), never as a serde JSON marshal on the read hot path.
 //!
 //! WRITES (`batchInsert`/`writeTxGate`) are NOT codegen-module cases anymore (#60 m1) — they stay
 //! on this crate's hand-written NATIVE gate-first transaction execution (`exec_tx`), called
@@ -41,16 +41,21 @@ use std::time::Instant;
 mod companion;
 
 // ── bc-GENERATED typed-NATIVE modules (bc#77/#90 rust-typed-native; each its own compile unit) ──
-// Only the 4 typed-native-COVERED read cases (#60 m1; complexWhere/inList are a bc#86 gap — NOT
-// generated, see the module doc above). Writes have NO codegen module anymore (exec_tx, native).
+// All 6 typed-native-COVERED read cases (#60; complexWhere/inList are now covered via bc#110 — a
+// native ARRAY input port `Vec<i64>` for the IN-list head, no serde-json marshal, no boxing). Writes have NO
+// codegen module anymore (exec_tx, native).
 #[path = "../../../generated/codegen/rust/belongsTo.rs"]
 mod cg_belongs_to;
+#[path = "../../../generated/codegen/rust/complexWhere.rs"]
+mod cg_complex_where;
 #[path = "../../../generated/codegen/rust/find.rs"]
 mod cg_find;
 #[path = "../../../generated/codegen/rust/hasMany.rs"]
 mod cg_has_many;
 #[path = "../../../generated/codegen/rust/hasManyLimit.rs"]
 mod cg_has_many_limit;
+#[path = "../../../generated/codegen/rust/inList.rs"]
+mod cg_in_list;
 
 use companion::{
     CasePlan, Dialect, Gate, InVal, Lit, ReadPlan, RelKind, Relation, Skip, Spec, TxPlan,
@@ -754,6 +759,78 @@ impl_posts_handler!(cg_belongs_to);
 impl_posts_handler!(cg_has_many);
 impl_posts_handler!(cg_has_many_limit);
 
+/// `inList` (`ByIds`): the ONE WHERE port is the IN-list array head — a native `Vec<i64>` port
+/// (bc#110), NOT a boxed Value. The handler reads it DIRECTLY off the concrete ports struct and
+/// builds the render scope's `ids` as `Value::Arr` of ints (the array element type is `i64` — the
+/// module's native port type). `eval_spec` then binds it per dialect (`json_each`/`JSON_TABLE`
+/// json-text on sqlite/mysql via `json_in_list_text`, a single native `= ANY($1)` array param on
+/// PG) — that dialect-specific SQL-BIND form is an execution detail on the OUTPUT side, NOT boxing
+/// on the read hot path (the generated module never touches a JSON serializer / a boxed Value port).
+impl cg_in_list::HandlerNRByIds for (&'static ReadPlan, &dyn Driver) {
+    fn node_n0(
+        &self,
+        ports: &cg_in_list::PortsNRByIdsN0,
+        _bound: Option<String>,
+    ) -> Option<cg_in_list::RawRowNRByIdsN0> {
+        let scope: Scope = vec![("ids".to_string(), i64_vec_to_value_arr(&ports.f_ids))];
+        let mut val = Vec::new();
+        render_and_fetch(self.0, scope, self.1, |row| {
+            val.push(cg_in_list::T0 {
+                id: row.get_i64("id"),
+                title: row.get_str("title"),
+            });
+        });
+        Some(cg_in_list::RawRowNRByIdsN0 {
+            is_error: false,
+            err: String::new(),
+            val,
+        })
+    }
+}
+
+/// `complexWhere` (`ComplexWhere`): mixed WHERE heads — three scalar ports (author_id/since/
+/// titleLike) plus the IN-list array head `ids` as a native `Vec<i64>` port (bc#110). Same seam as
+/// `inList` for the array head; the scalar ports are read directly off the concrete struct.
+impl cg_complex_where::HandlerNRComplexWhere for (&'static ReadPlan, &dyn Driver) {
+    fn node_n0(
+        &self,
+        ports: &cg_complex_where::PortsNRComplexWhereN0,
+        _bound: Option<String>,
+    ) -> Option<cg_complex_where::RawRowNRComplexWhereN0> {
+        let scope: Scope = vec![
+            ("author_id".to_string(), Value::Int(ports.f_author_id)),
+            ("since".to_string(), Value::Str(ports.f_since.clone())),
+            (
+                "titleLike".to_string(),
+                Value::Str(ports.f_titlelike.clone()),
+            ),
+            ("ids".to_string(), i64_vec_to_value_arr(&ports.f_ids)),
+        ];
+        let mut val = Vec::new();
+        render_and_fetch(self.0, scope, self.1, |row| {
+            val.push(cg_complex_where::T0 {
+                id: row.get_i64("id"),
+                author_id: row.get_i64("author_id"),
+                title: row.get_str("title"),
+                status: row.get_str("status"),
+                views: row.get_i64("views"),
+            });
+        });
+        Some(cg_complex_where::RawRowNRComplexWhereN0 {
+            is_error: false,
+            err: String::new(),
+            val,
+        })
+    }
+}
+
+/// The native IN-list array port (`Vec<i64>`) → the render scope's `Value::Arr` of ints — the ONLY
+/// place the array crosses into the boxed `Value` render scope, and it is on the DRIVER-BIND side
+/// (never on the row-materialization read hot path). NOT a JSON serializer marshal.
+fn i64_vec_to_value_arr(v: &[i64]) -> Value {
+    Value::Arr(v.iter().map(|i| Value::Int(*i)).collect())
+}
+
 /// WRITE handler: run the NATIVE gate-first transaction plan and return the TransactionResult
 /// (committed/executed/shortCircuit/entity always present — present-as-null for an absent optional
 /// — plus returnedRows only when a batch RETURNING produced rows) as a plain `Value::Obj`. #60 m1:
@@ -1086,26 +1163,80 @@ fn run_case(pc: &PreparedCase, driver: &dyn Driver) -> Value {
                 since: scope_str(&pc.input, "since"),
                 status: scope_str(&pc.input, "status"),
             };
-            Value::Arr(call_typed_native_read!(cg_find::run_native_raw_struct_Find, in_, plan, driver, [id, author_id, title, status, views, created_at]))
+            Value::Arr(call_typed_native_read!(
+                cg_find::run_native_raw_struct_Find,
+                in_,
+                plan,
+                driver,
+                [id, author_id, title, status, views, created_at]
+            ))
         }
         "belongsTo" | "hasMany" | "hasManyLimit" => {
-            let in_belongs = cg_belongs_to::InNRPosts { author_id: scope_i64(&pc.input, "author_id") };
-            let in_many = cg_has_many::InNRPosts { author_id: scope_i64(&pc.input, "author_id") };
-            let in_many_limit = cg_has_many_limit::InNRPosts { author_id: scope_i64(&pc.input, "author_id") };
+            let in_belongs = cg_belongs_to::InNRPosts {
+                author_id: scope_i64(&pc.input, "author_id"),
+            };
+            let in_many = cg_has_many::InNRPosts {
+                author_id: scope_i64(&pc.input, "author_id"),
+            };
+            let in_many_limit = cg_has_many_limit::InNRPosts {
+                author_id: scope_i64(&pc.input, "author_id"),
+            };
             let rows = match plan.case_id {
-                "belongsTo" => call_typed_native_read!(cg_belongs_to::run_native_raw_struct_Posts, in_belongs, plan, driver, [id, author_id, title]),
-                "hasMany" => call_typed_native_read!(cg_has_many::run_native_raw_struct_Posts, in_many, plan, driver, [id, author_id, title]),
-                _ => call_typed_native_read!(cg_has_many_limit::run_native_raw_struct_Posts, in_many_limit, plan, driver, [id, author_id, title]),
+                "belongsTo" => call_typed_native_read!(
+                    cg_belongs_to::run_native_raw_struct_Posts,
+                    in_belongs,
+                    plan,
+                    driver,
+                    [id, author_id, title]
+                ),
+                "hasMany" => call_typed_native_read!(
+                    cg_has_many::run_native_raw_struct_Posts,
+                    in_many,
+                    plan,
+                    driver,
+                    [id, author_id, title]
+                ),
+                _ => call_typed_native_read!(
+                    cg_has_many_limit::run_native_raw_struct_Posts,
+                    in_many_limit,
+                    plan,
+                    driver,
+                    [id, author_id, title]
+                ),
             };
             let rel = plan.relation.expect("relation op");
             Value::Arr(stitch_relation_native(rel, rows, driver))
         }
-        "complexWhere" | "inList" => panic!(
-            "codegen: case '{}' is NOT typed-native-covered (bc#86 gap: an IN-list's array-typed head \
-             has no native port type) — the harness must route this case through db_skip_reason, not run_case",
-            plan.case_id
-        ),
-        "batchInsert" | "writeTxGate" => run_write(plan.tx.expect("tx plan"), plan.dialect, &pc.input, driver),
+        "inList" => {
+            let in_ = cg_in_list::InNRByIds {
+                ids: scope_i64_arr(&pc.input, "ids"),
+            };
+            Value::Arr(call_typed_native_read!(
+                cg_in_list::run_native_raw_struct_ByIds,
+                in_,
+                plan,
+                driver,
+                [id, title]
+            ))
+        }
+        "complexWhere" => {
+            let in_ = cg_complex_where::InNRComplexWhere {
+                author_id: scope_i64(&pc.input, "author_id"),
+                since: scope_str(&pc.input, "since"),
+                titleLike: scope_str(&pc.input, "titleLike"),
+                ids: scope_i64_arr(&pc.input, "ids"),
+            };
+            Value::Arr(call_typed_native_read!(
+                cg_complex_where::run_native_raw_struct_ComplexWhere,
+                in_,
+                plan,
+                driver,
+                [id, author_id, title, status, views]
+            ))
+        }
+        "batchInsert" | "writeTxGate" => {
+            run_write(plan.tx.expect("tx plan"), plan.dialect, &pc.input, driver)
+        }
         other => panic!("unknown codegen case '{other}' (fail-closed)"),
     }
 }
@@ -1124,6 +1255,21 @@ fn scope_str(scope: &Scope, key: &str) -> String {
         other => {
             panic!("codegen native: bench input '{key}' is not a string (fail-closed): {other:?}")
         }
+    }
+}
+/// A native `Vec<i64>` for an IN-list array head (bc#110) — built ONCE from the bench input scope
+/// for the module's `InNR<Comp>` array field. Fail-closed on a non-int element (the covered IN-list
+/// corpus binds int arrays only).
+fn scope_i64_arr(scope: &Scope, key: &str) -> Vec<i64> {
+    match scope_get(scope, key) {
+        Some(Value::Arr(a)) => a
+            .iter()
+            .map(|e| match e {
+                Value::Int(i) => *i,
+                other => panic!("codegen native: IN-list input '{key}' has a non-int element (fail-closed): {other:?}"),
+            })
+            .collect(),
+        other => panic!("codegen native: bench input '{key}' is not an int array (fail-closed): {other:?}"),
     }
 }
 
@@ -1320,20 +1466,13 @@ fn db_skip_reason(dialect: &str) -> Option<String> {
     }
 }
 
-/// #60 milestone 1: `complexWhere`/`inList` are NOT typed-native-covered (bc#86 gap — an IN-list's
-/// array-typed head has no native scalar port type bc's typed-native emitter can lower to). There
-/// is no generated codegen module for them anymore (retired `-typed-raw` is NOT a fallback) — the
-/// codegen cell reports this as an explicit SKIP (never a silent/incorrect result).
-fn case_skip_reason(case_id: &str) -> Option<&'static str> {
-    match case_id {
-        "complexWhere" | "inList" => Some(
-            "not typed-native-covered (bc#86 gap): this case's WHERE binds an IN-list, whose value \
-             is an ARRAY — bc's typed-native emitter (rust-typed-native) has no native scalar port \
-             type for it, so litedbmodel's codegen-only lowering fails closed at generation. NOT \
-             regenerated on the retired '-typed-raw' path (no silent fallback).",
-        ),
-        _ => None,
-    }
+/// #60: ALL 6 read cases are now typed-native-covered — `complexWhere`/`inList` reached the
+/// zero-boxing native hot path via bc#110 (a native ARRAY input port `Vec<i64>` for the IN-list
+/// head). There is no case-level typed-native coverage gap left, so nothing is skipped here. Kept
+/// as a seam (returns `None` for every case) so a future uncovered read shape can be reported
+/// explicitly rather than silently degraded — never a silent/incorrect result.
+fn case_skip_reason(_case_id: &str) -> Option<&'static str> {
+    None
 }
 
 fn write_skipped(case: &str, dialect: &str, reason: &str) {

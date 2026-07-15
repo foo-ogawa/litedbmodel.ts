@@ -40,9 +40,16 @@
  * ## No literal-bake / no boxed fallback
  *
  * typed-native fails CLOSED on an uncovered shape (a `map`/`cond` relation kind it does not cover,
- * or an input head that cannot lower to a native scalar — e.g. an IN-list's array-typed head).
- * Such a shape is NOT silently regenerated on the boxed `-typed`/`-typed-raw` emitter — it THROWS,
- * naming the exact gap, so it can be tracked as a bc coverage gap (bc#86) rather than masked.
+ * or an input head that cannot lower to a native port). Such a shape is NOT silently regenerated on
+ * the boxed `-typed`/`-typed-raw` emitter — it THROWS, naming the exact gap, so it can be tracked as
+ * a bc coverage gap rather than masked.
+ *
+ * IN-list / array-bound WHERE heads (the `whereIn` `{__jsonArray:{ref:[head]},dialect}` param) are
+ * now COVERED via bc#110 (native array/list port for a componentRef input port): the lowering
+ * resolves the IN-list column's element scalar and emits a native ARRAY input port
+ * (`{type:'array', elemType}` → `Vec<ElemT>`/`[]ElemT`), so `complexWhere`/`inList` reach the
+ * zero-boxing native hot path (no serde_json/encoding-json, no boxed `Value`). They no longer
+ * fail closed as a bc#86/coverage gap.
  */
 
 import { generateModule, type Component, type ComponentGraphIR, type GeneratedModule, type Scope, type Value, type PortSchema } from 'behavior-contracts';
@@ -222,6 +229,13 @@ const WHERE_FRAGMENT_COLUMN = /^([A-Za-z_][A-Za-z0-9_]*)\s+(?:=|<>|<=|>=|<|>|LIK
  * reported as unresolvable rather than mis-parsed). */
 const SELECT_FROM_TABLE = /\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)\b/i;
 
+/** Extract the LHS column of an IN-list / array-bound WHERE fragment — the closed set of texts
+ * {@link inListFragment} emits across dialects, all of the form `<col> IN (…)` (sqlite `json_each`,
+ * mysql `JSON_TABLE`) or `<col> = ANY(?)` (postgres). The single array param binds a `?` inside; the
+ * column names the type to resolve the ELEMENT scalar from (spec §4.1 schema SoT). Any other shape
+ * returns undefined (fail-closed). */
+const IN_LIST_COLUMN = /^([A-Za-z_][A-Za-z0-9_]*)\s+(?:IN\s*\(|=\s*ANY\s*\()/i;
+
 /**
  * Derive each input head's bc scalar type from a read node's compiled {@link StaticStatement}s
  * (spec §4.1 schema SoT), for bc's typed-native codegen (#60 m1). Works from the ALREADY-COMPILED
@@ -229,16 +243,23 @@ const SELECT_FROM_TABLE = /\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)\b/i;
  * instead of re-walking the authored component — so this lowering needs NO extra input beyond
  * what `SqlBundle`/`ReadGraph` already expose (no change to `compileReadGraph`/`ReadGraph`).
  *
- * Returns the typed heads found, PLUS `unresolved` — heads referenced by a param that is NOT a
- * bare single-segment `{ref:[head]}` (e.g. `whereIn`'s `{__jsonArray:{ref:[…]},dialect}` array
- * param) or whose owning fragment's SQL text isn't the closed `<col> <op> ?` shape. A non-empty
- * `unresolved` means the read is NOT typed-native-coverable (fail-closed at the caller).
+ * Returns three sets:
+ *  - `byHead` — heads bound by a bare single-segment `{ref:[head]}` scalar param, typed to their
+ *    column's bc scalar (`int`/`float`/`string`/`bool`).
+ *  - `arrayHeads` — heads bound by an IN-list / array param (`whereIn`'s
+ *    `{__jsonArray:{ref:[head]},dialect}`), typed to their column's ELEMENT scalar. bc#110 gives
+ *    typed-native a native array port (`Vec<ElemT>`/`[]ElemT`) for such a head, so it is now
+ *    COVERED (no longer fail-closed) — the caller emits it as a native array input port.
+ *  - `unresolved` — heads whose owning fragment's SQL text isn't a shape this deriver covers (the
+ *    closed `<col> <op> ?` scalar shape or the `<col> IN (…)`/`<col> = ANY(?)` array shape). A
+ *    non-empty `unresolved` means the read is NOT typed-native-coverable (fail-closed at the caller).
  */
 function deriveHeadTypesFromStatements(
   statements: readonly StaticStatement[],
   resolveColumnType: ColumnTypeResolver,
-): { byHead: Map<string, BcScalar>; unresolved: Map<string, string> } {
+): { byHead: Map<string, BcScalar>; arrayHeads: Map<string, BcScalar>; unresolved: Map<string, string> } {
   const byHead = new Map<string, BcScalar>();
+  const arrayHeads = new Map<string, BcScalar>();
   const unresolved = new Map<string, string>();
 
   // The head statement (`SELECT … FROM <table>`) — always statements[0] (compileSelectNode always
@@ -252,9 +273,36 @@ function deriveHeadTypesFromStatements(
     for (const param of stmt.params) {
       const path = refPathOf(param);
       if (path === undefined || path.length !== 1) {
-        // Not a bare single-segment ref (e.g. the `whereIn` `__jsonArray` array param, or a nested
-        // literal): if it names a head at all, surface it; otherwise it simply isn't head-typable
-        // here (a literal has no head to report).
+        // An IN-list / array-bound WHERE head — `whereIn`'s `{__jsonArray:{ref:[head]},dialect}`
+        // param (single-array param, one `?` inside the `IN (…)`/`= ANY(?)` subquery). bc#110 gives
+        // typed-native a native ARRAY port for this shape (`Vec<ElemT>`/`[]ElemT`), so resolve the
+        // column's ELEMENT scalar (spec §4.1 SoT) and record it as an array head — no longer
+        // fail-closed. Any other non-scalar/nested-literal param stays unresolved (fail-closed).
+        const arrHead = arrayHeadNameOf(param);
+        if (arrHead !== undefined) {
+          if (table === undefined) {
+            unresolved.set(arrHead, `input head '${arrHead}': could not resolve the owning table from the SELECT head SQL ('${head?.sql ?? '<none>'}')`);
+            continue;
+          }
+          const cm = IN_LIST_COLUMN.exec(stmt.sql.trim());
+          if (cm === null) {
+            unresolved.set(
+              arrHead,
+              `input head '${arrHead}': IN-list WHERE fragment SQL '${stmt.sql}' is not the closed '<col> IN (…)'/'<col> = ANY(?)' shape this codegen-only deriver covers`,
+            );
+            continue;
+          }
+          const elemType = sqlTypeToBcScalar(resolveColumnType(table, cm[1]));
+          const priorElem = arrayHeads.get(arrHead);
+          if (priorElem !== undefined && priorElem !== elemType) {
+            unresolved.set(arrHead, `input head '${arrHead}' resolves to conflicting array element scalar types ('${priorElem}' vs '${elemType}') across statements`);
+            continue;
+          }
+          arrayHeads.set(arrHead, elemType);
+          continue;
+        }
+        // Not a bare single-segment ref and not a recognized array head (e.g. a nested literal): if
+        // it names a head at all, surface it; otherwise it simply isn't head-typable here.
         const named = headNameOf(param);
         if (named !== undefined) {
           unresolved.set(
@@ -289,7 +337,14 @@ function deriveHeadTypesFromStatements(
       byHead.set(headName, scalar);
     }
   }
-  return { byHead, unresolved };
+  // A head bound BOTH as a scalar and as an array across fragments is not a coherent native port —
+  // fail-closed rather than silently pick one (never occurs for the covered shapes, defensive).
+  for (const head of arrayHeads.keys()) {
+    if (byHead.has(head)) {
+      unresolved.set(head, `input head '${head}' is bound both as a scalar and as an array param — no single native port type`);
+    }
+  }
+  return { byHead, arrayHeads, unresolved };
 }
 
 /** A statement param's bare ref path (`{ref:[…]}`/`{refOpt:[…]}`), or undefined if it isn't one. */
@@ -314,6 +369,18 @@ function headNameOf(param: unknown): string | undefined {
   return undefined;
 }
 
+/** The head an IN-list / array param (`{__jsonArray:{ref:[head]},dialect}`) binds — ONLY the covered
+ * single-segment `{ref:[head]}` inner shape (bc#110's native array port requires a single-segment,
+ * non-opt ref). A multi-segment / opt / non-ref inner is NOT this covered array shape → undefined
+ * (the caller then treats it as an unresolved non-scalar param, fail-closed). */
+function arrayHeadNameOf(param: unknown): string | undefined {
+  if (param === null || typeof param !== 'object' || Array.isArray(param)) return undefined;
+  const obj = param as Record<string, unknown>;
+  if (!('__jsonArray' in obj)) return undefined;
+  const inner = refPathOf(obj.__jsonArray);
+  return inner !== undefined && inner.length === 1 ? inner[0] : undefined;
+}
+
 /**
  * Lower a read bundle's surrogate `ComponentGraphIR` into a NEW, CODEGEN-ONLY IR eligible for bc's
  * typed-native endpoint (#60 milestone 1): split the single `__scope: {obj:{...}}` boxed port into
@@ -332,6 +399,9 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
   const reasons: string[] = [];
   const components = ir.components.map((c) => {
     const inputPortTypes = new Map<string, BcScalar>();
+    // IN-list / array-bound heads (bc#110): the head's native ELEMENT scalar (the port lowers to
+    // `Vec<ElemT>`/`[]ElemT`, fed natively — NO json.Marshal/serde_json on the hot path).
+    const inputPortElemTypes = new Map<string, BcScalar>();
     const body = c.body.map((n) => {
       if ('cond' in n) return n;
       const isMapNode = 'map' in n;
@@ -345,7 +415,7 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
       }
       const obj = (scopeVal as { obj: Record<string, unknown> }).obj;
       const stmts = readGraph.statementsById[n.id] ?? [];
-      const { byHead, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType);
+      const { byHead, arrayHeads, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType);
       for (const [, reason] of unresolved) reasons.push(`node '${n.id}': ${reason}`);
       for (const [head, scalar] of byHead) {
         const prior = inputPortTypes.get(head);
@@ -355,13 +425,23 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
         }
         inputPortTypes.set(head, scalar);
       }
-      // Every head the surrogate scope references must have been typed above (byHead) — a head
-      // present in `obj` but absent from `byHead`/`unresolved` indicates a param shape this
-      // deriver's statement walk did not visit (e.g. a non-WHERE port); report it too rather than
-      // silently emitting an untyped scalar ref port.
+      for (const [head, elem] of arrayHeads) {
+        const prior = inputPortElemTypes.get(head);
+        if (prior !== undefined && prior !== elem) {
+          reasons.push(`input head '${head}' resolves to conflicting array element scalar types ('${prior}' vs '${elem}') across nodes`);
+          continue;
+        }
+        inputPortElemTypes.set(head, elem);
+      }
+      // Every head the surrogate scope references must have been typed above (byHead/arrayHeads) — a
+      // head present in `obj` but absent from all of byHead/arrayHeads/unresolved indicates a param
+      // shape this deriver's statement walk did not visit (e.g. a non-WHERE port); report it too
+      // rather than silently emitting an untyped scalar ref port. A covered array head is emitted as
+      // the SAME single-segment `{ref:[head]}` port (bc#110's array-port lowering keys off the
+      // inputPorts array schema, not a distinct port shape — `classifyExpr` sees a plain ref).
       const newPorts: Record<string, unknown> = {};
       for (const head of Object.keys(obj)) {
-        if (!byHead.has(head) && !unresolved.has(head)) {
+        if (!byHead.has(head) && !arrayHeads.has(head) && !unresolved.has(head)) {
           reasons.push(`node '${n.id}': input head '${head}' referenced by the surrogate scope but not resolved by any WHERE fragment — cannot type it for native codegen`);
           continue;
         }
@@ -387,6 +467,15 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
     for (const [name, scalar] of inputPortTypes) {
       const schema = (c.inputPorts ?? {})[name];
       inputPorts[name] = schema === undefined ? { required: true, type: scalar } : { ...schema, type: scalar };
+    }
+    // IN-list / array-bound heads (bc#110): a native ARRAY input port carrying the ELEMENT scalar as
+    // `elemType`. bc's typed-native emitter lowers this to `Vec<ElemT>`/`[]ElemT` fed natively from
+    // the input struct field — NO boxed `Value`, NO serde_json/encoding-json on the read hot path.
+    // bc does NOT infer element types (consumer-interface C3), so litedbmodel supplies `elemType`
+    // from the schema SoT (the IN-list column's resolved scalar).
+    for (const [name, elem] of inputPortElemTypes) {
+      const schema = (c.inputPorts ?? {})[name];
+      inputPorts[name] = { ...(schema ?? { required: true }), type: 'array', elemType: elem };
     }
     return { ...c, body, inputPorts } as unknown as Component;
   });

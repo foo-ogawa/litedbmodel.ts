@@ -9,13 +9,15 @@
  *    graph's boxed `__scope` port into individual scalar ref ports and types the component's
  *    `inputPorts` from the schema (spec §4.1), so a COVERED read shape produces a module with
  *    ZERO boxing markers (`obj_native`/`ser_T*`/`run_plan`/`RawValue`) and NO embedded IR. An
- *    UNCOVERED shape (e.g. an IN-list's array-typed head, or a relation expressed via a `.map`
- *    node with per-element field-access ports) THROWS `TypedNativeCoverageError` — a bc#86
- *    coverage gap, reported explicitly, never silently regenerated on a boxed fallback.
+ *    IN-list / array-bound WHERE head is now COVERED via bc#110 (native array/list port → a
+ *    `Vec<ElemT>`/`[]ElemT` input port, no serde_json/encoding-json boxing). An UNCOVERED shape
+ *    (e.g. a relation expressed via a `.map` node with per-element field-access ports) still THROWS
+ *    `TypedNativeCoverageError` — a bc coverage gap, reported explicitly, never silently
+ *    regenerated on a boxed fallback.
  *  - **typescript** stays on the boxed `typescript-typed` endpoint (bc has not registered a
  *    `typescript-typed-native` endpoint yet) — unaffected by the lowering (it uses the ORIGINAL
  *    portable IR), so it covers every shape go/rust do NOT (e.g. the frozen `exec.json` vector's
- *    `.map`-relation shape, and an IN-list read).
+ *    `.map`-relation shape).
  *  - **In-process byte-identity**: `codegenExecuteBundleForTest` (a codegen consumer reading the
  *    companion) drives the IDENTICAL static-makeSQL render/execute path `executeBundle` uses — its
  *    output equals mode-2 `executeBundle` AND the frozen vector's `expectedResult`, EXACTLY.
@@ -350,7 +352,7 @@ describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + by
     expect(art.module.code.length).toBeGreaterThan(0);
   });
 
-  it('an IN-list read (array-typed head) is NOT typed-native-coverable for go/rust — bc#86 gap, reported', () => {
+  it('an IN-list read (array-typed head) IS typed-native-covered for go/rust via bc#110 (native array port; no serde_json/encoding-json, no boxing)', () => {
     class InListReads extends SemanticBehavior {
       static columns = { posts: { id: 'INTEGER', title: 'TEXT' } };
       ByIds($: any) {
@@ -364,10 +366,24 @@ describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + by
     }
     const inListContract = publishBehaviors(InListReads);
     const inListBundle = compileBundle(inListContract, 'ByIds', [], 'sqlite', undefined, resolveColumnType);
+    // The native array-bind mechanism must be a native Vec<ElemT>/[]ElemT port — NEVER a
+    // serde_json/encoding-json marshal of the array on the hot path (that is the boxing this closes).
+    const NATIVE_ARRAY_PORT: Record<string, RegExp> = { go: /\[\]int64\b/, rust: /Vec<i64>/ };
+    const JSON_HOTPATH_MARKERS: RegExp[] = [/serde_json/, /encoding\/json/, /json\.Marshal/, /json\.Unmarshal/];
     for (const language of NATIVE_LANGS) {
-      expect(() => generateCodegenArtifact(inListBundle, language, REGISTERED, resolveColumnType)).toThrow(TypedNativeCoverageError);
+      const art = generateCodegenArtifact(inListBundle, language, REGISTERED, resolveColumnType);
+      expect(art.module.code.length).toBeGreaterThan(0);
+      assertDeInterpreted(art.module.code);
+      const stripped = stripComments(art.module.code);
+      // Zero boxing on the hot path (same gate as the covered scalar reads).
+      for (const marker of NATIVE_BOXING_MARKERS) expect(stripped).not.toMatch(marker);
+      // The IN-list array head lowers to a CONCRETE native array port fed natively (bc#110)…
+      expect(art.module.code).toMatch(NATIVE_ARRAY_PORT[language]);
+      // …and NO JSON-marshal of the array appears on the generated read hot path (proves the port
+      // feeds the driver's native array bind, not a serde_json/json.Marshal boxing).
+      for (const marker of JSON_HOTPATH_MARKERS) expect(art.module.code).not.toMatch(marker);
     }
-    // ts (boxed) still covers it.
+    // ts (boxed) still covers it too.
     const art = generateCodegenArtifact(inListBundle, 'typescript', REGISTERED, resolveColumnType);
     expect(art.module.code.length).toBeGreaterThan(0);
   });
