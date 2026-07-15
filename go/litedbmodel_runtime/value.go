@@ -100,8 +100,7 @@ func EncodeConformanceJSON(v bc.Value) string {
 		}
 		return "false"
 	case string:
-		b, _ := json.Marshal(t)
-		return string(b)
+		return jsonEscapeString(t)
 	case int64:
 		return fmt.Sprintf("{\"$bigint\":%q}", strconv.FormatInt(t, 10))
 	case float64:
@@ -115,8 +114,7 @@ func EncodeConformanceJSON(v bc.Value) string {
 	case *bc.Obj:
 		parts := make([]string, 0, t.Len())
 		for _, k := range t.Keys {
-			kb, _ := json.Marshal(k)
-			parts = append(parts, string(kb)+":"+EncodeConformanceJSON(t.Vals[k]))
+			parts = append(parts, jsonEscapeString(k)+":"+EncodeConformanceJSON(t.Vals[k]))
 		}
 		return "{" + strings.Join(parts, ",") + "}"
 	default:
