@@ -131,8 +131,8 @@ fn connect_mysql(art: &Artifact) -> MysqlDriver {
 // request in this adapter process (the harness spawns ONE subprocess per (language × impl) cell,
 // so a single pair of connections serves the whole cell's DB-backed axis).
 thread_local! {
-    static PG_CONN: RefCell<Option<PostgresDriver>> = RefCell::new(None);
-    static MYSQL_CONN: RefCell<Option<MysqlDriver>> = RefCell::new(None);
+    static PG_CONN: RefCell<Option<PostgresDriver>> = const { RefCell::new(None) };
+    static MYSQL_CONN: RefCell<Option<MysqlDriver>> = const { RefCell::new(None) };
 }
 
 // ── generated artifact (schema + seed + PER-DIALECT case bundles) ────────────
@@ -224,7 +224,7 @@ fn run_sql(case: &str, d: &SqliteDriver) {
         }
         "inList" => {
             let p = int_arr(10);
-            let ph = vec!["?"; 10].join(", ");
+            let ph = ["?"; 10].join(", ");
             d.prepare(&format!(
                 "SELECT id, title FROM posts WHERE id IN ({ph}) ORDER BY id ASC"
             ))
@@ -500,7 +500,7 @@ fn run_sql_generic<D: Driver + ?Sized>(case: &str, d: &D) {
         }
         "inList" => {
             let p = int_arr(10);
-            let ph = vec!["?"; 10].join(", ");
+            let ph = ["?"; 10].join(", ");
             d.prepare(&format!(
                 "SELECT id, title FROM posts WHERE id IN ({ph}) ORDER BY id ASC"
             ))
