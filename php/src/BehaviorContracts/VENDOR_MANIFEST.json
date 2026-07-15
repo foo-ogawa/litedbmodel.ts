@@ -1,9 +1,9 @@
 {
   "generator": "scripts/vendor-behavior-contracts-php.mjs",
   "upstream": {
-    "path": "/tmp/bc-072/php/src",
-    "version": "0.7.2",
-    "commit": "6833c3229dd3517c78d813eb4e0350ea630b7b7e"
+    "path": "/Users/ogawa/Work/my-libs/behavior-contracts/php/src",
+    "version": "0.7.3",
+    "commit": "acde8f07a02f2bce4d56a78b81163f26905ddb9d"
   },
   "namespace": "LiteDbModel\\Runtime\\BehaviorContracts",
   "files": {
@@ -13,6 +13,6 @@
     "PlanFailure.php": "fb1e04b71eaf2f83520486d6ce81f2143e5e94316d892c7570a7af78eee62164",
     "Plan.php": "5c4b1237cb1fc8a59eee396d56f8dfe352804feee139a1e98f98349cdb5e74bc",
     "BehaviorFailure.php": "81aa22db59b8fa4f8760586a14ee418e67696689b5b6c600582252d827c4f22a",
-    "Behavior.php": "e95ecb096d512f48e890d0c7138d97bbda53b22eefc890846b298d3b0d5b29c7"
+    "Behavior.php": "4bf8a574cf4b827bf0187133f94ab2d811ef1d6f65a9a51aa168e5cb935579c8"
   }
 }

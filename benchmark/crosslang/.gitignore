@@ -4,6 +4,7 @@
 v1ts/node_modules/
 # Compiled adapter binaries + build dirs
 adapters/rust/target/
+adapters/rust-codegen/target/
 adapters/go/go_bench
 adapters/v1rs/target/
 # Python bytecode

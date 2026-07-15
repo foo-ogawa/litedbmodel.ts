@@ -82,7 +82,7 @@
     "url": "git+https://github.com/foo-ogawa/litedbmodel.git"
   },
   "dependencies": {
-    "behavior-contracts": "^0.7.2",
+    "behavior-contracts": "^0.7.3",
     "reflect-metadata": "^0.2.2"
   },
   "devDependencies": {

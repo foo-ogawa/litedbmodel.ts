@@ -253,10 +253,16 @@ const IN_LIST_COLUMN = /^([A-Za-z_][A-Za-z0-9_]*)\s+(?:IN\s*\(|=\s*ANY\s*\()/i;
  *  - `unresolved` — heads whose owning fragment's SQL text isn't a shape this deriver covers (the
  *    closed `<col> <op> ?` scalar shape or the `<col> IN (…)`/`<col> = ANY(?)` array shape). A
  *    non-empty `unresolved` means the read is NOT typed-native-coverable (fail-closed at the caller).
+ *
+ * `elementVar` (map nodes only): the map's `as` binding (`$e0`). A param whose ref's FIRST segment
+ * is the element var (`{ref:['$e0','author_id']}`) is a map-ELEMENT field access, NOT a component
+ * input head — bc types it from the map's `over` element struct (the prior node's row), so this
+ * deriver neither types nor rejects it (it is fully covered by bc's `coveredMapNode` element typing).
  */
 function deriveHeadTypesFromStatements(
   statements: readonly StaticStatement[],
   resolveColumnType: ColumnTypeResolver,
+  elementVar?: string,
 ): { byHead: Map<string, BcScalar>; arrayHeads: Map<string, BcScalar>; unresolved: Map<string, string> } {
   const byHead = new Map<string, BcScalar>();
   const arrayHeads = new Map<string, BcScalar>();
@@ -269,9 +275,33 @@ function deriveHeadTypesFromStatements(
   const table = tableMatch?.[1];
 
   for (const stmt of statements) {
-    if (stmt.whereFragment !== true) continue;
+    // The LIMIT clause (` LIMIT ?`) is NOT a whereFragment — its param is `coalesce(refOpt(limit), N)`
+    // (optional head + a static default). bc's typed-native emitter binds `limit` as a native scalar
+    // port (its `portIsStatic` accepts the bare ref + number-literal default), so type the head from
+    // the schema-less LIMIT contract: `limit`-family heads are always an integer row count. The
+    // element-var guard applies here too (a map child never has a LIMIT-bound element ref today, but
+    // stay uniform). Anything OTHER than the closed `coalesce([refOpt([head]), <int>])` shape is left
+    // untyped here (the surrogate-scope reconciliation below fail-closes on an un-typed referenced head).
+    if (stmt.whereFragment !== true) {
+      for (const param of stmt.params) {
+        const lh = limitHeadNameOf(param);
+        if (lh === undefined) continue;
+        if (elementVar !== undefined && lh === elementVar) continue;
+        const prior = byHead.get(lh);
+        if (prior !== undefined && prior !== 'int') {
+          unresolved.set(lh, `input head '${lh}' resolves to conflicting scalar types ('${prior}' vs 'int' from a LIMIT clause) across statements`);
+          continue;
+        }
+        byHead.set(lh, 'int');
+      }
+      continue;
+    }
     for (const param of stmt.params) {
       const path = refPathOf(param);
+      // A map-ELEMENT field access (`{ref:['$e0','author_id']}`, first segment = the map `as` var) is
+      // NOT a component input head — bc types it from the map's `over` element struct. Neither type
+      // nor reject it here (fully covered by bc's `coveredMapNode` element-field lowering).
+      if (path !== undefined && elementVar !== undefined && path[0] === elementVar) continue;
       if (path === undefined || path.length !== 1) {
         // An IN-list / array-bound WHERE head — `whereIn`'s `{__jsonArray:{ref:[head]},dialect}`
         // param (single-array param, one `?` inside the `IN (…)`/`= ANY(?)` subquery). bc#110 gives
@@ -369,6 +399,50 @@ function headNameOf(param: unknown): string | undefined {
   return undefined;
 }
 
+/** The distinct map-ELEMENT field names a node's statements bind via `{ref:[elementVar, field]}`
+ * (first-seen order). These are the map child's element-field ports (`$e0.author_id`): bc's
+ * typed-native map lowering types each from the `over` element struct's field. Only single-field
+ * accesses (`[elementVar, field]`, length 2) are collected — a deeper element path is not a covered
+ * native port here (fail-closed downstream if one appears). */
+function elementFieldRefs(statements: readonly StaticStatement[], elementVar: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const stmt of statements) {
+    for (const param of stmt.params) {
+      const path = refPathOf(param);
+      if (path === undefined || path.length !== 2 || path[0] !== elementVar) continue;
+      const field = path[1];
+      if (!seen.has(field)) {
+        seen.add(field);
+        out.push(field);
+      }
+    }
+  }
+  return out;
+}
+
+/** The head a LIMIT param (`coalesce([{refOpt:[head]}, <int-literal>])`) binds — the closed shape
+ * `compileSelectNode` emits for an optional `limit` with a static default (`coalesce(opt($.limit), N)`).
+ * Returns the head name for that exact shape, else undefined (any other shape is not a LIMIT head this
+ * deriver types). bc's typed-native emitter binds it as a native scalar port (bare ref + number literal
+ * default are both `portIsStatic`). */
+function limitHeadNameOf(param: unknown): string | undefined {
+  if (param === null || typeof param !== 'object' || Array.isArray(param)) return undefined;
+  const obj = param as Record<string, unknown>;
+  const args = obj.coalesce;
+  if (!Array.isArray(args) || args.length !== 2) return undefined;
+  const [refPart, dflt] = args;
+  // The default must be a static integer literal (`coalesce(opt($.limit), 20)`).
+  if (typeof dflt !== 'number' || !Number.isInteger(dflt)) return undefined;
+  if (refPart === null || typeof refPart !== 'object' || Array.isArray(refPart)) return undefined;
+  const rp = refPart as Record<string, unknown>;
+  const keys = Object.keys(rp);
+  if (keys.length !== 1 || (keys[0] !== 'ref' && keys[0] !== 'refOpt')) return undefined;
+  const path = rp[keys[0]];
+  if (!Array.isArray(path) || path.length !== 1 || typeof path[0] !== 'string') return undefined;
+  return path[0];
+}
+
 /** The head an IN-list / array param (`{__jsonArray:{ref:[head]},dialect}`) binds — ONLY the covered
  * single-segment `{ref:[head]}` inner shape (bc#110's native array port requires a single-segment,
  * non-opt ref). A multi-segment / opt / non-ref inner is NOT this covered array shape → undefined
@@ -415,7 +489,14 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
       }
       const obj = (scopeVal as { obj: Record<string, unknown> }).obj;
       const stmts = readGraph.statementsById[n.id] ?? [];
-      const { byHead, arrayHeads, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType);
+      // A map node binds an ELEMENT var (`as: '$e0'`) — its child statements reference the mapped
+      // parent row via `{ref:['$e0', <field>]}`. That is a map-element field access (bc types it from
+      // the map's `over` element struct), NOT a component input head, so hand the element var to the
+      // deriver to exclude it from head typing/rejection.
+      const elementVar = isMapNode
+        ? ((n as unknown as { map: { as?: string } }).map.as ?? undefined)
+        : undefined;
+      const { byHead, arrayHeads, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType, elementVar);
       for (const [, reason] of unresolved) reasons.push(`node '${n.id}': ${reason}`);
       for (const [head, scalar] of byHead) {
         const prior = inputPortTypes.get(head);
@@ -440,7 +521,21 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
       // the SAME single-segment `{ref:[head]}` port (bc#110's array-port lowering keys off the
       // inputPorts array schema, not a distinct port shape — `classifyExpr` sees a plain ref).
       const newPorts: Record<string, unknown> = {};
+      // A map node's surrogate `__scope` obj is `{ $e0: {ref:['$e0']} }` — the WHOLE element. bc's
+      // typed-native map lowering types a port `{ref:['$e0', <field>]}` from the OVER element struct's
+      // FIELD (a native scalar), but CANNOT lower `{ref:['$e0']}` (the whole boxed element). So for a
+      // map node, replace the whole-element port with one native-scalar element-FIELD port per field
+      // the child statements actually bind (`{ref:['$e0', author_id]}` → port `author_id`). The handler
+      // reads these typed fields to build the child render scope. Non-element component heads (if any)
+      // are still typed/emitted normally below.
+      if (isMapNode && elementVar !== undefined) {
+        const fields = elementFieldRefs(stmts, elementVar);
+        for (const field of fields) newPorts[field] = { ref: [elementVar, field] };
+      }
       for (const head of Object.keys(obj)) {
+        // The map element var (`$e0`) whole-element port was replaced by per-field element ports above
+        // — drop the whole-element key (bc cannot lower a boxed whole-element ref).
+        if (elementVar !== undefined && head === elementVar) continue;
         if (!byHead.has(head) && !arrayHeads.has(head) && !unresolved.has(head)) {
           reasons.push(`node '${n.id}': input head '${head}' referenced by the surrogate scope but not resolved by any WHERE fragment — cannot type it for native codegen`);
           continue;

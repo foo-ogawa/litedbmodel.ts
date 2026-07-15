@@ -240,6 +240,47 @@ final class Behavior
                 return ['ok' => $augmented];
             }
 
+            if ($kind === 'fanout') {
+                // fanout（v3）: over（id-list）→ dedup 済み 1 回の batched handler → dedupe/drop/strip →
+                // connection {items, cursor:null}。整列制約（MAP_BATCH_RESULT_MISMATCH）は適用されない。
+                $f = get_object_vars($props['fanout']);
+                $over = ExprEval::evaluate($f['over'] ?? null, $baseScope());
+                if (!is_array($over)) {
+                    BehaviorFailure::raise('FANOUT_OVER_NOT_ARRAY', "fanout '{$op['id']}': 'over' did not evaluate to an array");
+                }
+                $component = $f['component'] ?? null;
+                if (!isset($handlers[$component])) {
+                    BehaviorFailure::raise('UNKNOWN_COMPONENT', "component '{$component}' has no handler (fail-closed)");
+                }
+                $handler = $handlers[$component];
+                $as = (string) ($f['as'] ?? '');
+                $fports = $f['ports'] ?? new \stdClass();
+                $itemsPorts = [];
+                foreach ($over as $el) {
+                    $scope = $baseScope();
+                    $scope[$as] = $el;
+                    $itemsPorts[] = (object) self::evalPorts($fports, $scope);
+                }
+                $conn = new \stdClass();
+                $conn->items = [];
+                $conn->cursor = null;
+                if (count($itemsPorts) > 0) {
+                    $outcome = $handler(['items' => $itemsPorts], ['nodeId' => $op['id'], 'component' => $component]);
+                    if (array_key_exists('error', $outcome)) {
+                        return $outcome; // policy Kind は runPlan が解釈
+                    }
+                    $r = $outcome['ok'];
+                    if (!is_array($r) || !array_is_list($r) || count($r) !== count($itemsPorts)) {
+                        BehaviorFailure::raise(
+                            'FANOUT_BATCH_RESULT_MISMATCH',
+                            "fanout '{$op['id']}': batched handler must return a list aligned to the deduped id list (want " . count($itemsPorts) . ')'
+                        );
+                    }
+                    $conn->items = self::fanoutDedupDrop($r, (string) $f['dedupeKey'], (string) $f['drop'], self::optStr($f['implicitSource'] ?? null));
+                }
+                return ['ok' => $conn];
+            }
+
             // componentRef
             $component = $props['component'] ?? null;
             if (!isset($handlers[$component])) {
@@ -286,6 +327,9 @@ final class Behavior
     private static function nodeKind(\stdClass $n): string
     {
         $props = get_object_vars($n);
+        if (array_key_exists('fanout', $props)) {
+            return 'fanout';
+        }
         if (array_key_exists('map', $props)) {
             return 'map';
         }
@@ -296,12 +340,15 @@ final class Behavior
             return 'componentRef';
         }
         $id = $props['id'] ?? '?';
-        BehaviorFailure::raise('UNKNOWN_NODE_KIND', "body node '{$id}' is not componentRef/map/cond");
+        BehaviorFailure::raise('UNKNOWN_NODE_KIND', "body node '{$id}' is not componentRef/map/cond/fanout");
     }
 
     private static function nodeParent(\stdClass $n): ?string
     {
         $props = get_object_vars($n);
+        if (array_key_exists('fanout', $props)) {
+            return self::optStr(get_object_vars($props['fanout'])['parent'] ?? null);
+        }
         if (array_key_exists('map', $props)) {
             return self::optStr(get_object_vars($props['map'])['parent'] ?? null);
         }
@@ -314,7 +361,7 @@ final class Behavior
     private static function nodeBindField(\stdClass $n): ?string
     {
         $props = get_object_vars($n);
-        if (array_key_exists('map', $props) || array_key_exists('cond', $props)) {
+        if (array_key_exists('map', $props) || array_key_exists('cond', $props) || array_key_exists('fanout', $props)) {
             return null;
         }
         return self::optStr($props['bindField'] ?? null);
@@ -323,6 +370,9 @@ final class Behavior
     private static function nodePolicy(\stdClass $n): ?string
     {
         $props = get_object_vars($n);
+        if (array_key_exists('fanout', $props)) {
+            return self::optStr(get_object_vars($props['fanout'])['policy'] ?? null);
+        }
         if (array_key_exists('map', $props)) {
             return self::optStr(get_object_vars($props['map'])['policy'] ?? null);
         }
@@ -335,6 +385,9 @@ final class Behavior
     private static function nodeRelationKind(\stdClass $n): ?string
     {
         $props = get_object_vars($n);
+        if (array_key_exists('fanout', $props)) {
+            return self::optStr(get_object_vars($props['fanout'])['relationKind'] ?? null);
+        }
         if (array_key_exists('map', $props)) {
             return self::optStr(get_object_vars($props['map'])['relationKind'] ?? null);
         }
@@ -342,6 +395,47 @@ final class Behavior
             return null;
         }
         return self::optStr($props['relationKind'] ?? null);
+    }
+
+    /**
+     * fanoutDedupDrop — THE ONE dedup/drop definition (behaviorVersion 3) — PHP twin of behavior.ts
+     * fanoutDedupDrop. First-seen dedupe by the body's `dedupeKey` field + dangling drop + implicitSource
+     * strip on the aligned raw list; returns the connection `items` (the caller wraps). Byte-equal to the
+     * TS/Python/native definitions. Bodies are \stdClass; a null / non-object / absent-key body is dangling.
+     *
+     * @param list<mixed> $alignedBodies
+     * @return list<mixed>
+     */
+    public static function fanoutDedupDrop(array $alignedBodies, string $dedupeKey, string $drop, ?string $implicitSource): array
+    {
+        $items = [];
+        $seen = [];
+        foreach ($alignedBodies as $body) {
+            $isObj = $body instanceof \stdClass;
+            $rec = $isObj ? get_object_vars($body) : null;
+            $keyVal = ($rec !== null && array_key_exists($dedupeKey, $rec)) ? $rec[$dedupeKey] : null;
+            $hasKey = $keyVal !== null;
+            if (!$hasKey) {
+                if ($drop === 'dangling') {
+                    continue;
+                }
+                $items[] = $body; // drop:none で dangling を保持
+                continue;
+            }
+            $seenKey = is_string($keyVal) ? ('s:' . $keyVal) : ('j:' . json_encode($keyVal));
+            if (array_key_exists($seenKey, $seen)) {
+                continue;
+            }
+            $seen[$seenKey] = true;
+            if ($implicitSource !== null && $rec !== null && array_key_exists($implicitSource, $rec)) {
+                $copy = clone $body;
+                unset($copy->{$implicitSource});
+                $items[] = $copy;
+            } else {
+                $items[] = $body;
+            }
+        }
+        return $items;
     }
 
     private static function optStr(mixed $v): ?string

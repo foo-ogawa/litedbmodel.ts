@@ -10,14 +10,14 @@
  *    `inputPorts` from the schema (spec §4.1), so a COVERED read shape produces a module with
  *    ZERO boxing markers (`obj_native`/`ser_T*`/`run_plan`/`RawValue`) and NO embedded IR. An
  *    IN-list / array-bound WHERE head is now COVERED via bc#110 (native array/list port → a
- *    `Vec<ElemT>`/`[]ElemT` input port, no serde_json/encoding-json boxing). An UNCOVERED shape
- *    (e.g. a relation expressed via a `.map` node with per-element field-access ports) still THROWS
- *    `TypedNativeCoverageError` — a bc coverage gap, reported explicitly, never silently
- *    regenerated on a boxed fallback.
+ *    `Vec<ElemT>`/`[]ElemT` input port, no serde_json/encoding-json boxing). A relation expressed via
+ *    a `.map` node with per-element field-access ports (`{ref:['$e0','author_id']}`) is now COVERED via
+ *    bc 0.7.3's map/fanout support + the lowering's map element-FIELD ports + LIMIT-clause head typing.
+ *    A genuinely uncovered shape still THROWS `TypedNativeCoverageError` — reported explicitly, never
+ *    silently regenerated on a boxed fallback.
  *  - **typescript** stays on the boxed `typescript-typed` endpoint (bc has not registered a
  *    `typescript-typed-native` endpoint yet) — unaffected by the lowering (it uses the ORIGINAL
- *    portable IR), so it covers every shape go/rust do NOT (e.g. the frozen `exec.json` vector's
- *    `.map`-relation shape).
+ *    portable IR).
  *  - **In-process byte-identity**: `codegenExecuteBundleForTest` (a codegen consumer reading the
  *    companion) drives the IDENTICAL static-makeSQL render/execute path `executeBundle` uses — its
  *    output equals mode-2 `executeBundle` AND the frozen vector's `expectedResult`, EXACTLY.
@@ -221,7 +221,7 @@ function structuralResult(bundle: SqlBundle, language: string, resolveColumnType
   }
 }
 
-describe('WS7f codegen — the FROZEN exec.json vector: ts covers it (boxed); go/rust report the bc#86 gap', () => {
+describe('WS7f codegen — the FROZEN exec.json vector: ts (boxed) AND go/rust (typed-native) all cover it (bc 0.7.3 map)', () => {
   for (const v of EXEC_VECTORS) {
     const resolveColumnType = schemaColumnTypeResolver(v.schema);
 
@@ -237,12 +237,18 @@ describe('WS7f codegen — the FROZEN exec.json vector: ts covers it (boxed); go
     });
 
     for (const language of NATIVE_LANGS) {
-      it(`${language}: this vector's relation rides a '.map' node with a per-element field-access port — NOT typed-native-covered (bc#86 gap, reported not silently passed) — ${v.name}`, () => {
+      // bc 0.7.3 + the litedbmodel codegen lowering (LIMIT-clause head typing + map-element FIELD
+      // ports, `{ref:['$e0','author_id']}`) now cover this vector's `.map`-relation shape as a
+      // RUNTIME-FREE typed-native module (the prior bc#86 gap is closed). The read primary (n0) + the
+      // per-element map child (n1, `authors`) both lower to concrete `HandlerNR<Feed>` node methods
+      // returning typed rows — zero boxed Value, no interpreter delegation.
+      it(`${language}: the '.map'-relation shape IS typed-native-covered (bc 0.7.3 map) — zero-boxing, de-interpreted — ${v.name}`, () => {
         const r = structuralResult(v.bundle, language, resolveColumnType);
-        expect(r.kind).toBe('uncovered');
-        if (r.kind === 'uncovered') {
-          expect(r.error.component).toBe('Feed');
-          expect(r.error.reasons.length).toBeGreaterThan(0);
+        expect(r.kind).toBe('ok');
+        if (r.kind === 'ok') {
+          assertDeInterpreted(r.module.code);
+          const stripped = stripComments(r.module.code);
+          for (const marker of NATIVE_BOXING_MARKERS) expect(stripped).not.toMatch(marker);
         }
       });
     }
@@ -317,8 +323,8 @@ describe('WS7f codegen — the EMITTED TS source loads and is de-interpreted', (
 });
 
 // ── A COVERED typed-native shape (#60 m1 positive path): a plain single-componentRef Select with
-// only scalar WHERE heads — the frozen exec.json corpus's only vector is NOT this shape (its
-// relation rides a `.map` node), so this proves the positive path independently, in-test. ──
+// only scalar WHERE heads. The frozen exec.json corpus's `.map`-relation vector is ALSO covered now
+// (bc 0.7.3 map + lowering); this block additionally proves the plain single-node positive path. ──
 describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + byte-identity', () => {
   const SCHEMA = [`CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT)`];
   const resolveColumnType = schemaColumnTypeResolver(SCHEMA);
