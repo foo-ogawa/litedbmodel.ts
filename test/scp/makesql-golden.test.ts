@@ -363,7 +363,9 @@ function goldenInsertJson(
     const upd = opts.onConflictUpdate === 'all' ? cols : opts.onConflictUpdate;
     sql = dialect === 'mysql'
       ? `INSERT INTO ${list} ${source} ON DUPLICATE KEY UPDATE ${upd.map((c) => `${c} = VALUES(${c})`).join(', ')}`
-      : `INSERT INTO ${list} ${source} ON CONFLICT (${opts.onConflict.join(', ')}) DO UPDATE SET ${upd.map((c) => `${c} = excluded.${c}`).join(', ')}`;
+      // #67: SQLite requires `WHERE true` between the SELECT source and ON CONFLICT in an
+      // INSERT…SELECT…upsert (else `near "DO": syntax error`) — mirror the fixed sqliteInsertJson.
+      : `INSERT INTO ${list} ${source} WHERE true ON CONFLICT (${opts.onConflict.join(', ')}) DO UPDATE SET ${upd.map((c) => `${c} = excluded.${c}`).join(', ')}`;
   } else {
     sql = `INSERT INTO ${list} ${source}`;
   }
