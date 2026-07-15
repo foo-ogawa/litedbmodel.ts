@@ -89,9 +89,6 @@ name = "behavior-contracts"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f04d161fff556c37cc4e93cf2eb2685bdc845502a77269b93b8635c3d0d46642"
-dependencies = [
- "serde_json",
-]
 
 [[package]]
 name = "bitflags"
@@ -951,7 +948,6 @@ dependencies = [
  "futures-util",
  "rusqlite",
  "rust_decimal",
- "serde",
  "serde_json",
  "sqlx",
  "tokio",

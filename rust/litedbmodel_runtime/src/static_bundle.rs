@@ -3,12 +3,15 @@
 //! Byte-for-byte port of the TS `src/scp/makesql/static-bundle.ts` + `makesql.ts` + `handler.ts`
 //! runtime halves — the SOLE makeSQL read/render path — mirroring the audited Python/Go/PHP sibling
 //! ports. It consumes the PRE-COMPILED, portable artifacts the corpus ships (a read `ReadGraph` = a
-//! bc `ComponentGraphIR` of `__makeSqlNode` surrogate nodes + per-node STATIC statement templates),
-//! and EXECUTES them via the shared behavior-contracts Rust crate ([`run_behavior`] drives
-//! map / Φ-merge / wiring; [`evaluate_expression`] resolves the deferred value-specs + skip). This
-//! module re-implements NO generic evaluator and does NO SQL re-derivation — every statement's
-//! `sql` is fixed text; the runtime only evaluates its deferred params + skip, resolves the WHERE
-//! connector from the present set, assembles + renders placeholders, and binds.
+//! `__makeSqlNode` surrogate component-graph + per-node STATIC statement templates), and executes
+//! them NATIVELY (#8): the read-graph orchestration (map iteration / Φ-merge / output assembly) is a
+//! CLOSED-SET native walker (`execute_read_graph` → `orchestrate_read_graph_serial`, NOT the retired
+//! bc `run_behavior` IR interpreter), and the deferred param slots + skip resolve through the crate's
+//! OWN native evaluator ([`crate::node::eval_expr`], NOT bc's serde_json-based `evaluate_expression`).
+//! This module re-implements NO generic evaluator BEYOND that closed native set and does NO SQL
+//! re-derivation — every statement's `sql` is fixed text; the runtime only evaluates its deferred
+//! params + skip, resolves the WHERE connector from the present set, assembles + renders
+//! placeholders, and binds. The runtime carries NO serde_json.
 //!
 //! A statement template (StaticStatement) is `{sql, params, skip?, whereFragment?}`:
 //! - `sql` — complete tuned dialect text (`?` placeholders), value-independent.
@@ -21,12 +24,40 @@
 //! array as-is (a text[] param); mysql/sqlite JSON-encode it to a single param (server-side
 //! expansion). This mirrors the TS `evalSpec`.
 
-use behavior_contracts::{evaluate_expression, ExecOutcome, Value};
-use serde_json::Value as J;
+use behavior_contracts::{ExecOutcome, Value};
 
 use crate::driver::Driver;
 use crate::errors::{re_error_to_sql_failure, SqlFailure};
-use crate::value::{encode_value, Scope};
+use crate::node::{compact_value, eval_expr, Node as J};
+
+/// Thin shim so the many `evaluate_expression(node, scope)` call sites port unchanged to the native
+/// evaluator (same signature; the native `EvalError` maps to the runtime's `String`-message form).
+fn evaluate_expression(node: &J, scope: &[(String, Value)]) -> Result<Value, EvalErr> {
+    eval_expr(node, scope).map_err(|e| EvalErr {
+        message: e.to_string(),
+    })
+}
+
+/// A minimal error carrier matching the old bc `ExprFailure`'s `.message` field the call sites read.
+struct EvalErr {
+    message: String,
+}
+
+/// Evaluate a body `cond` node (`{cond:{if,then,else}}`): reads the three sub-exprs and dispatches
+/// natively (byte-identical to bc's `cond` op — a bool `if`, else TYPE_MISMATCH). Used by the native
+/// read-graph orchestrators for a cond body node.
+fn eval_cond_node(c: &J, scope: &Scope) -> Result<Value, EvalErr> {
+    let cond = J::Object(vec![(
+        "cond".to_string(),
+        J::Array(vec![
+            c.get("if").cloned().unwrap_or(J::Null),
+            c.get("then").cloned().unwrap_or(J::Null),
+            c.get("else").cloned().unwrap_or(J::Null),
+        ]),
+    )]);
+    evaluate_expression(&cond, scope)
+}
+use crate::value::Scope;
 
 /// The synthetic port that carries a SQL node's render scope (mirrors TS SCOPE_PORT).
 pub const SCOPE_PORT: &str = "__scope";
@@ -104,11 +135,6 @@ pub fn render_placeholders(sql: &str, dialect_name: &str) -> String {
 
 // ── Deferred value-spec evaluation (port of static-bundle.ts evalSpec) ─────────
 
-/// Serialize JSON with no inter-token spaces (matches JS `JSON.stringify`).
-fn compact_json(v: &J) -> String {
-    serde_json::to_string(v).unwrap_or_else(|_| "null".to_string())
-}
-
 /// Evaluate one deferred value-spec against the scope, handling the `__jsonArray` marker: postgres
 /// keeps the array as-is (a text[] param); mysql/sqlite JSON-encode it to ONE string param.
 /// Everything else is a plain bc Expression IR value. The target dialect for an IN-list rides the
@@ -131,15 +157,16 @@ fn eval_spec(spec: &J, scope: &[(String, Value)]) -> Result<Value, String> {
         // coerces to `0` against a TINYINT(1) — a silent mismatch. `1`/`0` is what v1's `col IN (?)`
         // bound. SQLite's `json_each` coerces JSON booleans natively, so it keeps the plain form.
         let is_mysql = spec_dialect == "mysql";
-        let encoded = J::Array(
+        let encoded = Value::Arr(
             arr.iter()
                 .map(|e| match e {
-                    Value::Bool(b) if is_mysql => J::from(if *b { 1 } else { 0 }),
-                    _ => encode_value(e),
+                    Value::Bool(b) if is_mysql => Value::Int(if *b { 1 } else { 0 }),
+                    other => other.clone(),
                 })
                 .collect(),
         );
-        return Ok(Value::Str(compact_json(&encoded)));
+        // Native JS-JSON.stringify compaction (serde_json-free): the single IN-list string param.
+        return Ok(Value::Str(compact_value(&encoded)));
     }
     evaluate_expression(spec, scope).map_err(|e| e.message)
 }
@@ -323,7 +350,7 @@ fn primary_node_id(graph: &J) -> Result<String, String> {
         .ok_or_else(|| "static-bundle: read graph component has no body".to_string())?;
     for n in body {
         if let Some(id) = n.get("id").and_then(|i| i.as_str()) {
-            if by_id.contains_key(id) {
+            if by_id.iter().any(|(k, _)| k == id) {
                 return Ok(id.to_string());
             }
         }
@@ -338,7 +365,6 @@ fn statements_for<'a>(graph: &'a J, node_id: &str) -> &'a [J] {
         .get("statementsById")
         .and_then(|s| s.get(node_id))
         .and_then(|a| a.as_array())
-        .map(|v| v.as_slice())
         .unwrap_or(&[])
 }
 
@@ -361,7 +387,7 @@ pub fn render_read_primary(graph: &J, input: &Scope) -> Result<RenderedSql, Stri
 /// to compact JSON for a text column — byte-identical to the TS `JSON.stringify` (no spaces).
 pub(crate) fn to_driver_param(v: &Value) -> Value {
     match v {
-        Value::Obj(_) => Value::Str(compact_json(&encode_value(v))),
+        Value::Obj(_) => Value::Str(compact_value(v)),
         other => other.clone(),
     }
 }
@@ -558,8 +584,7 @@ fn exec_read_node_serial(
     base: &Scope,
 ) -> ExecOutcome {
     if let Some(c) = node.get("cond") {
-        let cond_expr = serde_json::json!({ "cond": [c.get("if"), c.get("then"), c.get("else")] });
-        return match evaluate_expression(&cond_expr, base) {
+        return match eval_cond_node(c, base) {
             Ok(v) => ExecOutcome::Ok(v),
             Err(e) => ExecOutcome::Error(e.message),
         };
@@ -920,8 +945,7 @@ fn exec_read_node(
     base: &Scope,
 ) -> ExecOutcome {
     if let Some(c) = node.get("cond") {
-        let cond_expr = serde_json::json!({ "cond": [c.get("if"), c.get("then"), c.get("else")] });
-        return match evaluate_expression(&cond_expr, base) {
+        return match eval_cond_node(c, base) {
             Ok(v) => ExecOutcome::Ok(v),
             Err(e) => ExecOutcome::Error(e.message),
         };

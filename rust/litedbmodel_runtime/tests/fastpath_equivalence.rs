@@ -11,9 +11,26 @@
 
 use behavior_contracts::{deep_equals, Value};
 use litedbmodel_runtime::{
-    encode_value, execute_read_graph, execute_read_graph_orchestrator_for_test, SqliteDriver,
+    encode_value, execute_read_graph, execute_read_graph_orchestrator_for_test, Node, SqliteDriver,
 };
 use serde_json::json;
+
+/// Convert a serde_json test fixture to the runtime's native `Node` (the runtime is serde_json-free).
+fn to_node(v: &serde_json::Value) -> Node {
+    match v {
+        serde_json::Value::Null => Node::Null,
+        serde_json::Value::Bool(b) => Node::Bool(*b),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(Node::Int)
+            .unwrap_or_else(|| Node::Float(n.as_f64().unwrap_or(0.0))),
+        serde_json::Value::String(s) => Node::Str(s.clone()),
+        serde_json::Value::Array(a) => Node::Array(a.iter().map(to_node).collect()),
+        serde_json::Value::Object(o) => {
+            Node::Object(o.iter().map(|(k, val)| (k.clone(), to_node(val))).collect())
+        }
+    }
+}
 
 fn schema() -> Vec<String> {
     vec![
@@ -111,13 +128,16 @@ fn assert_fastpath_equals_bc(
     input: &serde_json::Value,
     label: &str,
 ) -> Value {
-    let input_scope = litedbmodel_runtime::decode_scope(input).unwrap();
+    // The runtime is serde_json-free: convert the serde_json test fixtures to native `Node`s.
+    let graph = to_node(graph);
+    let input = to_node(input);
+    let input_scope = litedbmodel_runtime::decode_scope(&input).unwrap();
     let driver_fast = SqliteDriver::in_memory(&schema()).unwrap();
     let driver_bc = SqliteDriver::in_memory(&schema()).unwrap();
 
-    let via_fast = execute_read_graph(graph, &input_scope, &driver_fast)
+    let via_fast = execute_read_graph(&graph, &input_scope, &driver_fast)
         .unwrap_or_else(|e| panic!("[{label}] fast-path failed: {e:?}"));
-    let via_bc = execute_read_graph_orchestrator_for_test(graph, &input_scope, &driver_bc)
+    let via_bc = execute_read_graph_orchestrator_for_test(&graph, &input_scope, &driver_bc)
         .unwrap_or_else(|e| panic!("[{label}] bc path failed: {e:?}"));
 
     assert!(

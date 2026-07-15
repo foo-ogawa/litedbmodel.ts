@@ -21,6 +21,7 @@ use behavior_contracts::Value;
 
 use crate::driver::Driver;
 use crate::errors::SqlFailure;
+use crate::node::{write_json_string, Node as J};
 use crate::runtime::execute_bundle_pooled;
 use crate::static_bundle::{render_placeholders, resolve_pg_array_cast};
 
@@ -39,7 +40,7 @@ struct RelationOp {
     sql: String,
 }
 
-fn op_from_json(o: &serde_json::Value) -> RelationOp {
+fn op_from_json(o: &J) -> RelationOp {
     let s = |k: &str| o.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let str_arr = |k: &str| -> Option<Vec<String>> {
         o.get(k).and_then(|v| v.as_array()).map(|a| {
@@ -185,7 +186,11 @@ fn json_scalar(k: &Value) -> String {
                 f.to_string()
             }
         }
-        Value::Str(s) => serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string()),
+        Value::Str(s) => {
+            let mut out = String::new();
+            write_json_string(s, &mut out);
+            out
+        }
         other => format!("{other:?}"),
     }
 }
@@ -281,7 +286,7 @@ fn distribute_to_parent(op: &RelationOp, parent: &Value, batch: &RelationBatch) 
 /// `execute_bundle`), then hydrates the companion relation through this shared runtime stitch so the
 /// hydrated result is byte-identical to `read_bundle_pooled`'s.
 pub fn stitch_relation(
-    op_json: &serde_json::Value,
+    op_json: &J,
     mut parents: Vec<Value>,
     driver: &dyn Driver,
 ) -> Result<Vec<Value>, SqlFailure> {
@@ -331,8 +336,8 @@ fn driver_for_op<'a>(
 }
 
 pub fn read_bundle_pooled(
-    bundle: &serde_json::Value,
-    input: &serde_json::Value,
+    bundle: &J,
+    input: &J,
     driver: &(dyn Driver + Sync),
     with_names: &[String],
     connections: &std::collections::HashMap<String, &(dyn Driver + Sync)>,

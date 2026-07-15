@@ -19,6 +19,24 @@ use std::time::{Duration, Instant};
 use litedbmodel_runtime::{dispatch_read_nodes_parallel, MysqlDriver, PostgresDriver, Scope};
 use serde_json::json;
 
+/// Convert a serde_json test fixture to the runtime's native `Node` (the runtime is serde_json-free).
+fn to_node(v: &serde_json::Value) -> litedbmodel_runtime::Node {
+    use litedbmodel_runtime::Node;
+    match v {
+        serde_json::Value::Null => Node::Null,
+        serde_json::Value::Bool(b) => Node::Bool(*b),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(Node::Int)
+            .unwrap_or_else(|| Node::Float(n.as_f64().unwrap_or(0.0))),
+        serde_json::Value::String(s) => Node::Str(s.clone()),
+        serde_json::Value::Array(a) => Node::Array(a.iter().map(to_node).collect()),
+        serde_json::Value::Object(o) => {
+            Node::Object(o.iter().map(|(k, val)| (k.clone(), to_node(val))).collect())
+        }
+    }
+}
+
 fn enabled() -> bool {
     std::env::var("LITEDBMODEL_LIVEDB_PARALLEL").as_deref() == Ok("1")
 }

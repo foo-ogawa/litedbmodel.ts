@@ -25,12 +25,50 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use litedbmodel_runtime::value::encode_value;
 use litedbmodel_runtime::{
-    dialect_for, execute_bundle, execute_transaction_bundle, render_read_primary_bundle, Driver,
-    SqliteDriver,
+    dialect_for, encode_value, execute_bundle, execute_transaction_bundle,
+    render_read_primary_bundle, Driver, Node, SqliteDriver,
 };
 use serde_json::{json, Value as J};
+
+// The runtime is NATIVE-ONLY (serde_json-free): its exec API takes/returns the runtime's own `Node`.
+// This runner parses the corpus with serde_json (its own dep — allowed for a runner), then converts
+// each bundle/input sub-value to a `Node` at the runtime boundary, and converts a `Node` result back
+// to `serde_json::Value` for the canonical comparison.
+fn to_node(v: &J) -> Node {
+    match v {
+        J::Null => Node::Null,
+        J::Bool(b) => Node::Bool(*b),
+        J::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Node::Int(i)
+            } else {
+                Node::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        J::String(s) => Node::Str(s.clone()),
+        J::Array(a) => Node::Array(a.iter().map(to_node).collect()),
+        J::Object(o) => Node::Object(o.iter().map(|(k, val)| (k.clone(), to_node(val))).collect()),
+    }
+}
+
+fn node_to_json(n: &Node) -> J {
+    match n {
+        Node::Null => J::Null,
+        Node::Bool(b) => J::Bool(*b),
+        Node::Int(i) => J::Number((*i).into()),
+        Node::Float(f) => serde_json::Number::from_f64(*f)
+            .map(J::Number)
+            .unwrap_or(J::Null),
+        Node::Str(s) => J::String(s.clone()),
+        Node::Array(a) => J::Array(a.iter().map(node_to_json).collect()),
+        Node::Object(o) => J::Object(
+            o.iter()
+                .map(|(k, v)| (k.clone(), node_to_json(v)))
+                .collect(),
+        ),
+    }
+}
 
 /// The corpus schema version this runner supports (pin — bumped on additive refreeze).
 const SUPPORTED_CORPUS_VERSION: i64 = 2;
@@ -145,10 +183,12 @@ fn run_vector(v: &J) -> VectorResult {
 fn run_render(v: &J) -> VectorResult {
     // Render the PRIMARY read node's static makeSQL statements of the ReadGraph → dialect SQL +
     // flat params, asserted byte-identical to the reference-captured golden.
-    let rendered = match render_read_primary_bundle(&v["readGraph"], &v["input"]) {
-        Ok(r) => r,
-        Err(e) => return fail(format!("threw: {e}")),
-    };
+    let rendered_node =
+        match render_read_primary_bundle(&to_node(&v["readGraph"]), &to_node(&v["input"])) {
+            Ok(r) => r,
+            Err(e) => return fail(format!("threw: {e}")),
+        };
+    let rendered = node_to_json(&rendered_node);
     let sql_ok = rendered["sql"] == v["expectedSql"];
     let params_ok = eq(&rendered["params"], &v["expectedParams"]);
     if sql_ok && params_ok {
@@ -199,9 +239,9 @@ fn run_exec(v: &J) -> VectorResult {
     // The corpus `input` may carry $bigint tags; execute_bundle decodes plain JSON, so pass the
     // decoded-then-encoded form so bigint tags become plain numbers (bc has a single i64 int).
     let input = numeric_canon(&v["input"]);
-    match execute_bundle(&v["bundle"], &input, &driver) {
+    match execute_bundle(&to_node(&v["bundle"]), &to_node(&input), &driver) {
         Ok(result) => {
-            let got = encode_value(&result);
+            let got = node_to_json(&encode_value(&result));
             if eq(&got, &v["expectedResult"]) {
                 pass()
             } else {
@@ -218,8 +258,9 @@ fn run_tx(v: &J) -> VectorResult {
         Err(e) => return fail(format!("threw (seed): {}", e.message)),
     };
     let input = numeric_canon(&v["input"]);
-    let result = match execute_transaction_bundle(&v["bundle"], &input, &driver) {
-        Ok(r) => encode_value(&r),
+    let result = match execute_transaction_bundle(&to_node(&v["bundle"]), &to_node(&input), &driver)
+    {
+        Ok(r) => node_to_json(&encode_value(&r)),
         Err(e) => return fail(format!("threw: {}", e.message)),
     };
     let result_ok = eq(&result, &v["expectedResult"]);
@@ -231,7 +272,7 @@ fn run_tx(v: &J) -> VectorResult {
             let query = s["query"].as_str().unwrap_or("");
             let mut stmt = driver.prepare(query);
             let rows = match stmt.all(&[]) {
-                Ok(r) => J::Array(r.iter().map(encode_value).collect()),
+                Ok(r) => J::Array(r.iter().map(|v| node_to_json(&encode_value(v))).collect()),
                 Err(e) => {
                     state_ok = false;
                     state_detail = format!("db-state '{query}' threw: {}", e.message);

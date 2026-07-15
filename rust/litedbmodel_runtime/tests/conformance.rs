@@ -9,9 +9,34 @@
 use behavior_contracts::{deep_equals, Value};
 use litedbmodel_runtime::{
     dialect_for, execute_bundle, execute_transaction_bundle, render_placeholders,
-    render_read_primary, render_statements, Driver, SqliteDriver,
+    render_read_primary, render_statements, Driver, Node, SqliteDriver,
 };
 use serde_json::json;
+
+/// Convert a serde_json test fixture into the runtime's native `Node` (the runtime is serde_json-
+/// free; the tests build fixtures ergonomically with `json!` then cross this boundary).
+fn to_node(v: &serde_json::Value) -> Node {
+    match v {
+        serde_json::Value::Null => Node::Null,
+        serde_json::Value::Bool(b) => Node::Bool(*b),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(Node::Int)
+            .unwrap_or_else(|| Node::Float(n.as_f64().unwrap_or(0.0))),
+        serde_json::Value::String(s) => Node::Str(s.clone()),
+        serde_json::Value::Array(a) => Node::Array(a.iter().map(to_node).collect()),
+        serde_json::Value::Object(o) => {
+            Node::Object(o.iter().map(|(k, val)| (k.clone(), to_node(val))).collect())
+        }
+    }
+}
+
+/// `jn!(…)` = `to_node(&json!(…))` — a native `Node` fixture.
+macro_rules! jn {
+    ($($t:tt)*) => {
+        to_node(&json!($($t)*))
+    };
+}
 
 fn scope(pairs: &[(&str, Value)]) -> Vec<(String, Value)> {
     pairs
@@ -44,6 +69,11 @@ fn feed_statements() -> Vec<serde_json::Value> {
     ]
 }
 
+/// Convert a slice of serde_json statement fixtures to native `Node`s (the render boundary).
+fn to_nodes(v: &[serde_json::Value]) -> Vec<Node> {
+    v.iter().map(to_node).collect()
+}
+
 #[test]
 fn render_all_fragments_present() {
     let s = scope(&[
@@ -51,7 +81,7 @@ fn render_all_fragments_present() {
         ("status", Value::Str("live".into())),
         ("limit", Value::Int(5)),
     ]);
-    let r = render_statements(&feed_statements(), "sqlite", &s).unwrap();
+    let r = render_statements(&to_nodes(&feed_statements()), "sqlite", &s).unwrap();
     assert_eq!(
         r.sql,
         "SELECT id, author_id, title, status FROM posts WHERE author_id = ? AND status = ? ORDER BY id ASC LIMIT ?"
@@ -67,7 +97,7 @@ fn render_skip_drops_status_and_defaults_limit() {
         ("status", Value::Null),
         ("limit", Value::Null),
     ]);
-    let r = render_statements(&feed_statements(), "sqlite", &s).unwrap();
+    let r = render_statements(&to_nodes(&feed_statements()), "sqlite", &s).unwrap();
     assert_eq!(
         r.sql,
         "SELECT id, author_id, title, status FROM posts WHERE author_id = ? ORDER BY id ASC LIMIT ?"
@@ -83,7 +113,7 @@ fn render_postgres_dollar_placeholders() {
         ("status", Value::Str("live".into())),
         ("limit", Value::Int(5)),
     ]);
-    let r = render_statements(&feed_statements(), "postgres", &s).unwrap();
+    let r = render_statements(&to_nodes(&feed_statements()), "postgres", &s).unwrap();
     assert_eq!(
         r.sql,
         "SELECT id, author_id, title, status FROM posts WHERE author_id = $1 AND status = $2 ORDER BY id ASC LIMIT $3"
@@ -104,7 +134,7 @@ fn render_in_list_single_json_param_sqlite() {
         "ids",
         Value::Arr(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
     )]);
-    let r = render_statements(&stmts, "sqlite", &s).unwrap();
+    let r = render_statements(&to_nodes(&stmts), "sqlite", &s).unwrap();
     assert_eq!(
         r.sql,
         "SELECT id FROM posts WHERE id IN (SELECT value FROM json_each(?))"
@@ -128,7 +158,7 @@ fn render_placeholder_rewrite_quote_aware() {
 
 #[test]
 fn render_read_primary_picks_first_body_node() {
-    let graph = json!({
+    let graph = jn!({
         "dialect": "sqlite",
         "name": "Feed",
         "statementsById": {"n0": feed_statements()},
@@ -184,7 +214,7 @@ fn execute_read_bundle_end_to_end() {
     let driver = SqliteDriver::in_memory(&schema).unwrap();
     // A single-node static-makeSQL read bundle: bc drives the surrogate `__makeSqlNode` node, the
     // makeSQL handler renders its statements + executes REAL SQL, Φ maps the rows to `posts`.
-    let bundle = json!({
+    let bundle = jn!({
         "dialect": "sqlite",
         "name": "Feed",
         "readGraph": {
@@ -217,7 +247,7 @@ fn execute_read_bundle_end_to_end() {
         "optionalHeads": [],
         "relations": {}
     });
-    let out = execute_bundle(&bundle, &json!({"author_id": 7}), &driver).unwrap();
+    let out = execute_bundle(&bundle, &jn!({"author_id": 7}), &driver).unwrap();
     let posts = out.obj_get("posts").expect("posts key");
     match posts {
         Value::Arr(rows) => assert_eq!(rows.len(), 2),
@@ -260,8 +290,8 @@ fn tx_schema() -> Vec<String> {
 fn transaction_commits_on_gate_pass() {
     let driver = SqliteDriver::in_memory(&tx_schema()).unwrap();
     let out = execute_transaction_bundle(
-        &write_bundle(),
-        &json!({"author_id": 7, "title": "New Post"}),
+        &to_node(&write_bundle()),
+        &jn!({"author_id": 7, "title": "New Post"}),
         &driver,
     )
     .unwrap();
@@ -274,8 +304,8 @@ fn transaction_commits_on_gate_pass() {
 fn transaction_short_circuits_on_missing_requires() {
     let driver = SqliteDriver::in_memory(&tx_schema()).unwrap();
     let out = execute_transaction_bundle(
-        &write_bundle(),
-        &json!({"author_id": 999, "title": "Orphan"}),
+        &to_node(&write_bundle()),
+        &jn!({"author_id": 999, "title": "Orphan"}),
         &driver,
     )
     .unwrap();
@@ -297,7 +327,11 @@ fn transaction_unknown_gate_fails_closed() {
     let mut bundle = write_bundle();
     // Tag the requires gate with a bogus rule the runtime does not recognize.
     bundle["transaction"]["statements"][0]["gate"] = json!("someFutureGateRuleThatDoesNotExist");
-    let res = execute_transaction_bundle(&bundle, &json!({"author_id": 7, "title": "X"}), &driver);
+    let res = execute_transaction_bundle(
+        &to_node(&bundle),
+        &jn!({"author_id": 7, "title": "X"}),
+        &driver,
+    );
     assert!(
         res.is_err(),
         "an unknown gate rule must fail closed (Err), not commit"

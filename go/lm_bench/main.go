@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	conf "github.com/foo-ogawa/litedbmodel/go/conformance"
 	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
 
 	"github.com/foo-ogawa/litedbmodel/go/lm_bench/cgplans"
@@ -193,7 +194,7 @@ func parseCase(c *caseArt) *caseArt {
 	}
 	inode, err := bc.ParseJSONOrdered(c.Input)
 	must(err)
-	v, err := rt.DecodeConformanceValue(inode)
+	v, err := conf.DecodeConformanceValue(inode)
 	must(err)
 	if obj, ok := v.(*bc.Obj); ok {
 		c.inputScope = obj
@@ -656,7 +657,7 @@ func runCodegenValueStr(a *artifact, caseID string) string {
 	raw := seedDB(a)
 	defer raw.Close()
 	out := runCodegenCase("sqlite", caseID, raw)
-	return rt.EncodeConformanceJSON(coerceIntsValue(out))
+	return conf.EncodeConformanceJSON(coerceIntsValue(out))
 }
 
 func runLMValueStr(a *artifact, c *caseArt) string {
@@ -684,7 +685,7 @@ func runLMValueStr(a *artifact, c *caseArt) string {
 		must(e)
 		out = o
 	}
-	return rt.EncodeConformanceJSON(coerceIntsValue(out))
+	return conf.EncodeConformanceJSON(coerceIntsValue(out))
 }
 
 // txResultToObj presents the runtime's typed TransactionResult STRUCT as the canonical bc.Obj the

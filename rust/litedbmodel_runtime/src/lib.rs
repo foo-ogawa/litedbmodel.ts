@@ -22,6 +22,7 @@
 pub mod dialect;
 pub mod driver;
 pub mod errors;
+pub mod node;
 pub mod relation;
 pub mod runtime;
 pub mod static_bundle;
@@ -41,6 +42,7 @@ pub use driver::{Driver, PreparedStatement, RunInfo, SqliteDriver};
 pub use errors::{map_sqlite_error, re_error_to_sql_failure, SqlFailure};
 #[cfg(feature = "livedb")]
 pub use livedb::{MysqlDriver, PostgresDriver};
+pub use node::{decode_value, encode_value, eval_expr, EvalError, Node};
 pub use relation::{read_bundle_pooled, stitch_relation};
 pub use runtime::{
     execute_bundle, execute_bundle_pooled, execute_transaction_bundle, order_by_nulls,
@@ -51,4 +53,4 @@ pub use static_bundle::{
     execute_read_graph_pooled, render_placeholders, render_read_primary, render_statements,
     render_tx_op, RenderedSql, NODE_COMPONENT, SCOPE_PORT,
 };
-pub use value::{decode_scope, decode_value, encode_value, Scope};
+pub use value::{decode_scope, Scope};

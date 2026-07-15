@@ -89,12 +89,35 @@ echo "── 5. NATIVE-ONLY runtimes: NO IR interpreter (run_behavior) on the ex
 scan_nontest "rust runtime: no run_behavior call" "run_behavior[[:space:]]*\(" "$RUST_RT"
 scan_nontest "go runtime: no RunBehavior call" "RunBehavior[[:space:]]*\(" "$GO_RT"
 
-echo "── 6. NATIVE-ONLY runtimes: NO JSON operations on the exec path ──"
-# The go runtime exec path must carry no encoding/json OPERATIONS (json.Marshal/Unmarshal/Decoder/
-# Encoder). The json.Number TYPE (bc.ParseJSONOrdered's number output) is a decode-path type, not an
-# operation — allowed; the operations are what would re-serialize/parse IR/results by JSON library.
-scan_nontest "go runtime: no json.Marshal/Unmarshal/Decoder/Encoder" \
-  "json\.(Marshal|Unmarshal|NewDecoder|NewEncoder)[[:space:]]*\(" "$GO_RT"
+echo "── 6. NATIVE-ONLY runtimes: NO JSON library on the exec path ──"
+# The go runtime LIB must carry NO `encoding/json` at all (import OR operation) — it parses/renders
+# JSON through its own native codec. (A code line matching, comments stripped.)
+scan_nontest "go runtime: no encoding/json import/use" \
+  "\"encoding/json\"|json\.(Marshal|Unmarshal|NewDecoder|NewEncoder|Number)" "$GO_RT"
+
+echo "── 7. NATIVE-ONLY rust runtime: NO serde_json (compile-impossible to reintroduce) ──"
+# The rust runtime SOURCE must carry NO serde_json/serde CODE (`use serde…` / `serde_json::`), and
+# its Cargo.toml must depend on behavior-contracts with default-features=false (drops bc's `ir`
+# feature that pulls serde_json). Comment lines are stripped so the doc prose ("serde_json-free")
+# does not false-positive. A `[dev-dependencies] serde_json` (tests only) is NOT in the shipped lib
+# tree and is allowed — this scans the crate SOURCE, which must have zero serde CODE.
+RUST_RT_SRC="$RUST_RT"
+hits=$(grep -rnE "serde_json::|use serde(_json)?(::|;| )" "$RUST_RT_SRC" 2>/dev/null \
+  | grep -vE ':[0-9]+:[[:space:]]*(//|///|//!|\*)')
+if [ -n "$hits" ]; then
+  echo "✗ rust runtime src: serde_json/serde CODE present"
+  echo "$hits" | head -10
+  FAIL=1
+else
+  echo "✓ rust runtime src: no serde_json/serde code"
+fi
+# The runtime crate's cargo tree (normal edges = the shipped lib) must NOT contain serde_json.
+if (cd rust && cargo tree -p litedbmodel_runtime -i serde_json --edges normal 2>/dev/null | grep -q serde_json); then
+  echo "✗ rust runtime: cargo tree (normal edges) contains serde_json"
+  FAIL=1
+else
+  echo "✓ rust runtime: cargo tree (normal edges) has no serde_json"
+fi
 
 echo ""
 if [ "$FAIL" -ne 0 ]; then

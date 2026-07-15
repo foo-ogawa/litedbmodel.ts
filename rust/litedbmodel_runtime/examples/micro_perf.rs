@@ -18,6 +18,22 @@ use litedbmodel_runtime::{
 };
 use serde_json::Value as J;
 
+/// Convert a serde_json fixture to the runtime's native `Node` (the runtime is serde_json-free).
+fn to_node(v: &J) -> litedbmodel_runtime::Node {
+    use litedbmodel_runtime::Node;
+    match v {
+        J::Null => Node::Null,
+        J::Bool(b) => Node::Bool(*b),
+        J::Number(n) => n
+            .as_i64()
+            .map(Node::Int)
+            .unwrap_or_else(|| Node::Float(n.as_f64().unwrap_or(0.0))),
+        J::String(s) => Node::Str(s.clone()),
+        J::Array(a) => Node::Array(a.iter().map(to_node).collect()),
+        J::Object(o) => Node::Object(o.iter().map(|(k, val)| (k.clone(), to_node(val))).collect()),
+    }
+}
+
 // ── counting allocator ────────────────────────────────────────────────────────
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
 static COUNTING: AtomicU64 = AtomicU64::new(0); // 0 = off, 1 = on
@@ -112,7 +128,8 @@ fn main() {
     // find — a plain read (execute_bundle). This is the single-componentRef fast-path shape.
     let find = &sqlite_cases["find"];
     let (fus, fal) = measure(WARM, ITERS, || {
-        let out = execute_bundle(&find["bundle"], &find["input"], &driver).unwrap();
+        let out =
+            execute_bundle(&to_node(&find["bundle"]), &to_node(&find["input"]), &driver).unwrap();
         std::hint::black_box(&out);
     });
 
@@ -123,8 +140,8 @@ fn main() {
     let conns: HashMap<String, &(dyn Driver + Sync)> = HashMap::new();
     let (hus, hal) = measure(WARM, ITERS, || {
         let out: Value = read_bundle_pooled(
-            &hm["bundle"],
-            &hm["input"],
+            &to_node(&hm["bundle"]),
+            &to_node(&hm["input"]),
             &sync,
             std::slice::from_ref(&hm_with),
             &conns,

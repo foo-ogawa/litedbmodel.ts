@@ -19,16 +19,16 @@
 use std::cell::RefCell;
 
 use behavior_contracts::Value;
-use serde_json::{json, Value as J};
 
 use crate::dialect::dialect_for;
 use crate::driver::Driver;
 use crate::errors::{re_error_to_sql_failure, SqlFailure};
+use crate::node::{encode_value, Node as J};
 use crate::static_bundle::{
     execute_read_graph, execute_read_graph_pooled, render_read_primary, render_tx_op,
     to_driver_param,
 };
-use crate::value::{decode_scope, encode_value, Scope};
+use crate::value::{decode_scope, Scope};
 
 /// The reserved binding the body write's RETURNING row is exposed under (mirrors TS ENTITY_ROOT).
 pub const ENTITY_ROOT: &str = "__entity";
@@ -54,10 +54,13 @@ fn is_return_stmt(sql: &str) -> bool {
 pub fn render_read_primary_bundle(read_graph: &J, input: &J) -> Result<J, String> {
     let scope = decode_scope(input)?;
     let rendered = render_read_primary(read_graph, &scope)?;
-    Ok(json!({
-        "sql": rendered.sql,
-        "params": rendered.params.iter().map(encode_value).collect::<Vec<_>>(),
-    }))
+    Ok(J::Object(vec![
+        ("sql".to_string(), J::Str(rendered.sql)),
+        (
+            "params".to_string(),
+            J::Array(rendered.params.iter().map(encode_value).collect()),
+        ),
+    ]))
 }
 
 /// Execute a §8 read/exec SqlBundle end-to-end (bc `run_behavior` + the makeSQL handler).

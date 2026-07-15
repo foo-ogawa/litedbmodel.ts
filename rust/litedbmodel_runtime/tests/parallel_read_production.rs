@@ -25,6 +25,22 @@ use litedbmodel_runtime::{
 };
 use serde_json::{json, Value as J};
 
+/// Convert a serde_json test fixture to the runtime's native `Node` (the runtime is serde_json-free).
+fn to_node(v: &J) -> litedbmodel_runtime::Node {
+    use litedbmodel_runtime::Node;
+    match v {
+        J::Null => Node::Null,
+        J::Bool(b) => Node::Bool(*b),
+        J::Number(n) => n
+            .as_i64()
+            .map(Node::Int)
+            .unwrap_or_else(|| Node::Float(n.as_f64().unwrap_or(0.0))),
+        J::String(s) => Node::Str(s.clone()),
+        J::Array(a) => Node::Array(a.iter().map(to_node).collect()),
+        J::Object(o) => Node::Object(o.iter().map(|(k, val)| (k.clone(), to_node(val))).collect()),
+    }
+}
+
 /// A Sync driver: per-query it can sleep a per-SQL latency, and tracks concurrent in-flight count.
 /// `delays` maps a SQL string to its sleep; a missing key uses `default_latency`.
 struct LatencyDriver {
@@ -156,7 +172,7 @@ fn production_pooled_fans_out_siblings() {
     let input: Scope = Vec::new();
 
     let t0 = Instant::now();
-    let result = execute_read_graph_pooled(&graph, &input, &driver).expect("pooled ok");
+    let result = execute_read_graph_pooled(&to_node(&graph), &input, &driver).expect("pooled ok");
     let elapsed = t0.elapsed();
 
     // 1. Overlap: N=8 × 60ms serial = 480ms; concurrent ≈ 60ms.
@@ -171,7 +187,7 @@ fn production_pooled_fans_out_siblings() {
     assert_eq!(peak, N, "expected all {N} siblings in flight, peak={peak}");
 
     // 3. Determinism (basic): Φ output equals the SERIAL path byte-for-byte.
-    let serial = execute_read_graph(&graph, &input, &EchoDriver).expect("serial ok");
+    let serial = execute_read_graph(&to_node(&graph), &input, &EchoDriver).expect("serial ok");
     assert_eq!(encode_value(&result), encode_value(&serial));
 
     eprintln!(
@@ -191,7 +207,7 @@ fn production_pooled_concurrency_one_stays_serial() {
     let input: Scope = Vec::new();
 
     let t0 = Instant::now();
-    execute_read_graph_pooled(&graph, &input, &driver).expect("pooled ok");
+    execute_read_graph_pooled(&to_node(&graph), &input, &driver).expect("pooled ok");
     let elapsed = t0.elapsed();
 
     assert_eq!(
@@ -222,8 +238,8 @@ fn production_pooled_deterministic_under_shuffled_completion() {
     let graph = sibling_graph(N, 16);
     let input: Scope = Vec::new();
 
-    let result = execute_read_graph_pooled(&graph, &input, &driver).expect("pooled ok");
-    let serial = execute_read_graph(&graph, &input, &EchoDriver).expect("serial ok");
+    let result = execute_read_graph_pooled(&to_node(&graph), &input, &driver).expect("pooled ok");
+    let serial = execute_read_graph(&to_node(&graph), &input, &EchoDriver).expect("serial ok");
 
     // Byte-identical to the serial path despite reverse completion order.
     assert_eq!(
@@ -238,7 +254,8 @@ fn production_pooled_single_sibling_identity() {
     // A one-relation graph: pooled falls back to serial (no multi-member stage) → identical.
     let graph = sibling_graph(1, 16);
     let input: Scope = Vec::new();
-    let pooled = execute_read_graph_pooled(&graph, &input, &EchoDriver).expect("pooled ok");
-    let serial = execute_read_graph(&graph, &input, &EchoDriver).expect("serial ok");
+    let pooled =
+        execute_read_graph_pooled(&to_node(&graph), &input, &EchoDriver).expect("pooled ok");
+    let serial = execute_read_graph(&to_node(&graph), &input, &EchoDriver).expect("serial ok");
     assert_eq!(encode_value(&pooled), encode_value(&serial));
 }
