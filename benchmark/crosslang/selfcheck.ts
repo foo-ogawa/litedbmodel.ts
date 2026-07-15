@@ -120,14 +120,15 @@ function stripCommentsAndStrings(src: string): string {
   }
   return out;
 }
-// #60 m1: bc typed-native READ codegen. A COVERED read (find/belongsTo/hasMany/hasManyLimit)
-// generates a de-interpreted module. An UNCOVERED read (complexWhere/inList — bc#86 IN-list
-// array-head gap) fails CLOSED at generation, and WRITES (batchInsert/writeTxGate) are NOT
-// codegen-module cases (#60 m1) — both legitimately have NO generated module. We assert BOTH: the
-// covered modules ARE de-interpreted, AND the no-module cases have NO module (a module appearing
-// for them would mean a silent fallback leaked — the exact sham this gate guards against).
-const COVERED_READ = ['find', 'belongsTo', 'hasMany', 'hasManyLimit'];
-const NO_MODULE_CASES = ['complexWhere', 'inList', 'batchInsert', 'writeTxGate']; // uncovered read (bc#86) + writes
+// #60: bc typed-native READ codegen. ALL 6 reads are now COVERED and generate a de-interpreted
+// module — find/belongsTo/hasMany/hasManyLimit (scalar WHERE heads) PLUS complexWhere/inList (whose
+// IN-list array head reaches a native array port `Vec<i64>`/`[]int64` via bc#110). Only WRITES
+// (batchInsert/writeTxGate) are NOT codegen-module cases (#60) and legitimately have NO generated
+// module. We assert BOTH: the covered modules ARE de-interpreted, AND the no-module (write) cases
+// have NO module (a module appearing for them would mean a silent fallback leaked — the exact sham
+// this gate guards against).
+const COVERED_READ = ['find', 'belongsTo', 'hasMany', 'hasManyLimit', 'complexWhere', 'inList'];
+const NO_MODULE_CASES = ['batchInsert', 'writeTxGate']; // writes are not codegen-module cases (#60)
 const GEN_ROOT = resolve(HERE, 'generated', 'codegen');
 const GO_CGMODS = resolve(HERE, '..', '..', 'go', 'lm_bench', 'cgmods');
 const moduleTargets = (c: string): { label: string; path: string }[] => [
@@ -151,13 +152,13 @@ for (const c of COVERED_READ) {
     console.log(`  ${t.label.padEnd(28)} ${ok ? 'OK (no interpreter call, no embedded IR/fingerprint)' : `SHAM: callsInterpreter=${callsInterpreter} embedsIr=${embedsIr}`}`);
   }
 }
-console.log('\n=== anti-sham: uncovered-read (bc#86) + write cases have NO generated module (no silent fallback) ===');
+console.log('\n=== anti-sham: write cases have NO generated module (writes are not codegen-module cases, #60) ===');
 for (const c of NO_MODULE_CASES) {
   for (const t of moduleTargets(c)) {
     let present = true;
     try { readFileSync(t.path, 'utf8'); } catch { present = false; }
-    if (present) { failures++; console.log(`  ${t.label.padEnd(28)} UNEXPECTED — a module exists for a fail-closed/write case (silent fallback leaked)`); }
-    else console.log(`  ${t.label.padEnd(28)} OK (correctly absent — uncovered read fail-closed / write not a codegen case)`);
+    if (present) { failures++; console.log(`  ${t.label.padEnd(28)} UNEXPECTED — a module exists for a write case (silent fallback leaked)`); }
+    else console.log(`  ${t.label.padEnd(28)} OK (correctly absent — write not a codegen case)`);
   }
 }
 
