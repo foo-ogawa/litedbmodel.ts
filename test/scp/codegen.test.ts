@@ -5,8 +5,9 @@
  * Proves the AC "生成コード出力が thin-runtime と byte 一致" for the READ codegen surface:
  *
  *  - **go/rust** drive bc's typed-NATIVE endpoint (bc#77/#90, RUNTIME-FREE): litedbmodel's
- *    codegen-only lowering ({@link lowerReadGraphForTypedNative}) splits the surrogate read
- *    graph's boxed `__scope` port into individual scalar ref ports and types the component's
+ *    codegen-only lowering ({@link lowerReadGraphForTypedNative}) rebuilds each real Select-node's
+ *    ports from its compiled `statementsById` genuine bound heads into individual scalar ref ports
+ *    (#12: no surrogate `__scope` obj anymore) and types the component's
  *    `inputPorts` from the schema (spec §4.1), so a COVERED read shape produces a module with
  *    ZERO boxing markers (`obj_native`/`ser_T*`/`run_plan`/`RawValue`) and NO embedded IR. An
  *    IN-list / array-bound WHERE head is now COVERED via bc#110 (native array/list port → a
@@ -16,8 +17,14 @@
  *    A genuinely uncovered shape still THROWS `TypedNativeCoverageError` — reported explicitly, never
  *    silently regenerated on a boxed fallback.
  *  - **typescript** stays on the boxed `typescript-typed` endpoint (bc has not registered a
- *    `typescript-typed-native` endpoint yet) — unaffected by the lowering (it uses the ORIGINAL
- *    portable IR).
+ *    `typescript-typed-native` endpoint yet), but is now fed the SAME genuine-bound-head lowering
+ *    ({@link lowerReadGraphForTypedNative}) go/rust consume (#12 regression fix): post-#12 the real
+ *    Select-node read graph carries a fragment for every authored `whereX($.col, …)`, including a
+ *    WHERE COLUMN-NAME MARKER head (`whereGe($.created_at, $.since)` — `$.created_at` names the
+ *    column, is never a bound value). Handing that raw IR to the emitter emitted a stray
+ *    `created_at` input binding → `unknown binding: created_at` at execution. The lowering rebuilds
+ *    each node's ports from the GENUINE bound heads, dropping the marker, so the emitted TS module
+ *    runs (the array-typed heads lower cleanly via bc#110).
  *  - **In-process byte-identity**: `codegenExecuteBundleForTest` (a codegen consumer reading the
  *    companion) drives the IDENTICAL static-makeSQL render/execute path `executeBundle` uses — its
  *    output equals mode-2 `executeBundle` AND the frozen vector's `expectedResult`, EXACTLY.
@@ -38,7 +45,7 @@ import {
   executeBundle,
   executeTransactionBundle,
   generateCodegenArtifact,
-  bundleToPortableIR,
+  lowerReadGraphForTypedNative,
   codegenExecuteBundleForTest,
   CODEGEN_EMITTER,
   codegenEmitterFor,
@@ -316,7 +323,14 @@ describe('WS7f codegen — the EMITTED TS source loads and is de-interpreted', (
         bind: unknown;
       };
       expect(Array.isArray(mod.COMPONENT_NAMES)).toBe(true);
-      expect(art.module.fingerprint).toBe(bc.fingerprintComponentGraph(bundleToPortableIR(v.bundle)));
+      // #12 regression fix: the TS `typescript-typed` codegen input is now the SAME genuine-bound-head
+      // lowering go/rust consume ({@link lowerReadGraphForTypedNative}) — dropping the WHERE-fragment
+      // column-name marker heads that broke the emitted module (`unknown binding: created_at`). The
+      // module fingerprint therefore covers the LOWERED IR, not the raw portable IR, so assert against
+      // that (the SAME input generateCodegenArtifact feeds the emitter).
+      expect(art.module.fingerprint).toBe(
+        bc.fingerprintComponentGraph(lowerReadGraphForTypedNative(v.bundle.readGraph!, resolveColumnType)),
+      );
       assertDeInterpreted(art.module.code);
     });
   }

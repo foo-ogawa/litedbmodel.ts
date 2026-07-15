@@ -589,24 +589,40 @@ export function codegenEmitterFor(language: string, registered: readonly string[
   return typedEmitterFor(language, registered);
 }
 
-/** Does a resolved emitter id end in bc's typed-native suffix (`-typed-native`)? Only THOSE
- * emitters need (and are eligible for) the native-scalar-port lowering — a boxed endpoint
- * (`typescript-typed`) accepts the REAL Select-node IR just fine (it consumes a boxed `Value`
- * port either way), so lowering it would needlessly narrow TS's coverage (e.g. `whereIn`'s
- * array-typed head, which typed-native cannot cover but the boxed TS endpoint handles today). */
-function isTypedNativeEmitter(emitter: string): boolean {
-  return emitter.endsWith('-typed-native');
+/**
+ * Every litedbmodel READ codegen endpoint consumes the SAME native-scalar-port lowering — NOT
+ * just the `-typed-native` (go/rust) ones. Rationale (#12 regression fix):
+ *
+ * Post-#12 the read graph is the REAL de-surrogated `Select`-node IR, whose `where` port array
+ * carries a fragment for EVERY authored `whereX($.col, …)` — including one whose LHS `$.col` is a
+ * WHERE COLUMN-NAME MARKER, never a bound input value (`whereGe($.created_at, $.since)` accesses
+ * `$.created_at` only to NAME the column; only `$.since` is bound). Handing that raw IR to bc's
+ * emitter emits a `ref(["created_at"], scope)` read + a `created_at` input-struct field, so the
+ * bound module throws `unknown binding: created_at` at execution (the scope has no `created_at`).
+ * The go/rust `-typed-native` path never hit this because it is fed
+ * {@link lowerReadGraphForTypedNative}, which rebuilds each node's ports from the GENUINE bound
+ * heads (`statementsById`), dropping the column-name markers. TS was on the raw IR
+ * ({@link bundleToPortableIR}) → it kept the marker → it broke.
+ *
+ * The lowering is therefore the correct input for the boxed `typescript-typed` endpoint too: it
+ * feeds bc EXACTLY the genuine bound heads (equivalent-in-spirit to what go/rust consume), and
+ * bc#110's native array port means the array-typed heads (`complexWhere`/`inList`) lower cleanly —
+ * the old "lowering would narrow TS's array coverage" concern is stale. Only WRITE bundles (no
+ * `readGraph`) never reach this path. */
+function needsHeadLowering(_emitter: string): boolean {
+  return true;
 }
 
 /**
- * Generate the mode-3 READ codegen artifact for ONE §8 READ bundle in ONE target language. For a
- * typed-NATIVE target (go/rust, bc#77/#90), lowers the bundle's surrogate read graph into the
- * typed-native-eligible IR ({@link lowerReadGraphForTypedNative}) first — REAL static native
- * source, RUNTIME-FREE, no baked-IR interpret path. For any OTHER registered endpoint (currently
- * only TS's boxed `typescript-typed`, which has no typed-native counterpart yet), the ORIGINAL
- * portable IR ({@link bundleToPortableIR}) is used unchanged — the lowering is typed-native-only
- * and would needlessly narrow a boxed endpoint's existing coverage. litedbmodel supplies the
- * input (portable IR + catalog); bc owns the emitter.
+ * Generate the mode-3 READ codegen artifact for ONE §8 READ bundle in ONE target language. Lowers
+ * the bundle's real Select-node read graph into the native-scalar-port IR
+ * ({@link lowerReadGraphForTypedNative}) FIRST — for go/rust's typed-NATIVE endpoint (bc#77/#90,
+ * RUNTIME-FREE) AND for TS's boxed `typescript-typed` endpoint alike. Both consume the SAME
+ * genuine-bound-head shape: the lowering derives each node's ports from its compiled
+ * `statementsById` fragments, so a WHERE COLUMN-NAME MARKER head (`whereGe($.created_at, $.since)`
+ * — `$.created_at` names the column, is never bound) is EXCLUDED from the emitted ports/input
+ * struct, exactly as go/rust already handled it (#12 regression: TS previously fed the raw IR and
+ * emitted a stray `created_at` binding → `unknown binding: created_at` at execution).
  *
  * WRITE bundles are OUT OF SCOPE (#60 milestone 1: writes stay on the existing write/tx execution
  * path, never a codegen module) — throws if `bundle.readGraph` is absent.
@@ -628,7 +644,9 @@ export function generateCodegenArtifact(
   const emitter = typedEmitterFor(language, registeredLanguages);
   // The portable IR exists ONLY transiently here as the generator's input — it is NOT part of the
   // codegen OUTPUT (no artifact field, no file, no binary; the codegen path never reads IR data).
-  const ir = isTypedNativeEmitter(emitter)
+  // ALL read endpoints (go/rust typed-native AND TS boxed typescript-typed) are fed the SAME
+  // genuine-bound-head lowering (#12 regression fix — see needsHeadLowering).
+  const ir = needsHeadLowering(emitter)
     ? lowerReadGraphForTypedNative(bundle.readGraph, resolveColumnType)
     : bundleToPortableIR(bundle);
   const module = generateModule(ir, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
