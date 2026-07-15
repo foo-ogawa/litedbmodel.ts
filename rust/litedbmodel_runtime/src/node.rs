@@ -551,7 +551,22 @@ pub fn eval_expr(node: &Node, scope: &[(String, Value)]) -> EvalResult {
     match node {
         Node::Null => Ok(Value::Null),
         Node::Bool(b) => Ok(Value::Bool(*b)),
-        Node::Int(i) => Ok(Value::Int(*i)),
+        // A bare integral literal must be within the JS safe range (|i| <= 2^53-1) — byte-identical to
+        // bc's `evaluate` §2.3 classification. Beyond it, bc fails INVALID_LITERAL (an out-of-range
+        // literal must be authored as the tagged `{int:"…"}` form). This applies ONLY to a bare int
+        // LITERAL NODE in an expression; i64 values flowing through the param/scope materialization
+        // path (a ref-resolved bound value, e.g. an i64::MAX id) never pass through here and are
+        // unaffected — they bind exactly.
+        Node::Int(i) => {
+            const SAFE: i64 = 9_007_199_254_740_991; // 2^53 - 1
+            if !(-SAFE..=SAFE).contains(i) {
+                return Err(EvalError::new(
+                    "INVALID_LITERAL",
+                    format!("integral literal {i} exceeds safe range; use {{int:\"…\"}}"),
+                ));
+            }
+            Ok(Value::Int(*i))
+        }
         Node::Float(f) => Ok(Value::Float(*f)),
         Node::Str(s) => Ok(Value::Str(s.clone())),
         Node::Array(_) => Err(EvalError::new(
@@ -655,6 +670,14 @@ fn eval_op(op: &str, arg: &Node, scope: &[(String, Value)]) -> EvalResult {
             let a = arg
                 .as_array()
                 .ok_or_else(|| EvalError::new("INVALID_NODE", "concat expects an array"))?;
+            // n-ary, min 2 args — byte-identical to bc's `evaluate`: an arity < 2 is invalid IR
+            // (expression-ir.md §2.1/§3/§6), NOT a lenient single/empty-string result.
+            if a.len() < 2 {
+                return Err(EvalError::new(
+                    "INVALID_NODE",
+                    format!("concat expects >= 2 args, got {}", a.len()),
+                ));
+            }
             let mut s = String::new();
             for part in a {
                 match eval_expr(part, scope)? {
@@ -813,5 +836,93 @@ fn type_name(v: &Value) -> &'static str {
         Value::Str(_) => "string",
         Value::Arr(_) => "arr",
         Value::Obj(_) => "obj",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── guard 1: bare int LITERAL safe-range (superset-safe match to bc's evaluate §2.3) ──
+
+    #[test]
+    fn int_literal_within_safe_range_ok() {
+        // 2^53-1 is the boundary — still valid.
+        let n = Node::Int(9_007_199_254_740_991);
+        assert!(matches!(
+            eval_expr(&n, &[]),
+            Ok(Value::Int(9_007_199_254_740_991))
+        ));
+    }
+
+    #[test]
+    fn int_literal_beyond_safe_range_fails_invalid_literal() {
+        // 2^53 exceeds the safe range → INVALID_LITERAL (bc's exact code + message form).
+        let n = Node::Int(9_007_199_254_740_992);
+        match eval_expr(&n, &[]) {
+            Err(e) => {
+                assert_eq!(e.code, "INVALID_LITERAL");
+                assert!(
+                    e.message.contains("exceeds safe range"),
+                    "msg: {}",
+                    e.message
+                );
+            }
+            Ok(v) => panic!("expected INVALID_LITERAL, got Ok({v:?})"),
+        }
+        // i64::MAX (a far-out-of-range literal) also fails closed.
+        assert_eq!(
+            eval_expr(&Node::Int(i64::MAX), &[]).unwrap_err().code,
+            "INVALID_LITERAL"
+        );
+    }
+
+    #[test]
+    fn i64_param_value_via_ref_roundtrips_exact() {
+        // CRITICAL: the literal safe-range guard must NOT touch the param/value materialization path.
+        // An i64::MAX bound value resolved through a `{ref:[…]}` flows as a Value (not a literal node)
+        // and MUST round-trip EXACTLY — the coverage i64 bigint params depend on this.
+        let scope = vec![("big".to_string(), Value::Int(i64::MAX))];
+        let expr = Node::Object(vec![(
+            "ref".to_string(),
+            Node::Array(vec![Node::Str("big".to_string())]),
+        )]);
+        assert!(matches!(eval_expr(&expr, &scope), Ok(Value::Int(i)) if i == i64::MAX));
+        // A beyond-safe-range i64 in scope also round-trips (it is a VALUE, not a literal).
+        let scope2 = vec![("v".to_string(), Value::Int(9_007_199_254_740_992))];
+        let expr2 = Node::Object(vec![(
+            "ref".to_string(),
+            Node::Array(vec![Node::Str("v".to_string())]),
+        )]);
+        assert!(matches!(
+            eval_expr(&expr2, &scope2),
+            Ok(Value::Int(9_007_199_254_740_992))
+        ));
+    }
+
+    // ── guard 2: concat arity (superset-safe match — bc requires >= 2 args) ──
+
+    #[test]
+    fn concat_arity_below_two_fails_invalid_node() {
+        let s = vec![("s".to_string(), Value::Str("x".to_string()))];
+        let one = Node::Object(vec![(
+            "concat".to_string(),
+            Node::Array(vec![Node::Str("only".to_string())]),
+        )]);
+        match eval_expr(&one, &s) {
+            Err(e) => assert_eq!(e.code, "INVALID_NODE"),
+            Ok(v) => panic!("expected INVALID_NODE for 1-arg concat, got Ok({v:?})"),
+        }
+        let empty = Node::Object(vec![("concat".to_string(), Node::Array(vec![]))]);
+        assert_eq!(eval_expr(&empty, &s).unwrap_err().code, "INVALID_NODE");
+    }
+
+    #[test]
+    fn concat_two_or_more_args_ok() {
+        let two = Node::Object(vec![(
+            "concat".to_string(),
+            Node::Array(vec![Node::Str("a".to_string()), Node::Str("b".to_string())]),
+        )]);
+        assert!(matches!(eval_expr(&two, &[]), Ok(Value::Str(ref s)) if s == "ab"));
     }
 }
