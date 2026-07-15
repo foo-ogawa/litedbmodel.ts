@@ -19,30 +19,30 @@ export interface CellSpec {
   note?: string;
 }
 
-// The 19-op plan executor entry per language (owned by the adapter ports). Each reads the
-// committed orm-plan.json and speaks the NDJSON contract. Overridable via env for CI wiring.
+// The 19-op plan executor entry per language. Each reads the committed orm-plan.json and speaks the
+// NDJSON contract (default; `--smoke` runs the standalone 57-cell matrix). Overridable via env.
 const TS_RUNNER = process.env.TS_ORM_RUNNER ?? 'benchmark/crosslang/adapters/ts/orm-runner.ts';
 const PY = process.env.PYTHON_BIN ?? 'python3';
-const PY_RUNNER = process.env.PY_ORM_RUNNER ?? 'benchmark/crosslang/adapters/python/orm_runner.py';
+const PY_RUNNER = process.env.PY_ORM_RUNNER ?? 'benchmark/crosslang/adapters/python/orm_exec.py';
 const PHP = process.env.PHP_BIN ?? 'php';
-const PHP_RUNNER = process.env.PHP_ORM_RUNNER ?? 'benchmark/crosslang/adapters/php/orm-runner.php';
+const PHP_RUNNER = process.env.PHP_ORM_RUNNER ?? 'benchmark/crosslang/adapters/php/orm_exec.php';
 const RUST_BIN = process.env.RUST_ORM_BIN ?? 'benchmark/crosslang/adapters/rust/target/release/lm_orm';
-const GO_BIN = process.env.GO_ORM_BIN ?? 'go/lm_bench/lm_orm';
+const GO_BIN = process.env.GO_ORM_BIN ?? 'go/lm_bench/lm_orm/lm_orm';
 
 function ts(): CellSpec {
   return { language: 'ts', impl: 'runtime', spawn: { command: 'npx', args: ['tsx', TS_RUNNER] } };
 }
 function py(): CellSpec {
-  return { language: 'python', impl: 'runtime', spawn: { command: PY, args: [PY_RUNNER] } };
+  return { language: 'python', impl: 'runtime', spawn: { command: PY, args: [PY_RUNNER, '--orm-plan'] } };
 }
 function php(): CellSpec {
-  return { language: 'php', impl: 'runtime', spawn: { command: PHP, args: [PHP_RUNNER] } };
+  return { language: 'php', impl: 'runtime', spawn: { command: PHP, args: [PHP_RUNNER, '--orm-plan'] } };
 }
 function rust(): CellSpec {
-  return { language: 'rust', impl: 'runtime', spawn: { command: RUST_BIN, args: [] } };
+  return { language: 'rust', impl: 'runtime', spawn: { command: RUST_BIN, args: ['--orm-plan'] } };
 }
 function go(): CellSpec {
-  return { language: 'go', impl: 'runtime', spawn: { command: GO_BIN, args: [] } };
+  return { language: 'go', impl: 'runtime', spawn: { command: GO_BIN, args: ['--orm-plan'] } };
 }
 
 // ONE production cell per language: the shipped thin runtime executing the 19 ORM ops on
