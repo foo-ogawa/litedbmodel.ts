@@ -246,7 +246,7 @@ export type { CompositeWriteEntry } from './runtime';
 // to a gate-free tx plan (executed by the SAME multi-statement tx loop in all 5 runtimes). The
 // batch SQL is byte-copied from the v1 builders (compileInsertMany/compileUpdateMany/compileDeleteMany).
 export { compileCreateManyBundle, compileUpdateManyBundle, compileDeleteManyBundle } from './runtime';
-export { compileDeleteMany } from './makesql';
+export { compileDeleteMany, compileInsertMany } from './makesql';
 
 // Mode-3 codegen (WS7f, #35 — spec §9 exec-mode 3): supply the litedbmodel SQL catalog to bc's
 // shared generator; emit per-language STATIC straight-line source (de-interpreted, bc#75 — real
