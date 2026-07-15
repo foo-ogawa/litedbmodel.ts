@@ -25,6 +25,7 @@ package litedbmodel_runtime
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
 )
@@ -427,34 +428,7 @@ func (g *ReadGraph) primaryNodeID() (string, error) {
 	return "", fmt.Errorf("static-bundle: read graph has no primary node to render")
 }
 
-// ── ReadGraph execution (port of static-bundle.ts executeReadGraph) ────────────
-
-// readGraphHandlers is the makeSQL handler registry: one render→execute handler behind the
-// `__makeSqlNode` catalog leaf; the per-node static statements are keyed by nodeId.
-type readGraphHandlers struct {
-	db      SQLDB
-	graph   *ReadGraph
-	dialect string
-}
-
-// Exec satisfies bc.ComponentExec (unused — the node identity is required; see ExecCtx).
-func (h *readGraphHandlers) Exec(component string, ports *bc.Obj, bound bc.Value) (bc.ExecOutcome, bool) {
-	return bc.ErrOutcome("static-bundle: makeSQL handler requires the node identity (ExecCtx)"), true
-}
-
-// ExecCtx renders the node's static statements against the surrogate `__scope` port and runs REAL SQL.
-func (h *readGraphHandlers) ExecCtx(nodeID, component string, ports *bc.Obj, bound bc.Value) (bc.ExecOutcome, bool) {
-	scopeV, _ := ports.Get(scopePort)
-	scope, ok := scopeV.(*bc.Obj)
-	if !ok {
-		return bc.ErrOutcome(fmt.Sprintf("static-bundle: node '%s' surrogate scope did not evaluate to an object", nodeID)), true
-	}
-	rows, err := RenderExecuteNode(h.graph, nodeID, h.dialect, scope, h.db)
-	if err != nil {
-		return bc.ErrOutcome(err.Error()), true
-	}
-	return bc.OkOutcome(rows), true
-}
+// ── ReadGraph execution (NATIVE, interpreter-free — executeReadGraphNative below) ──
 
 // RenderExecuteNode renders ONE read node's static statements against `scope` and runs REAL SQL on
 // `db`, returning the row list. It is the render→execute SSoT behind the `__makeSqlNode` handler
@@ -485,16 +459,275 @@ func RenderExecuteNode(g *ReadGraph, nodeID, dialect string, scope *bc.Obj, db S
 // the codegen bench cell's handler can render it. Exported companion to RenderExecuteNode.
 func (g *ReadGraph) PrimaryNodeID() (string, error) { return g.primaryNodeID() }
 
-// ExecuteReadGraph executes a compiled ReadGraph via bc RunBehavior + a makeSQL handler: bc drives
-// map iteration / wire binding / Φ output; the handler renders each node's static statements against
-// the evaluated `__scope` and runs REAL SQL. Returns the component's Φ output. Byte-true to the TS
-// executeReadGraph — the "bc composes, makeSQL executes" design.
+// ExecuteReadGraph executes a compiled ReadGraph NATIVELY (no bc RunBehavior / no IR interpreter):
+// it walks the surrogate component's body nodes in order via the CLOSED-SET native orchestration
+// (executeReadGraphNative) — each componentRef node renders + executes its static statements against
+// the evaluated scope, a map node iterates its parent node's rows (per-element `$as` scope) and
+// collects the aligned child row-lists, and the component `output` obj assembles the Φ result by ref.
+// Every statement's SQL is fixed text carried verbatim; only the deferred typed param slots + skip are
+// evaluated. Byte-identical to the former RunBehavior path for the closed read-graph shapes the
+// makeSQL corpus emits (single sequential componentRef reads + a single relationKind:single map).
 func ExecuteReadGraph(g *ReadGraph, input *bc.Obj, db SQLDB) (bc.Value, error) {
-	handlers := &readGraphHandlers{db: db, graph: g, dialect: g.Dialect}
 	normalized := normalizeReadGraphInput(g, input)
-	out, err := bc.RunBehavior(g.IR, handlers, normalized, g.Name)
+	out, err := executeReadGraphNative(g, normalized, db)
 	if err != nil {
 		return nil, reErrorToSqlFailure(err)
 	}
 	return out, nil
+}
+
+// executeReadGraphNative is the NATIVE, interpreter-free read-graph orchestration for the closed set
+// of makeSQL read shapes. It reads the STATIC component structure (body node ids, the map `as`/`over`
+// wiring, the `output` obj) as pure data — it never calls bc.RunBehavior and never walks the generic
+// Expression IR (the per-statement param slots are still evaluated natively by renderStatements, the
+// typed-param-binding contract). Fail-closed: an out-of-set body node / output ref panics-equivalent
+// (returns an error) rather than silently degrading.
+func executeReadGraphNative(g *ReadGraph, scope *bc.Obj, db SQLDB) (bc.Value, error) {
+	comp := g.primaryComponent
+	if comp == nil {
+		return nil, fmt.Errorf("static-bundle: read graph has no component")
+	}
+	bodyN, _ := comp.Get("body")
+	body, _ := bodyN.([]bc.JNode)
+
+	// nodeResults holds each body node's produced value (a []bc.Value for a plain read; a
+	// []bc.Value of []bc.Value for a map). Assembled into the output by ref. Guarded by a mutex —
+	// independent same-stage nodes run concurrently (below).
+	nodeResults := map[string]bc.Value{}
+	var mu sync.Mutex
+	getResult := func(id string) (bc.Value, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		v, ok := nodeResults[id]
+		return v, ok
+	}
+	setResult := func(id string, v bc.Value) {
+		mu.Lock()
+		nodeResults[id] = v
+		mu.Unlock()
+	}
+
+	// execOne renders+executes one body node (plain read or map) against the scope.
+	execOne := func(n *bc.JObj) error {
+		idV, _ := n.Get("id")
+		id, _ := idV.(string)
+		if mapN, isMap := n.Get("map"); isMap {
+			// A relationKind:single map (`authors = posts.map(...)`): iterate the parent node's rows,
+			// bind the element under the map's `as` var, render+execute the child node per element,
+			// collect the aligned per-element child row-lists.
+			mapObj, ok := mapN.(*bc.JObj)
+			if !ok {
+				return fmt.Errorf("static-bundle: map node '%s' is not an object", id)
+			}
+			asV, _ := mapObj.Get("as")
+			asVar, _ := asV.(string)
+			overN, _ := mapObj.Get("over")
+			overRef, err := singleRefID(overN)
+			if err != nil {
+				return fmt.Errorf("static-bundle: map node '%s' over: %w", id, err)
+			}
+			overV, has := getResult(overRef)
+			parentRows, ok := overV.([]bc.Value)
+			if !has || !ok {
+				return fmt.Errorf("static-bundle: map node '%s' over '%s' did not produce a row list", id, overRef)
+			}
+			built := make([]bc.Value, 0, len(parentRows))
+			for _, pr := range parentRows {
+				elemScope := bc.NewObj()
+				for _, k := range scope.Keys {
+					elemScope.Set(k, scope.Vals[k])
+				}
+				elemScope.Set(asVar, pr)
+				childRows, err := RenderExecuteNode(g, id, g.Dialect, elemScope, db)
+				if err != nil {
+					return err
+				}
+				built = append(built, bc.Value(childRows))
+			}
+			setResult(id, bc.Value(built))
+			return nil
+		}
+		// A plain componentRef read node: render + execute its static statements against the scope.
+		if _, has := g.StatementsByID[id]; !has {
+			return fmt.Errorf("static-bundle: read graph body node '%s' has no static statements (out-of-set shape)", id)
+		}
+		rows, err := RenderExecuteNode(g, id, g.Dialect, scope, db)
+		if err != nil {
+			return err
+		}
+		setResult(id, bc.Value(rows))
+		return nil
+	}
+
+	// Stage plan: the component `plan.groups` lists body-index groups run in order; the INDEPENDENT
+	// members of a group are dispatched CONCURRENTLY (bounded by plan.concurrency) — bc's staged
+	// exec model, reproduced natively (the generated typed-native module uses the same scoped-worker
+	// fan-out). Failure precedence is the LOWEST body index in the group (committed in ascending
+	// index order). No plan → sequential in body order (a single implicit group).
+	groups, concurrency := readPlan(comp, len(body))
+	for _, group := range groups {
+		if err := runStageConcurrent(group, body, concurrency, execOne); err != nil {
+			return nil, err
+		}
+	}
+
+	return assembleReadOutput(comp, nodeResults)
+}
+
+// readPlan extracts the component's staged exec plan: the ordered index groups + the concurrency
+// bound. A missing/malformed plan falls back to ONE group of all body indices in order (sequential).
+func readPlan(comp *bc.JObj, bodyLen int) ([][]int, int) {
+	planN, ok := comp.Get("plan")
+	plan, ok2 := planN.(*bc.JObj)
+	if !ok || !ok2 {
+		all := make([]int, bodyLen)
+		for i := range all {
+			all[i] = i
+		}
+		return [][]int{all}, 1
+	}
+	concurrency := 1
+	if cN, ok := plan.Get("concurrency"); ok {
+		if dv, err := bc.DecodeValue(cN); err == nil {
+			if i, ok := dv.(int64); ok && i > 0 {
+				concurrency = int(i)
+			}
+		}
+	}
+	var groups [][]int
+	if gN, ok := plan.Get("groups"); ok {
+		if arr, ok := gN.([]bc.JNode); ok {
+			for _, gn := range arr {
+				if idxArr, ok := gn.([]bc.JNode); ok {
+					var grp []int
+					for _, iN := range idxArr {
+						if dv, err := bc.DecodeValue(iN); err == nil {
+							if i, ok := dv.(int64); ok {
+								grp = append(grp, int(i))
+							}
+						}
+					}
+					groups = append(groups, grp)
+				}
+			}
+		}
+	}
+	if len(groups) == 0 {
+		all := make([]int, bodyLen)
+		for i := range all {
+			all[i] = i
+		}
+		groups = [][]int{all}
+	}
+	return groups, concurrency
+}
+
+// runStageConcurrent dispatches the INDEPENDENT members of one plan stage (body indices) on a
+// bounded goroutine pool (semaphore of `concurrency`), then returns the LOWEST-index error (ascending
+// failure precedence, byte-matching the interpreter's committed order). A single-member stage runs
+// inline (no goroutine).
+func runStageConcurrent(group []int, body []bc.JNode, concurrency int, execOne func(*bc.JObj) error) error {
+	if len(group) <= 1 || concurrency <= 1 {
+		for _, idx := range group {
+			n, ok := body[idx].(*bc.JObj)
+			if !ok {
+				return fmt.Errorf("static-bundle: body node %d is not an object", idx)
+			}
+			if err := execOne(n); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	errs := make([]error, len(group))
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for pos, idx := range group {
+		n, ok := body[idx].(*bc.JObj)
+		if !ok {
+			errs[pos] = fmt.Errorf("static-bundle: body node %d is not an object", idx)
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(pos int, n *bc.JObj) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			errs[pos] = execOne(n)
+		}(pos, n)
+	}
+	wg.Wait()
+	// Ascending-index failure precedence (the group is emitted in ascending body index).
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+// singleRefID extracts the single node id from a `{ref:[id]}` wiring expr (fail-closed on any other
+// shape — the map `over` in the covered set is always a single-segment ref to a prior body node).
+func singleRefID(n bc.JNode) (string, error) {
+	o, ok := n.(*bc.JObj)
+	if !ok {
+		return "", fmt.Errorf("expected a {ref:[id]} object")
+	}
+	refN, ok := o.Get("ref")
+	if !ok {
+		return "", fmt.Errorf("expected a ref key")
+	}
+	arr, ok := refN.([]bc.JNode)
+	if !ok || len(arr) != 1 {
+		return "", fmt.Errorf("expected a single-segment ref")
+	}
+	s, ok := arr[0].(string)
+	if !ok {
+		return "", fmt.Errorf("expected a string ref segment")
+	}
+	return s, nil
+}
+
+// assembleReadOutput builds the component Φ output from `nodeResults` per the component's `output`
+// obj: either a single `{ref:[id]}` (the whole output IS that node's value) or an `{obj:{k:{ref:[id]}}}`
+// (an object keyed by field, each a node ref). Fail-closed on any other output shape.
+func assembleReadOutput(comp *bc.JObj, nodeResults map[string]bc.Value) (bc.Value, error) {
+	outN, ok := comp.Get("output")
+	if !ok {
+		return nil, fmt.Errorf("static-bundle: component has no output")
+	}
+	outObj, ok := outN.(*bc.JObj)
+	if !ok {
+		return nil, fmt.Errorf("static-bundle: component output is not an object")
+	}
+	// {ref:[id]} — the whole output is one node's value.
+	if id, err := singleRefID(outObj); err == nil {
+		v, has := nodeResults[id]
+		if !has {
+			return nil, fmt.Errorf("static-bundle: output ref '%s' has no node result", id)
+		}
+		return v, nil
+	}
+	// {obj:{field:{ref:[id]}}} — an object of node refs.
+	objN, ok := outObj.Get("obj")
+	if !ok {
+		return nil, fmt.Errorf("static-bundle: component output is neither a ref nor an obj")
+	}
+	fields, ok := objN.(*bc.JObj)
+	if !ok {
+		return nil, fmt.Errorf("static-bundle: component output obj is not an object")
+	}
+	result := bc.NewObj()
+	for _, field := range fields.Keys {
+		id, err := singleRefID(fields.Vals[field])
+		if err != nil {
+			return nil, fmt.Errorf("static-bundle: output field '%s': %w", field, err)
+		}
+		v, has := nodeResults[id]
+		if !has {
+			return nil, fmt.Errorf("static-bundle: output field '%s' ref '%s' has no node result", field, id)
+		}
+		result.Set(field, v)
+	}
+	return result, nil
 }
