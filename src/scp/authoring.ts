@@ -81,7 +81,7 @@ import {
 } from './catalog';
 import { assertComponentGraphPortable } from './guard';
 import { failClosedMaterializeResolverFromColumnMap, columnTypeResolverFromColumnMap, type MaterializeResolver, type ColumnTypeResolver } from './coltype';
-import { parseProjectionColumn } from './makesql/outtype';
+import { parseProjectionColumn, crudNodeAsType } from './makesql/outtype';
 
 /**
  * The litedbmodel leaf-component functions for the shared authoring surface —
@@ -109,12 +109,90 @@ import { parseProjectionColumn } from './makesql/outtype';
  */
 export type ComponentFns = Record<CatalogName, (ports: Record<string, unknown>) => Recorded>;
 
+let boundRaw: ComponentFns | undefined;
 let boundComponents: ComponentFns | undefined;
 
-/** The `catalogComponents(LITEDBMODEL_CATALOG)` leaf-function map (typed, memoized). */
+/**
+ * The AMBIENT per-compile column-type resolver (bc 0.8.0 SA5 / #12). `lowerBehaviorClass` sets this
+ * from the model's inline `static columns` immediately BEFORE `compileBehaviors` and clears it right
+ * after (a synchronous window — bc records every method body inside that single call). The typed CRUD
+ * leaf wrappers (Select/Insert/Update/Delete) read it to compute each authored node's determined
+ * output `PortableType` and stamp it via bc's `.as(t)` recording API, so `compileBehaviors`'
+ * all-nodes-typed gate passes. It is the SAME `static columns` SoT the post-compile de-box
+ * (`deriveReadOutTypes`) reads — moved to authoring time so the type is fixed at compile (declare-via-BC:
+ * column-types-in-authoring, no hand-built IR; SQL stays opaque text on the makeSQL leaf).
+ */
+let currentResolver: ColumnTypeResolver | undefined;
+
+/** Run `fn` with the ambient compile-time column resolver bound (restored on exit — reentrancy-safe). */
+function withColumnResolver<T>(resolve: ColumnTypeResolver | undefined, fn: () => T): T {
+  const prev = currentResolver;
+  currentResolver = resolve;
+  try {
+    return fn();
+  } finally {
+    currentResolver = prev;
+  }
+}
+
+/**
+ * Leaves whose authored node's output row shape is per-projection and MUST be typed via `.as` from the
+ * model's `static columns` (bc 0.8.0 SA5). A `Select` (read) is de-boxed by the typed read/codegen
+ * path, so its row REQUIRES the column-type SoT (fail-closed when absent — mirrors #59's
+ * `assertReadColumnsDeclared`). A write (`Insert`/`Update`/`Delete`) is NOT typed-codegen'd — its
+ * RETURNING de-box is derived POST-compile from the tuned SQL (`writeouttype.ts`); the write NODE's
+ * compile-time outType exists only to satisfy bc's all-nodes-typed gate, so it is typed from the
+ * `returning` port WHEN `static columns` is present, else annotated with the determined empty-row list
+ * `{arr:{obj:{}}}` (writes stay EXEMPT from a `static columns` requirement, as before #12).
+ */
+const READ_TYPED_LEAF = 'Select';
+const WRITE_TYPED_LEAVES = new Set(['Insert', 'Update', 'Delete']);
+
+/**
+ * Wrap one raw `catalogComponents` leaf so a typed-CRUD leaf stamps its authored node's determined
+ * output type via bc's `.as(t)` (bc 0.8.0 SA5). `Count` (static `int` via the catalog `elemType`),
+ * `Fragment`, and `Tx` pass through unchanged (no per-projection output).
+ */
+function wrapLeaf(name: CatalogName, raw: (ports: Record<string, unknown>) => Recorded): (ports: Record<string, unknown>) => Recorded {
+  const isRead = name === READ_TYPED_LEAF;
+  const isWrite = WRITE_TYPED_LEAVES.has(name);
+  if (!isRead && !isWrite) return raw;
+  return (ports: Record<string, unknown>): Recorded => {
+    const handle = raw(ports);
+    // Reads REQUIRE the column-type SoT (typed de-box); writes do not (RETURNING de-box is post-compile).
+    if (isRead && currentResolver === undefined) {
+      throw new Error(
+        `scp authoring: a Select node needs its output row type at compile time (bc 0.8.0 all-nodes-typed ` +
+          `gate), but the model declares NO \`columns\` — a typed read REQUIRES an inline \`static columns\` ` +
+          `SoT (or \`options.columns\`). No-assume, no-fallback.`,
+      );
+    }
+    const outType = currentResolver !== undefined
+      ? crudNodeAsType(name, ports, currentResolver, `${name} node`)
+      : { arr: { obj: {} } }; // write with no `static columns`: determined empty-row list (gate-only, inert)
+    return (handle as { as(t: unknown): Recorded }).as(outType);
+  };
+}
+
+/** The raw `catalogComponents(LITEDBMODEL_CATALOG)` leaf map (memoized). */
+function rawComponents(): ComponentFns {
+  if (boundRaw === undefined) {
+    boundRaw = catalogComponents(LITEDBMODEL_CATALOG) as ComponentFns;
+  }
+  return boundRaw;
+}
+
+/**
+ * The litedbmodel leaf-function map (typed, memoized). Each typed-CRUD leaf self-annotates its output
+ * `PortableType` via `.as` from the ambient per-compile `static columns` resolver (see
+ * {@link currentResolver}); authors call `L.Select({…})` exactly as before — the typing is automatic.
+ */
 export function components(): ComponentFns {
   if (boundComponents === undefined) {
-    boundComponents = catalogComponents(LITEDBMODEL_CATALOG) as ComponentFns;
+    const raw = rawComponents();
+    const wrapped = {} as ComponentFns;
+    for (const name of Object.keys(raw) as CatalogName[]) wrapped[name] = wrapLeaf(name, raw[name]);
+    boundComponents = wrapped;
   }
   return boundComponents;
 }
@@ -226,10 +304,30 @@ export interface PublishBehaviorsOptions {
  *     ({@link deriveContractEffect}); the author never declares it.
  */
 function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions): BehaviorModelContract {
-  const ir = compileBehaviors(cls, {
-    ...(options.inputPorts !== undefined ? { inputPorts: options.inputPorts } : {}),
-    ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
-  });
+  // STATIC de-box resolvers (issue #59): the column types come from the model's INLINE declaration
+  // (`static columns` on the class, or `options.columns`) — the BC-native, consumer-inline SoT (bc
+  // never infers types). Build the `table → (col → SQL type)` map ONCE at registration into BOTH the
+  // codegen outType resolver AND the FAIL-CLOSED TS read-path materialize resolver. A read then
+  // de-boxes with ZERO DB introspection (litedbmodel's static-resolution core value).
+  //
+  // bc 0.8.0 (#12 / SA5): the resolver is built BEFORE `compileBehaviors` and bound as the AMBIENT
+  // compile-time resolver (`withColumnResolver`) so the typed CRUD leaf wrappers can stamp each
+  // authored node's determined output type via `.as` DURING recording — clearing bc's all-nodes-typed
+  // gate. Same `static columns` SoT as the post-compile de-box, moved to authoring time.
+  const className = (cls as { name?: string }).name ?? '<anonymous>';
+  const declaredColumns = options.columns ?? (cls as unknown as TypedModelClass).columns;
+  const columnMap = declaredColumns !== undefined ? toColumnMap(declaredColumns) : undefined;
+  const materializeResolver: MaterializeResolver | undefined =
+    columnMap !== undefined ? failClosedMaterializeResolverFromColumnMap(columnMap) : undefined;
+  const resolveColumnType: ColumnTypeResolver | undefined =
+    columnMap !== undefined ? columnTypeResolverFromColumnMap(columnMap) : undefined;
+
+  const ir = withColumnResolver(resolveColumnType, () =>
+    compileBehaviors(cls, {
+      ...(options.inputPorts !== undefined ? { inputPorts: options.inputPorts } : {}),
+      ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
+    }),
+  );
 
   assertComponentsInCatalog(ir.components);
   assertComponentGraphPortable(ir);
@@ -242,19 +340,6 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
       component,
     };
   }
-
-  // STATIC de-box resolvers (issue #59): the column types come from the model's INLINE declaration
-  // (`static columns` on the class, or `options.columns`) — the BC-native, consumer-inline SoT (bc
-  // never infers types). Build the `table → (col → SQL type)` map ONCE at registration into BOTH the
-  // codegen outType resolver AND the FAIL-CLOSED TS read-path materialize resolver. A read then
-  // de-boxes with ZERO DB introspection (litedbmodel's static-resolution core value).
-  const className = (cls as { name?: string }).name ?? '<anonymous>';
-  const declaredColumns = options.columns ?? (cls as unknown as TypedModelClass).columns;
-  const columnMap = declaredColumns !== undefined ? toColumnMap(declaredColumns) : undefined;
-  const materializeResolver: MaterializeResolver | undefined =
-    columnMap !== undefined ? failClosedMaterializeResolverFromColumnMap(columnMap) : undefined;
-  const resolveColumnType: ColumnTypeResolver | undefined =
-    columnMap !== undefined ? columnTypeResolverFromColumnMap(columnMap) : undefined;
 
   // FAIL-CLOSED coverage-by-construction (issue #59 audit): every column a READ method projects MUST
   // have a declared type. Validate NOW, at registration — a read whose projected columns aren't fully

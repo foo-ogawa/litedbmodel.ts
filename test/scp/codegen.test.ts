@@ -328,8 +328,12 @@ describe('WS7f codegen — the EMITTED TS source loads and is de-interpreted', (
       // column-name marker heads that broke the emitted module (`unknown binding: created_at`). The
       // module fingerprint therefore covers the LOWERED IR, not the raw portable IR, so assert against
       // that (the SAME input generateCodegenArtifact feeds the emitter).
+      // bc 0.8.0 (SA3/SA7): the derived codegen IR is un-tokened, so `fingerprintComponentGraph`
+      // (provenance-gated) requires re-adopting it via `loadCompiledIR` first — the SAME seam
+      // `generateCodegenArtifact` uses before `generateModule`. The token is invisible to the
+      // fingerprint (non-enumerable symbol), so the value equals the artifact's fingerprint.
       expect(art.module.fingerprint).toBe(
-        bc.fingerprintComponentGraph(lowerReadGraphForTypedNative(v.bundle.readGraph!, resolveColumnType)),
+        bc.fingerprintComponentGraph(bc.loadCompiledIR(lowerReadGraphForTypedNative(v.bundle.readGraph!, resolveColumnType))),
       );
       assertDeInterpreted(art.module.code);
     });

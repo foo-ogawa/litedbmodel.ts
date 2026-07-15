@@ -285,6 +285,74 @@ function outputType(output: unknown, byNode: Map<string, PortableType>, at: stri
 }
 
 /**
+ * PRE-COMPILE node-output type (bc 0.8.0 SA5 / #12): the determined `PortableType` a litedbmodel CRUD
+ * leaf annotates its authored node with, via bc's `.as(t)` recording API, so `compileBehaviors`'
+ * all-nodes-typed gate (`UNTYPED_NODE`) passes. Computed from the RAW authored ports (a plain `table`
+ * string + a plain `select` / `returning` column list — the same projection SoT `deriveReadOutTypes`
+ * reads post-compile, just moved to authoring time) + the model's inline `static columns` resolver.
+ *
+ *  - `Select` → the row LIST `{arr:{obj:{outKey:<scalar>,…}}}` from the `select` projection. This is
+ *    the value `.as` takes in BOTH positions: a top-level Select node's `outType` is this list; a
+ *    mapped Select's `.as` records it as the map ELEMENT type (bc convention — the per-parent row list).
+ *  - `Count` → NOT handled here: its output is the static `int` catalog `elemType` (no `.as`).
+ *  - `Insert`/`Update`/`Delete` → the RETURNING row list `{arr:{obj:…}}` from the `returning` port
+ *    (bare-column list). No `returning` → an EMPTY row list `{arr:{obj:{}}}` (the write surfaces rows
+ *    only via RETURNING; a no-RETURNING write yields empty rows — mirrors `writeouttype.ts`).
+ *
+ * Schema columns are parsed by the SAME {@link parseProjectionColumn} the read/codegen paths use and
+ * typed via the resolver (an undeclared column fails closed here at authoring — earlier than the
+ * post-compile derivation). A COMPUTED projected column (`COUNT(*) as n`, a cast, a literal) is OMITTED
+ * from the typed row struct — the read path leaves a computed column RAW (#59: "the read path leaves it
+ * raw; the codegen path rejects it"), so its field is absent from the de-box row type. This keeps the
+ * node's outType DETERMINED (gate passes) while preserving #59's raw-computed read behavior; the typed
+ * codegen path independently rejects a computed projection later (it needs every field typed). The
+ * value is the OUTPUT-row type only; SQL stays opaque text on the makeSQL leaf (types the node OUTPUT,
+ * never the SQL).
+ */
+export function crudNodeAsType(
+  component: string,
+  ports: Record<string, unknown>,
+  resolveColumnType: ColumnTypeResolver,
+  at: string,
+): PortableType {
+  const table = ports['table'];
+  if (typeof table !== 'string') {
+    throw new Error(`outtype: ${at}: ${component} node requires a literal 'table' string port to type its output (got ${JSON.stringify(table)})`);
+  }
+  if (component === 'Select') {
+    const select = ports['select'];
+    if (!Array.isArray(select) || select.length === 0) {
+      throw new Error(
+        `outtype: ${at}: Select has no explicit column projection ('*' / empty). A typed de-box needs the ` +
+          `concrete column list to build the row struct — spec §4.1 is column-typed. Project explicit columns.`,
+      );
+    }
+    const obj: Record<string, PortableType> = {};
+    for (const raw of select) {
+      if (typeof raw !== 'string') throw new Error(`outtype: ${at}: Select 'select' entries must be literal strings (got ${JSON.stringify(raw)})`);
+      const parsed = parseProjectionColumn(raw, table, at);
+      if (parsed.kind === 'computed') continue; // computed column: read raw, omitted from the typed row (SA5-determined without it)
+      const { underlying, outputKey, qualifier } = parsed;
+      if (outputKey in obj) throw new Error(`outtype: ${at}: duplicate projected column key '${outputKey}' on '${table}'`);
+      obj[outputKey] = toPortableScalar(sqlTypeToBcScalar(resolveColumnType(qualifier ?? table, underlying)), qualifier ?? table, underlying);
+    }
+    return { arr: { obj } };
+  }
+  if (component === 'Insert' || component === 'Update' || component === 'Delete') {
+    // The RETURNING port is a single comma-separated bare-column string (`'id, author_id'`) or absent.
+    const returning = ports['returning'];
+    if (returning === undefined) return { arr: { obj: {} } };
+    if (typeof returning !== 'string') {
+      throw new Error(`outtype: ${at}: ${component} 'returning' port must be a literal string (got ${JSON.stringify(returning)})`);
+    }
+    const cols = returning.split(',').map((c) => c.trim()).filter((c) => c.length > 0);
+    if (cols.length === 0) return { arr: { obj: {} } };
+    return { arr: rowObjType(table, cols, resolveColumnType, at, {}) };
+  }
+  throw new Error(`outtype: ${at}: no pre-compile output type for component '${component}' (typed CRUD covers Select/Insert/Update/Delete; Count is static via catalog elemType).`);
+}
+
+/**
  * Per-node `outType` (keyed by body node id) + the component `outputType`, derived for a READ
  * component (spec §4.1). `cond` nodes are skipped for the per-node map but a `cond` at the OUTPUT
  * position (a shared-branch merge) would be handled by {@link outputType} if reached — the bench's

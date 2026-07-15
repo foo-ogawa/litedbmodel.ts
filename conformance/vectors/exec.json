@@ -22,6 +22,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "author_id": "int",
+                          "title": "string",
+                          "status": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "limit": {
                         "coalesce": [
@@ -103,16 +113,6 @@
                             ]
                           }
                         ]
-                      }
-                    },
-                    "outType": {
-                      "arr": {
-                        "obj": {
-                          "id": "int",
-                          "author_id": "int",
-                          "title": "string",
-                          "status": "string"
-                        }
                       }
                     }
                   },
@@ -448,6 +448,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "author_id": "int",
+                          "title": "string",
+                          "status": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "limit": {
                         "coalesce": [
@@ -529,16 +539,6 @@
                             ]
                           }
                         ]
-                      }
-                    },
-                    "outType": {
-                      "arr": {
-                        "obj": {
-                          "id": "int",
-                          "author_id": "int",
-                          "title": "string",
-                          "status": "string"
-                        }
                       }
                     }
                   },
