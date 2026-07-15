@@ -53,6 +53,7 @@ import {
   type ComponentGraphIR,
   type MapNode,
   type ComponentRefNode,
+  type FanoutNode,
   type PortSchema,
   type Recorded,
 } from 'behavior-contracts';
@@ -292,7 +293,12 @@ function selectProjectionsOf(component: Component): SelectProjection[] {
   const out: SelectProjection[] = [];
   for (const n of component.body) {
     if ('cond' in n) continue;
-    const ref = 'map' in n ? (n as MapNode).map : (n as ComponentRefNode);
+    if ('fanout' in n) {
+      // bc 0.7.3+ `FanoutNode`. litedbmodel never emits fanout — reject fail-closed rather
+      // than mis-read it as a component ref with no `Select` projection.
+      throw new Error(`selectProjectionsOf: component '${component.name}' node '${n.id}' is a fanout node, not supported by litedbmodel (bc FanoutNode)`);
+    }
+    const ref = 'map' in n ? n.map : n;
     if (ref.component !== 'Select') continue; // Count → scalar; no projection
     const ports = ref.ports as Record<string, unknown>;
     const table = literalStringPort(ports, 'table');
@@ -432,4 +438,4 @@ function makeEagerClass(name: string, fn: EagerBehavior): BehaviorClass {
 
 // Re-export used component-graph node types so consumers (WS3) can narrow the emitted IR
 // without importing bc directly.
-export type { Component, ComponentGraphIR, MapNode, ComponentRefNode };
+export type { Component, ComponentGraphIR, MapNode, ComponentRefNode, FanoutNode };

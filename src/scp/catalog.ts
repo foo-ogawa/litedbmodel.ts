@@ -216,6 +216,14 @@ export function assertComponentsInCatalog(components: readonly Component[]): voi
   for (const c of components) {
     for (const n of c.body) {
       if ('cond' in n) continue;
+      if ('fanout' in n) {
+        // bc 0.7.3+ `FanoutNode` (connection fan-out / batched BatchGet). litedbmodel authors
+        // only Select/Count/map/cond via LITEDBMODEL_CATALOG and never emits fanout, so a
+        // fanout node here means an unsupported graph reached the emitter — reject fail-closed
+        // rather than mis-validate it as a component ref.
+        errs.push(`${c.name}/${n.id}: fanout node is not supported by litedbmodel (bc FanoutNode)`);
+        continue;
+      }
       const ref = 'map' in n ? n.map : n;
       const entryDef = LITEDBMODEL_CATALOG[ref.component];
       if (entryDef === undefined) {

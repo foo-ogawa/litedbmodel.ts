@@ -47,7 +47,7 @@ import {
   type HandlerCtx,
   type ExecOutcome,
 } from 'behavior-contracts';
-import type { Component, ComponentRefNode, MapNode, BehaviorModelContract } from '../authoring';
+import type { Component, ComponentRefNode, MapNode, FanoutNode, BehaviorModelContract } from '../authoring';
 import { IN_SENTINEL } from './tx';
 import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
 import { renderPlaceholders, type Dialect } from './handler';
@@ -121,6 +121,11 @@ type RefLike = ComponentRefNode | MapNode;
 
 function isMap(n: Component['body'][number]): n is MapNode {
   return 'map' in n;
+}
+
+/** A bc 0.7.3+ `FanoutNode` (connection fan-out). litedbmodel never emits these. */
+function isFanout(n: Component['body'][number]): n is FanoutNode {
+  return 'fanout' in n;
 }
 
 function nodeRef(n: RefLike): { component: string; ports: Record<string, unknown> } {
@@ -677,6 +682,11 @@ export function compileStaticBundle(
   let primary: ComponentRefNode | undefined;
   for (const n of component.body) {
     if ('cond' in n) continue;
+    if (isFanout(n)) {
+      // bc 0.7.3+ `FanoutNode`. litedbmodel never emits fanout — reject fail-closed rather
+      // than mistake it for the primary catalog `componentRef`.
+      throw new Error(`static-bundle: behavior '${component.name}' node '${n.id}' is a fanout node, not supported by litedbmodel (bc FanoutNode)`);
+    }
     if (isMap(n)) continue;
     if (primary === undefined) primary = n;
   }
@@ -734,6 +744,7 @@ function collectRefOptHeads(node: unknown, into: Set<string>): void {
 
 function skipGuardHeads(n: Component['body'][number], into: Set<string>): void {
   if ('cond' in n) return;
+  if (isFanout(n)) return; // bc FanoutNode carries no where-ports SKIP guard (litedbmodel never emits it)
   const ports = isMap(n) ? n.map.ports : n.ports;
   const where = ports.where;
   if (typeof where !== 'object' || where === null || !('arr' in where)) return;

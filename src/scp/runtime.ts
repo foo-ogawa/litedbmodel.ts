@@ -334,7 +334,13 @@ export async function executeBehaviorAsync(
  */
 function baseWriteNodeOf(component: Component): Component['body'][number] {
   const writes = component.body.filter(
-    (n) => !('cond' in n) && !('map' in n) && (n.component === 'Insert' || n.component === 'Update' || n.component === 'Delete'),
+    // `fanout` (bc 0.7.3+ FanoutNode) is excluded from narrowing here: litedbmodel never emits
+    // it, and it carries no base write op, so it can never be a write node.
+    (n) =>
+      !('cond' in n) &&
+      !('map' in n) &&
+      !('fanout' in n) &&
+      (n.component === 'Insert' || n.component === 'Update' || n.component === 'Delete'),
   );
   if (writes.length === 0) {
     throw new Error(`scp write: Command '${component.name}' has no base write (Insert/Update/Delete) node`);

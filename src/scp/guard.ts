@@ -96,6 +96,11 @@ export function assertComponentPortable(component: Component): void {
       assertExprPortable(n.cond.if, `${at}/${n.id}.cond.if`);
       assertExprPortable(n.cond.then, `${at}/${n.id}.cond.then`);
       assertExprPortable(n.cond.else, `${at}/${n.id}.cond.else`);
+    } else if ('fanout' in n) {
+      // bc 0.7.3+ `FanoutNode` (connection fan-out). litedbmodel never emits fanout, so a
+      // fanout node here is an unsupported graph — reject fail-closed rather than treat it as
+      // a component ref with `.ports`.
+      throw new Error(`${at}/${n.id}: fanout node is not supported by litedbmodel (bc FanoutNode)`);
     } else {
       assertPortsPortable(n.ports, `${at}/${n.id}.ports`);
     }
