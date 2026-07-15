@@ -12,6 +12,8 @@ adapters/v1rs/target/
 adapters/python/__pycache__/
 **/__pycache__/
 
-# Generated build output — regenerated at run time by generate.ts / run.ts (NEVER commit; the
-# committed copies were stale/confusing per the #44 owner). bundles.json + codegen/{ts,py,go,rust,php}.
-generated/
+# Generated build output — regenerated at run time (NEVER commit): the old #44 bundles.json +
+# codegen/{ts,py,go,rust,php} modules. Ignore everything under generated/ EXCEPT the committed,
+# drift-checked #63 orm-plan.json artifact (the language-neutral SSoT every runtime consumes).
+generated/*
+!generated/orm-plan.json
