@@ -113,16 +113,35 @@ export interface PlanStmt {
   readonly useReturnAt?: number;
 }
 
-// A relation stage resolved at exec time from the primary result rows.
+// How a relation batch binds its resolved parent keys (the baked SQL's ONE param slot / groups):
+//   'jsonParam'      — sqlite/mysql single-key: bind ONE param = JSON.stringify(distinct keys)
+//                      (the SQL is `… IN (SELECT … FROM json_each(?)/JSON_TABLE(?))`, key-count-independent).
+//   'pgArraySingle'  — pg single-key: bind ONE array param = distinct keys (`= ANY($1::type[])`).
+//   'pgArrayComposite' — pg composite: bind TWO array params = the two key columns
+//                      (`JOIN unnest($1::int[], $2::int[])`), key-count-independent.
+//   'tupleExpand'    — sqlite/mysql composite: the SQL's `(col0, col1) IN (` prefix + a `(?, ?)` group
+//                      REPEATED per distinct tuple (joined by ', ') + `)`, params = flattened tuples.
+//                      `groupTemplate` + `prefix`/`suffix` let a language rebuild it without a compiler.
+export type RelationBindKind = 'jsonParam' | 'pgArraySingle' | 'pgArrayComposite' | 'tupleExpand';
+
+// A relation stage: how to load children for a prior read's rows. The SQL is BAKED per dialect (from
+// the SAME SCP relation compiler the ORM path uses) so a non-TS runtime binds it without a compiler.
 export interface RelationStage {
-  // Which prior statement's result rows this relation loads children for.
-  readonly parentStmt: number; // index into `reads` (the primary rows)
+  // Which read's rows this relation loads children for (0 = primary; N = relation stage N-1's rows).
+  readonly parentStmt: number;
   readonly tableName: string;
   readonly select: string;
   // Single-key relation: parent rows' `parentKey` → child `targetKey`.
   readonly single?: { parentKey: string; targetKey: string };
   // Composite-key relation: parent rows' (pk0,pk1) → child (tk0,tk1).
   readonly composite?: { parentKeys: [string, string]; targetKeys: [string, string] };
+  // Baked, per-dialect batch SQL + bind protocol (this stage belongs to ONE dialect's plan).
+  readonly bindKind: RelationBindKind;
+  // 'jsonParam'/'pgArray*': the full rendered SQL (key-count-independent). 'tupleExpand': the prefix
+  // (`… WHERE (col0, col1) IN (`), with `groupTemplate`/`suffix` completing it.
+  readonly sql: string;
+  readonly groupTemplate?: string; // 'tupleExpand' only, e.g. '(?, ?)'
+  readonly suffix?: string; // 'tupleExpand' only, e.g. ')'
 }
 
 // A read op plan: ordered primary/relation reads.
@@ -153,10 +172,52 @@ function stmt(node: MakeSQL, dialect: Dialect, role: StmtRole = 'stmt', useRetur
   return { role, sql: r.sql, params: r.params, useReturnAt };
 }
 
-// The composite key column order + target for the tenant relations.
-// The relation param arrays are derived at EXEC time from the primary rows; these builders
-// produce ONLY the primary reads + relation-stage descriptors. A single self-consistent seed
-// (below) fixes the deterministic parent keys so the SQL matches the golden shape.
+// ── Relation SQL bakers (the SAME SCP relation compilers the ORM path + parity test use) ──
+// Bake the per-dialect relation batch SQL + bind protocol so a non-TS runtime executes it WITHOUT
+// a compiler. Single-key + pg-composite SQL is key-count-independent (one/two JSON/array params);
+// sqlite/mysql composite expands a `(?, ?)` group per tuple (tupleExpand).
+
+// Two representative single keys (SQL is identical for any count — asserted by the executor).
+const SAMPLE_KEYS = [1, 2];
+const SAMPLE_TUPLES: number[][] = [[1, 1], [1, 2]];
+
+function bakeSingle(
+  d: OrmDialect,
+  parentStmt: number,
+  rel: { tableName: string; select: string; parentKey: string; targetKey: string },
+): RelationStage {
+  const node = compileSingleKeyUnlimited({ dialect: d, tableName: rel.tableName, select: rel.select, targetKey: rel.targetKey, values: SAMPLE_KEYS });
+  const asm = assembleMakeSQL(node);
+  const sql = renderPlaceholders(asm.sql, d);
+  return {
+    parentStmt,
+    tableName: rel.tableName,
+    select: rel.select,
+    single: { parentKey: rel.parentKey, targetKey: rel.targetKey },
+    bindKind: d === 'postgres' ? 'pgArraySingle' : 'jsonParam',
+    sql,
+  };
+}
+
+function bakeComposite(
+  d: OrmDialect,
+  parentStmt: number,
+  rel: { tableName: string; select: string; parentKeys: [string, string]; targetKeys: [string, string] },
+): RelationStage {
+  const node = compileCompositeKeyUnlimited({ dialect: d, tableName: rel.tableName, select: rel.select, targetKeys: rel.targetKeys, tuples: SAMPLE_TUPLES });
+  const asm = assembleMakeSQL(node);
+  const sql = renderPlaceholders(asm.sql, d);
+  const base = { parentStmt, tableName: rel.tableName, select: rel.select, composite: { parentKeys: rel.parentKeys, targetKeys: rel.targetKeys } };
+  if (d === 'postgres') {
+    return { ...base, bindKind: 'pgArrayComposite', sql };
+  }
+  // sqlite/mysql: `… WHERE (c0, c1) IN ((?, ?), (?, ?))` for the 2 SAMPLE_TUPLES → split into
+  // prefix `… IN (`, group `(?, ?)`, suffix `)` so the executor repeats the group per real tuple.
+  const inOpen = sql.indexOf('IN (') + 'IN ('.length;
+  const prefix = sql.slice(0, inOpen);
+  const suffix = ')';
+  return { ...base, bindKind: 'tupleExpand', sql: prefix, groupTemplate: '(?, ?)', suffix };
+}
 
 // ── Per-op × per-dialect plan builders ────────────────────────────────────────
 function buildReadOnly(node: (d: Dialect) => MakeSQL): (d: OrmDialect) => OpPlan {
@@ -171,7 +232,7 @@ function buildNestedSingle(
   return (d) => ({
     kind: 'read',
     reads: [stmt(primary(d), d, 'primary')],
-    relations: [{ parentStmt: 0, tableName: rel.tableName, select: rel.select, single: { parentKey: rel.parentKey, targetKey: rel.targetKey } }],
+    relations: [bakeSingle(d, 0, rel)],
   });
 }
 
@@ -373,8 +434,8 @@ const orm: Record<string, (d: OrmDialect) => OpPlan> = {
     kind: 'read',
     reads: [stmt(compileSelect({ dialect: d, tableName: 'benchmark_users', select: '*', order: 'id ASC', limit: 100 }), d, 'primary')],
     relations: [
-      { parentStmt: 0, tableName: 'benchmark_posts', select: '*', single: { parentKey: 'id', targetKey: 'author_id' } },
-      { parentStmt: 1, tableName: 'benchmark_comments', select: '*', single: { parentKey: 'id', targetKey: 'post_id' } },
+      bakeSingle(d, 0, { tableName: 'benchmark_posts', select: '*', parentKey: 'id', targetKey: 'author_id' }),
+      bakeSingle(d, 1, { tableName: 'benchmark_comments', select: '*', parentKey: 'id', targetKey: 'post_id' }),
     ],
   }),
 
@@ -389,8 +450,8 @@ const orm: Record<string, (d: OrmDialect) => OpPlan> = {
       ),
     ],
     relations: [
-      { parentStmt: 0, tableName: 'benchmark_tenant_posts', select: '*', composite: { parentKeys: ['tenant_id', 'user_id'], targetKeys: ['tenant_id', 'user_id'] } },
-      { parentStmt: 1, tableName: 'benchmark_tenant_comments', select: '*', composite: { parentKeys: ['tenant_id', 'post_id'], targetKeys: ['tenant_id', 'post_id'] } },
+      bakeComposite(d, 0, { tableName: 'benchmark_tenant_posts', select: '*', parentKeys: ['tenant_id', 'user_id'], targetKeys: ['tenant_id', 'user_id'] }),
+      bakeComposite(d, 1, { tableName: 'benchmark_tenant_comments', select: '*', parentKeys: ['tenant_id', 'post_id'], targetKeys: ['tenant_id', 'post_id'] }),
     ],
   }),
 };
