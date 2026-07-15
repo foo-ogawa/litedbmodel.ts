@@ -19,7 +19,7 @@ MySQL :3307, PostgreSQL :5433), **driver included**.
 - **No subset.** All 19 ops run in every language on every DB, or an explicit per-cell SKIP note (never a
   silent drop). A cell whose adapter did not build/run renders an honest failure row.
 
-_Generated 2026-07-15T17:50:28.724Z — warmup 15, 60 measured iterations. Dialects: sqlite, mysql, postgres._
+_Generated 2026-07-15T18:21:02.333Z — warmup 10, 40 measured iterations. Dialects: sqlite, mysql, postgres._
 
 _Environment: **native arm64 (Apple Silicon)** — go arm64, node arm64, rust `aarch64-apple-darwin`._
 
@@ -57,73 +57,73 @@ _Environment: **native arm64 (Apple Silicon)** — go arm64, node arm64, rust `a
 
 | Op | TypeScript | Python | PHP | Rust | Go |
 |---|---|---|---|---|---|
-| R Find all (limit 100) | 0.0823 | 0.0722 | **0.0392** | 0.0636 | 0.1575 |
-| R Filter, paginate & sort | 0.0328 | 0.0339 | 0.0276 | **0.0260** | 0.0614 |
-| R Nested find all (include posts) | 0.2783 | 0.2930 | **0.1574** | 0.2185 | 0.5248 |
-| R Find first | 0.0124 | 0.0060 | 0.0056 | **0.0051** | 0.0115 |
-| R Nested find first (include posts) | 0.0317 | 0.0296 | 0.0208 | **0.0206** | 0.0469 |
-| R Find unique (by email) | 0.0061 | 0.0035 | **0.0032** | 0.0032 | 0.0068 |
-| R Nested find unique (include posts) | 0.0235 | 0.0264 | **0.0172** | 0.0182 | 0.0412 |
-| W Create | 0.0117 | 0.0078 | 0.0052 | **0.0045** | 0.0084 |
-| W Nested create (with post) | 0.0173 | 0.0123 | 0.0091 | **0.0075** | 0.0140 |
-| W Update | 0.0075 | 0.0055 | 0.0026 | **0.0020** | 0.0045 |
-| W Nested update (update user + post) | 0.0210 | 0.0165 | 0.0199 | **0.0113** | 0.0254 |
-| W Upsert | 0.0170 | 0.0148 | 0.0087 | **0.0080** | 0.0156 |
-| W Nested upsert (user + post) | 0.0199 | 0.0116 | 0.0099 | **0.0082** | 0.0168 |
-| W Delete | 0.0141 | 0.0107 | 0.0076 | **0.0059** | 0.0118 |
-| W Create Many (10 records) | 0.0280 | 0.0206 | 0.0185 | **0.0173** | 0.0359 |
-| W Upsert Many (10 records) | 0.0287 | 0.0209 | 0.0199 | **0.0182** | 0.0385 |
-| W Update Many (10 different values) | 0.0523 | 0.0423 | 0.0372 | **0.0329** | 0.0876 |
-| R Nested relations (100->1000->10000) | 0.5604 | 0.6491 | **0.3453** | 0.4712 | 1.0862 |
-| R Nested relations (composite key, 5 tenants) | 0.2282 | **0.1615** | 0.1995 | 0.2008 | 0.3455 |
+| R Find all (limit 100) | 0.0750 | 0.0729 | **0.0394** | 0.0633 | 0.1687 |
+| R Filter, paginate & sort | 0.0341 | 0.0333 | 0.0276 | **0.0269** | 0.0650 |
+| R Nested find all (include posts) | 0.2676 | 0.2899 | **0.1537** | 0.2271 | 0.5453 |
+| R Find first | 0.0120 | 0.0057 | **0.0056** | 0.0057 | 0.0119 |
+| R Nested find first (include posts) | 0.0316 | 0.0280 | **0.0208** | 0.0218 | 0.0488 |
+| R Find unique (by email) | 0.0060 | 0.0034 | **0.0032** | 0.0034 | 0.0069 |
+| R Nested find unique (include posts) | 0.0227 | 0.0241 | **0.0173** | 0.0184 | 0.0434 |
+| W Create | 0.0115 | 0.0073 | **0.0052** | 0.0059 | 0.0089 |
+| W Nested create (with post) | 0.0172 | 0.0115 | 0.0090 | **0.0076** | 0.0147 |
+| W Update | 0.0071 | 0.0053 | 0.0026 | **0.0020** | 0.0052 |
+| W Nested update (update user + post) | 0.0182 | 0.0150 | 0.0174 | **0.0107** | 0.0237 |
+| W Upsert | 0.0160 | 0.0120 | 0.0090 | **0.0083** | 0.0153 |
+| W Nested upsert (user + post) | 0.0189 | 0.0117 | 0.0103 | **0.0084** | 0.0154 |
+| W Delete | 0.0138 | 0.0108 | 0.0078 | **0.0060** | 0.0118 |
+| W Create Many (10 records) | 0.0255 | 0.0200 | 0.0188 | **0.0182** | 0.0367 |
+| W Upsert Many (10 records) | 0.0275 | 0.0194 | 0.0191 | **0.0187** | 0.0366 |
+| W Update Many (10 different values) | 0.0457 | 0.0427 | **0.0377** | 0.0382 | 0.0814 |
+| R Nested relations (100->1000->10000) | 0.5425 | 0.6513 | **0.3384** | 0.4858 | 1.2077 |
+| R Nested relations (composite key, 5 tenants) | 0.2305 | **0.1572** | 0.1988 | 0.2087 | 0.3575 |
 
 #### MySQL — end-to-end p50 (ms), driver-included
 
 | Op | TypeScript | Python | PHP | Rust | Go |
 |---|---|---|---|---|---|
-| R Find all (limit 100) | 0.4588 | 1.8508 | 0.4689 | 0.5437 | **0.2933** |
-| R Filter, paginate & sort | **0.4129** | 1.3784 | 0.4437 | 0.4684 | 0.4604 |
-| R Nested find all (include posts) | 1.2035 | 5.7102 | 1.1114 | 1.3074 | **1.0061** |
-| R Find first | **0.3220** | 0.6281 | 0.3568 | 0.3887 | 0.3747 |
-| R Nested find first (include posts) | **0.7551** | 1.2995 | 0.8053 | 0.8452 | 0.8200 |
-| R Find unique (by email) | **0.2470** | 0.6304 | 0.3642 | 0.3744 | 0.3623 |
-| R Nested find unique (include posts) | **0.5672** | 1.3857 | 0.8081 | 0.8711 | 1.0035 |
-| W Create | **0.6824** | 0.9683 | 0.7567 | 0.8059 | 0.7522 |
-| W Nested create (with post) | 0.9306 | **0.8779** | 1.1268 | 0.9531 | 1.1741 |
-| W Update | 0.6032 | **0.5714** | 0.7003 | 0.6836 | 0.6942 |
-| W Nested update (update user + post) | 0.9458 | **0.8994** | 1.1721 | 0.9495 | 1.1718 |
-| W Upsert | 0.6765 | **0.6548** | 0.7780 | 0.7327 | 0.8062 |
-| W Nested upsert (user + post) | 0.8809 | **0.8673** | 1.1764 | 0.9605 | 1.2338 |
-| W Delete | 0.9213 | **0.8715** | 1.1609 | 1.0414 | 1.2043 |
-| W Create Many (10 records) | 0.7697 | **0.7420** | 0.8396 | 0.8529 | 0.9007 |
-| W Upsert Many (10 records) | 0.7559 | **0.7178** | 0.8359 | 0.8877 | 0.9071 |
-| W Update Many (10 different values) | 0.8096 | **0.5940** | 0.7195 | 0.7220 | 0.7590 |
-| R Nested relations (100->1000->10000) | **1.8684** | 8.6253 | 2.0824 | 2.4763 | 2.0273 |
-| R Nested relations (composite key, 5 tenants) | **0.8875** | 6.3279 | 1.3478 | 1.3045 | 1.3875 |
+| R Find all (limit 100) | **0.3878** | 1.5313 | 0.4839 | 0.6435 | 0.9470 |
+| R Filter, paginate & sort | **0.3417** | 0.6011 | 0.4547 | 0.7504 | 1.0426 |
+| R Nested find all (include posts) | **0.9382** | 4.7963 | 1.1550 | 2.1428 | 2.1986 |
+| R Find first | **0.2503** | 0.4964 | 0.3798 | 0.7768 | 0.9041 |
+| R Nested find first (include posts) | **0.5862** | 0.8518 | 0.8468 | 3.2006 | 1.9545 |
+| R Find unique (by email) | **0.2402** | 0.3274 | 0.3882 | 0.9971 | 1.6982 |
+| R Nested find unique (include posts) | **0.5506** | 0.6157 | 0.8129 | 2.3880 | 2.2713 |
+| W Create | 0.6745 | **0.6569** | 0.7556 | 1.6869 | 3.3222 |
+| W Nested create (with post) | 0.9469 | **0.8758** | 1.0682 | 2.8380 | 9.4805 |
+| W Update | 0.6345 | **0.5890** | 0.6380 | 1.5102 | 4.3116 |
+| W Nested update (update user + post) | 0.9358 | **0.8651** | 1.0125 | 2.6628 | 5.3548 |
+| W Upsert | **0.6789** | 0.7161 | 0.7900 | 3.2618 | 3.4285 |
+| W Nested upsert (user + post) | 0.9049 | **0.8486** | 1.1911 | 6.7624 | 5.0832 |
+| W Delete | 0.9161 | **0.8893** | 1.1447 | 6.3773 | 6.6328 |
+| W Create Many (10 records) | 0.7560 | **0.7400** | 0.8872 | 3.6189 | 4.0540 |
+| W Upsert Many (10 records) | 0.9207 | **0.7554** | 0.8150 | 3.2860 | 3.7442 |
+| W Update Many (10 different values) | 0.7578 | **0.6538** | 0.8170 | 2.5872 | 4.2504 |
+| R Nested relations (100->1000->10000) | **1.6839** | 9.2203 | 1.9915 | 7.7885 | 9.3680 |
+| R Nested relations (composite key, 5 tenants) | **0.9728** | 4.6115 | 1.2598 | 6.8901 | 8.6002 |
 
 #### PostgreSQL — end-to-end p50 (ms), driver-included
 
 | Op | TypeScript | Python | PHP | Rust | Go |
 |---|---|---|---|---|---|
-| R Find all (limit 100) | 0.4166 | 0.6395 | 0.5920 | 0.4793 | **0.2301** |
-| R Filter, paginate & sort | 0.2613 | 0.3085 | 0.5981 | 0.4383 | **0.2093** |
-| R Nested find all (include posts) | 0.8868 | 1.8167 | 1.2792 | 1.1160 | **0.6039** |
-| R Find first | 0.2050 | 0.2094 | 0.5248 | 0.4027 | **0.1716** |
-| R Nested find first (include posts) | 0.4232 | 0.4745 | 1.0141 | 0.8210 | **0.3262** |
-| R Find unique (by email) | 0.2452 | 0.2336 | 0.5443 | 0.4134 | **0.1625** |
-| R Nested find unique (include posts) | 0.4331 | 0.4773 | 1.0545 | 0.8166 | **0.3490** |
-| W Create | 0.5376 | 0.5504 | 0.8159 | 0.7461 | **0.5022** |
-| W Nested create (with post) | 0.6923 | 0.7764 | 1.3409 | 1.1393 | **0.6770** |
-| W Update | **0.4930** | 0.5609 | 0.9074 | 0.7605 | 0.5057 |
-| W Nested update (update user + post) | 0.7250 | 0.7649 | 1.2976 | 1.1718 | **0.6989** |
-| W Upsert | 0.5410 | 0.5757 | 0.7724 | 0.7906 | **0.5171** |
-| W Nested upsert (user + post) | 0.7181 | 0.7877 | 1.3237 | 1.1697 | **0.6873** |
-| W Delete | 0.7184 | 0.7620 | 1.2928 | 1.1295 | **0.6760** |
-| W Create Many (10 records) | **0.5832** | 0.6535 | 1.0207 | 0.7868 | 0.5837 |
-| W Upsert Many (10 records) | 0.6578 | 0.6718 | 0.9669 | 0.8524 | **0.6342** |
-| W Update Many (10 different values) | 0.7210 | 0.7909 | 1.1574 | 1.0218 | **0.6488** |
-| R Nested relations (100->1000->10000) | 1.8005 | 4.4411 | 2.2903 | 2.1055 | **1.2864** |
-| R Nested relations (composite key, 5 tenants) | 0.8859 | 1.3915 | 1.7080 | 1.5153 | **0.6658** |
+| R Find all (limit 100) | **0.4392** | 0.6626 | 0.6486 | 1.1157 | 1.0903 |
+| R Filter, paginate & sort | **0.2652** | 0.3885 | 0.5524 | 1.2170 | 0.5335 |
+| R Nested find all (include posts) | **0.9462** | 1.8181 | 1.3228 | 3.0297 | 1.0500 |
+| R Find first | **0.2091** | 0.2340 | 0.5344 | 1.1648 | 0.3804 |
+| R Nested find first (include posts) | **0.4284** | 0.5515 | 1.0875 | 2.2641 | 0.9157 |
+| R Find unique (by email) | 0.2429 | **0.2002** | 0.5654 | 1.9699 | 0.9999 |
+| R Nested find unique (include posts) | 0.5327 | **0.4721** | 1.0534 | 2.5375 | 0.9863 |
+| W Create | **0.5257** | 0.5580 | 0.8174 | 1.9995 | 1.1245 |
+| W Nested create (with post) | **0.7396** | 0.7829 | 1.4710 | 3.7894 | 2.1538 |
+| W Update | **0.5341** | 0.5793 | 0.7338 | 2.0923 | 1.5148 |
+| W Nested update (update user + post) | **0.7121** | 0.7659 | 1.2419 | 3.0441 | 1.9561 |
+| W Upsert | **0.5463** | 0.5738 | 0.7312 | 3.2218 | 1.2678 |
+| W Nested upsert (user + post) | **0.7695** | 0.7703 | 1.4782 | 2.5994 | 2.8472 |
+| W Delete | 0.8058 | **0.7670** | 1.3624 | 5.2882 | 2.4241 |
+| W Create Many (10 records) | **0.5953** | 0.7400 | 0.8160 | 2.0562 | 1.5587 |
+| W Upsert Many (10 records) | **0.6496** | 0.7167 | 0.8878 | 1.8522 | 1.8647 |
+| W Update Many (10 different values) | **0.7284** | 0.7572 | 1.0213 | 3.5470 | 1.9264 |
+| R Nested relations (100->1000->10000) | **1.7803** | 3.6794 | 2.0186 | 4.9287 | 3.0922 |
+| R Nested relations (composite key, 5 tenants) | **0.8697** | 1.1208 | 6.2073 | 5.2424 | 1.3556 |
 
 ## ② Within-language ÷sql overhead (SQLite)
 
@@ -218,9 +218,9 @@ _Environment: **native arm64 (Apple Silicon)** — go arm64, node arm64, rust `a
 
 | Cell | Cold start (ms) | RSS (MB) | Artifact size (MB) |
 |---|---|---|---|
-| TypeScript / runtime | 608 | 262.6 | — |
-| Python / runtime | 81 | 48.9 | — |
-| PHP / runtime | 129 | 4.0 | — |
-| Rust / runtime | 11 | 13.7 | 5.39 |
-| Go / runtime | 31 | 23.1 | 18.40 |
+| TypeScript / runtime | 533 | 244.1 | — |
+| Python / runtime | 81 | 47.1 | — |
+| PHP / runtime | 128 | 4.0 | — |
+| Rust / runtime | 26 | 13.0 | 5.39 |
+| Go / runtime | 48 | 22.5 | 18.40 |
 
