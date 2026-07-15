@@ -1,19 +1,20 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Cross-language harness (epic #44) — subprocess orchestration + aggregation.
+// Cross-language harness (epic #63) — subprocess orchestration + aggregation.
 // ════════════════════════════════════════════════════════════════════════════
 //
-// Spawns ONE adapter subprocess per live cell, drives it through the contract, and
-// aggregates the raw samples into the MatrixResult (metrics.ts owns the math). A
-// cell that fails (missing toolchain / build error / protocol error) is captured
-// as an error row rather than aborting the whole matrix — every declared cell is
-// accounted for honestly.
+// Spawns ONE production adapter subprocess per language, drives it through the
+// contract (19 ORM ops × 3 real dialects, DB-backed), and aggregates the raw samples
+// into the MatrixResult (metrics.ts owns the math). A cell that fails (missing
+// toolchain / build error / protocol error) is captured as an error row rather than
+// aborting the whole matrix — every declared cell is accounted for honestly. There is
+// NO micro/mock axis (#63): every measured op is a real DB round-trip.
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import {
-  encodeMessage, decodeMessages, CROSSLANG_CASE_IDS, CROSSLANG_MICRO_CASE_IDS, CROSSLANG_DIALECTS,
-  type Request, type Response, type CrosslangCaseId, type CrosslangMicroCaseId, type CrosslangDialect,
+  encodeMessage, decodeMessages, CROSSLANG_CASE_IDS, CROSSLANG_DIALECTS,
+  type Request, type Response, type CrosslangCaseId, type CrosslangDialect,
 } from './contract.js';
 import {
   summarizeLatency, throughputOpsPerSec, coldStartMs,
@@ -26,20 +27,16 @@ export interface HarnessConfig {
   iterations: number;
   throughputIterations: number;
   concurrency: number;
-  microWarmup: number;
-  microIterations: number;
   cases?: CrosslangCaseId[];
   dialects?: CrosslangDialect[];
   responseTimeoutMs?: number;
 }
 
 export const DEFAULT_CONFIG: HarnessConfig = {
-  warmup: 200,
-  iterations: 2000,
-  throughputIterations: 2000,
+  warmup: 50,
+  iterations: 300,
+  throughputIterations: 300,
   concurrency: 1,
-  microWarmup: 1000,
-  microIterations: 20000,
   responseTimeoutMs: 180_000,
 };
 
@@ -129,15 +126,17 @@ async function runCell(spec: CellSpec, config: HarnessConfig): Promise<CellResul
   const timeout = config.responseTimeoutMs ?? DEFAULT_CONFIG.responseTimeoutMs!;
   const proc = new AdapterProcess(spec.spawn!);
   const cases = config.cases ?? [...CROSSLANG_CASE_IDS];
-  const microCases = CROSSLANG_MICRO_CASE_IDS.filter((c) => (cases as string[]).includes(c)) as CrosslangMicroCaseId[];
   const dialects = config.dialects ?? [...CROSSLANG_DIALECTS];
 
   try {
-    const ready = await proc.awaitReady(timeout);
+    // Cold-start/ready has its OWN shorter deadline: a missing/broken adapter (e.g. an unbuilt
+    // binary) should fail its cell FAST as an honest error row, not stall the whole matrix on the
+    // per-request timeout. The build/seed of a real adapter is well under this.
+    const readyTimeout = Math.min(timeout, 30_000);
+    const ready = await proc.awaitReady(readyTimeout);
     const cold = coldStartMs(proc.spawnedAtEpochMs, ready.readyAtEpochMs);
 
     const dialectResults: Record<string, DialectResult> = {};
-    // For each dialect: DB-backed cases (real DB) + micro cases (per-dialect bundle).
     for (const dialect of dialects) {
       const caseResults: Record<string, CaseResult> = {};
       for (const caseId of cases) {
@@ -156,15 +155,7 @@ async function runCell(spec: CellSpec, config: HarnessConfig): Promise<CellResul
           rows: cost.kind === 'cost' ? cost.rows : undefined,
         };
       }
-
-      const micro: Record<string, ReturnType<typeof summarizeLatency>> = {};
-      const microSkipped: Record<string, string> = {};
-      for (const caseId of microCases) {
-        const res = (await proc.request({ kind: 'micro', case: caseId, dialect, warmup: config.microWarmup, iterations: config.microIterations }, timeout)) as Extract<Response, { kind: 'micro' } | { kind: 'skipped' }>;
-        if (res.kind === 'skipped') microSkipped[caseId] = res.reason;
-        else micro[caseId] = summarizeLatency(res.samplesMs);
-      }
-      dialectResults[dialect] = { cases: caseResults, micro, microSkipped };
+      dialectResults[dialect] = { cases: caseResults };
     }
 
     const rss = (await proc.request({ kind: 'rss' }, timeout)) as Extract<Response, { kind: 'rss' }>;
@@ -213,7 +204,6 @@ export async function runMatrix(config: HarnessConfig = DEFAULT_CONFIG): Promise
     generatedAt: new Date().toISOString(),
     iterations: config.iterations,
     warmup: config.warmup,
-    microIterations: config.microIterations,
     dialects: config.dialects ?? [...CROSSLANG_DIALECTS],
     cells,
   };

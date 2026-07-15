@@ -1,252 +1,174 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Cross-language report renderer (epic #44) — MatrixResult → CROSS-LANG.md.
+// Cross-language report renderer (epic #63) — MatrixResult → CROSS-LANG.md.
 // ════════════════════════════════════════════════════════════════════════════
 //
-// PER-DIALECT throughout (#44 validity gaps): every micro + DB-backed table is
-// rendered for sqlite / postgres / mysql, and the comparability disclosure states
-// exactly which comparisons are valid and which carry the driver caveat.
+// The unified, driver-included, END-TO-END report: the 19 ORM ops executed by each
+// language's thin generic runtime on all 3 real DBs. Two views:
+//   ① LANGUAGE-vs-LANGUAGE end-to-end p50 (ms), per op × per DB — "which language is
+//      fastest" (one table per DB; ops = rows, languages = columns).
+//   ② within-language ÷sql overhead (sqlite) — each op's runtime p50 ÷ the hand-SQL
+//      baseline p50 (only when a baseline cell ran).
+// The absolute-micro table + the relative-micro-as-primary table are GONE (#63): every
+// number here is a real DB round-trip.
 
 import { relativeOverhead, type MatrixResult, type CellResult, type DialectResult } from './metrics.js';
-import { CROSSLANG_CASE_LABELS, CROSSLANG_MICRO_CASE_IDS, CROSSLANG_CASE_IDS, type CrosslangCaseId } from './contract.js';
+import { CROSSLANG_CASE_LABELS, CROSSLANG_CASE_IDS, CROSSLANG_WRITE_CASES } from './contract.js';
 
 const LANG_LABEL: Record<string, string> = { ts: 'TypeScript', python: 'Python', php: 'PHP', rust: 'Rust', go: 'Go' };
-const IMPL_LABEL: Record<string, string> = { sql: 'sql', codegen: 'codegen', ir: 'ir', dynamic: 'dynamic', prepared: 'prepared', v1: 'v1' };
 const DIALECT_LABEL: Record<string, string> = { sqlite: 'SQLite', postgres: 'PostgreSQL', mysql: 'MySQL' };
+const LANG_ORDER = ['ts', 'python', 'php', 'rust', 'go'];
 
-const V1_REGRESSION_THRESHOLD = 1.5;
-
-function cell(m: MatrixResult, language: string, impl: string): CellResult | undefined {
-  return m.cells.find((c) => c.language === language && c.impl === impl);
+function runtimeCell(m: MatrixResult, language: string): CellResult | undefined {
+  return m.cells.find((c) => c.language === language && c.impl === 'runtime');
 }
-function dcell(m: MatrixResult, language: string, impl: string, dialect: string): DialectResult | undefined {
-  return cell(m, language, impl)?.dialects[dialect];
+function baselineCell(m: MatrixResult, language: string): CellResult | undefined {
+  return m.cells.find((c) => c.language === language && c.impl === 'baseline');
+}
+function dcell(cell: CellResult | undefined, dialect: string): DialectResult | undefined {
+  return cell?.dialects[dialect];
 }
 function fmtMs(v: number | undefined): string { return v === undefined || Number.isNaN(v) ? '—' : v.toFixed(4); }
-function fmtUs(v: number | undefined): string { return v === undefined || Number.isNaN(v) ? '—' : (v * 1000).toFixed(1); }
-function fmtOps(v: number | undefined): string { return v === undefined || Number.isNaN(v) ? '—' : Math.round(v).toLocaleString('en-US'); }
 function fmtRatio(v: number): string { return Number.isNaN(v) ? '—' : `${v.toFixed(2)}×`; }
+
+// The languages whose runtime cell actually produced results (no error).
+function liveLangs(m: MatrixResult): string[] {
+  return LANG_ORDER.filter((l) => {
+    const c = runtimeCell(m, l);
+    return c && !c.error;
+  });
+}
 
 function methodology(m: MatrixResult): string {
   return [
     '## Methodology',
     '',
-    'This is the litedbmodel v2 **cross-language execution-surface** benchmark (epic #44),',
-    'measuring each litedbmodel exec surface against a hand-optimized **raw-SQL baseline**,',
-    'across **all three target dialects** (SQLite / PostgreSQL / MySQL) and five languages.',
+    'The **unified, driver-included, end-to-end** cross-language benchmark (epic #63). Each language’s',
+    '**thin generic runtime** executes the SAME **19 ORM-comparison ops** — the exact ops the ORM-vs-ORM',
+    'bench measures for the litedbmodel column (`benchmark/benchmark.ts`), captured as the #64 v1 SQL golden',
+    'and proven byte-parity by the #65 v2 SCP path — **DB-backed on all three real dialects** (SQLite in-proc,',
+    'MySQL :3307, PostgreSQL :5433), **driver included**.',
     '',
-    '- **Dialect axis (#44 validity gap 1).** The SAME 8 behaviors are compiled for EACH',
-    '  dialect; the rendered SQL differs materially — SQLite `json_each(?)` IN-lists, PostgreSQL',
-    '  `= ANY($1)` with `?`→`$N` placeholders + deferred array casts, MySQL `JSON_TABLE(?)` —',
-    '  so the CLIENT-PATH cost is reported PER DIALECT, not just SQLite. The I/O-excluded micro',
-    '  runs every case against ALL THREE dialect bundles.',
-    '- **DB-backed across REAL PG + MySQL + SQLite (#44 validity gap 2).** SQLite is in-proc',
-    '  (better-sqlite3 / rusqlite / sqlite3 / PDO / modernc). PostgreSQL + MySQL are the REAL',
-    '  dockerized servers (`docker-compose.test.yml` + the WS7g host-port override, PG:5433,',
-    '  MySQL:3307). Each language documents WHICH driver it uses per dialect (see the',
-    '  comparability disclosure). Every declared cell is accounted for — a cell that cannot',
-    '  reach a dialect renders an explicit SKIP note, never a silent drop.',
-    '- **Impl axis (exec surfaces).** `sql` = hand-written raw SQL (baseline 1.0×; SQLite-shaped,',
-    '  so DB-backed on SQLite only). `codegen` = the bc-GENERATED STRAIGHT-LINE module (bc#75',
-    '  de-interpreted native source — IR NOT embedded, only its fingerprint for the fail-closed skew',
-    '  gate) executed via `bind(handlers)`.',
-    '  `ir` = the makeSQL bundle loaded FROM JSON + run through the shared runtime',
-    '  (bc `run_behavior` + makeSQL handler) — the TS / Python / PHP interpret reality. `dynamic` (TS) =',
-    '  `executeBehavior` (recompile per call). `prepared` (TS) = compile once → execute many.',
-    '  **Rust / Go carry NO `ir` cell** — their IR interpreter is DELETED (#8, native-only): every',
-    '  read/write runs generated native code, so `codegen` is their ONLY litedbmodel exec surface.',
-    '  **Python / PHP carry NO `codegen` cell** — they are not codegen-MODULE languages (generate.ts',
-    '  emits generated modules only for {ts, go, rust}), so `ir` is their by-design exec surface.',
-    '- **Shared harness + domain.** One TS harness spawns each `(language × impl)` adapter and',
-    '  drives it over a line-delimited JSON contract; adapters return RAW samples, the harness',
-    '  owns all percentile/throughput math. Every adapter runs the SAME 8 patterns against the',
-    '  SAME seeded dataset (8 users / 40 posts / 200 comments). 🔒 The bench CONSUMES generated',
-    '  artifacts only — `src/` is byte-unchanged.',
+    '- **ONE production path.** No impl axis (the old sql/codegen/ir/dynamic/prepared surfaces are gone) and',
+    '  **no I/O-excluded micro/mock axis** (V8-JIT/timing-confounded and off the production path). Every number',
+    '  below is a real DB round-trip through the shipped runtime + real driver.',
+    '- **Same op, same SQL as the ORM bench.** The statements come from the v2 SCP compile path (== the #65',
+    '  golden-parity SQL), so the **TS numbers are consistent with the ORM-bench litedbmodel column** by',
+    '  construction, and every language runs byte-identical SQL (the shared `orm-plan.json` artifact).',
+    '- **No subset.** All 19 ops run in every language on every DB, or an explicit per-cell SKIP note (never a',
+    '  silent drop). A cell whose adapter did not build/run renders an honest failure row.',
     '',
-    `_Generated ${m.generatedAt} — DB-backed warmup ${m.warmup}, ${m.iterations} measured iterations;`,
-    `micro-bench ${m.microIterations} iterations (the load-bearing signal). Dialects: ${m.dialects.join(', ')}._`,
+    `_Generated ${m.generatedAt} — warmup ${m.warmup}, ${m.iterations} measured iterations. Dialects: ${m.dialects.join(', ')}._`,
     '',
-    '_Environment: **native arm64 (Apple Silicon)** — go arm64, node arm64, rust `aarch64-apple-darwin` (NOT x86_64/Rosetta)._',
+    '_Environment: **native arm64 (Apple Silicon)** — go arm64, node arm64, rust `aarch64-apple-darwin`._',
     '',
-    comparabilityDisclosure(),
+    comparabilityDisclosure(m),
   ].join('\n');
 }
 
-// ── The honest comparability disclosure (#44 validity gap 3) ─────────────────
-function comparabilityDisclosure(): string {
+function comparabilityDisclosure(m: MatrixResult): string {
   return [
-    '> ## Comparability disclosure (TRUE, read before the numbers)',
+    '> ## Read before the numbers (honest caveats)',
     '>',
-    '> **1. The micro (client-path) cross-language comparison IS valid.** The micro-bench mocks',
-    '> the SQL driver (fixed rows, no round-trip, negligible + identical mock overhead across',
-    '> languages), so the timed op is ONLY the client-side path (compile/render/param-eval/bind/',
-    '> `?`→`$N`/JSON-array/hydration). It is DB-agnostic and aligned across languages, so the',
-    '> per-dialect client-path numbers ARE comparable language-to-language (modulo each runtime\'s',
-    '> interpreter/GC/native baseline — read each language\'s OWN `impl ÷ sql` ratio for the',
-    '> abstraction cost, which cancels that baseline).',
+    '> **1. PostgreSQL + MySQL are I/O-DOMINATED — languages CONVERGE there.** The round-trip to a real',
+    '> networked DB dwarfs the client-side render/bind cost, so the per-op PG/MySQL latencies are close across',
+    '> languages (they mostly measure the driver + the DB, not the language). The interesting language spread',
+    '> is on **SQLite in-proc** (no network), where the client path is a larger fraction of the total.',
     '>',
-    '> **Baseline row-hydration parity (apples-to-apples `÷ sql`).** Every language\'s `sql` baseline',
-    '> MATERIALIZES each read row into the SAME object form its `codegen`/`ir` cell produces (TS/Python/PHP',
-    '> build the row objects; Rust\'s `.all()` → `Vec<Value>`; Go\'s baseline hydrates each row into a',
-    '> `bc.Obj` — matching the codegen cell\'s output boxing). The baseline is NOT a bare cursor drain',
-    '> that builds nothing, so the `codegen ÷ sql` / `ir ÷ sql` ratio measures the SAME delta (render +',
-    '> bind + hydrate) in every language — the go ratio is now the same box-vs-box comparison as rust\'s.',
+    '> **2. Each language uses its OWN real driver per dialect** (below), so cross-language absolute times carry',
+    '> a driver caveat (different driver overheads). Within a language, the numbers are directly comparable.',
     '>',
-    '> **2. DB-backed ABSOLUTE numbers are DRIVER-DEPENDENT.** Each language uses its OWN driver',
-    '> per dialect (below), so DB-backed absolute times are comparable **WITHIN a language across',
-    '> surfaces** (same driver), and **across languages only with the driver caveat** (different',
-    '> driver overheads — an apples-to-oranges warning the original bench did not state).',
+    driverTable(m),
     '>',
-    '> **Per-language / per-dialect driver used (DB-backed):**',
+    '> **3. Go uses the PURE-GO `modernc.org/sqlite` driver** (no cgo) — a realistic default for Go users, but',
+    '> a cgo SQLite driver (mattn/go-sqlite3) would post different (usually faster) in-proc numbers. Where shown,',
+    '> the Go SQLite column is the pure-Go driver; a cgo variant is noted if measured.',
     '>',
+    '> **4. TS PG/MySQL ride the async pool path** (`pg` / `mysql2`, Node has no sync networked driver); SQLite',
+    '> is sync better-sqlite3. TS numbers match the ORM-bench litedbmodel column (same op, same v2 SQL).',
+    '',
+  ].join('\n');
+}
+
+function driverTable(m: MatrixResult): string {
+  const rows = [
     '> | Language | SQLite | PostgreSQL | MySQL |',
     '> |---|---|---|---|',
-    '> | TypeScript | better-sqlite3 (sync runtime) | `pg` Pool (async `executeBundleAsync`) | `mysql2` pool (async) |',
-    '> | Python | stdlib `sqlite3` (sync runtime) | `psycopg` 3 pooled (sync runtime) | `PyMySQL` pooled (sync runtime) |',
-    '> | Rust | `rusqlite` (sync runtime) | — (no `ir` cell — native-only, #8) | — (no `ir` cell — native-only, #8) |',
-    '> | Go | `modernc.org/sqlite` (sync runtime) | — (no `ir` cell — native-only, #8) | — (no `ir` cell — native-only, #8) |',
-    '> | PHP | PDO sqlite (sync runtime) | `LiveDb::postgres` PDO pgsql (`ir` only, #53) | `LiveDb::mysql` PDO RETURNING-emulated (`ir` only, #53) |',
-    '>',
-    '> The `ir` cell hits REAL dockerized PG + MySQL (#53) for the THREE languages that HAVE an `ir`',
-    '> cell — **TypeScript, Python, PHP**. TS PG/MySQL rides the ASYNC production path',
-    '> (`executeBundleAsync` + pool executors; writes via a manual tx over `renderTxStatement`, MySQL',
-    '> RETURNING emulated by re-select) because Node has no synchronous PG/MySQL driver; Python/PHP',
-    '> ride their shipped SYNC live drivers (the SAME `PostgresDriver`/`MysqlDriver` /',
-    '> `LiveDb::postgres`/`LiveDb::mysql` seam each runtime\'s conformance `livedb_runner` already',
-    '> proves against these same containers) through the standard `ir` runtime call',
-    '> (`executeBundle`/`execute_bundle`). Each language\'s live legs write into an ISOLATED per-bench',
-    '> schema (`scp_<lang>_bench`, distinct from conformance\'s `scp_<lang>`) so the two never collide.',
-    '>',
-    '> **Rust and Go carry NO `ir` cell** (the IR interpreter is DELETED from their runtimes, #8): their',
-    '> ONLY litedbmodel surface is `codegen` (generated native code). `codegen` is wired to the in-proc',
-    '> sqlite driver only, so Rust/Go are SQLite-only by construction — a native-only design, not a gap.',
-    '> (The independent `v1-rs` runner carries its OWN sqlx live wiring, so its PG/MySQL DB-backed DOES',
-    '> run — the sole Rust-family leg that reaches the dockerized PG/MySQL.)',
-    '>',
-    '> `sql` (the hand-written raw-SQL baseline) and `codegen` (the generated-module cell) stay',
-    '> SQLite-only for every language, by construction, not a gap: `sql` is deliberately',
-    '> sqlite-shaped SQL (the point of a fixed baseline), and `codegen`\'s generated read module is',
-    '> wired to the in-proc sqlite driver only (no language\'s codegen cell has ever run DB-backed',
-    '> against PG/MySQL — the per-cell skip note says so honestly).',
-    '>',
-    '> **Per-dialect MICRO (client-path) coverage.** TS + Python + Rust run the micro against ALL',
-    '> THREE dialect bundles (shape-based mocks, no SQL execution). Go + PHP micro is SQLite-only:',
-    '> their micro mock rides `database/sql` / a MockPDO-over-sqlite whose arg/parse layer rejects',
-    '> the PG/MySQL IN-list array param + `= ANY`/`JSON_TABLE` SQL — so their non-SQLite micro is an',
-    '> explicit per-cell SKIP (shown as `skip` in the micro tables), never a silent drop. The',
-    '> 3-dialect cross-language client-path comparison therefore stands on TS/Python/Rust; Go/PHP',
-    '> contribute the SQLite client-path + their full SQLite DB-backed surface. (The independent',
-    '> `v1-rs` Rust runner carries its OWN sqlx live wiring, so its PG/MySQL DB-backed DOES run.)',
-    '>',
-    '> **3. `codegen` GENUINELY executes THROUGH the bc-generated STRAIGHT-LINE module — and it is',
-    '> now the FASTER litedbmodel read surface (codegen < ir), approaching the raw-SQL baseline.**',
-    '> TS/Rust/Go (generate.ts\'s CODEGEN_LANGS) IMPORT the bc-GENERATED module + fail-closed-verify',
-    '> (recompute `fingerprint(live IR)` == baked `IR_FINGERPRINT`) + execute THROUGH the module\'s',
-    '> generated typed-native entry (`bind(handler).call(entry, input)` in TS; `run_native_raw_struct_<Comp>` /',
-    '> `RunNativeRawStruct_<Comp>` in Rust/Go) — a DISTINCT code entry from `ir`\'s',
-    '> `executeBundle`/`execute_bundle`/`ExecuteBundle`, with NO `run_behavior` tree-walk. The',
-    '> anti-sham gates in selfcheck.ts assert both: the generated MODULES carry no interpreter call /',
-    '> no embedded IR, AND the codegen CELLS invoke the generated function, not the interpreter, on',
-    '> the read path. Under bc 0.7.x typed-native lowering the generated read modules are de-boxed',
-    '> straight-line SQL render + typed param bind (no per-call `obj{…}` re-evaluation through the',
-    '> interpreter), so **codegen is measured BELOW `ir` for all six COVERED reads** (`find`,',
-    '> `complexWhere`, `inList`, `belongsTo`, `hasMany`, `hasManyLimit`) — read each language\'s',
-    '> `impl ÷ sql` micro table: codegen sits between the raw-SQL baseline (1.00×) and `ir`.',
-    '>',
-    '> **Coverage caveat — the two WRITE cases (`batchInsert`, `writeTxGate`) are NOT codegen-module',
-    '> cases (#60 m1):** no generated write module exists yet, so for writes the codegen cell falls',
-    '> back to the SAME runtime call `ir` uses plus a one-time cold-start fingerprint check. codegen',
-    '> ≈ ir (or marginally above, by the fingerprint cost) on those two writes is therefore honest and',
-    '> expected — the `codegen < ir` win is asserted only for the six covered READS. Behaviour is EQUAL',
-    '> either way (codegen output == ir output, same rows/values — asserted by the `verify` selfcheck',
-    '> for all 8 cases in Rust + Go, and the queries/op · rows/op fairness table below).',
-    '>',
-    '> **Rust and Go have NO `ir` cell to compare against** — their IR interpreter is DELETED (#8),',
-    '> so `codegen` is their sole surface. Their gap-to-baseline is read directly against the raw-SQL',
-    '> `sql` baseline (and, for the true gap-to-v1, against the `v1-rs` apples-to-apples runner below).',
-    '> **Python and PHP have NO `codegen` cell** (not codegen-module languages) — their measured',
-    '> surface is `ir`, the honest non-codegen interpret path.',
-    '',
-  ].join('\n');
+    '> | TypeScript | better-sqlite3 (sync) | `pg` Pool (async) | `mysql2` pool (async) |',
+    '> | Python | stdlib `sqlite3` | `psycopg` 3 | `PyMySQL` |',
+    '> | PHP | PDO sqlite | PDO pgsql | PDO mysql |',
+    '> | Rust | `rusqlite` | `tokio-postgres` + `deadpool` | `sqlx` |',
+    '> | Go | `modernc.org/sqlite` (pure-Go) | `pgx` | `go-sql-driver/mysql` |',
+  ];
+  void m;
+  return rows.join('\n');
 }
 
-// The impls present for a language, in canonical order.
-function implsFor(m: MatrixResult, language: string): string[] {
-  const order = ['sql', 'codegen', 'ir', 'dynamic', 'prepared', 'v1'];
-  return order.filter((impl) => cell(m, language, impl));
-}
-
-// ── Per-dialect relative micro overhead (impl ÷ sql) ─────────────────────────
-function relativeMicroTable(m: MatrixResult, language: string, dialect: string): string {
-  const impls = implsFor(m, language).filter((i) => i !== 'sql' && i !== 'v1');
-  const sqlD = dcell(m, language, 'sql', dialect);
-  if (!sqlD || impls.length === 0) return '';
-  const head = `| Micro case | ${impls.map((i) => `${IMPL_LABEL[i]} ÷ sql`).join(' | ')} |`;
-  const sep = `|---|${impls.map(() => '---').join('|')}|`;
-  const rows = CROSSLANG_MICRO_CASE_IDS.map((caseId) => {
-    const base = sqlD.micro[caseId]?.p50Ms;
-    const cells = impls.map((impl) => {
-      const d = dcell(m, language, impl, dialect);
-      return fmtRatio(relativeOverhead(d?.micro[caseId]?.p50Ms ?? NaN, base ?? NaN));
-    });
-    return `| ${CROSSLANG_CASE_LABELS[caseId]} | ${cells.join(' | ')} |`;
-  });
-  return [`##### ${LANG_LABEL[language] ?? language}`, '', head, sep, ...rows, ''].join('\n');
-}
-
-function microAbsoluteTable(m: MatrixResult, language: string, dialect: string): string {
-  const impls = implsFor(m, language).filter((i) => i !== 'v1');
-  if (impls.length === 0) return '';
-  const head = `| Micro case | ${impls.map((i) => `${IMPL_LABEL[i]} (µs)`).join(' | ')} |`;
-  const sep = `|---|${impls.map(() => '---').join('|')}|`;
-  const rows = CROSSLANG_MICRO_CASE_IDS.map((caseId) => {
-    const cells = impls.map((impl) => {
-      const d = dcell(m, language, impl, dialect);
-      if (d?.microSkipped[caseId]) return 'skip';
-      return fmtUs(d?.micro[caseId]?.p50Ms);
-    });
-    return `| ${CROSSLANG_CASE_LABELS[caseId]} | ${cells.join(' | ')} |`;
-  });
-  return [`##### ${LANG_LABEL[language] ?? language} — micro p50 (µs)`, '', head, sep, ...rows, ''].join('\n');
-}
-
-// ── Per-dialect DB-backed absolute latency ────────────────────────────────────
-function dbAbsoluteTable(m: MatrixResult, language: string, dialect: string): string {
-  const impls = implsFor(m, language);
-  if (impls.length === 0) return '';
-  const head = `| Case | ${impls.map((i) => `${IMPL_LABEL[i]} (p50 ms)`).join(' | ')} |`;
-  const sep = `|---|${impls.map(() => '---').join('|')}|`;
+// ── ① Language-vs-language END-TO-END p50 (ms), per op × per DB ────────────────
+function whichLanguageFastest(m: MatrixResult, dialect: string): string {
+  const langs = liveLangs(m);
+  if (langs.length === 0) return `#### ${DIALECT_LABEL[dialect] ?? dialect}\n\n_No language cell ran._\n`;
+  const head = `| Op | ${langs.map((l) => LANG_LABEL[l] ?? l).join(' | ')} |`;
+  const sep = `|---|${langs.map(() => '---').join('|')}|`;
   const rows = CROSSLANG_CASE_IDS.map((caseId) => {
-    const cells = impls.map((impl) => {
-      const cr = dcell(m, language, impl, dialect)?.cases[caseId];
-      if (cr?.skipped) return 'skip';
-      return fmtMs(cr?.latency.p50Ms);
+    // Find the fastest live language for this op×dialect to mark it.
+    const vals = langs.map((l) => dcell(runtimeCell(m, l), dialect)?.cases[caseId]);
+    const nums = vals.map((v) => (v && !v.skipped ? v.latency.p50Ms : NaN));
+    const best = Math.min(...nums.filter((x) => !Number.isNaN(x)));
+    const cells = vals.map((v, i) => {
+      if (!v) return '—';
+      if (v.skipped) return 'skip';
+      const p = v.latency.p50Ms;
+      const s = fmtMs(p);
+      return !Number.isNaN(best) && p === best && langs.length > 1 ? `**${s}**` : s;
     });
-    return `| ${CROSSLANG_CASE_LABELS[caseId]} | ${cells.join(' | ')} |`;
+    const w = CROSSLANG_WRITE_CASES.has(caseId) ? 'W' : 'R';
+    return `| ${w} ${CROSSLANG_CASE_LABELS[caseId] ?? caseId} | ${cells.join(' | ')} |`;
   });
-  // Collect any skip reasons (deduped) as a footnote.
+  // Skip-reason footnotes (deduped).
   const notes = new Set<string>();
-  for (const impl of impls) {
+  for (const l of langs) {
     for (const caseId of CROSSLANG_CASE_IDS) {
-      const s = dcell(m, language, impl, dialect)?.cases[caseId]?.skipped;
-      if (s) notes.add(`${IMPL_LABEL[impl]}: ${s}`);
+      const s = dcell(runtimeCell(m, l), dialect)?.cases[caseId]?.skipped;
+      if (s) notes.add(`${LANG_LABEL[l] ?? l}: ${s}`);
     }
   }
   const noteLines = notes.size ? ['', ...[...notes].map((n) => `> _skip — ${n}_`)] : [];
-  return [`##### ${LANG_LABEL[language] ?? language} — DB-backed p50 (ms)`, '', head, sep, ...rows, ...noteLines, ''].join('\n');
+  return [`#### ${DIALECT_LABEL[dialect] ?? dialect} — end-to-end p50 (ms), driver-included`, '', head, sep, ...rows, ...noteLines, ''].join('\n');
 }
 
-// ── Fairness per dialect — queries/op · rows/op ──────────────────────────────
+// ── ② within-language ÷sql overhead (sqlite) ──────────────────────────────────
+function overheadTable(m: MatrixResult): string {
+  const langs = liveLangs(m).filter((l) => baselineCell(m, l) && !baselineCell(m, l)!.error);
+  if (langs.length === 0) {
+    return ['## ② Within-language ÷sql overhead (SQLite)', '', '_No hand-SQL baseline cell ran — overhead column omitted._', ''].join('\n');
+  }
+  const head = `| Op | ${langs.map((l) => `${LANG_LABEL[l] ?? l} ÷sql`).join(' | ')} |`;
+  const sep = `|---|${langs.map(() => '---').join('|')}|`;
+  const rows = CROSSLANG_CASE_IDS.map((caseId) => {
+    const cells = langs.map((l) => {
+      const rt = dcell(runtimeCell(m, l), 'sqlite')?.cases[caseId];
+      const bl = dcell(baselineCell(m, l), 'sqlite')?.cases[caseId];
+      if (!rt || rt.skipped || !bl || bl.skipped) return '—';
+      return fmtRatio(relativeOverhead(rt.latency.p50Ms, bl.latency.p50Ms));
+    });
+    return `| ${CROSSLANG_CASE_LABELS[caseId] ?? caseId} | ${cells.join(' | ')} |`;
+  });
+  return ['## ② Within-language ÷sql overhead (SQLite)', '', '> Each op’s runtime-path p50 ÷ the hand-written raw-SQL baseline p50 (SQLite in-proc). 1.00× = the', '> thin runtime matches hand SQL; >1 = that multiple of client-side overhead.', '', head, sep, ...rows, ''].join('\n');
+}
+
+// ── Fairness — queries/op · rows/op ───────────────────────────────────────────
 function fairnessTable(m: MatrixResult, dialect: string): string {
-  const cells = m.cells.filter((c) => !c.error && c.dialects[dialect] && Object.values(c.dialects[dialect].cases).some((r) => r.queries !== undefined));
+  const langs = liveLangs(m);
+  const cells = langs.map((l) => runtimeCell(m, l)!).filter((c) => c.dialects[dialect] && Object.values(c.dialects[dialect].cases).some((r) => r.queries !== undefined));
   if (cells.length === 0) return '';
-  const head = `| Case | ${cells.map((c) => `${c.language}/${c.impl}`).join(' | ')} |`;
+  const head = `| Op | ${cells.map((c) => LANG_LABEL[c.language] ?? c.language).join(' | ')} |`;
   const sep = `|---|${cells.map(() => '---').join('|')}|`;
   const rows = CROSSLANG_CASE_IDS.map((caseId) => {
     const vals = cells.map((c) => {
       const r = c.dialects[dialect].cases[caseId];
       return r && r.queries !== undefined ? `${r.queries}/${r.rows}` : '—';
     });
-    return `| ${CROSSLANG_CASE_LABELS[caseId]} | ${vals.join(' | ')} |`;
+    return `| ${CROSSLANG_CASE_LABELS[caseId] ?? caseId} | ${vals.join(' | ')} |`;
   });
   return [`#### ${DIALECT_LABEL[dialect] ?? dialect} — queries/op · rows/op`, '', head, sep, ...rows, ''].join('\n');
 }
@@ -255,120 +177,39 @@ function resourceTable(m: MatrixResult): string {
   const head = '| Cell | Cold start (ms) | RSS (MB) | Artifact size (MB) |';
   const sep = '|---|---|---|---|';
   const rows = m.cells.map((c) => {
-    if (c.error) return `| ${c.language} / ${c.impl} | FAILED: ${c.error} | — | — |`;
+    if (c.error) return `| ${LANG_LABEL[c.language] ?? c.language} / ${c.impl} | FAILED: ${c.error} | — | — |`;
     const cold = c.coldStartMs === undefined ? '—' : c.coldStartMs.toFixed(0);
     const rss = c.rssBytes === undefined ? '—' : (c.rssBytes / 1024 / 1024).toFixed(1);
     const art = c.artifactSizeBytes === undefined ? '—' : (c.artifactSizeBytes / 1024 / 1024).toFixed(2);
-    return `| ${c.language} / ${c.impl} | ${cold} | ${rss} | ${art} |`;
+    return `| ${LANG_LABEL[c.language] ?? c.language} / ${c.impl} | ${cold} | ${rss} | ${art} |`;
   });
   return ['## Cold start, memory & artifact size', '', head, sep, ...rows, ''].join('\n');
 }
 
-// ── v1 regression verdict (SQLite micro; v1 cells run sqlite only) ───────────
-function v1Verdict(m: MatrixResult): string {
-  const lines: string[] = ['## v1-vs-v2 regression verdict (SQLite micro-bench)', ''];
-  const v1ts = cell(m, 'v1-ts', 'v1');
-  const out: string[] = [];
-  if (v1ts && !v1ts.error) {
-    const v1d = v1ts.dialects.sqlite;
-    lines.push('### v1-ts (`litedbmodel@1.2.10` eager path) vs v2 TS surfaces — SQLite micro p50', '');
-    lines.push('| Micro case | v1-ts (µs) | v2 codegen (µs) | v2 ir (µs) | v2 prepared (µs) | v2/v1 (best) | verdict |');
-    lines.push('|---|---|---|---|---|---|---|');
-    const cg = dcell(m, 'ts', 'codegen', 'sqlite'), ir = dcell(m, 'ts', 'ir', 'sqlite'), pr = dcell(m, 'ts', 'prepared', 'sqlite');
-    for (const caseId of CROSSLANG_MICRO_CASE_IDS) {
-      const v1 = v1d?.micro[caseId]?.p50Ms;
-      const candidates = [cg?.micro[caseId]?.p50Ms, ir?.micro[caseId]?.p50Ms, pr?.micro[caseId]?.p50Ms].filter((x): x is number => typeof x === 'number' && !Number.isNaN(x));
-      const best = candidates.length ? Math.min(...candidates) : NaN;
-      const ratio = relativeOverhead(best, v1 ?? NaN);
-      const pass = Number.isNaN(ratio) || ratio <= V1_REGRESSION_THRESHOLD;
-      if (!Number.isNaN(ratio)) out.push(`${CROSSLANG_CASE_LABELS[caseId]}: ${fmtRatio(ratio)} ${pass ? 'PASS' : 'REGRESSION'}`);
-      lines.push(`| ${CROSSLANG_CASE_LABELS[caseId]} | ${fmtUs(v1)} | ${fmtUs(cg?.micro[caseId]?.p50Ms)} | ${fmtUs(ir?.micro[caseId]?.p50Ms)} | ${fmtUs(pr?.micro[caseId]?.p50Ms)} | ${fmtRatio(ratio)} | ${pass ? '✅ PASS' : '❌ REGRESSION'} |`);
-    }
-    lines.push('', `> Best-of-{codegen,ir,prepared} v2 surface ÷ v1-ts, SQLite micro p50. Gate: ≤ ${V1_REGRESSION_THRESHOLD}×.`, '');
-  } else {
-    lines.push(`v1-ts cell did not run${v1ts?.error ? `: ${v1ts.error}` : ''}.`, '');
-  }
-
-  // ── v1-rs apples-to-apples (SAME Rust runtime family) — the TRUE gap-to-v1 for Rust ──
-  const v1rs = cell(m, 'v1-rs', 'ir');
-  if (v1rs && !v1rs.error) {
-    const v1rd = v1rs.dialects.sqlite;
-    const rsql = dcell(m, 'rust', 'sql', 'sqlite'), rir = dcell(m, 'rust', 'ir', 'sqlite'), rcg = dcell(m, 'rust', 'codegen', 'sqlite');
-    lines.push('### v1-rs (`litedbmodel.rs@0.4.5` async ActiveRecord) vs v2 Rust surfaces — SQLite micro p50 (APPLES-TO-APPLES)', '');
-    lines.push('> Same Rust runtime family (in-proc SQLite, I/O-excluded client-side path), so `×v1-rs`');
-    lines.push('> is the TRUE gap-to-v1 for Rust — not a cross-runtime ratio against v1-ts.', '');
-    lines.push('| Micro case | v1-rs (µs) | v2 sql (µs) | v2 ir (µs) | v2 codegen (µs) | sql ×v1-rs | ir ×v1-rs | codegen ×v1-rs |');
-    lines.push('|---|---|---|---|---|---|---|---|');
-    for (const caseId of CROSSLANG_MICRO_CASE_IDS) {
-      const v1 = v1rd?.micro[caseId]?.p50Ms;
-      const s0 = rsql?.micro[caseId]?.p50Ms, i0 = rir?.micro[caseId]?.p50Ms, c0 = rcg?.micro[caseId]?.p50Ms;
-      lines.push(`| ${CROSSLANG_CASE_LABELS[caseId]} | ${fmtUs(v1)} | ${fmtUs(s0)} | ${fmtUs(i0)} | ${fmtUs(c0)} | ${fmtRatio(relativeOverhead(s0 ?? NaN, v1 ?? NaN))} | ${fmtRatio(relativeOverhead(i0 ?? NaN, v1 ?? NaN))} | ${fmtRatio(relativeOverhead(c0 ?? NaN, v1 ?? NaN))} |`);
-    }
-    lines.push('', '> `×v1-rs` = v2 Rust surface ÷ v1-rs, SQLite micro p50. v1-rs is the achievable in-proc-SQLite');
-    lines.push('> comparison of the OLD hand-written runtime. Residual over v1-rs = SQL render (`?`→`$N` /');
-    lines.push('> placeholder walk) + boxed-`Value` row hydration + litedbmodel plumbing; the boxed-row');
-    lines.push('> portion is #76-de-box-addressable, the render walk is largely inherent to the portable IR.', '');
-  } else if (v1rs) {
-    lines.push('### v1-rs vs v2 Rust — APPLES-TO-APPLES', '', `v1-rs cell did not run${v1rs.error ? `: ${v1rs.error}` : ''}.`, '');
-  }
-
-  const regressed = out.filter((s) => s.includes('REGRESSION'));
-  if (regressed.length === 0) {
-    lines.push(`**Verdict: ✅ NO REGRESSION** — every v2 surface is within the ${V1_REGRESSION_THRESHOLD}× threshold of the v1-ts eager path on every measured SQLite micro case.`);
-  } else {
-    lines.push(`**Verdict: ⚠️ CLIENT-SIDE OVERHEAD (${regressed.length}/${out.length} micro cases exceed the ${V1_REGRESSION_THRESHOLD}× gate)** — v2's portable makeSQL-IR runtime is heavier than v1's hand DBConditions builder on the I/O-EXCLUDED micro; against any real DB round-trip (the DB-backed tables) this client-side delta is a small fraction of total latency.`);
-  }
-  lines.push('');
-  return lines.join('\n');
-}
-
 export function renderReport(m: MatrixResult): string {
-  const langs = ['ts', 'python', 'php', 'rust', 'go'].filter((l) => m.cells.some((c) => c.language === l && !c.error));
   const parts: string[] = [];
-  parts.push('# Cross-language execution-surface benchmark (epic #44)');
+  parts.push('# Cross-language END-TO-END benchmark (epic #63)');
   parts.push('');
   parts.push('<!-- GENERATED by benchmark/crosslang/run.ts — do not edit by hand; re-run to update. -->');
   parts.push('');
   parts.push(methodology(m));
 
-  parts.push('## Per-dialect relative overhead — `impl ÷ sql` (I/O-excluded micro, PRIMARY signal)');
+  parts.push('## ① Which language is fastest — end-to-end, driver-included, per op × per DB');
   parts.push('');
-  parts.push('> 1.00× = the exec surface matches hand-written raw SQL; >1 = that multiple of');
-  parts.push('> client-side overhead. This is the authoritative, VALID cross-language comparison.');
+  parts.push('> The 19 ORM ops executed by each language’s thin runtime against the REAL database. **Bold** = the');
+  parts.push('> fastest language for that op×DB. `R` = read, `W` = write. `skip` = cell not run (reason footnoted).');
   parts.push('');
-  for (const dialect of m.dialects) {
-    parts.push(`#### ${DIALECT_LABEL[dialect] ?? dialect}`);
-    parts.push('');
-    for (const l of langs) parts.push(relativeMicroTable(m, l, dialect));
-  }
+  for (const dialect of m.dialects) parts.push(whichLanguageFastest(m, dialect));
 
-  parts.push('## Micro-bench absolute (client-side p50, µs) — per dialect');
-  parts.push('');
-  for (const dialect of m.dialects) {
-    parts.push(`#### ${DIALECT_LABEL[dialect] ?? dialect}`);
-    parts.push('');
-    for (const l of langs) parts.push(microAbsoluteTable(m, l, dialect));
-  }
-
-  parts.push('## DB-backed absolute latency (p50 ms) — per dialect (REAL PG + MySQL + SQLite)');
-  parts.push('');
-  parts.push('> Comparable WITHIN a language across surfaces (same driver); across languages only');
-  parts.push('> with the per-language driver caveat above. `skip` = cell not run (reason footnoted).');
-  parts.push('');
-  for (const dialect of m.dialects) {
-    parts.push(`#### ${DIALECT_LABEL[dialect] ?? dialect}`);
-    parts.push('');
-    for (const l of langs) parts.push(dbAbsoluteTable(m, l, dialect));
-  }
+  parts.push(overheadTable(m));
 
   parts.push('## Fairness evidence — queries/op · rows/op (per dialect)');
   parts.push('');
-  parts.push('> Identical queries/op AND rows/op across every impl proves the raw-SQL baseline and');
-  parts.push('> each litedbmodel surface do the SAME logical DB work (tx framing excluded).');
+  parts.push('> Identical queries/op AND rows/op across every language proves they do the SAME logical DB work');
+  parts.push('> per op (the same v2 SCP SQL) — the apples-to-apples basis for the latency comparison.');
   parts.push('');
   for (const dialect of m.dialects) parts.push(fairnessTable(m, dialect));
 
   parts.push(resourceTable(m));
-  parts.push(v1Verdict(m));
   return parts.join('\n') + '\n';
 }

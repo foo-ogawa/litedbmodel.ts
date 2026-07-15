@@ -95,14 +95,11 @@ export const ORM_OP_LABEL: Record<string, string> = Object.fromEntries(ORM_OPS.m
 
 // ── A rendered statement + its role in the plan ───────────────────────────────
 // role:
-//   'stmt'         — a plain read/write statement executed as-is against the driver.
-//   'primary'      — a read whose result rows feed a subsequent relation batch (nested reads).
-//   'relation'     — a relation batch-load TEMPLATE: its param values are DERIVED at exec time
-//                    from the parent rows (targetKey / targetKeys against the primary result),
-//                    then compiled per-dialect via the SAME SCP relation compiler. Carries no
-//                    baked sql/params; the executor renders it against the real parent keys.
+//   'stmt'         — a plain read/write statement executed as-is against the driver. In a read plan,
+//                    reads[0] is the PRIMARY select (its rows feed the relation stages by array position).
 //   'insertReturn' — a write that RETURNs a generated id used by the NEXT statement's param.
-//   'useReturn'    — a write whose Nth param is filled from the prior insertReturn id.
+//   'useReturn'    — a write whose Nth param (useReturnAt) is filled from the prior insertReturn id.
+// (Relation batches are NOT PlanStmts — they are RelationStage entries with baked per-dialect SQL.)
 export type StmtRole = 'stmt' | 'insertReturn' | 'useReturn';
 
 export interface PlanStmt {
@@ -231,7 +228,7 @@ function buildNestedSingle(
 ): (d: OrmDialect) => OpPlan {
   return (d) => ({
     kind: 'read',
-    reads: [stmt(primary(d), d, 'primary')],
+    reads: [stmt(primary(d), d, 'stmt')],
     relations: [bakeSingle(d, 0, rel)],
   });
 }
@@ -432,7 +429,7 @@ const orm: Record<string, (d: OrmDialect) => OpPlan> = {
   // 18. Nested relations (100->1000->10000): users + posts(author_id) + comments(post_id).
   nestedRelations: (d) => ({
     kind: 'read',
-    reads: [stmt(compileSelect({ dialect: d, tableName: 'benchmark_users', select: '*', order: 'id ASC', limit: 100 }), d, 'primary')],
+    reads: [stmt(compileSelect({ dialect: d, tableName: 'benchmark_users', select: '*', order: 'id ASC', limit: 100 }), d, 'stmt')],
     relations: [
       bakeSingle(d, 0, { tableName: 'benchmark_posts', select: '*', parentKey: 'id', targetKey: 'author_id' }),
       bakeSingle(d, 1, { tableName: 'benchmark_comments', select: '*', parentKey: 'id', targetKey: 'post_id' }),
@@ -446,7 +443,7 @@ const orm: Record<string, (d: OrmDialect) => OpPlan> = {
       stmt(
         compileSelect({ dialect: d, tableName: 'benchmark_tenant_users', select: '*', conditions: { tenant_id: [1, 2, 3, 4, 5] }, limit: 100 }),
         d,
-        'primary',
+        'stmt',
       ),
     ],
     relations: [

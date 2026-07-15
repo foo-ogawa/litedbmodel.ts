@@ -81,12 +81,10 @@ export interface CaseResult {
   skipped?: string;
 }
 
-// Per-dialect results for one cell: the DB-backed cases + the micro cases compiled
-// for THAT dialect (the render/placeholder/array form differs per dialect).
+// Per-dialect results for one cell: the DB-backed op results for THAT dialect (#63:
+// the I/O-excluded micro axis is GONE — every measured op is DB-backed).
 export interface DialectResult {
   cases: Record<string, CaseResult>;
-  micro: Record<string, LatencyStats>;
-  microSkipped: Record<string, string>;
 }
 
 export interface CellResult {
@@ -96,7 +94,7 @@ export interface CellResult {
   rssBytes?: number;
   // Compiled-artifact size in bytes (Rust/Go binaries). Undefined for interpreted cells.
   artifactSizeBytes?: number;
-  // Per-dialect (sqlite/postgres/mysql) case + micro results.
+  // Per-dialect (sqlite/postgres/mysql) DB-backed op results.
   dialects: Record<string, DialectResult>;
   pending?: boolean;
   // A cell that failed to run (toolchain/build error) carries an error note so the
@@ -108,7 +106,6 @@ export interface MatrixResult {
   generatedAt: string;
   iterations: number;
   warmup: number;
-  microIterations: number;
   dialects: readonly string[];
   cells: CellResult[];
 }

@@ -23806,7 +23806,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users LIMIT 100",
             "params": []
           }
@@ -23829,7 +23829,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users LIMIT 100",
             "params": []
           }
@@ -23852,7 +23852,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users LIMIT 100",
             "params": []
           }
@@ -23918,7 +23918,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users WHERE name LIKE ? LIMIT 1",
             "params": [
               "User%"
@@ -23943,7 +23943,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users WHERE name LIKE ? LIMIT 1",
             "params": [
               "User%"
@@ -23968,7 +23968,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users WHERE name LIKE $1 LIMIT 1",
             "params": [
               "User%"
@@ -24036,7 +24036,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users WHERE email = ? LIMIT 1",
             "params": [
               "user500@example.com"
@@ -24061,7 +24061,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users WHERE email = ? LIMIT 1",
             "params": [
               "user500@example.com"
@@ -24086,7 +24086,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users WHERE email = $1 LIMIT 1",
             "params": [
               "user500@example.com"
@@ -24689,7 +24689,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users ORDER BY id ASC LIMIT 100",
             "params": []
           }
@@ -24723,7 +24723,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users ORDER BY id ASC LIMIT 100",
             "params": []
           }
@@ -24757,7 +24757,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_users ORDER BY id ASC LIMIT 100",
             "params": []
           }
@@ -24793,7 +24793,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_tenant_users WHERE tenant_id IN (SELECT value FROM json_each(?)) LIMIT 100",
             "params": [
               "[1,2,3,4,5]"
@@ -24845,7 +24845,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_tenant_users WHERE tenant_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) LIMIT 100",
             "params": [
               "[1,2,3,4,5]"
@@ -24897,7 +24897,7 @@
         "kind": "read",
         "reads": [
           {
-            "role": "primary",
+            "role": "stmt",
             "sql": "SELECT * FROM benchmark_tenant_users WHERE tenant_id IN ($1, $2, $3, $4, $5) LIMIT 100",
             "params": [
               1,

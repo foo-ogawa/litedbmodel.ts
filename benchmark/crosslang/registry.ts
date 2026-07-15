@@ -1,89 +1,53 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Cross-language cell REGISTRY (epic #44) — the (language × impl) matrix.
+// Cross-language cell REGISTRY (epic #63) — ONE production cell per language.
 // ════════════════════════════════════════════════════════════════════════════
 //
-//   TS      : sql / codegen / ir / dynamic / prepared     (5 cells)
-//   Python/PHP : sql / ir     (NO codegen — Python/PHP are     (2 each = 4 cells)
-//             NOT codegen-MODULE languages: generate.ts's CODEGEN_LANGS is
-//             {ts,go,rust}, so a py/php "codegen" cell was only ir + a
-//             one-time fingerprint check — not a distinct exec surface. Dropped
-//             per the owner-corrected #44 matrix.)
-//   Rust/Go : sql / codegen  (NATIVE-ONLY — no ir cell,    (2 each = 4 cells)
-//             the IR interpreter is deleted from their runtimes, #8)
-//   → 13 cells, + v1 comparison rows (v1-ts; v1-rs if the old .rs builds).
+// The unified bench measures each language's THIN GENERIC RUNTIME executing the 19
+// ORM ops (from the shared orm-plan.json artifact) DB-backed on all 3 real dialects.
+// There is ONE production cell per language — no impl axis, no codegen-module cells,
+// no micro/mock. Each cell spawns its language's 19-op plan-executor subprocess, which
+// speaks the contract (contract.ts) over stdin/stdout.
 //
-// A cell says how to SPAWN its adapter subprocess. Compiled cells (Rust/Go) are
-// built first; if the build fails the cell carries a `buildError` and the harness
-// renders an honest failure row (never silently drops it).
+// A cell says how to SPAWN its adapter subprocess. Compiled cells (Rust/Go) are built
+// first; if the build/spawn fails the harness renders an honest failure row (never a
+// silent drop), so a not-yet-built cell is visible, never faked.
 
 export interface CellSpec {
-  language: string; // 'ts' | 'python' | 'php' | 'rust' | 'go' | 'v1-ts' | 'v1-rs'
-  impl: string; // 'sql' | 'codegen' | 'ir' | 'dynamic' | 'prepared' | 'v1'
+  language: string; // 'ts' | 'python' | 'php' | 'rust' | 'go'
+  impl: string; // 'runtime' (the shipped thin-runtime production path) | 'baseline' (hand-SQL, sqlite)
   spawn?: { command: string; args: string[]; cwd?: string; env?: Record<string, string> };
-  // A note when a cell can't be built/run (rendered in the report).
   note?: string;
 }
 
-const TS_RUNNER = 'benchmark/crosslang/adapters/ts/runner.ts';
+// The 19-op plan executor entry per language (owned by the adapter ports). Each reads the
+// committed orm-plan.json and speaks the NDJSON contract. Overridable via env for CI wiring.
+const TS_RUNNER = process.env.TS_ORM_RUNNER ?? 'benchmark/crosslang/adapters/ts/orm-runner.ts';
 const PY = process.env.PYTHON_BIN ?? 'python3';
-const PY_RUNNER = 'benchmark/crosslang/adapters/python/runner.py';
+const PY_RUNNER = process.env.PY_ORM_RUNNER ?? 'benchmark/crosslang/adapters/python/orm_runner.py';
 const PHP = process.env.PHP_BIN ?? 'php';
-const PHP_RUNNER = 'benchmark/crosslang/adapters/php/runner.php';
-const RUST_BIN = process.env.RUST_BENCH_BIN ?? 'benchmark/crosslang/adapters/rust/target/release/lm_bench';
-// The codegen cell is a SEPARATE binary (owner order): its crate carries NO serde_json / no
-// litedbmodel_runtime — generated modules + the generated native companion only. It never
-// parses JSON or touches IR data at execution time.
-const RUST_CODEGEN_BIN = process.env.RUST_CODEGEN_BENCH_BIN ?? 'benchmark/crosslang/adapters/rust-codegen/target/release/lm_codegen';
-const GO_BIN = process.env.GO_BENCH_BIN ?? 'benchmark/crosslang/adapters/go/go_bench';
-// The go codegen cell is a SEPARATE binary (owner order, mirroring rust-codegen): its build links
-// NEITHER litedbmodel_runtime NOR (directly) encoding/json — the generated typed-native modules + the
-// generated native companion (cgplans, incl. SCHEMA/SEED) + database/sql only. It never parses the
-// JSON artifact or touches IR data at execution time. (bc-go transitively imports encoding/json for
-// its parser; that is unavoidable for any bc consumer and is not litedbmodel's codegen path.)
-const GO_CODEGEN_BIN = process.env.GO_CODEGEN_BENCH_BIN ?? 'benchmark/crosslang/adapters/go-codegen/lm_codegen';
-const V1RS_BIN = process.env.V1RS_BENCH_BIN ?? 'benchmark/crosslang/adapters/v1rs/target/release/v1rs_bench';
+const PHP_RUNNER = process.env.PHP_ORM_RUNNER ?? 'benchmark/crosslang/adapters/php/orm-runner.php';
+const RUST_BIN = process.env.RUST_ORM_BIN ?? 'benchmark/crosslang/adapters/rust/target/release/lm_orm';
+const GO_BIN = process.env.GO_ORM_BIN ?? 'go/lm_bench/lm_orm';
 
-function ts(impl: string): CellSpec {
-  return { language: 'ts', impl, spawn: { command: 'npx', args: ['tsx', TS_RUNNER, `--impl=${impl}`] } };
+function ts(): CellSpec {
+  return { language: 'ts', impl: 'runtime', spawn: { command: 'npx', args: ['tsx', TS_RUNNER] } };
 }
-function py(impl: string): CellSpec {
-  return { language: 'python', impl, spawn: { command: PY, args: [PY_RUNNER, `--impl=${impl}`] } };
+function py(): CellSpec {
+  return { language: 'python', impl: 'runtime', spawn: { command: PY, args: [PY_RUNNER] } };
 }
-function php(impl: string): CellSpec {
-  return { language: 'php', impl, spawn: { command: PHP, args: [PHP_RUNNER, `--impl=${impl}`] } };
+function php(): CellSpec {
+  return { language: 'php', impl: 'runtime', spawn: { command: PHP, args: [PHP_RUNNER] } };
 }
-function rust(impl: string): CellSpec {
-  // codegen rides the dedicated JSON-free binary; sql/ir ride the shared lm_bench adapter.
-  const command = impl === 'codegen' ? RUST_CODEGEN_BIN : RUST_BIN;
-  return { language: 'rust', impl, spawn: { command, args: [`--impl=${impl}`] } };
+function rust(): CellSpec {
+  return { language: 'rust', impl: 'runtime', spawn: { command: RUST_BIN, args: [] } };
 }
-function go(impl: string): CellSpec {
-  // codegen rides the dedicated JSON-free/rt-free binary (lm_codegen, no --impl arg — it IS codegen);
-  // sql rides the shared go_bench adapter.
-  if (impl === 'codegen') {
-    return { language: 'go', impl, spawn: { command: GO_CODEGEN_BIN, args: [] } };
-  }
-  return { language: 'go', impl, spawn: { command: GO_BIN, args: [`--impl=${impl}`] } };
+function go(): CellSpec {
+  return { language: 'go', impl: 'runtime', spawn: { command: GO_BIN, args: [] } };
 }
 
-export const MATRIX: CellSpec[] = [
-  // TS — the 5-mode reference.
-  ts('sql'), ts('codegen'), ts('ir'), ts('dynamic'), ts('prepared'),
-  // Python / PHP — sql / ir ONLY (the ir/interpret exec surface is their by-design mode).
-  // No codegen cell: Python/PHP are NOT codegen-MODULE languages (generate.ts's CODEGEN_LANGS
-  // is {ts,go,rust}), so a py/php "codegen" cell was only `ir` + a one-time fingerprint check —
-  // not a distinct exec surface. Dropped per the owner-corrected #44 matrix.
-  py('sql'), py('ir'),
-  php('sql'), php('ir'),
-  // Rust / Go — NATIVE-ONLY: { sql, codegen } (NO `ir` cell). The IR interpreter is DELETED from
-  // the rust/go runtimes (epic #44 native-only, #8) — every read/write runs generated native code
-  // (static SQL text + typed param binding), so there is no interpreter path to bench.
-  rust('sql'), rust('codegen'),
-  go('sql'), go('codegen'),
-  // v1 regression baselines.
-  { language: 'v1-ts', impl: 'v1', spawn: { command: 'npx', args: ['tsx', TS_RUNNER, '--impl=v1'] } },
-  { language: 'v1-rs', impl: 'ir', spawn: { command: V1RS_BIN, args: ['--impl=ir'] }, note: 'old litedbmodel.rs (async+deadpool) — built separately' },
-];
+// ONE production cell per language: the shipped thin runtime executing the 19 ORM ops on
+// all 3 real DBs, driver-included. (The retired #44 codegen-module cells + impl axis are gone.)
+export const MATRIX: CellSpec[] = [ts(), py(), php(), rust(), go()];
 
 export function liveCells(): CellSpec[] {
   let cells = MATRIX.filter((c) => c.spawn);
