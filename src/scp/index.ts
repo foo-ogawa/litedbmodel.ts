@@ -247,6 +247,10 @@ export type { CompositeWriteEntry } from './runtime';
 // batch SQL is byte-copied from the v1 builders (compileInsertMany/compileUpdateMany/compileDeleteMany).
 export { compileCreateManyBundle, compileUpdateManyBundle, compileDeleteManyBundle } from './runtime';
 export { compileDeleteMany, compileInsertMany } from './makesql';
+// dbCast: the column-type cast marker the makeSQL compilers thread into WHERE/SET (spec §4.1).
+// Re-exported so a bundle consumer builds the SAME DBCast instance the inlined compilers recognise
+// (a standalone dist/DBValues copy is a DIFFERENT class → the compiler would not honour the cast).
+export { dbCast, dbCastIn } from '../DBValues';
 
 // Mode-3 codegen (WS7f, #35 — spec §9 exec-mode 3): supply the litedbmodel SQL catalog to bc's
 // shared generator; emit per-language STATIC straight-line source (de-interpreted, bc#75 — real

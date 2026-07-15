@@ -33,8 +33,6 @@
 // entry re-exports the makeSQL compilers under `*MakeSQL` aliases (compileSelect→compileSelectMakeSQL,
 // compileInsert→compileInsertMakeSQL, compileDelete→compileDeleteMakeSQL); the others keep their name.
 import * as lm from '../../dist/scp/index.mjs';
-// dbCast lives in DBValues (no behavior-contracts dependency → CJS-importable under tsx).
-import { dbCast as dbCastImpl } from '../../dist/DBValues.js';
 
 // Local type aliases (the bundle does not re-export the compile-arg types by name; the shapes below
 // match src/scp/makesql exactly — asserted byte-for-byte by the #65 parity test).
@@ -53,7 +51,8 @@ const compileSingleKeyUnlimited = lm.compileSingleKeyUnlimited as (o: Record<str
 const compileCompositeKeyUnlimited = lm.compileCompositeKeyUnlimited as (o: Record<string, unknown>) => MakeSQL;
 const assembleMakeSQL = lm.assembleMakeSQL as (n: MakeSQL) => { sql: string; params: unknown[] };
 const renderPlaceholders = lm.renderPlaceholders as (sql: string, d: Dialect) => string;
-const dbCast = dbCastImpl as (v: unknown, cast: string) => unknown;
+// dbCast MUST come from the SAME bundle as the compilers (shared DBCast class identity).
+const dbCast = lm.dbCast as (v: unknown, cast: string) => unknown;
 
 // ── Dialects (the three real targets) ─────────────────────────────────────────
 export const ORM_DIALECTS = ['sqlite', 'mysql', 'postgres'] as const;
