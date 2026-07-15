@@ -20,6 +20,44 @@ interface BetterSqlite3Statement {
   run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
   all(...params: unknown[]): unknown[];
   get(...params: unknown[]): unknown;
+  /** better-sqlite3: return integer columns as bigint (exact for i64). Optional (feature-detected). */
+  safeIntegers?(toggle?: boolean): BetterSqlite3Statement;
+}
+
+/**
+ * Read de-box (issue #9): SQLite has no separate BIGINT type — better-sqlite3 returns every integer
+ * as a JS `number` by default, so an i64 past 2^53 is ALREADY rounded before the v1 decorator's
+ * `materializeCell(_, 'int64')` sees it. Enabling `safeIntegers` on the statement makes EVERY integer
+ * column arrive as an exact `bigint`, so a `@column.bigint()` cell materializes to the exact string.
+ * But that also turns undecorated / int32 columns into bigints; this pass narrows any STRAY bigint
+ * back to a JS `number` when it fits safely, else to an exact decimal string — so a value never
+ * leaks out as a raw bigint (not JSON-safe). Decorated columns are re-coerced afterwards by the
+ * model's `typeCastFromDB` (int64 bigint→string, int32/number bigint→number), so this pass only ever
+ * decides the shape of columns WITHOUT a decorator. Mirrors the v2 SCP `materializeRows` narrowing.
+ */
+function narrowStrayBigints(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const MIN = BigInt(Number.MIN_SAFE_INTEGER);
+  const MAX = BigInt(Number.MAX_SAFE_INTEGER);
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      const v = row[key];
+      if (typeof v === 'bigint') {
+        row[key] = v >= MIN && v <= MAX ? Number(v) : v.toString();
+      }
+    }
+  }
+  return rows;
+}
+
+/**
+ * Run a prepared SELECT with better-sqlite3 in safe-integer mode (feature-detected), then narrow any
+ * stray bigint (see {@link narrowStrayBigints}). Returns exact rows the v1 `materializeCell` de-box
+ * can consume without i64 rounding.
+ */
+function allExactRows(stmt: BetterSqlite3Statement, params: unknown[]): Record<string, unknown>[] {
+  if (typeof stmt.safeIntegers === 'function') stmt.safeIntegers(true);
+  const rows = stmt.all(...params) as Record<string, unknown>[];
+  return narrowStrayBigints(rows);
 }
 
 // ============================================
@@ -76,7 +114,7 @@ class SqliteConnection implements DBConnection {
     const isWithSelect = normalizedSql.startsWith('WITH') && !normalizedSql.includes('UPDATE') && !normalizedSql.includes('DELETE');
     
     if (isSelectLike || isWithSelect) {
-      const rows = stmt.all(...convertedParams) as Record<string, unknown>[];
+      const rows = allExactRows(stmt, convertedParams);
       return { rows, rowCount: rows.length };
     } else {
       // INSERT, UPDATE, DELETE
@@ -156,7 +194,7 @@ export class SqliteDriver implements DBDriver {
         normalizedSql.startsWith('WITH') ||
         normalizedSql.includes('RETURNING')
       ) {
-        const rows = stmt.all(...convertedParams) as Record<string, unknown>[];
+        const rows = allExactRows(stmt, convertedParams);
         result = { rows, rowCount: rows.length };
       } else {
         const runResult = stmt.run(...convertedParams);

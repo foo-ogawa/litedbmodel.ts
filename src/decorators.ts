@@ -12,8 +12,6 @@ import 'reflect-metadata';
 import { type Column, type OrderSpec, createColumn, orderToString, type Conds, condsToRecord } from './Column';
 import type { DriverTypeCast } from './drivers/types';
 import {
-  castToBoolean,
-  castToDatetime,
   castToIntegerArray,
   castToNumericArray,
   castToStringArray,
@@ -22,7 +20,27 @@ import {
   castToJson,
   formatLocalDate,
 } from './TypeCast';
+import { materializeCell } from './scp/coltype';
 import type { ModelOptions } from './types';
+
+// ── v1 read type contract (issue #9), aligned to the v2 SCP read de-box ────────
+// The legacy v1 `DBModel` decorator read path historically materialized `@column.bigint()` to a JS
+// `bigint` (not JSON-safe) and `@column.datetime()` / an auto-inferred `Date` to a JS `Date`
+// (TZ-shifted). Both carry the SAME i64-rounding / date-corruption hazards the v2 SCP read path
+// already closed. Per the owner (2026-07-15), v1 is realigned to the v2 read TYPE CONTRACT — and it
+// does so by REUSING the v2 materializer (`materializeCell`, `src/scp/coltype.ts`), NOT a divergent
+// v1 coercion. The v1 decorator IS the static type source (unlike v2, whose SoT is the SQL DDL), so
+// each read-affected decorator variant pins its v2 `MaterializeClass` and routes the raw driver cell
+// through `materializeCell`:
+//   - `@column.bigint()` / auto `BigInt`  → `int64` → EXACT decimal STRING (no i64 rounding, JSON-safe)
+//   - `@column.datetime()` / auto `Date`  → `date`  → TZ-attached STRING (NOT a TZ-shifted JS Date)
+//   - `@column.boolean()`  / auto `Boolean` → `bool` → JS boolean
+// `null`/`undefined` pass through (nullable columns) exactly as `materializeCell` and the prior v1
+// casts did. Fail-closed like v2: a driver cell that cannot be coerced to the declared class throws
+// (a declared BIGINT column returning a non-integer string is a driver-contract violation, not a
+// silent `null`). `@column.date()` already yields a YYYY-MM-DD string (never a Date), `@column.number()`
+// stays a JS `number` (int32/float range is exact), and DECIMAL/NUMERIC ride `@column.number()` or a
+// string column — all already contract-correct, so they are unchanged.
 
 // ============================================
 // Metadata Keys
@@ -163,18 +181,20 @@ function inferTypeCastFromDesignType(
   switch (designType) {
     case Boolean:
       return {
+        // v2 read contract: BOOLEAN → boolean, via the shared materializer.
         typeCast: (v) => {
           if (v === undefined) return undefined;
-          return castToBoolean(v);
+          return materializeCell(v, 'bool');
         },
         sqlCast: 'boolean',
       };
     case Date:
-      // Auto-inferred Date: same behavior as @column.datetime()
+      // Auto-inferred Date: same behavior as @column.datetime() — v2 read contract materializes the
+      // date family to a TZ-attached STRING (NOT a TZ-shifted JS Date), via the shared materializer.
       return {
         typeCast: (v) => {
           if (v === undefined) return undefined;
-          return castToDatetime(v);
+          return materializeCell(v, 'date');
         },
         // Delegate to driver-specific serializeDatetime
         serialize: (val, typeCast) => {
@@ -197,14 +217,12 @@ function inferTypeCastFromDesignType(
       };
     case BigInt:
       return {
+        // v2 read contract: BIGINT/INT8 → EXACT decimal STRING (no i64 rounding, JSON-safe), via the
+        // shared materializer. NOTE: the TS field type stays `bigint` in existing models for source
+        // compat, but the VALUE is now the exact string — the whole point of the #9 realignment.
         typeCast: (v) => {
           if (v === undefined) return undefined;
-          if (v === null) return null;
-          try {
-            return BigInt(v as string | number);
-          } catch {
-            return null;
-          }
+          return materializeCell(v, 'int64');
         },
         sqlCast: 'bigint',
       };
@@ -441,9 +459,10 @@ export const column = Object.assign(
      */
     boolean: (columnName?: string) =>
       createColumnDecorator(
+        // v2 read contract: BOOLEAN → boolean, via the shared materializer (issue #9).
         (v) => {
           if (v === undefined) return undefined;
-          return castToBoolean(v);
+          return materializeCell(v, 'bool');
         },
         undefined,  // no custom serialize
         false,      // allow auto-inference
@@ -470,14 +489,12 @@ export const column = Object.assign(
      */
     bigint: (columnName?: string) =>
       createColumnDecorator(
+        // v2 read contract: BIGINT/INT8 → EXACT decimal STRING (no i64 rounding, JSON-safe), via the
+        // shared materializer (issue #9). The declared TS field type may still be `bigint` in existing
+        // models, but the runtime value is now the exact string — that IS the realignment.
         (v) => {
           if (v === undefined) return undefined;
-          if (v === null) return null;
-          try {
-            return BigInt(v as string | number);
-          } catch {
-            return null;
-          }
+          return materializeCell(v, 'int64');
         },
         undefined,  // no custom serialize
         false,      // allow auto-inference
@@ -500,9 +517,12 @@ export const column = Object.assign(
      */
     datetime: (columnName?: string) =>
       createColumnDecorator(
+        // v2 read contract: DATE/TIMESTAMP/TIMESTAMPTZ/DATETIME/TIME → TZ-attached STRING (NOT a
+        // TZ-shifted JS Date), via the shared materializer (issue #9). A driver already returning the
+        // native textual form passes through; a JS Date is rendered to its lossless ISO instant.
         (v) => {
           if (v === undefined) return undefined;
-          return castToDatetime(v);
+          return materializeCell(v, 'date');
         },
         // Delegate to driver-specific serializeDatetime
         (val, typeCast) => {

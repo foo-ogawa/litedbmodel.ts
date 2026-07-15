@@ -651,7 +651,10 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       expect(found!.bool_val).toBe(true);
       expect(found!.text_val).toBe('long text content');
       expect(found!.varchar_val).toBe('short varchar');
-      expect(found!.timestamp_val?.toISOString()).toBe(testDate.toISOString());
+      // v2 read contract (issue #9): timestamptz → a TZ-attached string (not a JS Date); parse back
+      // to compare the instant.
+      expect(typeof found!.timestamp_val).toBe('string');
+      expect(new Date(found!.timestamp_val as unknown as string).toISOString()).toBe(testDate.toISOString());
     });
 
     it('should persist and retrieve array types correctly via create/find', async () => {
@@ -767,7 +770,9 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       expect(found!.bool_val).toBe(true);
       expect(found!.text_val).toBe('updated text');
       expect(found!.varchar_val).toBe('updated');
-      expect(found!.timestamp_val?.toISOString()).toBe(updatedDate.toISOString());
+      // v2 read contract (issue #9): timestamptz → TZ-attached string; parse back to compare instant.
+      expect(typeof found!.timestamp_val).toBe('string');
+      expect(new Date(found!.timestamp_val as unknown as string).toISOString()).toBe(updatedDate.toISOString());
       expect(found!.int_array).toEqual([4, 5, 6]);
       expect(found!.text_array).toEqual(['x', 'y', 'z']);
       expect(found!.json_val).toEqual({ key: 'updated' });
@@ -836,7 +841,9 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       });
       const id1 = result1!.values[0][0] as number;
       const found1 = await AllTypes.findOne([[AllTypes.id, id1]]);
-      expect(found1!.timestamp_val?.toISOString()).toBe(specificDate.toISOString());
+      // v2 read contract (issue #9): timestamptz → TZ-attached string; parse back to compare instant.
+      expect(typeof found1!.timestamp_val).toBe('string');
+      expect(new Date(found1!.timestamp_val as unknown as string).toISOString()).toBe(specificDate.toISOString());
 
       // Test null datetime (typed column preserves null)
       const result2 = await DBModel.transaction(async () => {
@@ -853,7 +860,9 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       });
       const id3 = result3!.values[0][0] as number;
       const found3 = await AllTypes.findOne([[AllTypes.id, id3]]);
-      expect(found3!.timestamp_val?.toISOString()).toBe(minDate.toISOString());
+      // v2 read contract (issue #9): timestamptz → TZ-attached string; parse back to compare instant.
+      expect(typeof found3!.timestamp_val).toBe('string');
+      expect(new Date(found3!.timestamp_val as unknown as string).toISOString()).toBe(minDate.toISOString());
     });
   });
 
@@ -928,7 +937,7 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       expect(row2.float_val).toBeNull();
       expect(row2.bool_val).toBe(true);
       expect(row2.text_val).toBeNull();
-      expect(row2.timestamp_val).toBeInstanceOf(Date);
+      expect(typeof row2.timestamp_val).toBe('string'); // v2 read contract (issue #9): date → string
       expect(row2.date_val).toBeNull();
       expect(row2.json_val).toEqual({ key: 'value' });
 
@@ -958,7 +967,7 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       // Verify initial values
       const initial = await AllTypes.findOne([[AllTypes.id, id]]);
       expect(initial!.int_val).toBe(10);
-      expect(initial!.timestamp_val).toBeInstanceOf(Date);
+      expect(typeof initial!.timestamp_val).toBe('string'); // v2 read contract (issue #9): date → string
       expect(typeof initial!.date_val).toBe('string');
 
       // Update all to null
@@ -1018,7 +1027,7 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       // Verify initial values
       const initialRecords = await AllTypes.find([[AllTypes.id, ids]]);
       for (const rec of initialRecords) {
-        expect(rec.timestamp_val).toBeInstanceOf(Date);
+        expect(typeof rec.timestamp_val).toBe('string'); // v2 read contract (issue #9): date → string
         expect(typeof rec.date_val).toBe('string');
         expect(rec.bool_val).not.toBeNull();
       }
@@ -1139,7 +1148,9 @@ describe.skipIf(skipIntegrationTests)('DBModel advanced operations', () => {
       // Find and verify timezone is preserved
       const found = await AutoDate.findOne([[AutoDate.id, createdId]]);
       expect(found).not.toBeNull();
-      expect(found!.created_at?.toISOString()).toBe(testDate.toISOString());
+      // v2 read contract (issue #9): auto-inferred Date column → TZ-attached string; parse back.
+      expect(typeof found!.created_at).toBe('string');
+      expect(new Date(found!.created_at as unknown as string).toISOString()).toBe(testDate.toISOString());
     });
 
     it('should handle null Date with plain @column() decorator', async () => {

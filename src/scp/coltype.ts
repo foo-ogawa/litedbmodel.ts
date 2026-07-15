@@ -227,6 +227,14 @@ export function materializeCell(value: unknown, klass: MaterializeClass): unknow
       if (typeof value === 'boolean') return value;
       if (typeof value === 'number') return value !== 0;
       if (typeof value === 'bigint') return value !== 0n;
+      // A driver in TEXT mode (or the legacy v1 DBModel read path, issue #9) may hand a BOOLEAN over as
+      // its textual form: pg's `t`/`f`, or `true`/`false`/`1`/`0`. Normalize those to a JS boolean too,
+      // so a single coercion path serves both the v2 native-driver read and the v1 text-mode read.
+      if (typeof value === 'string') {
+        const s = value.trim().toLowerCase();
+        if (s === 't' || s === 'true' || s === '1') return true;
+        if (s === 'f' || s === 'false' || s === '0') return false;
+      }
       throw new Error(`materialize bool: unexpected driver JS type ${typeof value} (${String(value)})`);
     }
     case 'passthrough':

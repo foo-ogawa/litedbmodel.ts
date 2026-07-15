@@ -620,7 +620,10 @@ describe('MySQL Driver', () => {
       expect(created.bool_val).toBe(true);
       expect(created.text_val).toBe('long text content');
       expect(created.varchar_val).toBe('short varchar');
-      expect(created.timestamp_val?.toISOString()).toBe(testDate.toISOString());
+      // v2 read contract (issue #9): datetime → TZ-attached string (not a JS Date); parse back to
+      // compare the instant.
+      expect(typeof created.timestamp_val).toBe('string');
+      expect(new Date(created.timestamp_val as unknown as string).toISOString()).toBe(testDate.toISOString());
 
       // Find and verify values are preserved
       const found = await AllTypes.findOne([[AllTypes.id, created.id]]);
@@ -630,7 +633,8 @@ describe('MySQL Driver', () => {
       expect(found!.bool_val).toBe(true);
       expect(found!.text_val).toBe('long text content');
       expect(found!.varchar_val).toBe('short varchar');
-      expect(found!.timestamp_val?.toISOString()).toBe(testDate.toISOString());
+      expect(typeof found!.timestamp_val).toBe('string');
+      expect(new Date(found!.timestamp_val as unknown as string).toISOString()).toBe(testDate.toISOString());
     });
 
     it('should persist and retrieve JSON types correctly via create/find', async () => {
@@ -738,7 +742,9 @@ describe('MySQL Driver', () => {
       expect(found!.bool_val).toBe(true);
       expect(found!.text_val).toBe('updated text');
       expect(found!.varchar_val).toBe('updated');
-      expect(found!.timestamp_val?.toISOString()).toBe(updatedDate.toISOString());
+      // v2 read contract (issue #9): datetime → TZ-attached string; parse back to compare instants.
+      expect(typeof found!.timestamp_val).toBe('string');
+      expect(new Date(found!.timestamp_val as unknown as string).toISOString()).toBe(updatedDate.toISOString());
       expect(found!.json_val).toEqual({ key: 'updated' });
     });
 
@@ -814,8 +820,10 @@ describe('MySQL Driver', () => {
       });
       const id1 = result1!.values[0][0] as number;
       const found1 = await AllTypes.findOne([[AllTypes.id, id1]]);
-      // Compare without milliseconds for MySQL compatibility
-      expect(found1!.timestamp_val?.toISOString().slice(0, 19)).toBe(specificDate.toISOString().slice(0, 19));
+      // v2 read contract (issue #9): datetime → TZ-attached string; parse back and compare without
+      // milliseconds for MySQL compatibility.
+      expect(typeof found1!.timestamp_val).toBe('string');
+      expect(new Date(found1!.timestamp_val as unknown as string).toISOString().slice(0, 19)).toBe(specificDate.toISOString().slice(0, 19));
 
       // Test null datetime (typed column preserves null)
       const result2 = await DBModel.transaction(async () => {
