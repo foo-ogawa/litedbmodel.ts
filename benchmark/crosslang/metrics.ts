@@ -3,8 +3,10 @@
 // ════════════════════════════════════════════════════════════════════════════
 //
 // All percentile / throughput / aggregation math lives here so it is computed
-// IDENTICALLY for every language and every impl. Language subprocesses return
-// RAW samples over the contract; the harness feeds them through these functions.
+// IDENTICALLY for every language. Each language's standalone bench self-measures and
+// writes RAW samples to its `.results/<lang>.csv`; the collector (`collect.ts`) parses
+// those CSVs and feeds the raw samples through these functions — the bench programs
+// never compute percentiles themselves (measurement vs aggregation stay separate).
 
 // Nearest-rank percentile. `samples` need not be pre-sorted. NaN for empty.
 export function percentile(samples: readonly number[], p: number): number {
@@ -68,7 +70,7 @@ export function relativeOverhead(implMs: number, baselineMs: number): number {
   return implMs / baselineMs;
 }
 
-// ── Aggregated result shapes (what the harness assembles + report renders) ────
+// ── Aggregated result shapes (what the collector assembles + report renders) ──
 export interface CaseResult {
   case: string;
   latency: LatencyStats;

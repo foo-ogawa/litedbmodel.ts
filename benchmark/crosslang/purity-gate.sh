@@ -10,8 +10,11 @@
 #   codegen-module cells — rust-codegen / ts codegen-cell / go cgcell·cgplans·cgmods /
 #   lm_codegen — which covered none of the 19 ORM ops and are deleted. The unified bench's
 #   ONE production path per language is the shipped thin runtime + real driver; its exec/ir
-#   cells legitimately use serde_json/encoding/json for the NDJSON stdio protocol, which is
-#   NOT gated here — purity applies to litedbmodel's OWN runtime source, per the #63 rescope.)
+#   bench cells legitimately use serde_json/encoding/json to READ the shared orm-plan.json
+#   artifact (the SSoT of baked SQL+params) and assemble their flat-CSV output — that bench-side
+#   JSON is NOT gated here; purity applies to litedbmodel's OWN runtime source, per the #63 rescope.
+#   (The old NDJSON stdio harness protocol is gone — each language now runs standalone and writes a
+#   flat CSV; a separate collector aggregates. See run.ts / collect.ts.)
 # grep で残骸が 1 件でも出たら exit 1。ベンチ/CI の前提ゲートとして回す。
 # ════════════════════════════════════════════════════════════════════════════
 set -u

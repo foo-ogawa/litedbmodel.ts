@@ -3,12 +3,13 @@
 // fixed inputs, and the hand-optimized raw-SQL baseline.
 // ════════════════════════════════════════════════════════════════════════════
 //
-// EVERY adapter (TS sql/codegen/ir/dynamic/prepared, and Python/Rust/PHP/Go
-// sql/codegen/ir) runs the SAME access patterns against the SAME dataset, so
-// only the runtime-layer overhead differs. The behaviors are authored ONCE here
-// with the litedbmodel public authoring API and compiled to SqlBundles; those
-// bundles are what the ir/codegen cells (all languages) consume. The raw-SQL
-// baseline strings are the hand-written N+1-avoided, projection-tight SQL.
+// EVERY language's thin generic runtime runs the SAME 19 access patterns against the
+// SAME dataset — ONE production path per language (the old impl axis of sql/codegen/ir/
+// dynamic/prepared cells is gone, #63), so only the runtime-layer overhead differs. The
+// behaviors are authored ONCE here with the litedbmodel public authoring API and compiled
+// to SqlBundles; those bundles (baked into the shared orm-plan.json artifact) are what each
+// language's standalone runtime consumes. The raw-SQL baseline strings are the hand-written
+// N+1-avoided, projection-tight SQL each op's runtime÷raw overhead is measured against.
 
 import Database from 'better-sqlite3';
 import * as lm from '../../dist/scp/index.mjs';
@@ -328,7 +329,7 @@ export const INPUTS = {
   writeTxGate: { author_id: 1, title: 'txn-post', created_at: '2026-05-01' },
 } as const;
 
-// ── Authored read behaviors (compiled to SqlBundles the ir/codegen cells consume) ──
+// ── Authored read behaviors (compiled to SqlBundles each language's runtime consumes) ──
 // ── Inline typed-column declaration (issue #59) — the BC-native column-type SoT ────
 // Each read/write projects from THESE declared types (bc never infers types; the consumer inline-
 // annotates them, exactly as graphddb declares its typed entity columns). Declared ONCE per table

@@ -26,8 +26,8 @@
 //
 // Two planes are checked:
 //   • DYNAMIC (executed) — the value the shipped TS read path (`executeBundle` /
-//     `executeBundleAsync`) returns, run against all three LIVE drivers. This is what the harness
-//     executes + asserts vs EXPECTED, per column, for BOTH type and value.
+//     `executeBundleAsync`) returns, run against all three LIVE drivers. This is what this
+//     coverage-roundtrip tool executes + asserts vs EXPECTED, per column, for BOTH type and value.
 //   • GENERATED (native) — verified at the TYPE-DERIVATION level only (the emitted rust struct
 //     field types); its native VALUE run is deferred to the #44 cross-lang re-bench.
 

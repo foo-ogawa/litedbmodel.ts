@@ -9,7 +9,9 @@
 //
 // This orchestrator does NOT drive the languages over a protocol (the old harness is
 // gone). It only: (1) regenerates the shared orm-plan.json artifact, (2) builds the
-// native cells (rust/go), (3) SPAWNS each language's STANDALONE bench as its own
+// cells that must be pre-compiled — rust/go native binaries AND the TS runner (esbuild →
+// plain JS, launched with bare `node` not `tsx`, so no transpiler is resident in the
+// measured process inflating RSS; see the note below), (3) SPAWNS each language's STANDALONE bench as its own
 // process (each self-measures ALL 19 ops × 3 dialects and writes .results/<lang>.csv),
 // then (4) runs the collector (collect.ts), the ONLY program that reads the CSVs and
 // renders CROSS-LANG.md. Budgets flow to each bench purely via env (BENCH_*).
