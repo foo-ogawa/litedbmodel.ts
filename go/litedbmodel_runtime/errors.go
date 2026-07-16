@@ -45,6 +45,72 @@ type SqlFailure struct {
 
 func (e *SqlFailure) Error() string { return e.Msg }
 
+// LimitExceededContext is the context a LimitExceededError was raised from (errors.ts
+// LimitExceededContext; spec §E-2 / v1 LimitExceededError):
+//   - "find"     — a top-level read exceeded findHardLimit. The read injects `LIMIT hardLimit + 1`
+//     when the author set no explicit limit, so the reported Count is the N+1 fetch size: the TOTAL
+//     is only known to be MORE than the limit.
+//   - "relation" — a hasMany relation batch exceeded hasManyHardLimit. The batch is fetched in full
+//     (no N+1), so the reported Count is the EXACT batch total.
+type LimitExceededContext string
+
+const (
+	LimitContextFind     LimitExceededContext = "find"
+	LimitContextRelation LimitExceededContext = "relation"
+)
+
+// LimitExceededError is the SHARED cross-language runaway-prevention contract (Phase E-2, epic #74;
+// Go port of src/scp/errors.ts LimitExceededError). Thrown post-fetch when a read / relation batch
+// returns MORE rows than the configured hard limit baked onto the artifact, so an accidental
+// missing-WHERE / N+1 pattern fails LOUD instead of loading an unbounded result.
+//
+// Byte-for-byte mirror of the TS reference error shape (#99):
+//   - fields: Limit (the cap), Count (rows fetched — see LimitExceededContext), Context
+//     ("find"|"relation"), Model (the read/parent model — for relation: the relation TARGET TABLE),
+//     Relation (the relation name, "relation" context only);
+//   - message: `Query limit exceeded: <where> returned <count-phrase> records, but limit is <limit>.
+//     This usually indicates a missing WHERE clause or an N+1 query pattern. Set a higher limit or
+//     use pagination.` — "find" reports `more than <limit>` (N+1 fetch), "relation" reports the
+//     exact `<count>`.
+//
+// NOT a SqlFailure: a runaway guard is a litedbmodel-level policy error, not a mapped driver failure,
+// and it carries no SQLITE_ code (so reErrorToSqlFailure propagates it unchanged).
+type LimitExceededError struct {
+	Limit    int
+	Count    int
+	Context  LimitExceededContext
+	Model    string // present ("" ⇒ absent, encoded "unknown" in the message)
+	Relation string // relation context only ("" ⇒ absent)
+}
+
+func (e *LimitExceededError) Error() string {
+	var where string
+	var countPhrase string
+	if e.Context == LimitContextFind {
+		model := e.Model
+		if model == "" {
+			model = "unknown"
+		}
+		where = fmt.Sprintf("find() on %s", model)
+		countPhrase = fmt.Sprintf("more than %d", e.Limit)
+	} else {
+		relation := e.Relation
+		if relation == "" {
+			relation = "unknown"
+		}
+		model := e.Model
+		if model == "" {
+			model = "unknown"
+		}
+		where = fmt.Sprintf("relation '%s' on %s", relation, model)
+		countPhrase = fmt.Sprintf("%d", e.Count)
+	}
+	return fmt.Sprintf("Query limit exceeded: %s returned %s records, "+
+		"but limit is %d. This usually indicates a missing WHERE clause or "+
+		"an N+1 query pattern. Set a higher limit or use pagination.",
+		where, countPhrase, e.Limit)
+}
+
 // Unwrap re-exposes the original wrapped driver error (Phase B / #83) so errors.As can reach a
 // concrete live-DB error type (*pgconn.PgError / *mysql.MySQLError) through the mapped SqlFailure —
 // keeping IsRetryableTxError's typed SQLSTATE/errno classifier LOAD-BEARING (not dead code behind the

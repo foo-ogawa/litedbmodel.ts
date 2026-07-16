@@ -46,7 +46,20 @@ type ReadGraph struct {
 	IR               bc.JNode              // the surrogate ComponentGraphIR ({irVersion, exprVersion, components})
 	StatementsByID   map[string][]bc.JNode // nodeId → ordered StaticStatement templates
 	OptionalHeads    []string
-	primaryComponent *bc.JObj // components[0] (for input normalization + primary-node lookup)
+	FindGuard        *FindGuard // Phase E-2 (#74): post-fetch runaway cap on the primary read node (nil ⇒ no check)
+	primaryComponent *bc.JObj   // components[0] (for input normalization + primary-node lookup)
+}
+
+// FindGuard is the baked post-fetch hard-limit metadata (readGraph.findGuard; Phase E-2, epic #74).
+// The read injects `LIMIT HardLimit + 1` into the primary node's statements at compile, so a fetched
+// row count > HardLimit means the TRUE total exceeds the cap. When present, the native walker checks
+// the primary node's row count AFTER fetch and throws LimitExceededError (context "find"). Absent
+// (nil) ⇒ NO check (disabled / uncapped path — the artifact carries no findGuard). Caps come from the
+// ARTIFACT ONLY (no config surface).
+type FindGuard struct {
+	HardLimit int    // the row cap; a primary-node fetch of MORE than this throws
+	NodeID    string // the body-node id of the primary read node whose row count is checked
+	Model     string // the read model (LimitExceededError.Model)
 }
 
 // ReadGraphFromJObj parses a readGraph object (from a bundle or a render vector) into a ReadGraph.
@@ -88,7 +101,30 @@ func ReadGraphFromJObj(obj *bc.JObj) (*ReadGraph, error) {
 			}
 		}
 	}
+	// Phase E-2 (#74): the baked post-fetch find guard. Absent ⇒ nil ⇒ no check (uncapped path).
+	if fgN, ok := obj.Get("findGuard"); ok {
+		if fg, ok := fgN.(*bc.JObj); ok {
+			g.FindGuard = &FindGuard{
+				HardLimit: int(getIntJ(fg, "hardLimit")),
+				NodeID:    getStrJ(fg, "nodeId"),
+				Model:     getStrJ(fg, "model"),
+			}
+		}
+	}
 	return g, nil
+}
+
+// getIntJ reads an integer field off a parsed JObj (nil-safe, 0 if absent/non-int). Used for the
+// baked hard-limit caps (Phase E-2). The corpus stores these as plain JSON numbers.
+func getIntJ(o *bc.JObj, k string) int64 {
+	if v, ok := o.Get(k); ok {
+		if dv, err := bc.DecodeValue(v); err == nil {
+			if i, ok := dv.(int64); ok {
+				return i
+			}
+		}
+	}
+	return 0
 }
 
 // ── makeSQL assembly (port of makesql.ts assembleMakeSQL / composeMakeSQL) ─────
@@ -574,6 +610,14 @@ func executeReadGraphNative(ctx *ExecutionContext, g *ReadGraph, scope *bc.Obj) 
 		if err != nil {
 			return err
 		}
+		// Phase E-2 (#74): post-fetch hard-limit runaway guard. When the baked findGuard targets THIS
+		// node and its fetched row list is longer than the cap, throw LimitExceededError (context
+		// "find"). The read injected `LIMIT hardLimit + 1` at compile, so a length of hardLimit + 1
+		// means the TRUE total exceeds the cap (the reported count = the N+1 fetch size). A no-op for
+		// every other node / an uncapped graph. Same check the TS reference (assertFindGuard) runs.
+		if err := assertFindGuard(g, id, rows); err != nil {
+			return err
+		}
 		setResult(id, bc.Value(rows))
 		return nil
 	}
@@ -591,6 +635,29 @@ func executeReadGraphNative(ctx *ExecutionContext, g *ReadGraph, scope *bc.Obj) 
 	}
 
 	return assembleReadOutput(comp, nodeResults)
+}
+
+// assertFindGuard is the post-fetch hard-limit runaway guard (Phase E-2, epic #74; v1 DBModel find
+// hard-limit — port of the TS assertFindGuard). When g.FindGuard targets nodeID and the fetched row
+// list is longer than the cap, it returns a *LimitExceededError (context "find"). The read injected
+// `LIMIT hardLimit + 1` at compile, so a length of hardLimit + 1 means the TRUE total exceeds the cap
+// (the reported count is the N+1 fetch size). A no-op for every other node / an uncapped graph
+// (g.FindGuard nil). Caps come from the ARTIFACT ONLY (no config surface). The SAME check the
+// rust/py/php ports run off the same findGuard field.
+func assertFindGuard(g *ReadGraph, nodeID string, rows []bc.Value) error {
+	guard := g.FindGuard
+	if guard == nil || guard.NodeID != nodeID {
+		return nil
+	}
+	if len(rows) > guard.HardLimit {
+		return &LimitExceededError{
+			Limit:   guard.HardLimit,
+			Count:   len(rows),
+			Context: LimitContextFind,
+			Model:   guard.Model,
+		}
+	}
+	return nil
 }
 
 // readPlan extracts the component's staged exec plan: the ordered index groups + the concurrency

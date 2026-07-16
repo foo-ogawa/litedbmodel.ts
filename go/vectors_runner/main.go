@@ -21,6 +21,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -183,27 +184,57 @@ func runWriteRender(v *bc.JObj) (bool, string) {
 	return false, strings.Join(detail, "; ")
 }
 
-func runExec(v *bc.JObj) (bool, string) {
+// execVector runs a vector's bundle end-to-end over a freshly-seeded in-proc SQLite. When the vector
+// sets `withRelation`, it runs the declarative-select relation surface (rt.ReadBundle) so the named
+// relation is batch-loaded + hydrated onto each parent — the SAME path the TS runner's readBundle
+// leg drives; else it runs the bare primary read (rt.ExecuteBundle). Returns the assembled result
+// value + a live db handle the caller must Close (an over-cap `withRelation` fires the relation
+// guard here, which the expect-error leg catches).
+func execVector(v *bc.JObj) (bc.Value, *sql.DB, error) {
 	bundleObj, ok := mustGet(v, "bundle").(*bc.JObj)
 	if !ok {
-		return false, "bundle is not an object"
+		return nil, nil, fmt.Errorf("bundle is not an object")
 	}
 	bundle, err := rt.BundleFromJObj(bundleObj)
 	if err != nil {
-		return false, "bundle parse: " + err.Error()
+		return nil, nil, fmt.Errorf("bundle parse: %w", err)
 	}
 	scope, err := inputScope(mustGet(v, "input"))
 	if err != nil {
-		return false, "input decode: " + err.Error()
+		return nil, nil, fmt.Errorf("input decode: %w", err)
 	}
 	schema, _ := mustGet(v, "schema").([]bc.JNode)
 	db, err := seedDB(schema)
 	if err != nil {
-		return false, "seed: " + err.Error()
+		return nil, nil, fmt.Errorf("seed: %w", err)
 	}
-	defer db.Close()
+	// A `withRelation` vector drives the declarative-select surface (ReadBundle) so the named relation
+	// is batch-loaded + hydrated (and its baked hard-limit guard fires); else the bare primary read.
+	if with := getStr(v, "withRelation"); with != "" {
+		relations, _ := bundleObj.Get("relations")
+		relObj, _ := relations.(*bc.JObj)
+		if relObj == nil {
+			db.Close()
+			return nil, nil, fmt.Errorf("withRelation %q but bundle has no relations object", with)
+		}
+		result, rerr := rt.ReadBundle(bundle, relObj, scope, db, []string{with}, nil)
+		if rerr != nil {
+			return nil, db, rerr
+		}
+		return result, db, nil
+	}
+	result, eerr := rt.ExecuteBundle(bundle, scope, db)
+	if eerr != nil {
+		return nil, db, eerr
+	}
+	return result, db, nil
+}
 
-	result, err := rt.ExecuteBundle(bundle, scope, db)
+func runExec(v *bc.JObj) (bool, string) {
+	result, db, err := execVector(v)
+	if db != nil {
+		defer db.Close()
+	}
 	if err != nil {
 		return false, "execute threw: " + err.Error()
 	}
@@ -213,6 +244,51 @@ func runExec(v *bc.JObj) (bool, string) {
 		return true, ""
 	}
 	return false, fmt.Sprintf("result %s != %s", got, want)
+}
+
+// runExpectError runs the vector's bundle over-cap and asserts it throws a *LimitExceededError whose
+// fields match the frozen `expectedError` (Phase E-2 hard-limit guard, epic #74). The cap is baked
+// onto the artifact (readGraph.findGuard / relation.hardLimit), so there is NO config surface — run
+// it and catch. A no-throw, or a non-LimitExceededError, FAILS (RED discipline: disabling the guard
+// makes these vectors go red). Mirrors the TS runner's expect-error leg.
+func runExpectError(v *bc.JObj) (bool, string) {
+	_, db, err := execVector(v)
+	if db != nil {
+		defer db.Close()
+	}
+	var lim *rt.LimitExceededError
+	if !errors.As(err, &lim) {
+		if err == nil {
+			return false, "expected LimitExceededError, got no throw"
+		}
+		return false, "expected LimitExceededError, got " + err.Error()
+	}
+	got := encodeLimitError(lim)
+	want := canonicalJSON(mustGet(v, "expectedError"))
+	if got == want {
+		return true, ""
+	}
+	return false, fmt.Sprintf("error %s != %s", got, want)
+}
+
+// encodeLimitError encodes a *LimitExceededError to the frozen `expectedError` JSON shape — the SAME
+// key order + optional-field presence the corpus stores ({name, limit, count, context, model?,
+// relation?}): a "" Model/Relation is an absent field (omitted), matching the TS runner's spread of
+// only-present model/relation. `name` is the constant "LimitExceededError".
+func encodeLimitError(e *rt.LimitExceededError) string {
+	parts := []string{
+		`"name":` + jstr("LimitExceededError"),
+		fmt.Sprintf("\"limit\":%d", e.Limit),
+		fmt.Sprintf("\"count\":%d", e.Count),
+		`"context":` + jstr(string(e.Context)),
+	}
+	if e.Model != "" {
+		parts = append(parts, `"model":`+jstr(e.Model))
+	}
+	if e.Relation != "" {
+		parts = append(parts, `"relation":`+jstr(e.Relation))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 func runTx(v *bc.JObj) (bool, string) {
@@ -386,6 +462,8 @@ func runVector(v *bc.JObj) (bool, string) {
 		return runWriteRender(v)
 	case "exec":
 		return runExec(v)
+	case "expect-error":
+		return runExpectError(v)
 	case "tx":
 		return runTx(v)
 	case "dialect":
