@@ -76,6 +76,8 @@ export {
   mysqlDeboxPoolOptions,
   pgDeboxExecutor,
   mysqlDeboxExecutor,
+  pgConnectionPool,
+  mysqlConnectionPool,
 } from './makesql';
 export type {
   MakeSQL,
@@ -189,6 +191,39 @@ export type { BcScalar, MaterializeClass, ColumnTypeResolver, MaterializeResolve
 export { executeBehavior, compileBundle, executeBundle, read, readBundle } from './runtime';
 export type { SqliteDb, ExecuteOptions, SqlBundle, ReadRuntimeOptions } from './runtime';
 
+// ── Phase A (#75): the ExecutionContext + central execute/run seam + per-execution connection
+// ownership. The CONTRACT-DEFINING artifact the native ports (#76-79) follow. All runtime SQL
+// (read/write/tx/relation) funnels through `execute`/`run`; `contextForDriver` is the backward-
+// compat wrapper (raw driver ⇒ single-DB, empty-middleware ctx) keeping conformance byte-identical.
+export {
+  execute,
+  executeSafe,
+  run,
+  executeAsync,
+  runAsync,
+  contextForDriver,
+  contextForConnection,
+  connectionForDriver,
+  MiddlewareChain,
+  PooledAsyncContext,
+  withTransactionAsync,
+  runWithPinnedAsyncConnection,
+} from './exec-context';
+export type {
+  ExecutionContext,
+  AsyncExecutionContext,
+  StatementIntent,
+  Rows,
+  RunInfo,
+  SyncConnection,
+  AsyncConnection,
+  AsyncConnectionPool,
+  Middleware,
+  SeamNext,
+  SqliteDriver,
+  TxOptions,
+} from './exec-context';
+
 // The ASYNC PG / MySQL production read execution model (#40): bc `runBehaviorAsync` fans out
 // independent sibling read nodes in bounded parallel against a pooled async executor.
 export { executeBundleAsync, executeBehaviorAsync } from './runtime';
@@ -220,7 +255,7 @@ export type {
   WriteRecorder,
 } from './writes';
 
-export { deriveTransactionPlan, executeTransaction, countingDriver, renderTxStatement, compileWriteNode, mysqlPkHint, stripMysqlPkHint } from './makesql';
+export { deriveTransactionPlan, executeTransaction, executeTransactionAsync, countingDriver, renderTxStatement, compileWriteNode, mysqlPkHint, stripMysqlPkHint } from './makesql';
 export type {
   TxExpr,
   TxOp,

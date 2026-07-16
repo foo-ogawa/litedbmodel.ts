@@ -18,6 +18,7 @@
  */
 
 import type { SqlExecutorAsync } from './static-bundle';
+import type { AsyncConnection, AsyncConnectionPool, Rows, RunInfo } from '../exec-context';
 
 // ── TS read-path driver de-box config (issue #59) ─────────────────────────────
 // The read-path materializer (`materializeCell`) coerces each driver cell to the JS form its SQL
@@ -155,5 +156,107 @@ export function mysqlPoolExecutor(pool: MysqlPoolLike): SqlExecutorAsync {
   return async (sql: string, params: unknown[]): Promise<Record<string, unknown>[]> => {
     const [rows] = await pool.query(sql, params);
     return rows;
+  };
+}
+
+// ── Phase A (#75): OWNED-connection pool adapters — the per-execution-ownership substrate ─────
+//
+// `pgPoolExecutor` / `mysqlPoolExecutor` above are the READ fan-out seam (acquire-run-release per
+// statement). A TRANSACTION instead needs ONE owned connection held across BEGIN…COMMIT — the
+// `AsyncConnectionPool` contract (`../exec-context`). These adapters expose a pg / mysql2 pool as
+// that owned-connection pool so `withTransactionAsync` pins one connection per tx and concurrent
+// transactions never share a connection (the isolation the shared-`pool.query`-per-statement model
+// violates). Query results de-box exactly as the read executors above (same pool config).
+
+/** A pg `Pool` that hands out an owned `PoolClient` (`connect()` → `release()`). */
+export interface PgOwnedPoolLike {
+  connect(): Promise<PgPoolClientLike>;
+}
+/** The pg `PoolClient`: parameterized `query`, and `release(destroy?)` back to the pool. */
+export interface PgPoolClientLike {
+  query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount?: number | null }>;
+  release(destroy?: boolean): void;
+}
+
+/** Adapt a pg `PoolClient` to the {@link AsyncConnection} seam (one owned connection). */
+function pgConnection(client: PgPoolClientLike): AsyncConnection {
+  return {
+    async execute(sql, params) {
+      const r = await client.query(sql, params as unknown[]);
+      return r.rows as Rows;
+    },
+    async run(sql, params) {
+      const r = await client.query(sql, params as unknown[]);
+      return { changes: r.rowCount ?? 0, lastInsertRowid: 0 } as RunInfo;
+    },
+  };
+}
+
+/**
+ * Adapt a pg `Pool` to the {@link AsyncConnectionPool} contract — `acquire` checks out an owned
+ * `PoolClient`, `release` returns it (destroyed on a poisoned tx). Feed this to
+ * `withTransactionAsync` for per-execution connection ownership.
+ */
+export function pgConnectionPool(pool: PgOwnedPoolLike): AsyncConnectionPool {
+  const handles = new WeakMap<AsyncConnection, PgPoolClientLike>();
+  return {
+    async acquire() {
+      const client = await pool.connect();
+      const conn = pgConnection(client);
+      handles.set(conn, client);
+      return conn;
+    },
+    async release(conn, destroy) {
+      handles.get(conn)?.release(destroy === true);
+    },
+  };
+}
+
+/** A mysql2/promise `Pool` that hands out an owned connection (`getConnection()` → `release()`). */
+export interface MysqlOwnedPoolLike {
+  getConnection(): Promise<MysqlPoolConnLike>;
+}
+/** A mysql2/promise pooled connection: `query`, and `release()` back to the pool. */
+export interface MysqlPoolConnLike {
+  query(sql: string, values?: unknown[]): Promise<[unknown, unknown]>;
+  release(): void;
+  destroy(): void;
+}
+
+/** Adapt a mysql2 pooled connection to the {@link AsyncConnection} seam (one owned connection). */
+function mysqlConnection(conn: MysqlPoolConnLike): AsyncConnection {
+  return {
+    async execute(sql, params) {
+      const [rows] = await conn.query(sql, params as unknown[]);
+      return (Array.isArray(rows) ? rows : []) as Rows;
+    },
+    async run(sql, params) {
+      const [res] = await conn.query(sql, params as unknown[]);
+      const h = res as { affectedRows?: number; insertId?: number };
+      return { changes: h?.affectedRows ?? 0, lastInsertRowid: h?.insertId ?? 0 } as RunInfo;
+    },
+  };
+}
+
+/**
+ * Adapt a mysql2/promise `Pool` to the {@link AsyncConnectionPool} contract — `acquire` checks out
+ * an owned connection, `release` returns it (or `destroy`s a poisoned one). Feed this to
+ * `withTransactionAsync` for per-execution connection ownership.
+ */
+export function mysqlConnectionPool(pool: MysqlOwnedPoolLike): AsyncConnectionPool {
+  const handles = new WeakMap<AsyncConnection, MysqlPoolConnLike>();
+  return {
+    async acquire() {
+      const raw = await pool.getConnection();
+      const conn = mysqlConnection(raw);
+      handles.set(conn, raw);
+      return conn;
+    },
+    async release(conn, destroy) {
+      const raw = handles.get(conn);
+      if (raw === undefined) return;
+      if (destroy === true) raw.destroy();
+      else raw.release();
+    },
   };
 }

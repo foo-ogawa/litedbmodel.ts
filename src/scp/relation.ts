@@ -28,6 +28,13 @@
 
 import { assembleMakeSQL, type MakeSQL } from './makesql/makesql';
 import { renderPlaceholders, type Dialect } from './makesql/handler';
+import {
+  type ExecutionContext,
+  type SqliteDriver,
+  execute as seamExecute,
+  executeSafe as seamExecuteSafe,
+  contextForDriver,
+} from './exec-context';
 import { materializeCell, sqlTypeToMaterializeClass, type MaterializeClass, type ColumnTypeResolver } from './coltype';
 import { parseProjectionColumn } from './makesql/outtype';
 import {
@@ -285,7 +292,34 @@ function compiledBatchSql(decl: RelationDecl, dialect: Dialect): string {
 
 /** A minimal read-only driver surface (`prepare(sql).all(...params)`), the SQLite `Database`. */
 export interface RelationDriver {
-  prepare(sql: string): { all(...params: unknown[]): unknown[] };
+  prepare(sql: string): { all(...params: unknown[]): unknown[]; safeIntegers?(v: boolean): unknown };
+}
+
+/** A relation batch runs against either a raw {@link RelationDriver} or a full {@link ExecutionContext}. */
+export type RelationTarget = RelationDriver | ExecutionContext;
+
+/**
+ * Coerce a relation target to an {@link ExecutionContext}. A raw {@link RelationDriver} (read-only
+ * `prepare`) is adapted to a full sync driver (its `run` is never reached on the read-only relation
+ * path) and wrapped via {@link contextForDriver} — the backward-compat seam. So the relation batch
+ * ALSO funnels through the central seam (middleware → connectionFor → execute), no direct driver.
+ */
+function relationContext(target: RelationTarget): ExecutionContext {
+  if ('connectionFor' in target) return target;
+  const driver: SqliteDriver = {
+    prepare(sql: string) {
+      const s = target.prepare(sql);
+      return {
+        all: (...p: unknown[]) => s.all(...p),
+        // The read-only relation path never runs a write; a defensive stub keeps the driver shape total.
+        run: () => {
+          throw new Error('relation batch: unexpected write on a read-only relation driver');
+        },
+        safeIntegers: s.safeIntegers?.bind(s),
+      };
+    },
+  };
+  return contextForDriver(driver);
 }
 
 /** The child rows grouped for a batch: parent-key value (stringified) → child rows. */
@@ -338,8 +372,9 @@ function bindKeys(op: RelationOp, tuples: readonly unknown[][]): unknown[] {
 export function runRelationOp(
   op: RelationOp,
   parents: readonly Record<string, unknown>[],
-  db: RelationDriver,
+  db: RelationTarget,
 ): { sql: string; keys: unknown[][]; batch: RelationBatch } {
+  const ctx = relationContext(db);
   const pCols = parentKeyCols(op);
   const keys = dedupeKeys(parents, pCols);
   const batch: RelationBatch = new Map();
@@ -361,11 +396,10 @@ export function runRelationOp(
   // / bool). SQLite-shaped driver; the async PG/MySQL relation path materializes at its own seam.
   const childCols = op.materializers;
   const int64Child = childCols !== undefined && Object.values(childCols).includes('int64');
-  const stmt = db.prepare(sql);
-  if (int64Child && typeof (stmt as { safeIntegers?: unknown }).safeIntegers === 'function') {
-    (stmt as unknown as { safeIntegers(v: boolean): unknown }).safeIntegers(true);
-  }
-  const rawRows = stmt.all(...bindKeys(op, keys)) as Record<string, unknown>[];
+  // Route the batch SELECT through the central READ seam (safeIntegers variant when a BIGINT child
+  // projects), so the relation path — like the primary read — never touches a driver directly.
+  const boundParams = bindKeys(op, keys);
+  const rawRows = (int64Child ? seamExecuteSafe(ctx, sql, boundParams) : seamExecute(ctx, sql, boundParams)) as Record<string, unknown>[];
   const rows = materializeChildRows(rawRows, childCols, int64Child);
   for (const row of rows) {
     const k = keyIdentity(tCols.map((c) => row[c]));

@@ -89,6 +89,7 @@ export {
   mysqlPkHint,
   stripMysqlPkHint,
   executeTransaction,
+  executeTransactionAsync,
   countingDriver,
   renderTxStatement,
   compileWriteNode,
@@ -136,5 +137,5 @@ export type { StaticBundle, StaticStatement, ValueSpec, ReadGraph, SqlExecutorAs
 
 // Pooled async executor factories (PG / MySQL) that turn the plan's concurrency into real parallel
 // read-relation DB I/O behind the async seam (#40).
-export { pgPoolExecutor, mysqlPoolExecutor, configurePgDeboxTypeParsers, mysqlDeboxPoolOptions, pgDeboxExecutor, mysqlDeboxExecutor } from './pool-executor';
-export type { PgPoolLike, MysqlPoolLike, PgTypesLike, PgModuleLike, Mysql2ModuleLike } from './pool-executor';
+export { pgPoolExecutor, mysqlPoolExecutor, configurePgDeboxTypeParsers, mysqlDeboxPoolOptions, pgDeboxExecutor, mysqlDeboxExecutor, pgConnectionPool, mysqlConnectionPool } from './pool-executor';
+export type { PgPoolLike, MysqlPoolLike, PgTypesLike, PgModuleLike, Mysql2ModuleLike, PgOwnedPoolLike, PgPoolClientLike, MysqlOwnedPoolLike, MysqlPoolConnLike } from './pool-executor';

@@ -37,6 +37,18 @@ import { assembleMakeSQL, type MakeSQL } from './makesql';
 import { renderPlaceholders, type Dialect as MakeSQLDialect } from './handler';
 import { formatterFor } from './compile';
 import { mapSqliteError } from '../errors';
+import {
+  type ExecutionContext,
+  type AsyncExecutionContext,
+  type PooledAsyncContext,
+  type SqliteDriver,
+  execute as seamExecute,
+  run as seamRun,
+  executeAsync as seamExecuteAsync,
+  runAsync as seamRunAsync,
+  contextForDriver,
+  withTransactionAsync,
+} from '../exec-context';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import {
   ENTITY_ROOT,
@@ -803,12 +815,20 @@ function collectRefHeads(node: unknown, heads: Set<string>): void {
 // Runtime — execute a TransactionPlan against real SQLite as ONE transaction.
 // ============================================================================
 
-/** The minimal synchronous SQLite driver surface the tx runtime needs (better-sqlite3). */
-export interface SqliteDb {
-  prepare(sql: string): {
-    all(...params: unknown[]): unknown[];
-    run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
-  };
+/**
+ * The minimal synchronous SQLite driver surface the tx runtime needs (better-sqlite3) — the
+ * backward-compat public seam. Internally the tx runs through the {@link ExecutionContext} seam
+ * (`../exec-context`); a raw driver passed here is wrapped via {@link contextForDriver}. Aliased to
+ * {@link SqliteDriver}.
+ */
+export type SqliteDb = SqliteDriver;
+
+/** A tx entry accepts either a raw {@link SqliteDb} or a full {@link ExecutionContext}. */
+export type DbOrContext = SqliteDb | ExecutionContext;
+
+/** Coerce a `SqliteDb | ExecutionContext` argument to a ctx (raw driver ⇒ backward-compat wrapper). */
+function asContext(dbOrCtx: DbOrContext): ExecutionContext {
+  return 'connectionFor' in dbOrCtx ? dbOrCtx : contextForDriver(dbOrCtx);
 }
 
 /** Why a transaction did not commit (a gate short-circuit outcome; not a driver error). */
@@ -855,19 +875,21 @@ function renderStatement(op: TxOp, scope: Scope, dialect: MakeSQLDialect): { sql
 }
 
 function execStatement(
-  db: SqliteDb,
+  ctx: ExecutionContext,
   op: TxOp,
   scope: Scope,
   dialect: MakeSQLDialect,
 ): { rows: Record<string, unknown>[]; changes: number } {
   const { sql, params } = renderStatement(op, scope, dialect);
-  const stmt = db.prepare(sql);
   const hasReturn = /\bselect\b/i.test(sql.slice(0, 8)) || /\breturning\b/i.test(sql);
+  // Every tx body statement funnels through the central seam (middleware → connectionFor → exec).
+  // A SELECT / RETURNING statement reads rows (execute); a bare write runs (run). The tx's `intent`
+  // is write throughout, so `connectionFor` resolves the tx-owned connection (§3).
   if (hasReturn) {
-    const rows = stmt.all(...params) as Record<string, unknown>[];
+    const rows = seamExecute(ctx, sql, params, { write: true });
     return { rows, changes: rows.length };
   }
-  const info = stmt.run(...params);
+  const info = seamRun(ctx, sql, params);
   return { rows: [], changes: info.changes };
 }
 
@@ -887,9 +909,22 @@ function gateShortCircuit(gate: GateRule, result: { rows: Record<string, unknown
   }
 }
 
-/** Execute a derived {@link TransactionPlan} as ONE real SQLite transaction with gate-first. */
-export function executeTransaction(db: SqliteDb, plan: TransactionPlan, input: Scope, dialect: MakeSQLDialect = 'sqlite'): TransactionResult {
-  db.prepare('BEGIN').run();
+/**
+ * Execute a derived {@link TransactionPlan} as ONE real SQLite transaction with gate-first
+ * short-circuit. Accepts a raw {@link SqliteDb} (wrapped via {@link contextForDriver}) or a full
+ * {@link ExecutionContext}. The transaction derives a tx-scoped ctx (`withConnection(conn, true)`)
+ * that PINS one connection so BEGIN, every body statement, and COMMIT/ROLLBACK all run on the SAME
+ * connection (§3, per-execution ownership). For the single-DB SQLite driver the pinned connection
+ * is the sole connection; the ownership shows its teeth on the pooled async path
+ * ({@link import('../exec-context').withTransactionAsync}), which this mirrors.
+ */
+export function executeTransaction(db: DbOrContext, plan: TransactionPlan, input: Scope, dialect: MakeSQLDialect = 'sqlite'): TransactionResult {
+  const outer = asContext(db);
+  // Pin ONE connection for the whole transaction (BEGIN…COMMIT on the same conn). For SQLite the
+  // base ctx already owns a single connection; deriving the tx-scoped ctx keeps the contract uniform
+  // with the async per-execution-ownership path so the native ports mirror ONE shape.
+  const ctx = outer.withConnection(outer.connectionFor({ write: true }), true);
+  seamRun(ctx, 'BEGIN', []);
   const executed: string[] = [];
   const scope: Scope = { ...input };
   let entity: Record<string, unknown> | null = null;
@@ -904,13 +939,13 @@ export function executeTransaction(db: SqliteDb, plan: TransactionPlan, input: S
 
   try {
     for (const stmt of plan.statements) {
-      const result = execStatement(db, stmt.op, scope, dialect);
+      const result = execStatement(ctx, stmt.op, scope, dialect);
       executed.push(stmt.id);
 
       if (stmt.gate !== undefined) {
         const reason = gateShortCircuit(stmt.gate, result);
         if (reason !== null) {
-          db.prepare('ROLLBACK').run();
+          seamRun(ctx, 'ROLLBACK', []);
           return { committed: false, shortCircuit: { statementId: stmt.id, reason }, entity: null, executed };
         }
       }
@@ -924,11 +959,11 @@ export function executeTransaction(db: SqliteDb, plan: TransactionPlan, input: S
       }
       if (isBatch && stmt.role === 'body' && result.rows.length > 0) returnedRows.push(result.rows);
     }
-    db.prepare('COMMIT').run();
+    seamRun(ctx, 'COMMIT', []);
     return { committed: true, entity, executed, ...(returnedRows.length > 0 ? { returnedRows } : {}) };
   } catch (e) {
     try {
-      db.prepare('ROLLBACK').run();
+      seamRun(ctx, 'ROLLBACK', []);
     } catch {
       /* ROLLBACK best-effort; surface the original failure below */
     }
@@ -954,4 +989,149 @@ export function countingDriver(db: SqliteDb): { db: SqliteDb; prepared: string[]
 /** Render one statement op to its dialect SQL text + params (exposed for golden tests). */
 export function renderTxStatement(op: TxOp, scope: Scope, dialect: MakeSQLDialect = 'sqlite'): { sql: string; params: unknown[] } {
   return renderStatement(op, scope, dialect);
+}
+
+// ============================================================================
+// Phase A (#75) — ASYNC transaction runtime (live PG / MySQL) with PER-EXECUTION
+// CONNECTION OWNERSHIP. The async twin of `executeTransaction`: it runs the derived
+// TransactionPlan through `withTransactionAsync`, which acquires ONE pooled connection,
+// pins it in the ALS ctx, and runs BEGIN…COMMIT on it. Concurrent transactions each own a
+// DISTINCT connection ⇒ isolated (no shared-slot cross-talk). This is the production async
+// write-tx path the concurrent-tx isolation test exercises.
+// ============================================================================
+
+/** Parse the `scp:pk=cols;ai=col` block-comment hint the MySQL RETURNING emulation reads. */
+function parsePkHint(sql: string): { cols: string[]; autoInc: string } | null {
+  const m = /\/\*scp:pk=([^;*]*);ai=([^*]*)\*\//i.exec(sql);
+  if (!m) return null;
+  return { cols: m[1].split(',').map((c) => c.trim()).filter(Boolean), autoInc: m[2].trim() };
+}
+
+/** The INSERT/UPDATE/DELETE target table (for the MySQL re-select). */
+function insertTable(sql: string): string {
+  const m = /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([A-Za-z0-9_."`]+)/i.exec(sql);
+  if (m === null) throw new Error(`scp write(mysql): cannot parse target table from '${sql.slice(0, 60)}…'`);
+  return m[1];
+}
+
+/** The INSERT column list (for re-selecting a client-supplied composite PK). */
+function insertCols(sql: string): string[] {
+  const m = /\bINSERT\s+INTO\s+[A-Za-z0-9_."`]+\s*\(([^)]*)\)/i.exec(sql);
+  if (m === null) return [];
+  return m[1].split(',').map((c) => c.trim());
+}
+
+/**
+ * Run ONE rendered tx statement through the async seam. On PG the RETURNING clause is native. On
+ * MySQL (no native RETURNING) the emulation strips RETURNING, runs the write, and re-selects the
+ * written row(s) by the REAL PK (auto-inc range, client PK, or composite) — mirroring the sync
+ * driver + the 4 native runtimes. Returns `{ rows, changes }`.
+ */
+async function execStatementAsync(
+  ctx: AsyncExecutionContext,
+  op: TxOp,
+  scope: Scope,
+  dialect: MakeSQLDialect,
+): Promise<{ rows: Record<string, unknown>[]; changes: number }> {
+  const { sql, params } = renderStatement(op, scope, dialect);
+  const hasReturn = /\bselect\b/i.test(sql.slice(0, 8)) || /\breturning\b/i.test(sql);
+
+  if (dialect === 'mysql' && /\breturning\b/i.test(sql)) {
+    const retMatch = /\s+RETURNING\s+(.+?)\s*$/is.exec(sql)!;
+    const cols = stripMysqlPkHint(retMatch[1]).trim();
+    const writeSql = stripMysqlPkHint(sql.slice(0, retMatch.index));
+    const pk = parsePkHint(sql);
+    const isInsert = /^\s*INSERT\b/i.test(writeSql);
+    const info = await seamRunAsync(ctx, writeSql, params);
+    if (!isInsert) return { rows: [], changes: info.changes };
+    const insertId = Number(info.lastInsertRowid);
+    let rows: Record<string, unknown>[];
+    if (pk === null) {
+      rows = await seamExecuteAsync(ctx, `SELECT ${cols} FROM ${insertTable(writeSql)} WHERE id = ?`, [insertId], { write: true });
+    } else if (pk.autoInc && pk.cols.length === 1 && pk.cols[0] === pk.autoInc) {
+      rows = await seamExecuteAsync(ctx, `SELECT ${cols} FROM ${insertTable(writeSql)} WHERE ${pk.autoInc} >= ? AND ${pk.autoInc} < ?`, [insertId, insertId + Math.max(1, info.changes)], { write: true });
+    } else {
+      const insCols = insertCols(writeSql);
+      const where = pk.cols.map((c) => `${c} = ?`).join(' AND ');
+      const vals = pk.cols.map((c) => params[insCols.indexOf(c)]);
+      rows = await seamExecuteAsync(ctx, `SELECT ${cols} FROM ${insertTable(writeSql)} WHERE ${where}`, vals, { write: true });
+    }
+    return { rows, changes: rows.length };
+  }
+
+  if (hasReturn) {
+    const rows = await seamExecuteAsync(ctx, sql, params, { write: true });
+    return { rows, changes: rows.length };
+  }
+  const info = await seamRunAsync(ctx, sql, params);
+  return { rows: [], changes: info.changes };
+}
+
+/**
+ * Execute a derived {@link TransactionPlan} as ONE live PG / MySQL transaction with gate-first
+ * short-circuit and **per-execution connection ownership** (§3). The whole tx runs on one owned
+ * pooled connection (acquired + pinned by {@link withTransactionAsync}); concurrent
+ * `executeTransactionAsync` calls on the SAME `ctx` each own a DISTINCT connection ⇒ isolated. The
+ * async twin of {@link executeTransaction}; the structured {@link TransactionResult} is identical.
+ */
+export function executeTransactionAsync(
+  ctx: PooledAsyncContext,
+  plan: TransactionPlan,
+  input: Scope,
+  dialect: MakeSQLDialect = 'sqlite',
+): Promise<TransactionResult> {
+  const isBatch =
+    plan.entityFrom === null &&
+    plan.statements.every((s) => s.gate === undefined && s.binds === undefined && s.role === 'body');
+
+  return withTransactionAsync(ctx, async (txCtx) => {
+    const executed: string[] = [];
+    const scope: Scope = { ...input };
+    let entity: Record<string, unknown> | null = null;
+    const returnedRows: Record<string, unknown>[][] = [];
+
+    for (const stmt of plan.statements) {
+      const result = await execStatementAsync(txCtx, stmt.op, scope, dialect);
+      executed.push(stmt.id);
+
+      if (stmt.gate !== undefined) {
+        const reason = gateShortCircuit(stmt.gate, result);
+        if (reason !== null) {
+          // A gate short-circuit ROLLBACKs the whole tx (atomicity): throw the sentinel so
+          // `withTransactionAsync` runs ROLLBACK on the owned connection, then translate to the
+          // structured non-committed result at the boundary.
+          throw new GateShortCircuit(stmt.id, reason, executed);
+        }
+      }
+
+      if (stmt.id === plan.entityFrom) {
+        entity = result.rows.length > 0 ? result.rows[0] : null;
+        if (entity !== null) scope[ENTITY_ROOT] = entity as unknown as Value;
+      }
+      if (stmt.binds !== undefined && result.rows.length > 0) {
+        scope[stmt.binds] = result.rows[0] as unknown as Value;
+      }
+      if (isBatch && stmt.role === 'body' && result.rows.length > 0) returnedRows.push(result.rows);
+    }
+    return { committed: true, entity, executed, ...(returnedRows.length > 0 ? { returnedRows } : {}) } as TransactionResult;
+  }).catch((e: unknown) => {
+    // A gate short-circuit is NOT a failure — it ROLLBACKs and reports `committed:false`. Any other
+    // error is a real driver failure (already rolled back by withTransactionAsync) → re-surface.
+    if (e instanceof GateShortCircuit) {
+      return { committed: false, shortCircuit: { statementId: e.statementId, reason: e.reason }, entity: null, executed: e.executed };
+    }
+    throw mapSqliteError(e);
+  });
+}
+
+/** Internal sentinel: a gate short-circuit inside an async tx (ROLLBACK, then report non-committed). */
+class GateShortCircuit extends Error {
+  constructor(
+    readonly statementId: string,
+    readonly reason: ShortCircuitReason,
+    readonly executed: readonly string[],
+  ) {
+    super(`scp write: gate short-circuit at '${statementId}' (${reason})`);
+    this.name = 'GateShortCircuit';
+  }
 }

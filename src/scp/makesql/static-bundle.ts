@@ -59,6 +59,14 @@ import { conditionsFor } from './json-array';
 import { compileSelect } from './compile-select';
 import { formatterFor } from './compile';
 import {
+  type ExecutionContext,
+  type SqliteDriver,
+  execute as seamExecute,
+  executeSafe as seamExecute_safe,
+  run as seamRun,
+  contextForDriver,
+} from '../exec-context';
+import {
   BETWEEN_SENTINEL,
   LIKE_SENTINEL,
   CAST_SENTINEL,
@@ -887,12 +895,21 @@ function renderBundle(bundle: StaticBundle, scope: Scope): { sql: string; params
   return renderStatements(bundle.statements, bundle.dialect, scope);
 }
 
-/** The minimal synchronous SQLite driver surface (better-sqlite3 `Database`). */
-export interface SqliteDb {
-  prepare(sql: string): {
-    all(...params: unknown[]): unknown[];
-    run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
-  };
+/**
+ * The minimal synchronous SQLite driver surface (better-sqlite3 `Database`) — the backward-compat
+ * public seam. Internally the read/write path runs through the {@link ExecutionContext} seam
+ * (`../exec-context`); a raw `SqliteDb` a caller passes is wrapped via {@link contextForDriver} at
+ * the entry so existing callers stay byte-identical. Aliased to {@link SqliteDriver} (the seam's
+ * driver shape) so the two are interchangeable.
+ */
+export type SqliteDb = SqliteDriver;
+
+/** A read/write entry accepts either a raw {@link SqliteDb} or a full {@link ExecutionContext}. */
+export type DbOrContext = SqliteDb | ExecutionContext;
+
+/** Coerce a `SqliteDb | ExecutionContext` argument to a ctx (raw driver ⇒ backward-compat wrapper). */
+function asContext(dbOrCtx: DbOrContext): ExecutionContext {
+  return 'connectionFor' in dbOrCtx ? dbOrCtx : contextForDriver(dbOrCtx);
 }
 
 /** Normalize omitted OPTIONAL heads to present-as-null (absent-key SKIP; SSoT-driven). */
@@ -909,13 +926,13 @@ function normalizeInput(bundle: StaticBundle, input: Scope): Scope {
  * heads, evaluate skip + value-specs per-input, assemble present fragments, render, and run the
  * SELECT. Returns the row list.
  */
-export function executeStaticBundle(bundle: StaticBundle, input: Scope, db: SqliteDb): Record<string, unknown>[] {
+export function executeStaticBundle(bundle: StaticBundle, input: Scope, db: DbOrContext): Record<string, unknown>[] {
+  const ctx = asContext(db);
   const scope = normalizeInput(bundle, input);
   const { sql, params } = renderBundle(bundle, scope);
-  let stmt: ReturnType<SqliteDb['prepare']>;
   try {
-    stmt = db.prepare(sql);
-    return stmt.all(...params) as Record<string, unknown>[];
+    // Central READ seam (exec-context §2): middleware → connectionFor → execute. No direct driver call.
+    return seamExecute(ctx, sql, params);
   } catch (e) {
     throw mapSqliteError(e);
   }
@@ -928,14 +945,15 @@ export function executeStaticBundle(bundle: StaticBundle, input: Scope, db: Sqli
  * `[{ changes, lastInsertRowid }]`. A driver error maps to a {@link SqlFailure} at the boundary.
  * (A Command with write-time relations rides the tx-DAG plan of `./tx`, not this path.)
  */
-export function executeStaticWrite(bundle: StaticBundle, input: Scope, db: SqliteDb): Record<string, unknown>[] {
+export function executeStaticWrite(bundle: StaticBundle, input: Scope, db: DbOrContext): Record<string, unknown>[] {
+  const ctx = asContext(db);
   const scope = normalizeInput(bundle, input);
   const { sql, params } = renderBundle(bundle, scope);
   const hasReturn = /\breturning\b/i.test(sql);
   try {
-    const stmt = db.prepare(sql);
-    if (hasReturn) return stmt.all(...params) as Record<string, unknown>[];
-    const info = stmt.run(...params);
+    // Central seam (exec-context §2): a RETURNING write reads rows (execute); a bare write runs (run).
+    if (hasReturn) return seamExecute(ctx, sql, params, { write: true });
+    const info = seamRun(ctx, sql, params);
     return [{ changes: info.changes, lastInsertRowid: toDriverParam(BigInt(info.lastInsertRowid)) }];
   } catch (e) {
     throw mapSqliteError(e);
@@ -1171,22 +1189,18 @@ async function boundedMap<T, R>(items: readonly T[], limit: number, fn: (item: T
   return out;
 }
 
-/** Render + execute a node's `statementsById` fragments against `scope`, sync driver, with #59 de-box. */
-function execReadNodeSync(graph: ReadGraph, nodeId: string, scope: Scope, db: SqliteDb): Value {
+/** Render + execute a node's `statementsById` fragments against `scope`, through the seam, with #59 de-box. */
+function execReadNodeSync(graph: ReadGraph, nodeId: string, scope: Scope, ctx: ExecutionContext): Value {
   const stmts = graph.statementsById[nodeId];
   if (stmts === undefined) throw new Error(`static-bundle: no statements for node '${nodeId}'`);
   const { sql, params } = renderStatements(stmts, graph.dialect, scope);
   const cols = graph.materializersByNode?.[nodeId];
   try {
-    const stmt = db.prepare(sql);
-    // A BIGINT-projecting node runs in SQLite safe-integer mode so int8 comes back as an EXACT
-    // bigint (a JS number would round it — the #59 hole); `materializeRows` then narrows/stringifies.
-    let safeIntegersOn = false;
-    if (cols !== undefined && hasInt64(cols) && typeof (stmt as { safeIntegers?: unknown }).safeIntegers === 'function') {
-      (stmt as unknown as { safeIntegers(v: boolean): unknown }).safeIntegers(true);
-      safeIntegersOn = true;
-    }
-    const rows = stmt.all(...params) as Record<string, unknown>[];
+    // A BIGINT-projecting node runs in safe-integer mode so int8 comes back as an EXACT bigint (a JS
+    // number would round it — the #59 hole); `materializeRows` then narrows/stringifies. Both paths
+    // funnel through the central READ seam (middleware → connectionFor → execute) — no direct driver.
+    const safeIntegersOn = cols !== undefined && hasInt64(cols);
+    const rows = (safeIntegersOn ? seamExecute_safe(ctx, sql, params) : seamExecute(ctx, sql, params)) as Record<string, unknown>[];
     return materializeRows(rows, cols, safeIntegersOn) as unknown as Value;
   } catch (e) {
     throw mapSqliteError(e);
@@ -1194,8 +1208,8 @@ function execReadNodeSync(graph: ReadGraph, nodeId: string, scope: Scope, db: Sq
 }
 
 /** Compute ONE read-graph body node's value against `base`: a `cond` join, a `map` (per-element
- * render+execute under the `as` binding), or a componentRef (render+execute). Sync driver. */
-function computeReadNodeSync(graph: ReadGraph, node: ReadBodyNode, base: Scope, db: SqliteDb): Value {
+ * render+execute under the `as` binding), or a componentRef (render+execute). Through the seam ctx. */
+function computeReadNodeSync(graph: ReadGraph, node: ReadBodyNode, base: Scope, ctx: ExecutionContext): Value {
   if (node.cond !== undefined) return evaluateExpression(node.cond, base) as Value;
   if (node.map !== undefined) {
     const over = evaluateExpression(node.map.over, base);
@@ -1203,11 +1217,11 @@ function computeReadNodeSync(graph: ReadGraph, node: ReadBodyNode, base: Scope, 
     const asName = node.map.as ?? '$';
     const out: Value[] = [];
     for (const el of over) {
-      out.push(execReadNodeSync(graph, node.id, { ...base, [asName]: el as Value }, db));
+      out.push(execReadNodeSync(graph, node.id, { ...base, [asName]: el as Value }, ctx));
     }
     return out as unknown as Value;
   }
-  return execReadNodeSync(graph, node.id, base, db);
+  return execReadNodeSync(graph, node.id, base, ctx);
 }
 
 /** Normalize omitted OPTIONAL heads to present-as-null (absent-key SKIP; SSoT-driven). */
@@ -1225,7 +1239,8 @@ function normalizeReadInput(graph: ReadGraph, input: Scope): Scope {
  * surrogate; litedbmodel owns map iteration / wire binding / Φ output. This is the SAME native
  * orchestration model the rust/go/py/php runtimes follow — one shape, all 5 languages, interpreter-free.
  */
-export function executeReadGraph(graph: ReadGraph, input: Scope, db: SqliteDb): Value {
+export function executeReadGraph(graph: ReadGraph, input: Scope, db: DbOrContext): Value {
+  const ctx = asContext(db);
   const component = graph.ir.components[0];
   const body = component.body as unknown as ReadBodyNode[];
   const output = (component as unknown as { output?: unknown }).output ?? null;
@@ -1240,7 +1255,7 @@ export function executeReadGraph(graph: ReadGraph, input: Scope, db: SqliteDb): 
       for (const [id, v] of results) base[id] = v;
       for (const idx of ordered) {
         const node = body[idx];
-        base[node.id] = results[results.push([node.id, computeReadNodeSync(graph, node, base, db)]) - 1][1];
+        base[node.id] = results[results.push([node.id, computeReadNodeSync(graph, node, base, ctx)]) - 1][1];
       }
     }
     const scope: Scope = { ...normalized };
