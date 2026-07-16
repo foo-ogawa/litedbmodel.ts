@@ -38,12 +38,16 @@ require $root . '/php/src/BehaviorContracts/BehaviorFailure.php';
 require $root . '/php/src/BehaviorContracts/Behavior.php';
 require $root . '/php/src/Dialect.php';
 require $root . '/php/src/SqlFailure.php';
+require $root . '/php/src/LimitExceededError.php';
 require $root . '/php/src/ExecutionContext.php';
 require $root . '/php/src/Middleware.php';
 require $root . '/php/src/StaticBundle.php';
+require $root . '/php/src/Relation.php';
 require $root . '/php/src/WriteRuntime.php';
 require $root . '/php/src/Runtime.php';
 
+use LiteDbModel\Runtime\LimitExceededError;
+use LiteDbModel\Runtime\Relation;
 use LiteDbModel\Runtime\Runtime;
 
 /** The corpus schema version this runner supports (pin — bumped on additive refreeze). */
@@ -189,9 +193,57 @@ function runVector(\stdClass $v): array
         if ($kind === 'exec') {
             $schema = is_array($v->schema) ? $v->schema : [];
             $db = seedDb($schema);
-            $result = Runtime::executeBundle($v->bundle, inputToScope(decodeValue($v->input)), $db);
+            $scope = inputToScope(decodeValue($v->input));
+            // A `withRelation` exec asserts the declarative-select typed-object surface (primary read +
+            // batch-prefetched relation), mirroring the TS runner's `readBundle` branch; a bare exec runs
+            // the primary read only. The relation batch may throw the Phase E-2 guard for a capped
+            // over-cap read (handled by the expect-error kind, not here — these exec vectors are UNDER cap).
+            $withRelation = isset($v->withRelation) ? (string) $v->withRelation : null;
+            $result = $withRelation !== null
+                ? Relation::readBundle($v->bundle, $scope, $db, [$withRelation])
+                : Runtime::executeBundle($v->bundle, $scope, $db);
             $ok = valuesEqual($result, $v->expectedResult);
             return $ok ? ['ok' => true] : ['ok' => false, 'detail' => 'result ' . json_encode($result) . ' != ' . json_encode($v->expectedResult)];
+        }
+        if ($kind === 'expect-error') {
+            // Phase E-2 hard-limit guard: the cap is BAKED into the bundle (readGraph.findGuard /
+            // relation hardLimit), so run it over-cap and assert the SAME LimitExceededError fields
+            // (name/limit/count/context/model?/relation?). No config surface — the cap comes from the
+            // artifact ONLY. A `withRelation` vector drives the relation batch (Relation::readBundle);
+            // a bare vector drives the primary find read (Runtime::executeBundle).
+            $schema = is_array($v->schema) ? $v->schema : [];
+            $db = seedDb($schema);
+            $scope = inputToScope(decodeValue($v->input));
+            $withRelation = isset($v->withRelation) ? (string) $v->withRelation : null;
+            $thrown = null;
+            try {
+                if ($withRelation !== null) {
+                    Relation::readBundle($v->bundle, $scope, $db, [$withRelation]);
+                } else {
+                    Runtime::executeBundle($v->bundle, $scope, $db);
+                }
+            } catch (\Throwable $e) {
+                $thrown = $e;
+            }
+            if (!($thrown instanceof LimitExceededError)) {
+                $got = $thrown === null ? 'no throw' : get_class($thrown) . ': ' . $thrown->getMessage();
+                return ['ok' => false, 'detail' => "expected LimitExceededError, got {$got}"];
+            }
+            $got = [
+                'name' => LimitExceededError::NAME,
+                'limit' => $thrown->limit,
+                'count' => $thrown->count,
+                'context' => $thrown->context,
+            ];
+            if ($thrown->model !== null) {
+                $got['model'] = $thrown->model;
+            }
+            if ($thrown->relation !== null) {
+                $got['relation'] = $thrown->relation;
+            }
+            $expected = $v->expectedError;
+            $ok = valuesEqual($got, $expected);
+            return $ok ? ['ok' => true] : ['ok' => false, 'detail' => 'error ' . json_encode($got) . ' != ' . json_encode($expected)];
         }
         if ($kind === 'tx') {
             $schema = is_array($v->schema) ? $v->schema : [];

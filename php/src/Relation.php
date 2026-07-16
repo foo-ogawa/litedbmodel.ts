@@ -170,7 +170,23 @@ final class Relation
         // The central READ seam (§2): the ONE driver contact for the relation batch. Byte-identical to
         // the pre-seam `$db->prepare($sql)->execute(bindKeys)->fetchAll(OBJ)`.
         $rows = execute($ctx, $sql, self::bindKeys($op, $keys));
-        foreach (is_array($rows) ? $rows : [] as $row) {
+        // Hard-limit runaway guard (Phase E-2, epic #74; v1 `_selectForRelation`): POST-fetch, if the
+        // batch TOTAL exceeds the baked cap, throw with the EXACT count (the batch is fetched in full,
+        // no N+1). ⚠️ field mapping mirrors the TS reference: `model` = the relation TARGET TABLE,
+        // `relation` = the relation NAME. ABSENT `op->hardLimit` ⇒ NO check (disabled / an intrinsic
+        // per-parent-`limit` relation whose fanout is already bounded). Thrown BEFORE grouping so an
+        // over-cap read never assembles an unbounded result set. Cap read from the artifact ONLY.
+        $rowList = is_array($rows) ? $rows : [];
+        if (isset($op->hardLimit) && count($rowList) > (int) $op->hardLimit) {
+            throw new LimitExceededError(
+                (int) $op->hardLimit,
+                count($rowList),
+                'relation',
+                isset($op->targetTable) ? (string) $op->targetTable : null,
+                (string) $op->name,
+            );
+        }
+        foreach ($rowList as $row) {
             $tuple = array_map(static fn ($c) => $row->{$c} ?? null, $tCols);
             $k = self::keyIdentity($tuple);
             $batch[$k][] = $row;
