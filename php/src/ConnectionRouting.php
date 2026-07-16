@@ -816,6 +816,22 @@ final class RoutedConnection implements Connection
         $this->pool->release($conn, false);
         return $info;
     }
+
+    public function control(string $sql): void
+    {
+        // Phase D #96: a runtime tx-control statement. In a routed deployment tx-control is issued on
+        // the PINNED tx connection (a {@see TxConnectionAdapter}, which wins in `connectionFor`), so
+        // this non-tx routed path is not the tx-control terminal in practice; it is implemented
+        // faithfully (acquire → control → release) to satisfy the {@see Connection} contract.
+        $conn = $this->pool->acquire();
+        try {
+            $conn->control($sql);
+        } catch (\Throwable $e) {
+            $this->pool->release($conn, true);
+            throw $e;
+        }
+        $this->pool->release($conn, false);
+    }
 }
 
 // ── setConfig / closeAllPools (C3 public surface) ──────────────────────────────────
@@ -1067,7 +1083,9 @@ function routingContext(RoutingConfig $routing, ?MiddlewareChain $middleware = n
     // The base ctx's driver() is the DEFAULT connection's writer backing driver — the tx path's
     // non-routed accessor. Named-DB tx routing overrides it per {@see routedTransaction()}.
     $defaultWriter = $routing->registry->pairFor(null)->writer;
-    return new RoutingExecutionContext($defaultWriter->backingDriver(), $middleware ?? new MiddlewareChain(), $routing);
+    // Phase D (#96): default to the AMBIENT-sourced chain (resolves the current scope's registry at
+    // wrap time) so a routed deployment gets middleware too; empty registry ⇒ byte-identical.
+    return new RoutingExecutionContext($defaultWriter->backingDriver(), $middleware ?? Context::ambientChain(), $routing);
 }
 
 /**

@@ -182,16 +182,24 @@ final class MisRoutingContext extends ExecutionContext
         PdoDriver $driver,
         MiddlewareChain $middleware,
         private readonly Connection $escapeConn,
-        private readonly bool $pinned = false,
+        private readonly ?Connection $ownedTxConn = null,
     ) {
-        parent::__construct($driver, $middleware, $pinned ? $escapeConn : null);
+        // Pin the REAL owned tx connection (the one `withTransactionDecided` created + BEGAN the tx on),
+        // so tx-CONTROL resolves it. The mutation is applied ONLY to DATA writes in `connectionFor`.
+        parent::__construct($driver, $middleware, $ownedTxConn);
     }
 
     public function connectionFor(StatementIntent $intent): Connection
     {
-        // The teeth of the mutation: send tx WRITES to the autocommit escape connection, so the first
-        // insert commits immediately and survives the rollback.
-        if ($intent->write) {
+        // The teeth of the mutation: send DATA writes to the autocommit escape connection, so the first
+        // insert commits immediately and survives the rollback. Tx-CONTROL (BEGIN/COMMIT/ROLLBACK —
+        // `$intent->control`, Phase D #96) is NOT escaped: it resolves the REAL owned tx connection
+        // (`parent::connectionFor` → the pinned conn), so the tx envelope is real on the owned conn
+        // while the body write leaks onto the autocommit escape — exactly the ownership violation the
+        // atomicity contract forbids. (Escaping tx-control TOO would make the escape connection itself
+        // transactional, and ITS rollback would clean up the leaked write — masking the mutation. The
+        // `control` flag keeps the mutation faithful under the Phase D through-the-seam tx-control.)
+        if ($intent->write && !$intent->control) {
             return $this->escapeConn;
         }
         return parent::connectionFor($intent);
@@ -200,7 +208,8 @@ final class MisRoutingContext extends ExecutionContext
     public function withConnection(Connection $conn, bool $tx): ExecutionContext
     {
         // Preserve the mis-routing across the tx-scoped derivation (withTransactionDecided derives a
-        // tx-scoped ctx; the mutation must persist so the write still escapes).
-        return new MisRoutingContext($this->driver(), $this->middleware, $this->escapeConn, $tx);
+        // tx-scoped ctx passing the REAL owned tx connection `$conn`); pin THAT for tx-control, keep the
+        // escape for data writes so the body write still escapes.
+        return new MisRoutingContext($this->driver(), $this->middleware, $this->escapeConn, $tx ? $conn : null);
     }
 }
