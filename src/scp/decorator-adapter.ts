@@ -101,13 +101,15 @@ export const COLUMN_FAMILY_SQL_TYPE: Readonly<Record<string, string>> = {
 };
 
 /**
- * The SQL type for a column whose decorator carries NO `sqlCast` (a bare `@column()` / `@column.number()`
- * whose `design:type` is `Number`, or a bare `@column()` `string`). The v1 decorator does NOT record
- * an INT-vs-REAL width, so the adapter falls back to this DOCUMENTED default per JS runtime type. This
- * lives in the mapping (the "schema"), NOT as a silent `?? 0` in the engine — a REAL/DECIMAL column is
- * pinned explicitly via {@link DeriveColumnsOptions.columnTypes} (the escape hatch). Both `INTEGER` and
- * `REAL` de-box a `number` column to a JS `number`, so the default is read-safe for the common id case;
- * only the typed-native codegen `outType` (int vs float) distinguishes them (F2/native concern).
+ * The LAST-RESORT SQL type for a column that carries NO `sqlCast` family, NO `baseSqlType` (its
+ * `design:type` is absent — no `emitDecoratorMetadata` — or is an Array/Object family), and NO
+ * `columnTypes` override. Phase F-2 (#105 option B) made {@link columnSqlType} consult the decorator's
+ * `baseSqlType` (derived from the field's TS `design:type`: String→TEXT / Number→INTEGER / Boolean→
+ * BOOLEAN / Date→TIMESTAMP / BigInt→BIGINT) BEFORE this default, so a bare `@column() name: string`
+ * types as `TEXT` (not `INTEGER`) — the fix for F1's blanket-INTEGER read-de-box defect (it threw
+ * `materialize int32` on a live string column). This default now only applies when `design:type` is
+ * genuinely unavailable; a REAL/DECIMAL column (a `Number` that is not INT) is pinned via
+ * {@link DeriveColumnsOptions.columnTypes} (the escape hatch, unchanged from F1).
  */
 export const DEFAULT_UNCAST_SQL_TYPE = 'INTEGER';
 
@@ -123,8 +125,14 @@ export interface DeriveColumnsOptions {
 }
 
 /**
- * Translate ONE column's {@link ColumnMeta} to its §4.1 SQL-type token: an explicit override wins;
- * else the family token from {@link COLUMN_FAMILY_SQL_TYPE}; else the {@link DEFAULT_UNCAST_SQL_TYPE}.
+ * Translate ONE column's {@link ColumnMeta} to its §4.1 SQL-type token. Precedence (Phase F-2 / #105
+ * option B):
+ *   1. an explicit `columnTypes` override (the REAL/DECIMAL/width escape hatch) wins;
+ *   2. else the family token from {@link COLUMN_FAMILY_SQL_TYPE} (an explicit `@column.*` `sqlCast`);
+ *   3. else the decorator's `baseSqlType` — derived from the field's TS `design:type` (String→TEXT /
+ *      Number→INTEGER / Boolean→BOOLEAN / Date→TIMESTAMP / BigInt→BIGINT), so a bare `@column()` types
+ *      correctly for the SCP typed-read de-box (the fix for F1's blanket-INTEGER default);
+ *   4. else {@link DEFAULT_UNCAST_SQL_TYPE} (only when `design:type` is unavailable).
  * Fail-closed: a family token the mapping does not know, or a produced token `coltype.ts` rejects,
  * THROWS (naming the column) — never a silent skip (no-assume, no-fallback).
  */
@@ -132,6 +140,7 @@ export function columnSqlType(propKey: string, meta: ColumnMeta, override?: stri
   const sqlType =
     override ??
     (meta.sqlCast !== undefined ? COLUMN_FAMILY_SQL_TYPE[meta.sqlCast] : undefined) ??
+    meta.baseSqlType ??
     DEFAULT_UNCAST_SQL_TYPE;
   if (meta.sqlCast !== undefined && override === undefined && COLUMN_FAMILY_SQL_TYPE[meta.sqlCast] === undefined) {
     throw new Error(
@@ -373,8 +382,16 @@ export function compileCommandBundle(
  * `onConflictUpdate` / `onConflictIgnore` are `compileInsertMany` BUILD options (not authored ports),
  * so they carry end-to-end here with NO SCP authoring addition — exactly as v1's `create` and
  * `createMany` share the ONE `DBModel._insert` grouping path (`buildInsert` handles ON CONFLICT for
- * both a single record and a batch). A single-record `records` array is a one-group createMany =
- * byte-identical to what `_insert` emits for a single upsert.
+ * both a single record and a batch). A single-record `records` array is a one-group createMany that
+ * emits the SAME statement `_insert` does for a single upsert.
+ *
+ * Parity scope (the v1/v2 SQL-parity rule, per dialect — NOT a blanket "byte-identical to v1"): on
+ * **Postgres** the emitted upsert INSERT is byte-identical to v1 (`compileInsertMany` copies the v1
+ * `buildInsert` verbatim; PG stays base-class tuple/placeholder form). On **MySQL / SQLite** the v2
+ * form is the JSON-array single-param shape (`json_each` / `JSON_TABLE`), which is DELIBERATELY NOT
+ * byte-identical to v1's per-row placeholder expansion — it is the established v2 shape the conformance
+ * corpus freezes (#64/#65), executing to the same rows. So: pg = v1-byte-identical; mysql/sqlite = the
+ * v2 JSON-array form (equivalent result, distinct text).
  *
  * @param options the `compileCreateManyBundle` options (records / rawRecords / sqlCastMap / onConflict /
  *   onConflictUpdate / onConflictIgnore / returning / pk) — already serialized as `DBModel._insert`

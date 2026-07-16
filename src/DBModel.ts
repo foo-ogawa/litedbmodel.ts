@@ -19,6 +19,30 @@ import { isConnectionError } from './connection-errors';
 // Import LazyRelation module (static import for Vitest compatibility)
 import { LazyRelationContext, type RelationType, type RelationConfig } from './LazyRelation';
 
+// Phase F-2 (#105): the SCP runtime bridge — re-points DBModel's methods onto the SCP compile + the
+// Phase A-E runtime (real tx / reader-writer routing / multi-DB / middleware / hard-limits). Wired for
+// the live pg/mysql dialects; sqlite + an uninitialized handler keep the v1 in-proc path (fallback).
+import {
+  buildContextFromConfig,
+  conditionsToWhere,
+  executeReadAsync,
+  executeCountAsync,
+  executeWriteAsync,
+  compileCreateBundle,
+  renderRawSql,
+  type RuntimeContext,
+  type ReadAuthoringSpec,
+  type DeriveColumnsOptions,
+  type ModelClassLike as ModelLike,
+} from './scp/dbmodel-runtime';
+import {
+  transaction as scpTransaction,
+  executeAsync as scpExecuteAsync,
+  runAsync as scpRunAsync,
+  type AsyncExecutionContext,
+} from './scp/exec-context';
+import type { Scope } from 'behavior-contracts';
+
 // Transaction context stored in AsyncLocalStorage
 interface TransactionContext {
   connection: DBConnection;
@@ -207,6 +231,121 @@ export abstract class DBModel {
   protected static _lastTransactionTime: number = 0;
 
   /**
+   * The Phase A-E SCP runtime context (built lazily from `_dbConfig` for the live pg/mysql dialects).
+   * `null` when not yet built; `false` when the config is sqlite / uninitialized (⇒ v1 in-proc path,
+   * the backward-compat fallback). Rebuilt on `setConfig`. Phase F-2 (#105). @internal
+   */
+  protected static _scpRuntime: RuntimeContext | null | false = null;
+
+  /**
+   * Get the SCP runtime context for this model's config (Phase F-2 / #105), lazily built from
+   * `_dbConfig`. Returns `null` when the model should use the v1 in-proc path (sqlite, or no live
+   * config, or the pg/mysql peer dep is unavailable) — the backward-compat fallback (empty middleware
+   * / single-DB / sqlite behavior unchanged). The routed reader/writer pools, writer-sticky, and the
+   * ctx seam (middleware + tx-pinning) all come from here. @internal
+   */
+  protected static _getScpRuntime(): RuntimeContext | null {
+    if (this._scpRuntime === false) return null;
+    if (this._scpRuntime !== null) return this._scpRuntime;
+    const config = this._dbConfig;
+    const driver = config?.driver ?? (config ? 'postgres' : undefined);
+    if (config === null || driver === 'sqlite' || driver === undefined) {
+      this._scpRuntime = false;
+      return null;
+    }
+    try {
+      const rt = buildContextFromConfig(
+        {
+          ...(config.host !== undefined ? { host: config.host } : {}),
+          ...(config.port !== undefined ? { port: config.port } : {}),
+          ...(config.database !== undefined ? { database: config.database } : {}),
+          ...(config.user !== undefined ? { user: config.user } : {}),
+          ...(config.password !== undefined ? { password: config.password } : {}),
+          ...(config.max !== undefined ? { max: config.max } : {}),
+          ...(config.keepAlive !== undefined ? { keepAlive: config.keepAlive } : {}),
+          ...(config.keepAliveInitialDelayMillis !== undefined ? { keepAliveInitialDelayMillis: config.keepAliveInitialDelayMillis } : {}),
+          driver: driver as 'postgres' | 'mysql',
+        },
+        {
+          ...(this._configOptions.writerConfig !== undefined ? { writerConfig: this._configOptions.writerConfig as never } : {}),
+          ...(this._configOptions.useWriterAfterTransaction !== undefined ? { useWriterAfterTransaction: this._configOptions.useWriterAfterTransaction } : {}),
+          ...(this._configOptions.writerStickyDuration !== undefined ? { writerStickyDuration: this._configOptions.writerStickyDuration } : {}),
+        },
+      );
+      this._scpRuntime = rt;
+      return rt;
+    } catch {
+      // The pg/mysql peer dep is unavailable (or pool construction failed) — fall back to the v1 path.
+      this._scpRuntime = false;
+      return null;
+    }
+  }
+
+  /**
+   * Reset the cached SCP runtime (called on `setConfig`). Does NOT close the previous runtime's pools
+   * synchronously here — the caller (setConfig) closes them; this only clears the cache. @internal
+   */
+  protected static _resetScpRuntime(): void {
+    this._scpRuntime = null;
+  }
+
+  /** Cached §4.1 column-type overrides for the SCP read/write bundle (per class). @internal */
+  private static _scpColumnTypesCache: WeakMap<object, DeriveColumnsOptions> = new WeakMap();
+
+  /**
+   * The §4.1 column-type OVERRIDES for the SCP read/write bundle (the F1 `columnTypes` escape hatch).
+   * Phase F-2 (#105): a column whose SQL type cannot be derived from the decorator — no explicit
+   * `sqlCast` family AND no `baseSqlType` (its TS `design:type` is `Object`, e.g. a NULLABLE
+   * `string | null` / `number | null` field: TS emits `design:type = Object` for a union) — would
+   * otherwise take the blanket-INTEGER default and THROW `materialize int32` on a live string. Because
+   * the DBModel read path does its OWN v1 de-box (`_createInstance` → `typeCastFromDB`), the SCP typed
+   * read only needs a NON-THROWING, passthrough-safe SQL type for such columns: we pin them to `TEXT`
+   * (passthrough — the driver value flows through unchanged, then v1 casts it). Columns WITH a derivable
+   * type (explicit family / a non-union `design:type`) keep it. This preserves the v1 read contract
+   * exactly (int→number, string→string) while never throwing on an undeterminable nullable column.
+   * @internal
+   */
+  protected static _scpColumnTypes(): DeriveColumnsOptions | undefined {
+    const cached = DBModel._scpColumnTypesCache.get(this);
+    if (cached !== undefined) return cached;
+    const meta = getColumnMeta(this);
+    const columnTypes: Record<string, string> = {};
+    if (meta !== undefined) {
+      for (const [propKey, m] of meta) {
+        const baseSqlType = (m as { baseSqlType?: string }).baseSqlType;
+        // A column with an EXPLICIT `@column.*` family (`sqlCast`: boolean / bigint / uuid / jsonb /
+        // date / timestamp / *Array) keeps its derived SQL type — that family de-box matches v1's.
+        if (m.sqlCast !== undefined) continue;
+        // A bare `@column()` whose TS `design:type` is String / Boolean / Date / BigInt has an
+        // UNAMBIGUOUS SQL type (option B: TEXT / BOOLEAN / TIMESTAMP / BIGINT) — keep it, so the SCP
+        // typed de-box fires exactly as the v1 contract (string→string, bool→boolean, …).
+        if (baseSqlType !== undefined && baseSqlType !== 'INTEGER') continue;
+        // What remains is a bare `Number` (baseSqlType INTEGER) — AMBIGUOUS: it may back an INTEGER or a
+        // DECIMAL/NUMERIC column (pg returns DECIMAL as a string that `int32` materialize would REJECT)
+        // — OR a union field with NO `design:type` (string|null). Pin these to `TEXT` = passthrough:
+        // the DBModel path does its OWN v1 de-box (`_createInstance` → `typeCastFromDB`), so the SCP
+        // read only needs a NON-THROWING passthrough (int→number, decimal→number, string→string — the
+        // exact v1 read contract). This is F1's `columnTypes` escape hatch for the un-derivable number.
+        columnTypes[propKey] = 'TEXT';
+      }
+    }
+    const result: DeriveColumnsOptions = { columnTypes };
+    DBModel._scpColumnTypesCache.set(this, result);
+    return result;
+  }
+
+  /**
+   * Is the SCP execution path usable RIGHT NOW? The v1 method/SQL middleware system
+   * (`src/Middleware.ts` + `DBModel.use`) is a SEPARATE registry from the SCP middleware chain, so a
+   * registered v1 middleware must keep the v1 execute path (its `execute`/method hooks fire exactly as
+   * before — backward-compat). With NO v1 middleware, the SCP path (routing/tx via the ctx seam, plus
+   * the SCP middleware chain for `src/scp` `use()`) drives execution. Phase F-2 (#105). @internal
+   */
+  protected static _scpUsable(): boolean {
+    return DBModel._middlewares.length === 0;
+  }
+
+  /**
    * Initialize DBModel with database config.
    * Call this once at application startup.
    * 
@@ -253,6 +392,11 @@ export abstract class DBModel {
       ...this._configOptions,
       ...options,
     };
+    // Phase F-2 (#105): drop the cached SCP runtime so the next op rebuilds it from the new config
+    // (new reader/writer pools + routing). The v1 DBHandler above still owns its own pools (used by
+    // the v1 fallback path + tx-context bridging); the SCP runtime owns the routed pools for the
+    // SCP execution path. Rebuilt lazily on first use.
+    this._resetScpRuntime();
   }
 
   /**
@@ -756,13 +900,110 @@ export abstract class DBModel {
    * Build SELECT SQL and execute via query()
    * @internal
    */
-  private static _select<T extends typeof DBModel>(
+  private static async _select<T extends typeof DBModel>(
     this: T,
     conditions: ConditionObject,
     options: SelectOptions = {}
   ): Promise<InstanceType<T>[]> {
+    // Phase F-2 (#105): route the common read through the SCP bundle path (compileReadBundle →
+    // executeBundleAsync on the routed reader ctx + middleware). Only the "plain" read is SCP-eligible
+    // (no custom CTE / join / tableName / append / forUpdate, not a QUERY view-model) — those complex
+    // shapes keep the v1 imperative path (byte-identical, unchanged). The SCP read returns RAW rows;
+    // `_createInstance` applies the model's own v1 `typeCastFromDB` (v1 read-contract parity).
+    const rt = this._getScpRuntime();
+    if (rt !== null && this._scpUsable() && this._isScpEligibleRead(options)) {
+      const rows = await this._scpSelectRaw(conditions, options, rt);
+      return this._instancesFromRows<T>(rows);
+    }
     const { sql, params } = this._buildSelectSQL(conditions, options);
     return this.query(sql, params);
+  }
+
+  /**
+   * Is a read SCP-eligible? Only the plain SELECT shape (conditions + order/group/limit/offset/select)
+   * lowers cleanly onto the F1 `findAuthoring`; a custom CTE / join / explicit tableName / append /
+   * FOR UPDATE / a QUERY view-model keeps the v1 imperative path (byte-identical, unchanged).
+   * @internal
+   */
+  protected static _isScpEligibleRead(options: SelectOptions): boolean {
+    if (this.isQueryBased()) return false;
+    // A `*` projection needs a concrete column list to type the SCP read; a raw model (no `@column`)
+    // can't supply one, so it keeps the v1 path. An explicit column list is always SCP-eligible.
+    const selectCols = options.select ?? this.SELECT_COLUMN;
+    if (selectCols === '*' && !this._hasDeclaredColumns()) return false;
+    return (
+      options.cte === undefined &&
+      options.join === undefined &&
+      options.joinParams === undefined &&
+      options.tableName === undefined &&
+      options.append === undefined &&
+      options.forUpdate !== true
+    );
+  }
+
+  /**
+   * Execute the SCP bundle read (find/findOne/findById), returning RAW driver rows. Applies FIND_FILTER
+   * (v1 parity: the model's default filter is AND-ed into the conditions). @internal
+   */
+  protected static async _scpSelectRaw<T extends typeof DBModel>(
+    this: T,
+    conditions: ConditionObject,
+    options: SelectOptions,
+    rt: RuntimeContext,
+  ): Promise<Record<string, unknown>[]> {
+    const bridge = conditionsToWhere(this._mergeFindFilter(conditions), this._getSqlCastFormatter());
+    const spec = this._readSpecFrom(options);
+    return executeReadAsync(this as unknown as ModelLike, 'find', spec, bridge, rt, this._scpColumnTypes());
+  }
+
+  /** Merge FIND_FILTER (the model's default filter) into a condition object (v1 `_buildSelectSQL` parity). */
+  protected static _mergeFindFilter(conditions: ConditionObject): ConditionObject {
+    if (!this.FIND_FILTER) return conditions;
+    const filter = condsToRecord(this.FIND_FILTER) as ConditionObject;
+    return { ...conditions, ...filter };
+  }
+
+  /** Build the SCP {@link ReadAuthoringSpec} from v1 {@link SelectOptions} (select/order/group/limit/offset). */
+  protected static _readSpecFrom(options: SelectOptions): ReadAuthoringSpec {
+    const selectCols = options.select ?? this.SELECT_COLUMN;
+    // A `*` projection is expanded to the model's declared `@column` DB column names — the SCP typed
+    // read needs a CONCRETE column list to type the row struct (a wildcard can't be typed). When the
+    // model declares no columns (a raw model), `*` stays as-is (that read then falls to the v1 path
+    // via _isScpEligibleRead's projection check, since an untyped `*` read cannot be SCP-typed).
+    const select = selectCols === '*'
+      ? this._modelColumnNames()
+      : String(selectCols).split(',').map((s) => s.trim());
+    const spec: ReadAuthoringSpec = { select };
+    const order = options.order ?? orderToString(this.DEFAULT_ORDER);
+    if (order) (spec as { order?: string }).order = typeof order === 'string' ? order : orderToString(order);
+    const group = options.group ?? this.getGroupByClause();
+    if (group) (spec as { group?: string }).group = group;
+    if (options.limit !== undefined) (spec as { limit?: number }).limit = options.limit;
+    if (options.offset !== undefined) (spec as { offset?: number }).offset = options.offset;
+    return spec;
+  }
+
+  /** The model's declared `@column` DB column names (for expanding a `*` projection). @internal */
+  protected static _modelColumnNames(): string[] {
+    const meta = getColumnMeta(this);
+    if (meta === undefined) return [];
+    return Array.from(meta.values()).map((m) => m.columnName);
+  }
+
+  /** Does the model declare any `@column` (⇒ a `*` read can be SCP-typed)? @internal */
+  protected static _hasDeclaredColumns(): boolean {
+    const meta = getColumnMeta(this);
+    return meta !== undefined && meta.size > 0;
+  }
+
+  /** Build model instances from raw rows, wiring the deferred relation context (v1 `query` parity). @internal */
+  protected static _instancesFromRows<T extends typeof DBModel>(this: T, rows: Record<string, unknown>[]): InstanceType<T>[] {
+    const instances = rows.map((row) => this._createInstance<T>(row));
+    if (instances.length > 1) {
+      const deferredRef: [typeof DBModel, DBModel[]] = [this, instances as DBModel[]];
+      for (const inst of instances) (inst as DBModel)._deferredContext = deferredRef;
+    }
+    return instances;
   }
 
   /**
@@ -844,6 +1085,14 @@ export abstract class DBModel {
     conditions: ConditionObject,
     options: { tableName?: string } = {}
   ): Promise<number> {
+    // Phase F-2 (#105): the plain COUNT routes through the SCP bundle path (L.Count → executeBundleAsync
+    // on the routed reader). A QUERY view-model / explicit tableName keeps the v1 imperative path.
+    const rt = this._getScpRuntime();
+    if (rt !== null && this._scpUsable() && !this.isQueryBased() && options.tableName === undefined) {
+      const bridge = conditionsToWhere(this._mergeFindFilter(conditions), this._getSqlCastFormatter());
+      const rows = await executeCountAsync(this as unknown as ModelLike, bridge, rt, this._scpColumnTypes());
+      return parseInt(String(rows[0]?.count ?? 0), 10);
+    }
     const params: unknown[] = [];
     const isQueryBased = this.isQueryBased();
     const cteAlias = this.getCTEAlias();
@@ -986,9 +1235,51 @@ export abstract class DBModel {
       ? 'all' as const
       : options.onConflictUpdate?.map(toColName);
 
-    // Execute INSERT for each group
+    // Phase F-2 (#105): route the INSERT through the SCP batch-write bundle (compileCreateBundle →
+    // executeTransactionAsync on the writer, write=tx guard). `compileInsertMany` reproduces the v1
+    // `buildInsert` byte-for-byte (per the parity rule), so the executed SQL is identical; onConflict*
+    // ride the build options unchanged. The legacy raw `conflict` string (no structured onConflict) is
+    // NOT modeled in the SCP builder — that rare path keeps the v1 execute loop below. Requires the
+    // rows to be a SINGLE column-pattern group (the common case); a heterogeneous multi-pattern insert
+    // and the legacy conflict path fall through to the v1 loop.
+    const rt = this._getScpRuntime();
+    const singleGroup = groupedByPattern.size === 1 ? [...groupedByPattern.values()][0] : undefined;
+    if (
+      rt !== null &&
+      this._scpUsable() &&
+      singleGroup !== undefined &&
+      !(options.conflict && !options.onConflict)
+    ) {
+      // The SCP MySQL batch INSERT wraps values in a JSON array (`json_each`), so a Date value would
+      // be JSON-serialized to an ISO string (`…T…Z`) that MySQL's `CAST(… AS DATETIME)` rejects. The v1
+      // direct-param path passes a Date object (mysql2 formats it). For the batch/JSON path, pre-format
+      // any Date to the MySQL `YYYY-MM-DD HH:MM:SS.mmm` string the CAST accepts (PG/SQLite pass Date
+      // straight through their own binding, so this is mysql-only). Phase F-2 (#105).
+      const scpRecords = rt.dialect === 'mysql' ? singleGroup.records.map((r) => this._mysqlDateStrings(r)) : singleGroup.records;
+      const bundle = compileCreateBundle(
+        this as unknown as ModelLike,
+        'create',
+        {
+          tableName,
+          records: scpRecords,
+          rawRecords: singleGroup.rawRecords,
+          sqlCastMap,
+          ...(onConflictCols !== undefined ? { onConflict: onConflictCols } : {}),
+          ...(options.onConflictIgnore !== undefined ? { onConflictIgnore: options.onConflictIgnore } : {}),
+          ...(onConflictUpdateCols !== undefined ? { onConflictUpdate: onConflictUpdateCols } : {}),
+          ...(options.returning !== undefined ? { returning: options.returning } : {}),
+        },
+        rt.dialect,
+        this._scpColumnTypes(),
+      );
+      const result = await executeWriteAsync(bundle, {} as Scope, rt);
+      const rows = this._writeResultRows(result);
+      return rows.map((row) => this._createInstance<T>(row));
+    }
+
+    // Execute INSERT for each group (v1 path — heterogeneous patterns / legacy conflict / v1 fallback).
     const allResults: InstanceType<T>[] = [];
-    
+
     for (const { columns, records: groupRecords, rawRecords: groupRawRecords } of groupedByPattern.values()) {
       // Use SqlBuilder to build the INSERT SQL
       const buildResult = sqlBuilder.buildInsert({
@@ -1131,6 +1422,57 @@ export abstract class DBModel {
     Object.assign(instance, row);
     instance.typeCastFromDB();
     return instance;
+  }
+
+  /**
+   * Route a raw `(sql, params)` through the SCP ctx seam (the escape-hatch / Fragment path). A
+   * SELECT / …RETURNING / WITH / VALUES / SHOW / PRAGMA runs the READ seam (reader routing / an
+   * ambient tx pin); any other statement the WRITE seam (writer routing / the tx pin). The seam
+   * applies the SCP middleware chain + connection routing; inside a SCP `transaction(fn)` the ALS pin
+   * resolves the tx connection so the statement joins the transaction. Phase F-2 (#105). @internal
+   */
+  protected static async _scpRawExecute(sql: string, params: unknown[], rt: RuntimeContext): Promise<Record<string, unknown>[]> {
+    const ctx = rt.ctx as unknown as AsyncExecutionContext;
+    // v1-built SQL uses `?` placeholders; the SCP seam passes SQL verbatim, so renumber `?`→`$N` for
+    // postgres (mysql keeps `?`) — the conversion v1's DBHandler did on the imperative path.
+    const rendered = renderRawSql(sql, rt.dialect);
+    const returnsRows = /^\s*(select|with|show|pragma|values|explain|table)\b/i.test(rendered) || /\breturning\b/i.test(rendered);
+    if (returnsRows) {
+      return scpExecuteAsync(ctx, rendered, params, { write: false });
+    }
+    await scpRunAsync(ctx, rendered, params, { write: true });
+    return [];
+  }
+
+  /**
+   * Convert any `Date` value in a record to the MySQL `YYYY-MM-DD HH:MM:SS.mmm` string (server-local
+   * wall-clock, matching mysql2's own Date→DATETIME formatting) so it survives the SCP MySQL batch
+   * INSERT's JSON-array round-trip + `CAST(… AS DATETIME)`. Non-Date values pass through. @internal
+   */
+  protected static _mysqlDateStrings(record: Record<string, unknown>): Record<string, unknown> {
+    let out: Record<string, unknown> | undefined;
+    for (const [k, v] of Object.entries(record)) {
+      if (v instanceof Date) {
+        if (out === undefined) out = { ...record };
+        const p = (n: number, w = 2) => String(n).padStart(w, '0');
+        out[k] = `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())} ${p(v.getHours())}:${p(v.getMinutes())}:${p(v.getSeconds())}.${p(v.getMilliseconds(), 3)}`;
+      }
+    }
+    return out ?? record;
+  }
+
+  /**
+   * Flatten a SCP {@link executeWriteAsync} result (a `TransactionResult`) into the RETURNING rows the
+   * v1 write path returns: a batch write exposes every group's rows via `returnedRows`; a single-write
+   * Command exposes its one row via `entity`. A non-returning write yields `[]`. Phase F-2 (#105). @internal
+   */
+  protected static _writeResultRows(result: { entity: Record<string, unknown> | null; returnedRows?: readonly (readonly Record<string, unknown>[])[] }): Record<string, unknown>[] {
+    if (result.returnedRows !== undefined) {
+      const out: Record<string, unknown>[] = [];
+      for (const group of result.returnedRows) out.push(...group);
+      return out;
+    }
+    return result.entity !== null ? [result.entity] : [];
   }
 
   /**
@@ -2675,14 +3017,26 @@ export abstract class DBModel {
       sql = sqlOrFragment as string;
     }
     const core = async (s: string, p?: unknown[]): Promise<ExecuteResult> => {
+      // Phase F-2 (#105): the ESCAPE-HATCH / Fragment path through the SCP ctx seam. When the SCP
+      // runtime is active (and no v1 middleware), route raw execute/query THROUGH the seam so an
+      // ambient SCP transaction pin (the tx connection), reader/writer routing, and the SCP middleware
+      // chain all apply — the SAME central point every SCP-generated statement uses. A SELECT/RETURNING
+      // runs the read seam; any other statement the write seam (writer routing). This is what lets a v1
+      // -fallback op (CTE / QUERY view / updateMany / findById) join a `transaction(fn)` correctly.
+      const rt = this._getScpRuntime();
+      if (rt !== null && this._scpUsable()) {
+        const rows = await this._scpRawExecute(s, p || [], rt);
+        return { rows, rowCount: rows.length };
+      }
+
       const handler = this.getHandler();
-      
+
       // Use writer pool if in withWriter context or writer sticky period
       const useWriter = this._getWriterContext().getStore() !== undefined || this._shouldUseWriterSticky();
-      const result = useWriter 
+      const result = useWriter
         ? await handler.executeOnWriter(s, p || [])
         : await handler.execute(s, p || []);
-      
+
       return {
         rows: result.rows as Record<string, unknown>[],
         rowCount: result.rowCount,
@@ -2789,11 +3143,39 @@ export abstract class DBModel {
     options: TransactionOptions = {}
   ): Promise<R> {
     const txContext = this._getTransactionContext();
-    
+
     // Check if already in a transaction (nested transaction)
     if (txContext.getStore()) {
       // Already in a transaction, just execute the function
       return func();
+    }
+
+    // Phase F-2 (#105): when the SCP runtime is active (and no v1 middleware), open the transaction on
+    // the SCP tx runtime (`scpTransaction` — one owned pooled connection pinned in the SCP ALS, the
+    // isolation-aware BEGIN/COMMIT + #81 retry). Every op inside `func` joins it: an SCP write via
+    // `executeWriteAsync` (its `executeTransactionAsync` sees the ambient pin → no new BEGIN), an SCP
+    // read / a v1-fallback `execute()` via the SCP seam (the ALS pin resolves the tx connection). We
+    // ALSO set the v1 `transactionContext` marker (a sentinel connection) so v1 code that checks
+    // `inTransaction()` / `_checkWriteAllowed` / `getCurrentConnection()` still sees an active tx.
+    const rt = this._getScpRuntime();
+    if (rt !== null && this._scpUsable()) {
+      const useWriterAfterTx = options.useWriterAfterTransaction ?? this._configOptions.useWriterAfterTransaction ?? true;
+      const result = await scpTransaction(
+        rt.ctx,
+        () => {
+          // Set the v1 tx marker for the duration of the body (same async scope as the SCP pin). The
+          // sentinel connection is never used for I/O — v1-fallback ops route through the SCP seam.
+          const sentinel: DBConnection = {
+            query: async () => ({ rows: [], rowCount: 0 }),
+            release: () => undefined,
+          };
+          return txContext.run({ connection: sentinel }, func);
+        },
+        options,
+        rt.dialect,
+      );
+      if (useWriterAfterTx && !(options.rollbackOnly ?? false)) this._lastTransactionTime = Date.now();
+      return result;
     }
 
     // Get handler
@@ -3027,6 +3409,10 @@ export abstract class DBModel {
         ...options,
       };
       protected static _lastTransactionTime: number = 0;
+      // Phase F-2 (#105): this base class gets its OWN SCP runtime slot (built lazily from ITS config),
+      // isolated from DBModel's default-config runtime and from other base classes — otherwise a
+      // sqlite/mysql base would inherit DBModel's shared pg runtime and route its SQL to the wrong DB.
+      protected static _scpRuntime: RuntimeContext | null | false = null;
 
       // Override to use this base class's transaction context
       protected static _getTransactionContext(): AsyncLocalStorage<TransactionContext> {

@@ -34,6 +34,25 @@ function toPortableScalar(scalar: BcScalar, _table: string, _column: string): Po
   return scalar;
 }
 
+/**
+ * The bc {@link PortableType} for a projected column's SQL type, ARRAY-aware (Phase F-2 / #105). A
+ * scalar column maps to its {@link sqlTypeToBcScalar} scalar; an ARRAY column (`TEXT[]` / `INT[]` /
+ * `NUMERIC[]` / `BOOLEAN[]` / …) maps to a `{ arr: <element scalar> }` list type — the honest output
+ * type of a projected array column (the driver hands over a JS array whose elements match the element
+ * outType; the read path passes it through, `sqlTypeToMaterializeClass` = passthrough). Without this,
+ * a projected array column would throw at `sqlTypeToBcScalar` (a scalar-only mapping) — which is why
+ * F1's `TEXT[]` support never surfaced (F1 reads projected no array column). Fail-closed: the element
+ * base type is validated by `sqlTypeToBcScalar` (an unknown element throws).
+ */
+function columnSqlTypeToPortable(sqlType: string, table: string, column: string): PortableType {
+  const arrayMatch = /^(.+?)\s*\[\s*\]$/.exec(sqlType.trim());
+  if (arrayMatch !== null) {
+    const element = toPortableScalar(sqlTypeToBcScalar(arrayMatch[1].trim()), table, column);
+    return { arr: element };
+  }
+  return toPortableScalar(sqlTypeToBcScalar(sqlType), table, column);
+}
+
 /** A body node that is a component ref or a map (a cond node has no SELECT projection). */
 type RefLike = ComponentRefNode | MapNode;
 
@@ -184,7 +203,7 @@ function rowObjType(
     // throws on an undeclared column, sqlType* throw on an unknown SQL type — fail-closed by
     // construction on the UNDERLYING column, keyed by the OUTPUT column (the driver's row key).
     const sqlType = resolveColumnType(owner, underlying);
-    obj[outputKey] = toPortableScalar(sqlTypeToBcScalar(sqlType), owner, underlying);
+    obj[outputKey] = columnSqlTypeToPortable(sqlType, owner, underlying); // array-aware (F2 #105)
     const klass = sqlTypeToMaterializeClass(sqlType);
     if (klass !== 'passthrough') materializers[outputKey] = klass; // omit passthrough (no-op coercion)
   }
@@ -334,7 +353,7 @@ export function crudNodeAsType(
       if (parsed.kind === 'computed') continue; // computed column: read raw, omitted from the typed row (SA5-determined without it)
       const { underlying, outputKey, qualifier } = parsed;
       if (outputKey in obj) throw new Error(`outtype: ${at}: duplicate projected column key '${outputKey}' on '${table}'`);
-      obj[outputKey] = toPortableScalar(sqlTypeToBcScalar(resolveColumnType(qualifier ?? table, underlying)), qualifier ?? table, underlying);
+      obj[outputKey] = columnSqlTypeToPortable(resolveColumnType(qualifier ?? table, underlying), qualifier ?? table, underlying);
     }
     return { arr: { obj } };
   }

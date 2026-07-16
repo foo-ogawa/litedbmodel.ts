@@ -70,6 +70,17 @@ export interface ColumnMeta {
   primaryKey?: boolean;
   /** SQL type for automatic casting in conditions (e.g., 'uuid') */
   sqlCast?: string;
+  /**
+   * The §4.1 SQL-type token derived from the field's TS `design:type` for a column with NO explicit
+   * `sqlCast` (Phase F-2 / #105 option B). `String → TEXT`, `Number → INTEGER`, `Boolean → BOOLEAN`,
+   * `Date → TIMESTAMP`, `BigInt → BIGINT`. This types the SCP typed-read de-box for a bare `@column()`
+   * (the README shape) so it is byte-safe (`materializeCell` never mis-reads a string as int32), and
+   * preserves the v1 read contract exactly (string→TEXT→string, int→INTEGER→number). A column WITH an
+   * explicit `sqlCast` family (`@column.boolean()` / `.bigint()` / `.uuid()` / …) does not set this —
+   * its family already maps to the SQL type. `REAL`/`DECIMAL` (a `Number` that is not INT) stays pinned
+   * via the adapter's `columnTypes` escape hatch. @internal
+   */
+  baseSqlType?: string;
 }
 
 // ============================================
@@ -232,6 +243,35 @@ function inferTypeCastFromDesignType(
   }
 }
 
+/**
+ * Derive the §4.1 SQL-type token from a field's TS `design:type` (Phase F-2 / #105 option B), for a
+ * column with NO explicit `sqlCast` family. This types the SCP typed-read de-box for a bare `@column()`
+ * (the README shape) — extending the SAME `design:type` source `inferTypeCastFromDesignType` reads for
+ * the read cast, so it stays consistent with v1's read contract (String→TEXT→string, Number→INTEGER→
+ * number, Boolean→BOOLEAN, Date→TIMESTAMP, BigInt→BIGINT). Returns `undefined` when `design:type` is
+ * absent (no `emitDecoratorMetadata`) or is a family with no unambiguous SQL type (Array/Object) — the
+ * adapter then falls back to its documented default / the `columnTypes` escape hatch (REAL/DECIMAL/etc.).
+ */
+function inferBaseSqlTypeFromDesignType(target: object, propertyKey: string): string | undefined {
+  const designType = Reflect.getMetadata('design:type', target, propertyKey);
+  if (!designType) return undefined;
+  switch (designType) {
+    case String:
+      return 'TEXT';
+    case Number:
+      return 'INTEGER';
+    case Boolean:
+      return 'BOOLEAN';
+    case Date:
+      return 'TIMESTAMP';
+    case BigInt:
+      return 'BIGINT';
+    default:
+      // Array / Object / unknown — no unambiguous scalar SQL type. The adapter's escape hatch pins it.
+      return undefined;
+  }
+}
+
 /** Options for registerColumn */
 interface RegisterColumnOptions {
   columnName: string;
@@ -272,12 +312,20 @@ function registerColumn(
     }
   }
 
+  // Phase F-2 (#105 option B): record the base SQL-type token from the field's TS `design:type` so the
+  // SCP typed-read de-box can type a bare `@column()` (no explicit sqlCast family) correctly — the fix
+  // for F1's blanket-INTEGER default (which threw `materialize int32` on a live string column). Recorded
+  // always (independent of the auto-infer skip / explicit sqlCast); the adapter consults it only when
+  // there is no explicit `sqlCast` family and no `columnTypes` override.
+  const baseSqlType = inferBaseSqlTypeFromDesignType(target, propertyKey);
+
   columns.set(propertyKey, {
     columnName: options.columnName,
     typeCast: finalTypeCast,
     serialize: finalSerialize,
     primaryKey: options.primaryKey,
     sqlCast: finalSqlCast,
+    ...(baseSqlType !== undefined ? { baseSqlType } : {}),
   });
 
   Reflect.defineMetadata(COLUMNS_KEY, columns, constructor);

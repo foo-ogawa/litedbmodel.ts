@@ -46,6 +46,17 @@ export const IMMEDIATE_SENTINEL = '@immediate';
 export const TUPLE_SENTINEL = '@tuple';
 export const SUBQUERY_SENTINEL = '@subquery';
 export const EXISTS_SENTINEL = '@exists';
+/**
+ * A whole raw WHERE predicate carried verbatim (Phase F-2 / #105). Unlike the per-construct sentinels
+ * above (each re-derives ONE v1 construct's text), this carries a COMPLETE predicate body (`sql`, with
+ * its own `?` placeholders) + its bound value-specs, produced upstream by the ORIGINAL
+ * `DBConditions.compile()` — so the v1 ActiveRecord condition surface (`find`'s `Conds` → one
+ * `ConditionObject` → one compiled WHERE body) bridges onto the SCP where port in ONE member,
+ * byte-true by construction, without re-decomposing every condition shape into per-member sugar. The
+ * predicate rides as a nested makeSQL Fragment in the value slot (the SAME `{ sql, params }` shape the
+ * subquery/EXISTS primitives use), spliced verbatim by the live compile.
+ */
+export const RAWPRED_SENTINEL = '@rawpred';
 
 /** Build a sentinel column ref: `$[HEAD][seg0][seg1]…` → a recorded ref with that path. */
 function sentinelRef($: Recorded, head: string, segs: readonly string[]): Recorded {
@@ -199,6 +210,23 @@ export function whereExists(
   not = false,
 ): Recorded {
   return eq(sentinelRef($, EXISTS_SENTINEL, [not ? 'NOT EXISTS' : 'EXISTS']), sub) as unknown as Recorded;
+}
+
+/**
+ * A COMPLETE raw WHERE predicate carried verbatim (Phase F-2 / #105). `pred.sql` is the whole
+ * predicate body (with its own `?` placeholders) that the ORIGINAL `DBConditions.compile()` produced
+ * for a v1 `ConditionObject`; `pred.params` its bound value-specs (recorded refs or literals), in `?`
+ * order. Encoded `eq($[@rawpred], pred)` — the value slot carries the predicate as a nested makeSQL
+ * Fragment (the SAME `{ sql, params }` shape {@link whereInSubquery}/{@link whereExists} use). The live
+ * compile splices `pred.sql` verbatim and appends `pred.params`, so the emitted WHERE is byte-identical
+ * to v1's (v1 IS the text source). This is the SINGLE-member bridge the F2 DBModel adapter uses to
+ * lower an arbitrary `find`/`count` condition set onto the SCP where port without per-shape re-authoring.
+ */
+export function whereRawPredicate(
+  $: Recorded,
+  pred: { sql: string; params?: readonly Operand[] },
+): Recorded {
+  return eq(sentinelRef($, RAWPRED_SENTINEL, []), pred) as unknown as Recorded;
 }
 
 // ── Phase E-1 (#97): typed subquery / parentRef authoring SUGAR (TS-only ergonomics) ───────────
