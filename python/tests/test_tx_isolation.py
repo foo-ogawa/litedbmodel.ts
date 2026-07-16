@@ -35,7 +35,8 @@ import threading
 
 import pytest
 
-from litedbmodel_runtime import MysqlDriver, PostgresDriver, execute_transaction_bundle
+from litedbmodel_runtime import MysqlDriver, PostgresDriver
+from litedbmodel_runtime.runtime import _execute_transaction_bundle  # internal per-command auto-tx (guard opt-out)
 
 ISO_TBL = "scp_tx_iso_py"
 ISO_N = 8
@@ -135,7 +136,7 @@ def _read_iso_rows(driver):
 
 
 def _run_insert_tx(driver, dialect, id_, worker, seq):
-    return execute_transaction_bundle(_insert_bundle(dialect), _tx_input(id_, worker, seq), driver, guard=False)
+    return _execute_transaction_bundle(_insert_bundle(dialect), _tx_input(id_, worker, seq), driver, guard=False)
 
 
 # ── (1) ISOLATION — N workers × 2 concurrent single-INSERT txs, no cross-talk ───
@@ -205,7 +206,7 @@ def _multi_stmt_atomicity(driver, dialect):
 
     def fail_tx():
         try:
-            execute_transaction_bundle(_two_stmt_bundle(dialect, 10, 20, 1), _tx_input(0, 1, 0), driver, guard=False)
+            _execute_transaction_bundle(_two_stmt_bundle(dialect, 10, 20, 1), _tx_input(0, 1, 0), driver, guard=False)
             result["fail_ok"] = True  # committed (BAD — stmt-2 should collide)
         except Exception:
             result["fail_ok"] = False  # raised → rolled back (GOOD)
@@ -268,13 +269,13 @@ def _commit_failure_no_pool_leak_pg(driver):
     for i in range(iterations):
         raised = False
         try:
-            execute_transaction_bundle(dup_bundle, {"a": 2 * i, "b": 2 * i + 1}, driver, guard=False)
+            _execute_transaction_bundle(dup_bundle, {"a": 2 * i, "b": 2 * i + 1}, driver, guard=False)
         except Exception:
             raised = True  # the deferred-unique violation surfaces at COMMIT → raises (GOOD)
         assert raised, "the deferred-unique tx must FAIL at COMMIT"
     # The pool survived (no leak) — a final CLEAN single-INSERT tx still commits.
     driver.exec_ddl([f"DELETE FROM {ISO_TBL}"])
-    ok = execute_transaction_bundle(
+    ok = _execute_transaction_bundle(
         {"dialect": "postgres", "transaction": {"phase": "create", "entityFrom": None, "statements": [
             {"id": "s0", "role": "body", "op": {"sql": f"INSERT INTO {ISO_TBL} (id, worker, seq, k) VALUES (?, 5, 0, 99)", "params": [{"ref": ["a"]}]}}]}},
         {"a": 500},

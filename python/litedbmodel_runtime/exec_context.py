@@ -61,6 +61,7 @@ import time
 from typing import Any, Callable, List, Optional, Sequence, TypeVar, Union
 
 from .driver import Driver, RunInfo, TxConnection
+from .errors import SqlFailure, map_sqlite_error
 from .tx_options import (
     IsolationLevel,
     TransactionOptions,
@@ -590,10 +591,18 @@ def transaction(
             # A guard rejection is a programming error, never retryable — re-raise immediately.
             raise
         except Exception as error:
-            if attempt < retry_limit and opts.retry_on_error and is_retryable_tx_error(error):
+            # PARITY (go `mapSqliteError` → `SqlFailure.Unwrap()` classified by `IsRetryableTxError` /
+            # rust): map a RAW driver error into the `SqlFailure` envelope so the retry classifier reads
+            # the TYPED SQLSTATE/errno THROUGH `.wrapped` — the SAME envelope go/rust classify through.
+            # A live PG 40001 / MySQL 1213 (raised at COMMIT as a raw psycopg/PyMySQL error) thus flows
+            # through `map_sqlite_error` here, making the `.wrapped` chain genuinely load-bearing on the
+            # live retry path (neuter `.wrapped` → this classification goes RED). An already-mapped
+            # `SqlFailure` (e.g. from a nested `execute_transaction_bundle`) is left as-is (no re-map).
+            failure = error if isinstance(error, SqlFailure) else map_sqlite_error(error)
+            if attempt < retry_limit and opts.retry_on_error and is_retryable_tx_error(failure):
                 # Exponential backoff before RETRYing the whole transaction on a fresh connection.
                 backoff_ms = opts.retry_duration * (2 ** (attempt - 1))
                 if backoff_ms > 0:
                     time.sleep(backoff_ms / 1000.0)
                 continue
-            raise
+            raise failure from (None if failure is error else error)

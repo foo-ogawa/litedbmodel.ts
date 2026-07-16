@@ -38,9 +38,9 @@ from litedbmodel_runtime import (  # noqa: E402
     MysqlDriver,
     PostgresDriver,
     execute_bundle,
-    execute_transaction_bundle,
     read_bundle,
 )
+from litedbmodel_runtime.runtime import _execute_transaction_bundle  # internal guard opt-out
 
 SUPPORTED_CORPUS_VERSION = 3
 # A distinct namespace per language so 4 languages share ONE docker stack without cross-talk.
@@ -173,8 +173,8 @@ def _run_tx(driver, bundle, vector, tx_expected_key) -> Dict[str, Any]:
     # SQLite but MySQL has no native RETURNING → []); the mysql leg then carries `expectedResultMysql`.
     expected = vector.get(tx_expected_key) if tx_expected_key in vector else vector["expectedResult"]
     # The livedb corpus runs the per-command auto-tx (no user transaction() boundary), so the write=tx
-    # guard is opted OUT here (INTERNAL-only path) — byte-identical to Phase A.
-    result = _encode(execute_transaction_bundle(bundle, dict(vector["input"]), driver, guard=False))
+    # guard is opted OUT here via the INTERNAL executor — byte-identical to Phase A.
+    result = _encode(_execute_transaction_bundle(bundle, dict(vector["input"]), driver, guard=False))
     result_ok = _eq(result, expected)
     state_ok = True
     detail: List[str] = []

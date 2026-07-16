@@ -219,9 +219,30 @@ def execute_transaction_bundle(
     bundle: Mapping[str, Any],
     input_scope: Mapping[str, Any],
     driver: Union[Driver, ExecutionContext],
+) -> Dict[str, Any]:
+    """Execute a SqlBundle's derived transaction plan as ONE real transaction (gate-first) — the
+    PUBLIC write entry. It is ALWAYS write=tx-guarded: a write issued OUTSIDE a :func:`transaction`
+    boundary raises :class:`WriteOutsideTransactionError`; one in a read-only scope raises
+    :class:`WriteInReadOnlyContextError`. There is deliberately NO ``guard`` knob on this public
+    surface (mirror go's public ``ExecuteTransactionBundle`` / TS ``executeTransactionBundle``, neither
+    of which exposes a guard opt-out; per the #86 send-off — never expose ``guard:false`` on a
+    user-facing write facade, v1 ``@internal _checkWriteAllowed`` treatment). The internal per-command
+    auto-tx paths (conformance / livedb / ownership) use :func:`_execute_transaction_bundle` with
+    ``guard=False``.
+
+    ``driver`` is EITHER a raw :class:`Driver` (wrapped via the backward-compat
+    :func:`context_for_driver`, §6 — byte-identical) OR an already-built :class:`ExecutionContext`.
+    """
+    return _execute_transaction_bundle(bundle, input_scope, driver, guard=True)
+
+
+def _execute_transaction_bundle(
+    bundle: Mapping[str, Any],
+    input_scope: Mapping[str, Any],
+    driver: Union[Driver, ExecutionContext],
     guard: bool = True,
 ) -> Dict[str, Any]:
-    """Execute a SqlBundle's derived transaction plan as ONE real transaction (gate-first).
+    """INTERNAL write executor with the guard opt-out (``@internal`` — NOT part of the public surface).
 
     Byte-for-byte port of the TS ``executeTransactionBundle`` → ``executeTransaction`` (spec §6), over
     the Phase A **per-execution connection ownership** seam (#78) + the Phase B **ambient-tx JOIN +
@@ -241,16 +262,10 @@ def execute_transaction_bundle(
       DISTINCT connection ⇒ isolated. This preserves the Phase A per-command auto-tx (the conformance /
       livedb corpus runs here, byte-identically).
 
-    - **write=tx guard**: ``guard`` (default ON) enforces :func:`check_write_allowed_ambient` at ENTRY
-      — a write OUTSIDE a :func:`transaction` boundary raises :class:`WriteOutsideTransactionError`;
-      one in a read-only scope raises :class:`WriteInReadOnlyContextError` (read-only first). The
-      ``guard=False`` opt-out is INTERNAL-only (the conformance / livedb / ownership paths that run a
-      per-command auto-tx without a user boundary) — it is NOT a user-facing surface (per the #86
-      audit send-off: never expose ``guard:false`` on a user write facade). The default-ON callers pass
-      nothing; the internal per-command paths pass ``guard=False``.
-
-    ``driver`` is EITHER a raw :class:`Driver` (wrapped via the backward-compat
-    :func:`context_for_driver`, §6 — byte-identical) OR an already-built :class:`ExecutionContext`.
+    - **write=tx guard**: ``guard`` (default ON) enforces :func:`check_write_allowed_ambient` at ENTRY.
+      The ``guard=False`` opt-out is INTERNAL-only (the conformance / livedb / ownership paths that run a
+      per-command auto-tx without a user boundary) — reached ONLY through this private function, never
+      through the public :func:`execute_transaction_bundle` (per the #86 audit send-off).
     """
     plan = bundle.get("transaction")
     if plan is None:

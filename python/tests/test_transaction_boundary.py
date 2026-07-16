@@ -32,6 +32,7 @@ from litedbmodel_runtime import (
     execute_transaction_bundle,
     transaction,
 )
+from litedbmodel_runtime.runtime import _execute_transaction_bundle  # internal guard opt-out (disable-join mutation)
 from litedbmodel_runtime.driver import SqliteDriver, _SqliteTxConnection
 
 
@@ -171,7 +172,7 @@ def test_disabling_ambient_join_goes_RED(monkeypatch):
     ctx_g = context_for_driver(driver_g)
 
     def do_op_g(id_, worker, seq):
-        return execute_transaction_bundle(_insert_bundle(id_, worker, seq), {"id": id_, "worker": worker, "seq": seq}, driver_g, guard=False)
+        return _execute_transaction_bundle(_insert_bundle(id_, worker, seq), {"id": id_, "worker": worker, "seq": seq}, driver_g, guard=False)
 
     with pytest.raises(Exception):
         transaction(ctx_g, lambda: [do_op_g(200, 2, 0), do_op_g(201, 2, 1)], TransactionOptions(retry_on_error=False), "sqlite")
@@ -187,7 +188,7 @@ def test_disabling_ambient_join_goes_RED(monkeypatch):
     monkeypatch.setattr(rt, "current_context", lambda: None)  # disable the ambient JOIN
 
     def do_op_m(id_, worker, seq):
-        return execute_transaction_bundle(_insert_bundle(id_, worker, seq), {"id": id_, "worker": worker, "seq": seq}, driver_m, guard=False)
+        return _execute_transaction_bundle(_insert_bundle(id_, worker, seq), {"id": id_, "worker": worker, "seq": seq}, driver_m, guard=False)
 
     try:
         transaction(ctx_m, lambda: [do_op_m(200, 2, 0), do_op_m(201, 2, 1)], TransactionOptions(retry_on_error=False), "sqlite")

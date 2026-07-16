@@ -41,9 +41,9 @@ if _PKG_PARENT not in sys.path:
 from litedbmodel_runtime import (  # noqa: E402
     dialect_for,
     execute_bundle,
-    execute_transaction_bundle,
     render_read_primary,
 )
+from litedbmodel_runtime.runtime import _execute_transaction_bundle  # noqa: E402  (internal guard opt-out)
 from litedbmodel_runtime.driver import SqliteDriver  # noqa: E402
 
 # The corpus schema version this runner supports (pin — bumped on additive refreeze).
@@ -169,8 +169,8 @@ def _run_vector(v: Dict[str, Any]) -> Dict[str, Any]:
             driver = _seed_driver(list(v["schema"]))
             try:
                 # Conformance runs the per-command auto-tx (no user transaction() boundary), so the
-                # write=tx guard is opted OUT here (INTERNAL-only path) — byte-identical to Phase A.
-                result = encode_value(execute_transaction_bundle(v["bundle"], decode_value(v["input"]), driver, guard=False))
+                # write=tx guard is opted OUT here via the INTERNAL executor — byte-identical to Phase A.
+                result = encode_value(_execute_transaction_bundle(v["bundle"], decode_value(v["input"]), driver, guard=False))
                 state_ok = True
                 state_detail = ""
                 for s in v.get("expectedDbState", []) or []:

@@ -287,9 +287,25 @@ def _isolation_behavior(driver, dialect):
 # ── (4) RETRY under REAL contention ─────────────────────────────────────────────
 
 
-def _retry_pg_write_skew(driver, sink, typed_only):
+def _neuter_wrapped_chain():
+    """Break the `.wrapped`/`__cause__` chain traversal in the typed classifier — yield ONLY the
+    top-of-chain error. Returns a restore fn. Used to PROVE the mapped-`SqlFailure`/`.wrapped` envelope
+    is load-bearing on the live retry path (the go #83 audit teeth): the error `transaction()` classifies
+    is a mapped `SqlFailure` whose TOP level has no `.sqlstate` — so without the chain traversal (and
+    with the string fallback OFF) it can't classify → the loser can't retry → RED."""
+    orig = T._iter_error_chain
+
+    def top_only(error):
+        yield error  # NO traversal into .wrapped / __cause__ / __context__
+
+    T._iter_error_chain = top_only
+    return lambda: setattr(T, "_iter_error_chain", orig)
+
+
+def _retry_pg_write_skew(driver, sink, typed_only, neuter_wrapped=False, expect_red=False):
     if typed_only:
         T.disable_retry_string_fallback = True
+    restore = _neuter_wrapped_chain() if neuter_wrapped else (lambda: None)
     try:
         driver.exec_ddl([f"DELETE FROM {ISO_TBL}"])
         driver.exec_ddl([f"INSERT INTO {ISO_TBL} (id, worker, seq) VALUES (1, 500, 10), (2, 500, 20)"])
@@ -319,20 +335,29 @@ def _retry_pg_write_skew(driver, sink, typed_only):
             t.start()
         for t in threads:
             t.join()
-        for i, e in enumerate(errs):
-            assert e is None, f"PG retry: worker {i} must eventually commit (retry absorbs 40001), got {e!r}"
-        assert sink.begins > 2, f"PG retry: the retry must have fired (>2 BEGIN for 2 workers), got {sink.begins}"
+        if expect_red:
+            # TEETH: with the `.wrapped` chain neutered AND the string fallback off, the mapped 40001
+            # cannot be classified retryable → the loser gives up (a worker carries the 40001 error).
+            assert any(e is not None for e in errs), \
+                "TEETH FAILED: PG retry still absorbed 40001 with .wrapped chain neutered + string fallback off (envelope NOT load-bearing)"
+        else:
+            for i, e in enumerate(errs):
+                assert e is None, f"PG retry: worker {i} must eventually commit (retry absorbs 40001), got {e!r}"
+            assert sink.begins > 2, f"PG retry: the retry must have fired (>2 BEGIN for 2 workers), got {sink.begins}"
     finally:
+        restore()
         T.disable_retry_string_fallback = False
 
 
-def _retry_mysql_deadlock(driver, sink, typed_only):
+def _retry_mysql_deadlock(driver, sink, typed_only, neuter_wrapped=False, expect_red=False):
     if typed_only:
         T.disable_retry_string_fallback = True
+    restore = _neuter_wrapped_chain() if neuter_wrapped else (lambda: None)
     try:
         deadlock_fired = False
+        red_seen = False
         for _round in range(25):
-            if deadlock_fired:
+            if deadlock_fired or red_seen:
                 break
             driver.exec_ddl([f"DELETE FROM {ISO_TBL}"])
             driver.exec_ddl([f"INSERT INTO {ISO_TBL} (id, worker, seq) VALUES (1, 500, 10), (2, 500, 20)"])
@@ -370,13 +395,22 @@ def _retry_mysql_deadlock(driver, sink, typed_only):
                 t.start()
             for t in threads:
                 t.join()
-            for i, e in enumerate(errs):
-                assert e is None, f"MySQL retry: worker {i} must eventually commit (retry absorbs 1213), got {e!r}"
-            if sink.begins > 2:
-                deadlock_fired = True
-        if typed_only:
+            if expect_red:
+                # TEETH: with the `.wrapped` chain neutered + string fallback off, a raced 1213 can't be
+                # classified retryable → the loser gives up. A worker carrying an error IS the RED signal.
+                if any(e is not None for e in errs):
+                    red_seen = True
+            else:
+                for i, e in enumerate(errs):
+                    assert e is None, f"MySQL retry: worker {i} must eventually commit (retry absorbs 1213), got {e!r}"
+                if sink.begins > 2:
+                    deadlock_fired = True
+        if expect_red:
+            assert red_seen, "TEETH inconclusive: no 1213 raced in 25 rounds to prove the neutered envelope goes RED"
+        elif typed_only:
             assert deadlock_fired, "MySQL typed-path proof inconclusive: no deadlock raced in 25 rounds"
     finally:
+        restore()
         T.disable_retry_string_fallback = False
 
 
@@ -446,8 +480,15 @@ def test_tx_boundary_postgres():
         _retry_pg_write_skew(driver, sink, typed_only=False)
         _reset(driver, "INTEGER")
         # REGRESSION (audit lesson): the TYPED-code path alone (string fallback disabled) must classify
-        # the live 40001 — proving psycopg .sqlstate is reachable through the mapped SqlFailure.
+        # the live 40001 THROUGH the mapped SqlFailure/.wrapped envelope (go/rust parity — the raw
+        # psycopg SerializationFailure is mapped in transaction()'s retry handler and classified via
+        # .wrapped, exactly as go classifies via SqlFailure.Unwrap()).
         _retry_pg_write_skew(driver, sink, typed_only=True)
+        _reset(driver, "INTEGER")
+        # TEETH: neuter the .wrapped chain traversal (+ string fallback off) → the mapped 40001 can no
+        # longer be classified → the loser gives up (RED). Proves the .wrapped envelope is genuinely
+        # load-bearing on the LIVE retry path, not dead machinery.
+        _retry_pg_write_skew(driver, sink, typed_only=True, neuter_wrapped=True, expect_red=True)
         _reset(driver, "INTEGER")
         _non_retryable_does_not_retry(driver, sink, "postgres")
         _reset(driver, "INTEGER")
@@ -472,9 +513,14 @@ def test_tx_boundary_mysql():
         _reset(driver, "INT")
         _retry_mysql_deadlock(driver, sink, typed_only=False)
         _reset(driver, "INT")
-        # REGRESSION (audit lesson): the TYPED-code path alone must classify the live 1213 — proving
-        # PyMySQL .args[0] is reachable through the mapped SqlFailure.
+        # REGRESSION (audit lesson): the TYPED-code path alone must classify the live 1213 THROUGH the
+        # mapped SqlFailure/.wrapped envelope (go/rust parity: the raw PyMySQL error is mapped in
+        # transaction()'s retry handler and classified via .wrapped).
         _retry_mysql_deadlock(driver, sink, typed_only=True)
+        _reset(driver, "INT")
+        # TEETH: neuter the .wrapped chain traversal (+ string fallback off) → a raced 1213 can no longer
+        # be classified → the loser gives up (RED). Proves the .wrapped envelope is load-bearing live.
+        _retry_mysql_deadlock(driver, sink, typed_only=True, neuter_wrapped=True, expect_red=True)
         _reset(driver, "INT")
         _non_retryable_does_not_retry(driver, sink, "mysql")
         _reset(driver, "INT")

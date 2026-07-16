@@ -16,7 +16,8 @@ statement templates keyed by node id); a write carries a `transaction` plan of `
 
 from __future__ import annotations
 
-from litedbmodel_runtime import execute_bundle, execute_transaction_bundle
+from litedbmodel_runtime import execute_bundle
+from litedbmodel_runtime.runtime import _execute_transaction_bundle  # internal per-command auto-tx (guard opt-out)
 from litedbmodel_runtime.driver import SqliteDriver
 
 # ── A minimal read bundle: one Select + a per-row map Select (mirrors the Feed shape) ──
@@ -138,7 +139,7 @@ def _write_bundle():
 def test_write_tx_commits_gate_first():
     driver = SqliteDriver.in_memory(WRITE_SCHEMA)
     try:
-        res = execute_transaction_bundle(_write_bundle(), {"author_id": 7, "title": "New Post", "request_id": "req-1"}, driver, guard=False)
+        res = _execute_transaction_bundle(_write_bundle(), {"author_id": 7, "title": "New Post", "request_id": "req-1"}, driver, guard=False)
         assert res["committed"] is True
         assert res["entity"] == {"id": 1, "author_id": 7, "title": "New Post"}
         assert res["executed"] == ["tx_requires_0", "tx_idem_1", "tx_body_2", "tx_derive_3", "tx_emit_4"]
@@ -153,7 +154,7 @@ def test_write_tx_commits_gate_first():
 def test_write_tx_requires_gate_short_circuits():
     driver = SqliteDriver.in_memory(WRITE_SCHEMA)
     try:
-        res = execute_transaction_bundle(_write_bundle(), {"author_id": 999, "title": "Orphan", "request_id": "req-2"}, driver, guard=False)
+        res = _execute_transaction_bundle(_write_bundle(), {"author_id": 999, "title": "Orphan", "request_id": "req-2"}, driver, guard=False)
         assert res["committed"] is False
         assert res["shortCircuit"] == {"statementId": "tx_requires_0", "reason": "requires_absent"}
         assert res["entity"] is None
@@ -167,10 +168,10 @@ def test_write_tx_requires_gate_short_circuits():
 def test_write_tx_idempotent_duplicate_short_circuits():
     driver = SqliteDriver.in_memory(WRITE_SCHEMA)
     try:
-        first = execute_transaction_bundle(_write_bundle(), {"author_id": 7, "title": "P", "request_id": "dup"}, driver, guard=False)
+        first = _execute_transaction_bundle(_write_bundle(), {"author_id": 7, "title": "P", "request_id": "dup"}, driver, guard=False)
         assert first["committed"] is True
         # Second run with the SAME request_id: the idempotency INSERT affects 0 rows → no-op.
-        second = execute_transaction_bundle(_write_bundle(), {"author_id": 7, "title": "P2", "request_id": "dup"}, driver, guard=False)
+        second = _execute_transaction_bundle(_write_bundle(), {"author_id": 7, "title": "P2", "request_id": "dup"}, driver, guard=False)
         assert second["committed"] is False
         assert second["shortCircuit"]["reason"] == "idempotent_duplicate"
         # No double write: exactly one post, post_count incremented exactly once.
@@ -196,7 +197,7 @@ def test_write_tx_unknown_gate_fails_closed():
     try:
         raised = False
         try:
-            execute_transaction_bundle(_unknown_gate_bundle(), {"author_id": 7, "title": "X", "request_id": "req-u"}, driver, guard=False)
+            _execute_transaction_bundle(_unknown_gate_bundle(), {"author_id": 7, "title": "X", "request_id": "req-u"}, driver, guard=False)
         except Exception as e:  # noqa: BLE001 — any raise is fail-closed; assert the message survives
             raised = True
             assert "unknown gate rule" in str(e)

@@ -21,13 +21,19 @@ The retryable classification extracts the driver error CODE **TYPED** — psycop
 PRIMARY, driver-version-independent classifier. The go port's first attempt shipped the typed block
 as DEAD CODE (the live driver error was flattened to a plain-string ``SqlFailure`` before it reached
 the classifier, so only the string-substring fallback ever fired — esp. at COMMIT, where a PG 40001
-write-skew or a MySQL 1213 deadlock actually surfaces). The Python port avoids that trap: the runtime
-retains the ORIGINAL concrete driver error on the mapped :class:`SqlFailure` (``.wrapped`` +
-``__cause__``), and :func:`is_retryable_tx_error` TRAVERSES the wrapped chain to reach ``.sqlstate`` /
-``.args[0]``. The message-substring match is a belt-and-suspenders FALLBACK for a type-erased error;
-it is EXERCISE-DISABLABLE (``disable_retry_string_fallback``) so the live regression test can prove
-the typed path alone still classifies live 40001 / 1213 (guarding against silent rot back to dead
-code — the exact defect go #83's audit caught).
+write-skew or a MySQL 1213 deadlock actually surfaces).
+
+For PARITY with rust/go the Python tx runtime maps a raw driver error into the :class:`SqlFailure`
+envelope (``with_transaction_decided`` -> :func:`map_sqlite_error`, retaining the concrete error on
+``.wrapped`` + ``__cause__`` -- the go ``SqlFailure.Unwrap()`` analogue) BEFORE the retry classifier
+sees it. So the LIVE retry path classifies a PG 40001 / MySQL 1213 THROUGH the envelope, exactly like
+go/rust: :func:`is_retryable_tx_error` TRAVERSES the wrapped chain (:func:`retryable_by_typed_code`)
+to reach ``.sqlstate`` / ``.args[0]`` on the wrapped concrete error. The message-substring match is a
+belt-and-suspenders FALLBACK for a type-erased error; it is EXERCISE-DISABLABLE
+(``disable_retry_string_fallback``) so the live regression test can prove the typed path alone still
+classifies live 40001 / 1213 (guarding against silent rot back to dead code -- the exact defect go
+#83's audit caught). The chain traversal also reaches a raw driver error passed directly (the
+top-of-chain case), so a mapped-envelope error and a raw error classify identically.
 """
 
 from __future__ import annotations
