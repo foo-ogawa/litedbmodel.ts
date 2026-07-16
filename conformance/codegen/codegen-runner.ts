@@ -384,14 +384,28 @@ async function runExecVectors(vectors: Json[], suiteName: string, outDir: string
       t.pass++;
     }
 
-    // 2) TS real execution (through the emitted typed module + thin handlers)
-    try {
-      const r = await tsExecOk(v, outDir, idx, resolveColumnType);
-      line(r.ok, `${v.name} [exec:ts emitted module]`, r.detail);
-      r.ok ? t.pass++ : t.fail++;
-    } catch (e) {
-      line(false, `${v.name} [exec:ts]`, e instanceof Error ? e.message : String(e));
-      t.fail++;
+    // 2) TS real execution (through the emitted typed module + thin handlers).
+    //    A vector whose read rides a RELATION (`withRelation`) is NOT a codegen surface: the
+    //    relation stitch is a RUNTIME operation (`runRelationOp` — where the hard-limit guard lives),
+    //    and typed-native explicitly does not cover the relation `.map` shape (the declared bc#86
+    //    gap — see the module header). The codegen leg proves byte-identity of the emitted PRIMARY
+    //    read's SQL; the relation's behaviour (incl. its guard) is exercised on the runtime path
+    //    (the mode-2 thin-runtime + native adapters, guard suite 7/7). So we SKIP the exec:ts leg
+    //    for a relation vector — reported as an uncovered gap, never counted as pass OR fail
+    //    (mirrors the compile-check skip below and the structural `uncovered` note above).
+    if (v.withRelation) {
+      console.error(
+        `  · ${v.name} [exec:ts — relation rides the runtime stitch, not a codegen surface (bc#86); guard covered by the runtime guard suite]`,
+      );
+    } else {
+      try {
+        const r = await tsExecOk(v, outDir, idx, resolveColumnType);
+        line(r.ok, `${v.name} [exec:ts emitted module]`, r.detail);
+        r.ok ? t.pass++ : t.fail++;
+      } catch (e) {
+        line(false, `${v.name} [exec:ts]`, e instanceof Error ? e.message : String(e));
+        t.fail++;
+      }
     }
 
     // 3) Go/Rust compile/parse check of the emitted de-boxed source — SKIPPED (not failed) for a
