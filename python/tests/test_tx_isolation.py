@@ -135,7 +135,7 @@ def _read_iso_rows(driver):
 
 
 def _run_insert_tx(driver, dialect, id_, worker, seq):
-    return execute_transaction_bundle(_insert_bundle(dialect), _tx_input(id_, worker, seq), driver)
+    return execute_transaction_bundle(_insert_bundle(dialect), _tx_input(id_, worker, seq), driver, guard=False)
 
 
 # ── (1) ISOLATION — N workers × 2 concurrent single-INSERT txs, no cross-talk ───
@@ -205,7 +205,7 @@ def _multi_stmt_atomicity(driver, dialect):
 
     def fail_tx():
         try:
-            execute_transaction_bundle(_two_stmt_bundle(dialect, 10, 20, 1), _tx_input(0, 1, 0), driver)
+            execute_transaction_bundle(_two_stmt_bundle(dialect, 10, 20, 1), _tx_input(0, 1, 0), driver, guard=False)
             result["fail_ok"] = True  # committed (BAD — stmt-2 should collide)
         except Exception:
             result["fail_ok"] = False  # raised → rolled back (GOOD)
@@ -268,7 +268,7 @@ def _commit_failure_no_pool_leak_pg(driver):
     for i in range(iterations):
         raised = False
         try:
-            execute_transaction_bundle(dup_bundle, {"a": 2 * i, "b": 2 * i + 1}, driver)
+            execute_transaction_bundle(dup_bundle, {"a": 2 * i, "b": 2 * i + 1}, driver, guard=False)
         except Exception:
             raised = True  # the deferred-unique violation surfaces at COMMIT → raises (GOOD)
         assert raised, "the deferred-unique tx must FAIL at COMMIT"
@@ -279,6 +279,7 @@ def _commit_failure_no_pool_leak_pg(driver):
             {"id": "s0", "role": "body", "op": {"sql": f"INSERT INTO {ISO_TBL} (id, worker, seq, k) VALUES (?, 5, 0, 99)", "params": [{"ref": ["a"]}]}}]}},
         {"a": 500},
         driver,
+        guard=False,
     )
     assert ok["committed"], "after 40 raising-COMMIT txs the pool must still serve a clean commit (no leak)"
     rows = driver.prepare(f"SELECT id FROM {ISO_TBL}").all([])

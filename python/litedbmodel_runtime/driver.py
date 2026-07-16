@@ -71,10 +71,15 @@ class Driver(Protocol):
 
     def prepare(self, sql: str) -> PreparedStatement: ...
 
-    def begin_tx(self) -> TxConnection:
+    def begin_tx(self, before: Sequence[str] = (), after: Sequence[str] = ()) -> TxConnection:
         """Acquire an OWNED :class:`TxConnection` for a transaction (per-execution connection
         ownership, §3; BEGIN issued on the acquired connection). The central seam's
-        ``with_transaction`` pins the returned handle so every statement in the tx body runs on it."""
+        ``with_transaction`` pins the returned handle so every statement in the tx body runs on it.
+
+        ``before`` / ``after`` are the per-transaction isolation prelude statements (Phase B / #84):
+        ``before`` runs on the acquired connection BEFORE the driver's own ``BEGIN`` (MySQL — the SET
+        scopes the next tx), ``after`` runs right AFTER it (Postgres — the SET is the first in-tx
+        statement). Empty ⇒ a bare ``BEGIN`` (the Phase A behavior, byte-identical)."""
         ...
 
 
@@ -129,11 +134,17 @@ class SqliteDriver:
     def prepare(self, sql: str) -> _SqlitePrepared:
         return _SqlitePrepared(self.conn, sql)
 
-    def begin_tx(self) -> "_SqliteTxConnection":
+    def begin_tx(self, before: Sequence[str] = (), after: Sequence[str] = ()) -> "_SqliteTxConnection":
         """Acquire the OWNED tx connection (§3). SQLite is single-connection, so the tx owns THE conn:
         BEGIN is issued on it here, every tx statement runs on it, and COMMIT/ROLLBACK end it — the
         SAME single-conn BEGIN…COMMIT bracket the pre-seam ``prepare("BEGIN").run([])`` path ran,
-        byte-identical."""
+        byte-identical.
+
+        SQLite has NO per-transaction isolation level, so ``before``/``after`` must be empty (the
+        Phase B contract already loud-rejects an isolation request for SQLite before it reaches here —
+        this asserts the invariant defensively)."""
+        if before or after:
+            raise ValueError("scp tx: SQLite does not support a per-transaction isolation prelude")
         self.conn.execute("BEGIN")
         return _SqliteTxConnection(self.conn)
 
@@ -466,14 +477,33 @@ class _PooledTxConnection:
 
     __slots__ = ("_pool", "_xform", "_emulate_returning", "_conn", "_released")
 
-    def __init__(self, pool: "_ConnectionPool", xform, emulate_returning: bool) -> None:
+    def __init__(
+        self,
+        pool: "_ConnectionPool",
+        xform,
+        emulate_returning: bool,
+        before: Sequence[str] = (),
+        after: Sequence[str] = (),
+    ) -> None:
         self._pool = pool
         self._xform = xform
         self._emulate_returning = emulate_returning
         conn = pool.acquire()
-        cur = conn.cursor()
-        cur.execute("BEGIN")
-        cur.close()
+        try:
+            cur = conn.cursor()
+            # Isolation prelude (Phase B / #84): MySQL's `SET TRANSACTION ISOLATION LEVEL …` runs
+            # BEFORE BEGIN (it scopes the next tx); PG's runs AFTER BEGIN (first in-tx statement).
+            for stmt in before:
+                cur.execute(stmt)
+            cur.execute("BEGIN")
+            for stmt in after:
+                cur.execute(stmt)
+            cur.close()
+        except Exception:
+            # A prelude/BEGIN failure must not leak the freshly-acquired connection: drop it (a
+            # half-opened tx leaves the connection in an unknown state) and re-raise.
+            pool.discard(conn)
+            raise
         self._conn = conn
         self._released = False
 
@@ -542,11 +572,12 @@ class _PooledDriver:
     def prepare(self, sql: str) -> _PooledPrepared:
         return _PooledPrepared(self, sql)
 
-    def begin_tx(self) -> _PooledTxConnection:
+    def begin_tx(self, before: Sequence[str] = (), after: Sequence[str] = ()) -> _PooledTxConnection:
         """Acquire an OWNED :class:`_PooledTxConnection` for a transaction (§3): ONE pooled connection,
-        BEGIN issued on it, held for the tx's whole duration. Concurrent ``begin_tx`` calls (distinct
-        threads) acquire DISTINCT connections ⇒ isolated — the concurrent-tx fix."""
-        return _PooledTxConnection(self._pool, self._xform, self._emulate_returning)
+        the isolation prelude + BEGIN issued on it, held for the tx's whole duration. Concurrent
+        ``begin_tx`` calls (distinct threads) acquire DISTINCT connections ⇒ isolated — the
+        concurrent-tx fix. ``before``/``after`` carry the per-tx isolation prelude (Phase B / #84)."""
+        return _PooledTxConnection(self._pool, self._xform, self._emulate_returning, before, after)
 
     def close(self) -> None:
         self._pool.close()

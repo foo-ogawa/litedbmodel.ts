@@ -28,13 +28,39 @@ _KIND_POLICY = {
 
 
 class SqlFailure(Exception):
-    """A mapped SCP failure: SCP `kind`, honored bc Policy Kind, the SQLite code, a message."""
+    """A mapped SCP failure: SCP `kind`, honored bc Policy Kind, the SQLite code, a message.
 
-    def __init__(self, kind: str, policy: str, sqlite_code: Optional[str], message: str) -> None:
+    ``wrapped`` retains the ORIGINAL concrete driver error (a live psycopg / PyMySQL error) when this
+    failure maps a live-DB driver error (Phase B / #84). :func:`map_sqlite_error` flattens the driver
+    error's TEXT into the message, but a text string is opaque to a TYPED classifier — so
+    :func:`litedbmodel_runtime.tx_options.is_retryable_tx_error`'s SQLSTATE/errno extraction (the
+    robust, driver-version-independent classifier) would be DEAD CODE unless the concrete error stays
+    reachable. ``wrapped`` (the go ``SqlFailure.Unwrap()`` analogue) re-exposes it so the classifier
+    traverses to ``err.sqlstate`` / ``err.args[0]`` even at COMMIT time (where a PG 40001 write-skew /
+    MySQL 1213 deadlock surfaces). ``None`` for a synthetically-constructed failure or an in-proc
+    SQLite error (which carries its own typed path via ``sqlite_code``). This attribute never touches
+    the byte-identical conformance surface (the corpus compares the encoded result, never the error
+    object). ``__cause__`` is set to the same driver error (``raise … from``-style) as a second
+    traversal path.
+    """
+
+    def __init__(
+        self,
+        kind: str,
+        policy: str,
+        sqlite_code: Optional[str],
+        message: str,
+        wrapped: Optional[BaseException] = None,
+    ) -> None:
         super().__init__(message)
         self.kind = kind
         self.policy = policy
         self.sqlite_code = sqlite_code
+        self.wrapped = wrapped
+        if wrapped is not None:
+            # Expose the concrete driver error through the standard exception-chain attribute too, so a
+            # traversal that only follows __cause__ still reaches the typed SQLSTATE/errno.
+            self.__cause__ = wrapped
 
 
 def _code_from_bettersqlite_tag(message: str) -> Optional[str]:
@@ -70,14 +96,18 @@ def map_sqlite_error(e: BaseException) -> SqlFailure:
         code = _code_from_bettersqlite_tag(str(e))
 
     if code is None:
+        # A live-DB (non-SQLite) driver error — e.g. a live psycopg / PyMySQL error. Retain the
+        # concrete error (``wrapped``) so the TYPED retryable classifier can reach its SQLSTATE / errno
+        # through the mapped failure (Phase B / #84 typed-retryable path). This is the branch a PG
+        # 40001 raised at COMMIT lands in.
         message = str(e)
-        return SqlFailure("driver_error", "fail", None, f"non-SQLite driver error: {message}")
+        return SqlFailure("driver_error", "fail", None, f"non-SQLite driver error: {message}", wrapped=e)
 
     tagged = f"[{code}] {e}"
     if code == "SQLITE_CONSTRAINT_FOREIGNKEY":
-        return SqlFailure("foreign_key_violation", "fail", code, tagged)
+        return SqlFailure("foreign_key_violation", "fail", code, tagged, wrapped=e)
     if code.startswith("SQLITE_CONSTRAINT"):
-        return SqlFailure("constraint_violation", "fail", code, tagged)
+        return SqlFailure("constraint_violation", "fail", code, tagged, wrapped=e)
     if code in ("SQLITE_BUSY", "SQLITE_LOCKED"):
-        return SqlFailure("retryable", "retry", code, tagged)
-    return SqlFailure("driver_error", "fail", code, tagged)
+        return SqlFailure("retryable", "retry", code, tagged, wrapped=e)
+    return SqlFailure("driver_error", "fail", code, tagged, wrapped=e)

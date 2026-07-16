@@ -168,7 +168,9 @@ def _run_vector(v: Dict[str, Any]) -> Dict[str, Any]:
         if kind == "tx":
             driver = _seed_driver(list(v["schema"]))
             try:
-                result = encode_value(execute_transaction_bundle(v["bundle"], decode_value(v["input"]), driver))
+                # Conformance runs the per-command auto-tx (no user transaction() boundary), so the
+                # write=tx guard is opted OUT here (INTERNAL-only path) — byte-identical to Phase A.
+                result = encode_value(execute_transaction_bundle(v["bundle"], decode_value(v["input"]), driver, guard=False))
                 state_ok = True
                 state_detail = ""
                 for s in v.get("expectedDbState", []) or []:

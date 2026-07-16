@@ -107,7 +107,10 @@ class _RecDriver:
     def prepare(self, sql):
         return _RecStmt(self.log, sql, self._fail_on)
 
-    def begin_tx(self):
+    def begin_tx(self, before=(), after=()):
+        # This recording driver models the SQLite single-conn tx (no per-tx isolation prelude); the
+        # prelude args are accepted for the Phase B signature but must be empty here.
+        assert not before and not after, "recording SQLite driver takes no isolation prelude"
         self.last_tx = _RecTx(self.log, self._fail_on, self._fail_commit)
         return self.last_tx
 
@@ -330,7 +333,7 @@ def test_sqlite_pool_not_leaked_on_raising_commit():
         def prepare(self, sql):
             raise AssertionError("tx path must not hit prepare")
 
-        def begin_tx(self):
+        def begin_tx(self, before=(), after=()):
             return _FakeTx(self._pool, self._fail_commit)
 
     # A SMALL pool (size 2) run through MANY raising-COMMIT txs: if a raising commit leaked its

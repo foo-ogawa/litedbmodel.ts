@@ -172,7 +172,9 @@ def _run_tx(driver, bundle, vector, tx_expected_key) -> Dict[str, Any]:
     # A write may GENUINELY diverge by dialect (a DELETE…RETURNING returns the deleted row on PG/
     # SQLite but MySQL has no native RETURNING → []); the mysql leg then carries `expectedResultMysql`.
     expected = vector.get(tx_expected_key) if tx_expected_key in vector else vector["expectedResult"]
-    result = _encode(execute_transaction_bundle(bundle, dict(vector["input"]), driver))
+    # The livedb corpus runs the per-command auto-tx (no user transaction() boundary), so the write=tx
+    # guard is opted OUT here (INTERNAL-only path) — byte-identical to Phase A.
+    result = _encode(execute_transaction_bundle(bundle, dict(vector["input"]), driver, guard=False))
     result_ok = _eq(result, expected)
     state_ok = True
     detail: List[str] = []

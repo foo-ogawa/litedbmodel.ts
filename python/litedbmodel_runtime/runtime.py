@@ -28,6 +28,8 @@ from .exec_context import (
     WRITE_INTENT,
     ExecutionContext,
     as_context,
+    check_write_allowed_ambient,
+    current_context,
     execute as seam_execute,
     run as seam_run,
     with_transaction_decided,
@@ -154,23 +156,98 @@ def _exec_statement(op: Mapping[str, Any], scope: Mapping[str, Any], dialect_nam
     return [], info.changes
 
 
+def _run_tx_plan(
+    plan: Mapping[str, Any],
+    input_scope: Mapping[str, Any],
+    dialect_name: str,
+    tx_ctx: ExecutionContext,
+    is_batch: bool,
+):
+    """Run the gate-first plan on a tx-scoped ctx, returning ``(result_dict, rolled_back)``.
+
+    Statements run in the plan's fixed order (requires → idempotency → unique → body → derive → edges
+    → emits, topo-ordered for composite DAGs); a failing gate short-circuits (``rolled_back=True``, a
+    legitimate ``committed:false`` outcome — NOT a raised error) and the tail never executes. On
+    success returns ``(committed-dict, False)``. This is the SHARED plan runner both the own-tx path
+    (:func:`with_transaction_decided`, which turns ``rolled_back`` into a ROLLBACK of the owned
+    connection) and the ambient-JOIN path (where a gate short-circuit returns ``committed:false``
+    WITHOUT rolling back the outer tx — the outer owns its COMMIT/ROLLBACK, go ``TransactionDecided``
+    nested parity) drive.
+    """
+    executed: List[str] = []
+    scope: Dict[str, Any] = dict(input_scope)
+    entity: Optional[Dict[str, Any]] = None
+    returned_rows: List[List[Dict[str, Any]]] = []
+
+    for stmt in plan["statements"]:
+        rows, changes = _exec_statement(stmt["op"], scope, dialect_name, tx_ctx)
+        executed.append(stmt["id"])
+
+        gate = stmt.get("gate")
+        if gate is not None:
+            reason = _gate_short_circuit(gate, rows, changes)
+            if reason is not None:
+                return (
+                    {
+                        "committed": False,
+                        "shortCircuit": {"statementId": stmt["id"], "reason": reason},
+                        "entity": None,
+                        "executed": executed,
+                    },
+                    True,
+                )
+
+        if stmt["id"] == plan.get("entityFrom"):
+            entity = rows[0] if rows else None
+            if entity is not None:
+                scope[ENTITY_ROOT] = entity
+
+        binds = stmt.get("binds")
+        if binds is not None and rows:
+            scope[binds] = rows[0]
+
+        if is_batch and stmt.get("role") == "body" and rows:
+            returned_rows.append(rows)
+
+    out: Dict[str, Any] = {"committed": True, "entity": entity, "executed": executed}
+    if returned_rows:
+        out["returnedRows"] = returned_rows
+    return out, False
+
+
 def execute_transaction_bundle(
     bundle: Mapping[str, Any],
     input_scope: Mapping[str, Any],
     driver: Union[Driver, ExecutionContext],
+    guard: bool = True,
 ) -> Dict[str, Any]:
     """Execute a SqlBundle's derived transaction plan as ONE real transaction (gate-first).
 
-    Byte-for-byte port of the TS ``executeTransactionBundle`` → ``executeTransaction`` (spec §6), now
-    over the Phase A **per-execution connection ownership** seam (#78): the whole plan runs inside
-    :func:`with_transaction_decided`, which acquires ONE owned connection (``driver.begin_tx()``),
-    pins it into a tx-scoped :class:`ExecutionContext`, and COMMITs / ROLLBACKs on the SAME owned
-    connection — never a driver-global writer slot. Concurrent transactions each own a DISTINCT
-    connection ⇒ isolated. Statements run in the plan's fixed order (requires → idempotency → unique →
-    body → derive → edges → emits, topo-ordered for composite DAGs); a failing gate ROLLBACKs and the
-    tail never executes. On success COMMITs and returns the ``$.entity`` RETURNING row. A short-circuit
-    returns ``committed:false`` (a legitimate gate outcome), NOT a raised failure; a driver failure
-    ROLLBACKs then raises a mapped SqlFailure.
+    Byte-for-byte port of the TS ``executeTransactionBundle`` → ``executeTransaction`` (spec §6), over
+    the Phase A **per-execution connection ownership** seam (#78) + the Phase B **ambient-tx JOIN +
+    write=tx guard** (#84/#86):
+
+    - **Ambient-tx JOIN (the core #86 fix)**: if this call runs INSIDE a user :func:`transaction`
+      boundary — detected via the ambient contextvar-propagated tx ctx (:func:`current_context`) — the
+      plan JOINs the ambient tx: it runs on the OUTER's pinned owned connection with NO new
+      BEGIN/COMMIT/acquire. So N ops inside one ``transaction(fn)`` produce exactly ONE BEGIN + ONE
+      COMMIT on ONE connection. A gate short-circuit inside a JOIN returns ``committed:false`` WITHOUT
+      rolling back the outer tx (the outer decides its own COMMIT/ROLLBACK — go ``TransactionDecided``
+      nested parity). An ERROR still propagates and rolls back the whole outer tx.
+
+    - **Own-tx path (outside a boundary)**: the whole plan runs inside :func:`with_transaction_decided`,
+      which acquires ONE owned connection (``driver.begin_tx()``), pins it, and COMMITs / ROLLBACKs on
+      the SAME owned connection — never a driver-global writer slot. Concurrent transactions each own a
+      DISTINCT connection ⇒ isolated. This preserves the Phase A per-command auto-tx (the conformance /
+      livedb corpus runs here, byte-identically).
+
+    - **write=tx guard**: ``guard`` (default ON) enforces :func:`check_write_allowed_ambient` at ENTRY
+      — a write OUTSIDE a :func:`transaction` boundary raises :class:`WriteOutsideTransactionError`;
+      one in a read-only scope raises :class:`WriteInReadOnlyContextError` (read-only first). The
+      ``guard=False`` opt-out is INTERNAL-only (the conformance / livedb / ownership paths that run a
+      per-command auto-tx without a user boundary) — it is NOT a user-facing surface (per the #86
+      audit send-off: never expose ``guard:false`` on a user write facade). The default-ON callers pass
+      nothing; the internal per-command paths pass ``guard=False``.
 
     ``driver`` is EITHER a raw :class:`Driver` (wrapped via the backward-compat
     :func:`context_for_driver`, §6 — byte-identical) OR an already-built :class:`ExecutionContext`.
@@ -181,53 +258,36 @@ def execute_transaction_bundle(
     dialect_name = bundle["dialect"]
     ctx = as_context(driver)
 
+    # write=tx guard (default ON): a write must be inside a user transaction() boundary. The guard
+    # reads the AMBIENT contextvar markers, so it fires BEFORE any connection is acquired.
+    if guard:
+        check_write_allowed_ambient("WRITE", bundle.get("name"))
+
     # Batch mode (createMany/updateMany/deleteMany): a gate-free, ref-free plan (entityFrom is null,
     # every statement a plain body) — accumulate each body statement's RETURNING rows in order.
     is_batch = plan.get("entityFrom") is None and all(
         s.get("gate") is None and s.get("binds") is None and s.get("role") == "body" for s in plan["statements"]
     )
 
+    # AMBIENT-TX JOIN: inside a user transaction() the ambient contextvar carries the outer's pinned tx
+    # ctx — run the plan on THAT connection with NO new BEGIN/COMMIT (the nested-join). A gate
+    # short-circuit returns committed:false without rolling back the outer; an error propagates.
+    ambient = current_context()
+    if ambient is not None and ambient.in_transaction():
+        try:
+            result, _rolled_back = _run_tx_plan(plan, input_scope, dialect_name, ambient, is_batch)
+            return result
+        except SqlFailure:
+            raise
+        except Exception as e:
+            raise map_sqlite_error(e)
+
+    # OWN-TX path: acquire + own ONE connection for this plan (the per-command auto-tx, Phase A).
     def body(tx_ctx: ExecutionContext):
-        executed: List[str] = []
-        scope: Dict[str, Any] = dict(input_scope)
-        entity: Optional[Dict[str, Any]] = None
-        returned_rows: List[List[Dict[str, Any]]] = []
-
-        for stmt in plan["statements"]:
-            rows, changes = _exec_statement(stmt["op"], scope, dialect_name, tx_ctx)
-            executed.append(stmt["id"])
-
-            gate = stmt.get("gate")
-            if gate is not None:
-                reason = _gate_short_circuit(gate, rows, changes)
-                if reason is not None:
-                    # A failed gate: ROLLBACK (a legitimate outcome, NOT an error) + return
-                    # committed:false. with_transaction_decided rolls back the owned connection.
-                    return tx_rollback(
-                        {
-                            "committed": False,
-                            "shortCircuit": {"statementId": stmt["id"], "reason": reason},
-                            "entity": None,
-                            "executed": executed,
-                        }
-                    )
-
-            if stmt["id"] == plan.get("entityFrom"):
-                entity = rows[0] if rows else None
-                if entity is not None:
-                    scope[ENTITY_ROOT] = entity
-
-            binds = stmt.get("binds")
-            if binds is not None and rows:
-                scope[binds] = rows[0]
-
-            if is_batch and stmt.get("role") == "body" and rows:
-                returned_rows.append(rows)
-
-        out: Dict[str, Any] = {"committed": True, "entity": entity, "executed": executed}
-        if returned_rows:
-            out["returnedRows"] = returned_rows
-        return tx_commit(out)
+        result, rolled_back = _run_tx_plan(plan, input_scope, dialect_name, tx_ctx, is_batch)
+        # A failed gate rolls back the owned connection (a legitimate outcome, NOT an error); success
+        # commits it.
+        return tx_rollback(result) if rolled_back else tx_commit(result)
 
     try:
         return with_transaction_decided(ctx, body)

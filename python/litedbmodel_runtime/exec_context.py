@@ -57,9 +57,19 @@ the PG/MySQL drivers was exactly the shared-slot model that corrupts concurrent 
 from __future__ import annotations
 
 import contextvars
+import time
 from typing import Any, Callable, List, Optional, Sequence, TypeVar, Union
 
 from .driver import Driver, RunInfo, TxConnection
+from .tx_options import (
+    IsolationLevel,
+    TransactionOptions,
+    WriteInReadOnlyContextError,
+    WriteOutsideTransactionError,
+    check_write_allowed,
+    is_retryable_tx_error,
+    isolation_prelude,
+)
 
 Rows = List[Any]
 _T = TypeVar("_T")
@@ -220,18 +230,23 @@ class ExecutionContext:
     contextvar value — its own tx connection — never another's.
     """
 
-    __slots__ = ("_driver", "middleware", "_pinned")
+    __slots__ = ("_driver", "middleware", "_pinned", "_read_only")
 
     def __init__(
         self,
         driver: Driver,
         middleware: MiddlewareChain,
         pinned: Optional[Connection] = None,
+        read_only: bool = False,
     ) -> None:
         self._driver = driver
         self.middleware = middleware
         # The pinned tx connection (present ⇒ this is a tx-scoped ctx; every statement resolves it).
         self._pinned = pinned
+        # The READ-ONLY marker (Phase B / #84 write=tx guard — mirror v1 `withWriter` / the TS
+        # `withReadOnly` ALS marker / rust/go `read_only`): a write in a read-only-scoped ctx is
+        # REJECTED (WriteInReadOnlyContextError). Derived via `with_read_only`.
+        self._read_only = read_only
 
     @property
     def driver(self) -> Driver:
@@ -240,8 +255,24 @@ class ExecutionContext:
         return self._driver
 
     def in_transaction(self) -> bool:
-        """Is this a tx-scoped ctx (a pinned connection is present)?"""
+        """Is this a tx-scoped ctx (a pinned connection is present)? This is the Python analogue of
+        the TS async-local "inside a transaction" marker — the write=tx guard reads it (via the
+        ambient contextvar), and the public :func:`transaction` boundary reads it for NESTED-tx join
+        detection."""
         return self._pinned is not None
+
+    def read_only(self) -> bool:
+        """Is this a READ-ONLY-scoped ctx (Phase B / #84 write=tx guard)? A write here is REJECTED
+        (:class:`WriteInReadOnlyContextError`). Derived via :meth:`with_read_only`."""
+        return self._read_only
+
+    def with_read_only(self) -> "ExecutionContext":
+        """Derive a READ-ONLY-scoped ctx (mirror v1 ``withWriter`` / the TS ``withReadOnly`` / rust/go
+        ``with_read_only``): reads are allowed, but ANY write funneled through the GUARDED write seam
+        (:func:`run_guarded` / a guarded ``execute_transaction_bundle``) is rejected with
+        :class:`WriteInReadOnlyContextError`. A tx-scoped ctx INHERITS its pinned connection + driver +
+        middleware; a Transaction() opened inside a read-only scope stays read-only (v1 parity)."""
+        return ExecutionContext(self._driver, self.middleware, self._pinned, read_only=True)
 
     def connection_for(self, intent: StatementIntent = READ_INTENT) -> Connection:
         """Resolve WHICH connection a statement runs on (§3). Phase A resolution: the tx-owned
@@ -254,10 +285,12 @@ class ExecutionContext:
 
     def with_connection(self, conn: Connection, tx: bool) -> "ExecutionContext":
         """Derive a tx-scoped ctx pinning ``conn`` (every statement resolves it while ``tx`` is True).
-        The derived ctx shares the primary driver + middleware chain. This is the Python analogue of
-        the TS ``withConnection(conn, tx)`` / go ``WithTxConnection`` / rust ``with_tx_connection``.
+        The derived ctx shares the primary driver + middleware chain, and INHERITS the read-only
+        marker (a tx opened inside a read-only scope stays read-only — v1 parity). This is the Python
+        analogue of the TS ``withConnection(conn, tx)`` / go ``WithTxConnection`` / rust
+        ``with_tx_connection``.
         """
-        return ExecutionContext(self._driver, self.middleware, conn if tx else None)
+        return ExecutionContext(self._driver, self.middleware, conn if tx else None, read_only=self._read_only)
 
 
 # ── ctx propagation (§3) — the Python-idiomatic contextvars slot ──────────────
@@ -362,6 +395,8 @@ def rollback(value: _T) -> TxDecision:
 def with_transaction_decided(
     ctx: ExecutionContext,
     body: Callable[["ExecutionContext"], TxDecision],
+    before: Sequence[str] = (),
+    after: Sequence[str] = (),
 ) -> Any:
     """Run ``body`` inside a transaction with **per-execution connection ownership** (§3, the
     concurrent-tx fix). This is the general form: ``body`` decides COMMIT vs ROLLBACK (see
@@ -380,12 +415,16 @@ def with_transaction_decided(
          COMMIT). Without this ``finally`` a raising COMMIT would leak the connection (the pool would
          shrink by one under repeated commit failures — the #78 audit defect).
 
+    ``before`` / ``after`` carry the per-transaction isolation prelude (Phase B / #84 —
+    :func:`litedbmodel_runtime.tx_options.isolation_prelude`): MySQL's ``SET`` runs pre-BEGIN, PG's
+    post-BEGIN. Empty ⇒ a bare ``BEGIN`` (byte-identical to the Phase A path).
+
     Concurrent calls (on distinct threads) each acquire a DISTINCT connection and pin it in their OWN
     contextvar scope, so their writes never cross-talk — the isolation the shared-slot model (the
     removed driver-global ``_writer``) violated. This mirrors the TS ``withTransactionAsync`` (#75) /
     rust ``with_transaction_decided`` (#76) / go ``WithTransactionDecided`` (#77).
     """
-    tx = ctx.driver.begin_tx()
+    tx = ctx.driver.begin_tx(before, after)
     tx_ctx = ctx.with_connection(_TxConnectionAdapter(tx), True)
 
     def scoped() -> Any:
@@ -430,3 +469,131 @@ def with_transaction(
     it; a raised exception ⇒ ROLLBACK + re-raise. For a body that never legitimately rolls back with a
     value."""
     return with_transaction_decided(ctx, lambda tx_ctx: commit(body(tx_ctx)))
+
+
+# ── The write=tx GUARD seam (Phase B / #84) ────────────────────────────────────
+
+
+def ambient_in_transaction() -> bool:
+    """Is THIS execution scope inside an active transaction? Reads the AMBIENT contextvar-propagated
+    :class:`ExecutionContext` (:func:`current_context`) — the Python analogue of the TS async-local
+    "inside a transaction" marker. A bare write outside :func:`transaction` sees ``None`` ⇒ False."""
+    ambient = current_context()
+    return ambient is not None and ambient.in_transaction()
+
+
+def ambient_read_only() -> bool:
+    """Is THIS execution scope a READ-ONLY context? Reads the ambient contextvar-propagated ctx's
+    read-only marker (the Python analogue of the TS ``withReadOnly`` async-local marker)."""
+    ambient = current_context()
+    return ambient is not None and ambient.read_only()
+
+
+def check_write_allowed_ambient(operation: str, model: Optional[str] = None) -> None:
+    """Enforce the write=tx guard against the AMBIENT (contextvar-propagated) tx/read-only markers
+    (mirror v1 ``_checkWriteAllowed`` / the TS ``checkWriteAllowed``). A write in a read-only scope →
+    :class:`WriteInReadOnlyContextError`; a write with NO active transaction →
+    :class:`WriteOutsideTransactionError`. Read-only is checked FIRST (v1 order). The Python port reads
+    the guard state from the ambient contextvar (not an explicit ctx arg) so a bare model-level write —
+    which only has the raw driver — still sees the caller's :func:`transaction` scope."""
+    check_write_allowed(operation, model, ambient_in_transaction(), ambient_read_only())
+
+
+def run_guarded(
+    ctx: ExecutionContext,
+    sql: str,
+    params: Sequence[Any],
+    operation: str,
+    model: Optional[str] = None,
+) -> RunInfo:
+    """GUARDED write seam (mirror the TS ``runGuarded`` / go ``RunGuarded``): enforce the write=tx
+    guard (:func:`check_write_allowed_ambient`) for a DATA-mutating statement, then delegate to
+    :func:`run`. A write issued OUTSIDE a :func:`transaction` throws
+    :class:`WriteOutsideTransactionError`; a write in a read-only scope throws
+    :class:`WriteInReadOnlyContextError`. Tx-control statements (BEGIN/COMMIT/ROLLBACK/SET) are NOT
+    guarded — the tx runtime issues them to OPEN the very scope the guard checks."""
+    check_write_allowed_ambient(operation, model)
+    return run(ctx, sql, params, WRITE_INTENT)
+
+
+# ── The PUBLIC user-controlled transaction boundary (Phase B-core / #86, python) ──
+
+
+def transaction(
+    ctx: ExecutionContext,
+    fn: Callable[[], _T],
+    options: Optional[TransactionOptions] = None,
+    dialect_name: str = "postgres",
+) -> _T:
+    """**The public user-controlled transaction boundary** (#86, python port of the TS ``transaction``
+    / rust ``transaction`` / go ``Transaction``) — the REAL transaction feature v2 was missing.
+    ``transaction(ctx, fn, options?)`` opens ONE boundary the caller wraps around MULTIPLE arbitrary
+    operations so they commit or roll back TOGETHER::
+
+        transaction(ctx, lambda: [
+            create_a(...),   # ← every op inside JOINS this ONE boundary:
+            update_b(...),   #    one connection, one BEGIN…COMMIT, all-or-nothing.
+        ], TransactionOptions(isolation=IsolationLevel.SERIALIZABLE))
+
+    ## What it does (v1 ``DBModel.transaction`` :2787 parity, on the SCP seam)
+
+    It acquires ONE owned connection (``driver.begin_tx`` with the isolation prelude), pins it into a
+    tx-scoped :class:`ExecutionContext` **propagated via** :data:`contextvars` (:func:`run_with_pinned_context`),
+    runs ``fn``, then COMMITs (or ROLLBACKs on a body error / ``options.rollback_only``), with the #81
+    retry loop (deadlock / serialization / connection error) wrapped around the WHOLE boundary — a
+    FRESH owned connection per attempt.
+
+    ## The ambient-tx JOIN — how operations participate (the core #86 fix; python = contextvars)
+
+    ``fn`` takes NO connection argument. Instead the pinned tx ctx lives in the ambient contextvar
+    (:func:`current_context`). Every operation ``fn`` issues — a live-DB write via
+    ``execute_transaction_bundle``, a read via ``execute_bundle`` — detects that ambient pinned ctx and
+    runs its statements on THAT connection **without opening its own BEGIN/COMMIT** (the nested-join,
+    below). So N operations inside one ``transaction(fn)`` produce exactly ONE BEGIN + ONE COMMIT on
+    ONE connection. Outside a ``transaction(fn)`` the ambient pin is absent, so a bare guarded write's
+    guard fires (:class:`WriteOutsideTransactionError`).
+
+    NESTED ``transaction()`` joins the outer (one physical BEGIN/COMMIT; an inner error rolls back the
+    WHOLE tx). Isolation/retry/rollback_only options on a nested call are IGNORED (the outer owns
+    them). Mirrors v1 ``DBModel.transaction`` :2794-2797.
+    """
+    opts = options if options is not None else TransactionOptions()
+
+    # NESTED-TX JOIN (mirror v1 :2794): already inside a tx on this contextvar scope ⇒ join the outer.
+    # No new connection, no BEGIN/COMMIT — the inner body is part of the outer physical transaction.
+    # Isolation/retry/rollback_only on a nested call are ignored: the outer owns the envelope.
+    if ambient_in_transaction():
+        return fn()
+
+    # Validate + build the isolation prelude BEFORE acquiring a connection (fail-closed: SQLite + a
+    # level is a hard error; an unsupported isolation must not open a tx it can't honor).
+    before, after = isolation_prelude(dialect_name, opts.isolation)
+
+    retry_limit = 1
+    if opts.retry_on_error:
+        retry_limit = opts.retry_limit if opts.retry_limit >= 1 else 1
+
+    attempt = 0
+    while True:
+        attempt += 1
+        # ONE attempt on a FRESH owned connection (a retry after a connection error thus RECONNECTS).
+        # `fn` reads the pinned tx ctx from the ambient contextvar (run_with_pinned_context inside
+        # with_transaction_decided), so every op JOINs this one connection.
+        def body(_tx_ctx: ExecutionContext) -> TxDecision:
+            value = fn()
+            # rollback_only (dry-run): ROLLBACK but still return the body value — no committed change.
+            return rollback(value) if opts.rollback_only else commit(value)
+
+        try:
+            return with_transaction_decided(ctx, body, before, after)
+        except (WriteOutsideTransactionError, WriteInReadOnlyContextError):
+            # A guard rejection is a programming error, never retryable — re-raise immediately.
+            raise
+        except Exception as error:
+            if attempt < retry_limit and opts.retry_on_error and is_retryable_tx_error(error):
+                # Exponential backoff before RETRYing the whole transaction on a fresh connection.
+                backoff_ms = opts.retry_duration * (2 ** (attempt - 1))
+                if backoff_ms > 0:
+                    time.sleep(backoff_ms / 1000.0)
+                continue
+            raise
