@@ -87,14 +87,14 @@ func TestEmptyMiddlewareIsPassthrough(t *testing.T) {
 
 // A middleware that appends a marker row around `next` — proves the fold + delegation order.
 func TestMiddlewareWrapsAndDelegates(t *testing.T) {
-	chain := NewMiddlewareChain()
-	chain.read = append(chain.read, func(sql string, args []any, next SeamNext[[]bc.Value]) ([]bc.Value, error) {
+	read := []ReadMiddleware{func(sql string, args []any, next SeamNext[[]bc.Value]) ([]bc.Value, error) {
 		rows, err := next(sql, args)
 		if err != nil {
 			return nil, err
 		}
 		return append(rows, "mw"), nil
-	})
+	}}
+	chain := newSourcedChain(func() ([]ReadMiddleware, []WriteMiddleware) { return read, nil })
 	if chain.IsEmpty() {
 		t.Fatalf("chain with a middleware must not be empty")
 	}

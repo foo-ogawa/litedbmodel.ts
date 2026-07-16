@@ -15,6 +15,7 @@
 package litedbmodel_runtime
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -338,9 +339,23 @@ func StitchRelation(opJObj *bc.JObj, parents []bc.Value, db SQLDB) ([]bc.Value, 
 }
 
 func ReadBundle(bundle *SqlBundle, relations *bc.JObj, input *bc.Obj, db SQLDB, withNames []string, connections map[string]SQLDB) (bc.Value, error) {
+	return ReadBundleCtx(context.Background(), bundle, relations, input, db, withNames, connections)
+}
+
+// ReadBundleCtx is [ReadBundle] riding a caller-supplied (Phase D scoped) context.Context: the primary
+// read AND every relation-batch SELECT funnel through an [ExecutionContext] whose middleware chain
+// resolves THAT context's scope registry ([ContextForDBCtx]). A middleware registered inside a
+// [WithMiddlewareScope] therefore observes BOTH the primary read and the relation-batch SQL (the
+// end-to-end relation coverage the #92 reference asserts). A cross-DB relation derives a distinct ctx
+// over its tagged connection but shares the SAME scoped Go context, so its batch is intercepted too.
+// With no middleware registered the chain is empty ⇒ byte-identical to [ReadBundle].
+func ReadBundleCtx(goCtx context.Context, bundle *SqlBundle, relations *bc.JObj, input *bc.Obj, db SQLDB, withNames []string, connections map[string]SQLDB) (bc.Value, error) {
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
 	// One ExecutionContext for the primary read; a cross-DB relation derives a distinct ctx over its
-	// tagged connection (§6 — the same single-DB, empty-middleware backward-compat wrapper per DB).
-	primaryCtx := ContextForDB(db)
+	// tagged connection (§6), sharing the scoped Go context so its batch is intercepted too.
+	primaryCtx := ContextForDBCtx(goCtx, db)
 	out, err := executeBundleCtx(primaryCtx, bundle, input)
 	if err != nil {
 		return nil, err
@@ -365,7 +380,7 @@ func ReadBundle(bundle *SqlBundle, relations *bc.JObj, input *bc.Obj, db SQLDB, 
 		}
 		relCtx := primaryCtx
 		if relDB != db {
-			relCtx = ContextForDB(relDB)
+			relCtx = ContextForDBCtx(goCtx, relDB)
 		}
 		batch, err := runRelationOpCtx(relCtx, op, rows)
 		if err != nil {
