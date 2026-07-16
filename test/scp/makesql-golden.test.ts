@@ -58,6 +58,15 @@ import {
   whereTupleIn,
   whereInSubquery,
   whereExists,
+  // Phase E-1 (#97): typed subquery / parentRef authoring sugar. `parentRef` is aliased to avoid a
+  // clash with v1's `DBValues.parentRef` imported above (the golden generator).
+  col as scpCol,
+  parentRef as scpParentRef,
+  inSubquery as scpInSubquery,
+  notInSubquery as scpNotInSubquery,
+  exists as scpExists,
+  notExists as scpNotExists,
+  compileBundle,
   type In,
 } from '../../src/scp/index';
 import { compileReadGraph, renderReadPrimary } from '../../src/scp/makesql/static-bundle';
@@ -252,6 +261,105 @@ describe('A. subquery / EXISTS — makeSQL byte-matches DBModel.inSubquery/exist
       expect(golden.sql).toBe(`${kw} (SELECT 1 FROM orders WHERE orders.user_id = users.id)`);
     }
   });
+});
+
+// ===========================================================================
+// A2 (#97). Typed subquery / parentRef SUGAR — the v2 typed builders (scpInSubquery /
+// scpExists / scpParentRef) RENDER byte-identically to v1's typed API (Model.inSubquery /
+// Model.exists / DBValues.parentRef → DBConditions golden). Proves the ergonomic sugar is a
+// pure lowering onto the existing whereInSubquery/whereExists with no divergence, on all
+// dialects. GOLDEN = v1 DBConditions.compile output (same technique as section A).
+// ===========================================================================
+describe('A2 (#97). typed subquery / parentRef sugar — byte-matches v1 typed API', () => {
+  class SubBase extends DBModel {
+    static getDriverType(): Dialect {
+      return 'postgres';
+    }
+  }
+  class Usr extends SubBase {
+    protected static TABLE_NAME = 'users';
+    id?: number;
+  }
+  void Usr;
+
+  // The v2 typed builders emit a bc-authored WHERE member that only reaches SQL through the
+  // read-graph compile (compileBundle), so we author each construct in a tiny SemanticBehavior,
+  // compile it, and read back the rendered whereFragment statement (byte SQL + params).
+  const L = components();
+  const users_id = scpCol('users', 'id');
+  const users_name = scpCol('users', 'name');
+  const posts_author = scpCol('posts', 'author_id');
+  const posts_id = scpCol('posts', 'id');
+  const orders_userid = scpCol('orders', 'user_id');
+
+  class TypedSub extends SemanticBehavior {
+    static columns = {
+      posts: { id: 'INTEGER', author_id: 'INTEGER' },
+      users: { id: 'INTEGER', name: 'TEXT' },
+      orders: { user_id: 'INTEGER' },
+    };
+    InSub(_$: In<Record<string, never>>) {
+      return L.Select({ table: 'posts', select: ['id'], where: [scpInSubquery(_$, [posts_author, users_id], [[users_name, 'Ada']])] });
+    }
+    NotInSub(_$: In<Record<string, never>>) {
+      return L.Select({ table: 'posts', select: ['id'], where: [scpNotInSubquery(_$, [posts_author, users_id], [[users_name, 'Ada']])] });
+    }
+    ExistsCorr(_$: In<Record<string, never>>) {
+      return L.Select({ table: 'posts', select: ['id'], where: [scpExists(_$, [[orders_userid, scpParentRef(posts_id)]])] });
+    }
+    NotExistsCorr(_$: In<Record<string, never>>) {
+      return L.Select({ table: 'posts', select: ['id'], where: [scpNotExists(_$, [[orders_userid, scpParentRef(posts_id)]])] });
+    }
+  }
+  const typed = publishBehaviors(TypedSub);
+
+  /** The rendered WHERE-fragment `{sql,params}` the typed builder produces for a dialect. */
+  function typedFragment(entry: string, dialect: Dialect): Rendered {
+    const bundle = compileBundle(typed, entry, [], dialect);
+    const stmts = bundle.readGraph?.statementsById?.n0 ?? [];
+    const frag = stmts.find((s) => (s as { whereFragment?: boolean }).whereFragment) as Rendered | undefined;
+    if (!frag) throw new Error(`no whereFragment for ${entry} [${dialect}]`);
+    // The stored fragment carries `?` placeholders (renumbered to the dialect form at final assembly);
+    // render them in isolation to compare against the v1 DBConditions golden (also renderPlaceholders'd).
+    return { sql: renderPlaceholders(frag.sql, dialect), params: frag.params };
+  }
+
+  for (const dialect of dialects) {
+    const fmt = dialect === 'postgres' ? pgFmt : (ph: string) => ph;
+
+    it(`[${dialect}] scpInSubquery / scpNotInSubquery == v1 Model.inSubquery/notInSubquery`, () => {
+      for (const [entry, op] of [['InSub', 'IN'], ['NotInSub', 'NOT IN']] as const) {
+        // v1 golden: Model.inSubquery / notInSubquery → DBSubquery → DBConditions.compile.
+        const sub = new DBSubquery(
+          [{ columnName: 'author_id', tableName: 'posts' }],
+          'users',
+          [{ columnName: 'id', tableName: 'users' }],
+          [{ column: { columnName: 'name', tableName: 'users' }, value: 'Ada' }],
+          op,
+        );
+        const params: unknown[] = [];
+        const goldenSql = renderPlaceholders(new DBConditions({ __subquery__: sub }).compile(params, fmt), dialect);
+        const got = typedFragment(entry, dialect);
+        expect(got.sql).toBe(goldenSql);
+        expect(got.params).toEqual(params);
+      }
+    });
+
+    it(`[${dialect}] scpExists / scpNotExists + scpParentRef == v1 Model.exists/notExists + parentRef`, () => {
+      for (const [entry, not] of [['ExistsCorr', false], ['NotExistsCorr', true]] as const) {
+        const ex = new DBExists(
+          'orders',
+          [{ column: { columnName: 'user_id', tableName: 'orders' }, value: parentRef({ columnName: 'id', tableName: 'posts' }) }],
+          not,
+        );
+        const params: unknown[] = [];
+        const goldenSql = renderPlaceholders(new DBConditions({ __exists__: ex }).compile(params, fmt), dialect);
+        const got = typedFragment(entry, dialect);
+        expect(got.sql).toBe(goldenSql);
+        expect(got.params).toEqual(params);
+      }
+    });
+  }
 });
 
 // ===========================================================================

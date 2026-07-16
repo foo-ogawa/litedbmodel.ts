@@ -77,6 +77,13 @@ import {
   whereTupleIn,
   whereInSubquery,
   whereExists,
+  // Phase E-1 (#97): typed subquery / parentRef authoring sugar (lowers to whereInSubquery/whereExists).
+  col,
+  parentRef,
+  inSubquery,
+  notInSubquery,
+  exists,
+  notExists,
   when,
   ne,
   opt,
@@ -266,6 +273,111 @@ class Blog extends SemanticBehavior {
     return L.Select({
       table: 'posts', select: ['id', 'title'],
       where: [whereInSubquery(_$, '(posts.author_id, posts.id)', { sql: 'SELECT users.id, 1 FROM users WHERE users.name = ?', params: ['Ada'] })],
+      order: 'id ASC',
+    });
+  }
+
+  // ── Phase E-1 (#97): typed subquery / parentRef authoring SUGAR — TWINS of the raw-SQL vectors ──
+  // Each `*T` entry authors the SAME predicate through the typed builders (inSubquery / notInSubquery
+  // / exists / notExists / parentRef, DBModel.ts:1215-1352 parity). The builders RENDER the inner
+  // SELECT fully `table.column`-qualified (v1 `DBSubquery`/`DBExists.compile` shape) and lower to the
+  // EXISTING whereInSubquery/whereExists — no new IR. Each typed vector is paired with a raw-SQL twin
+  // (`*Raw`) whose hand-written `{sql,params}` is byte-identical to what the builder renders, so the
+  // corpus proves BYTE + RESULT equivalence; the exec specs run the typed leg and assert the same rows.
+
+  /** #97 typed IN(subquery): `inSubquery([posts.author_id, users.id], [[users.name,'Ada']])` → posts 1,2. */
+  InSubqueryTyped(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [inSubquery(_$, [col('posts', 'author_id'), col('users', 'id')], [[col('users', 'name'), 'Ada']])],
+      order: 'id ASC',
+    });
+  }
+  /** #97 raw twin — the byte-identical `{sql,params}` the typed builder above renders (qualified). */
+  InSubqueryTypedRaw(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [whereInSubquery(_$, 'posts.author_id', { sql: 'SELECT users.id FROM users WHERE users.name = ?', params: ['Ada'] })],
+      order: 'id ASC',
+    });
+  }
+  /** #97 typed NOT IN(subquery) → post 3. */
+  NotInSubqueryTyped(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [notInSubquery(_$, [col('posts', 'author_id'), col('users', 'id')], [[col('users', 'name'), 'Ada']])],
+      order: 'id ASC',
+    });
+  }
+  NotInSubqueryTypedRaw(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [whereInSubquery(_$, 'posts.author_id', { sql: 'SELECT users.id FROM users WHERE users.name = ?', params: ['Ada'] }, true)],
+      order: 'id ASC',
+    });
+  }
+  /** #97 typed EXISTS with parentRef correlation: `exists([[comments.post_id, parentRef(posts.id)]])` → posts 1,2. */
+  ExistsTyped(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [exists(_$, [[col('comments', 'post_id'), parentRef(col('posts', 'id'))]])],
+      order: 'id ASC',
+    });
+  }
+  ExistsTypedRaw(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [whereExists(_$, { sql: 'SELECT 1 FROM comments WHERE comments.post_id = posts.id' })],
+      order: 'id ASC',
+    });
+  }
+  /** #97 typed NOT EXISTS with parentRef correlation → post 3. */
+  NotExistsTyped(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [notExists(_$, [[col('comments', 'post_id'), parentRef(col('posts', 'id'))]])],
+      order: 'id ASC',
+    });
+  }
+  NotExistsTypedRaw(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [whereExists(_$, { sql: 'SELECT 1 FROM comments WHERE comments.post_id = posts.id' }, true)],
+      order: 'id ASC',
+    });
+  }
+  /**
+   * #97 typed COMPOSITE-key IN(subquery): `(posts.author_id, posts.author_id) IN (SELECT users.id,
+   * users.id FROM users WHERE users.name='Ada')` → `(7,7)` → posts 1,2 (both author 7). Exercises the
+   * composite `(t.c1, t.c2)` lhs + multi-select-column rendering path of the typed builder.
+   */
+  CompInSubqueryTyped(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [inSubquery(_$, [
+        [col('posts', 'author_id'), col('users', 'id')],
+        [col('posts', 'author_id'), col('users', 'id')],
+      ], [[col('users', 'name'), 'Ada']])],
+      order: 'id ASC',
+    });
+  }
+  CompInSubqueryTypedRaw(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [whereInSubquery(_$, '(posts.author_id, posts.author_id)', { sql: 'SELECT users.id, users.id FROM users WHERE users.name = ?', params: ['Ada'] })],
+      order: 'id ASC',
+    });
+  }
+  /**
+   * #97 RED proof: a parentRef pointing at the WRONG outer column (`posts.author_id` instead of
+   * `posts.id`) makes the correlated EXISTS join on the wrong key. author_id 7 has no comment row with
+   * post_id 7, but posts.id 1,2 do — so the wrong ref yields the WRONG rows (∅), NOT posts 1,2. Proves
+   * the correlation is real: swapping the parentRef column changes the result (guarded by expected: []).
+   */
+  ExistsTypedWrongRef(_$: In<Record<string, never>>) {
+    return L.Select({
+      table: 'posts', select: ['id', 'title'],
+      where: [exists(_$, [[col('comments', 'post_id'), parentRef(col('posts', 'author_id'))]])],
       order: 'id ASC',
     });
   }
@@ -1041,9 +1153,41 @@ interface ExecSpec {
   refEntry?: string;
 }
 
+/**
+ * #97 Phase E-1: assert the TYPED subquery builders render the EXACT same compiled statements as
+ * their hand-written raw-SQL twins — across all 3 dialects. This is the byte-level proof that the
+ * typed sugar lowers to the existing whereInSubquery/whereExists with no divergence (the exec vectors
+ * additionally prove the rows match live). Compares statementsById (the rendered SQL/params) rather
+ * than the whole readGraph, since the input-port literal carries a cosmetic empty `params:[]` for the
+ * typed leg — the RENDERED SQL that actually executes is what must be identical.
+ */
+function assertTypedRawParity(blog: ReturnType<typeof publishBehaviors>): void {
+  const pairs: readonly [string, string][] = [
+    ['InSubqueryTyped', 'InSubqueryTypedRaw'],
+    ['NotInSubqueryTyped', 'NotInSubqueryTypedRaw'],
+    ['ExistsTyped', 'ExistsTypedRaw'],
+    ['NotExistsTyped', 'NotExistsTypedRaw'],
+    ['CompInSubqueryTyped', 'CompInSubqueryTypedRaw'],
+  ];
+  for (const dialect of ['sqlite', 'postgres', 'mysql'] as const) {
+    for (const [typedEntry, rawEntry] of pairs) {
+      const typed = compileBundle(blog, typedEntry, [], dialect);
+      const raw = compileBundle(blog, rawEntry, [], dialect);
+      const t = JSON.stringify(typed.readGraph?.statementsById);
+      const r = JSON.stringify(raw.readGraph?.statementsById);
+      if (t !== r) {
+        throw new Error(
+          `#97 typed↔raw parity FAILED for ${typedEntry} vs ${rawEntry} [${dialect}]:\n  typed: ${t}\n  raw  : ${r}`,
+        );
+      }
+    }
+  }
+}
+
 function buildCorpus(): { suite: string; corpusVersion: number; note: string; vectors: LiveVector[] } {
   const blog = publishBehaviors(Blog);
   const cmd = publishBehaviors(PostCommands);
+  assertTypedRawParity(blog);
 
   const execSpecs: ExecSpec[] = [
     // Feed: SKIP + belongsTo/hasMany relations (the relation batch exercises the v1 `= ANY($1::int[])`).
@@ -1226,6 +1370,18 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
     // #47 composite (a,b) IN (subquery) live cell: (posts.author_id, posts.id) IN (SELECT users.id, 1
     // FROM users WHERE name='Ada') → post 1 (Ada=7, id 1). Was byte-done PG only; now byte all-dialect + live.
     { name: 'CompInSubquery: (author_id, id) IN (SELECT id, 1 WHERE name=?) → post 1 [#47 byte-only→live]', entry: 'CompInSubquery', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // ── Phase E-1 (#97): typed subquery / parentRef authoring sugar — live twins of the raw vectors ──
+    // Each runs the TYPED builder leg and asserts the SAME rows the raw-SQL vector produces; the
+    // typed↔raw BYTE equivalence is asserted separately in buildCorpus (assertTypedRawParity).
+    { name: '#97 InSubqueryTyped: inSubquery([posts.author_id, users.id], name=Ada) → posts 1,2', entry: 'InSubqueryTyped', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    { name: '#97 NotInSubqueryTyped: notInSubquery(… name=Ada) → post 3', entry: 'NotInSubqueryTyped', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    { name: '#97 ExistsTyped: exists([comments.post_id = parentRef(posts.id)]) → posts 1,2', entry: 'ExistsTyped', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    { name: '#97 NotExistsTyped: notExists([comments.post_id = parentRef(posts.id)]) → post 3', entry: 'NotExistsTyped', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    { name: '#97 CompInSubqueryTyped: (author_id,author_id) IN (SELECT id,id name=Ada) → posts 1,2', entry: 'CompInSubqueryTyped', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // #97 RED proof: a parentRef on the WRONG outer column (posts.author_id, not posts.id) correlates
+    // on the wrong key → NO matching comment (no comment has post_id = 7/8) → ∅. Guards that the
+    // correlation is genuine (expected []); if parentRef silently used the right column this would fail.
+    { name: '#97 ExistsTypedWrongRef: parentRef(posts.author_id) mis-correlates → ∅ [RED proof]', entry: 'ExistsTypedWrongRef', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
   ];
 
   const exec: LiveExecVector[] = execSpecs.map((s) => {
