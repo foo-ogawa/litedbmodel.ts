@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 
@@ -54,6 +55,36 @@ func (s *recSink) snapshot() (log []string, beginTx, commits, rolls, distinct in
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.log...), s.beginTx, s.commits, s.rolls, len(s.distinct)
+}
+
+// reset clears the recorded log + the (legacy) driver-level counters — so a test can measure ONE
+// boundary in isolation. Phase D (#94) assertions read txControlCounts (the seam-visible SQL log).
+func (s *recSink) reset() {
+	s.mu.Lock()
+	s.log = nil
+	s.beginTx, s.commits, s.rolls, s.distinct = 0, 0, 0, nil
+	s.mu.Unlock()
+}
+
+// txControlCounts counts the runtime's OWN tx-control SQL as it appears in the recorded statement log
+// (Phase D / #94 — the tx runtime now issues BEGIN/COMMIT/ROLLBACK as REAL SQL strings THROUGH the seam
+// on the owned *sql.Conn, so the driver-level BeginTx/Commit/Rollback counters are 0; the tx-control is
+// OBSERVABLE as log entries — the very property that makes it middleware-visible). A leading BEGIN (any
+// `BEGIN…` incl. `BEGIN ISOLATION LEVEL …`) counts as a begin.
+func (s *recSink) txControlCounts() (begins, commits, rolls int) {
+	log, _, _, _, _ := s.snapshot()
+	for _, stmt := range log {
+		u := strings.ToUpper(strings.TrimSpace(stmt))
+		switch {
+		case strings.HasPrefix(u, "BEGIN"):
+			begins++
+		case u == "COMMIT":
+			commits++
+		case u == "ROLLBACK":
+			rolls++
+		}
+	}
+	return begins, commits, rolls
 }
 
 // recDriver wraps a base sql/driver, recording into a per-DSN sink (looked up by DSN).
@@ -128,6 +159,29 @@ func (c *recConn) PrepareContext(ctx context.Context, query string) (driver.Stmt
 		return pc.PrepareContext(ctx, query)
 	}
 	return c.base.Prepare(query)
+}
+
+// ExecContext / QueryContext forward to the base driver's context Execer/Queryer when it implements
+// them (Phase D / #94): this is REQUIRED so an arg-less statement — notably the runtime's OWN
+// BEGIN/COMMIT/ROLLBACK/SET tx-control, now issued as REAL SQL THROUGH the seam — takes the base
+// driver's TEXT protocol instead of database/sql's Prepare-fallback. MySQL rejects BEGIN/COMMIT/SET
+// through the prepared-statement protocol (Error 1295), so without this forward a wrapped MySQL conn
+// would fail every tx-control. The SQL is recorded first (so txControlCounts observes it). If the base
+// lacks the context Execer/Queryer, returning ErrSkip lets database/sql fall back to Prepare.
+func (c *recConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	c.sink.push(query)
+	if ec, ok := c.base.(driver.ExecerContext); ok {
+		return ec.ExecContext(ctx, query, args)
+	}
+	return nil, driver.ErrSkip
+}
+
+func (c *recConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	c.sink.push(query)
+	if qc, ok := c.base.(driver.QueryerContext); ok {
+		return qc.QueryContext(ctx, query, args)
+	}
+	return nil, driver.ErrSkip
 }
 
 type recTx struct {
@@ -340,9 +394,11 @@ func TestTransactionBoundaryOneBeginOneCommitForNOps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boundary: %v", err)
 	}
-	_, beginTx, commits, rolls, distinct := sink.snapshot()
-	if beginTx != 1 || commits != 1 || rolls != 0 || distinct != 1 {
-		t.Errorf("N ops in one boundary must be ONE BeginTx + ONE Commit on ONE *sql.Tx: beginTx=%d commits=%d rolls=%d distinctTx=%d", beginTx, commits, rolls, distinct)
+	// Phase D (#94): tx-control is seam-issued SQL — the nested Transaction JOINs (no new BEGIN/COMMIT),
+	// so N ops in one boundary produce exactly ONE BEGIN + ONE COMMIT (observable in the log).
+	begins, commits, rolls := sink.txControlCounts()
+	if begins != 1 || commits != 1 || rolls != 0 {
+		t.Errorf("N ops in one boundary must be ONE BEGIN + ONE COMMIT on ONE owned conn: begins=%d commits=%d rolls=%d", begins, commits, rolls)
 	}
 	// Both rows committed together.
 	rows, _ := Execute(ctx, "SELECT id FROM t WHERE id IN (2,3)", nil, ReadIntent())
@@ -370,9 +426,10 @@ func TestTransactionBodyErrorRollsBackTheWholeTx(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected opB's PK collision to propagate")
 	}
-	_, beginTx, commits, rolls, _ := sink.snapshot()
-	if beginTx != 1 || commits != 0 || rolls != 1 {
-		t.Errorf("body error ⇒ ONE BeginTx + ONE Rollback + zero Commit: beginTx=%d commits=%d rolls=%d", beginTx, commits, rolls)
+	// Phase D (#94): ONE BEGIN + ONE ROLLBACK + zero COMMIT (tx-control seam-visible in the log).
+	begins, commits, rolls := sink.txControlCounts()
+	if begins != 1 || commits != 0 || rolls != 1 {
+		t.Errorf("body error ⇒ ONE BEGIN + ONE ROLLBACK + zero COMMIT: begins=%d commits=%d rolls=%d", begins, commits, rolls)
 	}
 	// opA (id=2) must be rolled back with the whole tx.
 	rows, _ := Execute(ctx, "SELECT id FROM t WHERE id = ?", []any{int64(2)}, ReadIntent())
@@ -397,9 +454,11 @@ func TestTransactionRollbackOnlyReturnsValueButDoesNotCommit(t *testing.T) {
 	if err != nil || out != 42 {
 		t.Fatalf("rollbackOnly: out=%d err=%v", out, err)
 	}
-	_, _, commits, rolls, _ := sink.snapshot()
-	if commits != 0 || rolls != 1 {
-		t.Errorf("rollbackOnly ⇒ ROLLBACK never COMMIT: commits=%d rolls=%d", commits, rolls)
+	// Phase D (#94): tx-control is issued THROUGH the seam as SQL, so it appears in the recorded log
+	// (middleware-visible) — assert the tx-control SQL, not the (now-0) driver.Tx counters.
+	begins, commits, rolls := sink.txControlCounts()
+	if begins != 1 || commits != 0 || rolls != 1 {
+		t.Errorf("rollbackOnly ⇒ BEGIN + ROLLBACK, never COMMIT: begins=%d commits=%d rolls=%d", begins, commits, rolls)
 	}
 	rows, _ := Execute(ctx, "SELECT id FROM t WHERE id = ?", []any{int64(2)}, ReadIntent())
 	if len(rows) != 0 {
@@ -466,10 +525,11 @@ func TestRetryRerunsWholeTxOnRetryableError(t *testing.T) {
 	if err != nil || out != 5 {
 		t.Fatalf("retry: out=%d err=%v", out, err)
 	}
-	_, beginTx, commits, rolls, distinct := sink.snapshot()
-	// Attempt 1: BeginTx, insert, ROLLBACK. Attempt 2: BeginTx, insert, COMMIT. Two DISTINCT *sql.Tx.
-	if beginTx != 2 || commits != 1 || rolls != 1 || distinct != 2 {
-		t.Errorf("retry ⇒ 2 BeginTx (distinct) + 1 Commit + 1 Rollback: beginTx=%d commits=%d rolls=%d distinct=%d", beginTx, commits, rolls, distinct)
+	// Phase D (#94): each attempt re-issues BEGIN through the seam on a FRESH owned conn.
+	// Attempt 1: BEGIN, insert, ROLLBACK. Attempt 2: BEGIN, insert, COMMIT — 2 BEGIN + 1 COMMIT + 1 ROLLBACK.
+	begins, commits, rolls := sink.txControlCounts()
+	if begins != 2 || commits != 1 || rolls != 1 {
+		t.Errorf("retry ⇒ 2 BEGIN + 1 COMMIT + 1 ROLLBACK: begins=%d commits=%d rolls=%d", begins, commits, rolls)
 	}
 }
 
@@ -490,8 +550,9 @@ func TestNonRetryableErrorDoesNotRetry(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("a non-retryable error must NOT retry, body called %d times", calls)
 	}
-	_, beginTx, commits, rolls, _ := sink.snapshot()
-	if beginTx != 1 || commits != 0 || rolls != 1 {
-		t.Errorf("non-retryable ⇒ single attempt (1 BeginTx + 1 Rollback): beginTx=%d commits=%d rolls=%d", beginTx, commits, rolls)
+	// Phase D (#94): a single attempt ⇒ 1 BEGIN + 1 ROLLBACK, no COMMIT (tx-control seam-visible).
+	begins, commits, rolls := sink.txControlCounts()
+	if begins != 1 || commits != 0 || rolls != 1 {
+		t.Errorf("non-retryable ⇒ single attempt (1 BEGIN + 1 ROLLBACK): begins=%d commits=%d rolls=%d", begins, commits, rolls)
 	}
 }

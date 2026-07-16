@@ -114,9 +114,7 @@ func boundaryInsert(t *testing.T, txCtx *ExecutionContext, db TxDB, dialect stri
 // driver proves EXACTLY ONE BeginTx + ONE COMMIT on ONE *sql.Tx (the ambient JOIN — opB opens no
 // second BEGIN).
 func multiOpAtomicityCommit(t *testing.T, db *sql.DB, sink *recSink, dialect string) {
-	sink.mu.Lock()
-	sink.beginTx, sink.commits, sink.rolls, sink.distinct = 0, 0, 0, nil
-	sink.mu.Unlock()
+	sink.reset()
 
 	ctx := ContextForDB(db)
 	_, err := Transaction(ctx, db, dialect, DefaultTransactionOptions(), func(txCtx *ExecutionContext) (int, error) {
@@ -131,9 +129,11 @@ func multiOpAtomicityCommit(t *testing.T, db *sql.DB, sink *recSink, dialect str
 	if err != nil {
 		t.Fatalf("%s multi-op commit boundary: %v", dialect, err)
 	}
-	_, beginTx, commits, rolls, distinct := sink.snapshot()
-	if beginTx != 1 || commits != 1 || rolls != 0 || distinct != 1 {
-		t.Errorf("%s: N ops in one boundary must be ONE BeginTx + ONE COMMIT on ONE *sql.Tx: beginTx=%d commits=%d rolls=%d distinctTx=%d", dialect, beginTx, commits, rolls, distinct)
+	// Phase D (#94): tx-control is seam-issued SQL, so the ambient JOIN's "ONE BEGIN + ONE COMMIT for N
+	// ops on ONE owned conn" is observable in the recorded log (opB opens no second BEGIN).
+	begins, commits, rolls := sink.txControlCounts()
+	if begins != 1 || commits != 1 || rolls != 0 {
+		t.Errorf("%s: N ops in one boundary must be ONE BEGIN + ONE COMMIT on ONE owned conn: begins=%d commits=%d rolls=%d", dialect, begins, commits, rolls)
 	}
 	got := readIsoRows(t, db)
 	want := [][2]int64{{100, 1}, {101, 1}}
@@ -148,9 +148,7 @@ func multiOpAtomicityRollback(t *testing.T, db *sql.DB, sink *recSink, dialect s
 	if _, err := db.Exec(fmt.Sprintf("INSERT INTO %s (id, worker, seq) VALUES (201, 999, 9)", isoTbl)); err != nil {
 		t.Fatalf("preseed 201: %v", err)
 	}
-	sink.mu.Lock()
-	sink.beginTx, sink.commits, sink.rolls, sink.distinct = 0, 0, 0, nil
-	sink.mu.Unlock()
+	sink.reset()
 
 	ctx := ContextForDB(db)
 	_, err := Transaction(ctx, db, dialect, DefaultTransactionOptions(), func(txCtx *ExecutionContext) (int, error) {
@@ -165,9 +163,10 @@ func multiOpAtomicityRollback(t *testing.T, db *sql.DB, sink *recSink, dialect s
 	if err == nil {
 		t.Fatalf("%s: opB's PK collision must fail the whole boundary", dialect)
 	}
-	_, beginTx, commits, rolls, _ := sink.snapshot()
-	if beginTx != 1 || commits != 0 || rolls != 1 {
-		t.Errorf("%s: opB failure ⇒ ONE BeginTx + ONE ROLLBACK + zero COMMIT: beginTx=%d commits=%d rolls=%d", dialect, beginTx, commits, rolls)
+	// Phase D (#94): ONE BEGIN + ONE ROLLBACK + zero COMMIT, observable in the seam-issued tx-control log.
+	begins, commits, rolls := sink.txControlCounts()
+	if begins != 1 || commits != 0 || rolls != 1 {
+		t.Errorf("%s: opB failure ⇒ ONE BEGIN + ONE ROLLBACK + zero COMMIT: begins=%d commits=%d rolls=%d", dialect, begins, commits, rolls)
 	}
 	got := readIsoRows(t, db) // id=201 pre-seed (worker 999) filtered out
 	if len(got) != 0 {
@@ -295,9 +294,7 @@ func retryPgWriteSkew(t *testing.T, db *sql.DB, sink *recSink, typedOnly bool) {
 	if _, err := db.Exec(fmt.Sprintf("INSERT INTO %s (id, worker, seq) VALUES (1, 500, 10), (2, 500, 20)", isoTbl)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	sink.mu.Lock()
-	sink.beginTx = 0
-	sink.mu.Unlock()
+	sink.reset()
 
 	ctx := ContextForDB(db)
 	o := DefaultTransactionOptions()
@@ -334,11 +331,13 @@ func retryPgWriteSkew(t *testing.T, db *sql.DB, sink *recSink, typedOnly bool) {
 			t.Errorf("PG retry: worker %d must eventually commit (retry should have absorbed 40001), got %v", i, e)
 		}
 	}
-	_, beginTx, _, _, _ := sink.snapshot()
-	if beginTx <= 2 {
-		t.Errorf("PG retry: the retry must have fired (>2 BeginTx for 2 workers), got beginTx=%d", beginTx)
+	// Phase D (#94): each attempt re-issues BEGIN through the seam, so the retry firing shows as >2
+	// BEGIN in the recorded tx-control log (2 workers × ≥1 attempt, ≥1 of them retried).
+	begins, _, _ := sink.txControlCounts()
+	if begins <= 2 {
+		t.Errorf("PG retry: the retry must have fired (>2 BEGIN for 2 workers), got begins=%d", begins)
 	}
-	t.Logf("PG write-skew retry (typedOnly=%v): both committed after %d BeginTx (retry absorbed 40001)", typedOnly, beginTx)
+	t.Logf("PG write-skew retry (typedOnly=%v): both committed after %d BEGIN (retry absorbed 40001)", typedOnly, begins)
 }
 
 // retryMysqlDeadlock — two concurrent txs update two rows in OPPOSITE order → InnoDB deadlock (1213);
@@ -356,9 +355,7 @@ func retryMysqlDeadlock(t *testing.T, db *sql.DB, sink *recSink, typedOnly bool)
 	if _, err := db.Exec(fmt.Sprintf("INSERT INTO %s (id, worker, seq) VALUES (1, 500, 10), (2, 500, 20)", isoTbl)); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	sink.mu.Lock()
-	sink.beginTx = 0
-	sink.mu.Unlock()
+	sink.reset()
 
 	ctx := ContextForDB(db)
 	o := DefaultTransactionOptions()
@@ -370,9 +367,7 @@ func retryMysqlDeadlock(t *testing.T, db *sql.DB, sink *recSink, typedOnly bool)
 	// a genuine deadlock MUST race so the typed classifier is truly exercised.
 	deadlockFired := false
 	for round := 0; round < 25 && !deadlockFired; round++ {
-		sink.mu.Lock()
-		sink.beginTx = 0
-		sink.mu.Unlock()
+		sink.reset()
 
 		var firstDone sync.WaitGroup
 		firstDone.Add(2)
@@ -413,10 +408,11 @@ func retryMysqlDeadlock(t *testing.T, db *sql.DB, sink *recSink, typedOnly bool)
 				t.Errorf("MySQL retry: worker %d must eventually commit (retry should have absorbed 1213), got %v", i, e)
 			}
 		}
-		_, beginTx, _, _, _ := sink.snapshot()
-		if beginTx > 2 {
+		// Phase D (#94): a fired retry re-issues BEGIN through the seam ⇒ >2 BEGIN in the tx-control log.
+		begins, _, _ := sink.txControlCounts()
+		if begins > 2 {
 			deadlockFired = true
-			t.Logf("MySQL deadlock retry (typedOnly=%v): both committed after %d BeginTx (retry absorbed 1213)", typedOnly, beginTx)
+			t.Logf("MySQL deadlock retry (typedOnly=%v): both committed after %d BEGIN (retry absorbed 1213)", typedOnly, begins)
 		}
 	}
 	if typedOnly && !deadlockFired {
@@ -436,9 +432,7 @@ func nonRetryableDoesNotRetry(t *testing.T, db *sql.DB, sink *recSink, dialect s
 	if _, err := db.Exec(fmt.Sprintf("INSERT INTO %s (id, worker, seq) VALUES (400, 999, 9)", isoTbl)); err != nil {
 		t.Fatalf("preseed: %v", err)
 	}
-	sink.mu.Lock()
-	sink.beginTx = 0
-	sink.mu.Unlock()
+	sink.reset()
 	ctx := ContextForDB(db)
 	o := DefaultTransactionOptions() // retry ON
 	o.RetryDurationMs = 5
@@ -448,9 +442,10 @@ func nonRetryableDoesNotRetry(t *testing.T, db *sql.DB, sink *recSink, dialect s
 	if err == nil {
 		t.Fatalf("%s: a unique collision must fail the boundary", dialect)
 	}
-	_, beginTx, _, _, _ := sink.snapshot()
-	if beginTx != 1 {
-		t.Errorf("%s: a non-retryable error must NOT retry (1 BeginTx), got %d", dialect, beginTx)
+	// Phase D (#94): no retry ⇒ exactly ONE BEGIN issued through the seam (single attempt).
+	begins, _, _ := sink.txControlCounts()
+	if begins != 1 {
+		t.Errorf("%s: a non-retryable error must NOT retry (1 BEGIN), got %d", dialect, begins)
 	}
 }
 
@@ -460,15 +455,13 @@ func nestedOneBeginCommit(t *testing.T, db *sql.DB, sink *recSink, dialect strin
 	if _, err := db.Exec(fmt.Sprintf("DELETE FROM %s", isoTbl)); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
-	sink.mu.Lock()
-	sink.beginTx, sink.commits, sink.rolls, sink.distinct = 0, 0, 0, nil
-	sink.mu.Unlock()
+	sink.reset()
 	ctx := ContextForDB(db)
 	_, err := Transaction(ctx, db, dialect, DefaultTransactionOptions(), func(outer *ExecutionContext) (int, error) {
 		if err := boundaryInsert(t, outer, db, dialect, 500, 5, 0); err != nil {
 			return 0, err
 		}
-		// A nested Transaction() JOINs the outer — no new BeginTx/COMMIT.
+		// A nested Transaction() JOINs the outer — no new BEGIN/COMMIT.
 		return Transaction(outer, db, dialect, DefaultTransactionOptions(), func(inner *ExecutionContext) (int, error) {
 			return 0, boundaryInsert(t, inner, db, dialect, 501, 5, 1)
 		})
@@ -476,14 +469,13 @@ func nestedOneBeginCommit(t *testing.T, db *sql.DB, sink *recSink, dialect strin
 	if err != nil {
 		t.Fatalf("%s nested commit: %v", dialect, err)
 	}
-	_, beginTx, commits, rolls, distinct := sink.snapshot()
-	if beginTx != 1 || commits != 1 || rolls != 0 || distinct != 1 {
-		t.Errorf("%s nested: ONE BeginTx + ONE COMMIT on ONE *sql.Tx: beginTx=%d commits=%d rolls=%d distinct=%d", dialect, beginTx, commits, rolls, distinct)
+	// Phase D (#94): the nested JOIN opens no second BEGIN ⇒ ONE BEGIN + ONE COMMIT in the tx-control log.
+	begins, commits, rolls := sink.txControlCounts()
+	if begins != 1 || commits != 1 || rolls != 0 {
+		t.Errorf("%s nested: ONE BEGIN + ONE COMMIT on ONE owned conn: begins=%d commits=%d rolls=%d", dialect, begins, commits, rolls)
 	}
 	// An inner error rolls back the WHOLE tx.
-	sink.mu.Lock()
-	sink.beginTx, sink.commits, sink.rolls = 0, 0, 0
-	sink.mu.Unlock()
+	sink.reset()
 	if _, e := db.Exec(fmt.Sprintf("DELETE FROM %s", isoTbl)); e != nil {
 		t.Fatalf("clear: %v", e)
 	}
@@ -505,7 +497,7 @@ func nestedOneBeginCommit(t *testing.T, db *sql.DB, sink *recSink, dialect strin
 	if len(got) != 0 {
 		t.Errorf("%s nested: an inner error rolls back the WHOLE tx (id=600 absent), got=%v", dialect, got)
 	}
-	_, _, commits2, rolls2, _ := sink.snapshot()
+	_, commits2, rolls2 := sink.txControlCounts()
 	if commits2 != 0 || rolls2 != 1 {
 		t.Errorf("%s nested inner error ⇒ ONE ROLLBACK zero COMMIT: commits=%d rolls=%d", dialect, commits2, rolls2)
 	}

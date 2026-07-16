@@ -107,6 +107,86 @@ func TestD1RedNoRegistrationNoInterception(t *testing.T) {
 	}
 }
 
+// ── D1: runtime-issued tx-control is MIDDLEWARE-VISIBLE (owner decision option A, #94) ─────
+//
+// The Phase D restructure issues the runtime's OWN BEGIN/COMMIT/ROLLBACK THROUGH the seam on the owned
+// *sql.Conn, so a registered middleware OBSERVES them — full TS parity (the TS reference issues literal
+// BEGIN/COMMIT strings through its seam). These prove a middleware sees the tx-control of a REAL
+// Transaction(), + a RED proof that without registration the tx-control is not observed.
+
+// A registered middleware observes the runtime BEGIN + COMMIT of a REAL Transaction() (commit path).
+func TestD1TxControlVisibleCommit(t *testing.T) {
+	db := mwDB(t)
+	defer db.Close()
+	var seen []string
+	var mu sync.Mutex
+	_, err := WithMiddlewareScope(context.Background(), func(scopeCtx context.Context) (struct{}, error) {
+		RegisterMiddleware(scopeCtx, observeMiddleware(&seen, &mu).Descriptor())
+		ctx := ContextForDBCtx(scopeCtx, db)
+		_, e := Transaction(ctx, db, "sqlite", DefaultTransactionOptions(), func(txCtx *ExecutionContext) (int, error) {
+			// A guarded user write JOINs the boundary — it runs on the SAME pinned conn.
+			_, err := RunGuarded(txCtx, "INSERT INTO t (name) VALUES (?)", []any{"tx"}, "INSERT", "t")
+			return 0, err
+		})
+		return struct{}{}, e
+	})
+	if err != nil {
+		t.Fatalf("tx: %v", err)
+	}
+	// The middleware saw BEGIN, the INSERT, and COMMIT — the runtime tx-control is seam-visible.
+	if !equalStrs(seen, []string{"BEGIN", "INSERT INTO t (name) VALUES (?)", "COMMIT"}) {
+		t.Errorf("tx-control commit not observed in order: got %v", seen)
+	}
+}
+
+// A registered middleware observes BEGIN + ROLLBACK when the Transaction() body errors (rollback path).
+func TestD1TxControlVisibleRollback(t *testing.T) {
+	db := mwDB(t)
+	defer db.Close()
+	if _, err := db.Exec("INSERT INTO t (id, name) VALUES (1, 'seed')"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var seen []string
+	var mu sync.Mutex
+	_, _ = WithMiddlewareScope(context.Background(), func(scopeCtx context.Context) (struct{}, error) {
+		RegisterMiddleware(scopeCtx, observeMiddleware(&seen, &mu).Descriptor())
+		ctx := ContextForDBCtx(scopeCtx, db)
+		_, e := Transaction(ctx, db, "sqlite", DefaultTransactionOptions(), func(txCtx *ExecutionContext) (int, error) {
+			// A PK collision inside the boundary → the whole tx errors ⇒ ROLLBACK.
+			_, err := RunGuarded(txCtx, "INSERT INTO t (id, name) VALUES (1, 'dup')", nil, "INSERT", "t")
+			return 0, err
+		})
+		if e == nil {
+			t.Errorf("expected the PK collision to fail the boundary")
+		}
+		return struct{}{}, nil
+	})
+	// The middleware saw BEGIN, the failing INSERT, and ROLLBACK — the rollback tx-control is seam-visible.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) < 2 || seen[0] != "BEGIN" || seen[len(seen)-1] != "ROLLBACK" {
+		t.Errorf("tx-control rollback not observed (BEGIN … ROLLBACK): got %v", seen)
+	}
+}
+
+// RED proof: WITHOUT registration, the runtime tx-control is NOT observed (byte-identical passthrough).
+func TestD1TxControlRedNotObserved(t *testing.T) {
+	db := mwDB(t)
+	defer db.Close()
+	var seen []string
+	ctx := ContextForDB(db) // no scope, no registration → empty chain
+	_, err := Transaction(ctx, db, "sqlite", DefaultTransactionOptions(), func(txCtx *ExecutionContext) (int, error) {
+		_, e := RunGuarded(txCtx, "INSERT INTO t (name) VALUES (?)", []any{"tx"}, "INSERT", "t")
+		return 0, e
+	})
+	if err != nil {
+		t.Fatalf("tx: %v", err)
+	}
+	if len(seen) != 0 {
+		t.Errorf("RED: tx-control observed without registration: %v", seen)
+	}
+}
+
 // A middleware can REWRITE the SQL/params passed to next.
 func TestD1Rewrite(t *testing.T) {
 	db := mwDB(t)

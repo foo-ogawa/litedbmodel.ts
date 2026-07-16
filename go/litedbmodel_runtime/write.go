@@ -192,11 +192,14 @@ func parseTxPlan(plan *bc.JObj) (statements []txStatement, entityFrom string, er
 	return statements, entityFrom, nil
 }
 
-// TxDB is the transaction-capable database/sql surface (a *sql.DB satisfies both). Begin opens a
-// bare tx (the Phase A path); BeginTx opens one with a context.Context + isolation (Phase B / #83 —
-// database/sql applies the per-dialect isolation on the tx's connection atomically: PG issues
-// `BEGIN ISOLATION LEVEL …`, MySQL a preceding `SET TRANSACTION ISOLATION LEVEL …`).
+// TxDB is the transaction-capable database/sql surface (a *sql.DB satisfies all). Conn checks out ONE
+// OWNED pooled connection (Phase D / #94 — the tx restructure: the runtime issues its OWN
+// BEGIN/COMMIT/ROLLBACK/SET tx-control as REAL SQL strings THROUGH the seam on this one owned
+// connection, so a registered middleware OBSERVES them — full TS parity). Begin/BeginTx are retained
+// for the driver-level tests + any *sql.Tx caller, but the tx runtime now owns a *sql.Conn (whose
+// tx-control is seam-visible), NOT a *sql.Tx (whose BEGIN/Commit/Rollback are opaque method calls).
 type TxDB interface {
+	Conn(ctx context.Context) (*sql.Conn, error)
 	Begin() (*sql.Tx, error)
 	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }

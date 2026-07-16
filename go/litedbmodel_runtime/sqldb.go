@@ -16,6 +16,7 @@
 package litedbmodel_runtime
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"math"
@@ -70,6 +71,26 @@ func jsonEscapeString(s string) string {
 type SQLDB interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// connSQLDB adapts an OWNED *sql.Conn to the [SQLDB] surface (Phase D / #94 tx restructure): every
+// statement — including the runtime's OWN BEGIN/COMMIT/ROLLBACK/SET tx-control — runs on the SAME one
+// owned pooled connection via the connection-bound ExecContext/QueryContext. This is what lets the
+// runtime issue tx-control as REAL SQL strings THROUGH the seam (middleware-visible), on the pinned
+// connection, without a *sql.Tx handle (whose BEGIN/Commit/Rollback are opaque method calls the seam
+// can't observe). A *sql.Conn is exactly ONE pooled connection held for its lifetime — the same
+// ownership guarantee a *sql.Tx gives — so concurrent transactions each own a DISTINCT connection.
+type connSQLDB struct {
+	conn *sql.Conn
+	ctx  context.Context //nolint:containedctx // the owned-conn seam rides the tx's Go ctx (§3)
+}
+
+func (c connSQLDB) Query(query string, args ...any) (*sql.Rows, error) {
+	return c.conn.QueryContext(c.ctx, query, args...)
+}
+
+func (c connSQLDB) Exec(query string, args ...any) (sql.Result, error) {
+	return c.conn.ExecContext(c.ctx, query, args...)
 }
 
 // toDriverParam converts a rendered bc Value to a driver-bindable arg (render-path parity with
