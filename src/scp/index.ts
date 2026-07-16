@@ -78,6 +78,8 @@ export {
   mysqlDeboxExecutor,
   pgConnectionPool,
   mysqlConnectionPool,
+  pgPoolFactory,
+  mysqlPoolFactory,
 } from './makesql';
 export type {
   MakeSQL,
@@ -257,6 +259,7 @@ export type {
   RoutingConfig,
   ConnectionSetup,
   PoolCloser,
+  PoolFactory,
 } from './connection-routing';
 
 // The tx-completeness contract (Phase B-1 / #81): TransactionOptions shape + defaults, the

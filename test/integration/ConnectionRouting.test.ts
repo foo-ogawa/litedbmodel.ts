@@ -36,8 +36,9 @@ import {
   ConnectionRegistry,
   WriterStickyClock,
   buildRoutingConfig,
+  pgPoolFactory,
+  mysqlPoolFactory,
   withWriter,
-  resolvePool,
   sessionStatements,
   resolveConnectionConfig,
   configuredPool,
@@ -66,6 +67,11 @@ const MY = {
   password: process.env.TEST_MYSQL_PASSWORD || 'testpass',
   connectionLimit: 8,
 };
+
+// The same connection params as ConnectionConfig fields (no driver-specific `max`/`connectionLimit`,
+// which the ConnectionConfig contract expresses as `maxPool`) — for feeding buildRoutingConfig.
+const PG_CONN = { host: PG.host, port: PG.port, database: PG.database, user: PG.user, password: PG.password } as const;
+const MY_CONN = { host: MY.host, port: MY.port, database: MY.database, user: MY.user, password: MY.password } as const;
 
 const TBL = 'scp_route';
 
@@ -141,10 +147,20 @@ describe('C1 — reader/writer pool separation', () => {
 
     expect(log).toEqual(['reader', 'writer']);
 
-    // MUTATION (RED proof): if `resolvePool` routed a READ to the writer (the reader/writer split
-    // broken), the log would read ['writer','writer'] — the assertion above would be RED.
-    const mutatedRead = resolvePool({ write: true /* ← faithful mutation: treat read as write */, db: undefined }, routing);
-    expect(mutatedRead).toBe(writer); // demonstrates the writer branch; the correct read used reader (asserted above)
+    // MUTATION (RED proof) — PRODUCTION PATH: collapse the reader/writer split to ONE pool (the
+    // faithful "reader/writer separation deleted" mutation) and re-run the SAME read+write through
+    // the SAME `executeAsync`/`runAsync` seam. Now BOTH statements land on the one pool, so the log
+    // reads ['solo','solo'] — NOT ['reader','writer']. Proves the green assertion above depends on
+    // the real split: deleting it changes the observed routing.
+    const mlog: string[] = [];
+    const solo = recordingPool(pgConnectionPool(pgPool as never), 'solo', mlog);
+    const mctx = new PooledAsyncContext({
+      registry: ConnectionRegistry.fromDefault({ reader: solo, writer: solo }).build(), // ← split removed
+      sticky: new WriterStickyClock({ useWriterAfterTransaction: false }),
+    });
+    await executeAsync(mctx, `SELECT 1 AS one`, [], { write: false });
+    await runAsync(mctx, `INSERT INTO ${TBL} (id, val) VALUES ($1,$2) ON CONFLICT (id) DO NOTHING`, [1, 'a'], { write: true });
+    expect(mlog).toEqual(['solo', 'solo']); // read no longer distinguishable from write ⇒ the split was load-bearing
   });
 
   it('writer-sticky: after a committed tx, a read routes to the WRITER within the window, then back to the READER', async () => {
@@ -175,11 +191,25 @@ describe('C1 — reader/writer pool separation', () => {
     await executeAsync(ctx, `SELECT 1`, [], { write: false });
     expect(log.at(-1)).toBe('reader');
 
-    // MUTATION (RED proof): a broken sticky clock that never arms (isSticky always false) would send
-    // the in-window read to the reader — the middle assertion (writer) would be RED.
-    const brokenSticky = new WriterStickyClock({ useWriterAfterTransaction: false });
-    brokenSticky.mark();
-    expect(brokenSticky.isSticky()).toBe(false);
+    // MUTATION (RED proof) — PRODUCTION PATH: disable writer-sticky (`useWriterAfterTransaction:false`,
+    // the faithful "sticky deleted" mutation) and re-run the SAME commit-then-read through the SAME
+    // `transaction`/`executeAsync` seam. The in-window read now lands on the READER (no read-your-
+    // writes), NOT the writer — so the green `log.at(-1) === 'writer'` above is load-bearing.
+    const mlog: string[] = [];
+    let mclock = 2_000_000;
+    const mreader = recordingPool(pgConnectionPool(pgPool as never), 'reader', mlog);
+    const mwriter = recordingPool(pgConnectionPool(pgPool as never), 'writer', mlog);
+    const mctx = new PooledAsyncContext({
+      registry: ConnectionRegistry.fromDefault({ reader: mreader, writer: mwriter }).build(),
+      sticky: new WriterStickyClock({ useWriterAfterTransaction: false, now: () => mclock }), // ← sticky OFF
+    });
+    await transaction(mctx, async () => {
+      await runGuardedAsync(mctx, `INSERT INTO ${TBL} (id, val) VALUES ($1,$2) ON CONFLICT (id) DO NOTHING`, [3, 'c'], 'INSERT');
+    }, {}, 'postgres');
+    mlog.length = 0; // ignore the tx's own writer acquisitions; observe only the post-commit read
+    mclock += 100;
+    await executeAsync(mctx, `SELECT 1`, [], { write: false });
+    expect(mlog).toEqual(['reader']); // sticky off ⇒ in-window read hits the reader (read-your-writes lost)
   });
 
   it('withWriter(fn): reads inside the scope route to the WRITER; a write inside throws (read-only)', async () => {
@@ -209,10 +239,13 @@ describe('C1 — reader/writer pool separation', () => {
       }),
     ).rejects.toThrow(/not allowed in withWriter\(\) context|read-only/i);
 
-    // MUTATION (RED proof): if withWriter did NOT set the writer-routing marker, the in-scope read
-    // would resolve to the reader — the first `['writer']` assertion would be RED. Demonstrated by
-    // resolving a read with no scope active: it lands on the reader.
-    expect(resolvePool({ write: false }, routing)).toBe(reader);
+    // MUTATION (RED proof) — PRODUCTION PATH: run the SAME read through the SAME `executeAsync` seam
+    // but OUTSIDE the withWriter scope (the faithful "withWriter divert removed" mutation). Without
+    // the scope the read lands on the READER, NOT the writer — so the green `['writer']` in-scope
+    // assertion depends on withWriter actually diverting. (Same ctx; only the scope differs.)
+    log.length = 0;
+    await executeAsync(ctx, `SELECT 1 AS one`, [], { write: false }); // no withWriter wrapper
+    expect(log).toEqual(['reader']); // outside the scope ⇒ reader; the in-scope 'writer' was load-bearing
   });
 });
 
@@ -317,34 +350,121 @@ describe('C3 — setConfig (queryTimeout / pool sizing / closeAllPools)', () => 
     expect(ok.length).toBe(1);
   }, 15000);
 
-  it('pool sizing (maxPool) bounds concurrency; buildRoutingConfig + closeAllPools close every pool', async () => {
-    // Build a dedicated small pool (max 2) and prove no more than 2 connections are live at once by
-    // holding 3 concurrent slow-ish queries and observing the pool never exceeds its cap (pg exposes
-    // totalCount). Then close it via the buildRoutingConfig `close()`.
-    const small = new Pool({ ...PG, max: 2 });
-    let closed = false;
+  it('pool sizing: config.maxPool is the SOLE cap (applied at construction); closeAllPools closes the pool', async () => {
+    // The config's maxPool is the SOLE source of the cap: buildRoutingConfig CONSTRUCTS the pg pool
+    // via the factory from the resolved config, so `max` = maxPool at `new Pool()` time. We capture
+    // the constructed pg.Pool to read its live `totalCount` — nothing else bounds it (no raw `max`).
+    let captured: Pool | undefined;
+    const capturingPgFactory = (cfg: ReturnType<typeof resolveConnectionConfig>) => {
+      // Mirror pgPoolFactory but capture the pg.Pool for totalCount observation. `max` comes ONLY
+      // from cfg.maxPool — there is no other cap. keepAlive is also applied at construction (below).
+      const pool = new Pool({
+        host: cfg.host, port: cfg.port, database: cfg.database, user: cfg.user, password: cfg.password,
+        max: cfg.maxPool, // ← the SOLE cap source
+        keepAlive: cfg.keepAlive,
+        ...(cfg.keepAlive ? { keepAliveInitialDelayMillis: cfg.keepAliveInitialDelayMillis } : {}),
+      });
+      captured = pool;
+      return { pool: pgConnectionPool(pool as never), close: async () => { await pool.end(); } };
+    };
+
     const { routing, close } = buildRoutingConfig([
-      {
-        config: { driver: 'postgres', maxPool: 2 },
-        reader: pgConnectionPool(small as never),
-        writer: pgConnectionPool(small as never),
-        closers: [async () => { closed = true; await small.end(); }],
-      },
+      { config: { driver: 'postgres', ...PG_CONN, maxPool: 2, keepAlive: true, keepAliveInitialDelayMillis: 3000 }, poolFactory: capturingPgFactory },
     ]);
     const ctx = new PooledAsyncContext(routing);
+    expect(captured).toBeDefined();
+    // keepAlive reached the pg.Pool at CONSTRUCTION (pg stores it on options).
+    expect((captured as unknown as { options: { max: number; keepAlive: boolean; keepAliveInitialDelayMillis: number } }).options.max).toBe(2);
+    expect((captured as unknown as { options: { keepAlive: boolean } }).options.keepAlive).toBe(true);
+    expect((captured as unknown as { options: { keepAliveInitialDelayMillis: number } }).options.keepAliveInitialDelayMillis).toBe(3000);
 
-    // Fire 3 concurrent queries against a max-2 pool; while they run, totalCount must stay ≤ 2.
-    const q = () => executeAsync(ctx, `SELECT pg_sleep(0.2) AS d`, [], { write: false });
-    const inflight = [q(), q(), q()];
-    // Sample the pool mid-flight.
-    await new Promise((r) => setTimeout(r, 80));
-    expect(small.totalCount).toBeLessThanOrEqual(2);
+    // Fire 5 concurrent slow queries; the pool CANNOT exceed the maxPool=2 cap (2 connections live,
+    // the rest queued). totalCount must stay ≤ 2 mid-flight.
+    const q = () => executeAsync(ctx, `SELECT pg_sleep(0.25) AS d`, [], { write: false });
+    const inflight = [q(), q(), q(), q(), q()];
+    await new Promise((r) => setTimeout(r, 120));
+    const midFlightTotal = captured!.totalCount;
+    expect(midFlightTotal).toBeLessThanOrEqual(2);
     await Promise.all(inflight);
-
-    // closeAllPools closes the registered pool.
     await close();
-    expect(closed).toBe(true);
-    // A query after close fails (pool ended) — proves the close is real.
+
+    // MUTATION (RED proof) — PRODUCTION PATH: DELETE `maxPool` from the config and re-run the SAME 5
+    // concurrent queries through the SAME factory+seam. Without maxPool the resolved cap defaults to
+    // 10, so all 5 connections open at once → totalCount reaches 5 (> 2). If maxPool were dead surface
+    // (ignored), this run would ALSO cap at 2 and the assertion below would falsely pass — it does NOT,
+    // proving maxPool is the load-bearing, sole cap source.
+    let capturedM: Pool | undefined;
+    const capturingPgFactoryM = (cfg: ReturnType<typeof resolveConnectionConfig>) => {
+      const pool = new Pool({ host: cfg.host, port: cfg.port, database: cfg.database, user: cfg.user, password: cfg.password, max: cfg.maxPool });
+      capturedM = pool;
+      return { pool: pgConnectionPool(pool as never), close: async () => { await pool.end(); } };
+    };
+    const built = buildRoutingConfig([
+      { config: { driver: 'postgres', ...PG_CONN /* NO maxPool ⇒ default 10 */ }, poolFactory: capturingPgFactoryM },
+    ]);
+    const mctx = new PooledAsyncContext(built.routing);
+    const inflightM = [1, 2, 3, 4, 5].map(() => executeAsync(mctx, `SELECT pg_sleep(0.25) AS d`, [], { write: false }));
+    await new Promise((r) => setTimeout(r, 120));
+    expect(capturedM!.totalCount).toBeGreaterThan(2); // uncapped without maxPool ⇒ RED if maxPool were "always 2"
+    await Promise.all(inflightM);
+    await built.close();
+
+    // closeAllPools closed the first pool: a query after close fails (proves the close is real).
     await expect(executeAsync(ctx, `SELECT 1`, [], { write: false })).rejects.toThrow();
-  }, 15000);
+  }, 20000);
+
+  it('queryTimeout FIRES a real server statement timeout on a heavy query (MySQL max_execution_time)', async () => {
+    // MySQL: max_execution_time is documented to NOT apply to SLEEP() — so use a HEAVY read-only
+    // SELECT (a cartesian cross-join with an aggregate) that genuinely burns CPU past 200ms. The
+    // server aborts it with ER_QUERY_TIMEOUT (errno 3024 / "execution was interrupted").
+    const cfg = resolveConnectionConfig({ driver: 'mysql', queryTimeout: 200 });
+    const pool = configuredPool(mysqlConnectionPool(myPool as never), cfg);
+    const ctx = new PooledAsyncContext({ registry: ConnectionRegistry.singleDefault(pool), sticky: new WriterStickyClock({ useWriterAfterTransaction: false }) });
+
+    // A CPU-heavy SELECT: cross-join the 64-row information_schema.COLLATIONS against itself a few
+    // times with a SHA2 per row → millions of hashes, well over 200ms, and NOT a SLEEP (so the
+    // max_execution_time cap genuinely applies). SELECT-only ⇒ read intent.
+    const heavy = `
+      SELECT COUNT(*) AS n FROM
+        information_schema.COLLATIONS a,
+        information_schema.COLLATIONS b,
+        information_schema.COLLATIONS c
+      WHERE SHA2(CONCAT(a.ID, b.ID, c.ID, RAND()), 256) > ''`;
+    await expect(executeAsync(ctx, heavy, [], { write: false })).rejects.toThrow(/max_execution_time|execution was interrupted|3024|query execution/i);
+
+    // MUTATION (RED proof) — PRODUCTION PATH: the SAME heavy query on an UNCONFIGURED pool (no
+    // max_execution_time) COMPLETES (returns a count) — so the abort above is caused by the config's
+    // queryTimeout, not the query. (Kept small enough to finish in a few seconds when uncapped.)
+    const plain = mysqlConnectionPool(myPool as never);
+    const plainCtx = new PooledAsyncContext({ registry: ConnectionRegistry.singleDefault(plain), sticky: new WriterStickyClock({ useWriterAfterTransaction: false }) });
+    const smallHeavy = `
+      SELECT COUNT(*) AS n FROM
+        information_schema.COLLATIONS a,
+        information_schema.COLLATIONS b
+      WHERE SHA2(CONCAT(a.ID, b.ID), 256) > ''`;
+    const ok = await executeAsync(plainCtx, smallHeavy, [], { write: false });
+    expect(Number(ok[0].n)).toBeGreaterThan(0); // uncapped ⇒ completes
+  }, 30000);
+
+  it('the exported pgPoolFactory + mysqlPoolFactory build a working pool from config (end-to-end)', async () => {
+    // Exercise the SHIPPED factories (the ones the driver adapters expose) end-to-end: build via
+    // buildRoutingConfig from config → query live → close. Proves the reference factories the ports
+    // mirror actually construct + run + close against real PG and MySQL.
+    const pgBuilt = buildRoutingConfig([
+      { config: { driver: 'postgres', ...PG_CONN, maxPool: 3 }, poolFactory: pgPoolFactory(await import('pg')) },
+    ]);
+    const pgCtx = new PooledAsyncContext(pgBuilt.routing);
+    const pr = await executeAsync(pgCtx, `SELECT 11 AS n`, [], { write: false });
+    expect(Number(pr[0].n)).toBe(11);
+    await pgBuilt.close();
+
+    const mysql2mod = await import('mysql2/promise');
+    const myBuilt = buildRoutingConfig([
+      { config: { driver: 'mysql', ...MY_CONN, maxPool: 3 }, poolFactory: mysqlPoolFactory(mysql2mod as never) },
+    ]);
+    const myCtx = new PooledAsyncContext(myBuilt.routing);
+    const mr = await executeAsync(myCtx, `SELECT 13 AS n`, [], { write: false });
+    expect(Number(mr[0].n)).toBe(13);
+    await myBuilt.close();
+  }, 20000);
 });

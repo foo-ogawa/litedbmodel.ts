@@ -437,28 +437,52 @@ export function configuredPool(pool: AsyncConnectionPool, config: ResolvedConnec
 export type PoolCloser = () => Promise<void>;
 
 /**
- * One connection's inputs to {@link buildRoutingConfig}: its resolved config + its reader/writer
- * pools (already driver-built, e.g. via `pgConnectionPool`/`mysqlConnectionPool`) + closers. The
- * pools are wrapped with {@link configuredPool} so the session config (queryTimeout/searchPath/…)
- * is applied on checkout. A single-pool connection passes the SAME pool as reader and writer.
+ * A driver's pool factory: BUILD a pool from a {@link ResolvedConnectionConfig}, returning the
+ * {@link AsyncConnectionPool} seam adapter plus a {@link PoolCloser}. This is where the CONSTRUCTION
+ * knobs — pool sizing (`minPool`/`maxPool`) + `keepAlive`/`keepAliveInitialDelayMillis` — reach the
+ * real driver (`new pg.Pool({ max, keepAlive, … })` / `mysql2.createPool({ connectionLimit, … })`),
+ * because those are pool-CONSTRUCTION options a pre-built pool can no longer accept.
+ *
+ * `buildRoutingConfig` OWNS the call to this factory with the RESOLVED config, so the configured
+ * sizing/keepAlive is the SOLE source of the pool's cap — there is no second raw `new Pool({max})`
+ * path. `role` lets a factory build a distinct replica pool for the reader vs. the writer (e.g. a
+ * different host) while sharing the same sizing config; a factory that returns the SAME pool for both
+ * roles collapses to single-pool (reader === writer).
+ *
+ * The module stays driver-AGNOSTIC: the factory is supplied by the peer-dep-owning caller (this file
+ * imports no driver). The pool-executor adapters (`makesql/pool-executor.ts`) provide the concrete
+ * pg/mysql2 factories; the port agents (#88-91) supply their language's equivalent — the SAME shape.
+ */
+export type PoolFactory = (config: ResolvedConnectionConfig, role: 'reader' | 'writer') => { pool: AsyncConnectionPool; close: PoolCloser };
+
+/**
+ * One connection's inputs to {@link buildRoutingConfig}: its NAME (default when absent), its
+ * {@link ConnectionConfig} (connection params + sizing + keepAlive + session knobs), and a
+ * {@link PoolFactory} that `buildRoutingConfig` CALLS with the resolved config to construct the
+ * pool(s) — so sizing/keepAlive are applied at construction and the config is the sole cap source.
+ *
+ * `separateWriter: true` asks the factory for a DISTINCT writer pool (reader/writer replica split);
+ * otherwise the factory's reader pool is reused as the writer (single-pool, reader === writer).
  */
 export interface ConnectionSetup {
   readonly name?: string; // default connection when absent
   readonly config?: ConnectionConfig;
-  readonly reader: AsyncConnectionPool;
-  readonly writer: AsyncConnectionPool;
-  /** Closers for the DISTINCT underlying pools (deduped by identity in {@link closeRouting}). */
-  readonly closers?: readonly PoolCloser[];
+  /** The driver pool factory (built by `buildRoutingConfig` with the resolved config — sizing/keepAlive land here). */
+  readonly poolFactory: PoolFactory;
+  /** Build a distinct writer pool via the factory (replica split). Default false ⇒ reader === writer. */
+  readonly separateWriter?: boolean;
 }
 
 /**
  * The C3 `setConfig` result: the {@link RoutingConfig} a {@link import('./exec-context').PooledAsyncContext}
- * runs on, plus a `close()` that shuts every registered pool ({@link closeAllPools}). Build it from
- * one or more {@link ConnectionSetup}s (the FIRST unnamed / `default`-named is the default connection).
+ * runs on, plus a `close()` that shuts every constructed pool ({@link closeAllPools}). Build it from
+ * one or more {@link ConnectionSetup}s (the one named `default`, or the first unnamed, is the default
+ * connection).
  *
- * This is the driver-AGNOSTIC assembly point: the pg/mysql2 pool objects are built by the caller
- * (peer-dep-owning code) and passed IN, so this module imports no driver — the port agents supply
- * their language's pool builders and feed the SAME shape here.
+ * For each setup: resolve the config, CALL its {@link PoolFactory} to construct the pool(s) — so
+ * `minPool`/`maxPool`/`keepAlive`/`keepAliveInitialDelayMillis` are applied at `new Pool()` /
+ * `createPool()` time (the config is the SOLE source of the cap) — then wrap each pool with
+ * {@link configuredPool} so the SESSION knobs (queryTimeout/searchPath/charset) apply on checkout.
  */
 export function buildRoutingConfig(
   setups: readonly ConnectionSetup[],
@@ -469,10 +493,19 @@ export function buildRoutingConfig(
   const closers: PoolCloser[] = [];
   for (const s of setups) {
     const resolved = resolveConnectionConfig(s.config);
-    const reader = configuredPool(s.reader, resolved);
-    const writer = s.reader === s.writer ? reader : configuredPool(s.writer, resolved);
-    builder.add(s.name ?? DEFAULT_CONNECTION, s.reader === s.writer ? singlePoolPair(reader) : readerWriterPair(reader, writer));
-    if (s.closers !== undefined) closers.push(...s.closers);
+    // CONSTRUCT the reader pool from the resolved config (sizing/keepAlive land at `new Pool()`).
+    const readerBuilt = s.poolFactory(resolved, 'reader');
+    closers.push(readerBuilt.close);
+    const reader = configuredPool(readerBuilt.pool, resolved);
+    let pair: ReaderWriterPools;
+    if (s.separateWriter === true) {
+      const writerBuilt = s.poolFactory(resolved, 'writer');
+      closers.push(writerBuilt.close);
+      pair = readerWriterPair(reader, configuredPool(writerBuilt.pool, resolved));
+    } else {
+      pair = singlePoolPair(reader); // reader === writer (one constructed pool)
+    }
+    builder.add(s.name ?? DEFAULT_CONNECTION, pair);
   }
   const routing: RoutingConfig = { registry: builder.build(), sticky: new WriterStickyClock(stickyOpts) };
   return { routing, close: () => closeRouting(closers) };

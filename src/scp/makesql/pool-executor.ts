@@ -19,6 +19,7 @@
 
 import type { SqlExecutorAsync } from './static-bundle';
 import type { AsyncConnection, AsyncConnectionPool, Rows, RunInfo } from '../exec-context';
+import type { ResolvedConnectionConfig, PoolFactory, PoolCloser } from '../connection-routing';
 
 // ── TS read-path driver de-box config (issue #59) ─────────────────────────────
 // The read-path materializer (`materializeCell`) coerces each driver cell to the JS form its SQL
@@ -258,5 +259,87 @@ export function mysqlConnectionPool(pool: MysqlOwnedPoolLike): AsyncConnectionPo
       if (destroy === true) raw.destroy();
       else raw.release();
     },
+  };
+}
+
+// ── Phase C (#87): driver POOL FACTORIES — sizing/keepAlive applied at construction ───────────
+//
+// `buildRoutingConfig` (connection-routing.ts) OWNS pool construction so the C3 config's CONSTRUCTION
+// knobs — pool sizing (`minPool`/`maxPool`) + `keepAlive`/`keepAliveInitialDelayMillis` — reach the
+// real driver at `new pg.Pool({ max, … })` / `mysql2.createPool({ connectionLimit, … })` time (a
+// pre-built pool can no longer accept them). These factories map a {@link ResolvedConnectionConfig}
+// to the driver's pool options and return the owned-connection {@link AsyncConnectionPool} adapter +
+// a closer. The configured sizing is thus the SOLE source of the pool cap. Session knobs
+// (queryTimeout/searchPath/charset) are layered separately by `configuredPool` on checkout.
+
+/** A pg `Pool` the factory constructs: owned-connection surface + `end()` (the closer). */
+export type PgOwnedPoolWithEnd = PgOwnedPoolLike & { end(): Promise<void> };
+
+/** The `pg` module surface the pool factory needs: an OWNED-connection `Pool` ctor + `types`. */
+export interface PgFactoryModuleLike {
+  Pool: new (config: Record<string, unknown>) => PgOwnedPoolWithEnd;
+  types: PgTypesLike;
+}
+
+/**
+ * A {@link PoolFactory} for `pg`: constructs a `new pg.Pool(...)` from a {@link ResolvedConnectionConfig},
+ * applying the pool SIZING (`max` = `maxPool`, `min` = `minPool`) and `keepAlive` /
+ * `keepAliveInitialDelayMillis` AT CONSTRUCTION — the config is the sole source of the cap. Connection
+ * params (host/port/database/user/password) also flow from the config. Registers the read-path de-box
+ * type parsers (issue #59, global, idempotent) once. Returns the owned-connection adapter + closer.
+ *
+ * `role` is accepted for the reader/writer replica split; the caller may vary host per role via the
+ * config it passes. `Pool` is the `pg.Pool` ctor (peer dep, passed in — this module imports no driver).
+ */
+export function pgPoolFactory(pg: PgFactoryModuleLike): PoolFactory {
+  return (config: ResolvedConnectionConfig, _role: 'reader' | 'writer'): { pool: AsyncConnectionPool; close: PoolCloser } => {
+    configurePgDeboxTypeParsers(pg.types);
+    const pool = new pg.Pool({
+      ...(config.host !== undefined ? { host: config.host } : {}),
+      ...(config.port !== undefined ? { port: config.port } : {}),
+      ...(config.database !== undefined ? { database: config.database } : {}),
+      ...(config.user !== undefined ? { user: config.user } : {}),
+      ...(config.password !== undefined ? { password: config.password } : {}),
+      // SIZING (construction knob): the config is the sole source of the cap.
+      max: config.maxPool,
+      min: config.minPool,
+      // keepAlive (construction knob): TCP keepalive for serverless/long-idle connections.
+      keepAlive: config.keepAlive,
+      ...(config.keepAlive ? { keepAliveInitialDelayMillis: config.keepAliveInitialDelayMillis } : {}),
+    });
+    return { pool: pgConnectionPool(pool), close: () => pool.end() };
+  };
+}
+
+/** A mysql2 `Pool` the factory constructs: owned-connection surface + `end()` (the closer). */
+export type MysqlOwnedPoolWithEnd = MysqlOwnedPoolLike & { end(): Promise<void> };
+
+/**
+ * A {@link PoolFactory} for `mysql2/promise`: constructs a `mysql2.createPool(...)` from a
+ * {@link ResolvedConnectionConfig}, applying the pool SIZING (`connectionLimit` = `maxPool`) +
+ * `enableKeepAlive` / `keepAliveInitialDelay` AT CONSTRUCTION (the config is the sole source of the
+ * cap) plus the read-path de-box options ({@link mysqlDeboxPoolOptions}). Connection params flow from
+ * the config. Returns the owned-connection adapter + closer.
+ *
+ * NB: mysql2 has no `min` idle floor — `minPool` is a no-op there (a documented per-driver deviation;
+ * the SIZING CAP that matters — `maxPool` → `connectionLimit` — is honored). `createPool` is the
+ * `mysql2/promise` factory (peer dep, passed in).
+ */
+export function mysqlPoolFactory(mysql2: { createPool(config: Record<string, unknown>): MysqlOwnedPoolWithEnd }): PoolFactory {
+  return (config: ResolvedConnectionConfig, _role: 'reader' | 'writer'): { pool: AsyncConnectionPool; close: PoolCloser } => {
+    const pool = mysql2.createPool({
+      ...(config.host !== undefined ? { host: config.host } : {}),
+      ...(config.port !== undefined ? { port: config.port } : {}),
+      ...(config.database !== undefined ? { database: config.database } : {}),
+      ...(config.user !== undefined ? { user: config.user } : {}),
+      ...(config.password !== undefined ? { password: config.password } : {}),
+      // SIZING (construction knob): connectionLimit = maxPool (the sole source of the cap).
+      connectionLimit: config.maxPool,
+      // keepAlive (construction knob).
+      enableKeepAlive: config.keepAlive,
+      ...(config.keepAlive ? { keepAliveInitialDelay: config.keepAliveInitialDelayMillis } : {}),
+      ...mysqlDeboxPoolOptions,
+    });
+    return { pool: mysqlConnectionPool(pool), close: () => pool.end() };
   };
 }
