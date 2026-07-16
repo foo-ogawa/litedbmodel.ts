@@ -52,7 +52,8 @@ import { compileWriteNode } from './tx';
 import { assertFindFilterFolded, type FindFilterSource } from '../find-filter-guard';
 import { deriveReadOutTypes } from './outtype';
 import { materializeCell, type ColumnTypeResolver, type MaterializeClass } from '../coltype';
-import { mapSqliteError } from '../errors';
+import { mapSqliteError, LimitExceededError } from '../errors';
+import { resolveFindHardLimit } from '../limit-config';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import { dbCast, dbDynamic, dbImmediate, dbTupleIn } from '../../DBValues';
 import { conditionsFor } from './json-array';
@@ -1005,6 +1006,24 @@ export interface ReadGraph {
    * across sqlite/pg/mysql.
    */
   readonly materializersByNode?: Record<string, Record<string, MaterializeClass>>;
+  /**
+   * Hard-limit runaway guard for the top-level read (Phase E-2, epic #74; v1 `DBModel` find
+   * hard-limit). Present ONLY when a `findHardLimit` is configured AND the PRIMARY read node (the
+   * first non-cond/non-map body node — the "find" row list) had NO authored `limit` port (v1: the
+   * cap applies only when the caller set no explicit limit). At compile the read injects `LIMIT
+   * hardLimit + 1` into that node's statements; the native walker checks the primary node's fetched
+   * row count against `hardLimit` AFTER fetch and throws {@link import('../errors').LimitExceededError}
+   * (`context: 'find'`) when it exceeds. Pure JSON — the native ports (#100-103) run the SAME check
+   * off this field with no config surface of their own.
+   */
+  readonly findGuard?: {
+    /** The row cap. A primary-node fetch of MORE than this throws (`context: 'find'`). */
+    readonly hardLimit: number;
+    /** The real body-node id of the primary read node whose row count is checked. */
+    readonly nodeId: string;
+    /** The read model (behavior) name — the error's `model` field. */
+    readonly model: string;
+  };
 }
 
 /**
@@ -1056,6 +1075,15 @@ export function compileReadGraph(
     statementsById[n.id] = compileNodeStatements(n, dialect);
   }
 
+  // Hard-limit runaway guard for the top-level read (Phase E-2, epic #74; v1 `DBModel` find
+  // hard-limit). The PRIMARY read node is the first non-cond/non-map body `Select` — the "find" row
+  // list. When a `findHardLimit` is configured AND the author set NO explicit `limit` on it (v1:
+  // `!opts?.limit`), inject `LIMIT hardLimit + 1` (an N+1 fetch — enough to KNOW the total exceeds
+  // the cap without loading the whole runaway set) into that node's statements, and carry the guard
+  // metadata so the native walker checks the primary node's row count post-fetch. A node that already
+  // carries an authored `limit` is left untouched (no guard, no injection — byte-identical SQL).
+  const findGuard = resolveFindGuard(component, statementsById, dialect);
+
   // SINGLE column-type resolution (issue #59 audit — unified read+codegen): `deriveReadOutTypes`
   // resolves every projected column of the read ONCE (via the SHARED projection parser, all shapes:
   // bare / qualified / aliased; `*` / computed / undeclared → HARD ERROR, spec §4.1) and returns BOTH
@@ -1098,7 +1126,43 @@ export function compileReadGraph(
     statementsById,
     optionalHeads: [...optionalHeadsOfComponent(component, dialect)],
     ...(materializers !== undefined && materializers.size > 0 ? { materializersByNode: Object.fromEntries(materializers) } : {}),
+    ...(findGuard !== undefined ? { findGuard } : {}),
   };
+}
+
+/**
+ * Resolve the top-level-read hard-limit guard (Phase E-2). Returns the guard metadata (and MUTATES
+ * `statementsById` to inject `LIMIT hardLimit + 1` into the primary node's statements) when a
+ * `findHardLimit` is configured AND the primary read node had NO authored `limit`; else `undefined`
+ * (no guard, statements untouched — byte-identical SQL for the uncapped path).
+ *
+ * The PRIMARY read node is the first non-cond/non-map body `Select` (the "find" row list). A `Count`
+ * primary is never capped (it returns a scalar, not a runaway row list). The injection reuses the
+ * SAME `limitOffsetTail` + literal value-spec the authored `limit` port lowers to, so the injected
+ * ` LIMIT ?` renders byte-identically to an authored limit — only the value is the baked `hardLimit
+ * + 1`.
+ */
+function resolveFindGuard(
+  component: Component,
+  statementsById: Record<string, readonly StaticStatement[]>,
+  dialect: Dialect,
+): ReadGraph['findGuard'] {
+  const hardLimit = resolveFindHardLimit();
+  if (hardLimit === null) return undefined; // disabled ⇒ no guard, no injection
+  // The primary read node: first non-cond, non-map, non-fanout body node that is a `Select`.
+  const primary = component.body.find(
+    (n) => !('cond' in n) && !('map' in n) && !isFanout(n) && (n as { component?: string }).component === 'Select',
+  ) as (ComponentRefNode | undefined);
+  if (primary === undefined) return undefined; // no plain Select primary (e.g. a Count-only read)
+  // v1 `!opts?.limit`: only cap a read whose primary carries NO authored `limit` port.
+  if ((primary.ports as Record<string, unknown>).limit !== undefined) return undefined;
+  const table = (primary.ports as Record<string, unknown>).table;
+  if (typeof table !== 'string') return undefined; // a Select without a literal table can't be capped
+  // Inject `LIMIT hardLimit + 1` as a literal value-spec (bc IR literal = the bare number) into the
+  // primary node's statements — the SAME shape an authored `limit` lowers to, so it renders identically.
+  const injected: StaticStatement = { sql: limitOffsetTail('limit', dialect, table), params: [hardLimit + 1] };
+  statementsById[primary.id] = [...statementsById[primary.id], injected];
+  return { hardLimit, nodeId: primary.id, model: component.name };
 }
 
 /**
@@ -1224,6 +1288,21 @@ function computeReadNodeSync(graph: ReadGraph, node: ReadBodyNode, base: Scope, 
   return execReadNodeSync(graph, node.id, base, ctx);
 }
 
+/**
+ * Post-fetch hard-limit runaway guard (Phase E-2, epic #74; v1 `DBModel` find hard-limit). When
+ * `graph.findGuard` targets `nodeId` and the node's computed value is a row list longer than the
+ * cap, throw {@link LimitExceededError} (`context: 'find'`). The read injected `LIMIT hardLimit + 1`
+ * at compile, so a length of `hardLimit + 1` means the TRUE total exceeds the cap. A no-op for every
+ * other node / an uncapped graph. The SAME check the native ports (#100-103) run off `findGuard`.
+ */
+function assertFindGuard(graph: ReadGraph, nodeId: string, value: Value): void {
+  const guard = graph.findGuard;
+  if (guard === undefined || guard.nodeId !== nodeId) return;
+  if (Array.isArray(value) && value.length > guard.hardLimit) {
+    throw new LimitExceededError(guard.hardLimit, value.length, 'find', guard.model);
+  }
+}
+
 /** Normalize omitted OPTIONAL heads to present-as-null (absent-key SKIP; SSoT-driven). */
 function normalizeReadInput(graph: ReadGraph, input: Scope): Scope {
   const out: Scope = { ...input };
@@ -1255,7 +1334,9 @@ export function executeReadGraph(graph: ReadGraph, input: Scope, db: DbOrContext
       for (const [id, v] of results) base[id] = v;
       for (const idx of ordered) {
         const node = body[idx];
-        base[node.id] = results[results.push([node.id, computeReadNodeSync(graph, node, base, ctx)]) - 1][1];
+        const v = computeReadNodeSync(graph, node, base, ctx);
+        assertFindGuard(graph, node.id, v); // Phase E-2: throw if the primary read exceeded the cap
+        base[node.id] = results[results.push([node.id, v]) - 1][1];
       }
     }
     const scope: Scope = { ...normalized };
@@ -1328,6 +1409,8 @@ export async function executeReadGraphAsync(
       // Independent siblings of a stage run in bounded parallel (capped at the plan concurrency;
       // concurrency ≤ 1 ⇒ serial); committed in ascending body index order for determinism.
       const vals = await boundedMap(ordered, concurrency, (idx) => computeReadNodeAsync(graph, body[idx], base, exec, concurrency));
+      // Phase E-2: throw if the primary read exceeded the cap (checked per computed node).
+      ordered.forEach((idx, i) => assertFindGuard(graph, body[idx].id, vals[i]));
       ordered.forEach((idx, i) => results.push([body[idx].id, vals[i]]));
     }
     const scope: Scope = { ...normalized };

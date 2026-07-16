@@ -37,6 +37,10 @@ import {
   compileCompositeWriteBundle,
   executeBundle,
   executeTransactionBundle,
+  readBundle,
+  LimitExceededError,
+  setLimitConfig,
+  resetLimitConfig,
   publishBehaviors,
   components,
   SemanticBehavior,
@@ -137,6 +141,13 @@ export interface ExecVector {
   readonly input: EncodedValue;
   readonly schema: readonly string[];
   readonly expectedResult: EncodedValue;
+  /**
+   * When set, run through the typed-object read surface (`readBundle` with this relation eagerly
+   * selected) instead of the bare `executeBundle` — so the relation batch fires and its rows attach
+   * onto each parent. Used by the Phase E-2 guard SKIP vectors (a relation whose cap is disabled /
+   * intrinsic-LIMIT-windowed must attach normally, not throw). Absent ⇒ bare `executeBundle`.
+   */
+  readonly withRelation?: string;
 }
 
 /** A write-transaction vector: a §8 SqlBundle with a transaction plan run as one tx. */
@@ -151,6 +162,37 @@ export interface TxVector {
   readonly expectedDbState?: readonly { readonly query: string; readonly rows: EncodedValue }[];
 }
 
+/**
+ * An EXPECT-ERROR vector (Phase E-2, epic #74): a §8 {@link SqlBundle} whose hard-limit cap is
+ * BAKED at compile (`findGuard` on the read graph, or a relation op's `hardLimit`), executed against
+ * seeded OVER-CAP SQLite, asserting the runtime THROWS {@link import('../src/scp').LimitExceededError}
+ * with the exact fields. The cross-language contract every port (#100-103) proves its guard against:
+ * consume the SAME bundle + input, run it, and assert the SAME typed error shape is raised.
+ *
+ * `relation` present ⇒ run via the typed-object read surface (`readBundle` with `with`) so the
+ * relation batch fires; absent ⇒ a bare read (`executeBundle`). The config is NOT carried — the caps
+ * are already baked into the bundle, so a port needs no config surface to reproduce the throw.
+ */
+export interface ExpectErrorVector {
+  readonly name: string;
+  readonly kind: 'expect-error';
+  readonly dialect: DialectName;
+  readonly bundle: SqlBundle;
+  readonly input: EncodedValue;
+  readonly schema: readonly string[];
+  /** When set, run through the typed-object read surface with this relation eagerly selected. */
+  readonly withRelation?: string;
+  /** The exact {@link LimitExceededError} fields the throw must carry (the contract). */
+  readonly expectedError: {
+    readonly name: 'LimitExceededError';
+    readonly limit: number;
+    readonly count: number;
+    readonly context: 'find' | 'relation';
+    readonly model?: string;
+    readonly relation?: string;
+  };
+}
+
 /** A dialect-primitive vector: the `orderByNulls` NULLS-ordering emulation. */
 export interface DialectVector {
   readonly name: string;
@@ -161,7 +203,7 @@ export interface DialectVector {
   readonly expected: string;
 }
 
-export type Vector = RenderVector | WriteRenderVector | ExecVector | TxVector | DialectVector;
+export type Vector = RenderVector | WriteRenderVector | ExecVector | TxVector | DialectVector | ExpectErrorVector;
 
 /** A named suite file of vectors (one JSON per file, graphddb-shaped). */
 export interface Suite {
@@ -205,6 +247,14 @@ class Blog extends SemanticBehavior {
 
   ByIds($: In<{ ids: number[] }>) {
     return L.Select({ table: 'posts', select: ['id', 'title'], where: [whereIn(inColumn($, 'id'), $.ids)], order: 'id ASC' });
+  }
+
+  /**
+   * A bare posts row list with NO author `limit` — the find hard-limit guard TARGET (Phase E-2).
+   * The parent page for the relation-batch guard vectors too (hasMany tags attach onto each post).
+   */
+  Posts($: In<{ author_id: number }>) {
+    return L.Select({ table: 'posts', select: ['id', 'author_id', 'title', 'status'], where: [whereEq($.author_id, $.author_id)], order: 'id ASC' });
   }
 }
 
@@ -421,6 +471,88 @@ function orderByNullsVector(dialect: DialectName, dir: 'ASC' | 'DESC', nulls: 'F
   };
 }
 
+// ── Expect-error (hard-limit) vector construction (Phase E-2, epic #74) ────────
+//
+// Each guard vector compiles a bundle UNDER a hard-limit config (so the cap is BAKED onto the
+// artifact — `findGuard` for a find cap, a relation op `hardLimit` for a relation cap), then RUNS
+// it against seeded OVER-CAP SQLite and CAPTURES the LimitExceededError fields it throws. The config
+// is set only around the compile+run and RESET after — the vector carries no config (the caps are in
+// the bundle), so a port reproduces the throw from the bundle alone. If the reference does NOT throw,
+// generation fails loudly (an expect-error vector that doesn't error is a bug, not a corpus).
+
+/** Build a find-cap expect-error vector: a bare read over-cap → throw (context=find). */
+function findGuardVector(name: string, findHardLimit: number, schema: readonly string[], input: Record<string, unknown>): ExpectErrorVector {
+  resetLimitConfig();
+  setLimitConfig({ findHardLimit });
+  const bundle = compileBundle(publishBehaviors(Blog), 'Posts', [], 'sqlite', undefined, schemaColumnTypeResolver(schema));
+  resetLimitConfig();
+  const err = captureLimitError(() => executeBundle(bundle, input as never, { db: seedDb(schema) }), name);
+  return {
+    name, kind: 'expect-error', dialect: 'sqlite',
+    bundle: JSON.parse(JSON.stringify(bundle)) as SqlBundle,
+    input: encodeValue(input), schema,
+    expectedError: { name: 'LimitExceededError', limit: err.limit, count: err.count, context: err.context, ...(err.model !== undefined ? { model: err.model } : {}) },
+  };
+}
+
+/** Build a relation-cap expect-error vector: an over-cap hasMany batch → throw (context=relation, exact count). */
+function relationGuardVector(name: string, relations: readonly RelationDecl[], hasManyHardLimit: number | undefined, schema: readonly string[], input: Record<string, unknown>): ExpectErrorVector {
+  resetLimitConfig();
+  if (hasManyHardLimit !== undefined) setLimitConfig({ hasManyHardLimit });
+  const bundle = compileBundle(publishBehaviors(Blog), 'Posts', relations, 'sqlite', undefined, schemaColumnTypeResolver(schema));
+  resetLimitConfig();
+  const err = captureLimitError(() => readBundle(bundle, input as never, { db: seedDb(schema), with: { tags: true } }), name);
+  return {
+    name, kind: 'expect-error', dialect: 'sqlite', withRelation: 'tags',
+    bundle: JSON.parse(JSON.stringify(bundle)) as SqlBundle,
+    input: encodeValue(input), schema,
+    expectedError: { name: 'LimitExceededError', limit: err.limit, count: err.count, context: err.context, ...(err.model !== undefined ? { model: err.model } : {}), ...(err.relation !== undefined ? { relation: err.relation } : {}) },
+  };
+}
+
+/**
+ * Build a SKIP exec vector: compile `Posts` UNDER a config that must NOT throw (null-disable /
+ * per-relation-disable / intrinsic-LIMIT window), execute against the SAME over-cap data, and
+ * capture the NORMAL result. If the reference throws, generation fails (a skip vector must succeed).
+ * `withRelation` set ⇒ run the typed-object read surface (relation batch fires but is not capped).
+ */
+function guardSkipExec(name: string, config: { findHardLimit?: number | null; hasManyHardLimit?: number | null }, relations: readonly RelationDecl[], withRelation: string | undefined, input: Record<string, unknown>): ExecVector {
+  resetLimitConfig();
+  setLimitConfig(config);
+  const bundle = compileBundle(publishBehaviors(Blog), 'Posts', relations, 'sqlite', undefined, schemaColumnTypeResolver(READ_SCHEMA));
+  resetLimitConfig();
+  const db = seedDb(READ_SCHEMA);
+  const result = withRelation !== undefined
+    ? readBundle(bundle, input as never, { db, with: { [withRelation]: true } })
+    : executeBundle(bundle, input as never, { db });
+  db.close();
+  return { name, kind: 'exec', dialect: 'sqlite', bundle: JSON.parse(JSON.stringify(bundle)) as SqlBundle, input: encodeValue(input), schema: READ_SCHEMA, expectedResult: encodeValue(result), ...(withRelation !== undefined ? { withRelation } : {}) };
+}
+
+/** Build a SKIP exec vector on `Feed` (author-limit present ⇒ find-guard skipped): compile under a
+ *  find cap that would over-cap, run, capture the normal Φ result (no throw). */
+function guardSkipFeedExec(name: string, config: { findHardLimit?: number | null }, input: Record<string, unknown>): ExecVector {
+  resetLimitConfig();
+  setLimitConfig(config);
+  const bundle = compileBundle(publishBehaviors(Blog), 'Feed', blogRelations, 'sqlite', undefined, schemaColumnTypeResolver(READ_SCHEMA));
+  resetLimitConfig();
+  const db = seedDb(READ_SCHEMA);
+  const result = executeBundle(bundle, input as never, { db });
+  db.close();
+  return { name, kind: 'exec', dialect: 'sqlite', bundle: JSON.parse(JSON.stringify(bundle)) as SqlBundle, input: encodeValue(input), schema: READ_SCHEMA, expectedResult: encodeValue(result) };
+}
+
+/** Run `fn`, assert it threw a `LimitExceededError`, return its fields (generation fails if it did not). */
+function captureLimitError(fn: () => unknown, name: string): LimitExceededError {
+  try {
+    fn();
+  } catch (e) {
+    if (e instanceof LimitExceededError) return e;
+    throw new Error(`guard vector '${name}': expected LimitExceededError, got ${e instanceof Error ? e.name + ': ' + e.message : String(e)}`);
+  }
+  throw new Error(`guard vector '${name}': the reference did NOT throw (an expect-error vector must error)`);
+}
+
 // ── The corpus (generated from the reference) ─────────────────────────────────
 
 /** Generate the full corpus (list of suites). Every expected field is captured, not authored. */
@@ -489,11 +621,48 @@ export function generateCorpus(): Suite[] {
     }
   }
 
+  // ── guard suite: hard-limit runaway prevention (Phase E-2, epic #74; #99 reference) ─────────────
+  // Author 7 has posts (1,2) with tags (10,11 on post 1; 12 on post 2) = 3 tags total. So a
+  // findHardLimit of 1 over-caps the 2-post read, and a hasManyHardLimit of 2 over-caps the 3-tag
+  // batch. `Posts` carries no author `limit` → the find-guard applies. The expect-error vectors
+  // assert the THROW; the skip vectors (null / explicit-limit / intrinsic-LIMIT) are exec vectors
+  // that must NOT throw — the cross-language contract the ports (#100-103) reproduce.
+  const relTagsUnlimited: readonly RelationDecl[] = [
+    { name: 'author', kind: 'belongsTo', targetTable: 'users', select: ['id', 'name'], parentKey: 'author_id', targetKey: 'id' },
+    { name: 'tags', kind: 'hasMany', targetTable: 'tags', select: ['id', 'post_id', 'label'], parentKey: 'id', targetKey: 'post_id', order: 'id ASC' },
+  ];
+  const relTagsWindowed: readonly RelationDecl[] = [
+    { name: 'tags', kind: 'hasMany', targetTable: 'tags', select: ['id', 'post_id', 'label'], parentKey: 'id', targetKey: 'post_id', order: 'id ASC', limit: 1 },
+  ];
+  const relTagsOverride: readonly RelationDecl[] = [
+    { name: 'tags', kind: 'hasMany', targetTable: 'tags', select: ['id', 'post_id', 'label'], parentKey: 'id', targetKey: 'post_id', order: 'id ASC', hardLimit: 2 },
+  ];
+  const relTagsDisabled: readonly RelationDecl[] = [
+    { name: 'tags', kind: 'hasMany', targetTable: 'tags', select: ['id', 'post_id', 'label'], parentKey: 'id', targetKey: 'post_id', order: 'id ASC', hardLimit: null },
+  ];
+  const guard: Vector[] = [
+    // THROW: find cap exceeded (2 posts > cap 1) — reported count is the N+1 fetch (hardLimit+1=2).
+    findGuardVector(`find: read exceeds findHardLimit → throw (context=find)`, 1, READ_SCHEMA, { author_id: 7 }),
+    // THROW: relation batch total exceeded (3 tags > global cap 2) — reported EXACT count 3.
+    relationGuardVector(`relation: hasMany batch exceeds hasManyHardLimit → throw (exact count)`, relTagsUnlimited, 2, READ_SCHEMA, { author_id: 7 }),
+    // THROW: relation per-relation hardLimit override (2) wins over an absent/high global.
+    relationGuardVector(`relation: per-relation hardLimit override → throw`, relTagsOverride, undefined, READ_SCHEMA, { author_id: 7 }),
+    // SKIP (no throw): findHardLimit=null disables the read cap → normal rows.
+    guardSkipExec(`find: findHardLimit null → no throw (disabled)`, { findHardLimit: null }, [], undefined, { author_id: 7 }),
+    // SKIP: an explicit author limit governs (Feed's limit=20 branch), find-guard not applied.
+    guardSkipFeedExec(`find: explicit author limit → no throw (skip)`, { findHardLimit: 1 }, { author_id: 7, status: 'live', since: '2026-01-01', created_at: 'created_at' }),
+    // SKIP: per-relation hardLimit null disables the relation cap even when the global is set.
+    guardSkipExec(`relation: per-relation hardLimit null → no throw (disabled)`, { hasManyHardLimit: 1 }, relTagsDisabled, 'tags', { author_id: 7 }),
+    // SKIP: an intrinsic per-parent LIMIT window relation skips the batch-total check.
+    guardSkipExec(`relation: intrinsic per-parent LIMIT window → no throw (skip batch check)`, { hasManyHardLimit: 1 }, relTagsWindowed, 'tags', { author_id: 7 }),
+  ];
+
   return [
     { suite: 'render', corpusVersion: CORPUS_VERSION, note: 'READ primaries + WRITE statements × 3 dialects × SKIP/IN edge cases — static makeSQL render golden (byte-true to the original builders).', vectors: render },
     { suite: 'exec', corpusVersion: CORPUS_VERSION, note: 'Read bundles executed against seeded SQLite via the native read-graph walker: SKIP + belongsTo/hasMany relations (batched op).', vectors: exec },
     { suite: 'tx', corpusVersion: CORPUS_VERSION, note: 'Write-time-relations gate-first transaction bundles: commit + gate short-circuit + composite tx-DAG.', vectors: tx },
     { suite: 'dialect', corpusVersion: CORPUS_VERSION, note: 'Dialect primitive orderByNulls: PG/SQLite native NULLS, MySQL IS NULL emulation.', vectors: dialect },
+    { suite: 'guard', corpusVersion: CORPUS_VERSION, note: 'Hard-limit runaway prevention (Phase E-2, epic #74): expect-error vectors assert LimitExceededError (find N+1 / relation exact-count) with baked caps; exec skip vectors assert null-disable / explicit-limit / intrinsic-LIMIT-window do NOT throw. The cross-language contract #100-103 mirror.', vectors: guard },
   ];
 }
 
@@ -535,10 +704,31 @@ export function runVector(v: Vector): VectorResult {
     }
     if (v.kind === 'exec') {
       const db = seedDb(v.schema);
-      const result = encodeValue(executeBundle(v.bundle, decodeValue(v.input) as never, { db }));
+      const raw = v.withRelation !== undefined
+        ? readBundle(v.bundle, decodeValue(v.input) as never, { db, with: { [v.withRelation]: true } })
+        : executeBundle(v.bundle, decodeValue(v.input) as never, { db });
+      const result = encodeValue(raw);
       db.close();
       const ok = eq(result, v.expectedResult);
-      return { ...base, suite: 'exec', ok, detail: ok ? undefined : `result ${JSON.stringify(result)} != ${JSON.stringify(v.expectedResult)}` };
+      return { ...base, suite: v.withRelation !== undefined ? 'guard' : 'exec', ok, detail: ok ? undefined : `result ${JSON.stringify(result)} != ${JSON.stringify(v.expectedResult)}` };
+    }
+    if (v.kind === 'expect-error') {
+      // The cap is BAKED into the bundle (findGuard / relation hardLimit), so no config is set here:
+      // the runtime throws off the artifact alone. Run the bundle over-cap and assert the SAME typed
+      // LimitExceededError fields. A port mirrors this exactly (run the bundle → assert the throw).
+      const db = seedDb(v.schema);
+      let thrown: unknown;
+      try {
+        if (v.withRelation !== undefined) readBundle(v.bundle, decodeValue(v.input) as never, { db, with: { [v.withRelation]: true } });
+        else executeBundle(v.bundle, decodeValue(v.input) as never, { db });
+      } catch (e) { thrown = e; }
+      db.close();
+      if (!(thrown instanceof LimitExceededError)) {
+        return { ...base, suite: 'guard', ok: false, detail: `expected LimitExceededError, got ${thrown === undefined ? 'no throw' : thrown instanceof Error ? thrown.name + ': ' + thrown.message : String(thrown)}` };
+      }
+      const got = { name: thrown.name, limit: thrown.limit, count: thrown.count, context: thrown.context, ...(thrown.model !== undefined ? { model: thrown.model } : {}), ...(thrown.relation !== undefined ? { relation: thrown.relation } : {}) };
+      const ok = eq(got, v.expectedError);
+      return { ...base, suite: 'guard', ok, detail: ok ? undefined : `error ${JSON.stringify(got)} != ${JSON.stringify(v.expectedError)}` };
     }
     if (v.kind === 'tx') {
       const db = seedDb(v.schema);

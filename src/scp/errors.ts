@@ -38,6 +38,60 @@ export class SqlFailure extends Error {
   }
 }
 
+/**
+ * The context a {@link LimitExceededError} was raised from (spec §E-2 / v1 `LimitExceededError`).
+ *   - `'find'`   — a top-level read (find/read) exceeded `findHardLimit`. The read injects
+ *     `LIMIT hardLimit + 1` when the author set no explicit limit, so the reported `count` is the
+ *     N+1 fetch size: the TOTAL is only known to be MORE than `hardLimit`.
+ *   - `'relation'` — a hasMany relation batch exceeded `hasManyHardLimit`. The batch is fetched in
+ *     full (no N+1), so the reported `count` is the EXACT batch total.
+ */
+export type LimitExceededContext = 'find' | 'relation';
+
+/**
+ * The SHARED cross-language runaway-prevention contract (Phase E-2, epic #74; v1 parity —
+ * `DBModel` find hard-limit + `_selectForRelation`). Thrown by the TS runtime post-fetch guard when
+ * a read / relation batch returns MORE rows than the configured hard limit, so an accidental
+ * missing-WHERE / N+1 pattern fails LOUD instead of loading an unbounded result.
+ *
+ * This is the REFERENCE error shape the rust/go/py/php ports (#100-103) mirror byte-for-byte:
+ *   - fields: `limit` (the cap), `count` (rows fetched — see {@link LimitExceededContext}),
+ *     `context` (`'find'` | `'relation'`), `model` (the read/parent model), `relation?`
+ *     (the relation name, `'relation'` context only);
+ *   - message: `Query limit exceeded: <where> returned <count-phrase> records, but limit is
+ *     <limit>. This usually indicates a missing WHERE clause or an N+1 query pattern. Set a higher
+ *     limit or use pagination.` — `find` reports `more than <limit>` (N+1 fetch), `relation`
+ *     reports the exact `<count>`.
+ *
+ * NOT a {@link SqlFailure}: a runaway guard is a litedbmodel-level policy error, not a mapped driver
+ * failure, and it carries no `SQLITE_*` code (so `reErrorToSqlFailure` propagates it unchanged).
+ */
+export class LimitExceededError extends Error {
+  constructor(
+    readonly limit: number,
+    /**
+     * Rows fetched. `find` context: the `LIMIT hardLimit + 1` fetch size (the true total is only
+     * known to EXCEED `limit`). `relation` context: the EXACT batch-total row count.
+     */
+    readonly count: number,
+    readonly context: LimitExceededContext,
+    readonly model?: string,
+    readonly relation?: string,
+  ) {
+    const where =
+      context === 'find'
+        ? `find() on ${model ?? 'unknown'}`
+        : `relation '${relation ?? 'unknown'}' on ${model ?? 'unknown'}`;
+    const countPhrase = context === 'find' ? `more than ${limit}` : `${count}`;
+    super(
+      `Query limit exceeded: ${where} returned ${countPhrase} records, ` +
+        `but limit is ${limit}. This usually indicates a missing WHERE clause or ` +
+        `an N+1 query pattern. Set a higher limit or use pagination.`,
+    );
+    this.name = 'LimitExceededError';
+  }
+}
+
 /** True if `e` looks like a better-sqlite3 `SqliteError` (has a `SQLITE_*` string `code`). */
 function isSqliteError(e: unknown): e is { code: string; message: string } {
   return (
