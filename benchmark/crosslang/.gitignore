@@ -5,6 +5,10 @@
 .results/
 # Compiled rust adapter (the lm_orm ORM-plan executor) build dir
 adapters/rust/target/
+# Compiled TS adapter — the bench runner is esbuild-bundled to plain JS at run time (run.ts's build
+# step) and launched with bare `node` so esbuild/tsx is NOT resident in the MEASURED process. Like the
+# rust/go native binaries above, this is regenerated every run — NEVER commit.
+adapters/ts/orm-runner.built.mjs
 # Python bytecode
 adapters/python/__pycache__/
 **/__pycache__/
