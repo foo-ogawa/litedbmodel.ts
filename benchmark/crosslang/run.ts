@@ -39,8 +39,32 @@ const GO_BIN = process.env.GO_ORM_BIN ?? resolve(GO_DIR, 'lm_orm');
 const PY = process.env.PYTHON_BIN ?? 'python3';
 const PHP = process.env.PHP_BIN ?? 'php';
 
+// The TS cell is PRE-COMPILED to plain JS and launched with bare `node` (like rust/go are pre-built
+// native binaries) — NOT run through `tsx`. tsx is an esbuild-based on-the-fly transpiler that stays
+// RESIDENT in the measured process, inflating the reported RSS with a build tool that has nothing to
+// do with the litedbmodel runtime (measured: same-budget A/B on this bench, tsx ≈ 230–250 MB vs the
+// compiled node path ≈ 160–190 MB — a ~50–70 MB esbuild tax the other languages never pay). Bundling
+// the runner to JS and running it under node keeps the MEASURED process esbuild-free, so TS RSS
+// reflects node + the litedbmodel runtime + drivers, the same class of footprint the other languages
+// report. NB: an end-of-run RSS is a V8 high-water mark that never shrinks (post-GC live heap here is
+// only ~16 MB); the residual over the ~74 MB import-time floor is legitimate workload memory (pg Pool
+// + mysql2 buffers + V8 heap growth), NOT esbuild — do not chase the floor by forcing GC or reading
+// RSS before the workload, that would change WHAT is measured. The native/node drivers are EXTERNAL —
+// they load from node_modules at runtime (never bundle the `.node` addons). Wired here (not run-bench.sh)
+// so `run.ts` alone produces a fair TS cell.
+const TS_SRC = 'benchmark/crosslang/adapters/ts/orm-runner.ts';
+const TS_BUILT = resolve(HERE, 'adapters/ts/orm-runner.built.mjs');
+function buildTsCell(): void {
+  sh('npx', [
+    'esbuild', TS_SRC,
+    '--bundle', '--format=esm', '--platform=node',
+    '--external:better-sqlite3', '--external:pg', '--external:mysql2',
+    `--outfile=${TS_BUILT}`,
+  ]);
+}
+
 const BENCHES: LangBench[] = [
-  { language: 'ts', run: () => sh('npx', ['tsx', 'benchmark/crosslang/adapters/ts/orm-runner.ts']) },
+  { language: 'ts', build: buildTsCell, run: () => sh('node', [TS_BUILT]) },
   { language: 'python', run: () => sh(PY, ['benchmark/crosslang/adapters/python/orm_runner.py']) },
   { language: 'php', run: () => sh(PHP, ['benchmark/crosslang/adapters/php/orm-runner.php']) },
   {
