@@ -448,6 +448,7 @@ final class StaticBundle
             foreach ($stage as $idx) {
                 $node = $body[$idx];
                 $val = self::computeReadNode($graph, $node, $base, $ctx);
+                self::assertFindGuard($graph, (string) $node->id, $val); // Phase E-2: throw if the primary read exceeded the cap
                 $results[] = [(string) $node->id, $val];
                 $base[(string) $node->id] = $val;
             }
@@ -507,6 +508,30 @@ final class StaticBundle
             return $out;
         }
         return self::renderExecuteNode($graph, $nodeId, $base, $ctx);
+    }
+
+    /**
+     * Post-fetch hard-limit runaway guard for the top-level read (Phase E-2, epic #74; v1
+     * `DBModel` find hard-limit; port of static-bundle.ts `assertFindGuard`). When the graph
+     * bakes a `findGuard` targeting `$nodeId` and that node's computed value is a row list
+     * LONGER than the cap, throw {@see LimitExceededError} (`context: 'find'`). The read injected
+     * `LIMIT hardLimit + 1` at compile, so a length of `hardLimit + 1` means the TRUE total
+     * exceeds the cap; the reported `count` is that N+1 fetch length. A no-op for every other
+     * node / an uncapped graph (ABSENT `findGuard` ⇒ NO check — the cap comes from the artifact
+     * ONLY). The SAME check the TS/rust/go/py ports run off this field.
+     */
+    private static function assertFindGuard(\stdClass $graph, string $nodeId, mixed $value): void
+    {
+        $guard = $graph->findGuard ?? null;
+        if (!($guard instanceof \stdClass) || (string) ($guard->nodeId ?? '') !== $nodeId) {
+            return;
+        }
+        if (is_array($value) && array_is_list($value)) {
+            $hardLimit = (int) ($guard->hardLimit ?? 0);
+            if (count($value) > $hardLimit) {
+                throw new LimitExceededError($hardLimit, count($value), 'find', (string) ($guard->model ?? ''));
+            }
+        }
     }
 
     // ── Tx op render (port of tx.ts renderStatement) ───────────────────────────
