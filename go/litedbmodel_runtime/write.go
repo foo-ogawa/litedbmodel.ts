@@ -112,7 +112,7 @@ func gateShortCircuit(gate string, r execStatementResult) (ShortCircuitReason, e
 //
 // Every statement runs through the CENTRAL SEAM on the tx-scoped ctx (§2/§3): the seam resolves the
 // tx's OWNED connection (per-execution ownership) and runs there — a SELECT/RETURNING via Execute, a
-// non-returning write via Run. No direct db.Query / db.Exec — the tx-owned *sql.Tx is the ONLY driver
+// non-returning write via Run. No direct db.Query / db.Exec — the tx-owned *sql.Conn is the ONLY driver
 // contact (both carry WriteIntent: a tx statement always targets the writer / tx connection).
 func execTxStatement(ctx *ExecutionContext, op *bc.JObj, scope *bc.Obj, dialect Dialect) (execStatementResult, error) {
 	rendered, err := renderTxOp(op, scope, dialect.Name())
@@ -210,7 +210,7 @@ type TxDB interface {
 // render pipeline + a SQL driver, never re-deriving the plan.
 func ExecuteTransactionBundle(bundle *SqlBundle, input *bc.Obj, db TxDB) (TransactionResult, error) {
 	// Backward-compat wrapper (§6): wrap `db` in a thin ExecutionContext whose ConnectionFor resolves
-	// the tx-owned *sql.Tx once the combinator pins it, and drive the write plan as its OWN auto-tx
+	// the tx-owned *sql.Conn once the combinator pins it, and drive the write plan as its OWN auto-tx
 	// with the write=tx guard OFF (the internal per-execution-ownership plane the Phase A ownership
 	// proofs + the conformance/livedb runners use — they run a plan directly, NOT inside a user
 	// Transaction()). BYTE-IDENTICAL to the pre-#83 behavior. `db` must be BOTH the base connection
@@ -231,12 +231,12 @@ func ExecuteTransactionBundle(bundle *SqlBundle, input *bc.Obj, db TxDB) (Transa
 //
 // It drives [TransactionDecided], which decides the envelope from the passed ctx:
 //   - inside a user Transaction() (ctx.InTransaction() is true — a connection is pinned) → the plan
-//     JOINS: its statements run on the outer's owned *sql.Tx with NO new BEGIN/COMMIT, so N writes in
+//     JOINS: its statements run on the outer's owned *sql.Conn with NO new BEGIN/COMMIT, so N writes in
 //     one boundary are ONE physical transaction (one BEGIN, one COMMIT, one conn);
-//   - outside any transaction (a base ctx) → it opens its OWN BEGIN…COMMIT on a freshly-acquired
-//     owned *sql.Tx (the per-execution auto-tx; concurrent calls each own a DISTINCT *sql.Tx ⇒
-//     isolated). No isolation/retry here — those ride the user Transaction() options; a bare auto-tx
-//     uses the defaults (a bare BEGIN) with retry OFF (Phase A byte-identical behavior).
+//   - outside any transaction (a base ctx) → it opens its OWN BEGIN…COMMIT (issued as SQL THROUGH the
+//     seam) on a freshly-checked-out owned *sql.Conn (the per-execution auto-tx; concurrent calls each
+//     own a DISTINCT *sql.Conn ⇒ isolated). No isolation/retry here — those ride the user Transaction()
+//     options; a bare auto-tx uses the defaults (a bare BEGIN) with retry OFF (Phase A byte-identical).
 //
 // # write=tx guard (#86)
 //
@@ -259,14 +259,14 @@ func ExecuteTransactionBundleCtx(bundle *SqlBundle, input *bc.Obj, ctx *Executio
 
 // executeTransactionCtx runs a plan as one transaction with **per-execution connection ownership**
 // (§3) + gate-first short-circuit (byte-true to write-runtime.ts executeTransaction). It hands the
-// whole plan to [TransactionDecided], which — outside a user Transaction() — acquires ONE *sql.Tx
-// (Go's connection-owning primitive — BEGIN issued by database/sql), pins it into a tx-scoped ctx so
-// every statement resolves THAT connection via the seam, and COMMITs / ROLLBACKs it on the SAME
-// *sql.Tx per the body's decision; inside one it JOINS the ambient tx (no new BEGIN/COMMIT).
-// Statements run in the plan's fixed order; a failing gate returns a ROLLBACK decision
-// (committed:false — a legitimate outcome, NOT an error) and the tail never executes; a driver error
-// returns an error (⇒ rollback + re-raise). On success COMMITs and returns the `$.entity` RETURNING
-// row. Concurrent transactions each own a DISTINCT *sql.Tx ⇒ isolated (no shared-tx state).
+// whole plan to [TransactionDecided], which — outside a user Transaction() — checks out ONE *sql.Conn
+// (Go's connection-owning primitive), pins it into a tx-scoped ctx so every statement resolves THAT
+// connection via the seam, issues BEGIN / COMMIT / ROLLBACK as SQL THROUGH the seam (middleware-visible)
+// per the body's decision; inside one it JOINS the ambient tx (no new BEGIN/COMMIT). Statements run in
+// the plan's fixed order; a failing gate returns a ROLLBACK decision (committed:false — a legitimate
+// outcome, NOT an error) and the tail never executes; a driver error returns an error (⇒ rollback +
+// re-raise). On success COMMITs and returns the `$.entity` RETURNING row. Concurrent transactions each
+// own a DISTINCT *sql.Conn ⇒ isolated (no shared-tx state).
 func executeTransactionCtx(ctx *ExecutionContext, db TxDB, plan *bc.JObj, input *bc.Obj, dialect Dialect, guard bool) (TransactionResult, error) {
 	statements, entityFrom, err := parseTxPlan(plan)
 	if err != nil {
@@ -320,7 +320,8 @@ func executeTransactionCtx(ctx *ExecutionContext, db TxDB, plan *bc.JObj, input 
 		for _, stmt := range statements {
 			result, err := execTxStatement(txCtx, stmt.op, scope, dialect)
 			if err != nil {
-				// A driver error ⇒ the combinator ROLLBACKs the owned *sql.Tx + re-raises.
+				// A driver error ⇒ the combinator ROLLBACKs the owned *sql.Conn (ROLLBACK through the
+				// seam) + re-raises.
 				return TransactionResult{}, Commit(), err
 			}
 			executed = append(executed, stmt.id)
@@ -333,7 +334,7 @@ func executeTransactionCtx(ctx *ExecutionContext, db TxDB, plan *bc.JObj, input 
 					return TransactionResult{}, Commit(), gErr
 				}
 				if reason != "" {
-					// A failed gate: the combinator ROLLBACKs the owned *sql.Tx and returns this
+					// A failed gate: the combinator ROLLBACKs the owned *sql.Conn and returns this
 					// value (committed:false) — a legitimate outcome, NOT an error.
 					return TransactionResult{
 						Committed:    false,
@@ -368,7 +369,7 @@ func executeTransactionCtx(ctx *ExecutionContext, db TxDB, plan *bc.JObj, input 
 			}
 		}
 
-		// All statements succeeded: COMMIT the owned *sql.Tx and return the entity.
+		// All statements succeeded: COMMIT the owned *sql.Conn (COMMIT through the seam) and return the entity.
 		return TransactionResult{Committed: true, Entity: entity, Executed: executed, ReturnedRows: returnedRows}, Commit(), nil
 	})
 }

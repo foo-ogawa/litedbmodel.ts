@@ -40,14 +40,16 @@
 //
 // # Per-execution connection ownership (§3) — the concurrent-tx fix
 //
-// A transaction acquires ONE connection via *sql.Tx (db.Begin() — Go's connection-owning primitive:
-// a *sql.Tx binds exactly one pooled connection for its whole lifetime, the analogue of v1
-// `PoolTransaction`), pins it into a tx-scoped [ExecutionContext] threaded on a context.Context,
-// runs its body (every statement resolves that *sql.Tx via ConnectionFor), COMMITs/ROLLBACKs on the
-// SAME *sql.Tx, and releases it. Concurrent transactions each own a DISTINCT *sql.Tx over a DISTINCT
-// pooled connection ⇒ isolated. There is NO driver-global tx slot (Go never had one — the write path
-// already threaded a *sql.Tx; this seam makes that ownership central + explicit, and forbids any
-// shared-tx state re-appearing).
+// A transaction checks out ONE OWNED connection via db.Conn() → a *sql.Conn (Go's connection-owning
+// primitive that keeps tx-control OBSERVABLE: it binds exactly one pooled connection for the tx's whole
+// lifetime, the analogue of v1 `PoolTransaction`), pins it into a tx-scoped [ExecutionContext] threaded
+// on a context.Context, then issues its OWN tx-control (SET/BEGIN/COMMIT/ROLLBACK) as REAL SQL THROUGH
+// the seam ([Run] on the pinned conn) so a middleware OBSERVES it — full TS parity (Phase D / #94). The
+// body's every statement resolves that *sql.Conn via ConnectionFor; a poisoned conn (a failed
+// ROLLBACK/COMMIT) is DESTROYED on release (see [releaseTxConn]). Concurrent transactions each own a
+// DISTINCT *sql.Conn over a DISTINCT pooled connection ⇒ isolated. There is NO driver-global tx slot,
+// and no *sql.Tx (whose BEGIN/Commit/Rollback are opaque method calls the seam can't observe); this
+// seam makes ownership central + explicit + middleware-visible, and forbids any shared-tx state.
 
 package litedbmodel_runtime
 
@@ -91,8 +93,8 @@ type RunInfo struct {
 
 // Connection is the ONE driver contact point (§5): a resolved connection a statement runs on.
 // Outside a tx this wraps the primary SQLDB (a *sql.DB — a pooled connection per call); inside a tx
-// it wraps the tx-owned *sql.Tx. The seam is the ONLY caller; the runtime SQL path never touches a
-// db.Query / db.Exec directly.
+// it wraps the tx-owned *sql.Conn (via connSQLDB). The seam is the ONLY caller; the runtime SQL path
+// never touches a db.Query / db.Exec directly.
 type Connection interface {
 	// Execute runs a SELECT / RETURNING statement; returns the raw rows.
 	Execute(sql string, args []any) ([]bc.Value, error)
@@ -100,9 +102,10 @@ type Connection interface {
 	Run(sql string, args []any) (RunInfo, error)
 }
 
-// dbConnection adapts a raw SQLDB (the primary db, a *sql.DB — or a *sql.Tx for the tx path) to the
-// [Connection] seam. Execute/Run are the SAME queryRows / execWrite the runtime used directly before
-// the seam — so a ctx built via [ContextForDB] is byte-identical to the old raw-db path (the
+// dbConnection adapts a raw SQLDB (the primary db — a *sql.DB, the NON-tx path; the tx path pins a
+// *sql.Conn via connSQLDB instead) to the [Connection] seam. Execute/Run are the SAME queryRows /
+// execWrite the runtime used directly before the seam — so a ctx built via [ContextForDB] is
+// byte-identical to the old raw-db path (the
 // backward-compat wrapper, §6). It is the ONE place a db.Query / db.Exec is issued.
 type dbConnection struct {
 	db SQLDB
@@ -525,17 +528,19 @@ func Rollback() TxDecision { return TxDecision{Rollback: true} }
 // (§3, the concurrent-tx fix). This is the general form: `body` decides COMMIT vs ROLLBACK (see
 // [TxDecision]); a non-nil error from `body` always rolls back and re-raises.
 //
-//  1. acquire ONE connection via db.Begin() → a *sql.Tx (the tx's exclusive connection; BEGIN issued
-//     by database/sql on it), the Go analogue of v1 PoolTransaction;
+//  1. check out ONE OWNED connection via db.Conn() → a *sql.Conn (the tx's exclusive pooled connection,
+//     NO BEGIN yet), the Go analogue of v1 PoolTransaction;
 //  2. pin it into a tx-scoped [ExecutionContext] so EVERY statement `body` issues resolves THAT
 //     connection via ConnectionFor — never a fresh pooled one;
-//  3. run body(txCtx) → COMMIT / ROLLBACK on the OWNED *sql.Tx per the returned decision; on any
-//     error ROLLBACK (best-effort) and re-raise;
-//  4. the owned connection is released back to the pool when *sql.Tx is committed / rolled back.
+//  3. issue the isolation-aware BEGIN THROUGH the seam ([Run] on the pinned conn) so it is
+//     middleware-visible; run body(txCtx) → COMMIT / ROLLBACK THROUGH the seam per the returned
+//     decision; on any error ROLLBACK (best-effort) and re-raise;
+//  4. release the owned connection back to the pool (or DESTROY it via a bad-conn Raw when a failed
+//     ROLLBACK/COMMIT poisoned it — see [releaseTxConn]).
 //
-// Concurrent calls each acquire a DISTINCT *sql.Tx, so their writes never cross-talk — the isolation a
+// Concurrent calls each own a DISTINCT *sql.Conn, so their writes never cross-talk — the isolation a
 // shared-slot model would violate. This mirrors the TS withTransactionAsync (#75) / rust
-// with_transaction_decided (#76).
+// with_transaction_decided (#76). See [WithTransactionDecidedIsolated] for the seam-visible tx-control.
 func WithTransactionDecided[R any](ctx *ExecutionContext, db TxDB, body func(txCtx *ExecutionContext) (R, TxDecision, error)) (R, error) {
 	return WithTransactionDecidedIsolated(ctx, db, IsolationNone, "", body)
 }
@@ -671,12 +676,14 @@ func WithTransaction[R any](ctx *ExecutionContext, db TxDB, body func(txCtx *Exe
 //
 // # What it does (v1 `DBModel.transaction` :2787 parity, on the SCP seam)
 //
-// It acquires ONE owned *sql.Tx, issues the isolation-aware BEGIN (via db.BeginTx +
-// sql.TxOptions{Isolation} — database/sql emits the per-dialect isolation SQL), pins that connection
-// into a tx-scoped [ExecutionContext], runs `body(txCtx)`, then COMMITs (or ROLLBACKs on a body
-// error / options.RollbackOnly), with the #81 retry loop (deadlock / serialization / connection
-// error) wrapped around the WHOLE boundary — a FRESH owned *sql.Tx per attempt. It drives
-// [WithTransactionDecidedIsolated] per attempt (the ONE mechanism).
+// It checks out ONE owned *sql.Conn (db.Conn), issues the isolation-aware BEGIN as REAL SQL THROUGH
+// the seam ([BeginStatements]: PG `BEGIN ISOLATION LEVEL …`; MySQL a preceding `SET TRANSACTION
+// ISOLATION LEVEL …` then `BEGIN`), pins that connection into a tx-scoped [ExecutionContext], runs
+// `body(txCtx)`, then COMMITs (or ROLLBACKs on a body error / options.RollbackOnly) — also THROUGH the
+// seam, so a registered middleware OBSERVES the runtime tx-control — with the #81 retry loop (deadlock
+// / serialization / connection error) wrapped around the WHOLE boundary, a FRESH owned *sql.Conn per
+// attempt (re-issuing BEGIN through the seam each time). It drives [WithTransactionDecidedIsolated] per
+// attempt (the ONE mechanism).
 //
 // # The ambient-tx JOIN — how operations participate (the core #86 fix; go = explicit ctx)
 //
@@ -684,7 +691,7 @@ func WithTransaction[R any](ctx *ExecutionContext, db TxDB, body func(txCtx *Exe
 // pins it in an async-local, go/rust thread it by argument). Every operation `body` issues receives
 // THAT ctx: a write via [ExecuteTransactionBundleCtx], a read via the read seam. Because that ctx's
 // InTransaction() is already true (a connection is pinned), the write's own tx-bracketing DETECTS
-// the ambient tx and JOINS it — running its statements on the pinned owned *sql.Tx WITHOUT opening
+// the ambient tx and JOINS it — running its statements on the pinned owned *sql.Conn WITHOUT opening
 // its own BEGIN/COMMIT (see [TransactionDecided]'s nested-join). So N operations inside one
 // Transaction() produce exactly ONE BEGIN + ONE COMMIT on ONE connection. Outside a Transaction()
 // the ctx's InTransaction() is false, so a bare guarded write is rejected with
@@ -712,8 +719,9 @@ func Transaction[R any](ctx *ExecutionContext, db TxDB, dialectName string, opti
 //  2. RollbackOnly — a successful Commit(r) is rewritten to Rollback(r) (the body result is returned
 //     but NO change commits — dry-run/preview);
 //  3. retry — a retryable failure (deadlock / serialization / connection error, via
-//     [IsRetryableTxError]) re-runs the WHOLE boundary on a FRESH owned *sql.Tx, up to RetryLimit,
-//     with exponential backoff RetryDurationMs · 2^(k-1). A non-retryable error re-raises immediately.
+//     [IsRetryableTxError]) re-runs the WHOLE boundary on a FRESH owned *sql.Conn (re-issuing BEGIN
+//     through the seam), up to RetryLimit, with exponential backoff RetryDurationMs · 2^(k-1). A
+//     non-retryable error re-raises immediately.
 func TransactionDecided[R any](ctx *ExecutionContext, db TxDB, dialectName string, options TransactionOptions, body func(txCtx *ExecutionContext) (R, TxDecision, error)) (R, error) {
 	var zero R
 	// NESTED-TX JOIN (mirror v1 depth+1): already inside a tx on this ctx ⇒ join the outer. No new
@@ -742,7 +750,7 @@ func TransactionDecided[R any](ctx *ExecutionContext, db TxDB, dialectName strin
 	attempt := 0
 	for {
 		attempt++
-		// ONE attempt on a FRESH owned *sql.Tx (a retry after a connection error thus RECONNECTS).
+		// ONE attempt on a FRESH owned *sql.Conn (a retry after a connection error thus RECONNECTS).
 		result, err := WithTransactionDecidedIsolated(ctx, db, options.Isolation, dialectName, func(txCtx *ExecutionContext) (R, TxDecision, error) {
 			r, decision, bErr := body(txCtx)
 			if bErr != nil {
