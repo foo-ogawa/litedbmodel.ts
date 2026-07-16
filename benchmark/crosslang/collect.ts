@@ -73,6 +73,7 @@ interface CellAccum {
   coldMs?: number;
   rssBytes?: number;
   warmup?: number;
+  artifactBytes?: number;
 }
 
 function emptyAccum(): CellAccum {
@@ -98,6 +99,7 @@ function accumulate(rows: CsvRow[]): CellAccum {
       case 'cold_ms': a.coldMs = num; break;
       case 'rss_bytes': a.rssBytes = num; break;
       case 'warmup': a.warmup = num; break;
+      case 'artifact_bytes': a.artifactBytes = num; break;
     }
   }
   return a;
@@ -133,7 +135,12 @@ function toCell(language: string, a: CellAccum): CellResult {
     }
     dialects[dialect] = { cases };
   }
-  return { language, impl: 'runtime', coldStartMs: a.coldMs, rssBytes: a.rssBytes, dialects };
+  return {
+    language, impl: 'runtime',
+    coldStartMs: a.coldMs, rssBytes: a.rssBytes,
+    artifactSizeBytes: a.artifactBytes, // native cells only; interpreted cells omit it → report shows `—`
+    dialects,
+  };
 }
 
 function iterationsOf(a: CellAccum): number {

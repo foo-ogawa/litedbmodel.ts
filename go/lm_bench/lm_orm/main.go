@@ -604,6 +604,20 @@ func resultsPath() string {
 	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "benchmark", "crosslang", ".results", "go.csv")
 }
 
+// artifactBytes returns the size of THIS compiled binary (the native-cell artifact); ok=false if
+// the path/stat fails.
+func artifactBytes() (int64, bool) {
+	exe, err := os.Executable()
+	if err != nil {
+		return 0, false
+	}
+	info, err := os.Stat(exe)
+	if err != nil {
+		return 0, false
+	}
+	return info.Size(), true
+}
+
 func bench() {
 	const language = "go"
 	warmup := envNum("BENCH_WARMUP", 50)
@@ -691,6 +705,11 @@ func bench() {
 	runtime.ReadMemStats(&m)
 	emit("", "", "rss_bytes", strconv.FormatUint(m.Sys, 10))
 	emit("", "", "warmup", strconv.Itoa(warmup))
+	// artifact_bytes: this compiled binary's own size (a native-cell metric; the interpreted cells
+	// ts/python/php run on an interpreter, so they emit NO such row → the collector renders `—`).
+	if bytes, ok := artifactBytes(); ok {
+		emit("", "", "artifact_bytes", strconv.FormatInt(bytes, 10))
+	}
 
 	for _, d := range live {
 		d.db.Close()

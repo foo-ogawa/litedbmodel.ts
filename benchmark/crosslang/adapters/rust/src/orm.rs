@@ -694,6 +694,11 @@ fn bench() {
     emit("", "", "cold_ms", cold_ms.to_string());
     emit("", "", "rss_bytes", rss_bytes().to_string());
     emit("", "", "warmup", warmup.to_string());
+    // artifact_bytes: this compiled binary's own size (a native-cell metric; the interpreted cells
+    // ts/python/php run on an interpreter, so they emit NO such row → the collector renders `—`).
+    if let Some(bytes) = artifact_bytes() {
+        emit("", "", "artifact_bytes", bytes.to_string());
+    }
 
     let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let results_dir = here.join("../../.results");
@@ -721,6 +726,12 @@ fn rss_bytes() -> u64 {
         }
     }
     0
+}
+
+/// The size of THIS compiled binary (the native-cell artifact). None if the path/stat fails.
+fn artifact_bytes() -> Option<u64> {
+    let exe = std::env::current_exe().ok()?;
+    Some(std::fs::metadata(exe).ok()?.len())
 }
 
 fn main() {
