@@ -138,6 +138,10 @@ final class ExecutionContextSeamTest extends TestCase
                 $this->used = true;
                 return new RunInfo(0, 0);
             }
+            public function control(string $sql): void
+            {
+                $this->used = true;
+            }
         };
         $txCtx = $base->withConnection($marker, true);
         $this->assertTrue($txCtx->inTransaction());

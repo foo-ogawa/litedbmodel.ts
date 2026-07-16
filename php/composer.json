@@ -20,7 +20,8 @@
             "src/BehaviorContracts/Constants.php",
             "src/TxOptions.php",
             "src/ExecutionContext.php",
-            "src/ConnectionRouting.php"
+            "src/ConnectionRouting.php",
+            "src/Middleware.php"
         ]
     },
     "autoload-dev": {
