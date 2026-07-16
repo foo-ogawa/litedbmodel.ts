@@ -1,63 +1,91 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Cross-language benchmark ENTRY (epic #63) — generate → run matrix → write report.
+// Cross-language benchmark ORCHESTRATOR (epic #63) — build → run each standalone
+// bench (each writes its CSV) → collect (CSVs → CROSS-LANG.md).
 // ════════════════════════════════════════════════════════════════════════════
 //
-//   npx tsx benchmark/crosslang/run.ts                     # full run, writes CROSS-LANG.md
-//   BENCH_ITER=100 npx tsx …/run.ts                        # quick
-//   CROSSLANG_CASES=findAll,create npx tsx …/run.ts        # an op subset
-//   CROSSLANG_ONLY=ts npx tsx …/run.ts                     # a language subset
+//   npx tsx benchmark/crosslang/run.ts                     # full run
+//   BENCH_ITER=5 BENCH_WARMUP=2 npx tsx …/run.ts           # quick smoke
+//   CROSSLANG_ONLY=ts,python npx tsx …/run.ts              # a language subset
 //
-// SQLite is in-process; PG :5433 + MySQL :3307 are the dockerized live DBs. The shared
-// orm-plan.json artifact (the 19 ORM ops × 3 dialects) is regenerated first.
+// This orchestrator does NOT drive the languages over a protocol (the old harness is
+// gone). It only: (1) regenerates the shared orm-plan.json artifact, (2) builds the
+// native cells (rust/go), (3) SPAWNS each language's STANDALONE bench as its own
+// process (each self-measures ALL 19 ops × 3 dialects and writes .results/<lang>.csv),
+// then (4) runs the collector (collect.ts), the ONLY program that reads the CSVs and
+// renders CROSS-LANG.md. Budgets flow to each bench purely via env (BENCH_*).
+//
+// SQLite is in-process; PG :5433 + MySQL :3307 are the dockerized live DBs.
 
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { runMatrix, DEFAULT_CONFIG, type HarnessConfig } from './harness.js';
-import { renderReport } from './report.js';
-import { CROSSLANG_CASE_IDS, CROSSLANG_DIALECTS, type CrosslangCaseId, type CrosslangDialect } from './contract.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const OUT_MD = resolve(HERE, '../CROSS-LANG.md');
-const OUT_JSON = resolve(HERE, '.crosslang-results.json');
 const REPO = resolve(HERE, '../..');
+const RESULTS_DIR = resolve(HERE, '.results');
 
-function config(): HarnessConfig {
-  const iter = Number(process.env.BENCH_ITER ?? DEFAULT_CONFIG.iterations);
-  const warmup = Number(process.env.BENCH_WARMUP ?? DEFAULT_CONFIG.warmup);
-  const casesEnv = process.env.CROSSLANG_CASES;
-  const cases = casesEnv
-    ? (casesEnv.split(',').map((s) => s.trim()).filter(Boolean) as CrosslangCaseId[])
-    : ([...CROSSLANG_CASE_IDS] as CrosslangCaseId[]);
-  const dialectsEnv = process.env.CROSSLANG_DIALECTS;
-  const dialects = dialectsEnv
-    ? (dialectsEnv.split(',').map((s) => s.trim()).filter(Boolean) as CrosslangDialect[])
-    : ([...CROSSLANG_DIALECTS] as CrosslangDialect[]);
-  return {
-    ...DEFAULT_CONFIG,
-    iterations: iter,
-    warmup,
-    throughputIterations: Number(process.env.BENCH_TP_ITER ?? Math.min(iter, 2000)),
-    cases,
-    dialects,
-  };
+// ── The standalone bench entry per language (each writes .results/<lang>.csv) ────
+interface LangBench { language: string; build?: () => void; run: () => void }
+
+function sh(command: string, args: string[], cwd = REPO): void {
+  execFileSync(command, args, { cwd, stdio: 'inherit', env: process.env });
 }
 
-async function main(): Promise<void> {
-  const cfg = config();
-  console.error(`Cross-language bench (#63) — iterations=${cfg.iterations} warmup=${cfg.warmup} ops=${cfg.cases?.length} dialects=${cfg.dialects?.join(',')}\n`);
+const RUST_DIR = resolve(HERE, 'adapters/rust');
+const RUST_BIN = process.env.RUST_ORM_BIN ?? resolve(RUST_DIR, 'target/release/lm_orm');
+const GO_DIR = resolve(REPO, 'go/lm_bench/lm_orm');
+const GO_BIN = process.env.GO_ORM_BIN ?? resolve(GO_DIR, 'lm_orm');
+const PY = process.env.PYTHON_BIN ?? 'python3';
+const PHP = process.env.PHP_BIN ?? 'php';
 
-  // Regenerate the shared 19-op plan artifact (consume-only compile — src untouched).
+const BENCHES: LangBench[] = [
+  { language: 'ts', run: () => sh('npx', ['tsx', 'benchmark/crosslang/adapters/ts/orm-runner.ts']) },
+  { language: 'python', run: () => sh(PY, ['benchmark/crosslang/adapters/python/orm_runner.py']) },
+  { language: 'php', run: () => sh(PHP, ['benchmark/crosslang/adapters/php/orm-runner.php']) },
+  {
+    language: 'rust',
+    build: () => sh('cargo', ['build', '--release'], RUST_DIR),
+    run: () => sh(RUST_BIN, []),
+  },
+  {
+    language: 'go',
+    build: () => sh('go', ['build', '-o', 'lm_orm', '.'], GO_DIR),
+    run: () => sh(GO_BIN, []),
+  },
+];
+
+function selected(): LangBench[] {
+  const only = process.env.CROSSLANG_ONLY;
+  if (!only) return BENCHES;
+  const set = new Set(only.split(',').map((s) => s.trim()).filter(Boolean));
+  return BENCHES.filter((b) => set.has(b.language));
+}
+
+function main(): void {
+  const benches = selected();
+  console.error(`Cross-language bench (#63) — standalone-CSV flow. Languages: ${benches.map((b) => b.language).join(', ')}\n`);
+
+  // Fresh results dir (a stale CSV would poison the collector's report).
+  rmSync(RESULTS_DIR, { recursive: true, force: true });
+
+  // (1) Regenerate the shared 19-op plan artifact (consume-only compile — src untouched).
   console.error('Generating the ORM-plan artifact (generated/orm-plan.json)…');
-  execFileSync('npx', ['tsx', 'benchmark/crosslang/gen-orm-plan.ts'], { cwd: REPO, stdio: 'inherit' });
+  sh('npx', ['tsx', 'benchmark/crosslang/gen-orm-plan.ts']);
 
-  const result = await runMatrix(cfg);
-  mkdirSync(dirname(OUT_JSON), { recursive: true });
-  writeFileSync(OUT_JSON, JSON.stringify(result, null, 2));
-  writeFileSync(OUT_MD, renderReport(result));
-  console.error(`\nWrote ${OUT_MD}`);
-  console.error(`Wrote ${OUT_JSON}`);
+  // (2) + (3) Build native cells, then run each standalone bench (each writes its CSV).
+  for (const b of benches) {
+    if (b.build) {
+      console.error(`\n▶ build ${b.language} …`);
+      try { b.build(); } catch (err) { console.error(`  ✗ build ${b.language} failed: ${String(err)}`); continue; }
+    }
+    console.error(`\n▶ run ${b.language} bench …`);
+    try { b.run(); } catch (err) { console.error(`  ✗ ${b.language} bench failed: ${String(err)}`); }
+  }
+
+  // (4) Collect: the ONLY program that reads the CSVs and renders CROSS-LANG.md.
+  console.error('\n▶ collect (.results/*.csv → CROSS-LANG.md) …');
+  sh('npx', ['tsx', 'benchmark/crosslang/collect.ts']);
 }
 
-void main();
+main();

@@ -3,12 +3,13 @@
 declare(strict_types=1);
 
 /**
- * ORM-plan NDJSON runner entry point — PHP (epic #63), harness registry spawn target.
+ * ORM-plan STANDALONE bench entry point — PHP (epic #63).
  *
- * The harness registry (contract.ts) spawns this as `php orm-runner.php`. It delegates to the
- * executor in orm_exec.php: with no args it speaks the NDJSON run/throughput/cost/rss/shutdown
- * protocol; `--smoke` runs the standalone 57-cell matrix. See orm_exec.php for the full executor
- * (LiveDb PDO seam, bindKind protocol, per-op writes).
+ * The orchestrator (run.ts) spawns this as `php orm-runner.php` — ONE standalone process that runs
+ * ALL 19 ops × 3 dialects, self-measures, and writes a FLAT CSV to
+ * benchmark/crosslang/.results/php.csv. There is NO stdin/stdout protocol. `--smoke` runs the
+ * standalone 57-cell matrix instead. See orm_exec.php for the full executor (LiveDb PDO seam,
+ * bindKind protocol, per-op writes) and the `bench()` CSV writer.
  */
 
 require __DIR__ . '/orm_exec.php';

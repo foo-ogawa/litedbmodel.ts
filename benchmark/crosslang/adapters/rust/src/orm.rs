@@ -6,22 +6,19 @@
 //! (SqliteDriver in-proc + livedb PostgresDriver (tokio-postgres+deadpool) / MysqlDriver (sqlx)),
 //! binding the BAKED per-dialect SQL from the artifact per the bindKind protocol (NO SQL gen here).
 //!
-//! serde_json IS used here — this is the ir/exec cell (allowed by the purity gate, which only gates
-//! litedbmodel's OWN runtime source + the separate rust-codegen crate). The runtime's own native
-//! `Node`/`Value` codec parses the artifact + params (decode_value); serde_json only carries the
-//! NDJSON stdio protocol (serde_json is the transport, not an IR/exec dependency).
+//! The runtime's own native `Node`/`Value` codec parses the artifact + params (decode_value) — no
+//! serde_json in the exec path. Output is a FLAT CSV (no wire protocol).
 //!
-//! Spawn convention (harness registry): the release binary
+//! Spawn convention (run.ts orchestrator): the release binary
 //!     benchmark/crosslang/adapters/rust/target/release/lm_orm [--smoke]
-//! `--smoke` runs the 57-cell matrix and exits; without it, it speaks the NDJSON
-//! run/throughput/cost/rss/shutdown protocol over stdin/stdout (case=<opId>, dialect=<dialect>).
+//! `--smoke` runs the 57-cell matrix and exits; without it, it runs ALL 19 ops × 3 dialects,
+//! self-measures, and writes benchmark/crosslang/.results/rust.csv (no stdin/stdout protocol).
 
 use behavior_contracts::Value;
 use litedbmodel_runtime::livedb::{MysqlDriver, PostgresDriver};
 use litedbmodel_runtime::{decode_value, Driver, Node as J, SqliteDriver};
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::io::{BufRead, Write};
 use std::time::Instant;
 
 const PG_SCHEMA_NAME: &str = "scp_rust_bench";
@@ -551,14 +548,10 @@ fn smoke() {
     println!("SMOKE PASS [rust]: all cells DB-backed on all 3 real DBs.");
 }
 
-// ── NDJSON protocol (harness registry drives this over stdin/stdout) ───────────
-fn write_line(v: &serde_json::Value) {
-    let mut out = std::io::stdout();
-    out.write_all(serde_json::to_string(v).unwrap().as_bytes())
-        .unwrap();
-    out.write_all(b"\n").unwrap();
-    out.flush().unwrap();
-}
+// ── STANDALONE CSV bench (no protocol) ─────────────────────────────────────────
+// ONE standalone process runs ALL 19 ops × 3 dialects, self-measures, and writes a FLAT CSV to
+// benchmark/crosslang/.results/rust.csv. The collector (collect.ts) reads the CSVs → CROSS-LANG.md.
+// CSV schema: language,case,dialect,metric,value   (RAW values only — collector owns the math).
 fn now_ms() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -568,73 +561,72 @@ fn now_ms() -> f64 {
         * 1000.0
 }
 
-fn protocol() {
+fn env_num(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+fn bench() {
+    let language = "rust";
+    let warmup = env_num("BENCH_WARMUP", 50);
+    let iters = env_num("BENCH_ITER", 300);
+    let tp_iters = env_num("BENCH_TP_ITER", iters.min(2000));
+
+    let spawned_at = now_ms();
     let art = load_artifact();
-    let mut live: std::collections::HashMap<String, LiveDriver> = std::collections::HashMap::new();
-    write_line(
-        &serde_json::json!({"kind":"ready","language":"rust","impl":"runtime","readyAtEpochMs":now_ms()}),
-    );
-    let stdin = std::io::stdin();
-    for line in stdin.lock().lines() {
-        let line = line.unwrap();
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let req: serde_json::Value = match serde_json::from_str(line) {
-            Ok(r) => r,
+    let dialects = art.dialects();
+    // cold = process start → runtime ready (binary start + artifact load), before any connect.
+    let cold_ms = (now_ms() - spawned_at).max(0.0);
+
+    let mut rows: Vec<String> = vec!["language,case,dialect,metric,value".to_string()];
+    let mut emit = |case: &str, dialect: &str, metric: &str, value: String| {
+        rows.push(format!(
+            "{language},{case},{dialect},{metric},{}",
+            csv_field(&value)
+        ));
+    };
+
+    for dialect in &dialects {
+        // A connection failure (make_driver panics) is an honest per-cell skip, never a stall.
+        let drv =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| make_driver(dialect, &art)));
+        let drv = match drv {
+            Ok(d) => d,
             Err(e) => {
-                write_line(
-                    &serde_json::json!({"kind":"error","message":format!("bad request: {e}")}),
-                );
+                let reason = e
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| e.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "panic".into());
+                let first = reason.lines().next().unwrap_or("").to_string();
+                for op in art.ops() {
+                    let op_id = op.get("id").and_then(|i| i.as_str()).unwrap();
+                    emit(
+                        op_id,
+                        dialect,
+                        "skipped",
+                        format!("{dialect} unreachable ({first})"),
+                    );
+                }
                 continue;
             }
         };
-        let kind = req["kind"].as_str().unwrap_or("");
-        if kind == "shutdown" {
-            std::process::exit(0);
-        }
-        if kind == "rss" {
-            write_line(&serde_json::json!({"kind":"rss","rssBytes":rss_bytes()}));
-            continue;
-        }
-        let case = req["case"].as_str().unwrap_or("").to_string();
-        let dialect = req["dialect"].as_str().unwrap_or("sqlite").to_string();
-        if !live.contains_key(&dialect) {
-            live.insert(dialect.clone(), make_driver(&dialect, &art));
-        }
-        let drv = live.get(&dialect).unwrap().as_driver();
-        let plan = art.plan(&case, &dialect).clone();
-        match kind {
-            "run" => {
-                let warmup = req["warmup"].as_u64().unwrap_or(0) as usize;
-                let iters = req["iterations"].as_u64().unwrap_or(1) as usize;
-                for _ in 0..warmup {
-                    run_plan(drv, &dialect, &plan);
-                }
-                let mut samples = Vec::with_capacity(iters);
-                for _ in 0..iters {
-                    let t0 = Instant::now();
-                    run_plan(drv, &dialect, &plan);
-                    samples.push(t0.elapsed().as_secs_f64() * 1000.0);
-                }
-                write_line(
-                    &serde_json::json!({"kind":"run","case":case,"dialect":dialect,"samplesMs":samples}),
-                );
-            }
-            "throughput" => {
-                let iters = req["iterations"].as_u64().unwrap_or(1) as usize;
-                let t0 = Instant::now();
-                for _ in 0..iters {
-                    run_plan(drv, &dialect, &plan);
-                }
-                write_line(
-                    &serde_json::json!({"kind":"throughput","case":case,"dialect":dialect,"elapsedMs":t0.elapsed().as_secs_f64()*1000.0,"completed":iters}),
-                );
-            }
-            "cost" => {
-                let rows = run_plan(drv, &dialect, &plan);
-                // queries/op derived from the plan shape (same for every language — the SAME plan).
+        let d = drv.as_driver();
+        for op in art.ops() {
+            let case = op.get("id").and_then(|i| i.as_str()).unwrap();
+            let plan = art.plan(case, dialect).clone();
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // cost (fairness): queries/op from the plan shape; rows/op = executor's returned count.
                 let queries = if plan.get("kind").and_then(|k| k.as_str()) == Some("read") {
                     plan.get("reads")
                         .and_then(|r| r.as_array())
@@ -648,15 +640,78 @@ fn protocol() {
                         .and_then(|s| s.as_array())
                         .map_or(0, |a| a.len())
                 };
-                write_line(
-                    &serde_json::json!({"kind":"cost","case":case,"dialect":dialect,"queries":queries,"rows":rows}),
-                );
+                let rows_count = run_plan(d, dialect, &plan);
+                // latency: warmup, then one row PER timed iteration.
+                for _ in 0..warmup {
+                    run_plan(d, dialect, &plan);
+                }
+                let mut samples = Vec::with_capacity(iters);
+                for _ in 0..iters {
+                    let t0 = Instant::now();
+                    run_plan(d, dialect, &plan);
+                    samples.push(t0.elapsed().as_secs_f64() * 1000.0);
+                }
+                // throughput: a tight loop, raw elapsed + completed.
+                let t0 = Instant::now();
+                for _ in 0..tp_iters {
+                    run_plan(d, dialect, &plan);
+                }
+                let tp_elapsed = t0.elapsed().as_secs_f64() * 1000.0;
+                (queries, rows_count, samples, tp_elapsed)
+            }));
+            match res {
+                Ok((queries, rows_count, samples, tp_elapsed)) => {
+                    emit(case, dialect, "cost_queries", queries.to_string());
+                    emit(case, dialect, "cost_rows", rows_count.to_string());
+                    for s in samples {
+                        emit(case, dialect, "latency_ms", s.to_string());
+                    }
+                    emit(
+                        case,
+                        dialect,
+                        "throughput_elapsed_ms",
+                        tp_elapsed.to_string(),
+                    );
+                    emit(case, dialect, "throughput_completed", tp_iters.to_string());
+                }
+                Err(e) => {
+                    let reason = e
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| e.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "panic".into());
+                    emit(
+                        case,
+                        dialect,
+                        "skipped",
+                        reason.lines().next().unwrap_or("").to_string(),
+                    );
+                }
             }
-            _ => write_line(
-                &serde_json::json!({"kind":"error","message":format!("unknown kind {kind}")}),
-            ),
         }
     }
+
+    emit("", "", "cold_ms", cold_ms.to_string());
+    emit("", "", "rss_bytes", rss_bytes().to_string());
+    emit("", "", "warmup", warmup.to_string());
+    // artifact_bytes: this compiled binary's own size (a native-cell metric; the interpreted cells
+    // ts/python/php run on an interpreter, so they emit NO such row → the collector renders `—`).
+    if let Some(bytes) = artifact_bytes() {
+        emit("", "", "artifact_bytes", bytes.to_string());
+    }
+
+    let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let results_dir = here.join("../../.results");
+    std::fs::create_dir_all(&results_dir).expect("mkdir .results");
+    let out = results_dir.join(format!("{language}.csv"));
+    let mut body = rows.join("\n");
+    body.push('\n');
+    std::fs::write(&out, body).expect("write csv");
+    eprintln!(
+        "[{language}] wrote {} ({} rows)",
+        out.display(),
+        rows.len() - 1
+    );
 }
 
 fn rss_bytes() -> u64 {
@@ -673,11 +728,17 @@ fn rss_bytes() -> u64 {
     0
 }
 
+/// The size of THIS compiled binary (the native-cell artifact). None if the path/stat fails.
+fn artifact_bytes() -> Option<u64> {
+    let exe = std::env::current_exe().ok()?;
+    Some(std::fs::metadata(exe).ok()?.len())
+}
+
 fn main() {
     let smoke_mode = std::env::args().any(|a| a == "--smoke");
     if smoke_mode {
         smoke();
     } else {
-        protocol();
+        bench();
     }
 }
