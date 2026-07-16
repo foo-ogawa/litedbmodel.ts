@@ -9,13 +9,20 @@
  *       COMMIT and no interleaving corrupts the per-tx row set. Each of N concurrent transactions
  *       inserts a marker, holds mid-transaction (an `await` gap that forces overlap), then inserts a
  *       second row; the final table must contain EXACTLY the 2·N rows, correctly paired per worker.
- *   (2) ATOMICITY — a gate-first tx whose gate fails ROLLBACKs its WHOLE body; concurrent committing
- *       transactions are unaffected (their rows all present; the aborted worker's rows all absent).
+ *   (2) ATOMICITY (single-statement) — a tx whose sole INSERT collides on a PK ROLLBACKs; concurrent
+ *       committing transactions are unaffected (their rows all present; the aborted worker's absent).
+ *   (3) ATOMICITY (MULTI-statement, production-path) — a 2-statement transaction whose 2nd statement
+ *       fails: the 1st statement's write MUST be rolled back (real cross-statement atomicity through
+ *       `withTransactionAsync`), and a concurrently-committed tx is unaffected. This assertion pins
+ *       PRODUCTION `connectionFor` / `withTransactionAsync` ownership DIRECTLY — it swaps NOTHING —
+ *       so a native port (#76-79) that breaks per-execution ownership makes this gate RED. PG + MySQL.
  *
- * MUTATION PROOF (the test has teeth): a `sharedSlotPool` models the OLD driver-global single-slot
- * writer (every `acquire` hands back the SAME connection). Under it the concurrent transactions
- * interleave BEGIN/INSERT/COMMIT on one connection and the isolation assertion GOES RED — so the
- * green result on the real per-execution-ownership pool is meaningful, not vacuous.
+ * MUTATION SANITY (MODEL-ONLY, not a production-path proof): a `sharedSlotPool` models the OLD
+ * driver-global single-slot writer by SWAPPING the pool the ctx runs on. It does NOT exercise
+ * production `connectionFor`/`withTransactionAsync` ownership — it is a self-contained sanity check
+ * that a shared-connection pool collides where an owned-connection pool does not. The REAL teeth of
+ * this gate are assertions (1)-(3), which run the UNMODIFIED production ownership path; the audit
+ * separately confirmed reverting production ownership to a shared connection turns (1)-(3) RED.
  *
  * Requires live PG (:5433) + MySQL (:3307). Bring up: `npm run docker:livedb:up`.
  */
@@ -29,6 +36,7 @@ import {
   publishBehaviors,
   entityWrites,
   compileWriteBundle,
+  compileCreateManyBundle,
   executeTransactionAsync,
   PooledAsyncContext,
   pgConnectionPool,
@@ -125,6 +133,16 @@ async function resetPg(): Promise<void> {
 async function resetMy(): Promise<void> {
   await myPool!.query(`DROP TABLE IF EXISTS ${ISO_TBL}`);
   await myPool!.query(`CREATE TABLE ${ISO_TBL} (id INT PRIMARY KEY, worker INT NOT NULL, seq INT NOT NULL)`);
+}
+// A `seq DEFAULT 0` variant so a heterogeneous createMany (group 1 = {id,worker,seq}, group 2 =
+// {id,worker}) produces TWO valid INSERT statements — the multi-statement atomicity scenario.
+async function resetPgDefault(): Promise<void> {
+  await pgPool!.query(`DROP TABLE IF EXISTS ${ISO_TBL}`);
+  await pgPool!.query(`CREATE TABLE ${ISO_TBL} (id INTEGER PRIMARY KEY, worker INTEGER NOT NULL, seq INTEGER NOT NULL DEFAULT 0)`);
+}
+async function resetMyDefault(): Promise<void> {
+  await myPool!.query(`DROP TABLE IF EXISTS ${ISO_TBL}`);
+  await myPool!.query(`CREATE TABLE ${ISO_TBL} (id INT PRIMARY KEY, worker INT NOT NULL, seq INT NOT NULL DEFAULT 0)`);
 }
 
 /**
@@ -278,7 +296,89 @@ describe('Phase A #75 — concurrent-transaction isolation (per-execution connec
     expect(got).toEqual(Array.from({ length: N - 1 }, (_, i) => ({ id: i + 1, worker: i + 1 })));
   });
 
-  it('MUTATION PROOF (PG): the SAME two concurrent txs are ISOLATED under owned pool but COLLIDE under the shared slot', async () => {
+  // ── (3) MULTI-STATEMENT atomicity, PRODUCTION-PATH — the direct ownership pin the ports inherit ──
+  //
+  // A heterogeneous createMany compiles to a TWO-body-statement TransactionPlan (group 1 writes id,
+  // group 2 collides on a pre-seeded PK). Run through the UNMODIFIED production `executeTransactionAsync`
+  // (→ `withTransactionAsync` → per-execution owned connection): the 2nd statement's PK violation MUST
+  // roll back the 1st statement's already-executed INSERT (real cross-statement atomicity), and a
+  // concurrently-committed single-write tx MUST be unaffected. Nothing is swapped — a port that breaks
+  // per-execution ownership (BEGIN/2nd-stmt/ROLLBACK not on one owned connection) makes this go RED.
+
+  async function multiStatementAtomicity(
+    reset: () => Promise<void>,
+    pool: AsyncConnectionPool,
+    dialect: 'postgres' | 'mysql',
+    seed: (id: number, worker: number) => Promise<void>,
+    readAll: () => Promise<{ id: number; worker: number }[]>,
+  ): Promise<void> {
+    await reset();
+    // Pre-seed id=20 so the FAILING tx's SECOND statement (id=20) collides; its FIRST statement (id=10)
+    // must NOT survive the rollback.
+    await seed(20, 999);
+    const ctx = new PooledAsyncContext(pool);
+
+    // The failing 2-statement tx: heterogeneous groups → 2 INSERT statements; stmt-1 = id 10 (valid),
+    // stmt-2 = id 20 (PK collision). One logical transaction.
+    const failing = compileCreateManyBundle(
+      'CM_fail',
+      {
+        tableName: ISO_TBL,
+        records: [{ id: 10, worker: 1, seq: 7 }, { id: 20, worker: 1 }],
+        rawRecords: [{ id: 10, worker: 1, seq: 7 }, { id: 20, worker: 1 }],
+      },
+      dialect,
+    );
+    // The concurrent committing tx: a plain single INSERT (id 30) that MUST be unaffected.
+    const okBundle = compileWriteBundle(contract, 'Insert', insertWrites, 'create', dialect);
+
+    const [failOutcome, okOutcome] = await Promise.allSettled([
+      executeTransactionAsync(ctx, failing.transaction!, {}, dialect),
+      executeTransactionAsync(ctx, okBundle.transaction!, { id: 30, worker: 2, seq: 0 }, dialect),
+    ]);
+
+    // The failing tx must have thrown (PK collision on its 2nd statement) — NOT a silent partial commit.
+    expect(failOutcome.status).toBe('rejected');
+    // The concurrent tx committed.
+    expect(okOutcome.status === 'fulfilled' && okOutcome.value.committed).toBe(true);
+
+    const rows = (await readAll()).filter((r) => r.worker !== 999).sort((a, b) => a.id - b.id);
+    // id 10 (the failing tx's FIRST statement) is ROLLED BACK — cross-statement atomicity. id 30 (the
+    // concurrent committed tx) is present and unaffected. id 20 stays only as the pre-seed (worker 999,
+    // filtered out above).
+    expect(rows).toEqual([{ id: 30, worker: 2 }]);
+  }
+
+  it('PG: a 2-statement tx whose 2nd statement fails rolls back the 1st (production-path atomicity); concurrent commit unaffected', async () => {
+    await multiStatementAtomicity(
+      resetPgDefault,
+      pgConnectionPool(pgPool as never),
+      'postgres',
+      async (id, worker) => void (await pgPool!.query(`INSERT INTO ${ISO_TBL} (id, worker, seq) VALUES ($1, $2, 0)`, [id, worker])),
+      async () => (await pgPool!.query(`SELECT id, worker FROM ${ISO_TBL}`)).rows.map((x) => ({ id: Number(x.id), worker: Number(x.worker) })),
+    );
+  });
+
+  it('MySQL: a 2-statement tx whose 2nd statement fails rolls back the 1st (production-path atomicity); concurrent commit unaffected', async () => {
+    await multiStatementAtomicity(
+      resetMyDefault,
+      mysqlConnectionPool(myPool as never),
+      'mysql',
+      async (id, worker) => void (await myPool!.query(`INSERT INTO ${ISO_TBL} (id, worker, seq) VALUES (?, ?, 0)`, [id, worker])),
+      async () => {
+        const [r] = await myPool!.query(`SELECT id, worker FROM ${ISO_TBL}`);
+        return (r as Record<string, unknown>[]).map((x) => ({ id: Number(x.id), worker: Number(x.worker) }));
+      },
+    );
+  });
+
+  it('MODEL-ONLY sanity (not a production-path proof): an owned-connection pool isolates two concurrent txs where a shared-slot pool collides', async () => {
+    // MODEL-ONLY: this SWAPS the pool the ctx runs on (owned vs. a shared-slot model), so it does NOT
+    // exercise production `connectionFor`/`withTransactionAsync` ownership — it only sanity-checks that
+    // an owned-connection pool behaves differently from a shared one. The gate's REAL teeth are the
+    // production-path assertions above (isolation + single-/multi-statement atomicity), which run the
+    // UNMODIFIED ownership path; the audit confirmed those go RED under a faithful ownership mutation.
+    //
     // The scenario: TWO transactions started concurrently, with tx-A's body held open by a barrier
     // until tx-B has begun. Under per-execution ownership each owns its own connection, so both
     // COMMIT and BOTH rows land. Under the OLD shared-slot model they contend for the ONE connection
