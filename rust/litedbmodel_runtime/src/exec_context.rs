@@ -529,8 +529,42 @@ impl<'a, 't> ExecutionContext<'a, 't> {
 
 // ── The central seam (§2) — the ONLY place SQL meets a connection ─────────────
 
+/// The erased read/write result a Phase D SQL-level middleware wraps (design §4 D1). The registered
+/// SQL hooks are HOMOGENEOUS over the read (`Vec<Value>`) and write ([`RunInfo`]) seams — the rust
+/// analogue of the TS generic-`T`-erased-to-`unknown` hook — so ONE registration serves both. The
+/// seam boxes its terminal into a `SeamResult`, folds the ambient hooks over it, then unboxes.
+pub enum SeamResult {
+    /// A read result (rows) — [`execute`] terminal.
+    Rows(Vec<Value>),
+    /// A write result (affected summary) — [`run`] terminal.
+    Run(RunInfo),
+}
+
+/// An opaque, type-erased argument the Phase D METHOD-level hooks pass around (design §4 D2). The
+/// method boundary supplies the operation's model + args as `Dyn`s; a hook may inspect (downcast) or
+/// pass them through. The rust analogue of the TS `unknown` method-hook args.
+pub struct Dyn(Box<dyn std::any::Any + Send>);
+
+impl Dyn {
+    /// Wrap a value as an opaque method-hook argument.
+    pub fn new<T: std::any::Any + Send>(v: T) -> Self {
+        Dyn(Box::new(v))
+    }
+    /// The unit `Dyn` (a `model`-less method call — the raw `query` path passes this).
+    pub fn unit() -> Self {
+        Dyn(Box::new(()))
+    }
+    /// Downcast to a concrete type (the rust analogue of a TS hook reading a known arg shape).
+    pub fn downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
+        self.0.downcast_ref::<T>()
+    }
+}
+
 /// Central READ seam: ① middleware chain, ② resolve the connection, ③ execute. Every read (primary
-/// read node, relation batch, tx-body SELECT/RETURNING) funnels through here.
+/// read node, relation batch, tx-body SELECT/RETURNING) funnels through here. Phase D folds the
+/// AMBIENT (per-scope) SQL hooks ([`crate::middleware::wrap_ambient`]) as the OUTER wrapper around the
+/// ctx's own chain — empty ambient registry ⇒ byte-identical passthrough (the conformance/livedb
+/// runners register none).
 pub fn execute(
     ctx: &ExecutionContext,
     sql: &str,
@@ -538,12 +572,21 @@ pub fn execute(
     intent: &StatementIntent,
 ) -> Result<Vec<Value>, SqlFailure> {
     let conn = ctx.connection_for(intent)?;
-    ctx.middleware
-        .wrap_read(sql, params, &move |s, p| conn.execute(s, p))
+    // The seam terminal: the ctx's own (Phase A/B/C) chain wrapping the connection execute.
+    let terminal = move |s: &str, p: &[Value]| -> Result<SeamResult, SqlFailure> {
+        ctx.middleware
+            .wrap_read(s, p, &|s2, p2| conn.execute(s2, p2))
+            .map(SeamResult::Rows)
+    };
+    match crate::middleware::wrap_ambient(sql, params, &terminal)? {
+        SeamResult::Rows(rows) => Ok(rows),
+        SeamResult::Run(_) => Err(seam_result_mismatch("execute expected rows")),
+    }
 }
 
 /// Central WRITE seam: ① middleware chain, ② resolve the connection, ③ run. Every write and every
-/// tx-control statement (BEGIN/COMMIT/ROLLBACK on the non-tx driver path) funnels through here.
+/// tx-control statement (BEGIN/COMMIT/ROLLBACK on the non-tx driver path) funnels through here. Phase D
+/// folds the AMBIENT SQL hooks as the OUTER wrapper (empty ⇒ byte-identical passthrough).
 pub fn run(
     ctx: &ExecutionContext,
     sql: &str,
@@ -551,8 +594,28 @@ pub fn run(
     intent: &StatementIntent,
 ) -> Result<RunInfo, SqlFailure> {
     let conn = ctx.connection_for(intent)?;
-    ctx.middleware
-        .wrap_write(sql, params, &move |s, p| conn.run(s, p))
+    let terminal = move |s: &str, p: &[Value]| -> Result<SeamResult, SqlFailure> {
+        ctx.middleware
+            .wrap_write(s, p, &|s2, p2| conn.run(s2, p2))
+            .map(SeamResult::Run)
+    };
+    match crate::middleware::wrap_ambient(sql, params, &terminal)? {
+        SeamResult::Run(info) => Ok(info),
+        SeamResult::Rows(_) => Err(seam_result_mismatch("run expected a run summary")),
+    }
+}
+
+/// A middleware short-circuited a read seam with a write result (or vice versa) — a middleware-body
+/// bug (it returned the wrong `SeamResult` variant without calling `next`). Loud, never silent.
+fn seam_result_mismatch(what: &str) -> SqlFailure {
+    SqlFailure {
+        kind: "middleware_error".into(),
+        policy: "fail".into(),
+        sqlite_code: None,
+        message: format!(
+            "scp middleware: a SQL-level hook returned the wrong result variant ({what})"
+        ),
+    }
 }
 
 /// GUARDED write seam (Phase B / #82): enforce the write=tx guard

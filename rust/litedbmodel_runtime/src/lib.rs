@@ -24,6 +24,7 @@ pub mod dialect;
 pub mod driver;
 pub mod errors;
 pub mod exec_context;
+pub mod middleware;
 pub mod node;
 pub mod relation;
 pub mod runtime;
@@ -58,12 +59,21 @@ pub use exec_context::{
     execute as seam_execute, for_driver, for_routing, run as seam_run, run_guarded, transaction,
     transaction_decided, transaction_decided_on, transaction_on, with_transaction,
     with_transaction_decided, with_transaction_decided_isolated,
-    with_transaction_decided_isolated_on, Connection, DriverConnection, ExecutionContext,
-    Middleware, MiddlewareChain, SessionConnection, StatementIntent, TxConnection, TxConnectionRef,
-    TxDecision,
+    with_transaction_decided_isolated_on, Connection, DriverConnection, Dyn, ExecutionContext,
+    Middleware, MiddlewareChain, SeamResult, SessionConnection, StatementIntent, TxConnection,
+    TxConnectionRef, TxDecision,
 };
+// Phase D (#93) — the middleware layer (SQL-level `execute` hook + method-level hooks + Logger +
+// raw execute/query), mirroring the TS `src/scp/middleware.ts` API reference.
 #[cfg(feature = "livedb")]
 pub use livedb::{MysqlDriver, PostgresDriver};
+pub use middleware::{
+    active_sql_empty, active_sql_hooks, clear_middlewares, create_middleware, logger, raw_execute,
+    raw_query, register_method_hook, register_middleware, run_method, use_middleware,
+    with_middleware_scope, with_middleware_scope_opts, LogEntry, LoggerState, MethodHook,
+    MethodKind, MethodNext, MiddlewareDescriptor, MiddlewareHandle, RawResult, SqlHook, SqlHookFn,
+    SqlNext, StateAny,
+};
 pub use node::{decode_value, encode_value, eval_expr, EvalError, Node};
 pub use relation::{read_bundle_pooled, stitch_relation};
 pub use runtime::{
