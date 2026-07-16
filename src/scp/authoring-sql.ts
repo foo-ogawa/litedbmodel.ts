@@ -200,3 +200,168 @@ export function whereExists(
 ): Recorded {
   return eq(sentinelRef($, EXISTS_SENTINEL, [not ? 'NOT EXISTS' : 'EXISTS']), sub) as unknown as Recorded;
 }
+
+// ── Phase E-1 (#97): typed subquery / parentRef authoring SUGAR (TS-only ergonomics) ───────────
+//
+// These typed builders are a thin, PURE authoring layer over the existing {@link whereInSubquery} /
+// {@link whereExists} primitives above — they add NO IR, NO sentinel, and NO runtime path. Each one
+// RENDERS the inner subquery text (byte-for-byte the same shape v1's `DBSubquery`/`DBExists.compile`
+// produce — fully `table.column`-qualified, `?` placeholders, params in encounter order) and then
+// LOWERS to `whereInSubquery(lhs, {sql, params})` / `whereExists({sql, params})`. So the correlated
+// subquery capability is unchanged; only the AUTHORING shape gets sugar that matches v1's typed API
+// (`Model.inSubquery` / `.exists` / `parentRef`, DBModel.ts:1215-1352, DBValues.ts:574-821).
+
+/**
+ * A typed column reference — the v2 analogue of v1's `Column` (`{tableName, columnName}`). It renders
+ * as `table.column` in every subquery position (unambiguous, v1 parity). Build one with {@link col}.
+ */
+export interface ColumnRef {
+  readonly tableName: string;
+  readonly columnName: string;
+}
+
+/** Build a typed {@link ColumnRef} (`table.column`). v2 has no `Column` class, so this is the seam. */
+export function col(tableName: string, columnName: string): ColumnRef {
+  return { tableName, columnName };
+}
+
+/** Brand marking the {@link parentRef} correlated outer-column marker in a condition VALUE slot. */
+const PARENT_REF = Symbol('litedbmodel.parentRef');
+
+/**
+ * The correlated outer-column reference produced by {@link parentRef}. In a subquery condition value
+ * position it renders as the OUTER `table.column` (NO bound param) — driving `col = outer.col` (v1
+ * `DBParentRef.compile`, DBValues.ts:622-624). Anything not carrying {@link PARENT_REF} is a plain
+ * value operand.
+ */
+export interface ParentRefValue {
+  readonly [PARENT_REF]: true;
+  readonly tableName: string;
+  readonly columnName: string;
+}
+
+function isParentRef(v: unknown): v is ParentRefValue {
+  return typeof v === 'object' && v !== null && (v as Record<PropertyKey, unknown>)[PARENT_REF] === true;
+}
+
+/**
+ * Reference a column from the OUTER (parent) query inside a correlated subquery — v1's `parentRef`
+ * (DBValues.ts:643-645). Renders as `table.column` with no bound param, so a subquery condition
+ * `[Order.user_id, parentRef(User.id)]` becomes `orders.user_id = users.id`.
+ */
+export function parentRef(column: ColumnRef): ParentRefValue {
+  return { [PARENT_REF]: true, tableName: column.tableName, columnName: column.columnName } as ParentRefValue;
+}
+
+/** A subquery WHERE condition: `[targetColumn, value]` — value may be a {@link parentRef}, an array
+ *  (IN-list), `null` (IS NULL), or a scalar (`= ?`). Mirrors v1's `SubqueryCondition` shape. */
+export type SubqueryCondition = readonly [ColumnRef, unknown];
+
+function fmtCol(c: ColumnRef): string {
+  return `${c.tableName}.${c.columnName}`;
+}
+
+/**
+ * Render the WHERE fragment list for a subquery/EXISTS, byte-identical to v1's `DBSubquery`/
+ * `DBExists.compile` inner loop (DBValues.ts:704-732, 786-814): parentRef → `col = outer.col` (no
+ * param), null → `IS NULL`, array → `IN (?, …)` (empty → `1 = 0`), scalar → `= ?`. Placeholders are
+ * always `?` (the makesql pass renumbers to the dialect's placeholder when it splices the fragment).
+ */
+function renderConditions(conditions: readonly SubqueryCondition[]): { where: string; params: Operand[] } {
+  const parts: string[] = [];
+  const params: Operand[] = [];
+  for (const [column, value] of conditions) {
+    const colRef = fmtCol(column);
+    if (isParentRef(value)) {
+      parts.push(`${colRef} = ${value.tableName}.${value.columnName}`);
+    } else if (value === null || value === undefined) {
+      parts.push(`${colRef} IS NULL`);
+    } else if (Array.isArray(value)) {
+      if (value.length === 0) {
+        parts.push('1 = 0');
+      } else {
+        parts.push(`${colRef} IN (${value.map(() => '?').join(', ')})`);
+        for (const v of value) params.push(v);
+      }
+    } else {
+      parts.push(`${colRef} = ?`);
+      params.push(value);
+    }
+  }
+  return { where: parts.length ? ` WHERE ${parts.join(' AND ')}` : '', params };
+}
+
+/** A single key pair `[parentCol, targetCol]` or a list of them (composite key). Mirrors v1. */
+export type KeyPair = readonly [ColumnRef, ColumnRef];
+export type CompositeKeyPairs = readonly KeyPair[];
+
+function normalizeKeyPairs(keyPairs: KeyPair | CompositeKeyPairs): KeyPair[] {
+  // A single pair is `[ColumnRef, ColumnRef]`; a composite is `[[…],[…]]` — disambiguate on [0].
+  return Array.isArray(keyPairs[0]) ? (keyPairs as CompositeKeyPairs).map((p) => p) : [keyPairs as KeyPair];
+}
+
+/** Shared IN / NOT IN typed builder — renders the inner SELECT and lowers to {@link whereInSubquery}. */
+function inSubqueryImpl(
+  $: Recorded,
+  keyPairs: KeyPair | CompositeKeyPairs,
+  conditions: readonly SubqueryCondition[],
+  not: boolean,
+): Recorded {
+  const pairs = normalizeKeyPairs(keyPairs);
+  const parentColumns = pairs.map((p) => p[0]);
+  const selectColumns = pairs.map((p) => p[1]);
+  const targetTable = selectColumns[0]?.tableName ?? '';
+  const { where, params } = renderConditions(conditions);
+  const selectClause = selectColumns.map(fmtCol).join(', ');
+  const innerSql = `SELECT ${selectClause} FROM ${targetTable}${where}`;
+  // Single key → `t.c`; composite → `(t.c1, t.c2)` — v1 `DBSubquery.compile` (DBValues.ts:739-745).
+  const lhs =
+    parentColumns.length === 1
+      ? fmtCol(parentColumns[0])
+      : `(${parentColumns.map(fmtCol).join(', ')})`;
+  return whereInSubquery($, lhs, { sql: innerSql, params }, not);
+}
+
+/**
+ * `parent.col IN (SELECT target.col FROM target WHERE …)` — typed sugar (v1 `Model.inSubquery`,
+ * DBModel.ts:1215-1233). Single key `[parentCol, targetCol]` or composite `[[…],[…]]`. Lowers to
+ * {@link whereInSubquery}; the rendered inner SELECT is v1-shape (`table.column`-qualified).
+ */
+export function inSubquery(
+  $: Recorded,
+  keyPairs: KeyPair | CompositeKeyPairs,
+  conditions: readonly SubqueryCondition[] = [],
+): Recorded {
+  return inSubqueryImpl($, keyPairs, conditions, false);
+}
+
+/** `parent.col NOT IN (SELECT …)` — typed sugar (v1 `Model.notInSubquery`, DBModel.ts:1263-1281). */
+export function notInSubquery(
+  $: Recorded,
+  keyPairs: KeyPair | CompositeKeyPairs,
+  conditions: readonly SubqueryCondition[] = [],
+): Recorded {
+  return inSubqueryImpl($, keyPairs, conditions, true);
+}
+
+/** Shared EXISTS / NOT EXISTS typed builder — renders `SELECT 1 …` and lowers to {@link whereExists}. */
+function existsImpl($: Recorded, conditions: readonly SubqueryCondition[], not: boolean): Recorded {
+  const targetTable = conditions[0]?.[0]?.tableName ?? '';
+  const { where, params } = renderConditions(conditions);
+  const innerSql = `SELECT 1 FROM ${targetTable}${where}`;
+  return whereExists($, { sql: innerSql, params }, not);
+}
+
+/**
+ * `EXISTS (SELECT 1 FROM target WHERE …)` — typed sugar (v1 `Model.exists`, DBModel.ts:1306-1317).
+ * The target table is inferred from the first condition's column; use {@link parentRef} for the
+ * correlated outer reference. Lowers to {@link whereExists}.
+ */
+export function exists($: Recorded, conditions: readonly SubqueryCondition[]): Recorded {
+  return existsImpl($, conditions, false);
+}
+
+/** `NOT EXISTS (SELECT 1 FROM target WHERE …)` — typed sugar (v1 `Model.notExists`, DBModel.ts:1341-1352). */
+export function notExists($: Recorded, conditions: readonly SubqueryCondition[]): Recorded {
+  return existsImpl($, conditions, true);
+}

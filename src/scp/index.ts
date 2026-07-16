@@ -170,7 +170,16 @@ export {
   whereTupleIn,
   whereInSubquery,
   whereExists,
+  // Phase E-1 (#97): typed subquery / parentRef authoring sugar (TS-only ergonomics; lowers to
+  // whereInSubquery / whereExists — no new IR).
+  col,
+  parentRef,
+  inSubquery,
+  notInSubquery,
+  exists,
+  notExists,
 } from './authoring-sql';
+export type { ColumnRef, ParentRefValue, SubqueryCondition, KeyPair, CompositeKeyPairs } from './authoring-sql';
 
 // Error Mapping (spec §11 item 5): driver error → SCP Failure + Policy Kind.
 export { mapSqliteError, SqlFailure } from './errors';
