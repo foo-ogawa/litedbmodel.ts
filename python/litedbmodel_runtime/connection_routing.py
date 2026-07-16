@@ -958,17 +958,17 @@ class _TxPoolAdapter:
 def routed_begin_tx(
     routing: RoutingConfig,
     connection: Optional[str],
-    before: Sequence[str] = (),
-    after: Sequence[str] = (),
 ) -> TxConnection:
-    """Acquire an OWNED :class:`litedbmodel_runtime.driver._PooledTxConnection` for a transaction on the
+    """Acquire + OWN one :class:`litedbmodel_runtime.driver._PooledTxConnection` for a transaction on the
     NAMED connection ``connection``'s WRITER pool (Phase C-2; ``None`` ⇒ the default connection). The
     tx runs entirely on this ONE connection — the active-tx pin then wins over routing for every
-    statement in the body (Phase B unbroken). ``before`` / ``after`` carry the isolation prelude (Phase
-    B / #84). The writer pool's ``xform`` (``$N``/``?`` → ``%s``) + ``emulate_returning`` flag drive the
-    tx statements byte-identically to the Phase A ``_PooledTxConnection`` path; a :class:`ConfiguredPool`
-    writer additionally applies/resets the C3 session config on the tx connection (no session leak).
+    statement in the body (Phase B unbroken). tx-control (the isolation SET / BEGIN / COMMIT / ROLLBACK)
+    is issued THROUGH the seam on this pinned connection by the combinator (Phase D / #95,
+    middleware-visible), NOT here. The writer pool's ``xform`` (``$N``/``?`` → ``%s``) +
+    ``emulate_returning`` flag drive the tx statements byte-identically to the Phase A
+    ``_PooledTxConnection`` path; a :class:`ConfiguredPool` writer additionally applies/resets the C3
+    session config on the tx connection (no session leak).
     """
     writer = routing.registry.pair_for(connection).writer
     xform, emulate = _pool_exec_config(writer)
-    return _PooledTxConnection(_TxPoolAdapter(writer), xform, emulate, before, after)
+    return _PooledTxConnection(_TxPoolAdapter(writer), xform, emulate)

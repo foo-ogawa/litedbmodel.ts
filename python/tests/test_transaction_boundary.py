@@ -43,17 +43,22 @@ ISO_TBL = "scp_tx_boundary_py"
 
 
 class _RecTx(_SqliteTxConnection):
+    """New contract (Phase D / #95): tx-control flows through :meth:`run` (issued by the combinator via
+    the seam), so COMMIT/ROLLBACK are counted HERE when their SQL passes through — not in removed
+    ``commit``/``rollback`` methods. BEGIN is likewise a ``run`` call (counted in the driver's begin_tx
+    sink for the ambient-JOIN count, and issued via the seam)."""
+
     def __init__(self, conn, sink):
         super().__init__(conn)
         self._sink = sink
 
-    def commit(self):
-        self._sink["commits"] += 1
-        super().commit()
-
-    def rollback(self):
-        self._sink["rolls"] += 1
-        super().rollback()
+    def run(self, sql, params):
+        head = sql.strip().split(" ", 1)[0].upper()
+        if head == "COMMIT":
+            self._sink["commits"] += 1
+        elif head == "ROLLBACK":
+            self._sink["rolls"] += 1
+        return super().run(sql, params)
 
 
 class _RecSqliteDriver(SqliteDriver):
@@ -65,10 +70,10 @@ class _RecSqliteDriver(SqliteDriver):
         super().__init__(conn)
         self._sink = sink
 
-    def begin_tx(self, before=(), after=()):
-        assert not before and not after  # SQLite has no per-tx isolation prelude
+    def begin_tx(self):
+        # New contract: acquire + OWN the conn only; BEGIN is issued by the combinator THROUGH the seam
+        # (via _RecTx.run). The begin_tx COUNT still proves the ambient JOIN (N ops = ONE begin_tx).
         self._sink["begin_tx"] += 1
-        self.conn.execute("BEGIN")
         tx = _RecTx(self.conn, self._sink)
         self._sink["distinct"].add(id(tx))
         return tx

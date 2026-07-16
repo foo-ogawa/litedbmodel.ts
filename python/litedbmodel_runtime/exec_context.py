@@ -174,6 +174,12 @@ class _TxConnectionAdapter(Connection):
 SeamNext = Callable[[str, Sequence[Any]], _T]
 # One middleware: wrap a statement, delegating to `next` (Phase D supplies the registration API).
 Middleware = Callable[[str, Sequence[Any], "SeamNext[Any]"], Any]
+# A source of the CURRENT SQL-level middleware stack, resolved at `wrap` time (§4, Phase D). A ctx
+# built by the backward-compat factories carries a source that reads the ambient/scope-local
+# ``middleware`` registry — so a middleware registered AFTER the ctx was built (the normal
+# ``register_middleware(...)``-then-query order) is still seen, and a per-scope registry override
+# (concurrent-request isolation) is honored. Absent ⇒ a fixed (possibly empty) stack.
+MiddlewareStackSource = Callable[[], Sequence[Middleware]]
 
 
 class MiddlewareChain:
@@ -181,27 +187,41 @@ class MiddlewareChain:
     ``next`` (the connection-resolve + execute terminal). An EMPTY chain is a pure passthrough —
     ``wrap`` returns ``next(sql, params)`` verbatim, so Phase A behavior is byte-identical. The chain
     is generic over the seam result type so ONE shape serves both the read (``Rows``) and write
-    (``RunInfo``) seams. Phase A always constructs an empty chain; the registration API + native
-    middleware entries are Phase D (this is only the hook point).
+    (``RunInfo``) seams.
+
+    The stack is EITHER a fixed list (Phase A: an empty passthrough) OR a
+    :data:`MiddlewareStackSource` callable resolved at EACH :meth:`wrap` (Phase D: the live
+    ``middleware`` registry of the current execution scope) — so a middleware registered via
+    ``register_middleware(...)`` AFTER the ctx was built is still honored, and per-execution-scope
+    registries (concurrent isolation) resolve correctly. An empty resolved stack is a guaranteed
+    byte-identical passthrough (the conformance/livedb runners register none).
     """
 
-    __slots__ = ("_stack",)
+    __slots__ = ("_source",)
 
-    def __init__(self, stack: Optional[Sequence[Middleware]] = None) -> None:
-        self._stack: List[Middleware] = list(stack) if stack else []
+    def __init__(self, stack_or_source: Union[Sequence[Middleware], MiddlewareStackSource, None] = None) -> None:
+        if stack_or_source is None:
+            fixed: List[Middleware] = []
+            self._source: MiddlewareStackSource = lambda: fixed
+        elif callable(stack_or_source):
+            self._source = stack_or_source
+        else:
+            fixed = list(stack_or_source)
+            self._source = lambda: fixed
 
     @property
     def is_empty(self) -> bool:
-        """Is the chain empty (⇒ ``wrap`` is a guaranteed passthrough)?"""
-        return len(self._stack) == 0
+        """Is the chain empty RIGHT NOW (⇒ this ``wrap`` is a guaranteed passthrough)?"""
+        return len(self._source()) == 0
 
     def wrap(self, sql: str, params: Sequence[Any], next_: "SeamNext[_T]") -> _T:
         """Fold the chain around ``next_``, then invoke it. Empty ⇒ ``next_(sql, params)`` verbatim."""
-        if not self._stack:
+        stack = self._source()
+        if not stack:
             return next_(sql, params)
         fn: SeamNext[Any] = next_
-        for i in range(len(self._stack) - 1, -1, -1):
-            mw = self._stack[i]
+        for i in range(len(stack) - 1, -1, -1):
+            mw = stack[i]
             inner = fn
 
             def wrapped(s: str, p: Sequence[Any], _mw: Middleware = mw, _inner: SeamNext[Any] = inner) -> Any:
@@ -211,8 +231,8 @@ class MiddlewareChain:
         return fn(sql, params)
 
 
-# The shared empty (Phase A) middleware chain — a passthrough so :func:`context_for_driver` can build
-# a ctx without the caller owning a chain. Phase D swaps this for a per-ctx registered chain.
+# The shared empty (Phase A) middleware chain — a passthrough so a caller can build a ctx without
+# owning a chain. The Phase D backward-compat factories build a chain sourced from the active registry.
 _EMPTY_CHAIN = MiddlewareChain()
 
 
@@ -351,19 +371,23 @@ class ExecutionContext:
             connection=connection,
         )
 
-    def begin_tx(self, before: Sequence[str] = (), after: Sequence[str] = ()) -> "TxConnection":
-        """Acquire the OWNED tx connection for THIS ctx (§3). On the single-driver Phase A/B path this
+    def begin_tx(self) -> "TxConnection":
+        """Acquire + OWN the tx connection for THIS ctx (§3). On the single-driver Phase A/B path this
         delegates to ``driver.begin_tx``. When Phase C routing is present the tx acquires ONE connection
         from the target NAMED connection's WRITER pool (:attr:`_connection` → the writer pool of that
         registry pair), so a named-DB transaction runs entirely on ONE pinned writer connection — the
-        active-tx pin then wins over routing for every statement in the body (Phase B unbroken)."""
+        active-tx pin then wins over routing for every statement in the body (Phase B unbroken).
+
+        tx-control (the isolation SET / BEGIN / COMMIT / ROLLBACK) is issued THROUGH the seam on the
+        pinned connection by :func:`with_transaction_decided` (Phase D / #95, middleware-visible), NOT
+        here — this method only acquires + owns the connection."""
         if self._routing is not None:
             from .connection_routing import routed_begin_tx
 
-            return routed_begin_tx(self._routing, self._connection, before, after)
+            return routed_begin_tx(self._routing, self._connection)
         if self._driver is None:
             raise ValueError("scp exec-context: no driver and no routing config — cannot begin a transaction")
-        return self._driver.begin_tx(before, after)
+        return self._driver.begin_tx()
 
     def mark_sticky(self) -> None:
         """Mark the writer-sticky clock (Phase C-1, read-your-writes): the tx runtime calls this on a
@@ -422,15 +446,29 @@ def run(ctx: ExecutionContext, sql: str, params: Sequence[Any], intent: Statemen
 # ── Backward-compat wrappers (§6) ──────────────────────────────────────────────
 
 
+def _active_sql_middlewares() -> Sequence[Middleware]:
+    """The LIVE SQL-level middleware stack of the current execution scope (Phase D / #95). Lazily
+    imports :mod:`litedbmodel_runtime.middleware` (which imports the seam back) to avoid a load-time
+    circular import — the SAME lazy-import discipline ``connection_for`` uses for ``connection_routing``.
+    Empty when no middleware is registered, so a ctx built here is a byte-identical passthrough (the
+    conformance/livedb runners register none)."""
+    from .middleware import active_sql_middlewares
+
+    return active_sql_middlewares()
+
+
 def context_for_driver(driver: Driver) -> ExecutionContext:
-    """**Backward-compat wrapper (§6).** Wrap a raw :class:`Driver` in a thin
-    :class:`ExecutionContext`: reader = writer = the same driver, an EMPTY middleware chain, a single
-    DB, no pinned tx connection. Existing callers (conformance / livedb / bench / unit that pass a raw
-    driver) keep working **byte-identically** — the seam is a pure passthrough to
-    ``driver.prepare(...).all()/run()``. This is the Python analogue of the TS ``contextForDriver`` /
-    rust ``for_driver`` / go ``ContextForDB`` (§6).
+    """**Backward-compat wrapper (§6) + Phase D middleware hook (#95).** Wrap a raw :class:`Driver` in
+    a thin :class:`ExecutionContext`: reader = writer = the same driver, a single DB, no pinned tx
+    connection. Its middleware chain resolves the ambient/scope-local ``middleware`` registry
+    (:func:`litedbmodel_runtime.middleware.active_sql_middlewares`) at wrap time (Phase D), so a
+    middleware registered via ``register_middleware(...)`` / ``use(...)`` intercepts the SQL — and, when
+    NO middleware is registered, the chain is empty and the seam is a pure passthrough to
+    ``driver.prepare(...).all()/run()``, i.e. **byte-identical** (the conformance/livedb runners register
+    none, so they are unchanged). This is the Python analogue of the TS ``contextForDriver`` / rust
+    ``for_driver`` / go ``ContextForDB`` (§6).
     """
-    return ExecutionContext(driver, _EMPTY_CHAIN, None)
+    return ExecutionContext(driver, MiddlewareChain(_active_sql_middlewares), None)
 
 
 def as_context(driver_or_ctx: Union[Driver, ExecutionContext]) -> ExecutionContext:
@@ -482,37 +520,58 @@ def with_transaction_decided(
     concurrent-tx fix). This is the general form: ``body`` decides COMMIT vs ROLLBACK (see
     :class:`TxDecision`); a raised exception from ``body`` always rolls back and re-raises.
 
-      1. acquire ONE connection via :meth:`Driver.begin_tx` — a :class:`TxConnection` (the tx's
-         exclusive connection; BEGIN issued on it), the Python analogue of v1 ``PoolTransaction``;
+      1. acquire + OWN ONE connection via :meth:`Driver.begin_tx` — a :class:`TxConnection` (the tx's
+         exclusive connection), the Python analogue of v1 ``PoolTransaction``. **No tx-control is issued
+         at acquire** (Phase D / #95): the connection is only owned here.
       2. pin it into a tx-scoped :class:`ExecutionContext` (and the ambient contextvar) so EVERY
-         statement ``body`` issues resolves THAT connection via the seam — never a fresh pooled one;
-      3. run ``body(tx_ctx)`` → COMMIT / ROLLBACK on the OWNED connection per the returned decision;
-         on any raised exception ROLLBACK (best-effort) and re-raise;
-      4. **release the owned connection EXACTLY ONCE in a ``finally``** (the SOLE releaser — the
+         statement resolves THAT connection via the seam — never a fresh pooled one;
+      3. issue the isolation SET + ``BEGIN`` (``before`` → BEGIN → ``after``) THROUGH the seam
+         (:func:`run` on the PINNED ctx) — so a registered middleware OBSERVES the runtime BEGIN (full TS
+         parity, Phase D / #95). tx-control goes through the UNGUARDED :func:`run` seam (never
+         :func:`run_guarded`), so it is EXEMPT from the write=tx guard (BEGIN/COMMIT/ROLLBACK/SET are not
+         user writes). A prelude/BEGIN failure is a poisoned half-opened tx ⇒ destroy the connection;
+      4. run ``body(tx_ctx)`` → ``COMMIT`` / ``ROLLBACK`` THROUGH the seam (again middleware-visible) per
+         the returned decision; on any raised exception ROLLBACK (best-effort) and re-raise;
+      5. **release the owned connection EXACTLY ONCE in a ``finally``** (the SOLE releaser — the
          :class:`TxConnection` never self-releases). It goes back to the pool on the clean paths, and
-         is **destroyed** when the connection is poisoned — a body error, OR a COMMIT/ROLLBACK that
+         is **destroyed** when the connection is poisoned — a body/BEGIN error, OR a COMMIT/ROLLBACK that
          itself raised (rare but real: a deferred-constraint violation or a dropped connection at
          COMMIT). Without this ``finally`` a raising COMMIT would leak the connection (the pool would
          shrink by one under repeated commit failures — the #78 audit defect).
 
     ``before`` / ``after`` carry the per-transaction isolation prelude (Phase B / #84 —
     :func:`litedbmodel_runtime.tx_options.isolation_prelude`): MySQL's ``SET`` runs pre-BEGIN, PG's
-    post-BEGIN. Empty ⇒ a bare ``BEGIN`` (byte-identical to the Phase A path).
+    post-BEGIN. Empty ⇒ a bare ``BEGIN`` (byte-identical to the Phase A path — SAME literal statements on
+    the SAME owned connection; only the ISSUE PATH moved to the seam so middleware sees them).
 
     Concurrent calls (on distinct threads) each acquire a DISTINCT connection and pin it in their OWN
     contextvar scope, so their writes never cross-talk — the isolation the shared-slot model (the
     removed driver-global ``_writer``) violated. This mirrors the TS ``withTransactionAsync`` (#75) /
     rust ``with_transaction_decided`` (#76) / go ``WithTransactionDecided`` (#77).
     """
-    tx = ctx.begin_tx(before, after)
+    tx = ctx.begin_tx()
     tx_ctx = ctx.with_connection(_TxConnectionAdapter(tx), True)
+
+    # tx-control is issued THROUGH the seam on the PINNED ctx (so it resolves the owned tx connection AND
+    # a registered middleware observes it — Phase D / #95). Uses the UNGUARDED `run` (not `run_guarded`)
+    # ⇒ BEGIN/COMMIT/ROLLBACK/SET are exempt from the write=tx guard.
+    def _tx_control(stmt: str) -> None:
+        run(tx_ctx, stmt, [], WRITE_INTENT)
 
     def scoped() -> Any:
         # `destroy` starts True: the connection is only proven clean once a COMMIT/ROLLBACK completes
-        # without raising. ANY failure below (body error, or a commit/rollback that itself throws)
-        # leaves it True ⇒ the finally drops the poisoned connection instead of returning it.
+        # without raising. ANY failure below (BEGIN/prelude error, body error, or a commit/rollback that
+        # itself throws) leaves it True ⇒ the finally drops the poisoned connection instead of returning
+        # it (the #78 discard-on-poison, now covering a failed BEGIN issued through the seam too).
         destroy = True
         try:
+            # OPEN the tx: isolation SET + BEGIN, in order (MySQL SET pre-BEGIN via `before`, PG post-
+            # BEGIN via `after`). A failure here is a half-opened tx ⇒ destroy the connection.
+            for stmt in before:
+                _tx_control(stmt)
+            _tx_control("BEGIN")
+            for stmt in after:
+                _tx_control(stmt)
             try:
                 decision = body(tx_ctx)
             except BaseException:
@@ -520,7 +579,7 @@ def with_transaction_decided(
                 # that itself raises must NOT mask the body error — swallow it but keep destroy=True so
                 # the finally drops the poisoned connection. A clean rollback ⇒ back to the pool.
                 try:
-                    tx.rollback()
+                    _tx_control("ROLLBACK")
                     destroy = False
                 except Exception:
                     pass  # poisoned; destroy stays True. Original body error surfaces via `raise`.
@@ -528,10 +587,10 @@ def with_transaction_decided(
             if decision.rollback:
                 # A legitimate non-error rollback (e.g. a gate short-circuit): roll back, return value.
                 # A rollbackOnly (dry-run) tx committed NOTHING ⇒ it does NOT arm writer-stickiness.
-                tx.rollback()
+                _tx_control("ROLLBACK")
                 destroy = False
                 return decision.value
-            tx.commit()
+            _tx_control("COMMIT")
             destroy = False
             # WRITER-STICKY (Phase C-1, read-your-writes): a committed tx marks the sticky clock so
             # subsequent reads within `writer_sticky_duration` route to the writer pool (v1
@@ -539,7 +598,7 @@ def with_transaction_decided(
             ctx.mark_sticky()
             return decision.value
         finally:
-            # The SINGLE release point — runs on every path (success, body error, raising
+            # The SINGLE release point — runs on every path (success, BEGIN error, body error, raising
             # commit/rollback). Idempotent on the TxConnection side, but this is the only caller.
             tx.release(destroy)
 
