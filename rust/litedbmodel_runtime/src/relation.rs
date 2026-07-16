@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use behavior_contracts::Value;
 
 use crate::driver::Driver;
-use crate::errors::SqlFailure;
+use crate::errors::{LimitExceededError, RuntimeError, SqlFailure, LIMIT_CONTEXT_RELATION};
 use crate::exec_context::{self, StatementIntent};
 use crate::node::{write_json_string, Node as J};
 use crate::runtime::execute_bundle_pooled;
@@ -39,6 +39,12 @@ struct RelationOp {
     /// CROSS-DB (V0 R1): the target model's connection tag (None for a same-DB relation).
     connection: Option<String>,
     sql: String,
+    /// The child (target) table name — carried for the [`LimitExceededError`] `model` field (the
+    /// relation guard reports the relation's TARGET TABLE as `model`, the relation NAME as `relation`).
+    target_table: Option<String>,
+    /// Hard-limit runaway cap (Phase E-2, epic #74) — the effective per-batch row cap RESOLVED at
+    /// compile and baked as a plain number. Absent ⇒ no check (disabled / intrinsic-limit window).
+    hard_limit: Option<i64>,
 }
 
 fn op_from_json(o: &J) -> RelationOp {
@@ -63,6 +69,11 @@ fn op_from_json(o: &J) -> RelationOp {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
         sql: s("sql"),
+        target_table: o
+            .get("targetTable")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        hard_limit: o.get("hardLimit").and_then(|v| v.as_i64()),
     }
 }
 
@@ -220,7 +231,7 @@ fn run_relation_op(
     op: &RelationOp,
     parents: &[Value],
     driver: &dyn Driver,
-) -> Result<RelationBatch, SqlFailure> {
+) -> Result<RelationBatch, RuntimeError> {
     let p_cols = op.parent_key_cols();
     let keys = dedupe_keys(parents, &p_cols);
     let mut batch: RelationBatch = HashMap::new();
@@ -242,6 +253,24 @@ fn run_relation_op(
     // connection per batch, byte-identical to the pre-seam `driver.prepare().all()`.
     let ctx = exec_context::for_driver(driver);
     let rows = exec_context::execute(&ctx, &sql, &bound, &StatementIntent::read())?;
+    // Hard-limit runaway guard (Phase E-2, epic #74; v1 `_selectForRelation`): POST-fetch, BEFORE
+    // grouping — if the batch TOTAL exceeds the baked cap, throw with the EXACT count (the batch is
+    // fetched in full, no N+1). Absent `hard_limit` ⇒ disabled / intrinsic-limit relation ⇒ no
+    // check. ⚠ Field mapping mirrors the TS reference: `model` = the relation's TARGET TABLE,
+    // `relation` = the relation NAME. A LimitExceededError propagates as its OWN error (not a
+    // SqlFailure). Throws BEFORE grouping/hydration so an over-cap read never assembles an unbounded set.
+    if let Some(cap) = op.hard_limit {
+        let count = rows.len() as i64;
+        if count > cap {
+            return Err(RuntimeError::Limit(LimitExceededError::new(
+                cap,
+                count,
+                LIMIT_CONTEXT_RELATION,
+                op.target_table.clone(),
+                Some(op.name.clone()),
+            )));
+        }
+    }
     for row in rows {
         let tuple: Vec<Value> = t_cols
             .iter()
@@ -294,7 +323,7 @@ pub fn stitch_relation(
     op_json: &J,
     mut parents: Vec<Value>,
     driver: &dyn Driver,
-) -> Result<Vec<Value>, SqlFailure> {
+) -> Result<Vec<Value>, RuntimeError> {
     let op = op_from_json(op_json);
     let batch = run_relation_op(&op, &parents, driver)?;
     for row in parents.iter_mut() {
@@ -346,19 +375,19 @@ pub fn read_bundle_pooled(
     driver: &(dyn Driver + Sync),
     with_names: &[String],
     connections: &std::collections::HashMap<String, &(dyn Driver + Sync)>,
-) -> Result<Value, SqlFailure> {
+) -> Result<Value, RuntimeError> {
     let out = execute_bundle_pooled(bundle, input, driver)?;
     let mut rows = match out {
         Value::Arr(rows) => rows,
         _ => {
-            return Err(SqlFailure {
+            return Err(RuntimeError::Sql(SqlFailure {
                 kind: "driver_error".into(),
                 policy: "fail".into(),
                 sqlite_code: None,
                 message: "scp read: the read behavior output is not a row list; the typed-object \
                           read surface expects a Select-shaped output"
                     .into(),
-            })
+            }))
         }
     };
     let relations = bundle.get("relations");

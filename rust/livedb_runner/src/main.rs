@@ -196,7 +196,7 @@ fn run_exec(driver: &(dyn Driver + Sync), bundle: &J, v: &J) -> Result<(), Strin
     // nodes of a plan stage concurrently (capped at the plan concurrency); a single-relation read
     // graph runs serially, byte-identical to `execute_bundle` (#40).
     let result = execute_bundle_pooled(&to_node(bundle), &to_node(&input), driver)
-        .map_err(|e| format!("execute threw: {}", e.message))?;
+        .map_err(|e| format!("execute threw: {}", e.message()))?;
     let got = node_to_json(&encode_value(&result));
     if eq(&got, &v["expectedResult"]) {
         Ok(())
@@ -233,7 +233,7 @@ fn run_read(
         &with_names,
         &empty,
     )
-    .map_err(|e| format!("read threw: {}", e.message))?;
+    .map_err(|e| format!("read threw: {}", e.message()))?;
     let got = node_to_json(&encode_value(&result));
     if eq(&got, &v[expected_key]) {
         Ok(())
@@ -279,7 +279,7 @@ fn run_crossdb(
         &with_names,
         &connections,
     )
-    .map_err(|e| format!("cross-DB read threw: {}", e.message))?;
+    .map_err(|e| format!("cross-DB read threw: {}", e.message()))?;
     let got = node_to_json(&encode_value(&result));
     if eq(&got, &v[expected_key]) {
         Ok(())
