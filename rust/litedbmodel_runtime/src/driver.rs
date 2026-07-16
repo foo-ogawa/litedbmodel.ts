@@ -86,6 +86,20 @@ pub trait Driver {
         Ok(tx)
     }
 
+    /// Acquire an OWNED tx connection WITHOUT issuing BEGIN (#93 / owner option A). The Phase D tx
+    /// runtime pins THIS connection, then issues the isolation SET + `BEGIN` + `COMMIT`/`ROLLBACK`
+    /// THROUGH the central seam (`run(txctx, …)`), so a registered middleware observes the tx-control —
+    /// full TS parity (TS issues `runAsync(txCtx, 'BEGIN'/'COMMIT'/…)`). The connection is the SAME one
+    /// every body statement (and the seam-issued tx-control) resolves via `connection_for`, so
+    /// per-execution ownership + the concurrent-tx isolation are UNCHANGED — only WHERE the BEGIN/COMMIT
+    /// text is issued from moved (into the seam), not which connection runs it.
+    ///
+    /// The default acquires the SAME owned connection [`Driver::begin_tx`] does, but SUPPRESSES the
+    /// BEGIN: it wraps a freshly-acquired connection in a handle that runs no BEGIN. A single-connection
+    /// driver (sqlite) has nothing to acquire — it returns a bare forwarding handle (no BEGIN). Pooled
+    /// live drivers (PG/MySQL) OVERRIDE this to check out one pooled connection with NO BEGIN.
+    fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure>;
+
     /// Acquire an OWNED connection with the SESSION-config `setup` statements already applied, plus the
     /// `reset` statements to run when the returned handle is `finish`ed (Phase C / #88 — the rust
     /// analogue of the TS `configuredPool` acquire/release). This is the primitive
@@ -131,6 +145,16 @@ pub fn forwarding_tx(driver: &dyn Driver) -> Result<Box<dyn TxConnection + '_>, 
     Ok(Box::new(ForwardingTx { driver }))
 }
 
+/// Build the single-connection [`TxConnection`] WITHOUT issuing BEGIN (#93 seam-routed tx control): the
+/// tx runtime seam-issues BEGIN on the forwarded connection. The object-safe default `acquire_tx` for a
+/// single-connection [`Driver`] that has no override (it takes `&dyn Driver`, so a concrete impl calls
+/// `forwarding_tx_no_begin(self)`).
+pub fn forwarding_tx_no_begin(
+    driver: &dyn Driver,
+) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+    Ok(Box::new(ForwardingTx { driver }))
+}
+
 /// The single-connection [`TxConnection`]: forward every statement (and COMMIT/ROLLBACK) to the
 /// driver it borrows. Built via [`forwarding_tx`] (which issues BEGIN first).
 pub struct ForwardingTx<'a> {
@@ -143,6 +167,11 @@ impl TxConnection for ForwardingTx<'_> {
     }
     fn run(&mut self, sql: &str, params: &[Value]) -> Result<RunInfo, SqlFailure> {
         self.driver.prepare(sql).run(params)
+    }
+    fn release(self: Box<Self>, _poison: bool) -> Result<(), SqlFailure> {
+        // Single-connection sqlite seam: nothing to release (the one connection is the driver itself).
+        // The COMMIT/ROLLBACK was already seam-issued; dropping the handle is a no-op.
+        Ok(())
     }
     fn commit(self: Box<Self>) -> Result<(), SqlFailure> {
         self.driver.prepare("COMMIT").run(&[]).map(|_| ())
@@ -262,6 +291,28 @@ impl Driver for ConfiguredDriver {
             reset: self.reset.clone(),
         }))
     }
+
+    /// Acquire a session-configured owned tx connection WITHOUT issuing BEGIN (#93 seam-routed tx
+    /// control): the session SET statements are applied at acquisition (on the owned inner connection),
+    /// but the isolation SET + BEGIN are seam-issued by the tx runtime. The RESET statements run on
+    /// [`ConfiguredTx::release`] (clean) before the connection returns to the pool.
+    fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        // Acquire the inner owned tx connection (no BEGIN) and apply ONLY the session setup on it now —
+        // the isolation SET + BEGIN come through the seam. `acquire_tx` on the inner suppresses BEGIN;
+        // the session setup runs on the owned connection immediately (a connection property, not a tx
+        // statement — matches the pre-#93 order where setup rode the tx prelude before BEGIN).
+        let mut tx = self.inner.acquire_tx()?;
+        for sql in &self.setup {
+            if let Err(e) = tx.run(sql, &[]) {
+                let _ = tx.release(true); // a failed session setup poisons the connection.
+                return Err(e);
+            }
+        }
+        Ok(Box::new(ConfiguredTx {
+            inner: Some(tx),
+            reset: self.reset.clone(),
+        }))
+    }
 }
 
 /// A prepared statement on a [`ConfiguredDriver`]: acquire a session-configured owned connection, run
@@ -328,6 +379,22 @@ impl TxConnection for ConfiguredTx<'_> {
             .as_mut()
             .expect("configured tx present")
             .run(sql, params)
+    }
+    fn release(mut self: Box<Self>, poison: bool) -> Result<(), SqlFailure> {
+        let mut inner = self.inner.take().expect("configured tx present");
+        if poison {
+            // Poisoned: skip the reset (would fail on an aborted connection), destroy the connection.
+            return inner.release(true);
+        }
+        // Clean: run the RESET statements (so session knobs don't leak) on the owned connection BEFORE
+        // releasing it. A reset failure poisons the connection. The COMMIT/ROLLBACK was seam-issued.
+        for sql in &self.reset {
+            if let Err(e) = inner.run(sql, &[]) {
+                let _ = inner.release(true);
+                return Err(e);
+            }
+        }
+        inner.release(false)
     }
     fn commit(mut self: Box<Self>) -> Result<(), SqlFailure> {
         let mut inner = self.inner.take().expect("configured tx present");
@@ -418,6 +485,13 @@ impl Driver for SqliteDriver {
     /// the forwarding handle (byte-identical to the pre-seam `prepare("BEGIN").run()` path).
     fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
         forwarding_tx(self)
+    }
+
+    /// Acquire the single-connection tx handle WITHOUT BEGIN (#93 seam-routed tx control): the tx
+    /// runtime seam-issues BEGIN/COMMIT/ROLLBACK on this one connection — byte-identical SQL to the
+    /// pre-#93 forwarding path, only issued from the seam (so a middleware observes it).
+    fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        forwarding_tx_no_begin(self)
     }
 }
 

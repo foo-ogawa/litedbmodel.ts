@@ -747,6 +747,9 @@ mod tests {
         fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
             crate::driver::forwarding_tx(self)
         }
+        fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+            crate::driver::forwarding_tx_no_begin(self)
+        }
     }
     fn stub(_label: &'static str) -> Arc<dyn Driver + Send + Sync> {
         Arc::new(StubDriver)

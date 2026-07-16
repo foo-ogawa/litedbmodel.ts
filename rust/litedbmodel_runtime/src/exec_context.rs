@@ -126,21 +126,40 @@ impl Connection for DriverConnection<'_> {
 // ── Per-execution transaction ownership (§3) — the PoolTransaction analogue ────
 
 /// An OWNED transaction connection — the rust analogue of v1 `litedbmodel.rs` `PoolTransaction`
-/// (`handler.rs`). Acquired by [`Driver::begin_tx`], it holds ONE connection for the transaction's
-/// whole duration: every statement in the tx body runs on it (`execute`/`run`), and the tx ends by
-/// consuming the handle via [`TxConnection::commit`] / [`TxConnection::rollback`] (which run the
-/// COMMIT/ROLLBACK on the SAME owned connection, then release it — dropped, or back to the pool).
+/// (`handler.rs`). Acquired by [`Driver::acquire_tx`], it holds ONE connection for the transaction's
+/// whole duration: every statement in the tx body runs on it (`execute`/`run`), INCLUDING the tx's own
+/// BEGIN/COMMIT/ROLLBACK + the isolation SET — which the Phase D tx runtime now issues THROUGH the
+/// central seam ([`crate::exec_context::run`]) so a registered middleware observes them (#93 / owner
+/// option A, full TS parity). The tx ends by RELEASING the handle via [`TxConnection::release`] (drop
+/// the owned connection — back to the pool, or destroyed on poison). No SQL is run in `release`: the
+/// COMMIT/ROLLBACK was already issued through the seam.
+///
+/// [`TxConnection::commit`] / [`TxConnection::rollback`] (which DO run the COMMIT/ROLLBACK SQL then
+/// release) are retained ONLY for the [`Driver::session_connection`] default path (a session-config
+/// wrapper is not a user transaction and does not route its bracketing through the seam) — the user
+/// transaction boundary uses seam-issued tx-control + `release`.
 ///
 /// Concurrent transactions each hold a DISTINCT handle over a DISTINCT pooled connection, so their
 /// writes never cross-talk — the isolation the removed driver-global `writer` slot violated.
 pub trait TxConnection {
     /// Run a SELECT / RETURNING statement on the tx's owned connection.
     fn execute(&mut self, sql: &str, params: &[Value]) -> Result<Vec<Value>, SqlFailure>;
-    /// Run a non-returning write / DDL statement on the tx's owned connection.
+    /// Run a non-returning write / DDL / tx-control statement on the tx's owned connection. The
+    /// seam-issued BEGIN/COMMIT/ROLLBACK/SET resolve HERE (via [`TxConnectionRef`]), so they run on
+    /// the SAME owned connection and are middleware-visible.
     fn run(&mut self, sql: &str, params: &[Value]) -> Result<RunInfo, SqlFailure>;
-    /// COMMIT on the owned connection, then release it. Consumes the handle.
+    /// RELEASE the owned connection (drop it — back to the pool). `poison` ⇒ the connection is in an
+    /// unknown state (a ROLLBACK failed, or the tx errored non-cleanly) and must be DESTROYED, never
+    /// returned clean. Runs NO SQL — the COMMIT/ROLLBACK was already seam-issued. Consumes the handle.
+    /// (For a pooled driver whose connection Drop needs its runtime context — sqlx — the drop happens
+    /// inside that context here.)
+    fn release(self: Box<Self>, poison: bool) -> Result<(), SqlFailure>;
+    /// COMMIT on the owned connection, then release it. Consumes the handle. RETAINED for the
+    /// [`Driver::session_connection`] default path only — the user tx boundary seam-issues COMMIT then
+    /// calls [`TxConnection::release`].
     fn commit(self: Box<Self>) -> Result<(), SqlFailure>;
-    /// ROLLBACK on the owned connection, then release it (best-effort). Consumes the handle.
+    /// ROLLBACK on the owned connection, then release it (best-effort). Consumes the handle. RETAINED
+    /// for the session path only (see [`TxConnection::commit`]).
     fn rollback(self: Box<Self>) -> Result<(), SqlFailure>;
 }
 
@@ -710,42 +729,94 @@ pub fn with_transaction_decided_isolated_on<'a, R>(
     body: impl FnOnce(&ExecutionContext) -> Result<TxDecision<R>, SqlFailure>,
 ) -> Result<R, SqlFailure> {
     // Acquire the tx's OWNED connection from the WRITER pool of the named connection (Phase C) — or the
-    // single primary driver (base ctx). isolation prelude + BEGIN issued on it inside
-    // begin_tx_isolated. The handle borrows the routing/driver (`'a`); the slot holds it for the body.
-    let tx: Box<dyn TxConnection + 'a> = ctx
-        .tx_driver(connection)?
-        .begin_tx_isolated(before_begin, after_begin)?;
+    // single primary driver (base ctx) — WITHOUT issuing BEGIN (#93 / owner option A: the tx-control is
+    // seam-issued so a registered middleware observes it). The handle borrows the routing/driver (`'a`);
+    // the slot holds it for the body AND for the seam-issued BEGIN/COMMIT/ROLLBACK on the SAME conn.
+    let tx: Box<dyn TxConnection + 'a> = ctx.tx_driver(connection)?.acquire_tx()?;
     let slot: TxSlot<'a> = std::cell::RefCell::new(Some(tx));
-    // Scope the tx-ctx borrow of `slot` so it ends before we take the handle back for commit/rollback.
-    let result = {
-        let tx_ctx = ctx.with_tx_connection(&slot);
-        body(&tx_ctx)
-    };
+    let tx_ctx = ctx.with_tx_connection(&slot);
 
-    // Take the owned handle back out and consume it exactly once, per the body's decision. `take()`
-    // leaves the slot empty (drop is a no-op).
-    let tx = slot.borrow_mut().take();
-    match (result, tx) {
-        (Ok(TxDecision::Commit(r)), Some(tx)) => {
-            tx.commit()?;
-            // WRITER-STICKY (Phase C / #88 read-your-writes): a committed write marks the sticky clock
-            // so subsequent reads within the window route to the writer. A no-op without routing.
-            ctx.mark_sticky();
-            Ok(r)
+    // Issue the isolation prelude + BEGIN THROUGH THE SEAM on the pinned owned connection (full TS
+    // parity — TS `runAsync(txCtx, 'BEGIN')`). `run(tx_ctx, …)` resolves the pinned tx connection via
+    // `connection_for` (STEP 1 wins) and folds the ambient middleware, so a registered hook observes
+    // the runtime BEGIN/SET. Plain `run` — NOT `run_guarded` — so tx-control is EXEMPT from the write=tx
+    // guard (BEGIN/COMMIT/ROLLBACK/SET are not user writes; matches TS exec-context.ts:254). MySQL's
+    // SET-before-BEGIN order is honored: `before_begin` (SET) is issued BEFORE `BEGIN`, `after_begin`
+    // (PG SET) after. If BEGIN/prelude fails, the (poisoned) connection is released+destroyed below.
+    let began: Result<(), SqlFailure> = (|| {
+        for sql in before_begin {
+            run(&tx_ctx, sql, &[], &StatementIntent::write())?;
         }
-        (Ok(TxDecision::Rollback(r)), Some(tx)) => {
-            // A legitimate non-error rollback (e.g. a gate short-circuit): roll back, return the
-            // value. A rollback committed NOTHING ⇒ it does NOT arm stickiness. A rollback failure
-            // here IS surfaced (the connection would be poisoned).
-            tx.rollback()?;
-            Ok(r)
+        run(&tx_ctx, "BEGIN", &[], &StatementIntent::write())?;
+        for sql in after_begin {
+            run(&tx_ctx, sql, &[], &StatementIntent::write())?;
         }
-        (Ok(TxDecision::Commit(r)) | Ok(TxDecision::Rollback(r)), None) => Ok(r), // no handle (shouldn't happen)
-        (Err(e), Some(tx)) => {
-            let _ = tx.rollback(); // best-effort; the original failure is surfaced
+        Ok(())
+    })();
+    if let Err(e) = began {
+        // A BEGIN/prelude failure: the tx never opened. Release+destroy the connection (poisoned — its
+        // state after a failed BEGIN is undefined) and surface the error (retryable errors retry above).
+        if let Some(tx) = slot.borrow_mut().take() {
+            let _ = tx.release(true);
+        }
+        return Err(e);
+    }
+
+    // Run the body on the pinned tx ctx (every statement resolves the SAME owned connection).
+    let result = body(&tx_ctx);
+
+    // End the tx by seam-issuing COMMIT/ROLLBACK on the pinned connection (middleware-visible), THEN
+    // releasing the handle (drop the owned connection — the SQL is done). `poison` on a ROLLBACK
+    // failure / a body error whose ROLLBACK failed ⇒ the connection is destroyed, never recycled.
+    let end: Result<R, SqlFailure> = match result {
+        Ok(TxDecision::Commit(r)) => match run(&tx_ctx, "COMMIT", &[], &StatementIntent::write()) {
+            Ok(_) => {
+                release_tx(&slot, false);
+                // WRITER-STICKY (Phase C / #88 read-your-writes): a committed write marks the sticky
+                // clock so subsequent reads within the window route to the writer. No-op w/o routing.
+                ctx.mark_sticky();
+                Ok(r)
+            }
+            Err(e) => {
+                // COMMIT failed (e.g. a serialization failure surfaced at COMMIT — the 40001 the retry
+                // loop must see): best-effort ROLLBACK, destroy the connection, surface the error.
+                let rolled = run(&tx_ctx, "ROLLBACK", &[], &StatementIntent::write());
+                release_tx(&slot, true);
+                let _ = rolled;
+                Err(e)
+            }
+        },
+        Ok(TxDecision::Rollback(r)) => {
+            // A legitimate non-error rollback (a gate short-circuit): ROLLBACK through the seam, return
+            // the value. Committed NOTHING ⇒ does NOT arm stickiness. A ROLLBACK failure IS surfaced.
+            match run(&tx_ctx, "ROLLBACK", &[], &StatementIntent::write()) {
+                Ok(_) => {
+                    release_tx(&slot, false);
+                    Ok(r)
+                }
+                Err(e) => {
+                    release_tx(&slot, true);
+                    Err(e)
+                }
+            }
+        }
+        Err(e) => {
+            // A body error: ROLLBACK (best-effort, through the seam), destroy the connection, surface
+            // the ORIGINAL error (the ROLLBACK outcome does not mask it).
+            let rolled = run(&tx_ctx, "ROLLBACK", &[], &StatementIntent::write());
+            release_tx(&slot, rolled.is_err());
             Err(e)
         }
-        (Err(e), None) => Err(e),
+    };
+    end
+}
+
+/// Take the owned tx handle out of the slot and RELEASE it exactly once (drop the connection — back to
+/// the pool, or destroyed on `poison`). The COMMIT/ROLLBACK was already seam-issued; `release` runs no
+/// SQL. A `None` slot (already released) is a no-op — the runtime never releases twice.
+fn release_tx(slot: &TxSlot<'_>, poison: bool) {
+    if let Some(tx) = slot.borrow_mut().take() {
+        let _ = tx.release(poison);
     }
 }
 
@@ -979,6 +1050,9 @@ mod tests {
         }
         fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
             forwarding_tx(self)
+        }
+        fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+            crate::driver::forwarding_tx_no_begin(self)
         }
     }
 
@@ -1401,6 +1475,9 @@ mod tests {
         }
         fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
             forwarding_tx(self)
+        }
+        fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+            crate::driver::forwarding_tx_no_begin(self)
         }
     }
 

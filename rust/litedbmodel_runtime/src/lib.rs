@@ -52,7 +52,8 @@ pub use connection_routing::{
 pub use connection_routing::{mysql_pool_factory, pg_pool_factory};
 pub use dialect::{dialect_for, to_dollar_placeholders, Dialect};
 pub use driver::{
-    forwarding_tx, ConfiguredDriver, Driver, ForwardingTx, PreparedStatement, RunInfo, SqliteDriver,
+    forwarding_tx, forwarding_tx_no_begin, ConfiguredDriver, Driver, ForwardingTx,
+    PreparedStatement, RunInfo, SqliteDriver,
 };
 pub use errors::{map_sqlite_error, re_error_to_sql_failure, SqlFailure};
 pub use exec_context::{

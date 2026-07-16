@@ -27,8 +27,8 @@ use std::sync::{Arc, Mutex};
 use behavior_contracts::Value;
 use litedbmodel_runtime::{
     create_middleware, for_driver, logger, raw_execute, raw_query, seam_execute, seam_run,
-    use_middleware, with_middleware_scope, PostgresDriver, SeamResult, SqlFailure, SqlHookFn,
-    SqlNext, StatementIntent,
+    transaction, use_middleware, with_middleware_scope, PostgresDriver, SeamResult, SqlFailure,
+    SqlHookFn, SqlNext, StatementIntent, TransactionOptions, TxDialect,
 };
 
 // The rust-namespaced live table PREFIX is `scp_mw_rust_*` (must not collide with the go/py/php ports
@@ -267,4 +267,100 @@ fn d3_live_raw_execute_query_through_seam_and_logger() {
         assert!(entries[0].sql.contains("INSERT INTO"));
         assert!(entries[1].sql.contains("SELECT val"));
     });
+}
+
+#[test]
+fn d1_live_runtime_tx_boundaries_are_middleware_visible() {
+    // POSITIVE GUARANTEE (#93 / owner option A) on LIVE PG: a registered middleware OBSERVES the tx
+    // runtime's OWN BEGIN + COMMIT of a REAL `transaction()` (and BEGIN + ROLLBACK on a body error) —
+    // full TS parity, issued through the seam on the SAME pinned owned connection. RED proof:
+    // reverting the seam-routing of tx-control (see `with_transaction_decided_isolated_on`) makes the
+    // tx-boundary observation go empty of BEGIN/COMMIT.
+    if !enabled() {
+        eprintln!("skipped (set LITEDBMODEL_LIVEDB_PARALLEL=1 + docker up)");
+        return;
+    }
+    const TBL: &str = "scp_mw_rust_txb";
+    let db = connect();
+    reset(&db, TBL);
+    let ctx = for_driver(&db);
+
+    // COMMIT path: BEGIN → body INSERT → COMMIT, all observed.
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen2 = seen.clone();
+    with_middleware_scope(|| {
+        let mw = create_middleware::<(), _, fn() -> ()>(Some(observer(seen2)), None);
+        use_middleware(&mw);
+        transaction(
+            &ctx,
+            TxDialect::Postgres,
+            &TransactionOptions::default(),
+            |tx| {
+                seam_run(
+                    tx,
+                    &format!("INSERT INTO {TBL} (id, val) VALUES ($1, $2)"),
+                    &[Value::Int(1), Value::Str("a".into())],
+                    &StatementIntent::write(),
+                )
+                .map(|_| ())
+            },
+        )
+        .unwrap();
+    });
+    let obs = seen.lock().unwrap().clone();
+    assert!(
+        obs.iter().any(|s| s == "BEGIN"),
+        "runtime BEGIN observed on live PG: {obs:?}"
+    );
+    assert!(
+        obs.iter().any(|s| s.contains("INSERT INTO")),
+        "body observed: {obs:?}"
+    );
+    assert!(
+        obs.iter().any(|s| s == "COMMIT"),
+        "runtime COMMIT observed on live PG: {obs:?}"
+    );
+    // Ordering: BEGIN first, COMMIT last.
+    assert_eq!(obs.first().map(String::as_str), Some("BEGIN"));
+    assert_eq!(obs.last().map(String::as_str), Some("COMMIT"));
+
+    // ROLLBACK path: a body error rolls the tx back — BEGIN observed, ROLLBACK observed last.
+    reset(&db, TBL);
+    let seen_rb = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_rb2 = seen_rb.clone();
+    let res = with_middleware_scope(|| {
+        let mw = create_middleware::<(), _, fn() -> ()>(Some(observer(seen_rb2)), None);
+        use_middleware(&mw);
+        transaction(
+            &ctx,
+            TxDialect::Postgres,
+            &TransactionOptions {
+                // Disable retry so a body error surfaces immediately (no re-issued BEGIN attempts).
+                retry_on_error: false,
+                ..TransactionOptions::default()
+            },
+            |tx| {
+                // A genuine SQL error (missing table) inside the tx body.
+                seam_run(
+                    tx,
+                    "INSERT INTO scp_mw_rust_no_such_table VALUES (1)",
+                    &[],
+                    &StatementIntent::write(),
+                )
+                .map(|_| ())
+            },
+        )
+    });
+    assert!(res.is_err(), "the body error must surface");
+    let obs_rb = seen_rb.lock().unwrap().clone();
+    assert_eq!(
+        obs_rb.first().map(String::as_str),
+        Some("BEGIN"),
+        "BEGIN observed: {obs_rb:?}"
+    );
+    assert_eq!(
+        obs_rb.last().map(String::as_str),
+        Some("ROLLBACK"),
+        "ROLLBACK observed on body error: {obs_rb:?}"
+    );
 }

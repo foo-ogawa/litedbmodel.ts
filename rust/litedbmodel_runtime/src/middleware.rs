@@ -6,24 +6,23 @@
 //!
 //!   - **D1** SQL-level `execute` hook — `(sql, params, next)`, wrapping EVERY statement that funnels
 //!     through the central seam ([`crate::exec_context::execute`] / [`crate::exec_context::run`]): so
-//!     body read, body write, EXPLICIT seam-issued tx-control (`run(ctx, "BEGIN"/"COMMIT"/…)`), and
+//!     body read, body write, the tx runtime's OWN BEGIN/COMMIT/ROLLBACK + isolation SET, and
 //!     relation-batch SQL are ALL intercepted. A middleware can observe / rewrite (`next(sql', params')`)
 //!     / time / short-circuit. Registration via [`register_middleware`] / [`use_middleware`] appends to
 //!     the CURRENT scope's ordered stack, folded so index 0 = OUTERMOST (`use(A); use(B)` ⇒
 //!     `A.before → B.before → «execute» → B.after → A.after`).
 //!
-//! ## DOCUMENTED DIVERGENCE — runtime-issued tx-control is NOT middleware-visible in the native ports
+//! ## Runtime-issued tx-control IS middleware-visible (#93 / owner option A — full TS parity)
 //!
-//! In the TS reference, the tx runtime brackets a transaction with BEGIN/COMMIT/ROLLBACK issued THROUGH
-//! the seam (`runAsync(txCtx, 'BEGIN', …)`), so a registered middleware observes them. The NATIVE Phase A
-//! tx runtimes (rust/go/py/php) instead issue the runtime's OWN BEGIN/COMMIT/ROLLBACK DIRECTLY on the
-//! owned/pinned [`crate::exec_context::TxConnection`] (`begin_tx_isolated` / `TxConnection::commit` /
-//! `::rollback`), NOT via `run(ctx, …)` — so those runtime-issued tx-control statements are NOT wrapped
-//! by the Phase D middleware. Routing them through the seam would require RESTRUCTURING the audited
-//! Phase A tx runtime, a change pending the owner's sign-off — so this port deliberately leaves it as a
-//! DOCUMENTED DIVERGENCE (mirroring the php port), keeping the 4 native ports consistent. What IS fully
-//! middleware-visible here: body read/write statements, relation-batch SELECTs, tx-control a TEST issues
-//! explicitly via the seam (`run(ctx, "BEGIN", …)`), method hooks, Logger, and raw execute/query.
+//! The tx runtime ([`crate::exec_context::with_transaction_decided_isolated_on`]) issues its OWN
+//! BEGIN/COMMIT/ROLLBACK + the isolation SET THROUGH the seam (`run(txctx, "BEGIN"/"COMMIT"/…)`) on the
+//! SAME pinned owned connection — so a registered middleware OBSERVES them, exactly like the TS
+//! reference (`runAsync(txCtx, 'BEGIN'/'COMMIT'/'ROLLBACK')`). The owned connection is acquired via
+//! [`crate::driver::Driver::acquire_tx`] (acquire+pin, NO BEGIN); the seam-issued tx-control resolves
+//! that pinned connection via `connection_for` (per-execution ownership unchanged), and is EXEMPT from
+//! the write=tx guard (it goes through plain `run`, not `run_guarded`). This is proven by
+//! `d1_runtime_tx_control_is_middleware_visible` (unit) + the live PG boundary test (COMMIT + ROLLBACK
+//! observed), with a RED proof (revert the seam-routing → the tx-boundary observation goes RED).
 //!   - **D2** method-level hooks — [`run_method`] folds the matching op-kind hooks around an ORM
 //!     operation. The op KIND is a [`MethodKind`] TAG the operation boundary supplies — NEVER parsed
 //!     from SQL.
@@ -1143,14 +1142,14 @@ mod tests {
     }
 
     #[test]
-    fn d1_documented_divergence_runtime_tx_control_is_not_middleware_visible() {
-        // DOCUMENTED DIVERGENCE (matches php): the Phase A tx runtime issues its OWN BEGIN/COMMIT
-        // DIRECTLY on the owned connection (begin_tx_isolated / TxConnection::commit), NOT via
-        // run(ctx,…). So a `with_transaction` body's BEGIN/COMMIT are NOT wrapped by a registered
-        // middleware — only the BODY statements funnel through the seam and ARE observed. (Routing
-        // runtime tx-control through the seam would restructure the audited Phase A tx runtime, which
-        // is out of scope for #93.) This test PINS the divergence so a later Phase A change is noticed.
+    fn d1_runtime_tx_control_is_middleware_visible() {
+        // POSITIVE GUARANTEE (#93 / owner option A, full TS parity): the tx runtime issues its OWN
+        // BEGIN/COMMIT/ROLLBACK THROUGH the seam (`run(txctx, "BEGIN"/"COMMIT"/…)`) on the SAME pinned
+        // owned connection — so a registered middleware OBSERVES the runtime-issued tx-control, exactly
+        // like TS (`runAsync(txCtx, 'BEGIN')`). This replaces the former divergence pin.
         use crate::exec_context::{run as seam_run, with_transaction};
+
+        // COMMIT path: a successful `with_transaction` ⇒ BEGIN → body → COMMIT, ALL observed.
         let db = fresh_db();
         let ctx = for_driver(&db);
         let seen = Arc::new(StdMutex::new(Vec::<String>::new()));
@@ -1159,7 +1158,6 @@ mod tests {
             let mw = create_middleware::<(), _, fn() -> ()>(Some(observer(seen2)), None);
             use_middleware(&mw);
             with_transaction(&ctx, |tx| {
-                // A body write funnels through the seam and IS observed.
                 seam_run(
                     tx,
                     "INSERT INTO t (name) VALUES ('body')",
@@ -1170,14 +1168,53 @@ mod tests {
             .unwrap();
         });
         let observed = seen.lock().unwrap().clone();
-        // The body write is observed; the runtime's BEGIN/COMMIT are NOT (the documented divergence).
         assert_eq!(
             observed,
-            vec!["INSERT INTO t (name) VALUES ('body')".to_string()]
+            vec![
+                "BEGIN".to_string(),
+                "INSERT INTO t (name) VALUES ('body')".to_string(),
+                "COMMIT".to_string(),
+            ],
+            "runtime BEGIN + body + COMMIT must ALL be seam-visible"
         );
-        assert!(
-            !observed.iter().any(|s| s == "BEGIN" || s == "COMMIT"),
-            "runtime tx-control must NOT be seam-visible (Phase A divergence): {observed:?}"
+
+        // ROLLBACK path: a body error ⇒ BEGIN → body(failing) → ROLLBACK, ALL observed. Uses a
+        // short-circuit middleware that lets BEGIN/ROLLBACK through but makes the body statement fail.
+        let db2 = fresh_db();
+        let ctx2 = for_driver(&db2);
+        let seen_rb = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let seen_rb2 = seen_rb.clone();
+        let _ = with_middleware_scope(|| {
+            let mw = create_middleware::<(), _, fn() -> ()>(
+                Some(SqlHookFn(
+                    move |sql: &str, params: &[Value], next: &SqlNext| {
+                        seen_rb2.lock().unwrap().push(sql.to_string());
+                        next(sql, params)
+                    },
+                )),
+                None,
+            );
+            use_middleware(&mw);
+            with_transaction(&ctx2, |tx| {
+                // A genuine SQL error (missing table) rolls the tx back.
+                seam_run(
+                    tx,
+                    "INSERT INTO missing_table VALUES (1)",
+                    &[],
+                    &StatementIntent::write(),
+                )
+            })
+        });
+        let obs_rb = seen_rb.lock().unwrap().clone();
+        assert_eq!(
+            obs_rb.first().map(String::as_str),
+            Some("BEGIN"),
+            "BEGIN observed: {obs_rb:?}"
+        );
+        assert_eq!(
+            obs_rb.last().map(String::as_str),
+            Some("ROLLBACK"),
+            "ROLLBACK observed on body error: {obs_rb:?}"
         );
     }
 
