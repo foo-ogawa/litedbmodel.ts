@@ -195,7 +195,9 @@ function runVector(\stdClass $v): array
         if ($kind === 'tx') {
             $schema = is_array($v->schema) ? $v->schema : [];
             $db = seedDb($schema);
-            $result = Runtime::executeTransactionBundle($v->bundle, inputToScope(decodeValue($v->input)), $db);
+            // write=tx guard is opted OUT here via the INTERNAL executor — the conformance runner IS
+            // the per-command auto-tx boundary (no user transaction()), byte-identical to Phase A.
+            $result = Runtime::executeTransactionBundleInternal($v->bundle, inputToScope(decodeValue($v->input)), $db);
             $stateOk = true;
             $stateDetail = '';
             foreach (($v->expectedDbState ?? []) as $s) {

@@ -69,7 +69,7 @@ final class ExecuteBundleTest extends TestCase
     {
         $v = self::vectors('tx')->vectors[0];
         $db = self::seed($v->schema);
-        $result = Runtime::executeTransactionBundle($v->bundle, self::scope($v->input), $db);
+        $result = Runtime::executeTransactionBundleInternal($v->bundle, self::scope($v->input), $db);
 
         $this->assertTrue($result['committed']);
         $this->assertSame(['tx_requires_0', 'tx_idem_1', 'tx_unique_2', 'tx_body_3', 'tx_derive_4', 'tx_emit_5'], $result['executed']);
@@ -89,7 +89,7 @@ final class ExecuteBundleTest extends TestCase
         // Vector 1: author 999 does not exist → the `requires` gate fails FIRST; body never runs.
         $v = self::vectors('tx')->vectors[1];
         $db = self::seed($v->schema);
-        $result = Runtime::executeTransactionBundle($v->bundle, self::scope($v->input), $db);
+        $result = Runtime::executeTransactionBundleInternal($v->bundle, self::scope($v->input), $db);
 
         $this->assertFalse($result['committed']);
         $this->assertSame('requires_absent', $result['shortCircuit']['reason']);
@@ -113,7 +113,7 @@ final class ExecuteBundleTest extends TestCase
 
         $threw = false;
         try {
-            Runtime::executeTransactionBundle($v->bundle, self::scope($v->input), $db);
+            Runtime::executeTransactionBundleInternal($v->bundle, self::scope($v->input), $db);
         } catch (\Throwable $e) {
             $threw = true;
             $this->assertStringContainsString('unknown gate rule', $e->getMessage());

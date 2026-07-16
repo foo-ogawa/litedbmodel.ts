@@ -41,18 +41,33 @@ final class WriteRuntime
     private const ENTITY_ROOT = '__entity';
 
     /**
-     * Execute a derived transaction plan as ONE real transaction with gate-first short-circuit.
+     * Execute a derived transaction plan as ONE real transaction with gate-first short-circuit — the
+     * write executor (Phase A per-execution ownership + Phase B ambient-tx JOIN + write=tx guard).
+     *
+     * `$guard` (default ON — the PUBLIC surface) enforces the write=tx guard at ENTRY: a write OUTSIDE
+     * a {@see transaction()} boundary throws {@see WriteOutsideTransactionError}; one in a read-only
+     * scope throws {@see WriteInReadOnlyContextError}. The `guard=false` opt-out is INTERNAL-only (the
+     * conformance / livedb / ownership per-command auto-tx paths that run WITHOUT a user boundary) —
+     * reached ONLY through {@see Runtime::executeTransactionBundleInternal()}, never through the public
+     * facade (per the #86 send-off — mirror go/TS/rust/py, none of which expose a guard opt-out on the
+     * public write entry).
      *
      * @param \stdClass $plan the derived TransactionPlan (json_decode(.., false) shape).
      * @param array<string,mixed> $input the Command input scope ($.input.* = bc flat scope).
      * @return array{committed:bool, shortCircuit?:array{statementId:string,reason:string}, entity:?array<string,mixed>, executed:list<string>}
      * @throws SqlFailure a mapped driver failure (the transaction is ROLLBACKed first).
      */
-    public static function executeTransaction(\PDO|ExecutionContext $db, \stdClass $plan, array $input, Dialect $dialect): array
+    public static function executeTransaction(\PDO|ExecutionContext $db, \stdClass $plan, array $input, Dialect $dialect, bool $guard = true): array
     {
         $ctx = Context::of($db);
         $statements = is_array($plan->statements ?? null) ? $plan->statements : [];
         $entityFrom = $plan->entityFrom ?? null;
+
+        // write=tx guard (default ON): a write must be inside a user transaction() boundary. The guard
+        // reads the AMBIENT markers, so it fires BEFORE any connection is acquired.
+        if ($guard) {
+            checkWriteAllowedAmbient('WRITE', null);
+        }
 
         // Batch mode (createMany/updateMany/deleteMany): gate-free, ref-free plan (entityFrom null,
         // every statement a plain body) — accumulate each body statement's RETURNING rows in order.
@@ -64,83 +79,33 @@ final class WriteRuntime
             }
         }
 
-        // Per-execution connection ownership (§3): the tx owns ONE connection for its whole span;
+        $runPlan = fn (ExecutionContext $txCtx): TxDecision =>
+            self::runPlan($txCtx, $statements, $entityFrom, $isBatch, $input, $dialect);
+
+        // AMBIENT-TX JOIN (the core #86 fix): inside a user transaction() the ambient holder carries the
+        // outer's pinned tx ctx — run the plan on THAT connection with NO new BEGIN/COMMIT (the
+        // nested-join). A gate short-circuit returns committed:false WITHOUT rolling back the outer (the
+        // outer owns its COMMIT/ROLLBACK — go TransactionDecided nested parity); an error propagates and
+        // rolls back the whole outer tx.
+        $ambient = currentContext();
+        if ($ambient !== null && $ambient->inTransaction()) {
+            try {
+                return $runPlan($ambient)->value;
+            } catch (SqlFailure $e) {
+                throw $e;
+            } catch (\PDOException $e) {
+                throw SqlFailure::fromPdo($e);
+            }
+        }
+
+        // OWN-TX path (outside a boundary): the tx owns ONE connection for its whole span;
         // BEGIN/COMMIT/ROLLBACK are the combinator's, and every body statement funnels through the
         // seam onto the pinned tx connection. A gate short-circuit is a non-error ROLLBACK decision
         // (returns committed:false); a driver / gate-abort failure throws (the combinator rolls back +
-        // re-raises the mapped SqlFailure). The combinator releases the connection exactly once.
+        // re-raises the mapped SqlFailure). The combinator releases the connection exactly once. This
+        // is the per-command auto-tx the conformance / livedb corpus runs here, byte-identically.
         try {
-            return withTransactionDecided($ctx, function (ExecutionContext $txCtx) use (
-                $statements,
-                $entityFrom,
-                $isBatch,
-                $input,
-                $dialect
-            ): TxDecision {
-                /** @var list<list<array<string,mixed>>> $returnedRows */
-                $returnedRows = [];
-                /** @var list<string> $executed */
-                $executed = [];
-                // The evolving scope: input names at the top level (bc flat scope) + the body RETURNING
-                // row exposed under `__entity` once the body runs. Defaults live in the
-                // declaration/schema, so NO ad-hoc code default is injected here.
-                $scope = $input;
-                $entity = null;
-
-                foreach ($statements as $stmt) {
-                    if (!($stmt instanceof \stdClass)) {
-                        continue;
-                    }
-                    $result = self::runOne($txCtx, $stmt, $scope, $executed, $dialect);
-
-                    // Gate-first: a failing gate short-circuits — a NON-error ROLLBACK decision (the
-                    // tail never runs; the combinator rolls back the owned connection).
-                    $gate = $stmt->gate ?? null;
-                    if (is_string($gate)) {
-                        $reason = self::gateShortCircuit($gate, $result);
-                        if ($reason !== null) {
-                            return rollbackWith([
-                                'committed' => false,
-                                'shortCircuit' => ['statementId' => (string) ($stmt->id ?? ''), 'reason' => $reason],
-                                'entity' => null,
-                                'executed' => $executed,
-                            ]);
-                        }
-                    }
-
-                    // Capture the SOLE body RETURNING row as `$.entity` (WS5 single-write back-compat).
-                    if ($entityFrom !== null && (string) ($stmt->id ?? '') === (string) $entityFrom) {
-                        $entity = count($result['rows']) > 0 ? $result['rows'][0] : null;
-                        if ($entity instanceof \stdClass) {
-                            $scope[self::ENTITY_ROOT] = $entity;
-                        }
-                    }
-
-                    // WS8a composite: bind THIS statement's RETURNING row under its `binds` name so a
-                    // later `$.ref.<binds>.<field>` resolves against it (the tx-DAG data-dependency
-                    // edge). Self-describing — bind the row the plan named; no re-derivation.
-                    $binds = $stmt->binds ?? null;
-                    if (is_string($binds) && count($result['rows']) > 0) {
-                        $row = $result['rows'][0];
-                        if ($row instanceof \stdClass) {
-                            $scope[$binds] = $row;
-                        }
-                    }
-
-                    if ($isBatch && ($stmt->role ?? '') === 'body' && count($result['rows']) > 0) {
-                        $returnedRows[] = array_map([self::class, 'entityToArray'], $result['rows']);
-                    }
-                }
-                $out = [
-                    'committed' => true,
-                    'entity' => self::entityToArray($entity),
-                    'executed' => $executed,
-                ];
-                if (count($returnedRows) > 0) {
-                    $out['returnedRows'] = $returnedRows;
-                }
-                return commit($out);
-            });
+            return withTransactionDecided($ctx, $runPlan);
         } catch (SqlFailure $e) {
             throw $e;
         } catch (\PDOException $e) {
@@ -148,6 +113,89 @@ final class WriteRuntime
             // §11). The combinator already ROLLBACKed the owned connection + released it.
             throw SqlFailure::fromPdo($e);
         }
+    }
+
+    /**
+     * Run the gate-first plan on a tx-scoped ctx, returning a {@see TxDecision} (COMMIT on success, a
+     * non-error ROLLBACK on a gate short-circuit). Shared by the own-tx path (where the combinator
+     * turns the ROLLBACK decision into a real ROLLBACK of the owned connection) and the ambient-JOIN
+     * path (where the caller reads `->value` — a gate short-circuit returns committed:false WITHOUT
+     * rolling back the outer tx, which owns its own COMMIT/ROLLBACK).
+     *
+     * @param list<mixed> $statements
+     * @param array<string,mixed> $input
+     */
+    private static function runPlan(
+        ExecutionContext $txCtx,
+        array $statements,
+        mixed $entityFrom,
+        bool $isBatch,
+        array $input,
+        Dialect $dialect,
+    ): TxDecision {
+        /** @var list<list<array<string,mixed>>> $returnedRows */
+        $returnedRows = [];
+        /** @var list<string> $executed */
+        $executed = [];
+        // The evolving scope: input names at the top level (bc flat scope) + the body RETURNING
+        // row exposed under `__entity` once the body runs. Defaults live in the
+        // declaration/schema, so NO ad-hoc code default is injected here.
+        $scope = $input;
+        $entity = null;
+
+        foreach ($statements as $stmt) {
+            if (!($stmt instanceof \stdClass)) {
+                continue;
+            }
+            $result = self::runOne($txCtx, $stmt, $scope, $executed, $dialect);
+
+            // Gate-first: a failing gate short-circuits — a NON-error ROLLBACK decision (the
+            // tail never runs; the combinator rolls back the owned connection).
+            $gate = $stmt->gate ?? null;
+            if (is_string($gate)) {
+                $reason = self::gateShortCircuit($gate, $result);
+                if ($reason !== null) {
+                    return rollbackWith([
+                        'committed' => false,
+                        'shortCircuit' => ['statementId' => (string) ($stmt->id ?? ''), 'reason' => $reason],
+                        'entity' => null,
+                        'executed' => $executed,
+                    ]);
+                }
+            }
+
+            // Capture the SOLE body RETURNING row as `$.entity` (WS5 single-write back-compat).
+            if ($entityFrom !== null && (string) ($stmt->id ?? '') === (string) $entityFrom) {
+                $entity = count($result['rows']) > 0 ? $result['rows'][0] : null;
+                if ($entity instanceof \stdClass) {
+                    $scope[self::ENTITY_ROOT] = $entity;
+                }
+            }
+
+            // WS8a composite: bind THIS statement's RETURNING row under its `binds` name so a
+            // later `$.ref.<binds>.<field>` resolves against it (the tx-DAG data-dependency
+            // edge). Self-describing — bind the row the plan named; no re-derivation.
+            $binds = $stmt->binds ?? null;
+            if (is_string($binds) && count($result['rows']) > 0) {
+                $row = $result['rows'][0];
+                if ($row instanceof \stdClass) {
+                    $scope[$binds] = $row;
+                }
+            }
+
+            if ($isBatch && ($stmt->role ?? '') === 'body' && count($result['rows']) > 0) {
+                $returnedRows[] = array_map([self::class, 'entityToArray'], $result['rows']);
+            }
+        }
+        $out = [
+            'committed' => true,
+            'entity' => self::entityToArray($entity),
+            'executed' => $executed,
+        ];
+        if (count($returnedRows) > 0) {
+            $out['returnedRows'] = $returnedRows;
+        }
+        return commit($out);
     }
 
     /**

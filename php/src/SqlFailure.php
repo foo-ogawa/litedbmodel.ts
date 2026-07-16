@@ -25,13 +25,28 @@ final class SqlFailure extends \RuntimeException
     public const KIND_RETRYABLE = 'retryable';
     public const KIND_DRIVER = 'driver_error';
 
+    /**
+     * @param \Throwable|null $wrapped the ORIGINAL concrete driver error (a live {@see \PDOException})
+     *        when this failure maps a live-DB error (Phase B / #85). {@see fromPdo()} flattens the
+     *        driver TEXT into the message, but a text string is OPAQUE to a TYPED classifier — so
+     *        {@see \LiteDbModel\Runtime\isRetryableTxError()}'s SQLSTATE/errno extraction (the robust,
+     *        driver-version-independent classifier) would be DEAD CODE unless the concrete error stays
+     *        reachable. `$wrapped` (the go `SqlFailure.Unwrap()` analogue) re-exposes it so the
+     *        classifier reads `errorInfo` (PG SQLSTATE / MySQL errno) even at COMMIT time (where a PG
+     *        40001 write-skew / MySQL 1213 deadlock surfaces). It is ALSO threaded as the exception
+     *        `$previous` so `getPrevious()` reaches the same concrete error. `null` for a synthetic
+     *        failure or an in-proc SQLite error (which carries its own `sqliteCode`). This attribute
+     *        never touches the byte-identical conformance surface (the corpus compares the encoded
+     *        result, never the error object).
+     */
     public function __construct(
         public readonly string $kind,
         public readonly string $policy,
         public readonly ?string $sqliteCode,
         string $message,
+        public readonly ?\Throwable $wrapped = null,
     ) {
-        parent::__construct($message);
+        parent::__construct($message, 0, $wrapped);
     }
 
     /**
@@ -39,15 +54,20 @@ final class SqlFailure extends \RuntimeException
      * constraint / FK kinds (policy `fail` — a data conflict is not retryable); `SQLITE_BUSY` /
      * `SQLITE_LOCKED` map to `retryable` (policy `retry`); anything else maps to `driver_error`
      * (policy `fail`), preserving the original message (errors.ts `mapSqliteError`).
+     *
+     * A NON-SQLite (live PG/MySQL) driver error retains the concrete {@see \PDOException} as
+     * `$wrapped` so the TYPED retryable classifier can reach its `errorInfo` SQLSTATE/errno through the
+     * mapped failure (Phase B / #85 typed-retryable path). This is the branch a PG 40001 raised at
+     * COMMIT lands in.
      */
     public static function fromPdo(\PDOException $e): self
     {
         $code = self::sqliteCodeOf($e);
         $message = $e->getMessage();
         if ($code === null) {
-            return new self(self::KIND_DRIVER, 'fail', null, "non-SQLite driver error: {$message}");
+            return new self(self::KIND_DRIVER, 'fail', null, "non-SQLite driver error: {$message}", $e);
         }
-        return self::fromCode($code, $message);
+        return self::fromCode($code, $message, $e);
     }
 
     /**
@@ -55,19 +75,19 @@ final class SqlFailure extends \RuntimeException
      * and by the boundary re-map (errors.ts `mapSqliteError` code path) — the message embeds the
      * `[SQLITE_*]` tag so it survives being wrapped by bc's `runPlan` `OP_FAILED`.
      */
-    public static function fromCode(string $code, string $message): self
+    public static function fromCode(string $code, string $message, ?\Throwable $wrapped = null): self
     {
         $tagged = "[{$code}] {$message}";
         if ($code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
-            return new self(self::KIND_FOREIGN_KEY, 'fail', $code, $tagged);
+            return new self(self::KIND_FOREIGN_KEY, 'fail', $code, $tagged, $wrapped);
         }
         if (str_starts_with($code, 'SQLITE_CONSTRAINT')) {
-            return new self(self::KIND_CONSTRAINT, 'fail', $code, $tagged);
+            return new self(self::KIND_CONSTRAINT, 'fail', $code, $tagged, $wrapped);
         }
         if ($code === 'SQLITE_BUSY' || $code === 'SQLITE_LOCKED') {
-            return new self(self::KIND_RETRYABLE, 'retry', $code, $tagged);
+            return new self(self::KIND_RETRYABLE, 'retry', $code, $tagged, $wrapped);
         }
-        return new self(self::KIND_DRIVER, 'fail', $code, $tagged);
+        return new self(self::KIND_DRIVER, 'fail', $code, $tagged, $wrapped);
     }
 
     /**

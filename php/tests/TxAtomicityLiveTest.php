@@ -105,7 +105,7 @@ final class TxAtomicityLiveTest extends TestCase
 
         // The PRODUCTION path: executeTransactionBundle → withTransactionDecided → owned connection.
         try {
-            Runtime::executeTransactionBundle($bundle, [], $db);
+            Runtime::executeTransactionBundleInternal($bundle, [], $db);
             $this->fail("[$dialect] expected the 2nd INSERT (duplicate PK) to raise a driver failure");
         } catch (SqlFailure $e) {
             $this->addToAssertionCount(1); // the driver failure surfaced (mapped)
@@ -130,7 +130,7 @@ final class TxAtomicityLiveTest extends TestCase
         $mutated = new MisRoutingContext(new PdoDriver($db), new MiddlewareChain(), new PdoConnection($autocommit));
 
         try {
-            Runtime::executeTransactionBundle($bundle, [], $mutated);
+            Runtime::executeTransactionBundleInternal($bundle, [], $mutated);
             // The 2nd insert also mis-routes to autocommit; the duplicate PK still raises there.
         } catch (\Throwable) {
             // ignore — we only care that the FIRST write leaked past the rollback.

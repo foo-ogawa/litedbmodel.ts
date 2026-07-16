@@ -168,7 +168,9 @@ function runTx(PDO $db, \stdClass $bundle, \stdClass $v, string $txExpectedKey):
     // A write may GENUINELY diverge by dialect (DELETE…RETURNING returns rows on PG, [] on MySQL);
     // the mysql leg then carries `expectedResultMysql`. Fall back to the shared `expectedResult`.
     $expected = isset($v->{$txExpectedKey}) ? $v->{$txExpectedKey} : $v->expectedResult;
-    $result = Runtime::executeTransactionBundle($bundle, inputToScope($v->input), $db);
+    // write=tx guard is opted OUT here via the INTERNAL executor — the livedb runner IS the per-command
+    // auto-tx boundary (no user transaction()), byte-identical to Phase A.
+    $result = Runtime::executeTransactionBundleInternal($bundle, inputToScope($v->input), $db);
     $resultOk = valuesEqual($result, $expected);
     $stateOk = true;
     $detail = [];

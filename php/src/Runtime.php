@@ -95,9 +95,16 @@ final class Runtime
 
     /**
      * Execute a §8 write-tx `SqlBundle`'s derived transaction plan as ONE real transaction with
-     * gate-first short-circuit (runtime.ts `executeTransactionBundle` + write-runtime.ts
-     * `executeTransaction`). Consumes ONLY the serialized `TransactionPlan` (pure JSON) + the
-     * render pipeline + PDO.
+     * gate-first short-circuit — the PUBLIC write entry (runtime.ts `executeTransactionBundle` +
+     * write-runtime.ts `executeTransaction`). It is ALWAYS write=tx-guarded: a write issued OUTSIDE a
+     * {@see transaction()} boundary throws {@see WriteOutsideTransactionError}; one in a read-only
+     * scope throws {@see WriteInReadOnlyContextError}. There is deliberately NO `guard` knob on this
+     * public surface (mirror go's public `ExecuteTransactionBundle` / TS `executeTransactionBundle` /
+     * python's `execute_transaction_bundle`, none of which expose a guard opt-out; per the #86
+     * send-off — never expose `guard:false` on a user-facing write facade, v1 `@internal
+     * _checkWriteAllowed` treatment). The internal per-command auto-tx paths (conformance / livedb /
+     * ownership) use {@see executeTransactionBundleInternal()} with `guard=false`. Consumes ONLY the
+     * serialized `TransactionPlan` (pure JSON) + the render pipeline + PDO.
      *
      * @param \stdClass $bundle
      * @param array<string,mixed> $input
@@ -105,13 +112,40 @@ final class Runtime
      */
     public static function executeTransactionBundle(\stdClass $bundle, array $input, \PDO|ExecutionContext $db): array
     {
+        return self::runTransactionBundle($bundle, $input, $db, true);
+    }
+
+    /**
+     * @internal INTERNAL write executor with the guard opt-out — NOT part of the public surface. Used
+     *           ONLY by the conformance / livedb / ownership per-command auto-tx runners, which run a
+     *           write WITHOUT a user {@see transaction()} boundary (they ARE the boundary, byte-identical
+     *           to Phase A). Reached ONLY here, never through the public
+     *           {@see executeTransactionBundle()} (per the #86 audit send-off — the `guard=false`
+     *           opt-out stays off every user-facing write entry).
+     *
+     * @param \stdClass $bundle
+     * @param array<string,mixed> $input
+     * @return array{committed:bool, shortCircuit?:array{statementId:string,reason:string}, entity:?array<string,mixed>, executed:list<string>}
+     */
+    public static function executeTransactionBundleInternal(\stdClass $bundle, array $input, \PDO|ExecutionContext $db): array
+    {
+        return self::runTransactionBundle($bundle, $input, $db, false);
+    }
+
+    /**
+     * @param \stdClass $bundle
+     * @param array<string,mixed> $input
+     * @return array{committed:bool, shortCircuit?:array{statementId:string,reason:string}, entity:?array<string,mixed>, executed:list<string>}
+     */
+    private static function runTransactionBundle(\stdClass $bundle, array $input, \PDO|ExecutionContext $db, bool $guard): array
+    {
         $plan = $bundle->transaction ?? null;
         if (!($plan instanceof \stdClass)) {
             throw new \RuntimeException(
                 'scp write: this bundle carries no transaction plan (not a write-time-relations Command bundle)'
             );
         }
-        return WriteRuntime::executeTransaction(Context::of($db), $plan, $input, Dialect::forName((string) $bundle->dialect));
+        return WriteRuntime::executeTransaction(Context::of($db), $plan, $input, Dialect::forName((string) $bundle->dialect), $guard);
     }
 
     /**
