@@ -29,8 +29,15 @@ import {
   rawExecute,
   rawQuery,
   clearMiddlewares,
+  read,
+  publishBehaviors,
+  SemanticBehavior,
+  components,
+  whereEq,
   type ExecutionContext,
 } from '../../src/scp';
+
+const L = components();
 
 function freshDb(): Database.Database {
   const db = new Database(':memory:');
@@ -106,8 +113,8 @@ describe('Phase D — SQL-level execute hook (D1)', () => {
     const ctx = contextForDriver(db);
     withMiddlewareScope(() => {
       use(createMiddleware({
-        execute: function (_next, _sql, _params) {
-          // Do NOT call next — short-circuit with a synthetic row list.
+        execute: function () {
+          // Do NOT call next — short-circuit with a synthetic row list (next/sql/params ignored).
           return [{ id: 99, name: 'synthetic' }];
         },
       }));
@@ -171,6 +178,74 @@ describe('Phase D — SQL-level execute hook (D1)', () => {
       seamExecute(ctx, 'SELECT 3', []);
       expect(mw.state().count).toBe(1);
     });
+  });
+});
+
+// ── D1 END-TO-END: a real multi-node `.map` relation read fans out to relation-batch
+//    statements — prove the middleware observes the relation-batch SQL, not just the primary
+//    read. This is the reference relation-coverage test the ports (#93-96) copy. The primary
+//    read AND the hasMany relation batch both funnel through `runRelationOp → seamExecute`, so a
+//    registered SQL middleware sees BOTH. (`read(...)` wraps the raw driver via `contextForDriver`,
+//    which sources the ambient registry — the relation batch is NOT a driver-direct call.)
+
+/** A parent behavior whose typed-object read declares a hasMany relation (`kids`) — a multi-node read. */
+class RelBehavior extends SemanticBehavior {
+  static columns = {
+    parent: { id: 'INTEGER', name: 'TEXT' },
+    child: { id: 'INTEGER', parent_id: 'INTEGER', label: 'TEXT' },
+  } as const;
+  Parents($: { pid: unknown }) {
+    return L.Select({ table: 'parent', select: ['id', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' });
+  }
+}
+
+function relDb(): Database.Database {
+  const db = new Database(':memory:');
+  db.exec('CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT)');
+  db.exec('CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER, label TEXT)');
+  db.exec("INSERT INTO parent VALUES (1,'p')");
+  db.exec("INSERT INTO child VALUES (10,1,'a'),(11,1,'b')");
+  return db;
+}
+
+const REL = {
+  name: 'kids', kind: 'hasMany', targetTable: 'child',
+  select: ['id', 'parent_id', 'label'], parentKey: 'id', targetKey: 'parent_id', dialect: 'sqlite',
+} as never;
+
+describe('Phase D — SQL-level hook over a real relation-batch read (D1 end-to-end)', () => {
+  beforeEach(() => clearMiddlewares());
+
+  it('a registered middleware observes the relation-BATCH SQL of a multi-node `.map` relation read', () => {
+    const db = relDb();
+    const contract = publishBehaviors(RelBehavior);
+    const seen: string[] = [];
+    let rows: Record<string, unknown>[] = [];
+    withMiddlewareScope(() => {
+      use(createMiddleware({ execute: function (next, sql, params) { seen.push(sql); return next(sql, params); } }));
+      // A typed-object relation read: the primary SELECT on `parent` PLUS the hasMany batch SELECT on
+      // `child` (fan-out over the parent keys). Both funnel through the seam.
+      rows = read(contract, { pid: 1 }, { db, entry: 'Parents', relations: [REL], with: { kids: true } }) as Record<string, unknown>[];
+    });
+    db.close();
+    // The relation actually loaded (2 children under parent 1) — a genuine multi-node read.
+    expect((rows[0].kids as Record<string, unknown>[]).map((k) => k.label)).toEqual(['a', 'b']);
+    // The middleware saw the primary read AND the relation-batch SELECT (querying the child table).
+    const relBatchSql = seen.find((s) => /from\s+child/i.test(s));
+    expect(relBatchSql).toBeDefined();
+    expect(seen.some((s) => /from\s+parent/i.test(s))).toBe(true);
+  });
+
+  it('RED proof: without registration, the relation-batch SQL is NOT observed', () => {
+    const db = relDb();
+    const contract = publishBehaviors(RelBehavior);
+    const seen: string[] = [];
+    // No middleware registered → the relation batch runs as a byte-identical passthrough.
+    const rows = read(contract, { pid: 1 }, { db, entry: 'Parents', relations: [REL], with: { kids: true } }) as Record<string, unknown>[];
+    db.close();
+    // The read still WORKS (byte-identical) — the relation loaded — but nothing was observed.
+    expect((rows[0].kids as Record<string, unknown>[]).length).toBe(2);
+    expect(seen.find((s) => /from\s+child/i.test(s))).toBeUndefined();
   });
 });
 
