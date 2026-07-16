@@ -70,6 +70,7 @@ import {
   resolvePool,
 } from './connection-routing';
 import type { Dialect } from './makesql/handler';
+import { activeSqlMiddlewares } from './middleware';
 
 // ── Statement intent & the driver contact (§5) ────────────────────────────────
 
@@ -138,31 +139,46 @@ export type SeamNext<T> = (sql: string, params: readonly unknown[]) => T;
 export type Middleware<T> = (sql: string, params: readonly unknown[], next: SeamNext<T>) => T;
 
 /**
+ * A source of the CURRENT SQL-level middleware stack, resolved at `wrap` time (§4, Phase D). A ctx
+ * built by the backward-compat factories carries a source that reads the ambient/global
+ * {@link import('./middleware').MiddlewareRegistry} — so a middleware registered AFTER the ctx was
+ * built (the normal `DBModel.use(...)`-then-query order) is still seen, and a per-context registry
+ * override (concurrent-request isolation) is honored. Absent ⇒ a fixed (possibly empty) stack.
+ */
+export type MiddlewareStackSource = () => readonly Middleware<unknown>[];
+
+/**
  * The ordered middleware chain a ctx carries (§4). `wrap` folds the middlewares around `next`
  * (the connection-resolve + execute terminal). An EMPTY chain is a pure passthrough — `wrap`
- * returns `next(sql, params)` verbatim, so Phase A behavior is byte-identical. The chain is
+ * returns `next(sql, params)` verbatim, so an unregistered chain is byte-identical. The chain is
  * generic over the seam result type `T` so ONE shape serves both the sync (`Rows`/`RunInfo`) and
  * async (`Promise<…>`) seams.
+ *
+ * The stack is resolved by a {@link MiddlewareStackSource} at EACH `wrap` (Phase D) rather than
+ * captured at construction, so registration (`DBModel.use`) that happens after the ctx is built is
+ * still honored and per-execution-scope registries (concurrent isolation) resolve correctly. A chain
+ * constructed with an explicit fixed stack (or none) still works — that stack is its constant source.
  */
 export class MiddlewareChain {
-  /** The registered middlewares, outermost first (Phase A: always empty). */
-  private readonly stack: readonly Middleware<unknown>[];
+  /** Resolve the CURRENT registered SQL-level middlewares, outermost first, at `wrap` time. */
+  private readonly source: MiddlewareStackSource;
 
-  constructor(stack: readonly Middleware<unknown>[] = []) {
-    this.stack = stack;
+  constructor(stackOrSource: readonly Middleware<unknown>[] | MiddlewareStackSource = []) {
+    this.source = typeof stackOrSource === 'function' ? stackOrSource : () => stackOrSource;
   }
 
-  /** Is the chain empty (⇒ `wrap` is a guaranteed passthrough)? */
+  /** Is the chain empty RIGHT NOW (⇒ this `wrap` is a guaranteed passthrough)? */
   get isEmpty(): boolean {
-    return this.stack.length === 0;
+    return this.source().length === 0;
   }
 
   /** Fold the chain around `next`, then invoke it. Empty chain ⇒ `next(sql, params)` verbatim. */
   wrap<T>(sql: string, params: readonly unknown[], next: SeamNext<T>): T {
-    if (this.stack.length === 0) return next(sql, params);
+    const stack = this.source();
+    if (stack.length === 0) return next(sql, params);
     let fn = next as SeamNext<unknown>;
-    for (let i = this.stack.length - 1; i >= 0; i--) {
-      const mw = this.stack[i];
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const mw = stack[i];
       const inner = fn;
       fn = (s, p) => mw(s, p, inner);
     }
@@ -315,21 +331,24 @@ class BasicContext implements ExecutionContext {
 
 /**
  * **Backward-compat wrapper (§6).** Wrap a raw better-sqlite3 `Database` in a thin
- * {@link ExecutionContext}: reader = writer = the same driver, an EMPTY middleware chain, a single
- * DB. Existing callers (conformance / livedb / bench / unit that pass a raw driver) keep working
- * **byte-identically** — the seam is a pure passthrough to `driver.prepare(...).all()/run()`.
+ * {@link ExecutionContext}: reader = writer = the same driver, a single DB. Its middleware chain
+ * resolves the ambient/global SQL-level {@link import('./middleware').MiddlewareRegistry} at wrap
+ * time (Phase D), so a middleware registered via `DBModel.use(...)` intercepts the SQL — and, when
+ * NO middleware is registered, the chain is empty and the seam is a pure passthrough to
+ * `driver.prepare(...).all()/run()`, i.e. **byte-identical** (the conformance/livedb runners
+ * register none, so they are unchanged).
  */
 export function contextForDriver(driver: SqliteDriver): ExecutionContext {
-  return new BasicContext(connectionForDriver(driver), new MiddlewareChain(), null);
+  return new BasicContext(connectionForDriver(driver), new MiddlewareChain(activeSqlMiddlewares), null);
 }
 
 /**
  * Build a sync ctx directly over a {@link SyncConnection} (for a caller that already owns a
- * connection adapter — e.g. a non-better-sqlite3 sync backend). Same single-DB / empty-middleware
+ * connection adapter — e.g. a non-better-sqlite3 sync backend). Same single-DB / ambient-middleware
  * shape as {@link contextForDriver}.
  */
 export function contextForConnection(conn: SyncConnection): ExecutionContext {
-  return new BasicContext(conn, new MiddlewareChain(), null);
+  return new BasicContext(conn, new MiddlewareChain(activeSqlMiddlewares), null);
 }
 
 // ── Async ctx (live PG / MySQL) — per-execution connection ownership (§3) ──────
@@ -377,7 +396,7 @@ export class PooledAsyncContext implements AsyncExecutionContext {
    * reader === writer, sticky disabled — byte-identical to Phase A/B) OR a full {@link RoutingConfig}
    * (Phase C: reader/writer separation + writer-sticky + named-DB routing).
    */
-  constructor(poolOrRouting: AsyncConnectionPool | RoutingConfig, middleware: MiddlewareChain = new MiddlewareChain()) {
+  constructor(poolOrRouting: AsyncConnectionPool | RoutingConfig, middleware: MiddlewareChain = new MiddlewareChain(activeSqlMiddlewares)) {
     this.middleware = middleware;
     this.routing = isRoutingConfig(poolOrRouting)
       ? poolOrRouting

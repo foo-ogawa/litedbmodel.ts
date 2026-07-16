@@ -225,10 +225,48 @@ export type {
   AsyncConnection,
   AsyncConnectionPool,
   Middleware,
+  MiddlewareStackSource,
   SeamNext,
   SqliteDriver,
   TxOptions,
 } from './exec-context';
+
+// ── Phase D (#92): the MIDDLEWARE layer on the Phase A seam. The API REFERENCE the native ports
+// (#93-96) mirror: registration (`use`/`createMiddleware`), the SQL-level `execute(next, sql, params)`
+// chain contract + applied order (first-registered = outermost), method-level hooks keyed by op kind
+// (`runMethod`), per-execution-scope isolation (`withMiddlewareScope`, TS AsyncLocalStorage), the
+// standard `Logger`, and the raw `execute`/`query` API that goes THROUGH the seam. An unregistered
+// chain is a byte-identical passthrough (conformance/livedb register none ⇒ unchanged).
+export {
+  Registry,
+  currentRegistry,
+  withMiddlewareScope,
+  activeSqlMiddlewares,
+  register,
+  use,
+  createMiddleware,
+  runMethod,
+  Logger,
+  rawExecute,
+  rawExecuteAsync,
+  rawQuery,
+  rawQueryAsync,
+  clearMiddlewares,
+} from './middleware';
+export type {
+  SqlHook,
+  MethodKind,
+  MethodHook,
+  MethodNext,
+  MiddlewareDescriptor,
+  MiddlewareHandle,
+  MiddlewareConfig,
+  MethodHookFn,
+  SqlNext,
+  LogEntry,
+  LoggerOptions,
+  RawResult,
+} from './middleware';
 
 // ── Phase C (#87): connection routing + config. The API REFERENCE the native ports (#88-91) mirror.
 // Completes `connectionFor(intent)`'s resolution (§3 steps 2-4): reader/writer separation + writer-
