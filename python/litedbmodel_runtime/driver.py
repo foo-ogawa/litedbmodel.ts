@@ -218,7 +218,7 @@ class _ConnectionPool:
     concurrent sibling its own connection.
     """
 
-    __slots__ = ("_factory", "_max", "_free", "_opened", "_lock")
+    __slots__ = ("_factory", "_max", "_free", "_opened", "_lock", "_closed")
 
     def __init__(self, factory, max_size: int) -> None:
         import queue as _queue
@@ -229,10 +229,17 @@ class _ConnectionPool:
         self._free: "Any" = _queue.LifoQueue()
         self._opened = 0
         self._lock = _threading.Lock()
+        # Fail-fast after close(): a post-close acquire must RAISE, not block forever on `_free.get()`
+        # (the pool is drained and nothing will be released). Additive — the Phase A/B paths never
+        # acquire after close, so behavior there is unchanged; Phase C's close_all_pools relies on it so
+        # a query on a closed pool fails loudly (mirror the TS pool.end() → query rejects).
+        self._closed = False
 
     def acquire(self) -> Any:
         import queue as _queue
 
+        if self._closed:
+            raise RuntimeError("scp connection pool: acquire after close (the pool has been closed)")
         # Fast path: reuse a free connection.
         try:
             return self._free.get_nowait()
@@ -240,6 +247,8 @@ class _ConnectionPool:
             pass
         # Open a new one if below the ceiling; else wait for a release.
         with self._lock:
+            if self._closed:
+                raise RuntimeError("scp connection pool: acquire after close (the pool has been closed)")
             if self._opened < self._max:
                 self._opened += 1
                 return self._factory()
@@ -266,6 +275,7 @@ class _ConnectionPool:
     def close(self) -> None:
         import queue as _queue
 
+        self._closed = True  # fail-fast: a subsequent acquire raises instead of blocking on a drained pool
         while True:
             try:
                 conn = self._free.get_nowait()

@@ -229,16 +229,27 @@ class ExecutionContext:
     transaction pins its owned connection into a derived ctx and runs the body inside
     :func:`run_with_pinned_context`, so a concurrent execution scope (a distinct thread) sees its OWN
     contextvar value — its own tx connection — never another's.
+
+    ## Phase C routing (#90) — reader/writer + named-DB + writer-sticky
+
+    An OPTIONAL ``routing`` (a ``litedbmodel_runtime.connection_routing.RoutingConfig``) completes
+    ``connection_for``'s resolution steps 2-4 (reader/writer split, named-DB, writer-sticky). Absent ⇒
+    the byte-identical Phase A/B single-``driver`` path (``context_for_driver`` builds NO routing). The
+    active-tx pin STILL wins over routing (step 1) — a named-DB transaction runs entirely on ONE pinned
+    writer connection (Phase B unbroken). Only when routing IS present does ``connection_for`` consult
+    the registry; the driver-only ctors keep working unchanged.
     """
 
-    __slots__ = ("_driver", "middleware", "_pinned", "_read_only")
+    __slots__ = ("_driver", "middleware", "_pinned", "_read_only", "_routing", "_connection")
 
     def __init__(
         self,
-        driver: Driver,
+        driver: Optional[Driver],
         middleware: MiddlewareChain,
         pinned: Optional[Connection] = None,
         read_only: bool = False,
+        routing: Optional[Any] = None,
+        connection: Optional[str] = None,
     ) -> None:
         self._driver = driver
         self.middleware = middleware
@@ -248,12 +259,26 @@ class ExecutionContext:
         # `withReadOnly` ALS marker / rust/go `read_only`): a write in a read-only-scoped ctx is
         # REJECTED (WriteInReadOnlyContextError). Derived via `with_read_only`.
         self._read_only = read_only
+        # Phase C (#90): the OPTIONAL routing config (registry + writer-sticky clock). None ⇒ the
+        # single-driver Phase A/B path (byte-identical). Typed loosely (Any) to avoid a circular import
+        # with connection_routing (which imports Connection/StatementIntent from here).
+        self._routing = routing
+        # Phase C-2: the named-DB this ctx's transactions route to (the tx acquires from THIS named
+        # connection's writer pool). None ⇒ the default connection. Ignored when routing is None.
+        self._connection = connection
 
     @property
-    def driver(self) -> Driver:
+    def driver(self) -> Optional[Driver]:
         """The primary driver (for the pooled read fan-out, which needs a thread-shared driver — the
-        tx path never fans out, so this is the non-tx provider)."""
+        tx path never fans out, so this is the non-tx provider). ``None`` for a routing-only ctx built
+        via ``set_config`` (the routed tx path acquires from the target connection's writer pool)."""
         return self._driver
+
+    @property
+    def routing(self) -> Optional[Any]:
+        """The Phase C routing config (registry + writer-sticky clock), or ``None`` on the single-driver
+        Phase A/B path."""
+        return self._routing
 
     def in_transaction(self) -> bool:
         """Is this a tx-scoped ctx (a pinned connection is present)? This is the Python analogue of
@@ -273,25 +298,79 @@ class ExecutionContext:
         (:func:`run_guarded` / a guarded ``execute_transaction_bundle``) is rejected with
         :class:`WriteInReadOnlyContextError`. A tx-scoped ctx INHERITS its pinned connection + driver +
         middleware; a Transaction() opened inside a read-only scope stays read-only (v1 parity)."""
-        return ExecutionContext(self._driver, self.middleware, self._pinned, read_only=True)
+        return ExecutionContext(
+            self._driver, self.middleware, self._pinned, read_only=True, routing=self._routing, connection=self._connection
+        )
 
     def connection_for(self, intent: StatementIntent = READ_INTENT) -> Connection:
-        """Resolve WHICH connection a statement runs on (§3). Phase A resolution: the tx-owned
-        (pinned) connection wins; else the primary driver. Reader/writer split (§3-2/3) + named-DB
-        routing (§3-4) extend HERE in B/C/D — the seam does not change.
+        """Resolve WHICH connection a statement runs on (§3). Resolution order (first match wins):
+
+          1. the tx-owned (pinned) connection — inside a tx it ALWAYS wins (Phase A / B). A named-DB
+             transaction runs entirely on this ONE pinned writer connection (Phase B unbroken).
+          2-4. when Phase C routing is present: named-DB → reader/writer split → writer-sticky/withWriter
+             (:func:`litedbmodel_runtime.connection_routing.resolve_pool`), running the statement on ONE
+             pooled connection per statement (the read fan-out).
+          otherwise (no routing): the primary driver — the byte-identical Phase A/B single-DB path.
         """
         if self._pinned is not None:
             return self._pinned
+        if self._routing is not None:
+            # Phase C (#90): named-DB → reader/writer → writer-sticky. Lazy import avoids the circular
+            # dependency (connection_routing imports Connection/StatementIntent from this module).
+            from .connection_routing import PoolConnection, resolve_pool
+
+            return PoolConnection(resolve_pool(intent, self._routing))
         return DriverConnection(self._driver)
 
     def with_connection(self, conn: Connection, tx: bool) -> "ExecutionContext":
         """Derive a tx-scoped ctx pinning ``conn`` (every statement resolves it while ``tx`` is True).
-        The derived ctx shares the primary driver + middleware chain, and INHERITS the read-only
-        marker (a tx opened inside a read-only scope stays read-only — v1 parity). This is the Python
-        analogue of the TS ``withConnection(conn, tx)`` / go ``WithTxConnection`` / rust
+        The derived ctx shares the primary driver + middleware chain + routing, and INHERITS the
+        read-only marker (a tx opened inside a read-only scope stays read-only — v1 parity). This is the
+        Python analogue of the TS ``withConnection(conn, tx)`` / go ``WithTxConnection`` / rust
         ``with_tx_connection``.
         """
-        return ExecutionContext(self._driver, self.middleware, conn if tx else None, read_only=self._read_only)
+        return ExecutionContext(
+            self._driver,
+            self.middleware,
+            conn if tx else None,
+            read_only=self._read_only,
+            routing=self._routing,
+            connection=self._connection,
+        )
+
+    def with_connection_name(self, connection: Optional[str]) -> "ExecutionContext":
+        """Derive a ctx whose transactions route to the NAMED connection ``connection`` (Phase C-2): the
+        routed tx path acquires the tx-owned connection from THIS named connection's writer pool. ``None``
+        ⇒ the default connection. A no-op shape change on the single-driver path (routing is ``None``)."""
+        return ExecutionContext(
+            self._driver,
+            self.middleware,
+            self._pinned,
+            read_only=self._read_only,
+            routing=self._routing,
+            connection=connection,
+        )
+
+    def begin_tx(self, before: Sequence[str] = (), after: Sequence[str] = ()) -> "TxConnection":
+        """Acquire the OWNED tx connection for THIS ctx (§3). On the single-driver Phase A/B path this
+        delegates to ``driver.begin_tx``. When Phase C routing is present the tx acquires ONE connection
+        from the target NAMED connection's WRITER pool (:attr:`_connection` → the writer pool of that
+        registry pair), so a named-DB transaction runs entirely on ONE pinned writer connection — the
+        active-tx pin then wins over routing for every statement in the body (Phase B unbroken)."""
+        if self._routing is not None:
+            from .connection_routing import routed_begin_tx
+
+            return routed_begin_tx(self._routing, self._connection, before, after)
+        if self._driver is None:
+            raise ValueError("scp exec-context: no driver and no routing config — cannot begin a transaction")
+        return self._driver.begin_tx(before, after)
+
+    def mark_sticky(self) -> None:
+        """Mark the writer-sticky clock (Phase C-1, read-your-writes): the tx runtime calls this on a
+        successful COMMIT so subsequent reads within ``writer_sticky_duration`` route to the writer pool.
+        A no-op on the single-driver path (no routing ⇒ no sticky clock)."""
+        if self._routing is not None:
+            self._routing.sticky.mark()
 
 
 # ── ctx propagation (§3) — the Python-idiomatic contextvars slot ──────────────
@@ -425,7 +504,7 @@ def with_transaction_decided(
     removed driver-global ``_writer``) violated. This mirrors the TS ``withTransactionAsync`` (#75) /
     rust ``with_transaction_decided`` (#76) / go ``WithTransactionDecided`` (#77).
     """
-    tx = ctx.driver.begin_tx(before, after)
+    tx = ctx.begin_tx(before, after)
     tx_ctx = ctx.with_connection(_TxConnectionAdapter(tx), True)
 
     def scoped() -> Any:
@@ -448,11 +527,16 @@ def with_transaction_decided(
                 raise
             if decision.rollback:
                 # A legitimate non-error rollback (e.g. a gate short-circuit): roll back, return value.
+                # A rollbackOnly (dry-run) tx committed NOTHING ⇒ it does NOT arm writer-stickiness.
                 tx.rollback()
                 destroy = False
                 return decision.value
             tx.commit()
             destroy = False
+            # WRITER-STICKY (Phase C-1, read-your-writes): a committed tx marks the sticky clock so
+            # subsequent reads within `writer_sticky_duration` route to the writer pool (v1
+            # `_lastTransactionTime`). A no-op on the single-driver path (no routing).
+            ctx.mark_sticky()
             return decision.value
         finally:
             # The SINGLE release point — runs on every path (success, body error, raising
@@ -485,9 +569,16 @@ def ambient_in_transaction() -> bool:
 
 def ambient_read_only() -> bool:
     """Is THIS execution scope a READ-ONLY context? Reads the ambient contextvar-propagated ctx's
-    read-only marker (the Python analogue of the TS ``withReadOnly`` async-local marker)."""
+    read-only marker (the Python analogue of the TS ``withReadOnly`` async-local marker), OR the
+    Phase C :func:`litedbmodel_runtime.connection_routing.with_writer` bare read-only marker (so a write
+    inside ``with_writer`` is rejected even when routing is not ctx-threaded — v1's writerContext is
+    both writer-routing and read-only)."""
     ambient = current_context()
-    return ambient is not None and ambient.read_only()
+    if ambient is not None and ambient.read_only():
+        return True
+    from .connection_routing import in_writer_read_only_scope
+
+    return in_writer_read_only_scope()
 
 
 def check_write_allowed_ambient(operation: str, model: Optional[str] = None) -> None:
@@ -525,6 +616,7 @@ def transaction(
     fn: Callable[[], _T],
     options: Optional[TransactionOptions] = None,
     dialect_name: str = "postgres",
+    connection: Optional[str] = None,
 ) -> _T:
     """**The public user-controlled transaction boundary** (#86, python port of the TS ``transaction``
     / rust ``transaction`` / go ``Transaction``) — the REAL transaction feature v2 was missing.
@@ -570,6 +662,11 @@ def transaction(
     # level is a hard error; an unsupported isolation must not open a tx it can't honor).
     before, after = isolation_prelude(dialect_name, opts.isolation)
 
+    # Phase C-2: route the transaction to a NAMED connection's writer pool (default when absent). On the
+    # single-driver path this is a no-op shape change. `begin_tx` (in with_transaction_decided) then
+    # acquires the tx-owned connection from that named connection's writer pool.
+    tx_ctx = ctx.with_connection_name(connection) if connection is not None else ctx
+
     retry_limit = 1
     if opts.retry_on_error:
         retry_limit = opts.retry_limit if opts.retry_limit >= 1 else 1
@@ -586,7 +683,7 @@ def transaction(
             return rollback(value) if opts.rollback_only else commit(value)
 
         try:
-            return with_transaction_decided(ctx, body, before, after)
+            return with_transaction_decided(tx_ctx, body, before, after)
         except (WriteOutsideTransactionError, WriteInReadOnlyContextError):
             # A guard rejection is a programming error, never retryable — re-raise immediately.
             raise
