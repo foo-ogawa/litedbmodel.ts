@@ -19,7 +19,8 @@
         "files": [
             "src/BehaviorContracts/Constants.php",
             "src/TxOptions.php",
-            "src/ExecutionContext.php"
+            "src/ExecutionContext.php",
+            "src/ConnectionRouting.php"
         ]
     },
     "autoload-dev": {
