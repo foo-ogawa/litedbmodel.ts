@@ -17,7 +17,8 @@
             "LiteDbModel\\Runtime\\": "src/"
         },
         "files": [
-            "src/BehaviorContracts/Constants.php"
+            "src/BehaviorContracts/Constants.php",
+            "src/ExecutionContext.php"
         ]
     },
     "autoload-dev": {

@@ -148,8 +148,9 @@ final class Relation
      * @param list<\stdClass> $parents
      * @return array<string, list<\stdClass>>
      */
-    public static function runRelationOp(\stdClass $op, array $parents, \PDO $db): array
+    public static function runRelationOp(\stdClass $op, array $parents, \PDO|ExecutionContext $db): array
     {
+        $ctx = Context::of($db);
         $dialect = (string) $op->dialect;
         $pCols = self::parentKeyCols($op);
         $keys = self::dedupeKeys($parents, $pCols);
@@ -166,9 +167,9 @@ final class Relation
             return $batch;
         }
         $tCols = self::targetKeyCols($op);
-        $stmt = $db->prepare($sql);
-        $stmt->execute(self::bindKeys($op, $keys));
-        $rows = $stmt->fetchAll(\PDO::FETCH_OBJ);
+        // The central READ seam (§2): the ONE driver contact for the relation batch. Byte-identical to
+        // the pre-seam `$db->prepare($sql)->execute(bindKeys)->fetchAll(OBJ)`.
+        $rows = execute($ctx, $sql, self::bindKeys($op, $keys));
         foreach (is_array($rows) ? $rows : [] as $row) {
             $tuple = array_map(static fn ($c) => $row->{$c} ?? null, $tCols);
             $k = self::keyIdentity($tuple);
@@ -211,13 +212,13 @@ final class Relation
      * has no registered driver (a real wiring bug — never a silent same-DB fallback that would run
      * the target's query on the wrong DB). Untagged relations use the primary $db.
      *
-     * @param array<string,\PDO> $connections
+     * @param array<string,ExecutionContext> $connections
      */
-    private static function driverForOp(\stdClass $op, \PDO $db, array $connections): \PDO
+    private static function driverForOp(\stdClass $op, ExecutionContext $ctx, array $connections): ExecutionContext
     {
         $tag = $op->connection ?? null;
         if ($tag === null) {
-            return $db;
+            return $ctx;
         }
         if (!isset($connections[$tag])) {
             throw new \RuntimeException(
@@ -241,12 +242,14 @@ final class Relation
      *
      * @param array<string,mixed> $input
      * @param list<string> $withNames
-     * @param array<string,\PDO> $connections
+     * @param array<string,\PDO|ExecutionContext> $connections
      * @return list<\stdClass>
      */
-    public static function readBundle(\stdClass $bundle, array $input, \PDO $db, array $withNames, array $connections = []): array
+    public static function readBundle(\stdClass $bundle, array $input, \PDO|ExecutionContext $db, array $withNames, array $connections = []): array
     {
-        $out = Runtime::executeBundle($bundle, $input, $db);
+        $ctx = Context::of($db);
+        $connCtx = array_map(static fn (\PDO|ExecutionContext $c): ExecutionContext => Context::of($c), $connections);
+        $out = Runtime::executeBundle($bundle, $input, $ctx);
         if (!is_array($out) || !array_is_list($out)) {
             throw new \RuntimeException(
                 'scp read: the read behavior output is not a row list; the typed-object read surface '
@@ -261,8 +264,8 @@ final class Relation
                 throw new \RuntimeException("declarative select: relation '{$name}' is not declared on this model");
             }
             $op = $relations->{$name};
-            $relDb = self::driverForOp($op, $db, $connections);
-            $batch = self::runRelationOp($op, $rows, $relDb);
+            $relCtx = self::driverForOp($op, $ctx, $connCtx);
+            $batch = self::runRelationOp($op, $rows, $relCtx);
             foreach ($rows as $o) {
                 $o->{$name} = self::distributeToParent($op, $o, $batch);
             }

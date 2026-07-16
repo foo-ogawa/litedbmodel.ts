@@ -29,6 +29,7 @@ require $root . '/php/src/BehaviorContracts/BehaviorFailure.php';
 require $root . '/php/src/BehaviorContracts/Behavior.php';
 require $root . '/php/src/Dialect.php';
 require $root . '/php/src/SqlFailure.php';
+require $root . '/php/src/ExecutionContext.php';
 require $root . '/php/src/StaticBundle.php';
 require $root . '/php/src/WriteRuntime.php';
 require $root . '/php/src/Runtime.php';

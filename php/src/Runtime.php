@@ -77,7 +77,7 @@ final class Runtime
      * @param array<string,mixed> $input the bound input scope.
      * @return mixed the component's Φ output.
      */
-    public static function executeBundle(\stdClass $bundle, array $input, \PDO $db): mixed
+    public static function executeBundle(\stdClass $bundle, array $input, \PDO|ExecutionContext $db): mixed
     {
         $readGraph = $bundle->readGraph ?? null;
         if (!($readGraph instanceof \stdClass)) {
@@ -87,7 +87,7 @@ final class Runtime
             );
         }
         try {
-            return StaticBundle::executeReadGraph($readGraph, $input, $db);
+            return StaticBundle::executeReadGraph($readGraph, $input, Context::of($db));
         } catch (\Throwable $e) {
             throw self::reErrorToSqlFailure($e);
         }
@@ -103,7 +103,7 @@ final class Runtime
      * @param array<string,mixed> $input
      * @return array{committed:bool, shortCircuit?:array{statementId:string,reason:string}, entity:?array<string,mixed>, executed:list<string>}
      */
-    public static function executeTransactionBundle(\stdClass $bundle, array $input, \PDO $db): array
+    public static function executeTransactionBundle(\stdClass $bundle, array $input, \PDO|ExecutionContext $db): array
     {
         $plan = $bundle->transaction ?? null;
         if (!($plan instanceof \stdClass)) {
@@ -111,7 +111,7 @@ final class Runtime
                 'scp write: this bundle carries no transaction plan (not a write-time-relations Command bundle)'
             );
         }
-        return WriteRuntime::executeTransaction($db, $plan, $input, Dialect::forName((string) $bundle->dialect));
+        return WriteRuntime::executeTransaction(Context::of($db), $plan, $input, Dialect::forName((string) $bundle->dialect));
     }
 
     /**
