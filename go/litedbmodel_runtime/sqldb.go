@@ -83,6 +83,10 @@ type SQLDB interface {
 type connSQLDB struct {
 	conn *sql.Conn
 	ctx  context.Context //nolint:containedctx // the owned-conn seam rides the tx's Go ctx (§3)
+	// cache is the tx's per-connection prepared-statement cache (present ⇒ the tx-owned path reuses a
+	// *sql.Stmt bound to THIS *sql.Conn across the tx body; nil ⇒ prepare-per-call, byte-identical).
+	// Every cached stmt is closed at tx teardown (the handles are bound to conn and must not outlive it).
+	cache *txStmtCache
 }
 
 func (c connSQLDB) Query(query string, args ...any) (*sql.Rows, error) {
@@ -91,6 +95,61 @@ func (c connSQLDB) Query(query string, args ...any) (*sql.Rows, error) {
 
 func (c connSQLDB) Exec(query string, args ...any) (sql.Result, error) {
 	return c.conn.ExecContext(c.ctx, query, args...)
+}
+
+// queryCached reuses a tx-cached *sql.Stmt via PREPARE-ON-REPEAT (see [txStmtCache]): a statement runs
+// DIRECTLY on first sight and is prepared+reused only when it REPEATS within the tx. A prepare failure
+// (e.g. a driver that refuses to PREPARE a tx-control verb) FALLS BACK to a direct QueryContext — it
+// never fails a statement the direct path would have run (byte-identical).
+func (c connSQLDB) queryCached(query string, args []any) (*sql.Rows, error) {
+	if c.cache != nil && cacheableStmt(query) {
+		if st, ok := c.cache.lookup(query); ok {
+			rows, qerr := st.QueryContext(c.ctx, args...)
+			if qerr != nil {
+				return nil, mapSqliteError(qerr)
+			}
+			return rows, nil
+		}
+		if st, err := c.cache.prepareRepeat(c.ctx, query); err == nil && st != nil {
+			rows, qerr := st.QueryContext(c.ctx, args...)
+			if qerr != nil {
+				return nil, mapSqliteError(qerr)
+			}
+			return rows, nil
+		}
+	}
+	rows, err := c.conn.QueryContext(c.ctx, query, args...)
+	if err != nil {
+		return nil, mapSqliteError(err)
+	}
+	return rows, nil
+}
+
+// execCached reuses a tx-cached *sql.Stmt via PREPARE-ON-REPEAT for a write; on first sight (or a
+// prepare failure) it runs directly via ExecContext (byte-identical). Tx-control (BEGIN/COMMIT/
+// ROLLBACK/SET) is excluded by cacheableStmt and always runs directly.
+func (c connSQLDB) execCached(query string, args []any) (sql.Result, error) {
+	if c.cache != nil && cacheableStmt(query) {
+		if st, ok := c.cache.lookup(query); ok {
+			res, eerr := st.ExecContext(c.ctx, args...)
+			if eerr != nil {
+				return nil, mapSqliteError(eerr)
+			}
+			return res, nil
+		}
+		if st, err := c.cache.prepareRepeat(c.ctx, query); err == nil && st != nil {
+			res, eerr := st.ExecContext(c.ctx, args...)
+			if eerr != nil {
+				return nil, mapSqliteError(eerr)
+			}
+			return res, nil
+		}
+	}
+	res, err := c.conn.ExecContext(c.ctx, query, args...)
+	if err != nil {
+		return nil, mapSqliteError(err)
+	}
+	return res, nil
 }
 
 // toDriverParam converts a rendered bc Value to a driver-bindable arg (render-path parity with
@@ -180,24 +239,42 @@ func scanValue(v any) bc.Value {
 }
 
 // queryRows runs a SELECT/RETURNING statement and returns the rows as ordered bc objects (column
-// order preserved via *bc.Obj), or a mapped SqlFailure.
+// order preserved via *bc.Obj), or a mapped SqlFailure. db.Query PREPAREs a fresh statement per call;
+// the cached seam ([cachedSQLDB]) reuses a prepared *sql.Stmt instead (byte-identical rows, one fewer
+// prepare round-trip).
 func queryRows(db SQLDB, query string, args []any) ([]bc.Value, error) {
+	if c, ok := db.(cachedSQLDB); ok {
+		rows, err := c.queryCached(query, args)
+		if err != nil {
+			return nil, err // already mapped by queryCached
+		}
+		return scanRows(rows)
+	}
 	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, mapSqliteError(err)
 	}
+	return scanRows(rows)
+}
+
+// scanRows drains a *sql.Rows into ordered bc objects (the shared scan the cached + uncached paths
+// use). It closes rows before returning (both paths hand it ownership).
+func scanRows(rows *sql.Rows) ([]bc.Value, error) {
 	defer rows.Close()
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, mapSqliteError(err)
 	}
+	// One reusable scan-target pair for the whole result set (raw cells + their pointers): rows.Scan
+	// overwrites raw[i] each row, and scanValue copies the cell out into the bc.Obj immediately, so the
+	// same backing arrays serve every row (fewer per-row allocations, byte-identical output).
+	raw := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range raw {
+		ptrs[i] = &raw[i]
+	}
 	var out []bc.Value
 	for rows.Next() {
-		raw := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range raw {
-			ptrs[i] = &raw[i]
-		}
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, mapSqliteError(err)
 		}
@@ -217,8 +294,18 @@ func queryRows(db SQLDB, query string, args []any) ([]bc.Value, error) {
 }
 
 // execWrite runs a non-returning write and returns (rowsAffected, lastInsertRowid), or a mapped
-// SqlFailure. Mirrors better-sqlite3's `run` → {changes, lastInsertRowid}.
+// SqlFailure. Mirrors better-sqlite3's `run` → {changes, lastInsertRowid}. db.Exec PREPAREs a fresh
+// statement per call; the cached seam ([cachedSQLDB]) reuses a prepared *sql.Stmt instead.
 func execWrite(db SQLDB, query string, args []any) (changes int64, lastInsert int64, err error) {
+	if c, ok := db.(cachedSQLDB); ok {
+		res, e := c.execCached(query, args)
+		if e != nil {
+			return 0, 0, e
+		}
+		changes, _ = res.RowsAffected()
+		lastInsert, _ = res.LastInsertId()
+		return changes, lastInsert, nil
+	}
 	res, e := db.Exec(query, args...)
 	if e != nil {
 		return 0, 0, mapSqliteError(e)
@@ -226,4 +313,15 @@ func execWrite(db SQLDB, query string, args []any) (changes int64, lastInsert in
 	changes, _ = res.RowsAffected()
 	lastInsert, _ = res.LastInsertId()
 	return changes, lastInsert, nil
+}
+
+// cachedSQLDB is a [SQLDB] that ALSO offers prepared-statement-cached execution: queryCached /
+// execCached reuse a cached *sql.Stmt for the SQL instead of re-preparing per call. The connection
+// adapters that own a stmt cache (the non-tx *sql.DB path, the tx-owned *sql.Conn path) implement it;
+// queryRows / execWrite prefer it and map driver errors themselves. Returned errors are ALREADY
+// mapped (mapSqliteError) so the seam surfaces the SAME failure shape as the uncached path.
+type cachedSQLDB interface {
+	SQLDB
+	queryCached(query string, args []any) (*sql.Rows, error)
+	execCached(query string, args []any) (sql.Result, error)
 }
