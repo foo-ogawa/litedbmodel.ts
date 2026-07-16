@@ -425,6 +425,18 @@ class ExecutionContext
     }
 
     /**
+     * The pinned tx connection (present ⇒ tx-scoped ctx; every statement resolves it), or `null`. The
+     * sanctioned accessor for the {@see connectionFor()} extension point (Phase C: the routing subclass
+     * {@see RoutingExecutionContext} reads it so STEP 1 — the tx pin — STILL wins before it applies
+     * reader/writer/named-DB routing; Phase B is not broken). Protected: only a ctx subclass resolving
+     * `connectionFor` needs it.
+     */
+    protected function pinnedConnection(): ?Connection
+    {
+        return $this->pinned;
+    }
+
+    /**
      * Is this a READ-ONLY-scoped ctx (Phase B / #85 write=tx guard)? A write here is REJECTED
      * ({@see WriteInReadOnlyContextError}). Derived via {@see withReadOnly()}.
      */
