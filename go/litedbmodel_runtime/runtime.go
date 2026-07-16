@@ -20,6 +20,7 @@
 package litedbmodel_runtime
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -97,6 +98,14 @@ func BundleFromJObj(obj *bc.JObj) (*SqlBundle, error) {
 // bundle + bc runtime-core, never re-running litedbmodel's Backend-Compile.
 func ExecuteBundle(bundle *SqlBundle, input *bc.Obj, db SQLDB) (bc.Value, error) {
 	return executeBundleCtx(ContextForDB(db), bundle, input)
+}
+
+// ExecuteBundleCtx is [ExecuteBundle] riding a caller-supplied (Phase D scoped) context.Context: the
+// read graph runs over an [ExecutionContext] whose middleware chain resolves THAT context's scope
+// registry ([ContextForDBCtx]), so a middleware registered inside a [WithMiddlewareScope] intercepts
+// every read SQL. With no middleware registered it is byte-identical to [ExecuteBundle].
+func ExecuteBundleCtx(goCtx context.Context, bundle *SqlBundle, input *bc.Obj, db SQLDB) (bc.Value, error) {
+	return executeBundleCtx(ContextForDBCtx(goCtx, db), bundle, input)
 }
 
 // executeBundleCtx is the ctx-threaded core of ExecuteBundle: it drives the read graph over an

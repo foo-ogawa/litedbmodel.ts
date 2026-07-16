@@ -133,25 +133,56 @@ type WriteMiddleware func(sql string, args []any, next SeamNext[RunInfo]) (RunIn
 
 // MiddlewareChain is the ordered middleware chain a ctx carries (§4). wrapRead/wrapWrite fold the
 // middlewares around `next` (the connection-resolve + execute terminal). An EMPTY chain is a pure
-// passthrough — wrap returns next(sql, args) verbatim, so Phase A behavior is byte-identical. Phase A
-// always constructs an empty chain; the registration API + native middleware entries are Phase D
-// (this is only the hook point).
+// passthrough — wrap returns next(sql, args) verbatim, so Phase A behavior is byte-identical.
+//
+// A chain resolves its middlewares from a [middlewareSource] at EACH wrap (mirror the TS
+// MiddlewareStackSource) rather than capturing a fixed slice at construction — so a middleware
+// REGISTERED after the ctx was built (the normal register-then-query order), and a per-execution-scope
+// registry (concurrent isolation, Phase D), are both honored. A nil source ⇒ a fixed empty chain (the
+// Phase A backward-compat passthrough: no registration surface ⇒ nothing to resolve ⇒ byte-identical).
 type MiddlewareChain struct {
-	read  []ReadMiddleware
-	write []WriteMiddleware
+	// source resolves the CURRENT SQL-level middlewares (read + write), outermost-first, at wrap time.
+	// nil ⇒ a guaranteed-empty passthrough chain (Phase A). Set by [ContextForDB] et al. to read the
+	// per-scope registry carried on the ctx's Go context.Context (Phase D).
+	source middlewareSource
 }
 
-// NewMiddlewareChain returns a new empty chain (Phase A default — pure passthrough).
+// middlewareSource resolves the live SQL-level middlewares (read + write slices, index 0 = outermost)
+// at each wrap. The Phase D registry-backed source reads the current execution scope's stack.
+type middlewareSource func() (read []ReadMiddleware, write []WriteMiddleware)
+
+// NewMiddlewareChain returns a new empty chain (Phase A default — a nil-source pure passthrough).
 func NewMiddlewareChain() *MiddlewareChain { return &MiddlewareChain{} }
 
-// IsEmpty reports whether the chain is empty (⇒ wrap is a guaranteed passthrough).
-func (m *MiddlewareChain) IsEmpty() bool { return len(m.read) == 0 && len(m.write) == 0 }
+// newSourcedChain returns a chain whose middlewares are resolved from `source` at each wrap (Phase D).
+func newSourcedChain(source middlewareSource) *MiddlewareChain {
+	return &MiddlewareChain{source: source}
+}
+
+// resolve returns the current read + write middleware slices (index 0 = outermost), or (nil, nil) for
+// a nil-source Phase A chain.
+func (m *MiddlewareChain) resolve() (read []ReadMiddleware, write []WriteMiddleware) {
+	if m.source == nil {
+		return nil, nil
+	}
+	return m.source()
+}
+
+// IsEmpty reports whether the chain is empty RIGHT NOW (⇒ this wrap is a guaranteed passthrough).
+func (m *MiddlewareChain) IsEmpty() bool {
+	read, write := m.resolve()
+	return len(read) == 0 && len(write) == 0
+}
 
 // wrapRead folds the READ chain around `next`, then invokes it. Empty ⇒ next(sql, args) verbatim.
 func (m *MiddlewareChain) wrapRead(sql string, args []any, next SeamNext[[]bc.Value]) ([]bc.Value, error) {
+	read, _ := m.resolve()
+	if len(read) == 0 {
+		return next(sql, args) // fast path: no middleware ⇒ byte-identical passthrough
+	}
 	fn := next
-	for i := len(m.read) - 1; i >= 0; i-- {
-		mw := m.read[i]
+	for i := len(read) - 1; i >= 0; i-- {
+		mw := read[i]
 		inner := fn
 		fn = func(s string, p []any) ([]bc.Value, error) { return mw(s, p, inner) }
 	}
@@ -160,9 +191,13 @@ func (m *MiddlewareChain) wrapRead(sql string, args []any, next SeamNext[[]bc.Va
 
 // wrapWrite folds the WRITE chain around `next`, then invokes it. Empty ⇒ next(sql, args) verbatim.
 func (m *MiddlewareChain) wrapWrite(sql string, args []any, next SeamNext[RunInfo]) (RunInfo, error) {
+	_, write := m.resolve()
+	if len(write) == 0 {
+		return next(sql, args) // fast path: no middleware ⇒ byte-identical passthrough
+	}
 	fn := next
-	for i := len(m.write) - 1; i >= 0; i-- {
-		mw := m.write[i]
+	for i := len(write) - 1; i >= 0; i-- {
+		mw := write[i]
 		inner := fn
 		fn = func(s string, p []any) (RunInfo, error) { return mw(s, p, inner) }
 	}
@@ -210,26 +245,56 @@ type ExecutionContext struct {
 	writerScope bool
 }
 
-// sharedEmptyChain is the Phase A middleware chain — an empty passthrough so [ContextForDB] can build
-// a ctx without the caller owning a chain. Phase D swaps this for a per-ctx registered chain.
+// sharedEmptyChain is the Phase A middleware chain — a nil-source empty passthrough so a ctx can be
+// built without any registration surface. It is used by [ContextForDBWith] when the caller passes a
+// nil chain AND a background Go context (no scope to resolve).
 var sharedEmptyChain = NewMiddlewareChain()
 
-// ContextForDB is the **backward-compat wrapper (§6)**: wrap a raw SQLDB in a thin [ExecutionContext]
-// (primary = db, the shared EMPTY middleware chain, no pinned tx connection, a single DB, a
-// background Go context). Existing callers (conformance / livedb / bench / unit that pass a raw db)
-// keep working **byte-identically** — the seam is a pure passthrough to queryRows / execWrite. This
-// is the Go analogue of the TS contextForDriver / rust for_driver (§6).
-func ContextForDB(db SQLDB) *ExecutionContext {
-	return &ExecutionContext{ctx: context.Background(), db: db, middleware: sharedEmptyChain}
+// registryChainFor builds the Phase D middleware chain for a ctx riding `goCtx`: it resolves the
+// current execution scope's registry (carried on `goCtx`, else the process-global default) at EACH
+// wrap. When no middleware is registered the resolved slices are empty ⇒ the seam is a byte-identical
+// passthrough (the conformance / livedb / bench runners register none). This is the Go analogue of the
+// TS `new MiddlewareChain(activeSqlMiddlewares)` — the chain reads the LIVE ambient/scope stack, not a
+// snapshot, so a register-then-query order and per-scope isolation both resolve correctly.
+func registryChainFor(goCtx context.Context) *MiddlewareChain {
+	return newSourcedChain(func() ([]ReadMiddleware, []WriteMiddleware) {
+		return currentRegistry(goCtx).sqlMiddlewares()
+	})
 }
 
-// ContextForDBWith wraps a raw SQLDB with a caller-supplied context.Context + [MiddlewareChain]
-// (Phase A: pass an empty chain; Phase D: a registered chain). Primary = db, no pinned tx
-// connection, a single DB. Prefer [ContextForDB] when there is neither a middleware chain nor a
-// non-background Go context.
+// ContextForDB is the **backward-compat wrapper (§6)**: wrap a raw SQLDB in a thin [ExecutionContext]
+// (primary = db, a background Go context, no pinned tx connection, a single DB). Its middleware chain
+// resolves the ambient/scope registry (Phase D) at wrap time — so a middleware registered via
+// [RegisterMiddleware] under a [WithMiddlewareScope] intercepts the SQL, and, when NO middleware is
+// registered (the conformance / livedb / bench runners), the chain is empty and the seam is a pure
+// **byte-identical** passthrough to queryRows / execWrite. Go analogue of the TS contextForDriver.
+func ContextForDB(db SQLDB) *ExecutionContext {
+	goCtx := context.Background()
+	return &ExecutionContext{ctx: goCtx, db: db, middleware: registryChainFor(goCtx)}
+}
+
+// ContextForDBCtx wraps a raw SQLDB riding a caller-supplied context.Context (Phase D: a scoped Go
+// context carrying a per-request middleware registry via [WithMiddlewareScope]). The middleware chain
+// resolves THAT context's scope registry at wrap time, so a middleware registered inside the scope is
+// seen and concurrent scopes stay isolated. Primary = db, no pinned tx connection, a single DB.
+func ContextForDBCtx(goCtx context.Context, db SQLDB) *ExecutionContext {
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
+	return &ExecutionContext{ctx: goCtx, db: db, middleware: registryChainFor(goCtx)}
+}
+
+// ContextForDBWith wraps a raw SQLDB with a caller-supplied context.Context + an explicit
+// [MiddlewareChain]. When `middleware` is nil the chain is sourced from the passed context's scope
+// registry (Phase D) — so a scoped Go context resolves its registered middlewares; a background
+// context with no registrations stays a byte-identical passthrough. Prefer [ContextForDB] /
+// [ContextForDBCtx] unless you hold a hand-built chain.
 func ContextForDBWith(ctx context.Context, db SQLDB, middleware *MiddlewareChain) *ExecutionContext {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if middleware == nil {
-		middleware = sharedEmptyChain
+		middleware = registryChainFor(ctx)
 	}
 	return &ExecutionContext{ctx: ctx, db: db, middleware: middleware}
 }
@@ -242,10 +307,20 @@ func ContextForDBWith(ctx context.Context, db SQLDB, middleware *MiddlewareChain
 // with Reader == Writer + a disabled sticky clock resolves byte-identically to the Phase A/B
 // single-pool path. This is the go analogue of the TS `new PooledAsyncContext(routing)`.
 func ContextForRouting(routing RoutingConfig, middleware *MiddlewareChain) *ExecutionContext {
+	goCtx := context.Background()
 	if middleware == nil {
-		middleware = sharedEmptyChain
+		middleware = registryChainFor(goCtx)
 	}
-	return &ExecutionContext{ctx: context.Background(), middleware: middleware, routing: &routing}
+	return &ExecutionContext{ctx: goCtx, middleware: middleware, routing: &routing}
+}
+
+// ContextForRoutingCtx is [ContextForRouting] riding a caller-supplied (scoped) context.Context, so
+// the routed async path resolves the scope's middleware registry at wrap time (Phase D).
+func ContextForRoutingCtx(goCtx context.Context, routing RoutingConfig) *ExecutionContext {
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
+	return &ExecutionContext{ctx: goCtx, middleware: registryChainFor(goCtx), routing: &routing}
 }
 
 // Routing returns the Phase C routing config this ctx carries (nil for the Phase A/B primary-db path).
