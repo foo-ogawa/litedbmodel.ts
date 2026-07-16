@@ -201,6 +201,8 @@ export {
   run,
   executeAsync,
   runAsync,
+  runGuarded,
+  runGuardedAsync,
   contextForDriver,
   contextForConnection,
   connectionForDriver,
@@ -208,6 +210,7 @@ export {
   PooledAsyncContext,
   withTransactionAsync,
   runWithPinnedAsyncConnection,
+  currentPinnedAsyncConnection,
 } from './exec-context';
 export type {
   ExecutionContext,
@@ -223,6 +226,26 @@ export type {
   SqliteDriver,
   TxOptions,
 } from './exec-context';
+
+// The tx-completeness contract (Phase B-1 / #81): TransactionOptions shape + defaults, the
+// isolation-level enum + per-dialect BEGIN mapping, the retryable-error classifier, the write=tx
+// guards (`checkWriteAllowed` + `withReadOnly` / `runInTransactionScope` scope markers). The API
+// REFERENCE the 4 native ports (rust #82 / go #83 / py #84 / php #85) mirror.
+export {
+  isolationPhrase,
+  beginStatements,
+  resolveTxOptions,
+  isRetryableTxError,
+  sleep,
+  runInTransactionScope,
+  withReadOnly,
+  isInTransaction,
+  isReadOnly,
+  checkWriteAllowed,
+  WriteOutsideTransactionError,
+  WriteInReadOnlyContextError,
+} from './tx-options';
+export type { IsolationLevel, TransactionOptions, ResolvedTxOptions } from './tx-options';
 
 // The ASYNC PG / MySQL production read execution model (#40): bc `runBehaviorAsync` fans out
 // independent sibling read nodes in bounded parallel against a pooled async executor.

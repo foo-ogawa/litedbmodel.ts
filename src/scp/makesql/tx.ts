@@ -49,6 +49,8 @@ import {
   contextForDriver,
   withTransactionAsync,
 } from '../exec-context';
+import { type TransactionOptions, runInTransactionScope } from '../tx-options';
+import { isConnectionError } from '../../connection-errors';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import {
   ENTITY_ROOT,
@@ -938,27 +940,33 @@ export function executeTransaction(db: DbOrContext, plan: TransactionPlan, input
   const returnedRows: Record<string, unknown>[][] = [];
 
   try {
-    for (const stmt of plan.statements) {
-      const result = execStatement(ctx, stmt.op, scope, dialect);
-      executed.push(stmt.id);
+    // Mark the body "inside a transaction" (guard/nested detection) — the SAME async marker the
+    // async path sets; synchronous `run` keeps it on the current tick.
+    const shortCircuited = runInTransactionScope((): TransactionResult | null => {
+      for (const stmt of plan.statements) {
+        const result = execStatement(ctx, stmt.op, scope, dialect);
+        executed.push(stmt.id);
 
-      if (stmt.gate !== undefined) {
-        const reason = gateShortCircuit(stmt.gate, result);
-        if (reason !== null) {
-          seamRun(ctx, 'ROLLBACK', []);
-          return { committed: false, shortCircuit: { statementId: stmt.id, reason }, entity: null, executed };
+        if (stmt.gate !== undefined) {
+          const reason = gateShortCircuit(stmt.gate, result);
+          if (reason !== null) {
+            seamRun(ctx, 'ROLLBACK', []);
+            return { committed: false, shortCircuit: { statementId: stmt.id, reason }, entity: null, executed };
+          }
         }
-      }
 
-      if (stmt.id === plan.entityFrom) {
-        entity = result.rows.length > 0 ? result.rows[0] : null;
-        if (entity !== null) scope[ENTITY_ROOT] = entity as unknown as Value;
+        if (stmt.id === plan.entityFrom) {
+          entity = result.rows.length > 0 ? result.rows[0] : null;
+          if (entity !== null) scope[ENTITY_ROOT] = entity as unknown as Value;
+        }
+        if (stmt.binds !== undefined && result.rows.length > 0) {
+          scope[stmt.binds] = result.rows[0] as unknown as Value;
+        }
+        if (isBatch && stmt.role === 'body' && result.rows.length > 0) returnedRows.push(result.rows);
       }
-      if (stmt.binds !== undefined && result.rows.length > 0) {
-        scope[stmt.binds] = result.rows[0] as unknown as Value;
-      }
-      if (isBatch && stmt.role === 'body' && result.rows.length > 0) returnedRows.push(result.rows);
-    }
+      return null;
+    });
+    if (shortCircuited !== null) return shortCircuited;
     seamRun(ctx, 'COMMIT', []);
     return { committed: true, entity, executed, ...(returnedRows.length > 0 ? { returnedRows } : {}) };
   } catch (e) {
@@ -1079,6 +1087,7 @@ export function executeTransactionAsync(
   plan: TransactionPlan,
   input: Scope,
   dialect: MakeSQLDialect = 'sqlite',
+  options: TransactionOptions = {},
 ): Promise<TransactionResult> {
   const isBatch =
     plan.entityFrom === null &&
@@ -1114,7 +1123,7 @@ export function executeTransactionAsync(
       if (isBatch && stmt.role === 'body' && result.rows.length > 0) returnedRows.push(result.rows);
     }
     return { committed: true, entity, executed, ...(returnedRows.length > 0 ? { returnedRows } : {}) } as TransactionResult;
-  }).catch((e: unknown) => {
+  }, options, dialect === 'sqlite' ? 'postgres' : dialect, isConnectionError).catch((e: unknown) => {
     // A gate short-circuit is NOT a failure — it ROLLBACKs and reports `committed:false`. Any other
     // error is a real driver failure (already rolled back by withTransactionAsync) → re-surface.
     if (e instanceof GateShortCircuit) {

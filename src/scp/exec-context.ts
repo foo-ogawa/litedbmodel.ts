@@ -54,6 +54,16 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+  type TransactionOptions,
+  beginStatements,
+  resolveTxOptions,
+  isRetryableTxError,
+  sleep,
+  runInTransactionScope,
+  checkWriteAllowed,
+} from './tx-options';
+import type { Dialect } from './makesql/handler';
 
 // ── Statement intent & the driver contact (§5) ────────────────────────────────
 
@@ -213,6 +223,28 @@ export function executeAsync(ctx: AsyncExecutionContext, sql: string, params: re
 /** Central WRITE seam (async) — the live PG / MySQL twin of {@link run}. */
 export function runAsync(ctx: AsyncExecutionContext, sql: string, params: readonly unknown[], intent: StatementIntent = { write: true }): Promise<RunInfo> {
   return ctx.middleware.wrap<Promise<RunInfo>>(sql, params, (s, p) => ctx.connectionFor(intent).run(s, p));
+}
+
+/**
+ * GUARDED write seam (sync): enforce the write=tx guard ({@link checkWriteAllowed}) for a
+ * DATA-mutating statement, then delegate to {@link run}. A write issued OUTSIDE a transaction throws
+ * {@link WriteOutsideTransactionError}; a write in a {@link withReadOnly} scope throws
+ * {@link WriteInReadOnlyContextError}. Tx-control statements (BEGIN/COMMIT/ROLLBACK/SET) are NOT
+ * guarded — the tx runtime issues them to OPEN the very scope the guard checks. This is the seam a
+ * bare model-level write (create/update/delete/upsert/batch) goes through.
+ */
+export function runGuarded(ctx: ExecutionContext, sql: string, params: readonly unknown[], operation: string, modelName?: string): RunInfo {
+  checkWriteAllowed(operation, modelName);
+  return run(ctx, sql, params, { write: true });
+}
+
+/**
+ * GUARDED write seam (async) — the live PG / MySQL twin of {@link runGuarded}. The guard is enforced
+ * inside the returned promise (an async caller gets a REJECTED promise, never a synchronous throw).
+ */
+export async function runGuardedAsync(ctx: AsyncExecutionContext, sql: string, params: readonly unknown[], operation: string, modelName?: string): Promise<RunInfo> {
+  checkWriteAllowed(operation, modelName);
+  return runAsync(ctx, sql, params, { write: true });
 }
 
 // ── Sync ctx (SQLite) — the backward-compat driver wrapper (§6) ───────────────
@@ -383,56 +415,137 @@ export function runWithPinnedAsyncConnection<R>(conn: AsyncConnection, fn: () =>
   return asyncCtxStore.run(conn, fn);
 }
 
+/**
+ * The tx-owned connection pinned in the CURRENT async scope, or `undefined` if not inside a
+ * transaction. {@link withTransactionAsync} reads this to detect a NESTED transaction (an inner
+ * `withTransactionAsync` running inside an outer's ALS scope joins the outer instead of opening a
+ * new physical transaction). The native ports read their task-local / contextvar / `context.Context`
+ * for the SAME nested detection.
+ */
+export function currentPinnedAsyncConnection(): AsyncConnection | undefined {
+  return asyncCtxStore.getStore();
+}
+
 // ── The async per-execution-ownership transaction (§3) — the concurrent-tx fix ─
 
-/** Transaction options (Phase A: none; isolation / retry are #69-B, on this same seam). */
-export interface TxOptions {
-  /** Optional isolation level SQL fragment (e.g. `SERIALIZABLE`) appended to BEGIN. Phase B. */
-  readonly isolation?: string;
+/**
+ * Transaction options for {@link withTransactionAsync}. The full Phase B contract (isolation / retry
+ * / rollbackOnly) lives in {@link import('./tx-options').TransactionOptions}; this re-exports it so
+ * exec-context stays the single tx entry while the option shape + defaults + isolation-SQL mapping +
+ * retryable-error classification are defined ONCE in `tx-options.ts` (the file the 4 native ports
+ * mirror). `TxOptions` is the historical alias kept for callers; it IS `TransactionOptions`.
+ */
+export type TxOptions = TransactionOptions;
+
+/**
+ * Is `err` a broken/stale connection (retryable via reconnect)? Defaulted here to a message/-code
+ * heuristic matching `src/connection-errors.ts` so exec-context needs no cross-module import; the
+ * runtime passes the shared {@link import('../connection-errors').isConnectionError} in explicitly.
+ */
+function defaultIsConnectionError(err: Error): boolean {
+  const message = err.message || '';
+  const code = (err as NodeJS.ErrnoException).code || '';
+  return (
+    message.includes('Connection terminated') ||
+    message.includes('Client has encountered a connection error') ||
+    message.includes('ECONNRESET') ||
+    message.includes('ECONNREFUSED') ||
+    message.includes('Connection lost') ||
+    message.includes('This socket has been ended by the other party') ||
+    code === 'ECONNRESET' ||
+    code === 'ECONNREFUSED' ||
+    code === 'EPIPE' ||
+    code === 'PROTOCOL_CONNECTION_LOST'
+  );
 }
 
 /**
- * Run a transaction with **per-execution connection ownership** (§3, the concurrent-tx fix):
+ * Run a transaction with **per-execution connection ownership** (§3, the concurrent-tx fix) plus the
+ * full Phase B tx-completeness contract (#81): isolation level, nested-tx join, rollbackOnly, and
+ * whole-tx retry with per-attempt connection acquisition.
  *
- *   1. acquire ONE connection from the pool (the tx's exclusive connection);
+ * **Per attempt** (up to `retryLimit`):
+ *   1. acquire ONE fresh connection from the pool (a retry after a connection error thus RECONNECTS);
  *   2. pin it into the ALS ctx (`runWithPinnedAsyncConnection`) so EVERY statement `fn` issues
- *      resolves THAT connection via `ctx.connectionFor` — never a fresh pooled one;
- *   3. `BEGIN` → run `fn(txCtx)` → `COMMIT`; on any throw `ROLLBACK` and re-raise;
- *   4. release the connection back to the pool (destroyed if the ROLLBACK itself failed — a
- *      poisoned connection must not re-enter the pool).
+ *      resolves THAT connection — never a fresh pooled one;
+ *   3. issue the isolation-aware BEGIN ({@link beginStatements}: PG `BEGIN ISOLATION LEVEL …`;
+ *      MySQL a preceding `SET TRANSACTION ISOLATION LEVEL …` then `BEGIN`);
+ *   4. run `fn(txCtx)` → `COMMIT` (or `ROLLBACK` if `rollbackOnly`, still returning the body result);
+ *   5. on a body/commit error `ROLLBACK` and either RETRY (retryable error + attempts remain, with
+ *      exponential backoff `retryDuration·2^(k-1)`) or re-raise;
+ *   6. release the connection back to the pool (DESTROYED if the ROLLBACK itself failed, or the whole
+ *      tx errored non-cleanly — a poisoned connection must not re-enter the pool).
  *
- * Concurrent `withTransactionAsync` calls each acquire a DISTINCT connection and pin it in their
- * OWN ALS scope, so their writes never cross-talk — the isolation the shared-slot model (one
- * `pool.query` per statement, a global `Mutex<Option<writer>>`) violates. This is the reference the
- * native ports (#76-79) mirror.
+ * **Nested**: if a tx-owned connection is ALREADY pinned in the ALS (an outer `withTransactionAsync`
+ * on this async chain), the inner call JOINS the outer — it runs `fn` directly on the outer's ctx
+ * with NO new BEGIN/COMMIT/acquire, so the whole nested body is one physical transaction (an inner
+ * error propagates and rolls back the WHOLE tx). Mirrors v1 `DBModel.transaction` :2794-2797.
+ *
+ * Concurrent (non-nested) `withTransactionAsync` calls each acquire a DISTINCT connection and pin it
+ * in their OWN ALS scope, so their writes never cross-talk — the isolation the shared-slot model
+ * violates. This is the reference the native ports (#82-85) mirror.
  */
 export async function withTransactionAsync<R>(
   ctx: PooledAsyncContext,
   fn: (txCtx: AsyncExecutionContext) => Promise<R>,
-  opts: TxOptions = {},
+  opts: TransactionOptions = {},
+  dialect: Dialect = 'postgres',
+  isConnectionError: (e: Error) => boolean = defaultIsConnectionError,
 ): Promise<R> {
+  // NESTED-TX JOIN (§ mirror v1 :2794): already inside a tx on this async chain ⇒ join the outer.
+  // No new connection, no BEGIN/COMMIT — the inner body is part of the outer physical transaction.
+  const outerConn = currentPinnedAsyncConnection();
+  if (outerConn !== undefined) {
+    // Reuse the outer's ctx (the pinned conn already wins in `connectionFor`). Isolation/retry/
+    // rollbackOnly options on a NESTED call are ignored — the outer transaction owns them.
+    return fn(ctx.withConnection(outerConn, true));
+  }
+
+  const resolved = resolveTxOptions(opts);
+  const begins = beginStatements(dialect, resolved.isolation);
   const pool = ctx.connectionPool;
-  const conn = await pool.acquire();
-  const txCtx = ctx.withConnection(conn, true);
-  let poisoned = false;
-  try {
-    return await runWithPinnedAsyncConnection(conn, async () => {
-      // BEGIN / COMMIT / ROLLBACK go through the seam too, on the SAME pinned connection.
-      await runAsync(txCtx, opts.isolation ? `BEGIN ${opts.isolation}` : 'BEGIN', []);
+
+  let attempt = 0;
+  for (;;) {
+    attempt++;
+    const conn = await pool.acquire();
+    const txCtx = ctx.withConnection(conn, true);
+
+    // One attempt: BEGIN…body…COMMIT/ROLLBACK on the pinned conn. Returns `{ ok, value }` on success
+    // or `{ ok:false, error }` on failure — so the release + retry decision happens OUTSIDE the ALS
+    // run and the connection is released EXACTLY once per attempt.
+    let poisoned = false;
+    const attemptResult = await runWithPinnedAsyncConnection(conn, async (): Promise<{ ok: true; value: R } | { ok: false; error: unknown }> => {
+      for (const begin of begins) await runAsync(txCtx, begin, []);
       try {
-        const r = await fn(txCtx);
-        await runAsync(txCtx, 'COMMIT', []);
-        return r;
-      } catch (e) {
+        // Mark the body as "inside a transaction" so a nested write's guard (`checkWriteAllowed`)
+        // and nested-tx detection see an active tx. The connection pin (above) and this marker share
+        // the SAME async scope.
+        const r = await runInTransactionScope(() => fn(txCtx));
+        // rollbackOnly (dry-run): ROLLBACK but still return the body result — no committed change.
+        await runAsync(txCtx, resolved.rollbackOnly ? 'ROLLBACK' : 'COMMIT', []);
+        return { ok: true, value: r };
+      } catch (error) {
         try {
           await runAsync(txCtx, 'ROLLBACK', []);
         } catch {
           poisoned = true; // ROLLBACK failed ⇒ the connection is in an unknown state; drop it.
         }
-        throw e;
+        return { ok: false, error };
       }
     });
-  } finally {
-    await pool.release(conn, poisoned);
+
+    // An errored attempt saw a failed statement — destroy the (possibly poisoned) conn so a retry
+    // reconnects on a fresh one; a clean success returns the conn to the pool.
+    await pool.release(conn, poisoned || !attemptResult.ok);
+
+    if (attemptResult.ok) return attemptResult.value;
+
+    const { error } = attemptResult;
+    if (resolved.retryOnError && attempt < resolved.retryLimit && isRetryableTxError(error, isConnectionError)) {
+      await sleep(resolved.retryDuration * Math.pow(2, attempt - 1));
+      continue; // RETRY the whole transaction on a fresh connection
+    }
+    throw error;
   }
 }
