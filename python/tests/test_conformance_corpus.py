@@ -35,10 +35,11 @@ def test_vector_passes(suite, vector):
     assert result["ok"], f"[{suite}] {vector['name']}: {result.get('detail')}"
 
 
-def test_corpus_has_all_four_suites_and_36_vectors():
+def test_corpus_has_all_suites_and_vectors():
     vs = _all_vectors()
     suites = {s for s, _ in vs}
-    assert suites == {"render", "exec", "tx", "dialect"}
-    # CORPUS_VERSION 2 (static-makeSQL regen): render 18 (9 read + 9 write-render) + exec 2 +
-    # tx 4 (2 single + 2 composite DAG) + dialect 12 (orderByNulls × 3 dialects × 4 combos) = 36.
-    assert len(vs) == 36
+    assert suites == {"render", "exec", "tx", "dialect", "guard"}
+    # render 18 (9 read + 9 write-render) + exec 2 + tx 4 (2 single + 2 composite DAG) +
+    # dialect 12 (orderByNulls × 3 dialects × 4 combos) = 36 non-guard, plus the Phase E-2
+    # hard-limit runaway guard suite (epic #74): guard 7 (3 expect-error throw + 4 exec skip) = 43.
+    assert len(vs) == 43

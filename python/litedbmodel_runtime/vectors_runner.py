@@ -39,8 +39,10 @@ if _PKG_PARENT not in sys.path:
     sys.path.insert(0, _PKG_PARENT)
 
 from litedbmodel_runtime import (  # noqa: E402
+    LimitExceededError,
     dialect_for,
     execute_bundle,
+    read_bundle,
     render_read_primary,
 )
 from litedbmodel_runtime.runtime import _execute_transaction_bundle  # noqa: E402  (internal guard opt-out)
@@ -159,11 +161,52 @@ def _run_vector(v: Dict[str, Any]) -> Dict[str, Any]:
         if kind == "exec":
             driver = _seed_driver(list(v["schema"]))
             try:
-                result = encode_value(execute_bundle(v["bundle"], decode_value(v["input"]), driver))
+                with_relation = v.get("withRelation")
+                if with_relation is not None:
+                    # A declarative-select read (``with: {[withRelation]: true}``): the primary row list
+                    # plus the batch-hydrated relation — the SAME surface the relation-guard skip vectors
+                    # exercise (mirrors the TS runner's ``readBundle`` exec path).
+                    raw = read_bundle(v["bundle"], decode_value(v["input"]), driver, [with_relation])
+                else:
+                    raw = execute_bundle(v["bundle"], decode_value(v["input"]), driver)
+                result = encode_value(raw)
             finally:
                 driver.close()
             ok = _eq(result, v["expectedResult"])
             return {"ok": ok, "detail": None if ok else f"result {json.dumps(result)} != {json.dumps(v['expectedResult'])}"}
+
+        if kind == "expect-error":
+            # Phase E-2 hard-limit guard (#100-103 mirror): the cap is BAKED into the bundle
+            # (readGraph.findGuard / relation hardLimit), so run it over-cap and assert the SAME
+            # LimitExceededError fields. No config surface needed. A ``withRelation`` vector drives the
+            # relation guard via ``read_bundle``; else the primary read via ``execute_bundle``.
+            driver = _seed_driver(list(v["schema"]))
+            thrown: Any = None
+            try:
+                with_relation = v.get("withRelation")
+                if with_relation is not None:
+                    read_bundle(v["bundle"], decode_value(v["input"]), driver, [with_relation])
+                else:
+                    execute_bundle(v["bundle"], decode_value(v["input"]), driver)
+            except Exception as e:  # noqa: BLE001 — capture ANY error to classify (loud otherwise)
+                thrown = e
+            finally:
+                driver.close()
+            if not isinstance(thrown, LimitExceededError):
+                got = "no throw" if thrown is None else getattr(thrown, "name", type(thrown).__name__)
+                return {"ok": False, "detail": f"expected LimitExceededError, got {got}"}
+            got_err: Dict[str, Any] = {
+                "name": thrown.name,
+                "limit": thrown.limit,
+                "count": thrown.count,
+                "context": thrown.context,
+            }
+            if thrown.model is not None:
+                got_err["model"] = thrown.model
+            if thrown.relation is not None:
+                got_err["relation"] = thrown.relation
+            ok = _eq(got_err, v["expectedError"])
+            return {"ok": ok, "detail": None if ok else f"error {json.dumps(got_err)} != {json.dumps(v['expectedError'])}"}
 
         if kind == "tx":
             driver = _seed_driver(list(v["schema"]))

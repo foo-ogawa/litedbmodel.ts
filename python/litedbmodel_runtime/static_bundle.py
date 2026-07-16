@@ -34,7 +34,7 @@ from behavior_contracts import evaluate_expression
 
 from .dialect import Dialect, dialect_for
 from .driver import Driver
-from .errors import SqlFailure, map_sqlite_error
+from .errors import LimitExceededError, SqlFailure, map_sqlite_error
 from .exec_context import (
     READ_INTENT,
     ExecutionContext,
@@ -341,6 +341,24 @@ def _compute_read_node(
     return _render_execute_node(graph, node_id, base, ctx)
 
 
+def _assert_find_guard(graph: Mapping[str, Any], node_id: str, value: Any) -> None:
+    """Post-fetch hard-limit runaway guard (Phase E-2, epic #74; v1 ``DBModel`` find hard-limit).
+
+    Port of TS ``assertFindGuard``. When ``graph['findGuard']`` targets ``node_id`` and the node's
+    computed value is a row list longer than the baked cap, raise :class:`LimitExceededError`
+    (``context='find'``). The read injected ``LIMIT hardLimit + 1`` at compile, so a length of
+    ``hardLimit + 1`` means the TRUE total exceeds the cap; the reported ``count`` is that N+1 fetch
+    length. A no-op for every other node / an uncapped graph (the field is absent ⇒ NO check). The
+    SAME check the native ports (#100-103) run off the ``findGuard`` JSON field, with no config
+    surface of their own.
+    """
+    guard = graph.get("findGuard")
+    if not isinstance(guard, Mapping) or guard.get("nodeId") != node_id:
+        return
+    if isinstance(value, list) and len(value) > guard["hardLimit"]:
+        raise LimitExceededError(guard["hardLimit"], len(value), "find", guard.get("model"))
+
+
 def execute_read_graph(
     graph: Mapping[str, Any], input_scope: Mapping[str, Any], driver: "Union[Driver, ExecutionContext]"
 ) -> Any:
@@ -379,6 +397,9 @@ def execute_read_graph(
             else:
                 vals = [_compute_read_node(graph, body[idx], base, ctx) for idx in ordered]
             for idx, val in zip(ordered, vals):
+                # Phase E-2: raise if the primary read exceeded the cap (checked per computed node,
+                # covering BOTH the serial and the ThreadPool-fanned-out paths of this walker).
+                _assert_find_guard(graph, body[idx]["id"], val)
                 results.append((body[idx]["id"], val))
         scope = dict(normalized)
         for nid, val in results:
