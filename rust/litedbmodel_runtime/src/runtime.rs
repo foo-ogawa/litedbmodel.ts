@@ -22,7 +22,7 @@ use behavior_contracts::Value;
 
 use crate::dialect::dialect_for;
 use crate::driver::Driver;
-use crate::errors::{re_error_to_sql_failure, SqlFailure};
+use crate::errors::{re_error_to_sql_failure, RuntimeError, SqlFailure};
 use crate::exec_context::{self, ExecutionContext, StatementIntent, TxDecision};
 use crate::node::{encode_value, Node as J};
 use crate::static_bundle::{
@@ -71,7 +71,7 @@ pub fn render_read_primary_bundle(read_graph: &J, input: &J) -> Result<J, String
 /// `readGraph` (the REAL Select-node IR + static statements): a CLOSED-SET native walker drives
 /// map/Φ/wiring (never bc `run_behavior`) and renders + executes each node's statements. Returns
 /// the component's Φ output — byte-identical to the TS `executeBundle`.
-pub fn execute_bundle(bundle: &J, input: &J, driver: &dyn Driver) -> Result<Value, SqlFailure> {
+pub fn execute_bundle(bundle: &J, input: &J, driver: &dyn Driver) -> Result<Value, RuntimeError> {
     let read_graph = bundle.get("readGraph").filter(|g| !g.is_null()).ok_or_else(|| {
         let name = bundle.get("name").and_then(|n| n.as_str()).unwrap_or("");
         plain_failure(&format!(
@@ -95,7 +95,7 @@ pub fn execute_bundle_pooled(
     bundle: &J,
     input: &J,
     driver: &(dyn Driver + Sync),
-) -> Result<Value, SqlFailure> {
+) -> Result<Value, RuntimeError> {
     let read_graph = bundle.get("readGraph").filter(|g| !g.is_null()).ok_or_else(|| {
         let name = bundle.get("name").and_then(|n| n.as_str()).unwrap_or("");
         plain_failure(&format!(

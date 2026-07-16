@@ -28,7 +28,9 @@
 use behavior_contracts::{ExecOutcome, Value};
 
 use crate::driver::Driver;
-use crate::errors::{re_error_to_sql_failure, SqlFailure};
+use crate::errors::{
+    re_error_to_sql_failure, LimitExceededError, RuntimeError, SqlFailure, LIMIT_CONTEXT_FIND,
+};
 use crate::exec_context::{self, ExecutionContext, StatementIntent};
 use crate::node::{compact_value, eval_expr, Node as J};
 
@@ -336,6 +338,43 @@ fn normalize_read_graph_input(graph: &J, input: &Scope) -> Scope {
     out
 }
 
+// ── Find hard-limit guard (Phase E-2, epic #74; port of static-bundle.ts assertFindGuard) ─
+
+/// Post-fetch hard-limit runaway guard for the top-level read (Phase E-2; Rust port of the TS
+/// `assertFindGuard`, #99). When `graph.findGuard` (`{hardLimit, nodeId, model}`) targets `node_id`
+/// and the node's computed value is a row list LONGER than the cap, return a [`LimitExceededError`]
+/// (`context: find`). The compile injected `LIMIT hardLimit + 1`, so a length of `hardLimit + 1`
+/// means the TRUE total exceeds the cap. A no-op for every other node / an uncapped graph (absent
+/// `findGuard` ⇒ no check). The SAME check every native port runs off the baked `findGuard`.
+fn assert_find_guard(graph: &J, node_id: &str, value: &Value) -> Result<(), LimitExceededError> {
+    let Some(guard) = graph.get("findGuard").filter(|g| !g.is_null()) else {
+        return Ok(());
+    };
+    if guard.get("nodeId").and_then(|n| n.as_str()) != Some(node_id) {
+        return Ok(());
+    }
+    let Some(hard_limit) = guard.get("hardLimit").and_then(|h| h.as_i64()) else {
+        return Ok(());
+    };
+    if let Value::Arr(rows) = value {
+        let count = rows.len() as i64;
+        if count > hard_limit {
+            let model = guard
+                .get("model")
+                .and_then(|m| m.as_str())
+                .map(|s| s.to_string());
+            return Err(LimitExceededError::new(
+                hard_limit,
+                count,
+                LIMIT_CONTEXT_FIND,
+                model,
+                None,
+            ));
+        }
+    }
+    Ok(())
+}
+
 // ── ReadGraph render axis (port of static-bundle.ts renderReadPrimary) ─────────
 
 /// The first body node id that has compiled statements (the SELECT the relations map over).
@@ -439,7 +478,7 @@ pub fn execute_read_graph(
     graph: &J,
     input: &Scope,
     driver: &dyn Driver,
-) -> Result<Value, SqlFailure> {
+) -> Result<Value, RuntimeError> {
     // Wrap the raw driver in the backward-compat ctx (§6): empty middleware, single DB, no tx pin —
     // so this serial path is byte-identical to the pre-seam `driver.prepare().all()` while every read
     // now funnels through the central seam.
@@ -453,7 +492,7 @@ fn execute_read_graph_ctx(
     graph: &J,
     input: &Scope,
     ctx: &ExecutionContext,
-) -> Result<Value, SqlFailure> {
+) -> Result<Value, RuntimeError> {
     let ir = graph
         .get("ir")
         .ok_or_else(|| plain_failure("scp runtime: readGraph has no ir"))?;
@@ -486,12 +525,12 @@ fn execute_read_graph_ctx(
     let comp = component_for(ir, name)
         .ok_or_else(|| plain_failure("scp runtime: read graph has no entry component"))?;
     if !orchestrator_supports(comp) {
-        return Err(plain_failure(
+        return Err(RuntimeError::Sql(plain_failure(
             "scp runtime: read graph carries a shape the NATIVE orchestrator does not cover \
              (only componentRef / cond / relationKind:single map are native-covered). The IR \
              interpreter is retired (native-only) — this shape must be added to the native \
              orchestrator, never interpreted.",
-        ));
+        )));
     }
     orchestrate_read_graph_serial(graph, comp, &normalized, &dialect, ctx)
 }
@@ -504,7 +543,7 @@ pub fn execute_read_graph_orchestrator_for_test(
     graph: &J,
     input: &Scope,
     driver: &dyn Driver,
-) -> Result<Value, SqlFailure> {
+) -> Result<Value, RuntimeError> {
     let ir = graph
         .get("ir")
         .ok_or_else(|| plain_failure("scp runtime: readGraph has no ir"))?;
@@ -533,7 +572,7 @@ fn orchestrate_read_graph_serial(
     input: &Scope,
     dialect: &str,
     ctx: &ExecutionContext,
-) -> Result<Value, SqlFailure> {
+) -> Result<Value, RuntimeError> {
     let body = comp
         .get("body")
         .and_then(|b| b.as_array())
@@ -577,8 +616,15 @@ fn orchestrate_read_graph_serial(
                 .unwrap_or("")
                 .to_string();
             match exec_read_node_serial(ctx, graph, dialect, node, &base) {
-                ExecOutcome::Ok(v) => results.push((id, v)),
-                ExecOutcome::Error(e) => return Err(re_error_to_sql_failure(&e)),
+                ExecOutcome::Ok(v) => {
+                    // Phase E-2: throw if the primary read exceeded the cap (LimitExceededError
+                    // propagates as its own error, not a SqlFailure).
+                    assert_find_guard(graph, &id, &v)?;
+                    results.push((id, v));
+                }
+                ExecOutcome::Error(e) => {
+                    return Err(RuntimeError::Sql(re_error_to_sql_failure(&e)))
+                }
             }
         }
     }
@@ -588,7 +634,8 @@ fn orchestrate_read_graph_serial(
         s.extend(results.iter().cloned());
         s
     };
-    evaluate_expression(&output, &scope).map_err(|e| re_error_to_sql_failure(&e.message))
+    evaluate_expression(&output, &scope)
+        .map_err(|e| RuntimeError::Sql(re_error_to_sql_failure(&e.message)))
 }
 
 /// The `&dyn Driver` (serial) twin of [`exec_read_node`]: compute ONE read-graph body node's value —
@@ -670,11 +717,19 @@ fn fast_single_node(
     dialect: &str,
     node: &J,
     scope: &Scope,
-) -> Option<Result<Value, SqlFailure>> {
+) -> Option<Result<Value, RuntimeError>> {
     let node_id = node.get("id").and_then(|v| v.as_str())?;
     match render_and_execute_node(ctx, graph, dialect, node_id, scope) {
-        ExecOutcome::Ok(v) => Some(Ok(v)),
-        ExecOutcome::Error(e) => Some(Err(re_error_to_sql_failure(&e))),
+        ExecOutcome::Ok(v) => {
+            // Phase E-2: the single node IS the primary read node — apply the find hard-limit guard
+            // post-fetch, exactly as the general orchestrator does (a LimitExceededError propagates
+            // as its OWN error, never re-wrapped to a SqlFailure).
+            if let Err(limit) = assert_find_guard(graph, node_id, &v) {
+                return Some(Err(RuntimeError::Limit(limit)));
+            }
+            Some(Ok(v))
+        }
+        ExecOutcome::Error(e) => Some(Err(RuntimeError::Sql(re_error_to_sql_failure(&e)))),
     }
 }
 
@@ -705,7 +760,7 @@ pub fn execute_read_graph_pooled(
     graph: &J,
     input: &Scope,
     driver: &(dyn Driver + Sync),
-) -> Result<Value, SqlFailure> {
+) -> Result<Value, RuntimeError> {
     let ir = graph
         .get("ir")
         .ok_or_else(|| plain_failure("scp runtime: readGraph has no ir"))?;
@@ -801,7 +856,7 @@ fn orchestrate_read_graph(
     input: &Scope,
     dialect: &str,
     driver: &(dyn Driver + Sync),
-) -> Result<Value, SqlFailure> {
+) -> Result<Value, RuntimeError> {
     let body = comp
         .get("body")
         .and_then(|b| b.as_array())
@@ -881,7 +936,12 @@ fn orchestrate_read_graph(
 
         let run = match run_plan_parallel(Some(&plan_spec), &ops, exec) {
             Ok(r) => r,
-            Err(e) => return Err(plain_failure(&format!("orchestrate: {}", e.message))),
+            Err(e) => {
+                return Err(RuntimeError::Sql(plain_failure(&format!(
+                    "orchestrate: {}",
+                    e.message
+                ))))
+            }
         };
 
         // Commit this stage's outcomes into `results` in ascending body order (deterministic).
@@ -897,6 +957,9 @@ fn orchestrate_read_graph(
         }
         committed.sort_by_key(|(idx, _, _)| *idx);
         for (_, id, v) in committed {
+            // Phase E-2: throw if the primary read exceeded the cap (checked per committed node,
+            // ascending body order — deterministic precedence).
+            assert_find_guard(graph, &id, &v)?;
             results.push((id, v));
         }
     }
@@ -907,7 +970,8 @@ fn orchestrate_read_graph(
         s.extend(results.iter().cloned());
         s
     };
-    evaluate_expression(&output, &scope).map_err(|e| re_error_to_sql_failure(&e.message))
+    evaluate_expression(&output, &scope)
+        .map_err(|e| RuntimeError::Sql(re_error_to_sql_failure(&e.message)))
 }
 
 /// Compute ONE read-graph body node's value against `base` scope (#12 native walker):

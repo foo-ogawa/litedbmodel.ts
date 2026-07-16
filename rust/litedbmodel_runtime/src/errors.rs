@@ -28,6 +28,148 @@ impl std::fmt::Display for SqlFailure {
 }
 impl std::error::Error for SqlFailure {}
 
+/// The context a [`LimitExceededError`] was raised from (Rust port of the TS `LimitExceededContext`,
+/// spec §E-2). `"find"` — a top-level read exceeded the find hard limit (the reported `count` is the
+/// `LIMIT hardLimit + 1` N+1 fetch size — the TRUE total is only known to be MORE than the cap).
+/// `"relation"` — a hasMany relation batch exceeded the hasMany hard limit (the batch is fetched in
+/// full, so the reported `count` is the EXACT batch total).
+pub const LIMIT_CONTEXT_FIND: &str = "find";
+/// See [`LIMIT_CONTEXT_FIND`].
+pub const LIMIT_CONTEXT_RELATION: &str = "relation";
+
+/// The SHARED cross-language runaway-prevention contract (Phase E-2, epic #74; Rust port of the TS
+/// reference `LimitExceededError` in `src/scp/errors.ts`, #99). Raised by the runtime post-fetch
+/// guard when a read / relation batch returns MORE rows than the baked hard limit, so an accidental
+/// missing-WHERE / N+1 pattern fails LOUD instead of loading an unbounded result set.
+///
+/// Byte-for-byte mirror of the reference error shape:
+///   - fields: `limit` (the cap), `count` (rows fetched — see [`LIMIT_CONTEXT_FIND`]),
+///     `context` (`"find"` | `"relation"`), `model` (the read/parent model — the relation's TARGET
+///     TABLE in the relation context), `relation` (the relation NAME, `"relation"` context only);
+///   - message: `Query limit exceeded: <where> returned <count-phrase> records, but limit is
+///     <limit>. This usually indicates a missing WHERE clause or an N+1 query pattern. Set a higher
+///     limit or use pagination.` — `find` reports `more than <limit>` (N+1 fetch), `relation`
+///     reports the exact `<count>`.
+///
+/// NOT a [`SqlFailure`]: a runaway guard is a litedbmodel-level policy error, not a mapped driver
+/// failure, and it carries no `SQLITE_*` code — so it propagates as its OWN error (the read path's
+/// `re_error_to_sql_failure` never re-wraps it).
+#[derive(Debug, Clone)]
+pub struct LimitExceededError {
+    /// The row cap.
+    pub limit: i64,
+    /// Rows fetched. `find`: the `LIMIT hardLimit + 1` fetch size. `relation`: the EXACT batch total.
+    pub count: i64,
+    /// `"find"` or `"relation"` ([`LIMIT_CONTEXT_FIND`] / [`LIMIT_CONTEXT_RELATION`]).
+    pub context: String,
+    /// The read/parent model (find) or the relation's TARGET TABLE (relation).
+    pub model: Option<String>,
+    /// The relation NAME — present only in the `"relation"` context.
+    pub relation: Option<String>,
+    /// The rendered message (built once at construction — byte-identical to the TS reference).
+    pub message: String,
+}
+
+impl LimitExceededError {
+    /// Build a [`LimitExceededError`], rendering the SHARED message byte-for-byte with the TS
+    /// reference (`errors.ts` `LimitExceededError` constructor).
+    pub fn new(
+        limit: i64,
+        count: i64,
+        context: &str,
+        model: Option<String>,
+        relation: Option<String>,
+    ) -> Self {
+        let unknown = "unknown".to_string();
+        let where_ = if context == LIMIT_CONTEXT_FIND {
+            format!("find() on {}", model.as_ref().unwrap_or(&unknown))
+        } else {
+            format!(
+                "relation '{}' on {}",
+                relation.as_ref().unwrap_or(&unknown),
+                model.as_ref().unwrap_or(&unknown)
+            )
+        };
+        let count_phrase = if context == LIMIT_CONTEXT_FIND {
+            format!("more than {limit}")
+        } else {
+            count.to_string()
+        };
+        let message = format!(
+            "Query limit exceeded: {where_} returned {count_phrase} records, but limit is {limit}. \
+             This usually indicates a missing WHERE clause or an N+1 query pattern. Set a higher \
+             limit or use pagination."
+        );
+        LimitExceededError {
+            limit,
+            count,
+            context: context.to_string(),
+            model,
+            relation,
+            message,
+        }
+    }
+}
+
+impl std::fmt::Display for LimitExceededError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+impl std::error::Error for LimitExceededError {}
+
+/// The read-path error carrier (Phase E-2): a mapped driver [`SqlFailure`] OR a runaway
+/// [`LimitExceededError`]. The two are DISTINCT (the limit guard is not a SqlFailure) — a caller
+/// (e.g. the conformance runner's expect-error leg) matches on the variant to assert the raised
+/// error is a `LimitExceededError` with the exact fields, exactly as the TS runner's
+/// `thrown instanceof LimitExceededError` check. `SqlFailure` converts in via `?` so the many
+/// existing `Result<_, SqlFailure>` call sites on the read path port unchanged.
+#[derive(Debug, Clone)]
+pub enum RuntimeError {
+    /// A mapped SQL driver failure (the pre-existing error kind).
+    Sql(SqlFailure),
+    /// A hard-limit runaway guard trip (`context: find | relation`).
+    Limit(LimitExceededError),
+}
+
+impl RuntimeError {
+    /// The human message of either variant (so `.map_err(|e| … e.message())` ports from the old
+    /// `SqlFailure.message` field access unchanged).
+    pub fn message(&self) -> &str {
+        match self {
+            RuntimeError::Sql(e) => &e.message,
+            RuntimeError::Limit(e) => &e.message,
+        }
+    }
+
+    /// The [`LimitExceededError`] iff this is the limit variant (the expect-error leg reads it).
+    pub fn as_limit(&self) -> Option<&LimitExceededError> {
+        match self {
+            RuntimeError::Limit(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<SqlFailure> for RuntimeError {
+    fn from(e: SqlFailure) -> Self {
+        RuntimeError::Sql(e)
+    }
+}
+
+impl From<LimitExceededError> for RuntimeError {
+    fn from(e: LimitExceededError) -> Self {
+        RuntimeError::Limit(e)
+    }
+}
+
+impl std::fmt::Display for RuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message())
+    }
+}
+impl std::error::Error for RuntimeError {}
+
 /// Extended-result-code → canonical `SQLITE_*` name (subset the reference distinguishes).
 fn code_name_from_extended(primary: ErrorCode, extended: i32) -> Option<String> {
     // Extended constraint codes (primary = SQLITE_CONSTRAINT = 19).

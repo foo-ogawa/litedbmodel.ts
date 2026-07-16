@@ -55,7 +55,10 @@ pub use driver::{
     forwarding_tx, forwarding_tx_no_begin, ConfiguredDriver, Driver, ForwardingTx,
     PreparedStatement, RunInfo, SqliteDriver,
 };
-pub use errors::{map_sqlite_error, re_error_to_sql_failure, SqlFailure};
+pub use errors::{
+    map_sqlite_error, re_error_to_sql_failure, LimitExceededError, RuntimeError, SqlFailure,
+    LIMIT_CONTEXT_FIND, LIMIT_CONTEXT_RELATION,
+};
 pub use exec_context::{
     execute as seam_execute, for_driver, for_routing, run as seam_run, run_guarded, transaction,
     transaction_decided, transaction_decided_on, transaction_on, with_transaction,
@@ -92,3 +95,7 @@ pub use tx_options::{
     IsolationLevel, TransactionOptions,
 };
 pub use value::{decode_scope, Scope};
+
+/// The bc runtime `Value` (re-exported from `behavior-contracts`) — the read/exec result type of
+/// [`execute_bundle`] / [`read_bundle_pooled`] and the row shape [`stitch_relation`] takes/returns.
+pub use behavior_contracts::Value;

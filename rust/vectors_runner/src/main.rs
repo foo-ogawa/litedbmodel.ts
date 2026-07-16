@@ -27,7 +27,7 @@ use std::process::ExitCode;
 
 use litedbmodel_runtime::{
     dialect_for, encode_value, execute_bundle, execute_transaction_bundle,
-    render_read_primary_bundle, Driver, Node, SqliteDriver,
+    render_read_primary_bundle, stitch_relation, Driver, Node, RuntimeError, SqliteDriver, Value,
 };
 use serde_json::{json, Value as J};
 
@@ -174,6 +174,7 @@ fn run_vector(v: &J) -> VectorResult {
         "render" => run_render(v),
         "write-render" => run_write_render(v),
         "exec" => run_exec(v),
+        "expect-error" => run_expect_error(v),
         "tx" => run_tx(v),
         "dialect" => run_dialect(v),
         other => fail(format!("unknown vector kind: {other}")),
@@ -231,15 +232,37 @@ fn schema_of(v: &J) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Run a read vector's bundle end-to-end against a fresh in-memory SQLite: the primary read via
+/// `execute_bundle`, then — when the vector sets `withRelation` — batch-load + hydrate that ONE
+/// relation onto the primary rows via `stitch_relation` (mirrors the TS runner's
+/// `readBundle(bundle, input, {db, with:{[withRelation]:true}})` vs bare `executeBundle` split). The
+/// hard-limit guards fire on THIS path (find on the primary rows, relation on the batch total), so
+/// the same call serves both the `exec` (assert result) and `expect-error` (assert throw) legs.
+fn read_bundle_exec(v: &J, driver: &SqliteDriver) -> Result<Value, RuntimeError> {
+    // The corpus `input` may carry $bigint tags; the runtime decodes plain JSON, so pass the
+    // decoded-then-encoded form so bigint tags become plain numbers (bc has a single i64 int).
+    let input = numeric_canon(&v["input"]);
+    let result = execute_bundle(&to_node(&v["bundle"]), &to_node(&input), driver)?;
+    let Some(with_relation) = v.get("withRelation").and_then(|w| w.as_str()) else {
+        return Ok(result);
+    };
+    // Declarative-select path: stitch the named relation onto the primary rows via the SAME shared
+    // runtime stitch the typed-object read surface uses (the relation guard lives inside it).
+    let parents = match result {
+        Value::Arr(rows) => rows,
+        other => return Ok(other), // a non-list primary output carries no relations to stitch
+    };
+    let op_json = to_node(&v["bundle"]["relations"][with_relation]);
+    let stitched = stitch_relation(&op_json, parents, driver)?;
+    Ok(Value::Arr(stitched))
+}
+
 fn run_exec(v: &J) -> VectorResult {
     let driver = match SqliteDriver::in_memory(&schema_of(v)) {
         Ok(d) => d,
         Err(e) => return fail(format!("threw (seed): {}", e.message)),
     };
-    // The corpus `input` may carry $bigint tags; execute_bundle decodes plain JSON, so pass the
-    // decoded-then-encoded form so bigint tags become plain numbers (bc has a single i64 int).
-    let input = numeric_canon(&v["input"]);
-    match execute_bundle(&to_node(&v["bundle"]), &to_node(&input), &driver) {
+    match read_bundle_exec(v, &driver) {
         Ok(result) => {
             let got = node_to_json(&encode_value(&result));
             if eq(&got, &v["expectedResult"]) {
@@ -248,7 +271,49 @@ fn run_exec(v: &J) -> VectorResult {
                 fail(format!("result {got} != {}", v["expectedResult"]))
             }
         }
-        Err(e) => fail(format!("threw: {}", e.message)),
+        Err(e) => fail(format!("threw: {}", e.message())),
+    }
+}
+
+/// The Phase E-2 hard-limit expect-error leg: the cap is BAKED onto the frozen bundle (readGraph
+/// `findGuard` / relation `hardLimit`), so run the SAME `read_bundle_exec` over-cap and assert the
+/// raised error is a `LimitExceededError` whose fields equal the vector's `expectedError` — mirroring
+/// the TS runner's `thrown instanceof LimitExceededError` + field check. A LimitExceededError is a
+/// DISTINCT error variant (never a SqlFailure), so a SqlFailure / no-throw is a FAIL.
+fn run_expect_error(v: &J) -> VectorResult {
+    let driver = match SqliteDriver::in_memory(&schema_of(v)) {
+        Ok(d) => d,
+        Err(e) => return fail(format!("threw (seed): {}", e.message)),
+    };
+    match read_bundle_exec(v, &driver) {
+        Ok(_) => fail("expected LimitExceededError, got no throw"),
+        Err(e) => match e.as_limit() {
+            None => fail(format!(
+                "expected LimitExceededError, got SqlFailure: {}",
+                e.message()
+            )),
+            Some(le) => {
+                // Build the observed error shape (only the present optional fields), mirroring the TS
+                // runner's `{name, limit, count, context, model?, relation?}` object.
+                let mut got = serde_json::Map::new();
+                got.insert("name".into(), json!("LimitExceededError"));
+                got.insert("limit".into(), json!(le.limit));
+                got.insert("count".into(), json!(le.count));
+                got.insert("context".into(), json!(le.context));
+                if let Some(model) = &le.model {
+                    got.insert("model".into(), json!(model));
+                }
+                if let Some(relation) = &le.relation {
+                    got.insert("relation".into(), json!(relation));
+                }
+                let got = J::Object(got);
+                if eq(&got, &v["expectedError"]) {
+                    pass()
+                } else {
+                    fail(format!("error {got} != {}", v["expectedError"]))
+                }
+            }
+        },
     }
 }
 
