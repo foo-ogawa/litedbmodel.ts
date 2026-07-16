@@ -222,13 +222,49 @@ type ormDriver struct {
 	dialect string
 	impl    execImpl
 	db      *sql.DB
+	// stmts is the prepared-statement cache keyed by SQL text (prepare-once, execute-many). Go's
+	// database/sql PREPAREs a fresh statement on EVERY db.Query / tx.Exec and discards it — an extra
+	// round-trip per call on pg/mysql, a re-parse on sqlite. A real Go program caches the *sql.Stmt and
+	// reuses the handle; this mirrors the shipped litedbmodel_runtime stmt cache so the bench reflects
+	// the real runtime (not a bench-only trick). A *sql.DB-level *sql.Stmt is goroutine-safe and
+	// reusable across the pool; inside a tx it is rebound via tx.Stmt(cached) (no re-prepare). RETURNING
+	// statements are NOT cached (they run at most once per op AND the mysql path strips RETURNING per
+	// call) — matching the runtime's cacheable rule.
+	stmts map[string]*sql.Stmt
 }
 
-// queryAll runs a SELECT and returns rows as []map[string]any (generic column scan).
-func queryAll(q interface {
-	Query(string, ...any) (*sql.Rows, error)
-}, sqlText string, params []any) ([]map[string]any, error) {
-	rows, err := q.Query(sqlText, params...)
+// prepared returns the cached *sql.Stmt for sqlText, preparing + caching it on first use.
+func (d *ormDriver) prepared(sqlText string) (*sql.Stmt, error) {
+	if st := d.stmts[sqlText]; st != nil {
+		return st, nil
+	}
+	st, err := d.db.Prepare(sqlText)
+	if err != nil {
+		return nil, err
+	}
+	d.stmts[sqlText] = st
+	return st, nil
+}
+
+// cacheableStmt mirrors the runtime rule: a RETURNING statement is executed un-prepared (the mysql
+// RETURNING emulation happens at the driver-connection layer, which a prepared *sql.Stmt bypasses; pg
+// RETURNING runs at most once per op → negligible cache benefit). Everything else is cached.
+func cacheableStmt(sqlText string) bool { return !hasReturning(sqlText) }
+
+// queryAll runs a SELECT and returns rows as []map[string]any (generic column scan). It reuses the
+// driver's cached *sql.Stmt for the SQL (prepare-once) instead of re-preparing per call.
+func (d *ormDriver) queryAll(sqlText string, params []any) ([]map[string]any, error) {
+	var rows *sql.Rows
+	var err error
+	if cacheableStmt(sqlText) {
+		st, perr := d.prepared(sqlText)
+		if perr != nil {
+			return nil, perr
+		}
+		rows, err = st.Query(params...)
+	} else {
+		rows, err = d.db.Query(sqlText, params...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -237,13 +273,15 @@ func queryAll(q interface {
 	if err != nil {
 		return nil, err
 	}
+	// One reusable scan-target pair for the whole result set (rows.Scan overwrites raw[i] each row and
+	// normalizeCell copies the cell into the per-row map immediately) — fewer per-row allocations.
+	raw := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range raw {
+		ptrs[i] = &raw[i]
+	}
 	var out []map[string]any
 	for rows.Next() {
-		raw := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range raw {
-			ptrs[i] = &raw[i]
-		}
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, err
 		}
@@ -267,6 +305,16 @@ func normalizeCell(v any) any {
 	}
 }
 
+// close releases the cached prepared statements, then the *sql.DB. (db.Close closes the stmts too, but
+// this drops the Go-side cache explicitly.)
+func (d *ormDriver) close() error {
+	for k, st := range d.stmts {
+		_ = st.Close()
+		delete(d.stmts, k)
+	}
+	return d.db.Close()
+}
+
 func (d *ormDriver) run(plan map[string]any) (int, error) {
 	if plan["kind"].(string) == "read" {
 		return d.readPlan(plan)
@@ -278,7 +326,7 @@ func (d *ormDriver) readPlan(plan map[string]any) (int, error) {
 	reads := plan["reads"].([]any)
 	first := reads[0].(map[string]any)
 	firstParams := substParams(asAnySlice(first["params"]), 0)
-	rows, err := queryAll(d.db, first["sql"].(string), firstParams)
+	rows, err := d.queryAll(first["sql"].(string), firstParams)
 	if err != nil {
 		return 0, err
 	}
@@ -289,7 +337,7 @@ func (d *ormDriver) readPlan(plan map[string]any) (int, error) {
 		parentStmt := int(stage["parentStmt"].(float64))
 		var children []map[string]any
 		if b := bindRelation(stage, stageRows[parentStmt]); b != nil {
-			children, err = queryAll(d.db, b.sql, b.params)
+			children, err = d.queryAll(b.sql, b.params)
 			if err != nil {
 				return 0, err
 			}
@@ -300,12 +348,55 @@ func (d *ormDriver) readPlan(plan map[string]any) (int, error) {
 	return total, nil
 }
 
+// txStmts is a per-transaction prepared-statement cache with PREPARE-ON-REPEAT: statements are
+// prepared ON the tx (tx.Prepare) so they use the tx's OWNED connection — the pool is pinned to ONE
+// connection (search_path / in-mem DB), so preparing on d.db while the tx holds that one conn would
+// DEADLOCK. A tx is short-lived (one owned conn, returned to the pool at commit/rollback), so a
+// prepared stmt CANNOT be reused across transactions — only WITHIN the tx body. And a single-use
+// statement pays a NET EXTRA round-trip if prepared (tx.Prepare + Exec vs a pipelined tx.Exec). So a
+// statement is executed directly on FIRST sight and only PREPARED+cached when it REPEATS within the
+// same tx (a real app's intra-tx loop of identical writes) — zero regression for one-shot statements,
+// the reuse win when it exists. The tx-scoped stmts are auto-closed at commit/rollback.
+type txStmts struct {
+	tx    *sql.Tx
+	seen  map[string]bool
+	stmts map[string]*sql.Stmt
+}
+
+func newTxStmts(tx *sql.Tx) *txStmts {
+	return &txStmts{tx: tx, seen: map[string]bool{}, stmts: map[string]*sql.Stmt{}}
+}
+
+// txExec runs a non-returning write inside the tx. Prepare-on-repeat: the first occurrence of a
+// cacheable SQL runs via a direct tx.Exec (no extra prepare round-trip); a REPEAT prepares once and
+// reuses the tx-bound *sql.Stmt. Non-cacheable SQL (RETURNING) always runs directly.
+func (t *txStmts) txExec(sqlText string, params []any) (sql.Result, error) {
+	if !cacheableStmt(sqlText) {
+		return t.tx.Exec(sqlText, params...)
+	}
+	if st := t.stmts[sqlText]; st != nil {
+		return st.Exec(params...) // already prepared (a prior repeat) — reuse
+	}
+	if !t.seen[sqlText] {
+		t.seen[sqlText] = true
+		return t.tx.Exec(sqlText, params...) // first sight — direct exec, no prepare
+	}
+	// Second sight — prepare + cache, then reuse from here on.
+	st, err := t.tx.Prepare(sqlText)
+	if err != nil {
+		return nil, err
+	}
+	t.stmts[sqlText] = st
+	return st.Exec(params...)
+}
+
 func (d *ormDriver) writePlan(plan map[string]any) (int, error) {
 	seq := nextSeq()
 	tx, err := d.db.Begin()
 	if err != nil {
 		return 0, err
 	}
+	ts := newTxStmts(tx)
 	returnedID := int64(0)
 	n := 0
 	for _, s := range plan["statements"].([]any) {
@@ -321,6 +412,7 @@ func (d *ormDriver) writePlan(plan map[string]any) (int, error) {
 		switch {
 		case role == "insertReturn":
 			if d.dialect == "postgres" {
+				// pg native RETURNING id — not cached (runs once per op; RETURNING bypasses the cache).
 				var id int64
 				if e := tx.QueryRow(sqlText, params...).Scan(&id); e != nil {
 					_ = tx.Rollback()
@@ -328,7 +420,8 @@ func (d *ormDriver) writePlan(plan map[string]any) (int, error) {
 				}
 				returnedID = id
 			} else {
-				res, e := tx.Exec(stripReturning(sqlText), params...)
+				// sqlite/mysql: strip RETURNING → a plain cacheable INSERT (prepare-once via txExec).
+				res, e := ts.txExec(stripReturning(sqlText), params)
 				if e != nil {
 					_ = tx.Rollback()
 					return 0, e
@@ -336,13 +429,14 @@ func (d *ormDriver) writePlan(plan map[string]any) (int, error) {
 				returnedID, _ = res.LastInsertId()
 			}
 		case d.dialect == "mysql" && hasReturning(sqlText):
-			// MySQL has no native RETURNING (a plain upsert RETURNING id): strip + exec.
-			if _, e := tx.Exec(stripReturning(sqlText), params...); e != nil {
+			// MySQL has no native RETURNING (a plain upsert RETURNING id): strip → cacheable exec.
+			if _, e := ts.txExec(stripReturning(sqlText), params); e != nil {
 				_ = tx.Rollback()
 				return 0, e
 			}
 		case hasReturning(sqlText):
-			// pg native RETURNING / sqlite RETURNING: a row-returning statement → Query (drain).
+			// pg native RETURNING / sqlite RETURNING: a row-returning statement → Query (drain). Not
+			// cached (RETURNING) — runs at most once per op.
 			r, e := tx.Query(sqlText, params...)
 			if e != nil {
 				_ = tx.Rollback()
@@ -350,7 +444,7 @@ func (d *ormDriver) writePlan(plan map[string]any) (int, error) {
 			}
 			r.Close()
 		default:
-			if _, e := tx.Exec(sqlText, params...); e != nil {
+			if _, e := ts.txExec(sqlText, params); e != nil {
 				_ = tx.Rollback()
 				return 0, e
 			}
@@ -503,10 +597,11 @@ func makeDriver(dialect string, impl execImpl, a *artifact) (*ormDriver, error) 
 				return nil, err
 			}
 		}
+		db.SetMaxIdleConns(1) // keep the single in-memory conn warm (no reconnect churn between ops)
 		if err := seedRows(db, schema, "sqlite"); err != nil {
 			return nil, err
 		}
-		return &ormDriver{dialect: "sqlite", impl: impl, db: db}, nil
+		return &ormDriver{dialect: "sqlite", impl: impl, db: db, stmts: map[string]*sql.Stmt{}}, nil
 	case "postgres":
 		host := envOr("TEST_DB_HOST", "localhost")
 		port := envOr("TEST_DB_PORT", "5433")
@@ -530,6 +625,7 @@ func makeDriver(dialect string, impl execImpl, a *artifact) (*ormDriver, error) 
 		}
 		// Pin search_path for EVERY pooled connection (SET above only affects one conn).
 		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1) // keep that one search_path-pinned conn warm across ops (no re-SET churn)
 		for _, s := range strList(schema, "drop") {
 			if _, err := db.Exec(s); err != nil {
 				return nil, err
@@ -548,7 +644,7 @@ func makeDriver(dialect string, impl execImpl, a *artifact) (*ormDriver, error) 
 				return nil, err
 			}
 		}
-		return &ormDriver{dialect: "postgres", impl: impl, db: db}, nil
+		return &ormDriver{dialect: "postgres", impl: impl, db: db, stmts: map[string]*sql.Stmt{}}, nil
 	case "mysql":
 		host := envOr("TEST_MYSQL_HOST", "127.0.0.1")
 		port := envOr("TEST_MYSQL_PORT", "3307")
@@ -573,6 +669,11 @@ func makeDriver(dialect string, impl execImpl, a *artifact) (*ormDriver, error) 
 		if err != nil {
 			return nil, err
 		}
+		// The bench runs ops SEQUENTIALLY on one connection; pin the pool to a single warm conn so a
+		// cached *sql.Stmt's server-side prepared handle is reused across ops (a *sql.DB-level stmt is
+		// re-prepared per pooled conn under the hood — one warm conn = one prepare per SQL, then reuse).
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
 		for _, s := range strList(schema, "drop") {
 			if _, err := db.Exec(s); err != nil {
 				return nil, err
@@ -586,7 +687,7 @@ func makeDriver(dialect string, impl execImpl, a *artifact) (*ormDriver, error) 
 		if err := seedRows(db, schema, "mysql"); err != nil {
 			return nil, err
 		}
-		return &ormDriver{dialect: "mysql", impl: impl, db: db}, nil
+		return &ormDriver{dialect: "mysql", impl: impl, db: db, stmts: map[string]*sql.Stmt{}}, nil
 	default:
 		return nil, fmt.Errorf("unknown dialect %s", dialect)
 	}
@@ -646,7 +747,7 @@ func smoke() {
 	total := pass + fail
 	fmt.Printf("\n%d/%d cells green (%d ops x 3 DBs = %d).\n", pass, total, len(a.ops()), len(a.ops())*3)
 	for _, d := range dialects {
-		drivers[d].db.Close()
+		drivers[d].close()
 	}
 	if fail > 0 {
 		fmt.Fprintf(os.Stderr, "\nSMOKE FAILED: %d cell(s) errored (see ERR above).\n", fail)
@@ -825,10 +926,10 @@ func bench() {
 	}
 
 	for _, d := range live {
-		d.db.Close()
+		d.close()
 	}
 	for _, d := range baselines {
-		d.db.Close()
+		d.close()
 	}
 
 	out := resultsPath()

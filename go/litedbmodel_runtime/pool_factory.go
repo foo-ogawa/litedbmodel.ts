@@ -65,7 +65,16 @@ func PgPoolFactory() PoolFactory {
 			_ = db.Close()
 			return BuiltPool{}, mapSqliteError(err)
 		}
-		return BuiltPool{Pool: NewSQLDBPool(db), Close: db.Close}, nil
+		return BuiltPool{Pool: NewSQLDBPool(db), Close: closeWithStmtCache(db)}, nil
+	}
+}
+
+// closeWithStmtCache returns a closer that first drops db's prepared-statement cache, then closes the
+// *sql.DB — so a pool teardown releases the Go-side stmt cache too (no leaked map entry / handle).
+func closeWithStmtCache(db *sql.DB) func() error {
+	return func() error {
+		CloseDBStmtCache(db)
+		return db.Close()
 	}
 }
 
@@ -87,6 +96,6 @@ func MysqlPoolFactory() PoolFactory {
 			_ = db.Close()
 			return BuiltPool{}, mapSqliteError(err)
 		}
-		return BuiltPool{Pool: NewSQLDBPool(db), Close: db.Close}, nil
+		return BuiltPool{Pool: NewSQLDBPool(db), Close: closeWithStmtCache(db)}, nil
 	}
 }

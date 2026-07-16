@@ -112,11 +112,11 @@ type dbConnection struct {
 }
 
 func (c dbConnection) Execute(sql string, args []any) ([]bc.Value, error) {
-	return queryRows(c.db, sql, args)
+	return queryRows(cacheWrapDB(c.db), sql, args)
 }
 
 func (c dbConnection) Run(sql string, args []any) (RunInfo, error) {
-	changes, lastInsert, err := execWrite(c.db, sql, args)
+	changes, lastInsert, err := execWrite(cacheWrapDB(c.db), sql, args)
 	if err != nil {
 		return RunInfo{}, err
 	}
@@ -590,12 +590,19 @@ func WithTransactionDecidedIsolated[R any](ctx *ExecutionContext, db TxDB, isola
 		return zero, mapSqliteError(err)
 	}
 	// Pin the OWNED *sql.Conn into a tx-scoped ctx: every statement (data + tx-control) the body/runtime
-	// issues resolves THIS connection through the SAME seam — so tx-control is middleware-visible.
-	txCtx := ctx.WithTxConnection(txConnection{sqldb: connSQLDB{conn: conn, ctx: goCtx}})
+	// issues resolves THIS connection through the SAME seam — so tx-control is middleware-visible. The
+	// tx carries a per-connection prepared-statement cache (prepare-once, reuse across the tx body); its
+	// stmts are bound to THIS *sql.Conn and are closed at release (before the conn returns to the pool).
+	stmtCache := newTxStmtCache(conn)
+	txCtx := ctx.WithTxConnection(txConnection{sqldb: connSQLDB{conn: conn, ctx: goCtx, cache: stmtCache}})
 	// poisoned ⇒ the connection is in an unknown state (a failed ROLLBACK); DESTROY it on release so a
-	// fired statement_timeout / aborted session never re-enters the pool.
+	// fired statement_timeout / aborted session never re-enters the pool. Cached stmts are closed FIRST
+	// (they must not outlive the owned connection).
 	poisoned := false
-	defer releaseTxConn(conn, &poisoned)
+	defer func() {
+		stmtCache.closeAll()
+		releaseTxConn(conn, &poisoned)
+	}()
 
 	// (2) BEGIN (+ isolation SET) THROUGH the seam on the pinned conn — middleware observes it.
 	for _, begin := range begins {
