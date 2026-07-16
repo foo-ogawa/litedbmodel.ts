@@ -29,6 +29,7 @@ use behavior_contracts::{ExecOutcome, Value};
 
 use crate::driver::Driver;
 use crate::errors::{re_error_to_sql_failure, SqlFailure};
+use crate::exec_context::{self, ExecutionContext, StatementIntent};
 use crate::node::{compact_value, eval_expr, Node as J};
 
 /// Thin shim so the many `evaluate_expression(node, scope)` call sites port unchanged to the native
@@ -402,7 +403,7 @@ pub(crate) fn to_driver_param(v: &Value) -> Value {
 /// WHAT it runs. Takes `driver` by `&dyn Driver` so a `Sync` pooled driver can service concurrent
 /// calls (each acquiring its own pooled connection).
 fn render_and_execute_node(
-    driver: &dyn Driver,
+    ctx: &ExecutionContext,
     graph: &J,
     dialect: &str,
     node_id: &str,
@@ -421,8 +422,9 @@ fn render_and_execute_node(
         Err(e) => return ExecOutcome::Error(e),
     };
     let params: Vec<Value> = rendered.params.iter().map(to_driver_param).collect();
-    let mut stmt = driver.prepare(&rendered.sql);
-    match stmt.all(&params) {
+    // ③ execute through the CENTRAL SEAM (§2): middleware chain → connection_for(read) → execute.
+    // This is the ONLY driver contact for a read node — no direct `driver.prepare().all()`.
+    match exec_context::execute(ctx, &rendered.sql, &params, &StatementIntent::read()) {
         Ok(rows) => ExecOutcome::Ok(Value::Arr(rows)),
         Err(e) => ExecOutcome::Error(e.message),
     }
@@ -437,6 +439,20 @@ pub fn execute_read_graph(
     graph: &J,
     input: &Scope,
     driver: &dyn Driver,
+) -> Result<Value, SqlFailure> {
+    // Wrap the raw driver in the backward-compat ctx (§6): empty middleware, single DB, no tx pin —
+    // so this serial path is byte-identical to the pre-seam `driver.prepare().all()` while every read
+    // now funnels through the central seam.
+    let ctx = exec_context::for_driver(driver);
+    execute_read_graph_ctx(graph, input, &ctx)
+}
+
+/// The serial read-graph executor over an [`ExecutionContext`] — the ctx-threaded core of
+/// [`execute_read_graph`]. Every read node funnels through the central seam (§2).
+fn execute_read_graph_ctx(
+    graph: &J,
+    input: &Scope,
+    ctx: &ExecutionContext,
 ) -> Result<Value, SqlFailure> {
     let ir = graph
         .get("ir")
@@ -456,7 +472,7 @@ pub fn execute_read_graph(
     // shape (multiple nodes, a map/cond node, a non-trivial output) falls through to the general
     // native orchestrator below.
     if let Some(node) = single_ref_node(ir, name) {
-        if let Some(out) = fast_single_node(driver, graph, &dialect, node, &normalized) {
+        if let Some(out) = fast_single_node(ctx, graph, &dialect, node, &normalized) {
             return out;
         }
     }
@@ -477,7 +493,7 @@ pub fn execute_read_graph(
              orchestrator, never interpreted.",
         ));
     }
-    orchestrate_read_graph_serial(graph, comp, &normalized, &dialect, driver)
+    orchestrate_read_graph_serial(graph, comp, &normalized, &dialect, ctx)
 }
 
 /// The GENERAL native serial orchestrator forced (no single-ref fast-path), exposed `#[doc(hidden)]`
@@ -501,7 +517,8 @@ pub fn execute_read_graph_orchestrator_for_test(
     let normalized = normalize_read_graph_input(graph, input);
     let comp = component_for(ir, name)
         .ok_or_else(|| plain_failure("scp runtime: read graph has no entry component"))?;
-    orchestrate_read_graph_serial(graph, comp, &normalized, &dialect, driver)
+    let ctx = exec_context::for_driver(driver);
+    orchestrate_read_graph_serial(graph, comp, &normalized, &dialect, &ctx)
 }
 
 /// Serial NATIVE read-graph orchestration (interpreter-free): the `&dyn Driver` twin of
@@ -515,7 +532,7 @@ fn orchestrate_read_graph_serial(
     comp: &J,
     input: &Scope,
     dialect: &str,
-    driver: &dyn Driver,
+    ctx: &ExecutionContext,
 ) -> Result<Value, SqlFailure> {
     let body = comp
         .get("body")
@@ -559,7 +576,7 @@ fn orchestrate_read_graph_serial(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            match exec_read_node_serial(driver, graph, dialect, node, &base) {
+            match exec_read_node_serial(ctx, graph, dialect, node, &base) {
                 ExecOutcome::Ok(v) => results.push((id, v)),
                 ExecOutcome::Error(e) => return Err(re_error_to_sql_failure(&e)),
             }
@@ -578,7 +595,7 @@ fn orchestrate_read_graph_serial(
 /// a `cond` join, a `componentRef` render+execute, or a simple `map` (per-element render+execute under
 /// the `as` binding, collected in order). Byte-identical to bc run_behavior for these shapes.
 fn exec_read_node_serial(
-    driver: &dyn Driver,
+    ctx: &ExecutionContext,
     graph: &J,
     dialect: &str,
     node: &J,
@@ -607,7 +624,7 @@ fn exec_read_node_serial(
             scope.push((as_name.to_string(), el.clone()));
             // #12: render the real node's `statementsById[id]` fragments directly against the walk
             // scope (map element binding included) — no `__scope` surrogate port to evaluate.
-            match render_and_execute_node(driver, graph, dialect, node_id, &scope) {
+            match render_and_execute_node(ctx, graph, dialect, node_id, &scope) {
                 ExecOutcome::Ok(v) => out.push(v),
                 ExecOutcome::Error(e) => return ExecOutcome::Error(e),
             }
@@ -615,7 +632,7 @@ fn exec_read_node_serial(
         return ExecOutcome::Ok(Value::Arr(out));
     }
     // componentRef (#12): render the real node's statements directly against `base` (no `__scope`).
-    render_and_execute_node(driver, graph, dialect, node_id, base)
+    render_and_execute_node(ctx, graph, dialect, node_id, base)
 }
 
 /// If the entry component is a single `componentRef` body node `X` with `output == {ref:[X]}`,
@@ -648,14 +665,14 @@ fn single_ref_node<'a>(ir: &'a J, name: Option<&str>) -> Option<&'a J> {
 /// byte-identical result for `output={ref:[node]}` (#12: render the real node's `statementsById[id]`
 /// directly against the walk scope, no `__scope` surrogate).
 fn fast_single_node(
-    driver: &dyn Driver,
+    ctx: &ExecutionContext,
     graph: &J,
     dialect: &str,
     node: &J,
     scope: &Scope,
 ) -> Option<Result<Value, SqlFailure>> {
     let node_id = node.get("id").and_then(|v| v.as_str())?;
-    match render_and_execute_node(driver, graph, dialect, node_id, scope) {
+    match render_and_execute_node(ctx, graph, dialect, node_id, scope) {
         ExecOutcome::Ok(v) => Some(Ok(v)),
         ExecOutcome::Error(e) => Some(Err(re_error_to_sql_failure(&e))),
     }
@@ -913,6 +930,12 @@ fn exec_read_node(
 
     let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
+    // A per-worker backward-compat ctx over the pooled driver: no tx pin (the read fan-out never runs
+    // inside a tx — §3/§8 "parallel read fan-out is a separate connection"), empty middleware. So the
+    // seam resolves the pooled driver directly = one pooled connection per statement, byte-identical
+    // to the pre-seam parallel path, while STILL funneling every read through the central seam.
+    let ctx = exec_context::for_driver(driver);
+
     if let Some(m) = node.get("map") {
         let over = match evaluate_expression(m.get("over").unwrap_or(&J::Null), base) {
             Ok(v) => v,
@@ -929,7 +952,7 @@ fn exec_read_node(
             scope.push((as_name.to_string(), el.clone()));
             // #12: render the real node's `statementsById[id]` fragments directly against the walk
             // scope (the map element binding included) — no `__scope` surrogate port to evaluate.
-            match render_and_execute_node(driver, graph, dialect, node_id, &scope) {
+            match render_and_execute_node(&ctx, graph, dialect, node_id, &scope) {
                 ExecOutcome::Ok(v) => out.push(v),
                 ExecOutcome::Error(e) => return ExecOutcome::Error(e),
             }
@@ -938,7 +961,7 @@ fn exec_read_node(
     }
 
     // componentRef (#12): render the real node's statements directly against `base` (no `__scope`).
-    render_and_execute_node(driver, graph, dialect, node_id, base)
+    render_and_execute_node(&ctx, graph, dialect, node_id, base)
 }
 
 // ── Parallel read-relation dispatch (executor-layer fan-out; #40) ──────────────
@@ -1006,7 +1029,10 @@ pub fn dispatch_read_nodes_parallel<D: Driver + Sync>(
                 return ExecOutcome::Error(format!("parallel dispatch: unknown node '{}'", op.id))
             }
         };
-        render_and_execute_node(driver, graph, dialect, &op.id, scope)
+        // Per-worker backward-compat ctx over the pooled driver (no tx, empty middleware) — the seam
+        // resolves one pooled connection per statement, byte-identical to the pre-seam fan-out.
+        let ctx = exec_context::for_driver(driver);
+        render_and_execute_node(&ctx, graph, dialect, &op.id, scope)
     };
 
     let result = run_plan_parallel(Some(&plan), &ops, exec)

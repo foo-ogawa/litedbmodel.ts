@@ -15,7 +15,8 @@ use std::time::Instant;
 use behavior_contracts::Value;
 use litedbmodel_runtime::Node;
 use litedbmodel_runtime::{
-    execute_bundle, read_bundle_pooled, Driver, PreparedStatement, SqliteDriver,
+    execute_bundle, read_bundle_pooled, Driver, PreparedStatement, SqlFailure, SqliteDriver,
+    TxConnection,
 };
 
 /// Field access on a native `Node` object — `.get(k)` unwrapped (the bundles.json shape is fixed).
@@ -50,6 +51,9 @@ struct SyncDriverRef<'a>(&'a SqliteDriver);
 impl Driver for SyncDriverRef<'_> {
     fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
         self.0.prepare(sql)
+    }
+    fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        self.0.begin_tx()
     }
 }
 unsafe impl Sync for SyncDriverRef<'_> {}

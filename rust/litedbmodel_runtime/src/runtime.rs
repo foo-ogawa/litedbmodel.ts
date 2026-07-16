@@ -23,6 +23,7 @@ use behavior_contracts::Value;
 use crate::dialect::dialect_for;
 use crate::driver::Driver;
 use crate::errors::{re_error_to_sql_failure, SqlFailure};
+use crate::exec_context::{self, ExecutionContext, StatementIntent, TxDecision};
 use crate::node::{encode_value, Node as J};
 use crate::static_bundle::{
     execute_read_graph, execute_read_graph_pooled, render_read_primary, render_tx_op,
@@ -135,21 +136,25 @@ fn gate_short_circuit(
 }
 
 /// Render + execute one tx statement's makeSQL op; return (rows, changes). Mirrors TS `execStatement`.
+///
+/// Every statement runs through the CENTRAL SEAM on the tx-scoped ctx (§2/§3): the seam resolves the
+/// tx's OWNED connection (per-execution ownership) and runs there — a SELECT/RETURNING via
+/// [`exec_context::execute`], a non-returning write via [`exec_context::run`]. No direct
+/// `driver.prepare(...)` — the tx-owned connection is the ONLY driver contact.
 fn exec_statement(
-    driver: &dyn Driver,
+    ctx: &ExecutionContext,
     op: &J,
     scope: &Scope,
     dialect_name: &str,
 ) -> Result<(Vec<Value>, i64), SqlFailure> {
     let rendered = render_tx_op(op, scope, dialect_name).map_err(|e| plain_failure(&e))?;
     let params: Vec<Value> = rendered.params.iter().map(to_driver_param).collect();
-    let mut stmt = driver.prepare(&rendered.sql);
     if is_return_stmt(&rendered.sql) {
-        let rows = stmt.all(&params)?;
+        let rows = exec_context::execute(ctx, &rendered.sql, &params, &StatementIntent::write())?;
         let n = rows.len() as i64;
         Ok((rows, n))
     } else {
-        let info = stmt.run(&params)?;
+        let info = exec_context::run(ctx, &rendered.sql, &params, &StatementIntent::write())?;
         Ok((Vec::new(), info.changes))
     }
 }
@@ -191,13 +196,19 @@ pub fn execute_transaction_bundle(
                 && s.get("role").and_then(|r| r.as_str()) == Some("body")
         });
 
-    driver.prepare("BEGIN").run(&[])?;
-    let scope = RefCell::new(input_scope);
-    let mut executed: Vec<Value> = Vec::new();
-    let mut entity: Value = Value::Null;
-    let mut returned_rows: Vec<Value> = Vec::new();
+    // Wrap the raw driver in the backward-compat ctx (§6); `with_transaction_decided` acquires the
+    // tx's OWNED connection (per-execution ownership §3), issues BEGIN on it, pins it into a tx-scoped
+    // ctx so every `exec_statement` runs on THAT connection, and COMMITs / ROLLBACKs it per the body's
+    // decision (a gate short-circuit ⇒ Rollback + `committed:false`; success ⇒ Commit; a driver error
+    // ⇒ Err ⇒ best-effort rollback + re-raise). The removed driver-global `writer` slot is gone —
+    // concurrent txs each own a distinct connection.
+    let base_ctx = exec_context::for_driver(driver);
+    exec_context::with_transaction_decided(&base_ctx, |ctx| {
+        let scope = RefCell::new(input_scope);
+        let mut executed: Vec<Value> = Vec::new();
+        let mut entity: Value = Value::Null;
+        let mut returned_rows: Vec<Value> = Vec::new();
 
-    let mut run = || -> Result<Value, SqlFailure> {
         for stmt in statements {
             let op = stmt
                 .get("op")
@@ -206,15 +217,16 @@ pub fn execute_transaction_bundle(
                 .get("id")
                 .and_then(|i| i.as_str())
                 .ok_or_else(|| plain_failure("scp write: statement missing 'id'"))?;
-            let (rows, changes) = exec_statement(driver, op, &scope.borrow(), &dialect_name)?;
+            let (rows, changes) = exec_statement(ctx, op, &scope.borrow(), &dialect_name)?;
             executed.push(Value::Str(id.to_string()));
 
             if let Some(gate) = stmt.get("gate").and_then(|g| g.as_str()) {
                 let reason =
                     gate_short_circuit(gate, rows.len(), changes).map_err(|e| plain_failure(&e))?;
                 if let Some(reason) = reason {
-                    driver.prepare("ROLLBACK").run(&[])?;
-                    return Ok(Value::Obj(vec![
+                    // A failed gate ROLLBACKs (via the combinator) and returns `committed:false` — a
+                    // legitimate outcome, NOT an error.
+                    return Ok(TxDecision::Rollback(Value::Obj(vec![
                         ("committed".into(), Value::Bool(false)),
                         (
                             "shortCircuit".into(),
@@ -225,7 +237,7 @@ pub fn execute_transaction_bundle(
                         ),
                         ("entity".into(), Value::Null),
                         ("executed".into(), Value::Arr(executed.clone())),
-                    ]));
+                    ])));
                 }
             }
 
@@ -258,7 +270,6 @@ pub fn execute_transaction_bundle(
             }
         }
 
-        driver.prepare("COMMIT").run(&[])?;
         let mut out = vec![
             ("committed".to_string(), Value::Bool(true)),
             ("entity".to_string(), entity.clone()),
@@ -270,17 +281,8 @@ pub fn execute_transaction_bundle(
                 Value::Arr(returned_rows.clone()),
             ));
         }
-        Ok(Value::Obj(out))
-    };
-
-    match run() {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            // best-effort rollback; the original failure is surfaced.
-            let _ = driver.prepare("ROLLBACK").run(&[]);
-            Err(e)
-        }
-    }
+        Ok(TxDecision::Commit(Value::Obj(out)))
+    })
 }
 
 // ── Dialect primitive (render axis + dialect suite) ────────────────────────────

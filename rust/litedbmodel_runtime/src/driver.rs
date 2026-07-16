@@ -25,6 +25,7 @@ use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::Connection;
 
 use crate::errors::{map_sqlite_error, SqlFailure};
+use crate::exec_context::TxConnection;
 
 /// The summary of a non-returning write: affected-row count + last insert rowid.
 #[derive(Debug, Clone, Copy)]
@@ -42,6 +43,46 @@ pub trait PreparedStatement {
 /// The synchronous SQL-driver seam (mirrors the TS `SqliteDb`).
 pub trait Driver {
     fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_>;
+
+    /// Begin a transaction, returning an OWNED [`TxConnection`] handle (§3 per-execution connection
+    /// ownership — the rust analogue of v1 `PoolTransaction`). BEGIN is issued when the handle is
+    /// built. A single-connection driver (the in-proc `rusqlite` seam) forwards every tx statement +
+    /// the final COMMIT/ROLLBACK to its one connection ([`forwarding_tx`]). A POOLED live driver
+    /// (PG/MySQL) checks out ONE pooled connection and pins it in the handle, so concurrent
+    /// transactions each own a DISTINCT connection ⇒ isolated (the old driver-global `writer` slot is
+    /// gone). Every implementor MUST issue BEGIN in this method so the returned handle is live.
+    fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure>;
+}
+
+/// Build the single-connection [`TxConnection`] for a driver that is genuinely ONE connection (the
+/// in-proc `rusqlite` seam): issue BEGIN, then forward every statement (and COMMIT/ROLLBACK) to that
+/// driver. There is no per-execution ownership to enforce — a tx runs BEGIN…COMMIT on the one
+/// connection — but it satisfies the SAME [`TxConnection`] contract the seam threads. Shared by any
+/// `Driver::begin_tx` impl over a single-connection driver.
+pub fn forwarding_tx(driver: &dyn Driver) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+    driver.prepare("BEGIN").run(&[])?;
+    Ok(Box::new(ForwardingTx { driver }))
+}
+
+/// The single-connection [`TxConnection`]: forward every statement (and COMMIT/ROLLBACK) to the
+/// driver it borrows. Built via [`forwarding_tx`] (which issues BEGIN first).
+pub struct ForwardingTx<'a> {
+    driver: &'a dyn Driver,
+}
+
+impl TxConnection for ForwardingTx<'_> {
+    fn execute(&mut self, sql: &str, params: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+        self.driver.prepare(sql).all(params)
+    }
+    fn run(&mut self, sql: &str, params: &[Value]) -> Result<RunInfo, SqlFailure> {
+        self.driver.prepare(sql).run(params)
+    }
+    fn commit(self: Box<Self>) -> Result<(), SqlFailure> {
+        self.driver.prepare("COMMIT").run(&[]).map(|_| ())
+    }
+    fn rollback(self: Box<Self>) -> Result<(), SqlFailure> {
+        self.driver.prepare("ROLLBACK").run(&[]).map(|_| ())
+    }
 }
 
 /// Convert a rendered bc [`Value`] param to a `rusqlite` bindable value.
@@ -109,6 +150,12 @@ impl Driver for SqliteDriver {
             conn: &self.conn,
             sql: sql.to_string(),
         })
+    }
+
+    /// The in-proc `rusqlite` seam is a single connection: a tx runs BEGIN…COMMIT/ROLLBACK on it via
+    /// the forwarding handle (byte-identical to the pre-seam `prepare("BEGIN").run()` path).
+    fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        forwarding_tx(self)
     }
 }
 

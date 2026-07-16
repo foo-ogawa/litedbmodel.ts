@@ -22,6 +22,7 @@
 pub mod dialect;
 pub mod driver;
 pub mod errors;
+pub mod exec_context;
 pub mod node;
 pub mod relation;
 pub mod runtime;
@@ -38,8 +39,13 @@ pub const VERSION: &str = "2.1.0";
 
 // ── public surface (mirrors the Python `__all__`) ──────────────────────────────
 pub use dialect::{dialect_for, to_dollar_placeholders, Dialect};
-pub use driver::{Driver, PreparedStatement, RunInfo, SqliteDriver};
+pub use driver::{forwarding_tx, Driver, ForwardingTx, PreparedStatement, RunInfo, SqliteDriver};
 pub use errors::{map_sqlite_error, re_error_to_sql_failure, SqlFailure};
+pub use exec_context::{
+    execute as seam_execute, for_driver, run as seam_run, with_transaction,
+    with_transaction_decided, Connection, DriverConnection, ExecutionContext, Middleware,
+    MiddlewareChain, StatementIntent, TxConnection, TxConnectionRef, TxDecision,
+};
 #[cfg(feature = "livedb")]
 pub use livedb::{MysqlDriver, PostgresDriver};
 pub use node::{decode_value, encode_value, eval_expr, EvalError, Node};

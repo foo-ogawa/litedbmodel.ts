@@ -21,6 +21,7 @@ use behavior_contracts::Value;
 
 use crate::driver::Driver;
 use crate::errors::SqlFailure;
+use crate::exec_context::{self, StatementIntent};
 use crate::node::{write_json_string, Node as J};
 use crate::runtime::execute_bundle_pooled;
 use crate::static_bundle::{render_placeholders, resolve_pg_array_cast};
@@ -236,7 +237,11 @@ fn run_relation_op(
     }
     let t_cols = op.target_key_cols();
     let bound = bind_keys(op, &keys);
-    let rows = driver.prepare(&sql).all(&bound)?;
+    // The relation batch read funnels through the CENTRAL SEAM (§2) on a backward-compat ctx over the
+    // relation's driver (no tx — relation batches are read-only; empty middleware) — one pooled
+    // connection per batch, byte-identical to the pre-seam `driver.prepare().all()`.
+    let ctx = exec_context::for_driver(driver);
+    let rows = exec_context::execute(&ctx, &sql, &bound, &StatementIntent::read())?;
     for row in rows {
         let tuple: Vec<Value> = t_cols
             .iter()

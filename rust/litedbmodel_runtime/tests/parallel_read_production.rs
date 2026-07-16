@@ -62,6 +62,12 @@ impl Driver for LatencyDriver {
             sql: sql.to_string(),
         })
     }
+    fn begin_tx(
+        &self,
+    ) -> Result<Box<dyn litedbmodel_runtime::TxConnection + '_>, litedbmodel_runtime::SqlFailure>
+    {
+        litedbmodel_runtime::forwarding_tx(self)
+    }
 }
 
 struct LatencyStmt<'a> {
@@ -132,6 +138,12 @@ struct EchoDriver;
 impl Driver for EchoDriver {
     fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
         Box::new(EchoStmt(sql.to_string()))
+    }
+    fn begin_tx(
+        &self,
+    ) -> Result<Box<dyn litedbmodel_runtime::TxConnection + '_>, litedbmodel_runtime::SqlFailure>
+    {
+        litedbmodel_runtime::forwarding_tx(self)
     }
 }
 struct EchoStmt(String);

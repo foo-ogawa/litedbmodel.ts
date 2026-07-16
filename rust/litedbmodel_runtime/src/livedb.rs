@@ -20,16 +20,20 @@
 //! `concurrency` (default 16) becomes REAL parallel DB I/O when the executor dispatches independent
 //! sibling relations in parallel (`static_bundle::dispatch_read_nodes_parallel`).
 //!
-//! ## Write-tx stays SERIAL on ONE pinned connection
+//! ## Write-tx OWNS ONE pooled connection (per-execution ownership, #76 §3)
 //!
-//! A write bundle rides `execute_transaction_bundle`, which issues `BEGIN` … `COMMIT`/`ROLLBACK`
-//! as literal statements bracketing the gate-first tx-DAG. A pool would hand each statement a
-//! DIFFERENT connection, splitting the transaction. So on `BEGIN` the driver PINS one pooled
-//! connection into a single writer slot and routes every subsequent statement to it until
-//! `COMMIT`/`ROLLBACK` releases it — one connection, tx-DAG topological order, gate-first
-//! short-circuit, exactly as before. Writes are NEVER parallelized.
-
-use std::sync::Mutex;
+//! A write bundle rides `execute_transaction_bundle`, which now brackets the gate-first tx-DAG via
+//! the [`ExecutionContext`](crate::exec_context) seam's `with_transaction`. The seam calls
+//! [`Driver::begin_tx`], which checks out ONE pooled connection, issues `BEGIN` on it, and returns an
+//! OWNED [`TxConnection`] handle (the rust analogue of v1 `litedbmodel.rs` `PoolTransaction`). Every
+//! statement in the tx body resolves THAT owned connection (tx-DAG topological order, gate-first
+//! short-circuit); the handle's `commit`/`rollback` runs `COMMIT`/`ROLLBACK` on it and releases it.
+//!
+//! There is NO driver-global single-slot writer any more — the removed `writer: Mutex<Option<...>>`
+//! was exactly the shared slot that corrupted CONCURRENT transactions (two txs racing on one slot).
+//! With per-execution ownership, concurrent `begin_tx` calls each check out a DISTINCT pooled
+//! connection ⇒ isolated. Reads still check out a pooled connection per call (parallel-safe); writes
+//! are NEVER parallelized (one owned connection, serial tx-DAG).
 
 use behavior_contracts::Value;
 use deadpool_postgres::{Config as PgConfig, Pool as PgPool, Runtime as PgRuntime};
@@ -41,6 +45,7 @@ use tokio_postgres::NoTls;
 
 use crate::driver::{Driver, PreparedStatement, RunInfo};
 use crate::errors::SqlFailure;
+use crate::exec_context::TxConnection;
 
 fn driver_failure(msg: impl Into<String>) -> SqlFailure {
     SqlFailure {
@@ -55,29 +60,28 @@ fn driver_failure(msg: impl Into<String>) -> SqlFailure {
 /// relations can each hold a live connection without starving.
 pub const DEFAULT_POOL_SIZE: usize = 16;
 
-fn is_txn_control(sql: &str) -> bool {
-    let s = sql.trim().to_ascii_uppercase();
-    s == "BEGIN" || s == "COMMIT" || s == "ROLLBACK" || s == "START TRANSACTION"
-}
-
 // ── Postgres (tokio-postgres + deadpool-postgres) ──────────────────────────────
 
 /// A live Postgres driver: a `deadpool-postgres` pool over `tokio-postgres`, on a shared tokio
-/// runtime. Reads check out a pooled connection per call (parallel-safe); a write-tx pins ONE
-/// connection for the BEGIN…COMMIT span.
+/// runtime. Reads check out a pooled connection per call (parallel-safe); a write-tx OWNS one pooled
+/// connection for the BEGIN…COMMIT span via [`Driver::begin_tx`] (per-execution ownership §3 — no
+/// driver-global writer slot).
 pub struct PostgresDriver {
     rt: Runtime,
     pool: PgPool,
-    /// The pinned writer connection for the active transaction (single-slot). `None` between txns.
-    writer: Mutex<Option<deadpool_postgres::Object>>,
 }
 
 impl PostgresDriver {
     /// Connect with a libpq-style conn string, e.g.
     /// "host=localhost port=5433 user=testuser password=testpass dbname=testdb".
     pub fn connect(conn: &str) -> Result<Self, SqlFailure> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(DEFAULT_POOL_SIZE)
+        // A CURRENT-THREAD tokio runtime (#76 approved — lighter `block_on`, v1rs-aligned). The
+        // `Driver` facade `block_on`s each pooled future on the caller thread; the read fan-out
+        // (`dispatch_read_nodes_parallel`) runs on OS worker threads, EACH with this same driver
+        // reference `block_on`ing its own pooled connection — so concurrency comes from the pool +
+        // worker threads, not from a multi-thread runtime. deadpool-postgres drives its own
+        // connections on `Runtime::Tokio1` tasks, which a current-thread runtime services fine.
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| driver_failure(format!("postgres runtime: {e}")))?;
@@ -104,11 +108,7 @@ impl PostgresDriver {
             .create_pool(Some(PgRuntime::Tokio1), NoTls)
             .map_err(|e| driver_failure(format!("postgres pool: {e}")))?;
 
-        Ok(PostgresDriver {
-            rt,
-            pool,
-            writer: Mutex::new(None),
-        })
+        Ok(PostgresDriver { rt, pool })
     }
 
     pub fn exec_ddl(&self, statements: &[String]) -> Result<(), SqlFailure> {
@@ -136,11 +136,89 @@ impl Driver for PostgresDriver {
             sql: sql.to_string(),
         })
     }
+
+    /// Begin a transaction OWNING one pooled connection (§3): check out a `deadpool` connection, BEGIN
+    /// on it, and hand back a [`PgTx`] that runs every tx statement + COMMIT/ROLLBACK on THAT
+    /// connection, releasing it on completion. Concurrent `begin_tx` calls get DISTINCT connections ⇒
+    /// isolated (the old driver-global `writer` slot is gone).
+    fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        let conn = self.rt.block_on(async {
+            let client = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| driver_failure(format!("postgres pool get (tx): {e}")))?;
+            client
+                .batch_execute("BEGIN")
+                .await
+                .map_err(|e| driver_failure(format!("postgres BEGIN: {e}")))?;
+            Ok::<_, SqlFailure>(client)
+        })?;
+        Ok(Box::new(PgTx { rt: &self.rt, conn }))
+    }
 }
 
 struct PgPrepared<'a> {
     driver: &'a PostgresDriver,
     sql: String,
+}
+
+/// An OWNED Postgres transaction connection (§3 per-execution ownership — the rust analogue of v1
+/// `PoolTransaction::Postgres`). Holds ONE `deadpool` connection for the tx's whole span; every
+/// statement + the final COMMIT/ROLLBACK run on it. Dropping the `conn` returns it to the pool.
+struct PgTx<'a> {
+    rt: &'a Runtime,
+    conn: deadpool_postgres::Object,
+}
+
+impl TxConnection for PgTx<'_> {
+    fn execute(&mut self, sql: &str, params: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+        let owned: Vec<PgParam> = params.iter().map(to_pg_param).collect::<Result<_, _>>()?;
+        let refs: Vec<&(dyn ToSql + Sync)> =
+            owned.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
+        let conn = &self.conn;
+        self.rt.block_on(async move {
+            let rows = conn
+                .query(sql, refs.as_slice())
+                .await
+                .map_err(|e| driver_failure(format!("postgres tx query [{sql}]: {e}")))?;
+            pg_rows_to_values(&rows)
+        })
+    }
+
+    fn run(&mut self, sql: &str, params: &[Value]) -> Result<RunInfo, SqlFailure> {
+        let owned: Vec<PgParam> = params.iter().map(to_pg_param).collect::<Result<_, _>>()?;
+        let refs: Vec<&(dyn ToSql + Sync)> =
+            owned.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
+        let conn = &self.conn;
+        let changes = self.rt.block_on(async move {
+            conn.execute(sql, refs.as_slice())
+                .await
+                .map_err(|e| driver_failure(format!("postgres tx execute [{sql}]: {e}")))
+        })?;
+        Ok(RunInfo {
+            changes: changes as i64,
+            last_insert_rowid: 0, // PG has no lastInsertId; the RETURNING path uses execute()'s rows.
+        })
+    }
+
+    fn commit(self: Box<Self>) -> Result<(), SqlFailure> {
+        let conn = self.conn;
+        self.rt.block_on(async move {
+            conn.batch_execute("COMMIT")
+                .await
+                .map_err(|e| driver_failure(format!("postgres COMMIT: {e}")))
+        })
+    }
+
+    fn rollback(self: Box<Self>) -> Result<(), SqlFailure> {
+        let conn = self.conn;
+        self.rt.block_on(async move {
+            conn.batch_execute("ROLLBACK")
+                .await
+                .map_err(|e| driver_failure(format!("postgres ROLLBACK: {e}")))
+        })
+    }
 }
 
 /// An owned param that implements `tokio_postgres::types::ToSql` for the shapes render emits: the
@@ -375,100 +453,47 @@ fn pg_rows_to_values(rows: &[tokio_postgres::Row]) -> Result<Vec<Value>, SqlFail
 
 impl PreparedStatement for PgPrepared<'_> {
     fn all(&mut self, params: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+        // Pooled read: check out a connection per call (parallel-safe). In-tx statements NEVER reach
+        // here — the seam resolves the tx-owned `PgTx` connection for those. So there is no pinned
+        // writer slot to consult (the driver-global slot was removed §3).
         let owned: Vec<PgParam> = params.iter().map(to_pg_param).collect::<Result<_, _>>()?;
         let refs: Vec<&(dyn ToSql + Sync)> =
             owned.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
         let sql = self.sql.clone();
         let driver = self.driver;
-        // TAKE the pinned writer out of the mutex (leaving None) so the guard is NEVER held across
-        // an await — clippy::await_holding_lock. In a write-tx the pinned conn is used + restored;
-        // outside one (the parallel read path) we check out a pooled conn, so DISTINCT threads never
-        // contend for the same connection.
-        let pinned = driver.writer.lock().unwrap().take();
         driver.rt.block_on(async move {
-            match pinned {
-                Some(client) => {
-                    let res = client.query(sql.as_str(), refs.as_slice()).await;
-                    *driver.writer.lock().unwrap() = Some(client); // restore
-                    let rows =
-                        res.map_err(|e| driver_failure(format!("postgres query [{sql}]: {e}")))?;
-                    pg_rows_to_values(&rows)
-                }
-                None => {
-                    let client = driver
-                        .pool
-                        .get()
-                        .await
-                        .map_err(|e| driver_failure(format!("postgres pool get: {e}")))?;
-                    let rows = client
-                        .query(sql.as_str(), refs.as_slice())
-                        .await
-                        .map_err(|e| driver_failure(format!("postgres query [{sql}]: {e}")))?;
-                    pg_rows_to_values(&rows)
-                }
-            }
+            let client = driver
+                .pool
+                .get()
+                .await
+                .map_err(|e| driver_failure(format!("postgres pool get: {e}")))?;
+            let rows = client
+                .query(sql.as_str(), refs.as_slice())
+                .await
+                .map_err(|e| driver_failure(format!("postgres query [{sql}]: {e}")))?;
+            pg_rows_to_values(&rows)
         })
     }
 
     fn run(&mut self, params: &[Value]) -> Result<RunInfo, SqlFailure> {
-        let sql = self.sql.clone();
-        let driver = self.driver;
-
-        // Transaction-control literals PIN / RELEASE the single writer connection.
-        if params.is_empty() && is_txn_control(&sql) {
-            let upper = sql.trim().to_ascii_uppercase();
-            return driver.rt.block_on(async move {
-                if upper == "BEGIN" || upper == "START TRANSACTION" {
-                    let client = driver
-                        .pool
-                        .get()
-                        .await
-                        .map_err(|e| driver_failure(format!("postgres pool get: {e}")))?;
-                    client
-                        .batch_execute("BEGIN")
-                        .await
-                        .map_err(|e| driver_failure(format!("postgres BEGIN: {e}")))?;
-                    *driver.writer.lock().unwrap() = Some(client);
-                } else {
-                    // COMMIT / ROLLBACK on the pinned writer, then release it back to the pool.
-                    let client = driver.writer.lock().unwrap().take();
-                    if let Some(client) = client {
-                        client
-                            .batch_execute(&upper)
-                            .await
-                            .map_err(|e| driver_failure(format!("postgres {upper}: {e}")))?;
-                    }
-                }
-                Ok(RunInfo {
-                    changes: 0,
-                    last_insert_rowid: 0,
-                })
-            });
-        }
-
+        // Pooled write (a non-tx write, e.g. DDL through the seam's non-tx path). Tx-control literals
+        // (BEGIN/COMMIT/ROLLBACK) no longer flow through here — they are issued by `begin_tx` /
+        // `PgTx::commit` / `PgTx::rollback` on the OWNED connection (§3). In-tx writes go via `PgTx`.
         let owned: Vec<PgParam> = params.iter().map(to_pg_param).collect::<Result<_, _>>()?;
         let refs: Vec<&(dyn ToSql + Sync)> =
             owned.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
-        let pinned = driver.writer.lock().unwrap().take();
+        let sql = self.sql.clone();
+        let driver = self.driver;
         driver.rt.block_on(async move {
-            let changes = match pinned {
-                Some(client) => {
-                    let res = client.execute(sql.as_str(), refs.as_slice()).await;
-                    *driver.writer.lock().unwrap() = Some(client); // restore
-                    res.map_err(|e| driver_failure(format!("postgres execute: {e}")))?
-                }
-                None => {
-                    let client = driver
-                        .pool
-                        .get()
-                        .await
-                        .map_err(|e| driver_failure(format!("postgres pool get: {e}")))?;
-                    client
-                        .execute(sql.as_str(), refs.as_slice())
-                        .await
-                        .map_err(|e| driver_failure(format!("postgres execute: {e}")))?
-                }
-            };
+            let client = driver
+                .pool
+                .get()
+                .await
+                .map_err(|e| driver_failure(format!("postgres pool get: {e}")))?;
+            let changes = client
+                .execute(sql.as_str(), refs.as_slice())
+                .await
+                .map_err(|e| driver_failure(format!("postgres execute [{sql}]: {e}")))?;
             Ok(RunInfo {
                 changes: changes as i64,
                 last_insert_rowid: 0, // PG has no lastInsertId; the RETURNING path uses `all`.
@@ -480,19 +505,19 @@ impl PreparedStatement for PgPrepared<'_> {
 // ── MySQL (sqlx MySqlPool) ─────────────────────────────────────────────────────
 
 /// A live MySQL driver: a `sqlx` `MySqlPool` on a shared tokio runtime (the old `.rs`
-/// `Pool::Mysql(MySqlPool)`). `?` is native; emulates the missing `INSERT … RETURNING`.
+/// `Pool::Mysql(MySqlPool)`). `?` is native; emulates the missing `INSERT … RETURNING`. A write-tx
+/// OWNS one pooled connection via [`Driver::begin_tx`] (§3 — no driver-global writer slot).
 pub struct MysqlDriver {
     rt: Runtime,
     pool: MySqlPool,
-    /// Pinned writer connection for the active transaction (single-slot). `None` between txns.
-    writer: Mutex<Option<sqlx::pool::PoolConnection<sqlx::MySql>>>,
 }
 
 impl MysqlDriver {
     /// Connect via a URL, e.g. "mysql://testuser:testpass@127.0.0.1:3307/scp_rust".
     pub fn connect(url: &str) -> Result<Self, SqlFailure> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(DEFAULT_POOL_SIZE)
+        // CURRENT-THREAD tokio runtime (#76 approved — lighter block_on, v1rs-aligned). The read
+        // fan-out runs on OS worker threads, each block_on-ing its own pooled connection.
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| driver_failure(format!("mysql runtime: {e}")))?;
@@ -503,11 +528,7 @@ impl MysqlDriver {
                 .await
                 .map_err(|e| driver_failure(format!("mysql connect: {e}")))
         })?;
-        Ok(MysqlDriver {
-            rt,
-            pool,
-            writer: Mutex::new(None),
-        })
+        Ok(MysqlDriver { rt, pool })
     }
 
     pub fn exec_ddl(&self, statements: &[String]) -> Result<(), SqlFailure> {
@@ -519,15 +540,6 @@ impl MysqlDriver {
                     .map_err(|e| driver_failure(format!("mysql ddl {stmt:?}: {e}")))?;
             }
             Ok(())
-        })
-    }
-}
-
-impl Driver for MysqlDriver {
-    fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
-        Box::new(MyPrepared {
-            driver: self,
-            sql: sql.to_string(),
         })
     }
 }
@@ -716,171 +728,225 @@ fn parse_insert_cols(insert: &str) -> Vec<String> {
     Vec::new()
 }
 
+/// Run one `all` (SELECT / RETURNING) on a single MySQL connection — the SHARED body used by BOTH the
+/// pooled read path ([`MyPrepared::all`], on a per-call acquired connection) and the tx-owned path
+/// ([`MyTx::execute`], on the tx's owned connection). Byte-identical to the pre-seam logic; the ONLY
+/// change is that WHICH connection it runs on is decided by the caller (per-execution ownership §3),
+/// not a driver-global writer slot. Includes the MySQL RETURNING emulation (strip → INSERT →
+/// re-select by the real PK) — all statements of one `all` run on the SAME `conn` so the re-select
+/// sees the insert (crucial inside a tx before COMMIT).
+async fn my_all_on_conn(
+    conn: &mut sqlx::MySqlConnection,
+    sql: &str,
+    params: &[Value],
+) -> Result<Vec<Value>, SqlFailure> {
+    // MySQL RETURNING emulation: strip → INSERT → re-select the inserted rows by the REAL primary
+    // key. The strip-before-execute PK hint (tx.ts mysqlPkHint) carries the PK columns + the
+    // AUTO_INCREMENT column, so the re-select keys off an AUTO_INCREMENT range (int identity) or the
+    // client-supplied PK values (UUID / composite) pulled from the bound INSERT params — NOT a
+    // hardcoded `WHERE id = ?` (which breaks for UUID/composite).
+    if let Some(r) = parse_mysql_returning(sql) {
+        let q = bind_my(sqlx::query(&r.insert), params)?;
+        let exec_res = q
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| driver_failure(format!("mysql exec insert: {e}")))?;
+        let last_id = exec_res.last_insert_id() as i64;
+        let affected = exec_res.rows_affected().max(1) as i64;
+
+        // Build the re-select WHERE + its bound params.
+        let (where_sql, where_params): (String, Vec<Value>) = if r.pk_cols.is_empty() {
+            ("id = ?".to_string(), vec![Value::Int(last_id)])
+        } else if !r.auto_inc.is_empty() && r.pk_cols.len() == 1 && r.pk_cols[0] == r.auto_inc {
+            (
+                format!("{ai} >= ? AND {ai} < ?", ai = r.auto_inc),
+                vec![Value::Int(last_id), Value::Int(last_id + affected)],
+            )
+        } else {
+            // Client-supplied PK: pull each PK column's inserted value from the bound INSERT params
+            // by column position (single-row client-PK insert).
+            let mut conds: Vec<String> = Vec::new();
+            let mut vals: Vec<Value> = Vec::new();
+            let mut ok = true;
+            for pk in &r.pk_cols {
+                match r.insert_cols.iter().position(|c| c == pk) {
+                    Some(idx) if idx < params.len() => {
+                        conds.push(format!("{pk} = ?"));
+                        vals.push(params[idx].clone());
+                    }
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                (conds.join(" AND "), vals)
+            } else {
+                ("id = ?".to_string(), vec![Value::Int(last_id)])
+            }
+        };
+
+        let sel = format!(
+            "SELECT {cols} FROM {table} WHERE {where_sql}",
+            cols = r.cols,
+            table = r.table
+        );
+        let q2 = bind_my(sqlx::query(&sel), &where_params)?;
+        let rows = q2
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| driver_failure(format!("mysql re-select: {e}")))?;
+        return my_rows_to_values(&rows);
+    }
+
+    // A non-INSERT RETURNING (UPDATE/DELETE … RETURNING): MySQL has no native RETURNING and the
+    // pre-image is gone, so v1 (`mysql.ts`) strips RETURNING, runs the write, returns NO rows.
+    // Byte-faithful: execute the stripped write, return an empty row set.
+    if let Some(write_sql) = strip_non_insert_returning(sql) {
+        let q = bind_my(sqlx::query(&write_sql), params)?;
+        q.execute(&mut *conn)
+            .await
+            .map_err(|e| driver_failure(format!("mysql write [{write_sql}]: {e}")))?;
+        return Ok(Vec::new());
+    }
+
+    let q = bind_my(sqlx::query(sql), params)?;
+    let rows = q
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| driver_failure(format!("mysql query [{sql}]: {e}")))?;
+    my_rows_to_values(&rows)
+}
+
+/// Run one `run` (non-returning write) on a single MySQL connection — the SHARED body for the pooled
+/// write path and the tx-owned path (§3).
+async fn my_run_on_conn(
+    conn: &mut sqlx::MySqlConnection,
+    sql: &str,
+    params: &[Value],
+) -> Result<RunInfo, SqlFailure> {
+    let q = bind_my(sqlx::query(sql), params)?;
+    let res = q
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| driver_failure(format!("mysql exec [{sql}]: {e}")))?;
+    Ok(RunInfo {
+        changes: res.rows_affected() as i64,
+        last_insert_rowid: res.last_insert_id() as i64,
+    })
+}
+
 impl PreparedStatement for MyPrepared<'_> {
     fn all(&mut self, params: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+        // Pooled read: acquire a connection per call (parallel-safe). In-tx statements never reach
+        // here — the seam resolves the tx-owned `MyTx` connection for those.
         let sql = self.sql.clone();
         let driver = self.driver;
         let params = params.to_vec();
-        // TAKE the pinned writer out of the mutex so no guard is held across an await
-        // (clippy::await_holding_lock). It is threaded through the future by value and RESTORED
-        // afterwards. Outside a write-tx (`pinned == None`) we run on a pooled connection, so
-        // DISTINCT parallel-read threads never contend for the same connection.
-        let mut pinned = driver.writer.lock().unwrap().take();
-        let result = driver.rt.block_on(async {
-            // MySQL RETURNING emulation: strip → INSERT → re-select the inserted rows by the REAL
-            // primary key. The strip-before-execute PK hint (tx.ts mysqlPkHint) carries the PK
-            // columns + the AUTO_INCREMENT column, so the re-select keys off an AUTO_INCREMENT range
-            // (int identity) or the client-supplied PK values (UUID / composite) pulled from the
-            // bound INSERT params — NOT a hardcoded `WHERE id = ?` (which breaks for UUID/composite).
-            if let Some(r) = parse_mysql_returning(&sql) {
-                let q = bind_my(sqlx::query(&r.insert), &params)?;
-                let exec_res = match pinned.as_mut() {
-                    Some(conn) => q
-                        .execute(&mut **conn)
-                        .await
-                        .map_err(|e| driver_failure(format!("mysql exec insert: {e}")))?,
-                    None => q
-                        .execute(&driver.pool)
-                        .await
-                        .map_err(|e| driver_failure(format!("mysql exec insert: {e}")))?,
-                };
-                let last_id = exec_res.last_insert_id() as i64;
-                let affected = exec_res.rows_affected().max(1) as i64;
-
-                // Build the re-select WHERE + its bound params.
-                let (where_sql, where_params): (String, Vec<Value>) = if r.pk_cols.is_empty() {
-                    ("id = ?".to_string(), vec![Value::Int(last_id)])
-                } else if !r.auto_inc.is_empty()
-                    && r.pk_cols.len() == 1
-                    && r.pk_cols[0] == r.auto_inc
-                {
-                    (
-                        format!("{ai} >= ? AND {ai} < ?", ai = r.auto_inc),
-                        vec![Value::Int(last_id), Value::Int(last_id + affected)],
-                    )
-                } else {
-                    // Client-supplied PK: pull each PK column's inserted value from the bound
-                    // INSERT params by column position (single-row client-PK insert).
-                    let mut conds: Vec<String> = Vec::new();
-                    let mut vals: Vec<Value> = Vec::new();
-                    let mut ok = true;
-                    for pk in &r.pk_cols {
-                        match r.insert_cols.iter().position(|c| c == pk) {
-                            Some(idx) if idx < params.len() => {
-                                conds.push(format!("{pk} = ?"));
-                                vals.push(params[idx].clone());
-                            }
-                            _ => {
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if ok {
-                        (conds.join(" AND "), vals)
-                    } else {
-                        ("id = ?".to_string(), vec![Value::Int(last_id)])
-                    }
-                };
-
-                let sel = format!(
-                    "SELECT {cols} FROM {table} WHERE {where_sql}",
-                    cols = r.cols,
-                    table = r.table
-                );
-                let q2 = bind_my(sqlx::query(&sel), &where_params)?;
-                let rows = match pinned.as_mut() {
-                    Some(conn) => q2.fetch_all(&mut **conn).await,
-                    None => q2.fetch_all(&driver.pool).await,
-                }
-                .map_err(|e| driver_failure(format!("mysql re-select: {e}")))?;
-                return my_rows_to_values(&rows);
-            }
-
-            // A non-INSERT RETURNING (UPDATE/DELETE … RETURNING): MySQL has no native RETURNING and
-            // the pre-image is gone, so v1 (`mysql.ts`) strips RETURNING, runs the write, returns NO
-            // rows. Byte-faithful: execute the stripped write, return an empty row set.
-            if let Some(write_sql) = strip_non_insert_returning(&sql) {
-                let q = bind_my(sqlx::query(&write_sql), &params)?;
-                match pinned.as_mut() {
-                    Some(conn) => q.execute(&mut **conn).await,
-                    None => q.execute(&driver.pool).await,
-                }
-                .map_err(|e| driver_failure(format!("mysql write [{write_sql}]: {e}")))?;
-                return Ok(Vec::new());
-            }
-
-            let q = bind_my(sqlx::query(&sql), &params)?;
-            let rows = match pinned.as_mut() {
-                Some(conn) => q.fetch_all(&mut **conn).await,
-                None => q.fetch_all(&driver.pool).await,
-            }
-            .map_err(|e| driver_failure(format!("mysql query [{sql}]: {e}")))?;
-            my_rows_to_values(&rows)
-        });
-        if let Some(conn) = pinned {
-            *driver.writer.lock().unwrap() = Some(conn); // restore the pinned writer
-        }
-        result
+        driver.rt.block_on(async move {
+            let mut conn = driver
+                .pool
+                .acquire()
+                .await
+                .map_err(|e| driver_failure(format!("mysql acquire: {e}")))?;
+            my_all_on_conn(&mut conn, &sql, &params).await
+        })
     }
 
     fn run(&mut self, params: &[Value]) -> Result<RunInfo, SqlFailure> {
+        // Pooled write. Tx-control literals (BEGIN/COMMIT/ROLLBACK) no longer flow through here — they
+        // are issued by `begin_tx` / `MyTx::commit` / `MyTx::rollback` on the OWNED connection (§3).
         let sql = self.sql.clone();
         let driver = self.driver;
         let params = params.to_vec();
+        driver.rt.block_on(async move {
+            let mut conn = driver
+                .pool
+                .acquire()
+                .await
+                .map_err(|e| driver_failure(format!("mysql acquire: {e}")))?;
+            my_run_on_conn(&mut conn, &sql, &params).await
+        })
+    }
+}
 
-        if params.is_empty() && is_txn_control(&sql) {
-            let upper = sql.trim().to_ascii_uppercase();
-            return driver.rt.block_on(async move {
-                // Tx-control must run UNPREPARED: MySQL rejects BEGIN/COMMIT/ROLLBACK in the
-                // prepared-statement protocol (error 1295). `raw_sql` uses the simple-query path.
-                if upper == "BEGIN" || upper == "START TRANSACTION" {
-                    let mut conn = driver
-                        .pool
-                        .acquire()
-                        .await
-                        .map_err(|e| driver_failure(format!("mysql acquire: {e}")))?;
-                    sqlx::raw_sql("BEGIN")
-                        .execute(&mut *conn)
-                        .await
-                        .map_err(|e| driver_failure(format!("mysql BEGIN: {e}")))?;
-                    *driver.writer.lock().unwrap() = Some(conn);
-                } else {
-                    let conn = driver.writer.lock().unwrap().take();
-                    if let Some(mut conn) = conn {
-                        sqlx::raw_sql(if upper == "COMMIT" {
-                            "COMMIT"
-                        } else {
-                            "ROLLBACK"
-                        })
-                        .execute(&mut *conn)
-                        .await
-                        .map_err(|e| driver_failure(format!("mysql {upper}: {e}")))?;
-                    }
-                }
-                Ok(RunInfo {
-                    changes: 0,
-                    last_insert_rowid: 0,
-                })
-            });
-        }
+impl Driver for MysqlDriver {
+    fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
+        Box::new(MyPrepared {
+            driver: self,
+            sql: sql.to_string(),
+        })
+    }
 
-        let mut pinned = driver.writer.lock().unwrap().take();
-        let result = driver.rt.block_on(async {
-            let q = bind_my(sqlx::query(&sql), &params)?;
-            let res = match pinned.as_mut() {
-                Some(conn) => q.execute(&mut **conn).await,
-                None => q.execute(&driver.pool).await,
-            }
-            .map_err(|e| driver_failure(format!("mysql exec [{sql}]: {e}")))?;
-            Ok(RunInfo {
-                changes: res.rows_affected() as i64,
-                last_insert_rowid: res.last_insert_id() as i64,
-            })
-        });
-        if let Some(conn) = pinned {
-            *driver.writer.lock().unwrap() = Some(conn); // restore the pinned writer
-        }
-        result
+    /// Begin a transaction OWNING one pooled connection (§3): acquire a `sqlx` connection, `BEGIN` on
+    /// it (via `raw_sql` — MySQL rejects BEGIN/COMMIT/ROLLBACK in the prepared-statement protocol,
+    /// error 1295), and hand back a [`MyTx`] that runs every tx statement + COMMIT/ROLLBACK on THAT
+    /// owned connection. Concurrent `begin_tx` calls get DISTINCT connections ⇒ isolated.
+    fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        let conn = self.rt.block_on(async {
+            let mut conn = self
+                .pool
+                .acquire()
+                .await
+                .map_err(|e| driver_failure(format!("mysql acquire (tx): {e}")))?;
+            sqlx::raw_sql("BEGIN")
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| driver_failure(format!("mysql BEGIN: {e}")))?;
+            Ok::<_, SqlFailure>(conn)
+        })?;
+        Ok(Box::new(MyTx { rt: &self.rt, conn }))
+    }
+}
+
+/// An OWNED MySQL transaction connection (§3 per-execution ownership — the rust analogue of v1
+/// `PoolTransaction::Mysql`). Holds ONE `sqlx` pooled connection for the tx's whole span; every
+/// statement + the final COMMIT/ROLLBACK run on it. Dropping the connection returns it to the pool.
+struct MyTx<'a> {
+    rt: &'a Runtime,
+    conn: sqlx::pool::PoolConnection<sqlx::MySql>,
+}
+
+impl TxConnection for MyTx<'_> {
+    fn execute(&mut self, sql: &str, params: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+        let conn = &mut self.conn;
+        self.rt
+            .block_on(async move { my_all_on_conn(conn, sql, params).await })
+    }
+
+    fn run(&mut self, sql: &str, params: &[Value]) -> Result<RunInfo, SqlFailure> {
+        let conn = &mut self.conn;
+        self.rt
+            .block_on(async move { my_run_on_conn(conn, sql, params).await })
+    }
+
+    fn commit(self: Box<Self>) -> Result<(), SqlFailure> {
+        // Move the owned connection INTO the async block so it is dropped (returned to the pool)
+        // WITHIN the tokio runtime context — a sqlx `PoolConnection` Drop requires a Tokio context
+        // (dropping it outside `block_on` panics under a current-thread runtime).
+        let MyTx { rt, mut conn } = *self;
+        rt.block_on(async move {
+            let r = sqlx::raw_sql("COMMIT")
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| driver_failure(format!("mysql COMMIT: {e}")))
+                .map(|_| ());
+            drop(conn); // return to pool inside the runtime
+            r
+        })
+    }
+
+    fn rollback(self: Box<Self>) -> Result<(), SqlFailure> {
+        let MyTx { rt, mut conn } = *self;
+        rt.block_on(async move {
+            let r = sqlx::raw_sql("ROLLBACK")
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| driver_failure(format!("mysql ROLLBACK: {e}")))
+                .map(|_| ());
+            drop(conn); // return to pool inside the runtime
+            r
+        })
     }
 }
