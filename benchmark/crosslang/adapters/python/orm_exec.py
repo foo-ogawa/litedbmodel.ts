@@ -19,7 +19,6 @@ import json
 import os
 import sys
 import time
-import traceback
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -301,88 +300,97 @@ def smoke():
     print("SMOKE PASS [python]: all cells DB-backed on all 3 real DBs.")
 
 
-# ── NDJSON protocol (harness registry drives this over stdin/stdout) ───────────────────────────
-def _write(obj):
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
+# ── STANDALONE CSV bench (no protocol) ─────────────────────────────────────────────────────────
+# ONE standalone process runs ALL 19 ops × 3 dialects, self-measures, and writes a FLAT CSV to
+# benchmark/crosslang/.results/python.csv. The collector (collect.ts) reads the CSVs → CROSS-LANG.md.
+# CSV schema: language,case,dialect,metric,value   (RAW values only — collector owns the math).
+LANGUAGE = "python"
+RESULTS_DIR = HERE.parent.parent / ".results"
 
 
-def protocol():
+def _proc_rss_bytes():
+    try:
+        import resource
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return rss if sys.platform == "darwin" else rss * 1024
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _csv_field(v):
+    s = str(v)
+    return '"' + s.replace('"', '""') + '"' if any(c in s for c in ',"\n') else s
+
+
+def bench():
+    warmup = int(os.environ.get("BENCH_WARMUP", "50"))
+    iters = int(os.environ.get("BENCH_ITER", "300"))
+    tp_iters = int(os.environ.get("BENCH_TP_ITER", str(min(iters, 2000))))
+
+    spawned_at = time.time() * 1000.0
     art = load_artifact()
+    dialects = art["dialects"]
+    # cold = process start → runtime ready (interpreter + module/artifact load), before any connect.
+    cold_ms = max(0.0, (time.time() * 1000.0) - spawned_at)
+
+    rows = ["language,case,dialect,metric,value"]
+
+    def emit(case, dialect, metric, value):
+        rows.append(f"{LANGUAGE},{case},{dialect},{metric},{_csv_field(value)}")
+
     live = {}
-
-    def driver_for(d):
-        if d not in live:
-            live[d] = make_driver(d, art)
-        return live[d]
-
-    _write({"kind": "ready", "language": "python", "impl": "runtime", "readyAtEpochMs": time.time() * 1000.0})
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+    for dialect in dialects:
         try:
-            req = json.loads(line)
+            drv = live[dialect] = make_driver(dialect, art)
         except Exception as e:  # noqa: BLE001
-            _write({"kind": "error", "message": f"bad request line: {e}"})
+            reason = str(e).splitlines()[0] if str(e) else type(e).__name__
+            for op in ORM_OPS:
+                emit(op["id"], dialect, "skipped", f"{dialect} unreachable ({reason})")
             continue
-        try:
-            kind = req["kind"]
-            if kind == "shutdown":
-                for d in live.values():
-                    d.close()
-                sys.exit(0)
-            if kind == "rss":
-                try:
-                    import resource
-                    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                    if sys.platform != "darwin":
-                        rss *= 1024
-                except Exception:
-                    rss = 0
-                _write({"kind": "rss", "rssBytes": rss})
-                continue
-            case, dialect = req["case"], req["dialect"]
+        for op in ORM_OPS:
+            case = op["id"]
             plan = art["plans"][case][dialect]
-            drv = driver_for(dialect)
-            if kind == "run":
-                warmup = req.get("warmup", 0)
-                iters = req.get("iterations", 1)
+            try:
+                # cost (fairness): queries/op from the plan shape; rows/op = executor's returned count.
+                queries = (len(plan["reads"]) + len(plan["relations"])) if plan["kind"] == "read" else len(plan["statements"])
+                rows_count = drv.run(plan)
+                emit(case, dialect, "cost_queries", queries)
+                emit(case, dialect, "cost_rows", rows_count)
+                # latency: warmup, then one row PER timed iteration.
                 for _ in range(warmup):
                     drv.run(plan)
-                samples = []
                 for _ in range(iters):
                     t0 = time.perf_counter()
                     drv.run(plan)
-                    samples.append((time.perf_counter() - t0) * 1000.0)
-                _write({"kind": "run", "case": case, "dialect": dialect, "samplesMs": samples})
-            elif kind == "throughput":
-                iters = req.get("iterations", 1)
+                    emit(case, dialect, "latency_ms", (time.perf_counter() - t0) * 1000.0)
+                # throughput: a tight loop, raw elapsed + completed.
                 t0 = time.perf_counter()
-                for _ in range(iters):
+                for _ in range(tp_iters):
                     drv.run(plan)
-                _write({"kind": "throughput", "case": case, "dialect": dialect,
-                        "elapsedMs": (time.perf_counter() - t0) * 1000.0, "completed": iters})
-            elif kind == "cost":
-                rows = drv.run(plan)
-                # queries/op derived from the plan shape (same for every language — the SAME plan).
-                queries = (len(plan["reads"]) + len(plan["relations"])) if plan["kind"] == "read" else len(plan["statements"])
-                _write({"kind": "cost", "case": case, "dialect": dialect, "queries": queries, "rows": rows})
-            else:
-                _write({"kind": "error", "message": f"unknown kind {kind}"})
-        except Exception as e:  # noqa: BLE001
-            _write({"kind": "error", "message": str(e), "stack": traceback.format_exc()})
+                emit(case, dialect, "throughput_elapsed_ms", (time.perf_counter() - t0) * 1000.0)
+                emit(case, dialect, "throughput_completed", tp_iters)
+            except Exception as e:  # noqa: BLE001
+                emit(case, dialect, "skipped", str(e).splitlines()[0] if str(e) else type(e).__name__)
+
+    emit("", "", "cold_ms", cold_ms)
+    emit("", "", "rss_bytes", _proc_rss_bytes())
+    emit("", "", "warmup", warmup)
+
+    for d in live.values():
+        d.close()
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    out = RESULTS_DIR / f"{LANGUAGE}.csv"
+    out.write_text("\n".join(rows) + "\n")
+    sys.stderr.write(f"[{LANGUAGE}] wrote {out} ({len(rows) - 1} rows)\n")
 
 
 def main():
     args = sys.argv[1:]
-    if "--orm-plan" not in args and "--smoke" not in args:
-        print("usage: orm_exec.py --orm-plan [--smoke]", file=sys.stderr)
-        sys.exit(2)
     if "--smoke" in args:
         smoke()
     else:
-        protocol()
+        bench()
 
 
 if __name__ == "__main__":

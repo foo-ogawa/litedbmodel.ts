@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 # The #63 ORM-plan executor (consumes generated/orm-plan.json; the shipped thin-runtime + live
-# driver seam — this is the ir/exec cell, so serde_json is allowed for the NDJSON stdio protocol).
+# driver seam). It self-measures and writes a FLAT CSV (no wire protocol, no serde_json).
 [[bin]]
 name = "lm_orm"
 path = "src/orm.rs"
@@ -16,7 +16,6 @@ path = "src/orm.rs"
 # `Driver` seam `livedb_runner` uses.
 litedbmodel_runtime = { path = "../../../../rust/litedbmodel_runtime", features = ["livedb"] }
 behavior-contracts = "0.8.0"
-serde_json = "1"
 
 [profile.release]
 opt-level = 3

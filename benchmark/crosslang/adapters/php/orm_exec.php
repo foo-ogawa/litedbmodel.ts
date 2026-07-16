@@ -383,84 +383,95 @@ function smoke(array $artifact): void
     echo "SMOKE PASS [php]: all cells DB-backed on all 3 real DBs.\n";
 }
 
-// ── NDJSON protocol (harness registry drives this over stdin/stdout) ───────────────────────────
-function writeMsg(array $obj): void
+// ── STANDALONE CSV bench (no protocol) ─────────────────────────────────────────────────────────
+// ONE standalone process runs ALL 19 ops × 3 dialects, self-measures, and writes a FLAT CSV to
+// benchmark/crosslang/.results/php.csv. The collector (collect.ts) reads the CSVs → CROSS-LANG.md.
+// CSV schema: language,case,dialect,metric,value   (RAW values only — collector owns the math).
+function csvField($v): string
 {
-    fwrite(STDOUT, json_encode($obj) . "\n");
+    $s = (string) $v;
+    return preg_match('/[",\n]/', $s) ? '"' . str_replace('"', '""', $s) . '"' : $s;
 }
 
-function protocol(array $artifact): void
+function bench(array $artifact, string $resultsDir): void
 {
-    $live = [];
-    $driverFor = function (string $d) use (&$live, $artifact): OrmDriver {
-        if (!isset($live[$d])) {
-            $live[$d] = makeDriver($d, $artifact);
-        }
-        return $live[$d];
+    $language = 'php';
+    $warmup = (int) (getenv('BENCH_WARMUP') ?: 50);
+    $iters = (int) (getenv('BENCH_ITER') ?: 300);
+    $tpIters = (int) (getenv('BENCH_TP_ITER') ?: min($iters, 2000));
+
+    $spawnedAt = microtime(true) * 1000.0;
+    $dialects = $artifact['dialects'];
+    // cold = process start → runtime ready (interpreter + artifact load), before any connect.
+    $coldMs = max(0.0, (microtime(true) * 1000.0) - $spawnedAt);
+
+    $rows = ['language,case,dialect,metric,value'];
+    $emit = function ($case, $dialect, $metric, $value) use (&$rows, $language): void {
+        $rows[] = "$language,$case,$dialect,$metric," . csvField($value);
     };
-    writeMsg(['kind' => 'ready', 'language' => 'php', 'impl' => 'runtime', 'readyAtEpochMs' => microtime(true) * 1000.0]);
-    $in = fopen('php://stdin', 'r');
-    while (($line = fgets($in)) !== false) {
-        $line = trim($line);
-        if ($line === '') {
-            continue;
-        }
-        $req = json_decode($line, true);
-        if ($req === null) {
-            writeMsg(['kind' => 'error', 'message' => 'bad request line']);
-            continue;
-        }
+
+    $live = [];
+    foreach ($dialects as $dialect) {
         try {
-            $kind = $req['kind'];
-            if ($kind === 'shutdown') {
-                exit(0);
+            $drv = $live[$dialect] = makeDriver($dialect, $artifact);
+        } catch (\Throwable $e) {
+            $reason = explode("\n", $e->getMessage())[0];
+            foreach ($artifact['ops'] as $op) {
+                $emit($op['id'], $dialect, 'skipped', "$dialect unreachable ($reason)");
             }
-            if ($kind === 'rss') {
-                writeMsg(['kind' => 'rss', 'rssBytes' => memory_get_usage(true)]);
-                continue;
-            }
-            $case = $req['case'];
-            $dialect = $req['dialect'];
+            continue;
+        }
+        foreach ($artifact['ops'] as $op) {
+            $case = $op['id'];
             $plan = $artifact['plans'][$case][$dialect];
-            $drv = $driverFor($dialect);
-            if ($kind === 'run') {
-                $warmup = $req['warmup'] ?? 0;
-                $iters = $req['iterations'] ?? 1;
-                for ($i = 0; $i < $warmup; $i++) {
-                    $drv->run($plan);
-                }
-                $samples = [];
-                for ($i = 0; $i < $iters; $i++) {
-                    $t0 = hrtime(true);
-                    $drv->run($plan);
-                    $samples[] = (hrtime(true) - $t0) / 1e6;
-                }
-                writeMsg(['kind' => 'run', 'case' => $case, 'dialect' => $dialect, 'samplesMs' => $samples]);
-            } elseif ($kind === 'throughput') {
-                $iters = $req['iterations'] ?? 1;
-                $t0 = hrtime(true);
-                for ($i = 0; $i < $iters; $i++) {
-                    $drv->run($plan);
-                }
-                writeMsg(['kind' => 'throughput', 'case' => $case, 'dialect' => $dialect, 'elapsedMs' => (hrtime(true) - $t0) / 1e6, 'completed' => $iters]);
-            } elseif ($kind === 'cost') {
-                $rows = $drv->run($plan);
-                // queries/op derived from the plan shape (same for every language — the SAME plan).
+            try {
+                // cost (fairness): queries/op from the plan shape; rows/op = executor's returned count.
                 $queries = $plan['kind'] === 'read'
                     ? count($plan['reads']) + count($plan['relations'])
                     : count($plan['statements']);
-                writeMsg(['kind' => 'cost', 'case' => $case, 'dialect' => $dialect, 'queries' => $queries, 'rows' => $rows]);
-            } else {
-                writeMsg(['kind' => 'error', 'message' => "unknown kind $kind"]);
+                $rowsCount = $drv->run($plan);
+                $emit($case, $dialect, 'cost_queries', $queries);
+                $emit($case, $dialect, 'cost_rows', $rowsCount);
+                // latency: warmup, then one row PER timed iteration.
+                for ($i = 0; $i < $warmup; $i++) {
+                    $drv->run($plan);
+                }
+                for ($i = 0; $i < $iters; $i++) {
+                    $t0 = hrtime(true);
+                    $drv->run($plan);
+                    $emit($case, $dialect, 'latency_ms', (hrtime(true) - $t0) / 1e6);
+                }
+                // throughput: a tight loop, raw elapsed + completed.
+                $t0 = hrtime(true);
+                for ($i = 0; $i < $tpIters; $i++) {
+                    $drv->run($plan);
+                }
+                $emit($case, $dialect, 'throughput_elapsed_ms', (hrtime(true) - $t0) / 1e6);
+                $emit($case, $dialect, 'throughput_completed', $tpIters);
+            } catch (\Throwable $e) {
+                $emit($case, $dialect, 'skipped', explode("\n", $e->getMessage())[0]);
             }
-        } catch (\Throwable $e) {
-            writeMsg(['kind' => 'error', 'message' => $e->getMessage(), 'stack' => $e->getTraceAsString()]);
         }
     }
+
+    $emit('', '', 'cold_ms', $coldMs);
+    $emit('', '', 'rss_bytes', memory_get_usage(true));
+    $emit('', '', 'warmup', $warmup);
+
+    foreach ($live as $d) {
+        $d->close();
+    }
+
+    if (!is_dir($resultsDir)) {
+        mkdir($resultsDir, 0o777, true);
+    }
+    $out = $resultsDir . '/' . $language . '.csv';
+    file_put_contents($out, implode("\n", $rows) . "\n");
+    fwrite(STDERR, "[$language] wrote $out (" . (count($rows) - 1) . " rows)\n");
 }
 
-/** Entry point: --smoke runs the 57-cell matrix; otherwise (or --orm-plan) speaks NDJSON. Reused by
- *  the registry shim orm-runner.php (which requires this file, then calls ormExecMain). */
+/** Entry point: --smoke runs the 57-cell matrix; otherwise runs the standalone CSV bench. Reused by
+ *  the entry shim orm-runner.php (which requires this file, then calls ormExecMain). */
 function ormExecMain(array $argv, string $artifactPath): void
 {
     $args = array_slice($argv, 1);
@@ -468,7 +479,8 @@ function ormExecMain(array $argv, string $artifactPath): void
     if (in_array('--smoke', $args, true)) {
         smoke($artifact);
     } else {
-        protocol($artifact);
+        $resultsDir = dirname($artifactPath, 2) . '/.results';
+        bench($artifact, $resultsDir);
     }
 }
 

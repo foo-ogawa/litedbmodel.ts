@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""ORM-plan NDJSON runner entry point — Python (epic #63), harness registry spawn target.
+"""ORM-plan STANDALONE bench entry point — Python (epic #63).
 
-The harness registry (contract.ts) spawns this as `python3 orm_runner.py`. It delegates to the
-executor in orm_exec.py: with no args (or `--orm-plan`) it speaks the NDJSON run/throughput/cost/
-rss/shutdown protocol; `--smoke` runs the standalone 57-cell matrix. See orm_exec.py for the full
-executor (driver seam, bindKind protocol, per-op writes).
+The orchestrator (run.ts) spawns this as `python3 orm_runner.py` — ONE standalone process that
+runs ALL 19 ops × 3 dialects, self-measures, and writes a FLAT CSV to
+benchmark/crosslang/.results/python.csv. There is NO stdin/stdout protocol. `--smoke` runs the
+standalone 57-cell matrix instead. See orm_exec.py for the full executor (driver seam, bindKind
+protocol, per-op writes) and the `bench()` CSV writer.
 """
 
 import sys
@@ -21,7 +22,7 @@ def main():
     if "--smoke" in args:
         orm_exec.smoke()
     else:
-        orm_exec.protocol()
+        orm_exec.bench()
 
 
 if __name__ == "__main__":

@@ -12,12 +12,12 @@
 // This uses database/sql DIRECTLY through the shipped driver handles (the statement-level seam the
 // spec calls for), so the SAME live drivers the ir bench cell uses execute the 19 ops.
 //
-// Spawn convention (harness registry): the built binary
+// Spawn convention (run.ts orchestrator): the built binary
 //
 //	go/lm_bench/lm_orm  [--smoke]
 //
-// `--smoke` runs the 57-cell matrix and exits; without it, it speaks the NDJSON
-// run/throughput/cost/rss/shutdown protocol over stdin/stdout (case=<opId>, dialect=<dialect>).
+// `--smoke` runs the 57-cell matrix and exits; without it, it runs ALL 19 ops × 3 dialects,
+// self-measures, and writes benchmark/crosslang/.results/go.csv (no stdin/stdout protocol).
 package main
 
 import (
@@ -579,104 +579,133 @@ func firstLine(s string) string {
 	return s
 }
 
-// ── NDJSON protocol (harness registry drives this over stdin/stdout) ───────────
-func writeMsg(obj map[string]any) {
-	b, _ := json.Marshal(obj)
-	os.Stdout.Write(append(b, '\n'))
+// ── STANDALONE CSV bench (no protocol) ─────────────────────────────────────────
+// ONE standalone process runs ALL 19 ops × 3 dialects, self-measures, and writes a FLAT CSV to
+// benchmark/crosslang/.results/go.csv. The collector (collect.ts) reads the CSVs → CROSS-LANG.md.
+// CSV schema: language,case,dialect,metric,value   (RAW values only — collector owns the math).
+func envNum(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
-func protocol() {
-	a := loadArtifact()
-	live := map[string]*ormDriver{}
-	driverFor := func(d string) (*ormDriver, error) {
-		if drv, ok := live[d]; ok {
-			return drv, nil
-		}
-		drv, err := makeDriver(d, a)
-		if err != nil {
-			return nil, err
-		}
-		live[d] = drv
-		return drv, nil
+func csvField(s string) string {
+	if strings.ContainsAny(s, ",\"\n") {
+		return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
 	}
-	writeMsg(map[string]any{"kind": "ready", "language": "go", "impl": "runtime", "readyAtEpochMs": float64(time.Now().UnixNano()) / 1e6})
-	dec := json.NewDecoder(os.Stdin)
-	for {
-		var req map[string]any
-		if err := dec.Decode(&req); err != nil {
-			return // EOF
-		}
-		kind, _ := req["kind"].(string)
-		if kind == "shutdown" {
-			for _, d := range live {
-				d.db.Close()
-			}
-			os.Exit(0)
-		}
-		if kind == "rss" {
-			var m runtime.MemStats
-			runtime.ReadMemStats(&m)
-			writeMsg(map[string]any{"kind": "rss", "rssBytes": m.Sys})
-			continue
-		}
-		caseID, _ := req["case"].(string)
-		dialect, _ := req["dialect"].(string)
-		drv, err := driverFor(dialect)
+	return s
+}
+
+func resultsPath() string {
+	_, thisFile, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "benchmark", "crosslang", ".results", "go.csv")
+}
+
+func bench() {
+	const language = "go"
+	warmup := envNum("BENCH_WARMUP", 50)
+	iters := envNum("BENCH_ITER", 300)
+	tpDefault := iters
+	if tpDefault > 2000 {
+		tpDefault = 2000
+	}
+	tpIters := envNum("BENCH_TP_ITER", tpDefault)
+
+	spawnedAt := float64(time.Now().UnixNano()) / 1e6
+	a := loadArtifact()
+	dialects := a.dialects()
+	// cold = process start → runtime ready (binary start + artifact load), before any connect.
+	coldMs := (float64(time.Now().UnixNano()) / 1e6) - spawnedAt
+	if coldMs < 0 {
+		coldMs = 0
+	}
+
+	rows := []string{"language,case,dialect,metric,value"}
+	emit := func(caseID, dialect, metric, value string) {
+		rows = append(rows, fmt.Sprintf("%s,%s,%s,%s,%s", language, caseID, dialect, metric, csvField(value)))
+	}
+	f := func(v float64) string { return strconv.FormatFloat(v, 'g', -1, 64) }
+
+	live := map[string]*ormDriver{}
+	for _, dialect := range dialects {
+		drv, err := makeDriver(dialect, a)
 		if err != nil {
-			writeMsg(map[string]any{"kind": "error", "message": err.Error()})
+			reason := firstLine(err.Error())
+			for _, opAny := range a.ops() {
+				op := opAny.(map[string]any)
+				emit(op["id"].(string), dialect, "skipped", fmt.Sprintf("%s unreachable (%s)", dialect, reason))
+			}
 			continue
 		}
-		plan := a.plan(caseID, dialect)
-		switch kind {
-		case "run":
-			warmup := intOf(req["warmup"])
-			iters := intOf(req["iterations"])
-			for i := 0; i < warmup; i++ {
-				drv.run(plan)
-			}
-			samples := make([]float64, 0, iters)
-			for i := 0; i < iters; i++ {
-				t0 := time.Now()
-				if _, err := drv.run(plan); err != nil {
-					writeMsg(map[string]any{"kind": "error", "case": caseID, "dialect": dialect, "message": err.Error()})
-					goto next
-				}
-				samples = append(samples, float64(time.Since(t0).Nanoseconds())/1e6)
-			}
-			writeMsg(map[string]any{"kind": "run", "case": caseID, "dialect": dialect, "samplesMs": samples})
-		case "throughput":
-			iters := intOf(req["iterations"])
-			t0 := time.Now()
-			for i := 0; i < iters; i++ {
-				drv.run(plan)
-			}
-			writeMsg(map[string]any{"kind": "throughput", "case": caseID, "dialect": dialect, "elapsedMs": float64(time.Since(t0).Nanoseconds()) / 1e6, "completed": iters})
-		case "cost":
-			rows, err := drv.run(plan)
-			if err != nil {
-				writeMsg(map[string]any{"kind": "error", "case": caseID, "dialect": dialect, "message": err.Error()})
-				continue
-			}
-			// queries/op derived from the plan shape (same for every language — the SAME plan).
+		live[dialect] = drv
+		for _, opAny := range a.ops() {
+			op := opAny.(map[string]any)
+			caseID := op["id"].(string)
+			plan := a.plan(caseID, dialect)
+			// cost (fairness): queries/op from the plan shape; rows/op = executor's returned count.
 			queries := 0
 			if plan["kind"] == "read" {
 				queries = len(asAnySlice(plan["reads"])) + len(asAnySlice(plan["relations"]))
 			} else {
 				queries = len(asAnySlice(plan["statements"]))
 			}
-			writeMsg(map[string]any{"kind": "cost", "case": caseID, "dialect": dialect, "queries": queries, "rows": rows})
-		default:
-			writeMsg(map[string]any{"kind": "error", "message": "unknown kind " + kind})
+			rowsCount, err := drv.run(plan)
+			if err != nil {
+				emit(caseID, dialect, "skipped", firstLine(err.Error()))
+				continue
+			}
+			emit(caseID, dialect, "cost_queries", strconv.Itoa(queries))
+			emit(caseID, dialect, "cost_rows", strconv.Itoa(rowsCount))
+			// latency: warmup, then one row PER timed iteration.
+			for i := 0; i < warmup; i++ {
+				drv.run(plan)
+			}
+			failed := false
+			for i := 0; i < iters; i++ {
+				t0 := time.Now()
+				if _, err := drv.run(plan); err != nil {
+					emit(caseID, dialect, "skipped", firstLine(err.Error()))
+					failed = true
+					break
+				}
+				emit(caseID, dialect, "latency_ms", f(float64(time.Since(t0).Nanoseconds())/1e6))
+			}
+			if failed {
+				continue
+			}
+			// throughput: a tight loop, raw elapsed + completed.
+			t0 := time.Now()
+			for i := 0; i < tpIters; i++ {
+				drv.run(plan)
+			}
+			emit(caseID, dialect, "throughput_elapsed_ms", f(float64(time.Since(t0).Nanoseconds())/1e6))
+			emit(caseID, dialect, "throughput_completed", strconv.Itoa(tpIters))
 		}
-	next:
 	}
-}
 
-func intOf(v any) int {
-	if f, ok := v.(float64); ok {
-		return int(f)
+	emit("", "", "cold_ms", f(coldMs))
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	emit("", "", "rss_bytes", strconv.FormatUint(m.Sys, 10))
+	emit("", "", "warmup", strconv.Itoa(warmup))
+
+	for _, d := range live {
+		d.db.Close()
 	}
-	return 0
+
+	out := resultsPath()
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: mkdir .results: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(out, []byte(strings.Join(rows, "\n")+"\n"), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: write csv: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "[%s] wrote %s (%d rows)\n", language, out, len(rows)-1)
 }
 
 func main() {
@@ -689,6 +718,6 @@ func main() {
 	if smokeMode {
 		smoke()
 	} else {
-		protocol()
+		bench()
 	}
 }

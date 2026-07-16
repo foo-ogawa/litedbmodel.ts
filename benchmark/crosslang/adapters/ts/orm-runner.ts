@@ -1,28 +1,56 @@
 // ════════════════════════════════════════════════════════════════════════════
-// TS ORM-plan adapter RUNNER (epic #63) — the NDJSON contract entry (reference).
+// TS ORM-plan bench — STANDALONE CSV writer (epic #63) — the reference.
 // ════════════════════════════════════════════════════════════════════════════
 //
-// The production TS cell: the harness spawns this once; it loads the shared 19-op plan
-// artifact + connects the three real drivers, then speaks contract.ts over stdin/stdout.
-// It executes the SAME 19 ORM ops the ORM-bench litedbmodel column runs (the executor is
-// orm-exec-ts.ts, verified 57/57 on real DBs), so TS numbers == the ORM column.
+// ONE standalone process (no stdin/stdout protocol): loads the shared 19-op plan
+// artifact + connects the three real drivers, self-measures ALL 19 ops × 3 dialects
+// (cold at startup, warmup + timed iterations for latency, throughput, cost
+// queries/rows, rss at end), and writes a FLAT CSV to
+// benchmark/crosslang/.results/ts.csv. The bench NEVER reports — the collector
+// (collect.ts) reads the CSVs and renders CROSS-LANG.md.
 //
-// The other languages (Python/PHP/Rust/Go) implement the SAME NDJSON phases over their
-// shipped driver seam — this is the reference. Run: npx tsx …/adapters/ts/orm-runner.ts
+// It executes the SAME 19 ORM ops the ORM-bench litedbmodel column runs (the
+// executor is orm-exec-ts.ts, verified 57/57 on real DBs), so TS numbers == the
+// ORM column. The other languages (Python/PHP/Rust/Go) are the SAME shape.
+//
+// CSV schema (RAW values only — the collector owns all percentile/ratio math):
+//   language,case,dialect,metric,value
+// metrics: latency_ms (one row PER timed iteration), throughput_elapsed_ms,
+//   throughput_completed, cost_queries, cost_rows, cold_ms, rss_bytes,
+//   skipped (value = reason). cold_ms / rss_bytes are process-level (case+dialect empty).
+//
+// Budgets come from env (BENCH_WARMUP / BENCH_ITER / BENCH_TP_ITER) — no protocol.
+//   npx tsx benchmark/crosslang/adapters/ts/orm-runner.ts
 
-import { createInterface } from 'node:readline';
 import { performance } from 'node:perf_hooks';
-import { buildOrmPlanArtifact, type OrmDialect, type OpPlan } from '../../orm-plan.js';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildOrmPlanArtifact, ORM_OP_IDS, ORM_DIALECTS, type OrmDialect, type OpPlan } from '../../orm-plan.js';
 import { sqliteDriver, pgDriver, mysqlDriver, type OrmDriver } from '../../orm-exec-ts.js';
 import {
   PG_SCHEMA_NAME, MYSQL_DB_NAME, PG_CONN, PG_BOOT_CONN, MYSQL_CONN, MYSQL_BOOT_CONN,
 } from '../../domain.js';
-import { encodeMessage, type Request, type Response } from '../../contract.js';
+
+const LANGUAGE = 'ts';
+const SPAWNED_AT = Date.now();
+const HERE = dirname(fileURLToPath(import.meta.url));
+const OUT_CSV = resolve(HERE, '../../.results', `${LANGUAGE}.csv`);
+
+const WARMUP = Number(process.env.BENCH_WARMUP ?? 50);
+const ITER = Number(process.env.BENCH_ITER ?? 300);
+const TP_ITER = Number(process.env.BENCH_TP_ITER ?? Math.min(ITER, 2000));
 
 const art = buildOrmPlanArtifact();
 
-function write(msg: Response): void {
-  process.stdout.write(encodeMessage(msg));
+// ── flat CSV row buffer ───────────────────────────────────────────────────────
+const rows: string[] = ['language,case,dialect,metric,value'];
+function emit(caseId: string, dialect: string, metric: string, value: string | number): void {
+  rows.push(`${LANGUAGE},${caseId},${dialect},${metric},${csvField(value)}`);
+}
+function csvField(v: string | number): string {
+  const s = String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 // Lazy per-dialect drivers; a connection FAILURE is an honest per-cell skip reason (never a stall).
@@ -47,75 +75,60 @@ function planFor(caseId: string, dialect: OrmDialect): OpPlan {
   return byD[dialect];
 }
 
-async function collect(drv: OrmDriver, plan: OpPlan, warmup: number, iterations: number): Promise<number[]> {
-  for (let i = 0; i < warmup; i++) await drv.run(plan);
-  const samples: number[] = new Array(iterations);
-  for (let i = 0; i < iterations; i++) {
+async function benchCell(drv: OrmDriver, caseId: string, dialect: OrmDialect): Promise<void> {
+  const plan = planFor(caseId, dialect);
+
+  // cost (fairness): queries/op from the plan shape; rows/op = the executor's returned count.
+  const queries = plan.kind === 'read' ? plan.reads.length + plan.relations.length : plan.statements.length;
+  const rowsCount = await drv.run(plan);
+  emit(caseId, dialect, 'cost_queries', queries);
+  emit(caseId, dialect, 'cost_rows', rowsCount);
+
+  // latency: warmup, then one row PER timed iteration.
+  for (let i = 0; i < WARMUP; i++) await drv.run(plan);
+  for (let i = 0; i < ITER; i++) {
     const t0 = performance.now();
     await drv.run(plan);
-    samples[i] = performance.now() - t0;
+    emit(caseId, dialect, 'latency_ms', performance.now() - t0);
   }
-  return samples;
-}
 
-async function handle(req: Request): Promise<void> {
-  switch (req.kind) {
-    case 'run': {
-      const drv = await driverFor(req.dialect);
-      if (!drv) { write({ kind: 'skipped', case: req.case, dialect: req.dialect, reason: `${req.dialect} unreachable (${connectFailed[req.dialect]})` }); return; }
-      const samplesMs = await collect(drv, planFor(req.case, req.dialect), req.warmup, req.iterations);
-      write({ kind: 'run', case: req.case, dialect: req.dialect, samplesMs });
-      return;
-    }
-    case 'throughput': {
-      const drv = await driverFor(req.dialect);
-      if (!drv) { write({ kind: 'skipped', case: req.case, dialect: req.dialect, reason: `${req.dialect} unreachable` }); return; }
-      const plan = planFor(req.case, req.dialect);
-      const t0 = performance.now();
-      for (let i = 0; i < req.iterations; i++) await drv.run(plan);
-      write({ kind: 'throughput', case: req.case, dialect: req.dialect, elapsedMs: performance.now() - t0, completed: req.iterations });
-      return;
-    }
-    case 'cost': {
-      // queries/op·rows/op fairness: rows/op is the executor's returned count (reads = rows read,
-      // writes = statements executed). queries/op is derived from the plan shape (statements +
-      // relation stages), matching the logical work every language does for the SAME SQL.
-      const plan = planFor(req.case, req.dialect);
-      const queries = plan.kind === 'read' ? plan.reads.length + plan.relations.length : plan.statements.length;
-      const drv = await driverFor('sqlite');
-      let rows = 0;
-      if (drv) { try { rows = await drv.run(planFor(req.case, 'sqlite')); } catch { rows = 0; } }
-      write({ kind: 'cost', case: req.case, dialect: req.dialect, queries, rows });
-      return;
-    }
-    case 'rss':
-      write({ kind: 'rss', rssBytes: process.memoryUsage().rss });
-      return;
-    case 'shutdown':
-      for (const d of Object.values(drivers)) if (d) await d.close();
-      process.exit(0);
-  }
+  // throughput: a tight loop of TP_ITER ops, raw elapsed + completed.
+  const t0 = performance.now();
+  for (let i = 0; i < TP_ITER; i++) await drv.run(plan);
+  emit(caseId, dialect, 'throughput_elapsed_ms', performance.now() - t0);
+  emit(caseId, dialect, 'throughput_completed', TP_ITER);
 }
 
 async function main(): Promise<void> {
-  write({ kind: 'ready', language: 'ts', impl: 'runtime', readyAtEpochMs: Date.now() });
-  const rl = createInterface({ input: process.stdin });
-  for await (const line of rl) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let req: Request;
-    try {
-      req = JSON.parse(trimmed) as Request;
-    } catch (err) {
-      write({ kind: 'error', message: `bad request line: ${String(err)}` });
+  // cold = process start → runtime ready (interpreter + module/artifact load), measured BEFORE any
+  // driver connect — the same point the old harness read as the `ready` line (drivers were lazy).
+  const coldMs = Math.max(0, Date.now() - SPAWNED_AT);
+
+  for (const dialect of ORM_DIALECTS) {
+    const drv = await driverFor(dialect);
+    if (!drv) {
+      const reason = `${dialect} unreachable (${connectFailed[dialect]})`;
+      for (const caseId of ORM_OP_IDS) emit(caseId, dialect, 'skipped', reason);
       continue;
     }
-    try {
-      await handle(req);
-    } catch (err) {
-      write({ kind: 'error', message: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined });
+    for (const caseId of ORM_OP_IDS) {
+      try {
+        await benchCell(drv, caseId, dialect);
+      } catch (err) {
+        emit(caseId, dialect, 'skipped', err instanceof Error ? err.message.split('\n')[0] : String(err));
+      }
     }
   }
+
+  emit('', '', 'cold_ms', coldMs);
+  emit('', '', 'rss_bytes', process.memoryUsage().rss);
+  emit('', '', 'warmup', WARMUP);
+
+  for (const d of Object.values(drivers)) if (d) await d.close();
+
+  mkdirSync(dirname(OUT_CSV), { recursive: true });
+  writeFileSync(OUT_CSV, rows.join('\n') + '\n');
+  process.stderr.write(`[${LANGUAGE}] wrote ${OUT_CSV} (${rows.length - 1} rows)\n`);
 }
 
 void main();
