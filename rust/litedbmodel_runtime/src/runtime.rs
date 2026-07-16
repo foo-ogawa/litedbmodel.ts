@@ -172,6 +172,45 @@ pub fn execute_transaction_bundle(
     input: &J,
     driver: &dyn Driver,
 ) -> Result<Value, SqlFailure> {
+    // Backward-compat wrapper (§6): wrap the raw driver in a base ctx and drive the write plan as its
+    // OWN auto-tx with the write=tx guard OFF (the internal per-execution-ownership plane the Phase A
+    // ownership proofs + the conformance/livedb runners use — they run a plan directly, NOT inside a
+    // user `transaction()`). BYTE-IDENTICAL to the pre-#82 behavior. A user-facing write instead rides
+    // [`execute_transaction_bundle_ctx`] with the guard ON.
+    let base_ctx = exec_context::for_driver(driver);
+    execute_transaction_bundle_ctx(bundle, input, &base_ctx, false)
+}
+
+/// Execute a §8 SqlBundle's derived transaction plan on an explicit [`ExecutionContext`] (Phase B /
+/// #82) — the ctx-threaded write entry that JOINS an ambient user `transaction()` or (outside one)
+/// opens its own guarded auto-tx.
+///
+/// ## Ambient-tx JOIN vs. its own envelope (the #86 core; rust = explicit ctx)
+///
+/// It drives [`exec_context::transaction_decided`], which decides the envelope from the passed ctx:
+///   - **inside a user `transaction()`** (`ctx.in_transaction()` is true — a connection is pinned) →
+///     the plan JOINS: its statements run on the outer's owned connection with NO new BEGIN/COMMIT,
+///     so N writes in one boundary are ONE physical transaction (one BEGIN, one COMMIT, one conn);
+///   - **outside any transaction** (a base ctx) → it opens its OWN BEGIN…COMMIT on a freshly-acquired
+///     owned connection (the per-execution auto-tx; concurrent calls each own a DISTINCT connection ⇒
+///     isolated). No isolation/retry here — those ride the user `transaction()` options; a bare
+///     auto-tx uses the defaults (a bare `BEGIN`).
+///
+/// ## write=tx guard (#86)
+///
+/// With `guard` true (the DEFAULT for a user-facing write), a write with NO ambient user tx is
+/// REJECTED via [`crate::tx_options::check_write_allowed`] BEFORE any SQL:
+/// [`crate::tx_options::write_outside_transaction`] (no active tx) /
+/// [`crate::tx_options::write_in_read_only`] (read-only scope). Inside a `transaction()` the ctx is
+/// tx-scoped ⇒ the guard passes and the write joins. `guard` is INTERNAL-only (never exposed on a
+/// user-facing surface — per the #86 audit note): the conformance / livedb / ownership-proof paths
+/// pass `false` to run a plan as its own auto-tx.
+pub fn execute_transaction_bundle_ctx(
+    bundle: &J,
+    input: &J,
+    ctx: &ExecutionContext,
+    guard: bool,
+) -> Result<Value, SqlFailure> {
     let plan = bundle.get("transaction").filter(|p| !p.is_null()).ok_or_else(|| {
         plain_failure(
             "scp write: this bundle carries no transaction plan (not a write-time-relations Command bundle)",
@@ -180,6 +219,7 @@ pub fn execute_transaction_bundle(
     let dialect_name = str_field(bundle, "dialect")?.to_string();
     // Fail closed on an unknown dialect (mirrors the sibling ports).
     dialect_for(&dialect_name).map_err(|e| plain_failure(&e))?;
+    let tx_dialect = crate::tx_options::Dialect::parse(&dialect_name)?;
 
     let input_scope = decode_scope(input).map_err(|e| plain_failure(&e))?;
     let statements = plan
@@ -196,15 +236,34 @@ pub fn execute_transaction_bundle(
                 && s.get("role").and_then(|r| r.as_str()) == Some("body")
         });
 
-    // Wrap the raw driver in the backward-compat ctx (§6); `with_transaction_decided` acquires the
-    // tx's OWNED connection (per-execution ownership §3), issues BEGIN on it, pins it into a tx-scoped
-    // ctx so every `exec_statement` runs on THAT connection, and COMMITs / ROLLBACKs it per the body's
-    // decision (a gate short-circuit ⇒ Rollback + `committed:false`; success ⇒ Commit; a driver error
-    // ⇒ Err ⇒ best-effort rollback + re-raise). The removed driver-global `writer` slot is gone —
-    // concurrent txs each own a distinct connection.
-    let base_ctx = exec_context::for_driver(driver);
-    exec_context::with_transaction_decided(&base_ctx, |ctx| {
-        let scope = RefCell::new(input_scope);
+    // write=tx guard (#86), enforced at ENTRY so it sees the CALLER's ctx: a write inside a user
+    // `transaction()` has a tx-scoped ctx (⇒ passes + JOINS the outer); a bare write outside any
+    // boundary has a base ctx (⇒ write_outside_transaction); a write in a read-only scope ⇒
+    // write_in_read_only (checked first). Tx-control statements the runtime itself issues (BEGIN/
+    // COMMIT/SET) never pass through here — only data-write plans do.
+    if guard {
+        crate::tx_options::check_write_allowed(
+            "WRITE",
+            statements
+                .first()
+                .and_then(|s| s.get("id"))
+                .and_then(|i| i.as_str()),
+            ctx.in_transaction(),
+            ctx.read_only(),
+        )?;
+    }
+
+    // The write-tx auto-tx defaults (no isolation / no retry / no rollback_only) when this plan opens
+    // its OWN envelope (outside a user `transaction()`). Inside one, `transaction_decided` JOINS and
+    // ignores these — the outer's options own the envelope. Retry is OFF here: a bare plan auto-tx
+    // matches the Phase A byte-identical behavior; the user `transaction()` boundary owns retry.
+    let auto_opts = crate::tx_options::TransactionOptions {
+        retry_on_error: false,
+        ..crate::tx_options::TransactionOptions::default()
+    };
+
+    exec_context::transaction_decided(ctx, tx_dialect, &auto_opts, |tx_ctx| {
+        let scope = RefCell::new(input_scope.clone());
         let mut executed: Vec<Value> = Vec::new();
         let mut entity: Value = Value::Null;
         let mut returned_rows: Vec<Value> = Vec::new();
@@ -217,7 +276,7 @@ pub fn execute_transaction_bundle(
                 .get("id")
                 .and_then(|i| i.as_str())
                 .ok_or_else(|| plain_failure("scp write: statement missing 'id'"))?;
-            let (rows, changes) = exec_statement(ctx, op, &scope.borrow(), &dialect_name)?;
+            let (rows, changes) = exec_statement(tx_ctx, op, &scope.borrow(), &dialect_name)?;
             executed.push(Value::Str(id.to_string()));
 
             if let Some(gate) = stmt.get("gate").and_then(|g| g.as_str()) {

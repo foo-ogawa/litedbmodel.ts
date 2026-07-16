@@ -27,6 +27,7 @@ pub mod node;
 pub mod relation;
 pub mod runtime;
 pub mod static_bundle;
+pub mod tx_options;
 pub mod value;
 
 /// WS7g (#36) live PostgreSQL / MySQL drivers — behind the `livedb` feature so the default
@@ -42,8 +43,9 @@ pub use dialect::{dialect_for, to_dollar_placeholders, Dialect};
 pub use driver::{forwarding_tx, Driver, ForwardingTx, PreparedStatement, RunInfo, SqliteDriver};
 pub use errors::{map_sqlite_error, re_error_to_sql_failure, SqlFailure};
 pub use exec_context::{
-    execute as seam_execute, for_driver, run as seam_run, with_transaction,
-    with_transaction_decided, Connection, DriverConnection, ExecutionContext, Middleware,
+    execute as seam_execute, for_driver, run as seam_run, run_guarded, transaction,
+    transaction_decided, with_transaction, with_transaction_decided,
+    with_transaction_decided_isolated, Connection, DriverConnection, ExecutionContext, Middleware,
     MiddlewareChain, StatementIntent, TxConnection, TxConnectionRef, TxDecision,
 };
 #[cfg(feature = "livedb")]
@@ -51,12 +53,17 @@ pub use livedb::{MysqlDriver, PostgresDriver};
 pub use node::{decode_value, encode_value, eval_expr, EvalError, Node};
 pub use relation::{read_bundle_pooled, stitch_relation};
 pub use runtime::{
-    execute_bundle, execute_bundle_pooled, execute_transaction_bundle, order_by_nulls,
-    render_read_primary_bundle, ENTITY_ROOT,
+    execute_bundle, execute_bundle_pooled, execute_transaction_bundle,
+    execute_transaction_bundle_ctx, order_by_nulls, render_read_primary_bundle, ENTITY_ROOT,
 };
 pub use static_bundle::{
     dispatch_read_nodes_parallel, execute_read_graph, execute_read_graph_orchestrator_for_test,
     execute_read_graph_pooled, render_placeholders, render_read_primary, render_statements,
     render_tx_op, RenderedSql, NODE_COMPONENT, SCOPE_PORT,
+};
+pub use tx_options::{
+    begin_statements, check_write_allowed, is_connection_error, is_retryable_tx_error,
+    isolation_prelude, write_in_read_only, write_outside_transaction, Dialect as TxDialect,
+    IsolationLevel, TransactionOptions,
 };
 pub use value::{decode_scope, Scope};

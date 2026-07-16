@@ -294,6 +294,11 @@ pub struct ExecutionContext<'a, 't> {
     /// slot itself — keeping them distinct avoids the invariant-lifetime borrow conflict when
     /// [`with_transaction`] takes the handle back out.
     pinned: Option<&'t TxSlot<'a>>,
+    /// The READ-ONLY marker (Phase B / #82 write=tx guard — mirror v1 `with_writer` / the TS
+    /// `withReadOnly` ALS marker): a write in a read-only-scoped ctx is REJECTED
+    /// ([`crate::tx_options::write_in_read_only`]). The explicit-ctx analogue of the TS async-local
+    /// read-only marker; derived via [`ExecutionContext::with_read_only`].
+    read_only: bool,
 }
 
 /// The shared empty (Phase A) middleware chain — a `'static` passthrough so [`for_driver`] can build
@@ -321,6 +326,7 @@ impl<'a> ExecutionContext<'a, 'a> {
             driver,
             middleware,
             pinned: None,
+            read_only: false,
         }
     }
 }
@@ -337,9 +343,31 @@ impl<'a, 't> ExecutionContext<'a, 't> {
         self.driver
     }
 
-    /// Is this a tx-scoped ctx (a pinned connection is present)?
+    /// Is this a tx-scoped ctx (a pinned connection is present)? This is the explicit-ctx analogue of
+    /// the TS async-local "inside a transaction" marker — the write=tx guard reads it, and the public
+    /// [`transaction`] boundary reads it for NESTED-tx join detection.
     pub fn in_transaction(&self) -> bool {
         self.pinned.is_some()
+    }
+
+    /// Is this a READ-ONLY-scoped ctx (Phase B / #82 write=tx guard)? A write here is REJECTED
+    /// ([`crate::tx_options::write_in_read_only`]) — the explicit-ctx analogue of the TS `withReadOnly`
+    /// / v1 `with_writer` read-only marker. Derived via [`ExecutionContext::with_read_only`].
+    pub fn read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Derive a READ-ONLY-scoped ctx (mirror v1 `with_writer` / the TS `withReadOnly`): reads are
+    /// allowed, but ANY write funneled through the GUARDED write seam ([`run_guarded`]) throws
+    /// [`crate::tx_options::write_in_read_only`]. Used for a writer-pinned read scope that must never
+    /// accidentally mutate.
+    pub fn with_read_only(&self) -> ExecutionContext<'a, 't> {
+        ExecutionContext {
+            driver: self.driver,
+            middleware: self.middleware,
+            pinned: self.pinned,
+            read_only: true,
+        }
     }
 
     /// Resolve WHICH connection a statement runs on (§3). Phase A resolution: the tx-owned (pinned)
@@ -361,6 +389,9 @@ impl<'a, 't> ExecutionContext<'a, 't> {
             driver: self.driver,
             middleware: self.middleware,
             pinned: Some(slot),
+            // A tx-scoped ctx INHERITS the read-only marker: a `transaction()` opened inside a
+            // read-only scope is still read-only (v1 parity — `with_writer` reads never mutate).
+            read_only: self.read_only,
         }
     }
 }
@@ -391,6 +422,31 @@ pub fn run(
     let conn = ctx.connection_for(intent);
     ctx.middleware
         .wrap_write(sql, params, &move |s, p| conn.run(s, p))
+}
+
+/// GUARDED write seam (Phase B / #82): enforce the write=tx guard
+/// ([`crate::tx_options::check_write_allowed`]) for a DATA-mutating statement, then delegate to
+/// [`run`]. A write issued OUTSIDE a transaction throws [`crate::tx_options::write_outside_transaction`];
+/// a write in a [`ExecutionContext::with_read_only`] scope throws
+/// [`crate::tx_options::write_in_read_only`] (read-only checked FIRST, v1 order). Tx-control statements
+/// (BEGIN/COMMIT/ROLLBACK/SET) are NOT guarded — the tx runtime issues them to OPEN the very scope the
+/// guard checks. This is the seam a bare model-level write (create/update/delete/upsert/batch) goes
+/// through. The guard reads the CALLER's ctx markers (`in_transaction` / `read_only`) — the
+/// explicit-ctx analogue of the TS async-local markers.
+pub fn run_guarded(
+    ctx: &ExecutionContext,
+    sql: &str,
+    params: &[Value],
+    operation: &str,
+    model: Option<&str>,
+) -> Result<RunInfo, SqlFailure> {
+    crate::tx_options::check_write_allowed(
+        operation,
+        model,
+        ctx.in_transaction(),
+        ctx.read_only(),
+    )?;
+    run(ctx, sql, params, &StatementIntent::write())
 }
 
 // ── The per-execution-ownership transaction (§3) — the concurrent-tx fix ──────
@@ -425,9 +481,27 @@ pub fn with_transaction_decided<'a, R>(
     ctx: &ExecutionContext<'a, '_>,
     body: impl FnOnce(&ExecutionContext) -> Result<TxDecision<R>, SqlFailure>,
 ) -> Result<R, SqlFailure> {
-    // Acquire the tx's OWNED connection (BEGIN issued on it inside begin_tx) and hold it in the slot.
-    // The handle borrows the primary driver (`'a`); the slot holds it for the tx body's duration.
-    let tx: Box<dyn TxConnection + 'a> = ctx.driver().begin_tx()?;
+    with_transaction_decided_isolated(ctx, &[], &[], body)
+}
+
+/// The isolation-aware form of [`with_transaction_decided`] (Phase B / #82): `before_begin` /
+/// `after_begin` are the isolation-prelude statements the driver runs around its `BEGIN`
+/// ([`crate::tx_options::isolation_prelude`] — MySQL SET pre-BEGIN, PG SET post-BEGIN). Both empty ⇒
+/// identical to [`with_transaction_decided`] (a bare `BEGIN`). This is the ONE mechanism the public
+/// [`transaction`] boundary and the write-tx plan executor both drive; the retry loop + nested-join
+/// live in [`transaction`], while THIS runs exactly ONE attempt on a freshly-acquired owned
+/// connection.
+pub fn with_transaction_decided_isolated<'a, R>(
+    ctx: &ExecutionContext<'a, '_>,
+    before_begin: &[String],
+    after_begin: &[String],
+    body: impl FnOnce(&ExecutionContext) -> Result<TxDecision<R>, SqlFailure>,
+) -> Result<R, SqlFailure> {
+    // Acquire the tx's OWNED connection (isolation prelude + BEGIN issued on it inside
+    // begin_tx_isolated) and hold it in the slot. The handle borrows the primary driver (`'a`); the
+    // slot holds it for the tx body's duration.
+    let tx: Box<dyn TxConnection + 'a> =
+        ctx.driver().begin_tx_isolated(before_begin, after_begin)?;
     let slot: TxSlot<'a> = std::cell::RefCell::new(Some(tx));
     // Scope the tx-ctx borrow of `slot` so it ends before we take the handle back for commit/rollback.
     let result = {
@@ -465,6 +539,136 @@ pub fn with_transaction<'a, R>(
     body: impl FnOnce(&ExecutionContext) -> Result<R, SqlFailure>,
 ) -> Result<R, SqlFailure> {
     with_transaction_decided(ctx, |tx_ctx| body(tx_ctx).map(TxDecision::Commit))
+}
+
+// ── The PUBLIC user-controlled transaction boundary (Phase B-core / #86, rust port) ──
+
+/// **The public user-controlled transaction boundary** (#86, rust port of the TS `transaction`) —
+/// the REAL transaction feature v2 was missing. `transaction(ctx, dialect, options, body)` opens ONE
+/// boundary the caller wraps around MULTIPLE arbitrary operations so they commit or roll back
+/// TOGETHER:
+///
+/// ```text
+///   transaction(&ctx, Dialect::Postgres, &opts, |tx_ctx| {
+///       execute_transaction_bundle_ctx(a_bundle, a_input, tx_ctx)?;  // ← every op inside JOINS
+///       execute_transaction_bundle_ctx(b_bundle, b_input, tx_ctx)?;  //    this ONE boundary:
+///       Ok(())                                                        //    one conn, one BEGIN…COMMIT
+///   })
+/// ```
+///
+/// ## What it does (v1 `litedbmodel.rs` `transaction_with_options` parity, on the SCP seam)
+///
+/// It acquires ONE owned connection, issues the isolation-aware `BEGIN`
+/// ([`crate::tx_options::isolation_prelude`] — PG SET post-BEGIN, MySQL SET pre-BEGIN), pins that
+/// connection into a tx-scoped [`ExecutionContext`], runs `body(tx_ctx)`, then `COMMIT` (or
+/// `ROLLBACK` on a body error / `options.rollback_only`), with the #81 retry loop (deadlock /
+/// serialization / connection error) wrapped around the WHOLE boundary — a FRESH owned connection per
+/// attempt. It drives [`with_transaction_decided_isolated`] per attempt (the ONE mechanism).
+///
+/// ## The ambient-tx JOIN — how operations participate (the core #86 fix; rust = explicit ctx)
+///
+/// `body` receives the tx-scoped ctx EXPLICITLY (the approved rust-idiomatic decision — no
+/// task-local; the TS pins it in an async-local, rust threads it by argument). Every operation `body`
+/// issues receives THAT ctx: a write via [`crate::runtime::execute_transaction_bundle_ctx`], a read
+/// via the read seam. Because that ctx's `in_transaction()` is already true (a connection is pinned),
+/// the write's own tx-bracketing DETECTS the ambient tx and JOINS it — running its statements on the
+/// pinned owned connection WITHOUT opening its own `BEGIN/COMMIT` (see
+/// [`transaction_decided`]'s nested-join). So N operations inside one `transaction()` produce exactly
+/// ONE BEGIN + ONE COMMIT on ONE connection. Outside a `transaction()` the ctx's `in_transaction()`
+/// is false, so a bare write's guard fires ([`crate::tx_options::write_outside_transaction`]).
+///
+/// NESTED `transaction()` joins the outer (one physical BEGIN/COMMIT; an inner error rolls back the
+/// WHOLE tx). Isolation/retry/rollback_only options on a nested call are IGNORED (the outer owns
+/// them) — mirror v1 `TransactionExecutor::transaction` (`handler.rs:801`, `depth+1`, no new BEGIN).
+pub fn transaction<'a, R>(
+    ctx: &ExecutionContext<'a, '_>,
+    dialect: crate::tx_options::Dialect,
+    options: &crate::tx_options::TransactionOptions,
+    body: impl Fn(&ExecutionContext) -> Result<R, SqlFailure>,
+) -> Result<R, SqlFailure> {
+    transaction_decided(ctx, dialect, options, |tx_ctx| {
+        body(tx_ctx).map(TxDecision::Commit)
+    })
+}
+
+/// The [`TxDecision`]-returning form of [`transaction`] (Phase B / #82): `body` decides COMMIT vs
+/// ROLLBACK (a gate short-circuit returns [`TxDecision::Rollback`] with `committed:false` — a
+/// legitimate non-error outcome), an `Err` always rolls back + retries/re-raises. This is what the
+/// write-tx plan executor ([`crate::runtime::execute_transaction_bundle_ctx`]) drives, so a
+/// gate-first plan run inside a user `transaction()` short-circuits correctly while still JOINING.
+///
+/// Handles the three Phase B concerns the plain [`with_transaction_decided`] does not:
+///   1. **nested-join** — if `ctx.in_transaction()` is already true (an outer `transaction()` pinned a
+///      connection), run `body` on the OUTER ctx with NO new BEGIN/COMMIT/acquire (the inner body is
+///      part of the outer physical tx; an inner error propagates and rolls back the WHOLE tx);
+///   2. **rollback_only** — a successful `Commit(r)` is rewritten to `Rollback(r)` (the body result is
+///      returned but NO change commits — dry-run/preview);
+///   3. **retry** — a retryable failure (deadlock / serialization / connection error, via
+///      [`crate::tx_options::is_retryable_tx_error`]) re-runs the WHOLE boundary on a FRESH owned
+///      connection, up to `retry_limit`, with exponential backoff `retry_duration_ms · 2^(k-1)`. A
+///      non-retryable error re-raises immediately.
+pub fn transaction_decided<'a, R>(
+    ctx: &ExecutionContext<'a, '_>,
+    dialect: crate::tx_options::Dialect,
+    options: &crate::tx_options::TransactionOptions,
+    body: impl Fn(&ExecutionContext) -> Result<TxDecision<R>, SqlFailure>,
+) -> Result<R, SqlFailure> {
+    // NESTED-TX JOIN (mirror v1 `TransactionExecutor::transaction` depth+1): already inside a tx on
+    // this ctx ⇒ join the outer. No new connection, no BEGIN/COMMIT — the inner body is part of the
+    // outer physical transaction. Isolation/retry/rollback_only on a nested call are ignored: the
+    // outer owns the envelope. A gate `Rollback` here still returns its value (the caller reports
+    // `committed:false`) WITHOUT rolling back the outer — the outer decides its own COMMIT/ROLLBACK.
+    if ctx.in_transaction() {
+        return match body(ctx)? {
+            TxDecision::Commit(r) | TxDecision::Rollback(r) => Ok(r),
+        };
+    }
+
+    // The isolation prelude (PG SET post-BEGIN / MySQL SET pre-BEGIN / SQLite = hard-error on a level).
+    let (before_begin, after_begin) =
+        crate::tx_options::isolation_prelude(dialect, options.isolation)?;
+    let rollback_only = options.rollback_only;
+    let retry_limit = if options.retry_on_error {
+        options.retry_limit.max(1)
+    } else {
+        1
+    };
+
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        // ONE attempt on a FRESH owned connection (a retry after a connection error thus RECONNECTS).
+        let outcome =
+            with_transaction_decided_isolated(ctx, &before_begin, &after_begin, |tx_ctx| {
+                let decided = body(tx_ctx)?;
+                // rollback_only (dry-run): a SUCCESSFUL commit becomes a ROLLBACK, still returning the
+                // body result — no committed change. An explicit gate Rollback stays a rollback.
+                Ok(if rollback_only {
+                    match decided {
+                        TxDecision::Commit(r) | TxDecision::Rollback(r) => TxDecision::Rollback(r),
+                    }
+                } else {
+                    decided
+                })
+            });
+
+        match outcome {
+            Ok(r) => return Ok(r),
+            Err(e) => {
+                if attempt < retry_limit && crate::tx_options::is_retryable_tx_error(&e) {
+                    // Exponential backoff before RETRYing the whole transaction on a fresh connection.
+                    let backoff = options
+                        .retry_duration_ms
+                        .saturating_mul(1u64 << (attempt - 1));
+                    if backoff > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(backoff));
+                    }
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
 }
 
 // ── Unit tests (no DB) — the seam + middleware passthrough + tx ownership ───────
@@ -698,5 +902,314 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    // ── Phase B (#82) — the write=tx guard + the public transaction() boundary ─────
+
+    use crate::tx_options::{Dialect, IsolationLevel, TransactionOptions};
+
+    fn opts() -> TransactionOptions {
+        TransactionOptions::default()
+    }
+
+    #[test]
+    fn guard_rejects_write_outside_transaction() {
+        let (d, log) = driver(None);
+        let ctx = for_driver(&d);
+        // A bare write on a base ctx (no active tx) is REJECTED before any SQL.
+        let e =
+            run_guarded(&ctx, "INSERT INTO t VALUES (1)", &[], "INSERT", Some("t")).unwrap_err();
+        assert_eq!(e.kind, "write_outside_transaction");
+        assert!(
+            log.borrow().is_empty(),
+            "no SQL issued before the guard fires"
+        );
+    }
+
+    #[test]
+    fn guard_rejects_write_in_read_only_first() {
+        let (d, log) = driver(None);
+        let base = for_driver(&d);
+        // A read-only-scoped tx ctx: read-only is checked FIRST, even though a tx is active.
+        with_transaction(&base, |tx| {
+            let ro = tx.with_read_only();
+            let e = run_guarded(&ro, "UPDATE t SET x=1", &[], "UPDATE", Some("t")).unwrap_err();
+            assert_eq!(e.kind, "write_in_read_only_context");
+            Ok(())
+        })
+        .unwrap();
+        // Only BEGIN + COMMIT ran (the guarded write never issued SQL).
+        assert_eq!(
+            *log.borrow(),
+            vec!["BEGIN".to_string(), "COMMIT".to_string()]
+        );
+    }
+
+    #[test]
+    fn guard_allows_write_inside_transaction() {
+        let (d, log) = driver(None);
+        let base = for_driver(&d);
+        with_transaction(&base, |tx| {
+            // Inside a tx ⇒ the guard passes and the write runs on the owned connection.
+            run_guarded(tx, "INSERT INTO t VALUES (1)", &[], "INSERT", Some("t"))?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "BEGIN".to_string(),
+                "INSERT INTO t VALUES (1)".to_string(),
+                "COMMIT".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn transaction_boundary_one_begin_one_commit_for_n_ops() {
+        // Two ops inside ONE transaction() boundary ⇒ exactly ONE BEGIN + ONE COMMIT (the ambient
+        // JOIN — the second op does NOT open its own BEGIN/COMMIT).
+        let (d, log) = driver(None);
+        let ctx = for_driver(&d);
+        transaction(&ctx, Dialect::Postgres, &opts(), |tx| {
+            run(
+                tx,
+                "INSERT INTO a VALUES (1)",
+                &[],
+                &StatementIntent::write(),
+            )?;
+            // A "nested" transaction_decided (as a joined write would do) must NOT open a new BEGIN.
+            transaction(tx, Dialect::Postgres, &opts(), |inner| {
+                run(
+                    inner,
+                    "INSERT INTO b VALUES (2)",
+                    &[],
+                    &StatementIntent::write(),
+                )?;
+                Ok(())
+            })?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "BEGIN".to_string(),
+                "INSERT INTO a VALUES (1)".to_string(),
+                "INSERT INTO b VALUES (2)".to_string(),
+                "COMMIT".to_string(),
+            ],
+            "one BEGIN + one COMMIT; the nested op JOINED (no inner BEGIN/COMMIT)"
+        );
+    }
+
+    #[test]
+    fn transaction_body_error_rolls_back_the_whole_tx() {
+        // A failing op inside the boundary ⇒ ONE BEGIN + ONE ROLLBACK, zero COMMIT; the earlier op's
+        // statement is part of the same physical tx (rolled back with it).
+        let (d, log) = driver(Some("BAD"));
+        let ctx = for_driver(&d);
+        let res: Result<(), SqlFailure> = transaction(&ctx, Dialect::Postgres, &opts(), |tx| {
+            run(
+                tx,
+                "INSERT INTO a VALUES (1)",
+                &[],
+                &StatementIntent::write(),
+            )?;
+            run(tx, "BAD", &[], &StatementIntent::write())?; // errors
+            Ok(())
+        });
+        assert!(res.is_err());
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "BEGIN".to_string(),
+                "INSERT INTO a VALUES (1)".to_string(),
+                "BAD".to_string(),
+                "ROLLBACK".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn rollback_only_returns_value_but_does_not_commit() {
+        // rollback_only: a successful body ROLLBACKs (dry-run) but still returns its value.
+        let (d, log) = driver(None);
+        let ctx = for_driver(&d);
+        let o = TransactionOptions {
+            rollback_only: true,
+            ..opts()
+        };
+        let out = transaction(&ctx, Dialect::Postgres, &o, |tx| {
+            run(
+                tx,
+                "INSERT INTO a VALUES (1)",
+                &[],
+                &StatementIntent::write(),
+            )?;
+            Ok(42)
+        })
+        .unwrap();
+        assert_eq!(out, 42);
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "BEGIN".to_string(),
+                "INSERT INTO a VALUES (1)".to_string(),
+                "ROLLBACK".to_string(),
+            ],
+            "rollback_only ⇒ ROLLBACK, never COMMIT"
+        );
+    }
+
+    #[test]
+    fn isolation_prelude_pg_sets_after_begin() {
+        // PG isolation ⇒ SET TRANSACTION ISOLATION LEVEL runs AS THE FIRST in-tx statement (post-BEGIN,
+        // via the default begin_tx_isolated forwarding).
+        let (d, log) = driver(None);
+        let ctx = for_driver(&d);
+        let o = TransactionOptions {
+            isolation: Some(IsolationLevel::Serializable),
+            ..opts()
+        };
+        transaction(&ctx, Dialect::Postgres, &o, |tx| {
+            run(
+                tx,
+                "INSERT INTO a VALUES (1)",
+                &[],
+                &StatementIntent::write(),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "BEGIN".to_string(),
+                "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE".to_string(),
+                "INSERT INTO a VALUES (1)".to_string(),
+                "COMMIT".to_string(),
+            ]
+        );
+    }
+
+    /// A driver that fails the body statement on the FIRST `attempts` attempts (with a retryable
+    /// message), then succeeds — proving the whole-tx retry loop re-runs on a fresh connection.
+    struct FlakyDriver {
+        log: Rc<RefCell<Vec<String>>>,
+        remaining_fails: RefCell<u32>,
+    }
+    struct FlakyStmt {
+        log: Rc<RefCell<Vec<String>>>,
+        sql: String,
+        should_fail: bool,
+    }
+    impl PreparedStatement for FlakyStmt {
+        fn all(&mut self, _p: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+            self.log.borrow_mut().push(self.sql.clone());
+            Ok(Vec::new())
+        }
+        fn run(&mut self, _p: &[Value]) -> Result<DrvRunInfo, SqlFailure> {
+            self.log.borrow_mut().push(self.sql.clone());
+            if self.should_fail && self.sql == "WORK" {
+                return Err(SqlFailure {
+                    kind: "driver_error".into(),
+                    policy: "fail".into(),
+                    sqlite_code: None,
+                    message: "could not serialize access due to concurrent update (SQLSTATE 40001)"
+                        .into(),
+                });
+            }
+            Ok(DrvRunInfo {
+                changes: 1,
+                last_insert_rowid: 0,
+            })
+        }
+    }
+    impl Driver for FlakyDriver {
+        fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
+            // Decide fail-or-not per WORK statement, decrementing the remaining-fails budget.
+            let should_fail = if sql == "WORK" {
+                let mut r = self.remaining_fails.borrow_mut();
+                if *r > 0 {
+                    *r -= 1;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            Box::new(FlakyStmt {
+                log: self.log.clone(),
+                sql: sql.to_string(),
+                should_fail,
+            })
+        }
+        fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+            forwarding_tx(self)
+        }
+    }
+
+    #[test]
+    fn retry_reruns_whole_tx_on_retryable_error() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let d = FlakyDriver {
+            log: log.clone(),
+            remaining_fails: RefCell::new(1), // fail once, succeed on attempt 2
+        };
+        let ctx = for_driver(&d);
+        let o = TransactionOptions {
+            retry_on_error: true,
+            retry_limit: 3,
+            retry_duration_ms: 0, // no sleep in the test
+            ..opts()
+        };
+        let out = transaction(&ctx, Dialect::Postgres, &o, |tx| {
+            run(tx, "WORK", &[], &StatementIntent::write())?;
+            Ok(7)
+        })
+        .unwrap();
+        assert_eq!(out, 7);
+        // Attempt 1: BEGIN, WORK(fails), ROLLBACK. Attempt 2: BEGIN, WORK(ok), COMMIT.
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "BEGIN".to_string(),
+                "WORK".to_string(),
+                "ROLLBACK".to_string(),
+                "BEGIN".to_string(),
+                "WORK".to_string(),
+                "COMMIT".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn non_retryable_error_does_not_retry() {
+        let (d, log) = driver(Some("WORK"));
+        let ctx = for_driver(&d);
+        let o = TransactionOptions {
+            retry_on_error: true,
+            retry_limit: 3,
+            retry_duration_ms: 0,
+            ..opts()
+        };
+        // The default RecordDriver fails "WORK" with message "boom" (NOT retryable) ⇒ exactly one
+        // attempt, then the error surfaces.
+        let res: Result<(), SqlFailure> = transaction(&ctx, Dialect::Postgres, &o, |tx| {
+            run(tx, "WORK", &[], &StatementIntent::write())?;
+            Ok(())
+        });
+        assert!(res.is_err());
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "BEGIN".to_string(),
+                "WORK".to_string(),
+                "ROLLBACK".to_string(),
+            ],
+            "a non-retryable error is NOT retried (single attempt)"
+        );
     }
 }

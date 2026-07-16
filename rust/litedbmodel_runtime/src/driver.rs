@@ -52,6 +52,34 @@ pub trait Driver {
     /// transactions each own a DISTINCT connection ⇒ isolated (the old driver-global `writer` slot is
     /// gone). Every implementor MUST issue BEGIN in this method so the returned handle is live.
     fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure>;
+
+    /// Begin a transaction with an isolation-level prelude (Phase B / #82). `before_begin` statements
+    /// run on the newly-acquired OWNED connection BEFORE its `BEGIN` (MySQL `SET TRANSACTION
+    /// ISOLATION LEVEL …`, which scopes the very next tx); `after_begin` statements run as the FIRST
+    /// statements inside the just-opened tx (Postgres `SET TRANSACTION ISOLATION LEVEL …`, valid as
+    /// the leading statement). Both empty ⇒ identical to [`Driver::begin_tx`] (the Phase A path).
+    ///
+    /// The default implementation composes it from the primitives already every driver has: the
+    /// `before_begin` statements ride the (soon-to-own) connection via a throwaway prepared run — but
+    /// since a pooled driver has no way to run a statement on a specific not-yet-owned connection, the
+    /// robust default acquires the tx first (plain BEGIN), then runs BOTH slots on the OWNED handle.
+    /// For MySQL this is WRONG (its SET must precede BEGIN), so [`crate::livedb::MysqlDriver`]
+    /// OVERRIDES this to acquire → SET → BEGIN in the right order. The single-connection
+    /// [`forwarding_tx`] and Postgres use the default (PG's isolation SET is valid post-BEGIN).
+    fn begin_tx_isolated(
+        &self,
+        before_begin: &[String],
+        after_begin: &[String],
+    ) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        // Default: BEGIN (via begin_tx), then run before_begin + after_begin on the OWNED handle.
+        // Correct for PG (SET ISOLATION valid as the first in-tx statement) and for the
+        // single-connection sqlite seam (which ignores isolation — the caller never passes it there).
+        let mut tx = self.begin_tx()?;
+        for sql in before_begin.iter().chain(after_begin.iter()) {
+            tx.run(sql, &[])?;
+        }
+        Ok(tx)
+    }
 }
 
 /// Build the single-connection [`TxConnection`] for a driver that is genuinely ONE connection (the

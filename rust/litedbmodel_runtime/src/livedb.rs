@@ -56,6 +56,20 @@ fn driver_failure(msg: impl Into<String>) -> SqlFailure {
     }
 }
 
+/// A Postgres tx-path failure that ALWAYS embeds the SQLSTATE code when the driver error carries one
+/// (Phase B / #82). tokio-postgres's `Display` for a server error can abbreviate to just `db error`
+/// (notably a serialization failure surfaced at COMMIT), which would hide the `40001` / `40P01` the
+/// retryable-error classifier ([`crate::tx_options::is_retryable_tx_error`]) keys on. Extracting the
+/// SQLSTATE via `as_db_error().code()` and appending it makes the whole-tx retry loop reliable
+/// regardless of the Display verbosity — the classification is by the STABLE code, not fragile text.
+fn pg_err(context: &str, e: &tokio_postgres::Error) -> SqlFailure {
+    let code = e
+        .as_db_error()
+        .map(|db| format!(" (SQLSTATE {})", db.code().code()))
+        .unwrap_or_default();
+    driver_failure(format!("{context}: {e}{code}"))
+}
+
 /// The plan's default concurrency (spec) — the pool is sized to match so `concurrency` sibling
 /// relations can each hold a live connection without starving.
 pub const DEFAULT_POOL_SIZE: usize = 16;
@@ -181,7 +195,7 @@ impl TxConnection for PgTx<'_> {
             let rows = conn
                 .query(sql, refs.as_slice())
                 .await
-                .map_err(|e| driver_failure(format!("postgres tx query [{sql}]: {e}")))?;
+                .map_err(|e| pg_err(&format!("postgres tx query [{sql}]"), &e))?;
             pg_rows_to_values(&rows)
         })
     }
@@ -194,7 +208,7 @@ impl TxConnection for PgTx<'_> {
         let changes = self.rt.block_on(async move {
             conn.execute(sql, refs.as_slice())
                 .await
-                .map_err(|e| driver_failure(format!("postgres tx execute [{sql}]: {e}")))
+                .map_err(|e| pg_err(&format!("postgres tx execute [{sql}]"), &e))
         })?;
         Ok(RunInfo {
             changes: changes as i64,
@@ -207,7 +221,7 @@ impl TxConnection for PgTx<'_> {
         self.rt.block_on(async move {
             conn.batch_execute("COMMIT")
                 .await
-                .map_err(|e| driver_failure(format!("postgres COMMIT: {e}")))
+                .map_err(|e| pg_err("postgres COMMIT", &e))
         })
     }
 
@@ -216,7 +230,7 @@ impl TxConnection for PgTx<'_> {
         self.rt.block_on(async move {
             conn.batch_execute("ROLLBACK")
                 .await
-                .map_err(|e| driver_failure(format!("postgres ROLLBACK: {e}")))
+                .map_err(|e| pg_err("postgres ROLLBACK", &e))
         })
     }
 }
@@ -884,16 +898,44 @@ impl Driver for MysqlDriver {
     /// error 1295), and hand back a [`MyTx`] that runs every tx statement + COMMIT/ROLLBACK on THAT
     /// owned connection. Concurrent `begin_tx` calls get DISTINCT connections ⇒ isolated.
     fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        self.begin_tx_isolated(&[], &[])
+    }
+
+    /// MySQL isolation prelude (Phase B / #82): `SET TRANSACTION ISOLATION LEVEL …` scopes ONLY the
+    /// NEXT transaction, so it MUST run on the owned connection BEFORE `BEGIN` — hence the override
+    /// (the default trait impl runs it after BEGIN, which MySQL would apply to the tx AFTER this one).
+    /// `after_begin` is unused for MySQL (isolation always rides `before_begin`); it is run post-BEGIN
+    /// for completeness so the contract stays uniform.
+    fn begin_tx_isolated(
+        &self,
+        before_begin: &[String],
+        after_begin: &[String],
+    ) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
         let conn = self.rt.block_on(async {
             let mut conn = self
                 .pool
                 .acquire()
                 .await
                 .map_err(|e| driver_failure(format!("mysql acquire (tx): {e}")))?;
+            // Isolation SET (if any) BEFORE BEGIN — it scopes the immediately-following transaction.
+            for sql in before_begin {
+                sqlx::raw_sql(sql)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|e| driver_failure(format!("mysql tx prelude [{sql}]: {e}")))?;
+            }
+            // BEGIN via raw_sql (MySQL rejects BEGIN/COMMIT/ROLLBACK in the prepared-statement
+            // protocol, error 1295).
             sqlx::raw_sql("BEGIN")
                 .execute(&mut *conn)
                 .await
                 .map_err(|e| driver_failure(format!("mysql BEGIN: {e}")))?;
+            for sql in after_begin {
+                sqlx::raw_sql(sql)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|e| driver_failure(format!("mysql tx post-begin [{sql}]: {e}")))?;
+            }
             Ok::<_, SqlFailure>(conn)
         })?;
         Ok(Box::new(MyTx { rt: &self.rt, conn }))
