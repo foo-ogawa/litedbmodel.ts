@@ -228,6 +228,37 @@ export type {
   TxOptions,
 } from './exec-context';
 
+// ── Phase C (#87): connection routing + config. The API REFERENCE the native ports (#88-91) mirror.
+// Completes `connectionFor(intent)`'s resolution (§3 steps 2-4): reader/writer separation + writer-
+// sticky + `withWriter` (C1), a multi-DB name→pools registry + named routing (C2), and the setConfig
+// surface (queryTimeout/keepAlive/pool sizing/searchPath/charset) + closeAllPools (C3). A single-pool
+// `PooledAsyncContext` synthesizes a default-only registry (reader === writer, sticky off) ⇒ byte-
+// identical to Phase A/B; a `buildRoutingConfig`-driven ctx gets the full routing.
+export {
+  ConnectionRegistry,
+  ConnectionRegistryBuilder,
+  WriterStickyClock,
+  DEFAULT_CONNECTION,
+  withWriter,
+  inWriterScope,
+  resolvePool,
+  resolveConnectionConfig,
+  sessionStatements,
+  sessionResetStatements,
+  configuredPool,
+  singlePoolPair,
+  readerWriterPair,
+  buildRoutingConfig,
+} from './connection-routing';
+export type {
+  ConnectionConfig,
+  ResolvedConnectionConfig,
+  ReaderWriterPools,
+  RoutingConfig,
+  ConnectionSetup,
+  PoolCloser,
+} from './connection-routing';
+
 // The tx-completeness contract (Phase B-1 / #81): TransactionOptions shape + defaults, the
 // isolation-level enum + per-dialect BEGIN mapping, the retryable-error classifier, the write=tx
 // guards (`checkWriteAllowed` + `withReadOnly` / `runInTransactionScope` scope markers). The API

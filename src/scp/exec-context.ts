@@ -63,6 +63,12 @@ import {
   runInTransactionScope,
   checkWriteAllowed,
 } from './tx-options';
+import {
+  type RoutingConfig,
+  ConnectionRegistry,
+  WriterStickyClock,
+  resolvePool,
+} from './connection-routing';
 import type { Dialect } from './makesql/handler';
 
 // ── Statement intent & the driver contact (§5) ────────────────────────────────
@@ -357,20 +363,39 @@ const asyncCtxStore = new AsyncLocalStorage<AsyncConnection>();
  */
 export class PooledAsyncContext implements AsyncExecutionContext {
   readonly middleware: MiddlewareChain;
-  private readonly pool: AsyncConnectionPool;
+  /**
+   * The full routing config (§3 steps 2-4): the multi-DB {@link ConnectionRegistry} + the
+   * {@link WriterStickyClock}. A ctx built from a single `pool` synthesizes a default-only registry
+   * (reader === writer) + an always-false sticky clock, so its resolution is byte-identical to the
+   * Phase A/B single-pool path. A ctx built with a {@link RoutingConfig} (via {@link setConfig})
+   * gets reader/writer separation, writer-sticky, and named-DB routing.
+   */
+  private readonly routing: RoutingConfig;
 
-  constructor(pool: AsyncConnectionPool, middleware: MiddlewareChain = new MiddlewareChain()) {
-    this.pool = pool;
+  /**
+   * Construct from EITHER a single {@link AsyncConnectionPool} (backward-compat: default connection,
+   * reader === writer, sticky disabled — byte-identical to Phase A/B) OR a full {@link RoutingConfig}
+   * (Phase C: reader/writer separation + writer-sticky + named-DB routing).
+   */
+  constructor(poolOrRouting: AsyncConnectionPool | RoutingConfig, middleware: MiddlewareChain = new MiddlewareChain()) {
     this.middleware = middleware;
+    this.routing = isRoutingConfig(poolOrRouting)
+      ? poolOrRouting
+      : // Single-pool backward-compat: default-only registry (reader === writer) + a sticky clock
+        // that is NEVER marked (so `isSticky()` stays false) ⇒ every intent lands on the one pool.
+        { registry: ConnectionRegistry.singleDefault(poolOrRouting), sticky: new WriterStickyClock({ useWriterAfterTransaction: false }) };
   }
 
-  connectionFor(_intent: StatementIntent): AsyncConnection {
-    // Inside a tx: the ALS-pinned owned connection (every statement on the SAME conn). Otherwise a
-    // per-statement acquire/run/release wrapper (the read fan-out: each concurrent sibling gets its
-    // own pooled connection). Phase A ignores reader/writer/db routing (single-DB).
+  connectionFor(intent: StatementIntent): AsyncConnection {
+    // STEP 1 (§3): inside a tx, the ALS-pinned owned connection wins — every statement on the SAME
+    // conn (the per-execution ownership the concurrent-tx fix depends on). The tx pin is a per-scope
+    // fact only the ctx's ALS holds, so it is resolved HERE, before the pool-selection steps.
     const pinned = asyncCtxStore.getStore();
     if (pinned !== undefined) return pinned;
-    const pool = this.pool;
+    // STEPS 2-4 (§3): named-DB → reader/writer split → writer-sticky/withWriter. `resolvePool`
+    // returns WHICH pool serves this intent; the returned wrapper acquires/runs/releases one owned
+    // connection per statement (the read fan-out: each concurrent sibling on its own connection).
+    const pool = resolvePool(intent, this.routing);
     return {
       async execute(sql, params) {
         const c = await pool.acquire();
@@ -393,15 +418,34 @@ export class PooledAsyncContext implements AsyncExecutionContext {
 
   withConnection(_conn: AsyncConnection, _tx: boolean): AsyncExecutionContext {
     // Deriving a tx-scoped ctx pins the connection via the ALS run in withTransactionAsync (not by
-    // mutating this object); the derived ctx shares the pool + middleware and is never used to
+    // mutating this object); the derived ctx shares the routing + middleware and is never used to
     // acquire (the ALS-pinned connection wins in `connectionFor`).
     return this;
   }
 
-  /** The pool (so `withTransactionAsync` can acquire the tx's owned connection). */
-  get connectionPool(): AsyncConnectionPool {
-    return this.pool;
+  /**
+   * The WRITER pool of the connection a transaction runs against (so `withTransactionAsync` acquires
+   * the tx's owned connection from the right pool). A transaction is a write ⇒ the writer pool of the
+   * named connection (`intent.db`). Absent `db` ⇒ the default connection's writer.
+   */
+  connectionPoolFor(intent: StatementIntent = { write: true }): AsyncConnectionPool {
+    return this.routing.registry.pairFor(intent.db).writer;
   }
+
+  /** The default connection's writer pool (backward-compat accessor for the single-DB tx path). */
+  get connectionPool(): AsyncConnectionPool {
+    return this.routing.registry.pairFor(undefined).writer;
+  }
+
+  /** The writer-sticky clock (the tx runtime `.mark()`s it on a successful write/commit). */
+  get stickyClock(): WriterStickyClock {
+    return this.routing.sticky;
+  }
+}
+
+/** Narrow the {@link PooledAsyncContext} ctor arg: is it a {@link RoutingConfig} (vs. a bare pool)? */
+function isRoutingConfig(x: AsyncConnectionPool | RoutingConfig): x is RoutingConfig {
+  return typeof x === 'object' && x !== null && 'registry' in x && 'sticky' in x;
 }
 
 /**
@@ -491,6 +535,7 @@ export async function withTransactionAsync<R>(
   opts: TransactionOptions = {},
   dialect: Dialect = 'postgres',
   isConnectionError: (e: Error) => boolean = defaultIsConnectionError,
+  connection?: string,
 ): Promise<R> {
   // NESTED-TX JOIN (§ mirror v1 :2794): already inside a tx on this async chain ⇒ join the outer.
   // No new connection, no BEGIN/COMMIT — the inner body is part of the outer physical transaction.
@@ -503,7 +548,9 @@ export async function withTransactionAsync<R>(
 
   const resolved = resolveTxOptions(opts);
   const begins = beginStatements(dialect, resolved.isolation);
-  const pool = ctx.connectionPool;
+  // Named-DB routing (§3-4): a transaction is a write ⇒ acquire from the WRITER pool of the target
+  // connection (`connection` name, or the default). Single-DB ⇒ the one default writer pool.
+  const pool = ctx.connectionPoolFor({ write: true, ...(connection !== undefined ? { db: connection } : {}) });
 
   let attempt = 0;
   for (;;) {
@@ -539,7 +586,13 @@ export async function withTransactionAsync<R>(
     // reconnects on a fresh one; a clean success returns the conn to the pool.
     await pool.release(conn, poisoned || !attemptResult.ok);
 
-    if (attemptResult.ok) return attemptResult.value;
+    if (attemptResult.ok) {
+      // WRITER-STICKY (§3-2, read-your-writes): a committed tx marks the sticky clock so subsequent
+      // reads within `writerStickyDuration` route to the writer pool (v1 `_lastTransactionTime`). A
+      // rollbackOnly (dry-run) tx committed NOTHING ⇒ it does NOT arm stickiness.
+      if (!resolved.rollbackOnly) ctx.stickyClock.mark();
+      return attemptResult.value;
+    }
 
     const { error } = attemptResult;
     if (resolved.retryOnError && attempt < resolved.retryLimit && isRetryableTxError(error, isConnectionError)) {
@@ -596,8 +649,10 @@ export function transaction<R>(
   options: TransactionOptions = {},
   dialect: Dialect = 'postgres',
   isConnectionError: (e: Error) => boolean = defaultIsConnectionError,
+  connection?: string,
 ): Promise<R> {
   // The boundary is `withTransactionAsync` with a body that ignores the tx ctx — ambient operations
   // resolve the pinned connection through the ALS, not an explicit arg (v1 `txContext.run(func)`).
-  return withTransactionAsync(ctx, () => fn(), options, dialect, isConnectionError);
+  // `connection` (Phase C-2) routes the tx to a NAMED connection's writer pool (default when absent).
+  return withTransactionAsync(ctx, () => fn(), options, dialect, isConnectionError, connection);
 }
