@@ -16,6 +16,7 @@ import json
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from .driver import Driver
+from .exec_context import READ_INTENT, ExecutionContext, as_context, execute as seam_execute
 from .static_bundle import PG_ARRAY_CAST_TOKEN, render_placeholders, resolve_pg_array_cast
 
 __all__ = ["dedupe_keys", "run_relation_op", "distribute_to_parent", "read_bundle"]
@@ -82,16 +83,20 @@ def _bind_keys(op: Mapping[str, Any], tuples: Sequence[Sequence[Any]]) -> List[A
 def run_relation_op(
     op: Mapping[str, Any],
     parents: Sequence[Mapping[str, Any]],
-    driver: Driver,
+    driver: Union[Driver, ExecutionContext],
 ) -> Dict[str, Any]:
     """Run ONE relation batch op for a set of parent rows (byte-for-byte port of TS ``runRelationOp``).
 
     Dedup the parent-key tuples, resolve the deferred PG array cast(s) from the REAL keys (one per
     key column for composite) BEFORE the ``?``→``$N`` render, render placeholders, then — on a
-    NON-empty key set — execute binding the keys (single array / per-column arrays / JSON tuples) and
-    group the child rows by their target-key identity. EMPTY key set → NO query. Returns
-    ``{sql, keys, batch}`` (``keys`` = the deduped parent-key tuples).
+    NON-empty key set — execute (THROUGH THE CENTRAL SEAM, ``READ_INTENT``) binding the keys (single
+    array / per-column arrays / JSON tuples) and group the child rows by their target-key identity.
+    EMPTY key set → NO query. Returns ``{sql, keys, batch}`` (``keys`` = the deduped parent-key tuples).
+
+    ``driver`` is EITHER a raw :class:`Driver` (wrapped via :func:`context_for_driver` — byte-identical)
+    OR an :class:`ExecutionContext`.
     """
+    ctx = as_context(driver)
     p_cols = _parent_key_cols(op)
     keys = dedupe_keys(parents, p_cols)
     batch: Dict[str, List[Dict[str, Any]]] = {}
@@ -103,7 +108,7 @@ def run_relation_op(
     if len(keys) == 0:
         return {"sql": sql, "keys": keys, "batch": batch}
     t_cols = _target_key_cols(op)
-    rows = driver.prepare(sql).all(_bind_keys(op, keys))
+    rows = seam_execute(ctx, sql, _bind_keys(op, keys), READ_INTENT)
     for row in rows:
         k = _key_identity([row[c] for c in t_cols])
         batch.setdefault(k, []).append(row)

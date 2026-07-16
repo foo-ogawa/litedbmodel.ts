@@ -13,8 +13,27 @@ the TS runtime.
 from __future__ import annotations
 
 from .dialect import SQLITE, POSTGRES, MYSQL, Dialect, dialect_for, to_dollar_placeholders
-from .driver import Driver, MysqlDriver, PostgresDriver, PreparedStatement, RunInfo, SqliteDriver
+from .driver import Driver, MysqlDriver, PostgresDriver, PreparedStatement, RunInfo, SqliteDriver, TxConnection
 from .errors import SqlFailure, map_sqlite_error
+from .exec_context import (
+    Connection,
+    ExecutionContext,
+    MiddlewareChain,
+    StatementIntent,
+    READ_INTENT,
+    WRITE_INTENT,
+    TxDecision,
+    as_context,
+    commit,
+    context_for_driver,
+    current_context,
+    execute,
+    rollback,
+    run,
+    run_with_pinned_context,
+    with_transaction,
+    with_transaction_decided,
+)
 from .static_bundle import (
     assemble_make_sql,
     compose_make_sql,
@@ -54,9 +73,28 @@ __all__ = [
     "SqliteDriver",
     "PostgresDriver",
     "MysqlDriver",
+    "TxConnection",
     # errors
     "SqlFailure",
     "map_sqlite_error",
+    # ExecutionContext + central execute/run seam (Phase A / #78)
+    "Connection",
+    "ExecutionContext",
+    "MiddlewareChain",
+    "StatementIntent",
+    "READ_INTENT",
+    "WRITE_INTENT",
+    "TxDecision",
+    "as_context",
+    "commit",
+    "context_for_driver",
+    "current_context",
+    "execute",
+    "rollback",
+    "run",
+    "run_with_pinned_context",
+    "with_transaction",
+    "with_transaction_decided",
     # static makeSQL bundle runtime (the sole read/render path)
     "assemble_make_sql",
     "compose_make_sql",

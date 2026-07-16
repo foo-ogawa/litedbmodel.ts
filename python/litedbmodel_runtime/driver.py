@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from typing import Any, Dict, List, Optional, Protocol, Sequence
+from typing import Any, Dict, List, Protocol, Sequence
 
 
 class RunInfo:
@@ -34,10 +34,36 @@ class PreparedStatement(Protocol):
     def run(self, params: Sequence[Any]) -> RunInfo: ...
 
 
+class TxConnection(Protocol):
+    """An OWNED transaction connection (Phase A / #78) — the Python analogue of v1 ``PoolTransaction``
+    / go's ``*sql.Tx``. Acquired by :meth:`Driver.begin_tx`, it holds ONE connection for the
+    transaction's whole duration: every statement in the tx body runs on it (``all`` / ``run``), and
+    the tx ends by consuming the handle via :meth:`commit` / :meth:`rollback` (which run the
+    COMMIT/ROLLBACK on the SAME owned connection, then release it — back to the pool, or destroyed).
+
+    Concurrent transactions each hold a DISTINCT handle over a DISTINCT pooled connection, so their
+    writes never cross-talk — the isolation the removed driver-global ``_writer`` slot violated.
+    """
+
+    def all(self, sql: str, params: Sequence[Any]) -> List[Dict[str, Any]]: ...
+
+    def run(self, sql: str, params: Sequence[Any]) -> RunInfo: ...
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+
 class Driver(Protocol):
     """The synchronous SQL-driver seam (mirrors the TS `SqliteDb`)."""
 
     def prepare(self, sql: str) -> PreparedStatement: ...
+
+    def begin_tx(self) -> TxConnection:
+        """Acquire an OWNED :class:`TxConnection` for a transaction (per-execution connection
+        ownership, §3; BEGIN issued on the acquired connection). The central seam's
+        ``with_transaction`` pins the returned handle so every statement in the tx body runs on it."""
+        ...
 
 
 class _SqlitePrepared:
@@ -91,8 +117,40 @@ class SqliteDriver:
     def prepare(self, sql: str) -> _SqlitePrepared:
         return _SqlitePrepared(self.conn, sql)
 
+    def begin_tx(self) -> "_SqliteTxConnection":
+        """Acquire the OWNED tx connection (§3). SQLite is single-connection, so the tx owns THE conn:
+        BEGIN is issued on it here, every tx statement runs on it, and COMMIT/ROLLBACK end it — the
+        SAME single-conn BEGIN…COMMIT bracket the pre-seam ``prepare("BEGIN").run([])`` path ran,
+        byte-identical."""
+        self.conn.execute("BEGIN")
+        return _SqliteTxConnection(self.conn)
+
     def close(self) -> None:
         self.conn.close()
+
+
+class _SqliteTxConnection:
+    """The OWNED tx handle over a stdlib ``sqlite3`` connection (single-conn; the tx owns THE conn)."""
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn: "sqlite3.Connection") -> None:
+        self._conn = conn
+
+    def all(self, sql: str, params: Sequence[Any]) -> List[Dict[str, Any]]:
+        return _SqlitePrepared(self._conn, sql).all(params)
+
+    def run(self, sql: str, params: Sequence[Any]) -> RunInfo:
+        return _SqlitePrepared(self._conn, sql).run(params)
+
+    def commit(self) -> None:
+        self._conn.execute("COMMIT")
+
+    def rollback(self) -> None:
+        try:
+            self._conn.execute("ROLLBACK")
+        except Exception:
+            pass  # best-effort; the original failure is surfaced by the caller
 
 
 # ── Live PostgreSQL / MySQL drivers (WS7g #36; async/pooled #40) ────────────────
@@ -197,13 +255,6 @@ def _qmark_to_pyformat(sql: str) -> str:
     return sql.replace("%", "%%").replace("?", "%s")
 
 
-_TXN_CONTROL = frozenset({"BEGIN", "COMMIT", "ROLLBACK", "START TRANSACTION"})
-
-
-def _is_txn_control(sql: str) -> bool:
-    return sql.strip().upper() in _TXN_CONTROL
-
-
 def _parse_pk_hint(returning_cols: str):
     """Parse the ` /*scp:pk=col1,col2;ai=<col|>*/` PK hint out of the RETURNING-cols text.
 
@@ -249,151 +300,198 @@ def _returning_reselect_where(insert_sql, pk_cols, auto_inc, params, last_id, af
     return " AND ".join(conds), vals
 
 
-class _PooledPrepared:
-    """A prepared statement over a POOLED live DB-API driver (psycopg / PyMySQL).
+# ── Per-connection execution primitives (shared by the pooled read/write path + the owned tx) ──
+#
+# These run one statement on a GIVEN DB-API connection — the SAME row-exec, MySQL-RETURNING-emulation,
+# and cell-scalar logic whether the connection is a freshly-acquired pooled one (non-tx read/write) or
+# the tx's OWNED connection (Phase A / #78). Factoring them out of the old `_PooledPrepared`/
+# `_PooledDriver._writer` pair is what lets the tx path own its connection without a driver-global slot.
 
-    For a read (no active tx) it checks out a connection from the pool, runs the statement, and
-    returns the connection — so concurrent siblings run on DISTINCT connections. Inside a write-tx
-    it runs on the driver's PINNED writer connection (set on BEGIN, released on COMMIT/ROLLBACK).
-    ``paramstyle_xform`` adapts the rendered placeholder text; ``emulate_returning`` toggles the
-    MySQL RETURNING emulation.
+
+def _scalar(v: Any) -> Any:
+    """Coerce a driver cell to a canonical bc scalar (int/float/bool/str/None).
+
+    psycopg maps a PG ``uuid`` column to a Python ``uuid.UUID`` and other rich types (Decimal,
+    date/datetime) to their own classes. The conformance row encoding — and the cross-language
+    reference — are JSON scalars, so a non-native cell is stringified to its canonical text form,
+    exactly as SQLite/MySQL return a uuid-as-text or the Rust PG driver falls back to ``String``.
+    Native scalars pass through unchanged (bool before int, since ``bool`` is an ``int`` subclass).
+    """
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    from decimal import Decimal
+
+    if isinstance(v, Decimal):
+        f = float(v)
+        return int(f) if f.is_integer() else f
+    if isinstance(v, (bytes, bytearray)):
+        return bytes(v).decode("utf-8", "replace")
+    return str(v)
+
+
+def _fetch_all(cur) -> List[Dict[str, Any]]:
+    cols = [d[0] for d in cur.description] if cur.description is not None else []
+    return [{c: _scalar(x) for c, x in zip(cols, r)} for r in cur.fetchall()]
+
+
+def _conn_all(conn: Any, sql: str, params: Sequence[Any], xform, emulate_returning: bool) -> List[Dict[str, Any]]:
+    """Run a SELECT/RETURNING statement on ``conn`` (with MySQL RETURNING emulation when configured).
+
+    MySQL has no RETURNING: strip it, run the INSERT, re-select the inserted rows by the REAL primary
+    key. The strip-before-execute PK hint (tx.ts mysqlPkHint) carries the PK columns + the
+    AUTO_INCREMENT column so the re-select keys off the actual PK — an AUTO_INCREMENT range for an int
+    identity, or the client-supplied PK values (UUID / composite) pulled from the bound INSERT params —
+    NOT a hardcoded ``WHERE id = ?`` (which breaks for UUID / composite PKs).
+    """
+    if emulate_returning:
+        m = _RETURNING_RE.search(sql)
+        if m is not None:
+            returning_cols = _PK_HINT_RE.sub("", m.group(1)).strip()
+            pk_cols, auto_inc = _parse_pk_hint(m.group(1))
+            write_sql = _PK_HINT_RE.sub("", sql[: m.start()])
+            table_m = _INSERT_TABLE_RE.match(write_sql)
+            if table_m is None:
+                # A non-INSERT RETURNING (UPDATE/DELETE … RETURNING): MySQL has no native RETURNING and
+                # the pre-image is gone, so v1 (`mysql.ts`) strips RETURNING, runs the write, and
+                # returns NO rows. Byte-faithful: execute the stripped write, [].
+                cur = conn.cursor()
+                cur.execute(xform(write_sql), tuple(params))
+                cur.close()
+                return []
+            # INSERT … RETURNING: run the INSERT, re-select the inserted rows by the REAL PK.
+            table = table_m.group(1)
+            cur = conn.cursor()
+            cur.execute(xform(write_sql), tuple(params))
+            last_id = cur.lastrowid
+            affected = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 1
+            cur.close()
+            where_sql, where_params = _returning_reselect_where(write_sql, pk_cols, auto_inc, list(params), last_id, affected)
+            sel = conn.cursor()
+            sel.execute(xform(f"SELECT {returning_cols} FROM {table} WHERE {where_sql}"), tuple(where_params))
+            rows = _fetch_all(sel)
+            sel.close()
+            return rows
+    cur = conn.cursor()
+    cur.execute(xform(sql), tuple(params))
+    rows = _fetch_all(cur)
+    cur.close()
+    return rows
+
+
+def _conn_run(conn: Any, sql: str, params: Sequence[Any], xform) -> RunInfo:
+    """Run a non-returning write on ``conn`` and report the affected summary."""
+    cur = conn.cursor()
+    cur.execute(xform(sql), tuple(params))
+    changes = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
+    last = cur.lastrowid if getattr(cur, "lastrowid", None) is not None else 0
+    cur.close()
+    return RunInfo(changes, last)
+
+
+class _PooledPrepared:
+    """A prepared statement over a POOLED live DB-API driver (psycopg / PyMySQL) — the NON-TX path.
+
+    It checks out a connection from the pool, runs the statement, and returns the connection — so
+    concurrent siblings run on DISTINCT connections. The write-tx path no longer rides here: a tx runs
+    on its OWN connection via :class:`_PooledTxConnection` (per-execution ownership, §3), NOT through a
+    driver-global pinned writer.
     """
 
-    __slots__ = ("_driver", "_sql", "_params")
+    __slots__ = ("_driver", "_sql")
 
     def __init__(self, driver: "_PooledDriver", sql: str) -> None:
         self._driver = driver
         self._sql = sql
-        self._params: Sequence[Any] = ()
-
-    @staticmethod
-    def _scalar(v: Any) -> Any:
-        """Coerce a driver cell to a canonical bc scalar (int/float/bool/str/None).
-
-        psycopg maps a PG ``uuid`` column to a Python ``uuid.UUID`` and other rich types
-        (Decimal, date/datetime) to their own classes. The conformance row encoding — and the
-        cross-language reference — are JSON scalars, so a non-native cell is stringified to its
-        canonical text form, exactly as SQLite/MySQL return a uuid-as-text or the Rust PG driver
-        falls back to ``String``. Native scalars pass through unchanged (bool before int, since
-        ``bool`` is an ``int`` subclass).
-        """
-        if v is None or isinstance(v, (bool, int, float, str)):
-            return v
-        from decimal import Decimal
-
-        if isinstance(v, Decimal):
-            f = float(v)
-            return int(f) if f.is_integer() else f
-        if isinstance(v, (bytes, bytearray)):
-            return bytes(v).decode("utf-8", "replace")
-        return str(v)
-
-    @classmethod
-    def _fetch_all(cls, cur) -> List[Dict[str, Any]]:
-        cols = [d[0] for d in cur.description] if cur.description is not None else []
-        return [{c: cls._scalar(x) for c, x in zip(cols, r)} for r in cur.fetchall()]
-
-    def _run_all(self, conn: Any) -> List[Dict[str, Any]]:
-        xform = self._driver._xform
-        # MySQL has no RETURNING: strip it, run the INSERT, re-select the inserted rows by the REAL
-        # primary key. The strip-before-execute PK hint (tx.ts mysqlPkHint) carries the PK columns +
-        # the AUTO_INCREMENT column so the re-select keys off the actual PK — an AUTO_INCREMENT range
-        # for an int identity, or the client-supplied PK values (UUID / composite) pulled from the
-        # bound INSERT params — NOT a hardcoded `WHERE id = ?` (which breaks for UUID / composite PKs).
-        if self._driver._emulate_returning:
-            m = _RETURNING_RE.search(self._sql)
-            if m is not None:
-                returning_cols = _PK_HINT_RE.sub("", m.group(1)).strip()
-                pk_cols, auto_inc = _parse_pk_hint(m.group(1))
-                write_sql = _PK_HINT_RE.sub("", self._sql[: m.start()])
-                table_m = _INSERT_TABLE_RE.match(write_sql)
-                if table_m is None:
-                    # A non-INSERT RETURNING (UPDATE/DELETE … RETURNING): MySQL has no native
-                    # RETURNING and the pre-image is gone, so v1 (`mysql.ts`) strips RETURNING, runs
-                    # the write, and returns NO rows. Byte-faithful: execute the stripped write, [].
-                    cur = conn.cursor()
-                    cur.execute(xform(write_sql), tuple(self._params))
-                    cur.close()
-                    return []
-                # INSERT … RETURNING: run the INSERT, re-select the inserted rows by the REAL PK.
-                table = table_m.group(1)
-                cur = conn.cursor()
-                cur.execute(xform(write_sql), tuple(self._params))
-                last_id = cur.lastrowid
-                affected = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 1
-                cur.close()
-                where_sql, where_params = _returning_reselect_where(
-                    write_sql, pk_cols, auto_inc, list(self._params), last_id, affected
-                )
-                sel = conn.cursor()
-                sel.execute(xform(f"SELECT {returning_cols} FROM {table} WHERE {where_sql}"), tuple(where_params))
-                rows = self._fetch_all(sel)
-                sel.close()
-                return rows
-        cur = conn.cursor()
-        cur.execute(xform(self._sql), tuple(self._params))
-        rows = self._fetch_all(cur)
-        cur.close()
-        return rows
 
     def all(self, params: Sequence[Any]) -> List[Dict[str, Any]]:
-        self._params = params
-        return self._driver._with_conn(self._run_all)
+        return self._driver._with_conn(
+            lambda conn: _conn_all(conn, self._sql, params, self._driver._xform, self._driver._emulate_returning)
+        )
 
     def run(self, params: Sequence[Any]) -> RunInfo:
-        # Transaction-control literals pin / release the single writer connection.
-        if _is_txn_control(self._sql):
-            self._driver._handle_txn_control(self._sql)
-            return RunInfo(0, 0)
+        return self._driver._with_conn(lambda conn: _conn_run(conn, self._sql, params, self._driver._xform))
 
-        def op(conn: Any) -> RunInfo:
-            cur = conn.cursor()
-            cur.execute(self._driver._xform(self._sql), tuple(params))
-            changes = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
-            last = cur.lastrowid if getattr(cur, "lastrowid", None) is not None else 0
+
+class _PooledTxConnection:
+    """The OWNED tx handle over a POOLED live DB-API connection (§3) — the Python analogue of v1
+    ``PoolTransaction``. It acquires ONE connection from the pool, issues BEGIN on it, and holds it
+    for the transaction's whole duration: every tx-body statement (``all`` / ``run``) runs on THIS
+    connection, and :meth:`commit` / :meth:`rollback` end the tx on it and return it to the pool
+    (destroyed if the ROLLBACK itself fails — a poisoned connection must not re-enter the pool).
+
+    Concurrent transactions each hold a DISTINCT ``_PooledTxConnection`` over a DISTINCT pooled
+    connection, so their writes never cross-talk — the isolation the removed driver-global ``_writer``
+    slot violated.
+    """
+
+    __slots__ = ("_pool", "_xform", "_emulate_returning", "_conn", "_done")
+
+    def __init__(self, pool: "_ConnectionPool", xform, emulate_returning: bool) -> None:
+        self._pool = pool
+        self._xform = xform
+        self._emulate_returning = emulate_returning
+        conn = pool.acquire()
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.close()
+        self._conn = conn
+        self._done = False
+
+    def all(self, sql: str, params: Sequence[Any]) -> List[Dict[str, Any]]:
+        return _conn_all(self._conn, sql, params, self._xform, self._emulate_returning)
+
+    def run(self, sql: str, params: Sequence[Any]) -> RunInfo:
+        return _conn_run(self._conn, sql, params, self._xform)
+
+    def commit(self) -> None:
+        cur = self._conn.cursor()
+        cur.execute("COMMIT")
+        cur.close()
+        self._release(destroy=False)
+
+    def rollback(self) -> None:
+        try:
+            cur = self._conn.cursor()
+            cur.execute("ROLLBACK")
             cur.close()
-            return RunInfo(changes, last)
+            self._release(destroy=False)
+        except Exception:
+            # A failed ROLLBACK poisons the connection — drop it, never return it to the pool.
+            self._release(destroy=True)
 
-        return self._driver._with_conn(op)
+    def _release(self, destroy: bool) -> None:
+        if self._done:
+            return
+        self._done = True
+        if destroy:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+        else:
+            self._pool.release(self._conn)
 
 
 class _PooledDriver:
-    """Shared pooled live-driver base (Postgres / MySQL) — the parallel-read + serial-write seam."""
+    """Shared pooled live-driver base (Postgres / MySQL) — the parallel-read + per-execution-owned-tx
+    seam (Phase A / #78). NO driver-global tx slot: a transaction owns its connection via
+    :class:`_PooledTxConnection` (acquired by :meth:`begin_tx`), so concurrent transactions are
+    isolated."""
 
-    __slots__ = ("_pool", "_xform", "_emulate_returning", "_writer")
+    __slots__ = ("_pool", "_xform", "_emulate_returning")
 
     def __init__(self, pool: _ConnectionPool, xform, emulate_returning: bool) -> None:
         self._pool = pool
         self._xform = xform
         self._emulate_returning = emulate_returning
-        self._writer: Any = None  # pinned connection for the active write-tx (single-threaded)
 
     def _with_conn(self, op):
-        """Run ``op(conn)`` on the pinned writer (in a tx) or a freshly checked-out pooled conn."""
-        if self._writer is not None:
-            return op(self._writer)
+        """Run ``op(conn)`` on a freshly checked-out pooled connection (the non-tx read/write path)."""
         conn = self._pool.acquire()
         try:
             return op(conn)
         finally:
             self._pool.release(conn)
-
-    def _handle_txn_control(self, sql: str) -> None:
-        upper = sql.strip().upper()
-        if upper in ("BEGIN", "START TRANSACTION"):
-            conn = self._pool.acquire()
-            cur = conn.cursor()
-            cur.execute("BEGIN")
-            cur.close()
-            self._writer = conn
-        else:  # COMMIT / ROLLBACK: run on the pinned writer, then return it to the pool.
-            conn = self._writer
-            self._writer = None
-            if conn is not None:
-                cur = conn.cursor()
-                cur.execute(upper)
-                cur.close()
-                self._pool.release(conn)
 
     def exec_ddl(self, statements: Sequence[str]) -> None:
         conn = self._pool.acquire()
@@ -408,13 +506,13 @@ class _PooledDriver:
     def prepare(self, sql: str) -> _PooledPrepared:
         return _PooledPrepared(self, sql)
 
+    def begin_tx(self) -> _PooledTxConnection:
+        """Acquire an OWNED :class:`_PooledTxConnection` for a transaction (§3): ONE pooled connection,
+        BEGIN issued on it, held for the tx's whole duration. Concurrent ``begin_tx`` calls (distinct
+        threads) acquire DISTINCT connections ⇒ isolated — the concurrent-tx fix."""
+        return _PooledTxConnection(self._pool, self._xform, self._emulate_returning)
+
     def close(self) -> None:
-        if self._writer is not None:
-            try:
-                self._writer.close()
-            except Exception:
-                pass
-            self._writer = None
         self._pool.close()
 
 
