@@ -288,8 +288,7 @@ impl SessionConnection for PgSession<'_> {
             owned.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
         let conn = self.conn.as_ref().expect("pg session conn present");
         self.rt.block_on(async move {
-            let rows = conn
-                .query(sql, refs.as_slice())
+            let rows = pg_query_cached(conn, sql, refs.as_slice())
                 .await
                 .map_err(|e| pg_err(&format!("postgres session query [{sql}]"), &e))?;
             pg_rows_to_values(&rows)
@@ -301,7 +300,7 @@ impl SessionConnection for PgSession<'_> {
             owned.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
         let conn = self.conn.as_ref().expect("pg session conn present");
         let changes = self.rt.block_on(async move {
-            conn.execute(sql, refs.as_slice())
+            pg_execute_cached(conn, sql, refs.as_slice())
                 .await
                 .map_err(|e| pg_err(&format!("postgres session execute [{sql}]"), &e))
         })?;
@@ -355,8 +354,7 @@ impl TxConnection for PgTx<'_> {
             owned.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
         let conn = &self.conn;
         self.rt.block_on(async move {
-            let rows = conn
-                .query(sql, refs.as_slice())
+            let rows = pg_query_cached(conn, sql, refs.as_slice())
                 .await
                 .map_err(|e| pg_err(&format!("postgres tx query [{sql}]"), &e))?;
             pg_rows_to_values(&rows)
@@ -369,7 +367,7 @@ impl TxConnection for PgTx<'_> {
             owned.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
         let conn = &self.conn;
         let changes = self.rt.block_on(async move {
-            conn.execute(sql, refs.as_slice())
+            pg_execute_cached(conn, sql, refs.as_slice())
                 .await
                 .map_err(|e| pg_err(&format!("postgres tx execute [{sql}]"), &e))
         })?;
@@ -646,6 +644,52 @@ fn pg_rows_to_values(rows: &[tokio_postgres::Row]) -> Result<Vec<Value>, SqlFail
     Ok(out)
 }
 
+// ── Prepared-statement caching (perf, mirrors the Go stmt-cache fix) ─────────────
+//
+// tokio-postgres PREPAREs a fresh unnamed server-side statement on EVERY `client.query(&str, …)` /
+// `client.execute(&str, …)` call (an extra Parse round-trip per op, the dominant cost the crosslang
+// bench flagged — Rust pg/mysql ~2× the other langs). A pre-`prepare()`d [`tokio_postgres::Statement`]
+// reused across calls skips the re-Parse. deadpool-postgres already ships the exact per-connection
+// cache we need: [`deadpool_postgres::Client::prepare_cached`] keeps a `StatementCache` keyed by SQL
+// (+ inferred param types) that LIVES ON THE POOLED CONNECTION — so it survives checkout/release and is
+// automatically per-connection (a `Statement` is bound to the backend it was Parsed on; deadpool's
+// cache is attached to each `Object` and returns to the pool with it).
+//
+// Correctness: the SAME SQL text is Parsed and the SAME params are Bound — the rows returned are
+// BYTE-IDENTICAL to the un-prepared path (conformance/livedb unchanged). No RETURNING carve-out is
+// needed for Postgres: PG has NATIVE RETURNING, so a RETURNING insert/update runs its exact SQL through
+// the prepared path just like a plain SELECT (unlike MySQL, whose RETURNING is emulated at a layer a
+// prepared statement would bypass — see the MySQL section). Tx-control (BEGIN/COMMIT/ROLLBACK) and the
+// session SET/RESET statements go through `batch_execute` (simple query protocol), NOT this cached
+// query/execute path, so they are untouched — matching the Go fix's tx-control exclusion.
+//
+// Scoping: works uniformly for the non-tx pooled read/write path (a per-call-checked-out `Object`, its
+// cache persisting in the pool), the tx-owned connection ([`PgTx`], one `Object` for the tx span), and
+// a session-configured connection ([`PgSession`]). Concurrent transactions each own a DISTINCT `Object`
+// ⇒ a DISTINCT statement cache ⇒ the Phase A-F concurrent-tx isolation is untouched.
+
+/// Run a cached-prepared `query` (SELECT / native RETURNING) on a deadpool PG connection: prepare the
+/// SQL ONCE (cached on the connection), then execute the reused [`tokio_postgres::Statement`].
+async fn pg_query_cached(
+    conn: &deadpool_postgres::Object,
+    sql: &str,
+    refs: &[&(dyn ToSql + Sync)],
+) -> Result<Vec<tokio_postgres::Row>, tokio_postgres::Error> {
+    let stmt = conn.prepare_cached(sql).await?;
+    conn.query(&stmt, refs).await
+}
+
+/// Run a cached-prepared `execute` (non-RETURNING write) on a deadpool PG connection: prepare ONCE
+/// (cached on the connection), then execute the reused [`tokio_postgres::Statement`].
+async fn pg_execute_cached(
+    conn: &deadpool_postgres::Object,
+    sql: &str,
+    refs: &[&(dyn ToSql + Sync)],
+) -> Result<u64, tokio_postgres::Error> {
+    let stmt = conn.prepare_cached(sql).await?;
+    conn.execute(&stmt, refs).await
+}
+
 impl PreparedStatement for PgPrepared<'_> {
     fn all(&mut self, params: &[Value]) -> Result<Vec<Value>, SqlFailure> {
         // Pooled read: check out a connection per call (parallel-safe). In-tx statements NEVER reach
@@ -662,8 +706,7 @@ impl PreparedStatement for PgPrepared<'_> {
                 .get()
                 .await
                 .map_err(|e| driver_failure(format!("postgres pool get: {e}")))?;
-            let rows = client
-                .query(sql.as_str(), refs.as_slice())
+            let rows = pg_query_cached(&client, sql.as_str(), refs.as_slice())
                 .await
                 .map_err(|e| driver_failure(format!("postgres query [{sql}]: {e}")))?;
             pg_rows_to_values(&rows)
@@ -685,8 +728,7 @@ impl PreparedStatement for PgPrepared<'_> {
                 .get()
                 .await
                 .map_err(|e| driver_failure(format!("postgres pool get: {e}")))?;
-            let changes = client
-                .execute(sql.as_str(), refs.as_slice())
+            let changes = pg_execute_cached(&client, sql.as_str(), refs.as_slice())
                 .await
                 .map_err(|e| driver_failure(format!("postgres execute [{sql}]: {e}")))?;
             Ok(RunInfo {
@@ -698,10 +740,29 @@ impl PreparedStatement for PgPrepared<'_> {
 }
 
 // ── MySQL (sqlx MySqlPool) ─────────────────────────────────────────────────────
+//
+// Prepared-statement caching (the perf fix the Go leg needed) is ALREADY built into this path: sqlx
+// prepares each unique SQL ONCE per connection and reuses the handle. `sqlx::query(sql)` defaults to
+// `persistent = true`, and `MySqlConnectOptions::statement_cache_capacity` defaults to 100 (cache ON),
+// so sqlx's MySQL executor takes the `get_or_prepare_statement` branch — it sends only a
+// `StatementExecute` for a repeat, NOT `Parse`+`Execute`+`StmtClose` (the un-cached branch). The cache
+// lives on the pooled `MySqlConnection` and SURVIVES `pool.acquire()`/release (sqlx does not clear it
+// on return-to-pool), so both the per-call-acquired read/write path and the tx-owned connection reuse
+// prepared statements automatically. This was CONFIRMED by measurement: applying the Postgres
+// prepared-statement fix (`prepare_cached`, ~2.1× on pg writes+reads) left the MySQL p50 UNCHANGED
+// (create 1.184 → 1.202ms, median-of-medians 1.268 → 1.258ms), i.e. MySQL was never paying a redundant
+// per-call Parse. So NO hand-rolled statement cache is added here — it would be redundant with sqlx's
+// and, worse, a naïve one would collide with the RETURNING emulation below (a prepared statement path
+// bypasses the conn-level RETURNING interception — the same carve-out the Go fix documented). MySQL's
+// residual sync-facade cost (per-call `pool.acquire()` + on-release `ping()` + the 2-round-trip
+// strip→INSERT→re-select RETURNING emulation) is INHERENT to the design (#76), not a caching bug.
 
 /// A live MySQL driver: a `sqlx` `MySqlPool` on a shared tokio runtime (the old `.rs`
 /// `Pool::Mysql(MySqlPool)`). `?` is native; emulates the missing `INSERT … RETURNING`. A write-tx
 /// OWNS one pooled connection via [`Driver::begin_tx`] (§3 — no driver-global writer slot).
+///
+/// sqlx already caches prepared statements per connection (see the module note above) — no additional
+/// statement cache is layered here.
 pub struct MysqlDriver {
     rt: Runtime,
     pool: MySqlPool,
