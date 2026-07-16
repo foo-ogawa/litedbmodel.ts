@@ -116,8 +116,21 @@ export interface OrmDriver {
   close(): Promise<void>;
 }
 
+// ── RAW-driver BASELINE seam (task: measure litedbmodel's over-driver overhead) ──
+// The baseline runs the IDENTICAL final SQL + params the runtime issues (produced by the SAME
+// shared assembly below: subst / bindRelation / tx orchestration → byte-identical SQL, verified
+// against orm-plan.json in selfcheck.ts), but binds them through the BARE database driver — no
+// litedbmodel de-box map, no runtime wrapper. `runtime÷baseline` = litedbmodel's over-driver cost
+// (≈1.0× by design for the thin ops; the collector flags any op×dialect > 1.3× as a candidate bug).
+//
+// It is implemented as a MODE flag on the same drivers so BOTH paths derive their statements from
+// the exact same `bindRelation`/`subst`/id-chaining code — the ONLY difference is the low-level
+// per-statement seam (`all`/`runStmt`): `runtime` applies litedbmodel's param de-box (`.map(sq/toPlain)`),
+// `raw` binds the driver's native accepted values directly.
+export type ExecImpl = 'runtime' | 'raw';
+
 // ── SQLite (better-sqlite3, sync) ─────────────────────────────────────────────
-export function sqliteDriver(): OrmDriver {
+export function sqliteDriver(impl: ExecImpl = 'runtime'): OrmDriver {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   for (const s of dropStatements('sqlite')) db.exec(s);
@@ -125,12 +138,17 @@ export function sqliteDriver(): OrmDriver {
   for (const s of seedStatements('sqlite')) db.prepare(s.sql).run(...s.params);
 
   // better-sqlite3 binds only number/string/bigint/buffer/null — coerce booleans to 1/0.
+  // `raw` baseline: better-sqlite3 STILL cannot bind a JS boolean (it throws), so the bool→1/0
+  // coercion is a DRIVER requirement, not litedbmodel overhead — the raw seam keeps ONLY that
+  // minimal driver-mandated coercion and drops the litedbmodel `toPlain` bigint de-box map.
   const sq = (v: unknown): unknown => (typeof v === 'boolean' ? (v ? 1 : 0) : toPlain(v));
+  const sqRaw = (v: unknown): unknown => (typeof v === 'boolean' ? (v ? 1 : 0) : v);
+  const coerce = impl === 'raw' ? sqRaw : sq;
   function all(sql: string, params: unknown[]): Row[] {
-    return db.prepare(sql).all(...params.map(sq)) as Row[];
+    return db.prepare(sql).all(...params.map(coerce)) as Row[];
   }
   function runStmt(sql: string, params: unknown[]): { lastId: number } {
-    const info = db.prepare(sql).run(...params.map(sq));
+    const info = db.prepare(sql).run(...params.map(coerce));
     return { lastId: Number(info.lastInsertRowid) };
   }
 
@@ -185,7 +203,7 @@ export function sqliteDriver(): OrmDriver {
 }
 
 // ── Postgres (pg Pool, async) ─────────────────────────────────────────────────
-export async function pgDriver(schemaName: string, conn: Record<string, unknown>, bootConn: Record<string, unknown>): Promise<OrmDriver> {
+export async function pgDriver(schemaName: string, conn: Record<string, unknown>, bootConn: Record<string, unknown>, impl: ExecImpl = 'runtime'): Promise<OrmDriver> {
   const boot = new Pool({ ...bootConn, max: 1 });
   await boot.query(`CREATE SCHEMA IF NOT EXISTS ${schemaName}`);
   await boot.end();
@@ -197,8 +215,10 @@ export async function pgDriver(schemaName: string, conn: Record<string, unknown>
   for (const s of pgSeqResetStatements()) await pool.query(s);
 
   async function all(sql: string, params: unknown[], arrayParams = false): Promise<Row[]> {
-    // pg binds a JS array as one array param natively.
-    const res = await pool.query(sql, params.map(toPlain));
+    // pg binds a JS array as one array param natively. `raw` baseline: `pg` accepts bigint/number/
+    // string/array directly, so the litedbmodel `toPlain` bigint de-box map is pure overhead — the
+    // raw seam drops it and binds the params as-is (byte-identical SQL, no litedbmodel coercion).
+    const res = await pool.query(sql, impl === 'raw' ? params : params.map(toPlain));
     void arrayParams;
     return res.rows as Row[];
   }
@@ -232,7 +252,7 @@ export async function pgDriver(schemaName: string, conn: Record<string, unknown>
       for (const st of plan.statements) {
         let params = subst(st.params, seq);
         if (st.role === 'useReturn' && st.useReturnAt !== undefined) params = params.map((p, i) => (i === st.useReturnAt ? returnedId : p));
-        const res = await client.query(st.sql, params.map(toPlain));
+        const res = await client.query(st.sql, impl === 'raw' ? params : params.map(toPlain));
         if (st.role === 'insertReturn' && res.rows.length > 0) returnedId = Number((res.rows[0] as Row).id);
         n += 1;
       }
@@ -258,7 +278,7 @@ export async function pgDriver(schemaName: string, conn: Record<string, unknown>
 }
 
 // ── MySQL (mysql2/promise pool, async) ────────────────────────────────────────
-export async function mysqlDriver(dbName: string, conn: Record<string, unknown>, bootConn: Record<string, unknown>): Promise<OrmDriver> {
+export async function mysqlDriver(dbName: string, conn: Record<string, unknown>, bootConn: Record<string, unknown>, impl: ExecImpl = 'runtime'): Promise<OrmDriver> {
   const boot = mysql.createPool({ ...bootConn, connectionLimit: 1 });
   await boot.query(`CREATE DATABASE IF NOT EXISTS ${dbName}`);
   await boot.end();
@@ -269,7 +289,9 @@ export async function mysqlDriver(dbName: string, conn: Record<string, unknown>,
   for (const s of seedStatements('mysql')) await pool.query(s.sql, s.params as unknown[]);
 
   async function all(sql: string, params: unknown[]): Promise<Row[]> {
-    const [rows] = await pool.query(sql, params.map(toPlain));
+    // `raw` baseline: mysql2 binds bigint/number/string directly, so the litedbmodel `toPlain`
+    // de-box map is pure overhead — the raw seam drops it (byte-identical SQL, no coercion layer).
+    const [rows] = await pool.query(sql, impl === 'raw' ? params : params.map(toPlain));
     return Array.isArray(rows) ? (rows as Row[]) : [];
   }
 
@@ -300,7 +322,7 @@ export async function mysqlDriver(dbName: string, conn: Record<string, unknown>,
         // MySQL has no native RETURNING: strip it on ANY statement (insertReturn AND a
         // plain upsert that carries `RETURNING id`); capture LAST_INSERT_ID for chaining.
         const { sql } = stripReturning(st.sql);
-        const [res]: [mysql.ResultSetHeader, unknown] = (await c.query(sql, params.map(toPlain))) as never;
+        const [res]: [mysql.ResultSetHeader, unknown] = (await c.query(sql, impl === 'raw' ? params : params.map(toPlain))) as never;
         if (st.role === 'insertReturn') returnedId = Number(res.insertId);
         n += 1;
       }

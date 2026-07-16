@@ -14,6 +14,10 @@
 import { relativeOverhead, type MatrixResult, type CellResult, type DialectResult } from './metrics.js';
 import { CROSSLANG_CASE_LABELS, CROSSLANG_CASE_IDS, CROSSLANG_WRITE_CASES } from './contract.js';
 
+// The owner's bug threshold: litedbmodel-runtime ÷ raw-driver > 1.3× on the identical SQL is likely a
+// runtime-overhead bug (the thin runtime should sit at the raw-driver floor). The §② table flags it.
+const OVERHEAD_FLAG_THRESHOLD = 1.3;
+
 const LANG_LABEL: Record<string, string> = { ts: 'TypeScript', python: 'Python', php: 'PHP', rust: 'Rust', go: 'Go' };
 const DIALECT_LABEL: Record<string, string> = { sqlite: 'SQLite', postgres: 'PostgreSQL', mysql: 'MySQL' };
 const LANG_ORDER = ['ts', 'python', 'php', 'rust', 'go'];
@@ -157,16 +161,34 @@ function overheadTable(m: MatrixResult): string {
   }
   const head = `| Op | ${langs.map((l) => `${LANG_LABEL[l] ?? l} ÷sql`).join(' | ')} |`;
   const sep = `|---|${langs.map(() => '---').join('|')}|`;
+  const flags: string[] = []; // op×dialect×lang whose runtime÷baseline > 1.3× (candidate bugs).
   const rows = CROSSLANG_CASE_IDS.map((caseId) => {
     const cells = langs.map((l) => {
       const rt = dcell(runtimeCell(m, l), 'sqlite')?.cases[caseId];
       const bl = dcell(baselineCell(m, l), 'sqlite')?.cases[caseId];
       if (!rt || rt.skipped || !bl || bl.skipped) return '—';
-      return fmtRatio(relativeOverhead(rt.latency.p50Ms, bl.latency.p50Ms));
+      const ratio = relativeOverhead(rt.latency.p50Ms, bl.latency.p50Ms);
+      const s = fmtRatio(ratio);
+      if (!Number.isNaN(ratio) && ratio > OVERHEAD_FLAG_THRESHOLD) {
+        flags.push(`${LANG_LABEL[l] ?? l} · ${CROSSLANG_CASE_LABELS[caseId] ?? caseId}: ${s}`);
+        return `⚠️ ${s}`; // over the owner's 1.3× bug threshold — a candidate to investigate.
+      }
+      return s;
     });
     return `| ${CROSSLANG_CASE_LABELS[caseId] ?? caseId} | ${cells.join(' | ')} |`;
   });
-  return ['## ② Within-language ÷sql overhead (SQLite)', '', '> Each op’s runtime-path p50 ÷ the hand-written raw-SQL baseline p50 (SQLite in-proc). 1.00× = the', '> thin runtime matches hand SQL; >1 = that multiple of client-side overhead.', '', head, sep, ...rows, ''].join('\n');
+  const flagNote = flags.length
+    ? ['', `> **⚠️ ${flags.length} cell(s) exceed the ${OVERHEAD_FLAG_THRESHOLD}× bug threshold** — likely a runtime overhead bug, investigate:`, ...flags.map((f) => `> - ${f}`)]
+    : ['', `> ✅ Every cell ≤ ${OVERHEAD_FLAG_THRESHOLD}× — the thin runtime sits at the raw-driver floor (MEASURED, not asserted).`];
+  return [
+    '## ② Within-language ÷sql overhead (SQLite) — MEASURED',
+    '',
+    '> Each op’s runtime-path p50 ÷ the raw-driver baseline p50 (SQLite in-proc): the SAME final SQL +',
+    `> params the runtime issues (from the shared orm-plan.json), replayed through the BARE driver with no`,
+    `> litedbmodel de-box/assembly. 1.00× = the thin runtime matches the raw driver; **> ${OVERHEAD_FLAG_THRESHOLD}× (⚠️) = a`,
+    '> likely runtime-overhead bug** (the owner’s threshold) — a candidate for the orchestrator to investigate.',
+    '', head, sep, ...rows, ...flagNote, '',
+  ].join('\n');
 }
 
 // ── Fairness — queries/op · rows/op ───────────────────────────────────────────
@@ -189,7 +211,9 @@ function fairnessTable(m: MatrixResult, dialect: string): string {
 function resourceTable(m: MatrixResult): string {
   const head = '| Cell | Cold start (ms) | RSS (MB) | Artifact size (MB) |';
   const sep = '|---|---|---|---|';
-  const rows = m.cells.map((c) => {
+  // Only the runtime cells carry process-level resource metrics; the raw-driver baseline cell is a
+  // latency-only measurement (its resource numbers would all be `—`), so it is not a row here.
+  const rows = m.cells.filter((c) => c.impl !== 'baseline').map((c) => {
     if (c.error) return `| ${LANG_LABEL[c.language] ?? c.language} / ${c.impl} | FAILED: ${c.error} | — | — |`;
     const cold = c.coldStartMs === undefined ? '—' : c.coldStartMs.toFixed(0);
     const rss = c.rssBytes === undefined ? '—' : (c.rssBytes / 1024 / 1024).toFixed(1);

@@ -21,6 +21,22 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::time::Instant;
 
+// ── RAW-driver BASELINE seam (measure litedbmodel_runtime's over-driver overhead) ──────────────────
+// The baseline runs the IDENTICAL final SQL + params the runtime issues (produced by the SAME shared
+// `read_plan`/`write_plan` assembly below — `bind_relation`/`decode_params`/`strip_returning`/
+// id-chaining → BYTE-IDENTICAL SQL text and params), but binds them through a BARE
+// `rusqlite::Connection` (`prepare()` + `query`/`execute`) — NO shipped `Driver`, NO
+// `litedbmodel_runtime` `Value` codec on the hot path. `runtime÷baseline` = litedbmodel's
+// over-driver cost; the collector splits `baseline_latency_ms` into the `impl: baseline` §② cell.
+//
+// It is implemented as a `Seam` trait over `all(sql, params)` / `run(sql, params)` so BOTH the
+// `runtime` (the shipped `&dyn Driver`) and `raw` (bare `rusqlite::Connection`) paths derive their
+// statements from the exact same executor code — the ONLY difference is the low-level per-statement
+// seam. sqlite is the primary/mandatory dialect (the §② table is sqlite-only). pg/mysql have no raw
+// baseline (see `bench()`): the runtime uses async tokio-postgres/sqlx behind a sync facade, and a
+// separate raw async pg/mysql baseline is disproportionate for a table that consumes only sqlite.
+use rusqlite::types::{Value as SqlValue, ValueRef};
+
 const PG_SCHEMA_NAME: &str = "scp_rust_bench";
 const MYSQL_DB_NAME: &str = "scp_rust_bench";
 
@@ -188,12 +204,107 @@ fn value_to_node(v: &Value) -> J {
     }
 }
 
-// ── executor over the generic Driver seam ──────────────────────────────────────
-fn all_rows(d: &dyn Driver, sql: &str, params: &[Value]) -> Vec<Value> {
-    d.prepare(sql).all(params).expect("query")
+// ── per-statement SEAM (runtime `Driver` vs raw `rusqlite`) ─────────────────────
+// The executor below (`read_plan`/`write_plan`) is written ONCE against this low-level seam, so the
+// SQL text + params it assembles are byte-identical for both impls. `runtime` forwards to the shipped
+// `Driver` (`prepare(sql).all/.run`); `raw` binds the SAME SQL/params through a bare rusqlite conn.
+trait Seam {
+    fn all(&self, sql: &str, params: &[Value]) -> Vec<Value>;
+    fn run(&self, sql: &str, params: &[Value]) -> i64; // returns last_insert_rowid
 }
 
-fn read_plan(d: &dyn Driver, plan: &J) -> usize {
+/// The RUNTIME seam: the shipped `litedbmodel_runtime` `Driver` (unchanged from the pre-baseline path).
+struct RuntimeSeam<'a> {
+    d: &'a dyn Driver,
+}
+impl Seam for RuntimeSeam<'_> {
+    fn all(&self, sql: &str, params: &[Value]) -> Vec<Value> {
+        self.d.prepare(sql).all(params).expect("query")
+    }
+    fn run(&self, sql: &str, params: &[Value]) -> i64 {
+        self.d
+            .prepare(sql)
+            .run(params)
+            .expect("run")
+            .last_insert_rowid
+    }
+}
+
+/// The RAW baseline seam: a BARE `rusqlite::Connection`. It binds the bc `Value` params through the
+/// SAME scalar→SqlValue mapping the runtime's `SqliteDriver` uses (Null / Bool→Int / Int / Float /
+/// Str), then `prepare()` + `query`/`execute` DIRECTLY — no shipped `Driver`, no runtime codec.
+struct RawSqliteSeam {
+    conn: rusqlite::Connection,
+}
+impl RawSqliteSeam {
+    fn bind(params: &[Value]) -> Vec<SqlValue> {
+        // Mirror litedbmodel_runtime::driver::to_sql_value: only scalars reach the binder.
+        params
+            .iter()
+            .map(|v| match v {
+                Value::Null => SqlValue::Null,
+                Value::Bool(b) => SqlValue::Integer(if *b { 1 } else { 0 }),
+                Value::Int(i) => SqlValue::Integer(*i),
+                Value::Float(f) => SqlValue::Real(*f),
+                Value::Str(s) => SqlValue::Text(s.clone()),
+                other => panic!(
+                    "raw baseline: a {} reached the param binder (expected a scalar)",
+                    match other {
+                        Value::Arr(_) => "array",
+                        Value::Obj(_) => "object",
+                        _ => "value",
+                    }
+                ),
+            })
+            .collect()
+    }
+}
+impl Seam for RawSqliteSeam {
+    fn all(&self, sql: &str, params: &[Value]) -> Vec<Value> {
+        let bound = Self::bind(params);
+        let mut stmt = self.conn.prepare(sql).expect("raw prepare");
+        let col_names: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let refs: Vec<&dyn rusqlite::ToSql> =
+            bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let mut rows = stmt.query(refs.as_slice()).expect("raw query");
+        let mut out: Vec<Value> = Vec::new();
+        while let Some(row) = rows.next().expect("raw row") {
+            let mut obj: Vec<(String, Value)> = Vec::with_capacity(col_names.len());
+            for (i, name) in col_names.iter().enumerate() {
+                let cell = row.get_ref(i).expect("raw cell");
+                obj.push((name.clone(), from_sql_ref(cell)));
+            }
+            out.push(Value::Obj(obj));
+        }
+        out
+    }
+    fn run(&self, sql: &str, params: &[Value]) -> i64 {
+        let bound = Self::bind(params);
+        let refs: Vec<&dyn rusqlite::ToSql> =
+            bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let mut stmt = self.conn.prepare(sql).expect("raw prepare");
+        stmt.execute(refs.as_slice()).expect("raw execute");
+        self.conn.last_insert_rowid()
+    }
+}
+
+/// Convert a fetched SQLite cell to a bc `Value` (mirror `from_sql_ref` in the runtime driver).
+fn from_sql_ref(r: ValueRef<'_>) -> Value {
+    match r {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => Value::Int(i),
+        ValueRef::Real(f) => Value::Float(f),
+        ValueRef::Text(bytes) => Value::Str(String::from_utf8_lossy(bytes).into_owned()),
+        ValueRef::Blob(bytes) => Value::Str(String::from_utf8_lossy(bytes).into_owned()),
+    }
+}
+
+// ── executor over the generic per-statement seam ────────────────────────────────
+fn all_rows(d: &dyn Seam, sql: &str, params: &[Value]) -> Vec<Value> {
+    d.all(sql, params)
+}
+
+fn read_plan(d: &dyn Seam, plan: &J) -> usize {
     let reads = plan.get("reads").and_then(|r| r.as_array()).unwrap();
     let first_sql = reads[0].get("sql").and_then(|s| s.as_str()).unwrap();
     let first_params = decode_params(reads[0].get("params").unwrap_or(&J::NULL), 0);
@@ -212,9 +323,9 @@ fn read_plan(d: &dyn Driver, plan: &J) -> usize {
     total
 }
 
-fn write_plan(d: &dyn Driver, dialect: &str, plan: &J) -> usize {
+fn write_plan(d: &dyn Seam, dialect: &str, plan: &J) -> usize {
     let seq = next_seq();
-    d.prepare("BEGIN").run(&[]).expect("begin");
+    d.run("BEGIN", &[]);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut returned_id: i64 = 0;
         let mut n = 0usize;
@@ -240,23 +351,17 @@ fn write_plan(d: &dyn Driver, dialect: &str, plan: &J) -> usize {
                         .unwrap_or(0);
                 } else {
                     // sqlite / mysql: strip RETURNING, run, use last_insert_rowid.
-                    let info = d
-                        .prepare(&strip_returning(sql))
-                        .run(&params)
-                        .expect("insert");
-                    returned_id = info.last_insert_rowid;
+                    returned_id = d.run(&strip_returning(sql), &params);
                 }
             } else if dialect == "mysql" && has_returning(sql) {
                 // MySQL has no native RETURNING: strip it (a plain upsert RETURNING id).
-                d.prepare(&strip_returning(sql))
-                    .run(&params)
-                    .expect("write");
+                d.run(&strip_returning(sql), &params);
             } else if has_returning(sql) {
                 // pg native RETURNING / sqlite RETURNING: a row-returning statement must go via all()
                 // (rusqlite's execute() rejects a statement that returns rows).
                 all_rows(d, sql, &params);
             } else {
-                d.prepare(sql).run(&params).expect("write");
+                d.run(sql, &params);
             }
             n += 1;
         }
@@ -264,17 +369,18 @@ fn write_plan(d: &dyn Driver, dialect: &str, plan: &J) -> usize {
     }));
     match result {
         Ok(n) => {
-            d.prepare("COMMIT").run(&[]).expect("commit");
+            d.run("COMMIT", &[]);
             n
         }
         Err(e) => {
-            let _ = d.prepare("ROLLBACK").run(&[]);
+            let _ =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.run("ROLLBACK", &[])));
             std::panic::resume_unwind(e);
         }
     }
 }
 
-fn run_plan(d: &dyn Driver, dialect: &str, plan: &J) -> usize {
+fn run_plan(d: &dyn Seam, dialect: &str, plan: &J) -> usize {
     match plan.get("kind").and_then(|k| k.as_str()).unwrap() {
         "read" => read_plan(d, plan),
         _ => write_plan(d, dialect, plan),
@@ -378,7 +484,7 @@ fn adapt_ddl_for_rust_decoder(ddl: &[String], dialect: &str) -> Vec<String> {
         .collect()
 }
 
-fn seed_pooled(d: &dyn Driver, schema: &J, dialect: &str) {
+fn seed_pooled(d: &dyn Seam, schema: &J, dialect: &str) {
     for s in schema.get("seed").and_then(|s| s.as_array()).unwrap() {
         let sql_raw = s.get("sql").and_then(|s| s.as_str()).unwrap();
         let sql = if dialect == "postgres" {
@@ -387,8 +493,25 @@ fn seed_pooled(d: &dyn Driver, schema: &J, dialect: &str) {
             sql_raw.to_string()
         };
         let params = decode_params(s.get("params").unwrap_or(&J::NULL), 0);
-        d.prepare(&sql).run(&params).expect("seed");
+        d.run(&sql, &params);
     }
+}
+
+/// Build the RAW-baseline sqlite seam: a BARE `rusqlite::Connection` carrying the IDENTICAL schema +
+/// seed the runtime's `SqliteDriver` gets (same DDL via `execute_batch`, `PRAGMA foreign_keys = ON`,
+/// then the same seed statements through the raw seam). No shipped `Driver` — the baseline's per-op
+/// timed loop runs the IDENTICAL assembled SQL/params (byte-for-byte) through this bare connection.
+fn make_raw_sqlite(art: &Artifact) -> RawSqliteSeam {
+    let schema = art.schema("sqlite");
+    let conn = rusqlite::Connection::open_in_memory().expect("raw sqlite open");
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("raw pragma");
+    for stmt in str_list(schema, "ddl") {
+        conn.execute_batch(&stmt).expect("raw ddl");
+    }
+    let seam = RawSqliteSeam { conn };
+    seed_pooled(&seam, schema, "sqlite");
+    seam
 }
 
 enum LiveDriver {
@@ -412,7 +535,7 @@ fn make_driver(dialect: &str, art: &Artifact) -> LiveDriver {
         "sqlite" => {
             let ddl = str_list(schema, "ddl");
             let d = SqliteDriver::in_memory(&ddl).expect("sqlite schema");
-            seed_pooled(&d, schema, "sqlite");
+            seed_pooled(&RuntimeSeam { d: &d }, schema, "sqlite");
             LiveDriver::Sqlite(d)
         }
         "postgres" => {
@@ -437,7 +560,7 @@ fn make_driver(dialect: &str, art: &Artifact) -> LiveDriver {
                 "postgres",
             ))
             .expect("pg ddl");
-            seed_pooled(&d, schema, "postgres");
+            seed_pooled(&RuntimeSeam { d: &d }, schema, "postgres");
             d.exec_ddl(&str_list(schema, "seqReset"))
                 .expect("pg seqReset");
             LiveDriver::Pg(d)
@@ -463,7 +586,7 @@ fn make_driver(dialect: &str, art: &Artifact) -> LiveDriver {
                 "mysql",
             ))
             .expect("mysql ddl");
-            seed_pooled(&d, schema, "mysql");
+            seed_pooled(&RuntimeSeam { d: &d }, schema, "mysql");
             LiveDriver::My(d)
         }
         other => panic!("unknown dialect {other}"),
@@ -488,9 +611,9 @@ fn smoke() {
         let mut cells: Vec<String> = Vec::new();
         for (d, drv) in &drivers {
             let plan = art.plan(op_id, d);
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_plan(drv.as_driver(), d, plan)
-            }));
+            let seam = RuntimeSeam { d: drv.as_driver() };
+            let res =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_plan(&seam, d, plan)));
             match res {
                 Ok(n) => {
                     cells.push(n.to_string());
@@ -621,11 +744,24 @@ fn bench() {
                 continue;
             }
         };
-        let d = drv.as_driver();
+        let runtime = RuntimeSeam { d: drv.as_driver() };
+        // RAW-driver BASELINE (sqlite ONLY): a bare `rusqlite::Connection` carrying the IDENTICAL
+        // schema + seed, on which the SAME assembled SQL/params run through `prepare()`+`query`/
+        // `execute` (no shipped `Driver`). pg/mysql have no raw baseline — the §② table is sqlite-only
+        // and a raw async pg/mysql baseline is disproportionate (see the seam comment above). A raw
+        // build failure is NOT a whole-cell skip: the runtime numbers still stand; only the ÷sql ratio
+        // for sqlite drops.
+        let baseline: Option<RawSqliteSeam> = if dialect == "sqlite" {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| make_raw_sqlite(&art))).ok()
+        } else {
+            None
+        };
         for op in art.ops() {
             let case = op.get("id").and_then(|i| i.as_str()).unwrap();
             let plan = art.plan(case, dialect).clone();
+            let baseline_ref = baseline.as_ref();
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let d: &dyn Seam = &runtime;
                 // cost (fairness): queries/op from the plan shape; rows/op = executor's returned count.
                 let queries = if plan.get("kind").and_then(|k| k.as_str()) == Some("read") {
                     plan.get("reads")
@@ -641,7 +777,7 @@ fn bench() {
                         .map_or(0, |a| a.len())
                 };
                 let rows_count = run_plan(d, dialect, &plan);
-                // latency: warmup, then one row PER timed iteration.
+                // latency (RUNTIME): warmup, then one row PER timed iteration.
                 for _ in 0..warmup {
                     run_plan(d, dialect, &plan);
                 }
@@ -657,14 +793,35 @@ fn bench() {
                     run_plan(d, dialect, &plan);
                 }
                 let tp_elapsed = t0.elapsed().as_secs_f64() * 1000.0;
-                (queries, rows_count, samples, tp_elapsed)
+                // latency (BASELINE): the IDENTICAL SQL/params through the bare rusqlite conn, SAME
+                // warmup + timed iterations → runtime÷baseline = litedbmodel's over-driver overhead.
+                let baseline_samples: Vec<f64> = match baseline_ref {
+                    Some(raw) => {
+                        let b: &dyn Seam = raw;
+                        for _ in 0..warmup {
+                            run_plan(b, dialect, &plan);
+                        }
+                        let mut bs = Vec::with_capacity(iters);
+                        for _ in 0..iters {
+                            let t0 = Instant::now();
+                            run_plan(b, dialect, &plan);
+                            bs.push(t0.elapsed().as_secs_f64() * 1000.0);
+                        }
+                        bs
+                    }
+                    None => Vec::new(),
+                };
+                (queries, rows_count, samples, tp_elapsed, baseline_samples)
             }));
             match res {
-                Ok((queries, rows_count, samples, tp_elapsed)) => {
+                Ok((queries, rows_count, samples, tp_elapsed, baseline_samples)) => {
                     emit(case, dialect, "cost_queries", queries.to_string());
                     emit(case, dialect, "cost_rows", rows_count.to_string());
                     for s in samples {
                         emit(case, dialect, "latency_ms", s.to_string());
+                    }
+                    for s in baseline_samples {
+                        emit(case, dialect, "baseline_latency_ms", s.to_string());
                     }
                     emit(
                         case,

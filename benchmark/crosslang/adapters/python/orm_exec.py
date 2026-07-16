@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -32,6 +33,15 @@ ARTIFACT_PATH = HERE.parent.parent / "generated" / "orm-plan.json"
 # Isolated namespace (never the shared testdb fixture tables); mirrors the #44 adapter convention.
 PG_SCHEMA_NAME = "scp_python_bench"
 MYSQL_DB_NAME = "scp_python_bench"
+
+# ── RAW-driver BASELINE (task: MEASURE litedbmodel_runtime's over-driver overhead) ─────────────
+# The baseline runs the IDENTICAL final SQL + params the runtime issues (assembled by the SAME
+# shared OrmDriver._read/_write code below → byte-identical SQL) but binds them through the BARE
+# database driver — no litedbmodel_runtime seam, no per-cell de-box. `runtime÷baseline` isolates
+# litedbmodel's cost over the raw driver. The baseline gets its OWN isolated PG schema / MySQL db so
+# the two impls never clobber each other's seeded tables (they may run back-to-back).
+PG_BASELINE_SCHEMA = f"{PG_SCHEMA_NAME}_baseline"
+MYSQL_BASELINE_DB = f"{MYSQL_DB_NAME}_baseline"
 
 ORM_OPS = None  # filled from artifact
 
@@ -95,11 +105,24 @@ def _pg_placeholders(sql):
 
 
 # ── relation bind protocol (mirror bindRelation in orm-exec-ts.ts) ─────────────────────────────
+def _row_get(r, key):
+    # Named-column access on a parent row for the relation key-extraction (shared assembly). The
+    # runtime seam returns plain dicts (`.get`); the RAW baseline returns the driver's OWN native
+    # named-row type — psycopg dict_row / PyMySQL DictCursor are dicts, sqlite3.Row is indexed by
+    # name via `[]` (no `.get`). This shim reads either without adding a de-box layer to the row.
+    if isinstance(r, dict):
+        return r.get(key)
+    try:
+        return r[key]
+    except (IndexError, KeyError):
+        return None
+
+
 def _distinct_single_keys(stage, parents):
     seen, out = set(), []
     pk = stage["single"]["parentKey"]
     for r in parents:
-        k = r.get(pk)
+        k = _row_get(r, pk)
         if k is None:
             continue
         s = str(k)
@@ -113,7 +136,7 @@ def _distinct_tuples(stage, parents):
     seen, out = set(), []
     p0, p1 = stage["composite"]["parentKeys"]
     for r in parents:
-        k0, k1 = r.get(p0), r.get(p1)
+        k0, k1 = _row_get(r, p0), _row_get(r, p1)
         if k0 is None or k1 is None:
             continue
         s = str(k0) + " " + str(k1)
@@ -147,9 +170,14 @@ def _bind_relation(stage, parents):
 
 # ── drivers (all speak the shipped .prepare(sql).all/.run seam) ────────────────────────────────
 class OrmDriver:
-    def __init__(self, dialect, driver):
+    def __init__(self, dialect, driver, impl="runtime"):
         self.dialect = dialect
         self.driver = driver
+        # `runtime` = shipped litedbmodel_runtime.driver seam; `raw` = bare-driver baseline. The seam
+        # object in `self.driver` carries the difference; the read/write assembly below is IDENTICAL
+        # for both impls, so the SQL + params it issues are byte-identical (only the low-level
+        # prepare/execute differs). `impl` is kept for isolation-naming + honest reporting.
+        self.impl = impl
 
     def _all(self, sql, params):
         return self.driver.prepare(sql).all(list(params))
@@ -258,6 +286,173 @@ def make_driver(dialect, artifact):
     return OrmDriver(dialect, d)
 
 
+# ── RAW-driver BASELINE seams (mirror the .prepare(sql).all/.run shape, but BARE) ───────────────
+# Each raw seam speaks the SAME `.prepare(sql).all(params)/.run(params)/.close()` surface the shipped
+# runtime driver does, so OrmDriver's read/write assembly is reused UNCHANGED (byte-identical SQL).
+# The ONLY difference vs the runtime seam is the low-level per-statement execution:
+# The row shape is the DRIVER'S OWN native named-row type (sqlite3.Row / psycopg dict_row / PyMySQL
+# DictCursor) — NOT litedbmodel's `dict(zip(cols, row))` reconstruction + per-cell `_scalar()` de-box
+# loop, which is exactly the runtime cost being measured. Named columns are load-bearing for the
+# SHARED relation-key extraction (`_row_get`) and pg id-chaining (`rows[0]["id"]`), so a bare tuple
+# row would break the shared assembly; the driver-native factory is the honest baseline.
+#   * sqlite : stdlib sqlite3, `conn.row_factory = sqlite3.Row` (driver-native); `?` binds natively
+#              (NO placeholder translation) — drops the runtime seam's explicit dict(zip) mapping.
+#   * pg     : bare psycopg, `dict_row` factory; same driver-MANDATED `$N`→`%s` translation the
+#              runtime does, but drops the runtime's per-cell `_scalar()` de-box loop.
+#   * mysql  : bare PyMySQL, DictCursor; same driver-MANDATED `?`→`%s` translation.
+# `run()` returns a RunInfo-shaped object (`.last_insert_rowid`) so `_insert_return` reads it as-is.
+
+
+class _RawRunInfo:
+    __slots__ = ("last_insert_rowid",)
+
+    def __init__(self, last_insert_rowid):
+        self.last_insert_rowid = last_insert_rowid
+
+
+class _RawSqlitePrepared:
+    __slots__ = ("_conn", "_sql")
+
+    def __init__(self, conn, sql):
+        self._conn = conn
+        self._sql = sql
+
+    def all(self, params):
+        # BARE: raw cursor + fetchall() tuples — NO dict(zip) row-mapping the runtime seam applies.
+        return self._conn.execute(self._sql, tuple(params)).fetchall()
+
+    def run(self, params):
+        cur = self._conn.execute(self._sql, tuple(params))
+        return _RawRunInfo(cur.lastrowid if cur.lastrowid is not None else 0)
+
+
+class _RawSqliteSeam:
+    """Bare stdlib sqlite3 seam (no litedbmodel_runtime). `?` binds positionally (no translation)."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def prepare(self, sql):
+        return _RawSqlitePrepared(self.conn, sql)
+
+    def close(self):
+        self.conn.close()
+
+
+class _RawDbapiPrepared:
+    __slots__ = ("_conn", "_sql", "_xform")
+
+    def __init__(self, conn, sql, xform):
+        self._conn = conn
+        self._sql = sql
+        self._xform = xform
+
+    def all(self, params):
+        cur = self._conn.cursor()
+        cur.execute(self._xform(self._sql), tuple(params))
+        rows = cur.fetchall() if cur.description is not None else []
+        cur.close()
+        return rows
+
+    def run(self, params):
+        cur = self._conn.cursor()
+        cur.execute(self._xform(self._sql), tuple(params))
+        last = getattr(cur, "lastrowid", None)
+        cur.close()
+        return _RawRunInfo(last if last is not None else 0)
+
+
+class _RawDbapiSeam:
+    """Bare DB-API seam (raw psycopg / PyMySQL) — driver-MANDATED placeholder translation only,
+    NO litedbmodel_runtime `_scalar` de-box. Autocommit ON so the shared BEGIN…COMMIT bracket real
+    transactions, exactly as the runtime driver's pooled connections do."""
+
+    def __init__(self, conn, xform):
+        self.conn = conn
+        self._xform = xform
+
+    def prepare(self, sql):
+        return _RawDbapiPrepared(self.conn, sql, self._xform)
+
+    def close(self):
+        try:
+            self.conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _raw_dollar_to_pyformat(sql):
+    # Driver-mandated: psycopg binds `%s`, so PG's rendered `$N` must be translated (same as the
+    # runtime's _dollar_to_pyformat) — the SQL STATEMENT is byte-identical, only the placeholder
+    # token the bare driver requires differs. Literal `%` doubled for safety.
+    import re as _re
+    return _re.sub(r"\$\d+", "%s", sql.replace("%", "%%"))
+
+
+def _raw_qmark_to_pyformat(sql):
+    # Driver-mandated: PyMySQL binds `%s`, so MySQL's rendered `?` must be translated (same as the
+    # runtime's _qmark_to_pyformat).
+    return sql.replace("%", "%%").replace("?", "%s")
+
+
+def make_baseline_driver(dialect, artifact):
+    """Build the RAW-driver baseline for `dialect`, seeded IDENTICALLY into an ISOLATED namespace
+    (its own PG schema / MySQL db) so it never clobbers the runtime driver's tables. Raises on a
+    connect/seed failure — the caller treats that as a per-dialect baseline skip (never a whole-cell
+    skip: the runtime metrics for that dialect still stand)."""
+    schema = artifact["schema"][dialect]
+    if dialect == "sqlite":
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row  # driver-native named rows (NOT litedbmodel dict(zip)/_scalar)
+        conn.execute("PRAGMA foreign_keys = ON")
+        for s in schema["ddl"]:
+            conn.execute(s)
+        for s in schema["seed"]:
+            conn.execute(s["sql"], tuple(s["params"]))
+        conn.commit()
+        conn.isolation_level = None  # BEGIN/COMMIT drive real txns for writes (mirror the runtime path)
+        return OrmDriver("sqlite", _RawSqliteSeam(conn), impl="raw")
+    if dialect == "postgres":
+        import psycopg
+        cfg = _pg_cfg()
+        # Bootstrap the isolated baseline schema on a throwaway autocommit connection, then pin it.
+        conn = psycopg.connect(host=cfg["host"], port=cfg["port"], user=cfg["user"],
+                               password=cfg["password"], dbname=cfg["dbname"], autocommit=True)
+        conn.row_factory = psycopg.rows.dict_row  # driver-native named rows (NOT litedbmodel _scalar)
+        cur = conn.cursor()
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {PG_BASELINE_SCHEMA}")
+        cur.execute(f"SET search_path TO {PG_BASELINE_SCHEMA}")
+        for s in schema.get("drop", []):
+            cur.execute(s)
+        for s in schema["ddl"]:
+            cur.execute(s)
+        for s in schema["seed"]:
+            cur.execute(_raw_dollar_to_pyformat(_pg_placeholders(s["sql"])), tuple(s["params"]))
+        for s in schema.get("seqReset", []) or []:
+            cur.execute(s)
+        cur.close()
+        return OrmDriver("postgres", _RawDbapiSeam(conn, _raw_dollar_to_pyformat), impl="raw")
+    # mysql
+    import pymysql
+    cfg = _mysql_cfg()
+    conn = pymysql.connect(host=cfg["host"], port=cfg["port"], user=cfg["user"],
+                           password=cfg["password"], autocommit=True,
+                           cursorclass=pymysql.cursors.DictCursor)  # driver-native named rows
+    cur = conn.cursor()
+    cur.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_BASELINE_DB}")
+    cur.execute(f"USE {MYSQL_BASELINE_DB}")
+    for s in schema.get("drop", []):
+        cur.execute(s)
+    for s in schema["ddl"]:
+        cur.execute(s)
+    for s in schema["seed"]:
+        cur.execute(_raw_qmark_to_pyformat(s["sql"]), tuple(s["params"]))
+    for s in schema.get("seqReset", []) or []:
+        cur.execute(s)
+    cur.close()
+    return OrmDriver("mysql", _RawDbapiSeam(conn, _raw_qmark_to_pyformat), impl="raw")
+
+
 def load_artifact():
     global ORM_OPS
     art = json.loads(ARTIFACT_PATH.read_text())
@@ -339,6 +534,7 @@ def bench():
         rows.append(f"{LANGUAGE},{case},{dialect},{metric},{_csv_field(value)}")
 
     live = {}
+    baselines = {}
     for dialect in dialects:
         try:
             drv = live[dialect] = make_driver(dialect, art)
@@ -347,6 +543,15 @@ def bench():
             for op in ORM_OPS:
                 emit(op["id"], dialect, "skipped", f"{dialect} unreachable ({reason})")
             continue
+        # The bare-driver BASELINE (same real driver, same SQL, no litedbmodel_runtime). A baseline
+        # connect/seed failure is NOT a whole-cell skip — the runtime numbers still stand; only the
+        # `baseline_latency_ms` rows for this dialect drop (the ÷raw ratio can't be computed for it).
+        baseline = None
+        try:
+            baseline = baselines[dialect] = make_baseline_driver(dialect, art)
+        except Exception as e:  # noqa: BLE001
+            reason = str(e).splitlines()[0] if str(e) else type(e).__name__
+            sys.stderr.write(f"[{LANGUAGE}] baseline {dialect} unreachable ({reason}) — runtime metrics unaffected\n")
         for op in ORM_OPS:
             case = op["id"]
             plan = art["plans"][case][dialect]
@@ -369,6 +574,20 @@ def bench():
                     drv.run(plan)
                 emit(case, dialect, "throughput_elapsed_ms", (time.perf_counter() - t0) * 1000.0)
                 emit(case, dialect, "throughput_completed", tp_iters)
+                # baseline latency: the IDENTICAL SQL/params through the BARE driver (no runtime seam),
+                # SAME warmup + timed iterations → runtime÷baseline = litedbmodel's over-driver cost.
+                # Emitted as `baseline_latency_ms`; the collector splits it into the `impl: baseline`
+                # cell. A per-op baseline error must NOT abort the runtime metrics already emitted.
+                if baseline is not None:
+                    try:
+                        for _ in range(warmup):
+                            baseline.run(plan)
+                        for _ in range(iters):
+                            b0 = time.perf_counter()
+                            baseline.run(plan)
+                            emit(case, dialect, "baseline_latency_ms", (time.perf_counter() - b0) * 1000.0)
+                    except Exception as e:  # noqa: BLE001
+                        emit(case, dialect, "baseline_skipped", str(e).splitlines()[0] if str(e) else type(e).__name__)
             except Exception as e:  # noqa: BLE001
                 emit(case, dialect, "skipped", str(e).splitlines()[0] if str(e) else type(e).__name__)
 
@@ -377,6 +596,8 @@ def bench():
     emit("", "", "warmup", warmup)
 
     for d in live.values():
+        d.close()
+    for d in baselines.values():
         d.close()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)

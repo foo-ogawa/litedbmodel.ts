@@ -14,6 +14,7 @@
 
 import { buildOrmPlanArtifact, ORM_OPS, ORM_OP_IDS } from './orm-plan.js';
 import { sqliteDriver } from './orm-exec-ts.js';
+import Database from 'better-sqlite3';
 
 // Expected rows/op (reads) / statements (writes) — the ORM-bench logical work against the shared
 // seed. Identical across dialects; the selfcheck proves it on the always-available sqlite path.
@@ -81,6 +82,55 @@ async function main(): Promise<void> {
     }
   }
   await drv.close();
+
+  // 4. RAW-BASELINE PARITY (task gate) — the raw-driver baseline MUST run the IDENTICAL SQL the
+  //    runtime issues. Both impls derive their statements from the SAME assembly (subst/bindRelation/
+  //    id-chaining); the ONLY difference is the low-level param seam. Proof: the `raw` sqlite driver
+  //    executes every op DB-backed with the SAME rows/op the runtime produces (identical SQL runs to
+  //    the same logical result), AND every plan's baked primary SQL runs VERBATIM on a bare driver.
+  const rawDrv = sqliteDriver('raw');
+  for (const op of ORM_OPS) {
+    try {
+      const n = await rawDrv.run(art[op.id].sqlite);
+      if (n !== EXPECTED[op.id]) {
+        console.error(`✗ ${op.id}: RAW baseline rows/op ${n} != expected ${EXPECTED[op.id]} (SQL diverged from runtime)`);
+        failures++;
+      }
+    } catch (e) {
+      console.error(`✗ ${op.id}: RAW baseline execute FAILED — ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`);
+      failures++;
+    }
+  }
+  await rawDrv.close();
+
+  // 4b. BYTE-IDENTITY — the plan's baked primary read SQL must be executable byte-for-byte by a BARE
+  //     better-sqlite3 (no litedbmodel): if the runtime were silently rewriting SQL, this raw prepare
+  //     of the artifact's own SQL would drift from the runtime's row shape. We prepare + run the exact
+  //     `reads[0].sql`/`params` string from the artifact against a freshly seeded bare DB.
+  {
+    const bare = new Database(':memory:');
+    try {
+      // Seed the bare DB identically to the runtime (same DDL + seed from the artifact-domain path).
+      const { ddl, dropStatements, seedStatements } = await import('./orm-domain.js');
+      bare.pragma('foreign_keys = ON');
+      for (const s of dropStatements('sqlite')) bare.exec(s);
+      for (const s of ddl('sqlite')) bare.exec(s);
+      for (const s of seedStatements('sqlite')) bare.prepare(s.sql).run(...s.params);
+      for (const op of ORM_OPS) {
+        const plan = art[op.id].sqlite;
+        if (plan.kind !== 'read') continue; // writes mutate; the read primaries are the pure byte check
+        const primary = plan.reads[0];
+        // Prepare + run the ARTIFACT's own SQL string verbatim on the bare driver (throws if the plan
+        // SQL is not valid stand-alone SQL — i.e. if the runtime depended on rewriting it).
+        bare.prepare(primary.sql).all(...(primary.params as unknown[]).map((v) => (typeof v === 'boolean' ? (v ? 1 : 0) : v)));
+      }
+    } catch (e) {
+      console.error(`✗ byte-identity: the artifact's baked read SQL did not run verbatim on a bare driver — ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`);
+      failures++;
+    } finally {
+      bare.close();
+    }
+  }
 
   if (failures > 0) {
     console.error(`\nSELF-CHECK: FAIL (${failures} problem(s)).`);

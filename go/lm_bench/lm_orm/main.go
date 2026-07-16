@@ -32,11 +32,42 @@ import (
 	"time"
 
 	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
-	_ "modernc.org/sqlite" // PURE-GO sqlite driver (registered as "sqlite")
+
+	_ "github.com/go-sql-driver/mysql" // BARE mysql driver (registered as "mysql") — raw baseline
+	_ "github.com/jackc/pgx/v5/stdlib" // BARE pgx stdlib driver (registered as "pgx") — raw baseline
+	_ "modernc.org/sqlite"             // PURE-GO sqlite driver (registered as "sqlite")
 )
 
 const pgSchemaName = "scp_go_bench"
 const mysqlDBName = "scp_go_bench"
+
+// Raw-driver BASELINE (task: MEASURE litedbmodel's over-driver overhead, not assert it). For each
+// op×dialect the bench ALSO runs the IDENTICAL final SQL + params the runtime issues — assembled by
+// the SAME bindRelation/substParams/writePlan code — but through the BARE database/sql driver (no
+// litedbmodel_runtime wrapper). Emitted as `baseline_latency_ms`; the collector splits it into an
+// `impl: baseline` cell. runtime÷baseline = litedbmodel's over-driver cost (≈1.0× for the thin ops).
+//
+//   - sqlite   : runtime ALREADY uses the raw modernc.org/sqlite driver → baseline is a SECOND
+//     *sql.DB opened the same way (the honest ≈1.0× confirmation).
+//   - postgres : runtime uses rt.OpenPostgres = sql.Open("pgx", …); baseline opens the SAME pgx
+//     stdlib driver directly (no wrapper) → byte-identical $N + RETURNING SQL.
+//   - mysql    : runtime uses rt.OpenMysql = the RETURNING-emulating "mysql-scp" wrapper, but this
+//     executor's writePlan already strips RETURNING itself and uses tx.Exec for the mysql
+//     path (never the wrapper's QueryContext RETURNING interception), so the bare "mysql"
+//     driver runs the SAME stripped statements byte-identically.
+//
+// The baseline gets its OWN isolated pg schema / mysql db, seeded identically, so the two impls never
+// clobber each other's tables.
+const pgBaselineSchema = "scp_go_bench_baseline"
+const mysqlBaselineDB = "scp_go_bench_baseline"
+
+// execImpl selects the runtime path vs the bare-driver baseline for makeDriver.
+type execImpl string
+
+const (
+	implRuntime execImpl = "runtime"
+	implRaw     execImpl = "raw"
+)
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -189,6 +220,7 @@ func bindRelation(stage map[string]any, parents []map[string]any) *relBind {
 // ── executor ───────────────────────────────────────────────────────────────────
 type ormDriver struct {
 	dialect string
+	impl    execImpl
 	db      *sql.DB
 }
 
@@ -411,10 +443,53 @@ func seedRows(db *sql.DB, schema map[string]any, dialect string) error {
 	return nil
 }
 
-func makeDriver(dialect string, a *artifact) (*ormDriver, error) {
+// openPostgres opens the pg *sql.DB for the given impl: `runtime` = the shipped rt.OpenPostgres
+// wrapper; `raw` = the BARE pgx stdlib driver (sql.Open("pgx", …)) directly — no litedbmodel wrapper.
+// The wrapper adds only pool sizing + Ping over the same pgx driver, so the SQL issued is identical.
+func openPostgres(impl execImpl, dsn string) (*sql.DB, error) {
+	if impl == implRaw {
+		db, err := sql.Open("pgx", dsn)
+		if err != nil {
+			return nil, err
+		}
+		if err := db.Ping(); err != nil {
+			db.Close()
+			return nil, err
+		}
+		return db, nil
+	}
+	return rt.OpenPostgres(dsn)
+}
+
+// openMysql opens the mysql *sql.DB for the given impl: `runtime` = rt.OpenMysql (the "mysql-scp"
+// RETURNING-emulating wrapper); `raw` = the BARE go-sql-driver ("mysql") directly. This executor's
+// writePlan strips RETURNING itself and drives the mysql path via tx.Exec (never the wrapper's
+// QueryContext RETURNING interception), so both handles run byte-identical stripped statements.
+func openMysql(impl execImpl, dsn string) (*sql.DB, error) {
+	if impl == implRaw {
+		db, err := sql.Open("mysql", dsn)
+		if err != nil {
+			return nil, err
+		}
+		if err := db.Ping(); err != nil {
+			db.Close()
+			return nil, err
+		}
+		return db, nil
+	}
+	return rt.OpenMysql(dsn)
+}
+
+// makeDriver builds a live *ormDriver for one dialect × impl. ALL statement assembly (DDL/seed via
+// the shared schema node, and at run time bindRelation/substParams/writePlan) is impl-agnostic — the
+// ONLY difference is the low-level *sql.DB handle: `runtime` opens via the litedbmodel_runtime
+// wrappers, `raw` opens the bare driver against an ISOLATED baseline schema/db seeded identically.
+func makeDriver(dialect string, impl execImpl, a *artifact) (*ormDriver, error) {
 	schema := a.schema(dialect)
 	switch dialect {
 	case "sqlite":
+		// sqlite runtime ALREADY uses the raw modernc.org/sqlite driver; the baseline is a SECOND
+		// identical in-memory *sql.DB (each :memory: open is its own isolated DB) → honest ≈1.0×.
 		db, err := sql.Open("sqlite", ":memory:")
 		if err != nil {
 			return nil, err
@@ -431,7 +506,7 @@ func makeDriver(dialect string, a *artifact) (*ormDriver, error) {
 		if err := seedRows(db, schema, "sqlite"); err != nil {
 			return nil, err
 		}
-		return &ormDriver{dialect: "sqlite", db: db}, nil
+		return &ormDriver{dialect: "sqlite", impl: impl, db: db}, nil
 	case "postgres":
 		host := envOr("TEST_DB_HOST", "localhost")
 		port := envOr("TEST_DB_PORT", "5433")
@@ -439,14 +514,18 @@ func makeDriver(dialect string, a *artifact) (*ormDriver, error) {
 		pass := envOr("TEST_DB_PASSWORD", "testpass")
 		dbname := envOr("TEST_DB_NAME", "testdb")
 		dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, pass, dbname)
-		db, err := rt.OpenPostgres(dsn)
+		schemaName := pgSchemaName
+		if impl == implRaw {
+			schemaName = pgBaselineSchema
+		}
+		db, err := openPostgres(impl, dsn)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := db.Exec("CREATE SCHEMA IF NOT EXISTS " + pgSchemaName); err != nil {
+		if _, err := db.Exec("CREATE SCHEMA IF NOT EXISTS " + schemaName); err != nil {
 			return nil, err
 		}
-		if _, err := db.Exec("SET search_path TO " + pgSchemaName); err != nil {
+		if _, err := db.Exec("SET search_path TO " + schemaName); err != nil {
 			return nil, err
 		}
 		// Pin search_path for EVERY pooled connection (SET above only affects one conn).
@@ -469,24 +548,28 @@ func makeDriver(dialect string, a *artifact) (*ormDriver, error) {
 				return nil, err
 			}
 		}
-		return &ormDriver{dialect: "postgres", db: db}, nil
+		return &ormDriver{dialect: "postgres", impl: impl, db: db}, nil
 	case "mysql":
 		host := envOr("TEST_MYSQL_HOST", "127.0.0.1")
 		port := envOr("TEST_MYSQL_PORT", "3307")
 		user := envOr("TEST_MYSQL_USER", "testuser")
 		pass := envOr("TEST_MYSQL_PASSWORD", "testpass")
 		bootDB := envOr("TEST_MYSQL_DB", "testdb")
+		dbName := mysqlDBName
+		if impl == implRaw {
+			dbName = mysqlBaselineDB
+		}
 		bootDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=false&multiStatements=false", user, pass, host, port, bootDB)
-		boot, err := rt.OpenMysql(bootDSN)
+		boot, err := openMysql(impl, bootDSN)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := boot.Exec("CREATE DATABASE IF NOT EXISTS " + mysqlDBName); err != nil {
+		if _, err := boot.Exec("CREATE DATABASE IF NOT EXISTS " + dbName); err != nil {
 			return nil, err
 		}
 		boot.Close()
-		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=false&multiStatements=false", user, pass, host, port, mysqlDBName)
-		db, err := rt.OpenMysql(dsn)
+		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=false&multiStatements=false", user, pass, host, port, dbName)
+		db, err := openMysql(impl, dsn)
 		if err != nil {
 			return nil, err
 		}
@@ -503,7 +586,7 @@ func makeDriver(dialect string, a *artifact) (*ormDriver, error) {
 		if err := seedRows(db, schema, "mysql"); err != nil {
 			return nil, err
 		}
-		return &ormDriver{dialect: "mysql", db: db}, nil
+		return &ormDriver{dialect: "mysql", impl: impl, db: db}, nil
 	default:
 		return nil, fmt.Errorf("unknown dialect %s", dialect)
 	}
@@ -522,7 +605,7 @@ func smoke() {
 	dialects := a.dialects()
 	drivers := map[string]*ormDriver{}
 	for _, d := range dialects {
-		drv, err := makeDriver(d, a)
+		drv, err := makeDriver(d, implRuntime, a)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "FATAL: connect %s: %v\n", d, err)
 			os.Exit(1)
@@ -644,8 +727,9 @@ func bench() {
 	f := func(v float64) string { return strconv.FormatFloat(v, 'g', -1, 64) }
 
 	live := map[string]*ormDriver{}
+	baselines := map[string]*ormDriver{}
 	for _, dialect := range dialects {
-		drv, err := makeDriver(dialect, a)
+		drv, err := makeDriver(dialect, implRuntime, a)
 		if err != nil {
 			reason := firstLine(err.Error())
 			for _, opAny := range a.ops() {
@@ -655,6 +739,16 @@ func bench() {
 			continue
 		}
 		live[dialect] = drv
+		// Bare-driver BASELINE (same real driver, same SQL, ISOLATED baseline schema/db). A baseline
+		// connect failure is NOT a whole-cell skip — the runtime numbers still stand; only the
+		// baseline_latency_ms rows for that dialect are dropped (honest per-dialect skip, no fake).
+		var baseline *ormDriver
+		if b, berr := makeDriver(dialect, implRaw, a); berr != nil {
+			fmt.Fprintf(os.Stderr, "[go] baseline %s unavailable (%s) — runtime metrics unaffected\n", dialect, firstLine(berr.Error()))
+		} else {
+			baseline = b
+			baselines[dialect] = b
+		}
 		for _, opAny := range a.ops() {
 			op := opAny.(map[string]any)
 			caseID := op["id"].(string)
@@ -697,6 +791,25 @@ func bench() {
 			}
 			emit(caseID, dialect, "throughput_elapsed_ms", f(float64(time.Since(t0).Nanoseconds())/1e6))
 			emit(caseID, dialect, "throughput_completed", strconv.Itoa(tpIters))
+
+			// baseline latency: the IDENTICAL SQL/params (same assembly) through the BARE driver, SAME
+			// warmup + timed iterations → runtime÷baseline = litedbmodel's over-driver overhead. Emitted
+			// as baseline_latency_ms; the collector splits it into the `impl: baseline` cell. A baseline
+			// error mid-loop is an honest per-dialect skip (drop the rows) — the runtime rows stand.
+			if baseline != nil {
+				bPlan := a.plan(caseID, dialect)
+				for i := 0; i < warmup; i++ {
+					baseline.run(bPlan)
+				}
+				for i := 0; i < iters; i++ {
+					b0 := time.Now()
+					if _, err := baseline.run(bPlan); err != nil {
+						fmt.Fprintf(os.Stderr, "[go] baseline %s/%s errored (%s) — dropped, runtime unaffected\n", dialect, caseID, firstLine(err.Error()))
+						break
+					}
+					emit(caseID, dialect, "baseline_latency_ms", f(float64(time.Since(b0).Nanoseconds())/1e6))
+				}
+			}
 		}
 	}
 
@@ -712,6 +825,9 @@ func bench() {
 	}
 
 	for _, d := range live {
+		d.db.Close()
+	}
+	for _, d := range baselines {
 		d.db.Close()
 	}
 

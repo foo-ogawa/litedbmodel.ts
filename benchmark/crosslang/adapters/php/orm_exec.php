@@ -30,6 +30,12 @@ require $REPO . '/php/vendor/autoload.php';
 const PG_SCHEMA_NAME = 'scp_php_bench';
 const MYSQL_DB_NAME = 'scp_php_bench';
 
+// Raw-driver BASELINE gets its OWN isolated PG schema / MySQL db so the two impls never clobber each
+// other's tables (and could run side by side). Same real driver + byte-identical SQL, so the
+// runtime÷baseline ratio isolates litedbmodel's over-driver cost, NOT a driver difference.
+const PG_BASELINE_SCHEMA = 'scp_php_bench_baseline';
+const MYSQL_BASELINE_DB = 'scp_php_bench_baseline';
+
 $ARTIFACT_PATH = dirname($HERE, 2) . '/generated/orm-plan.json';
 
 // ── {{SEQ}} substitution: a per-op-invocation incrementing int for unique-email writes ─────────
@@ -169,16 +175,46 @@ function bindRelation(array $stage, array $parents): ?array
     return ['sql' => $stage['sql'] . $groups . ($stage['suffix'] ?? ''), 'params' => $flat, 'kind' => $kind];
 }
 
+/**
+ * BARE PDO for the Postgres RAW baseline. The artifact's `postgres`-tagged SQL renders `$N`
+ * placeholders (the Render final pass), but PDO_pgsql binds `?` positionally and does NOT translate
+ * `$N`. The SHIPPED runtime absorbs this in LiveDb\PgLivePdo; the raw baseline must issue the SAME
+ * final SQL to the driver, so it replicates ONLY that driver-mandated `$N`→`?` rewrite — no
+ * litedbmodel logic. The bytes handed to libpq are identical to the runtime's, so runtime÷baseline
+ * measures litedbmodel's over-driver cost, not a placeholder-dialect difference.
+ */
+final class RawPgPdo extends PDO
+{
+    private static function rewrite(string $sql): string
+    {
+        return preg_replace('/\$\d+/', '?', $sql) ?? $sql;
+    }
+
+    #[\ReturnTypeWillChange]
+    public function prepare(string $query, array $options = []): \PDOStatement|false
+    {
+        return parent::prepare(self::rewrite($query), $options);
+    }
+
+    #[\ReturnTypeWillChange]
+    public function exec(string $statement): int|false
+    {
+        return parent::exec(self::rewrite($statement));
+    }
+}
+
 // ── driver (all speak PDO prepare/execute/fetchAll) ────────────────────────────────────────────
 final class OrmDriver
 {
     public string $dialect;
     public PDO $db;
+    public string $impl;
 
-    public function __construct(string $dialect, PDO $db)
+    public function __construct(string $dialect, PDO $db, string $impl = 'runtime')
     {
         $this->dialect = $dialect;
         $this->db = $db;
+        $this->impl = $impl;
     }
 
     private function allRows(string $sql, array $params): array
@@ -269,10 +305,19 @@ function pgPlaceholders(string $sql): string
     }, $sql) ?? $sql;
 }
 
-function makeDriver(string $dialect, array $artifact): OrmDriver
+/**
+ * Build a driver for `$dialect` in `$impl` mode. `runtime` = the SHIPPED litedbmodel PDO seam
+ * (LiveDb\PgLivePdo / MysqlLivePdo for pg/mysql; bare PDO for sqlite which is already raw). `raw` =
+ * the BARE database driver on an ISOLATED baseline schema/db, seeded identically. BOTH modes share
+ * ALL statement assembly (bindRelation/substParams/coerceParams/tx/id-chaining) via the SAME
+ * OrmDriver, so the SQL is byte-identical — ONLY the low-level PDO handle differs.
+ */
+function makeDriver(string $dialect, array $artifact, string $impl = 'runtime'): OrmDriver
 {
     $schema = $artifact['schema'][$dialect];
     if ($dialect === 'sqlite') {
+        // sqlite runtime is ALREADY bare PDO; the raw baseline is a second bare PDO issuing the same
+        // statements (ratio ≈1.0× = the honest MEASURED confirmation of near-zero over-driver cost).
         $db = new PDO('sqlite::memory:');
         $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $db->setAttribute(PDO::ATTR_STRINGIFY_FETCHES, false);
@@ -287,7 +332,7 @@ function makeDriver(string $dialect, array $artifact): OrmDriver
             $st = $db->prepare($s['sql']);
             $st->execute(coerceParams(array_values($s['params']), 'sqlite'));
         }
-        return new OrmDriver('sqlite', $db);
+        return new OrmDriver('sqlite', $db, $impl);
     }
     if ($dialect === 'postgres') {
         $host = getenv('TEST_DB_HOST') ?: 'localhost';
@@ -295,9 +340,14 @@ function makeDriver(string $dialect, array $artifact): OrmDriver
         $user = getenv('TEST_DB_USER') ?: 'testuser';
         $pass = getenv('TEST_DB_PASSWORD') ?: 'testpass';
         $dbname = getenv('TEST_DB_NAME') ?: 'testdb';
-        $db = LiveDb::postgres($host, $port, $user, $pass, $dbname);
-        $db->exec('CREATE SCHEMA IF NOT EXISTS ' . PG_SCHEMA_NAME);
-        $db->exec('SET search_path TO ' . PG_SCHEMA_NAME);
+        $schemaName = $impl === 'raw' ? PG_BASELINE_SCHEMA : PG_SCHEMA_NAME;
+        // runtime = shipped LiveDb\PgLivePdo; raw = BARE PDO that replicates ONLY the driver-mandated
+        // `$N`→`?` rewrite (byte-identical final SQL to libpq, no litedbmodel logic).
+        $db = $impl === 'raw'
+            ? new RawPgPdo("pgsql:host={$host};port={$port};dbname={$dbname}", $user, $pass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION])
+            : LiveDb::postgres($host, $port, $user, $pass, $dbname);
+        $db->exec('CREATE SCHEMA IF NOT EXISTS ' . $schemaName);
+        $db->exec('SET search_path TO ' . $schemaName);
         foreach ($schema['drop'] ?? [] as $s) {
             $db->exec($s);
         }
@@ -311,7 +361,7 @@ function makeDriver(string $dialect, array $artifact): OrmDriver
         foreach ($schema['seqReset'] ?? [] as $s) {
             $db->exec($s);
         }
-        return new OrmDriver('postgres', $db);
+        return new OrmDriver('postgres', $db, $impl);
     }
     // mysql
     $host = getenv('TEST_MYSQL_HOST') ?: '127.0.0.1';
@@ -319,9 +369,23 @@ function makeDriver(string $dialect, array $artifact): OrmDriver
     $user = getenv('TEST_MYSQL_USER') ?: 'testuser';
     $pass = getenv('TEST_MYSQL_PASSWORD') ?: 'testpass';
     $bootDb = getenv('TEST_MYSQL_DB') ?: 'testdb';
-    $boot = LiveDb::mysql($host, $port, $user, $pass, $bootDb);
-    $boot->exec('CREATE DATABASE IF NOT EXISTS ' . MYSQL_DB_NAME);
-    $db = LiveDb::mysql($host, $port, $user, $pass, MYSQL_DB_NAME);
+    $dbName = $impl === 'raw' ? MYSQL_BASELINE_DB : MYSQL_DB_NAME;
+    // runtime = shipped LiveDb\MysqlLivePdo; raw = BARE PDO. The executor already strips RETURNING for
+    // mysql (writePlan) BEFORE the driver sees it, so LiveDb's RETURNING emulation is never exercised
+    // here — a bare PDO runs the identical stripped statements. Native prepares (emulate OFF) so an
+    // int LIMIT binds as an int (MySQL rejects a quoted LIMIT '20'), matching the runtime seam.
+    if ($impl === 'raw') {
+        $boot = new PDO("mysql:host={$host};port={$port};dbname={$bootDb}", $user, $pass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $boot->exec('CREATE DATABASE IF NOT EXISTS ' . $dbName);
+        $db = new PDO("mysql:host={$host};port={$port};dbname={$dbName}", $user, $pass, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ]);
+    } else {
+        $boot = LiveDb::mysql($host, $port, $user, $pass, $bootDb);
+        $boot->exec('CREATE DATABASE IF NOT EXISTS ' . $dbName);
+        $db = LiveDb::mysql($host, $port, $user, $pass, $dbName);
+    }
     foreach ($schema['drop'] ?? [] as $s) {
         $db->exec($s);
     }
@@ -332,7 +396,7 @@ function makeDriver(string $dialect, array $artifact): OrmDriver
         $st = $db->prepare($s['sql']);
         $st->execute(coerceParams(array_values($s['params']), 'mysql'));
     }
-    return new OrmDriver('mysql', $db);
+    return new OrmDriver('mysql', $db, $impl);
 }
 
 function loadArtifact(string $path): array
@@ -411,15 +475,26 @@ function bench(array $artifact, string $resultsDir): void
     };
 
     $live = [];
+    $baselines = [];
     foreach ($dialects as $dialect) {
         try {
-            $drv = $live[$dialect] = makeDriver($dialect, $artifact);
+            $drv = $live[$dialect] = makeDriver($dialect, $artifact, 'runtime');
         } catch (\Throwable $e) {
             $reason = explode("\n", $e->getMessage())[0];
             foreach ($artifact['ops'] as $op) {
                 $emit($op['id'], $dialect, 'skipped', "$dialect unreachable ($reason)");
             }
             continue;
+        }
+        // The bare-driver BASELINE (same real driver + byte-identical SQL, ISOLATED baseline schema/db,
+        // no litedbmodel seam). A baseline connect failure is NOT a whole-cell skip — the runtime
+        // metrics still stand; only the ÷sql ratio for that dialect drops.
+        $baseline = null;
+        try {
+            $baseline = $baselines[$dialect] = makeDriver($dialect, $artifact, 'raw');
+        } catch (\Throwable $e) {
+            // honestly no-op: baseline unreachable → emit nothing for baseline (runtime untouched).
+            $baseline = null;
         }
         foreach ($artifact['ops'] as $op) {
             $case = $op['id'];
@@ -432,7 +507,7 @@ function bench(array $artifact, string $resultsDir): void
                 $rowsCount = $drv->run($plan);
                 $emit($case, $dialect, 'cost_queries', $queries);
                 $emit($case, $dialect, 'cost_rows', $rowsCount);
-                // latency: warmup, then one row PER timed iteration.
+                // latency (RUNTIME): warmup, then one row PER timed iteration.
                 for ($i = 0; $i < $warmup; $i++) {
                     $drv->run($plan);
                 }
@@ -448,6 +523,25 @@ function bench(array $artifact, string $resultsDir): void
                 }
                 $emit($case, $dialect, 'throughput_elapsed_ms', (hrtime(true) - $t0) / 1e6);
                 $emit($case, $dialect, 'throughput_completed', $tpIters);
+
+                // latency (BASELINE): the IDENTICAL SQL/params through the bare driver (no litedbmodel
+                // seam), SAME warmup + timed iterations → runtime÷baseline = litedbmodel's over-driver
+                // overhead. Emitted as `baseline_latency_ms`; the collector splits it into `impl:
+                // baseline`. A baseline error here does NOT drop the runtime metrics already emitted.
+                if ($baseline !== null) {
+                    try {
+                        for ($i = 0; $i < $warmup; $i++) {
+                            $baseline->run($plan);
+                        }
+                        for ($i = 0; $i < $iters; $i++) {
+                            $b0 = hrtime(true);
+                            $baseline->run($plan);
+                            $emit($case, $dialect, 'baseline_latency_ms', (hrtime(true) - $b0) / 1e6);
+                        }
+                    } catch (\Throwable $e) {
+                        // baseline-only failure: leave the runtime metrics standing, skip this ratio.
+                    }
+                }
             } catch (\Throwable $e) {
                 $emit($case, $dialect, 'skipped', explode("\n", $e->getMessage())[0]);
             }
@@ -459,6 +553,9 @@ function bench(array $artifact, string $resultsDir): void
     $emit('', '', 'warmup', $warmup);
 
     foreach ($live as $d) {
+        $d->close();
+    }
+    foreach ($baselines as $d) {
         $d->close();
     }
 
