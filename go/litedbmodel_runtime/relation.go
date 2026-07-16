@@ -37,30 +37,55 @@ func errRelationNotDeclared(name string) error {
 // RelationOp is the pre-compiled STATIC batch op read out of bundle.relations[name] (pure JSON).
 // Single-key relations carry ParentKey/TargetKey; composite (#47 item 1) carry ParentKeys/TargetKeys.
 type RelationOp struct {
-	Name       string
-	Kind       string // "belongsTo" | "hasMany" | "hasOne"
-	ParentKey  string
-	TargetKey  string
-	ParentKeys []string // composite: ordered parent key columns (nil for single-key)
-	TargetKeys []string // composite: ordered child key columns (nil for single-key)
-	Dialect    string
-	Connection string // CROSS-DB (V0 R1): the target model's connection tag (empty for same-DB)
-	SQL        string
+	Name        string
+	Kind        string // "belongsTo" | "hasMany" | "hasOne"
+	ParentKey   string
+	TargetKey   string
+	ParentKeys  []string // composite: ordered parent key columns (nil for single-key)
+	TargetKeys  []string // composite: ordered child key columns (nil for single-key)
+	Dialect     string
+	Connection  string // CROSS-DB (V0 R1): the target model's connection tag (empty for same-DB)
+	SQL         string
+	TargetTable string // the child (target) table name — the LimitExceededError.Model for a relation
+	// HardLimit is the baked per-batch runaway cap (Phase E-2, epic #74; v1 _selectForRelation
+	// hasManyHardLimit): when the batch fetches MORE than this TOTAL, runRelationOp throws
+	// LimitExceededError (context "relation", EXACT count). nil ⇒ NO check (disabled, or an
+	// intrinsic per-parent LIMIT-window relation whose fanout is already bounded — the artifact omits
+	// the field). Caps come from the ARTIFACT ONLY (no config surface).
+	HardLimit *int
 }
 
 // relationOpFromJObj reads one bundle.relations entry into a RelationOp.
 func relationOpFromJObj(o *bc.JObj) RelationOp {
 	return RelationOp{
-		Name:       getStrJ(o, "name"),
-		Kind:       getStrJ(o, "kind"),
-		ParentKey:  getStrJ(o, "parentKey"),
-		TargetKey:  getStrJ(o, "targetKey"),
-		ParentKeys: getStrArrJ(o, "parentKeys"),
-		TargetKeys: getStrArrJ(o, "targetKeys"),
-		Dialect:    getStrJ(o, "dialect"),
-		Connection: getStrJ(o, "connection"),
-		SQL:        getStrJ(o, "sql"),
+		Name:        getStrJ(o, "name"),
+		Kind:        getStrJ(o, "kind"),
+		ParentKey:   getStrJ(o, "parentKey"),
+		TargetKey:   getStrJ(o, "targetKey"),
+		ParentKeys:  getStrArrJ(o, "parentKeys"),
+		TargetKeys:  getStrArrJ(o, "targetKeys"),
+		Dialect:     getStrJ(o, "dialect"),
+		Connection:  getStrJ(o, "connection"),
+		SQL:         getStrJ(o, "sql"),
+		TargetTable: getStrJ(o, "targetTable"),
+		HardLimit:   optIntJ(o, "hardLimit"),
 	}
+}
+
+// optIntJ reads an OPTIONAL integer field off a parsed JObj, returning nil when the key is absent (so
+// a present cap of 0 stays distinct from "no cap"). Used for the baked relation hard-limit (Phase E-2).
+func optIntJ(o *bc.JObj, k string) *int {
+	v, ok := o.Get(k)
+	if !ok {
+		return nil
+	}
+	if dv, err := bc.DecodeValue(v); err == nil {
+		if i, ok := dv.(int64); ok {
+			n := int(i)
+			return &n
+		}
+	}
+	return nil
 }
 
 func getStrJ(o *bc.JObj, k string) string {
@@ -245,6 +270,21 @@ func runRelationOpCtx(ctx *ExecutionContext, op RelationOp, parents []bc.Value) 
 	rows, err := Execute(ctx, sqlText, bindKeys(op, keys), ReadIntent())
 	if err != nil {
 		return nil, err
+	}
+	// Phase E-2 (#74): post-fetch hard-limit runaway guard. When the batch TOTAL exceeds the baked
+	// cap, throw with the EXACT count (the batch is fetched in full, no N+1) BEFORE grouping/hydration
+	// so an over-cap read never assembles an unbounded result set. Field mapping: Model = the relation
+	// TARGET TABLE, Relation = the relation name. Absent op.HardLimit ⇒ disabled / intrinsic-limit
+	// relation ⇒ no check. One guard point → both eager (ReadBundle) and lazy (StitchRelation). The
+	// SAME check the TS reference (runRelationOp) + the rust/py/php ports run off the same field.
+	if op.HardLimit != nil && len(rows) > *op.HardLimit {
+		return nil, &LimitExceededError{
+			Limit:    *op.HardLimit,
+			Count:    len(rows),
+			Context:  LimitContextRelation,
+			Model:    op.TargetTable,
+			Relation: op.Name,
+		}
 	}
 	for _, r := range rows {
 		obj, ok := r.(*bc.Obj)
