@@ -281,7 +281,14 @@ func isolationBehavior(t *testing.T, db *sql.DB, dialect string) {
 // retryPgWriteSkew — two concurrent SERIALIZABLE txs each read the sum then write their own row;
 // PG raises 40001 on the loser. With retryOnError the loser re-runs the WHOLE boundary and BOTH
 // eventually commit. Proven behaviorally (both rows present) + the retry actually fired (>2 BeginTx).
-func retryPgWriteSkew(t *testing.T, db *sql.DB, sink *recSink) {
+// `typedOnly` disables the message-substring fallback in IsRetryableTxError so the run PROVES the
+// typed-code path (errors.As on the concrete *pgconn.PgError, reachable via SqlFailure.Unwrap())
+// classifies the live 40001 on its own — the regression guard the audit demanded.
+func retryPgWriteSkew(t *testing.T, db *sql.DB, sink *recSink, typedOnly bool) {
+	if typedOnly {
+		disableRetryStringFallback = true
+		defer func() { disableRetryStringFallback = false }()
+	}
 	if _, err := db.Exec(fmt.Sprintf("DELETE FROM %s", isoTbl)); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
@@ -331,12 +338,18 @@ func retryPgWriteSkew(t *testing.T, db *sql.DB, sink *recSink) {
 	if beginTx <= 2 {
 		t.Errorf("PG retry: the retry must have fired (>2 BeginTx for 2 workers), got beginTx=%d", beginTx)
 	}
-	t.Logf("PG write-skew retry: both committed after %d BeginTx (retry absorbed 40001)", beginTx)
+	t.Logf("PG write-skew retry (typedOnly=%v): both committed after %d BeginTx (retry absorbed 40001)", typedOnly, beginTx)
 }
 
 // retryMysqlDeadlock — two concurrent txs update two rows in OPPOSITE order → InnoDB deadlock (1213);
-// the loser retries and BOTH commit.
-func retryMysqlDeadlock(t *testing.T, db *sql.DB, sink *recSink) {
+// the loser retries and BOTH commit. `typedOnly` disables the string fallback so the run PROVES the
+// typed-code path (errors.As on the concrete *mysql.MySQLError via SqlFailure.Unwrap()) classifies
+// the live 1213 on its own.
+func retryMysqlDeadlock(t *testing.T, db *sql.DB, sink *recSink, typedOnly bool) {
+	if typedOnly {
+		disableRetryStringFallback = true
+		defer func() { disableRetryStringFallback = false }()
+	}
 	if _, err := db.Exec(fmt.Sprintf("DELETE FROM %s", isoTbl)); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
@@ -351,41 +364,66 @@ func retryMysqlDeadlock(t *testing.T, db *sql.DB, sink *recSink) {
 	o := DefaultTransactionOptions()
 	o.RetryDurationMs = 5
 
-	bar := make(chan struct{})
-	var once sync.Once
-	var wg sync.WaitGroup
-	errs := make([]error, 2)
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			first, second := int64(1), int64(2)
-			if i == 1 {
-				first, second = 2, 1 // opposite lock order → deadlock
-			}
-			_, e := Transaction(ctx, db, "mysql", o, func(txCtx *ExecutionContext) (int, error) {
-				if _, err := Run(txCtx, fmt.Sprintf("UPDATE %s SET seq = seq + 1 WHERE id = ?", isoTbl), []any{first}, WriteIntent()); err != nil {
-					return 0, err
+	// Run the deadlock scenario, repeating up to N rounds until a retry actually fires (a deadlock
+	// raced). A two-party barrier (firstDone) ensures BOTH workers hold their first row-lock before
+	// either grabs the second → InnoDB detects the cycle and raises 1213 on the loser. When typedOnly,
+	// a genuine deadlock MUST race so the typed classifier is truly exercised.
+	deadlockFired := false
+	for round := 0; round < 25 && !deadlockFired; round++ {
+		sink.mu.Lock()
+		sink.beginTx = 0
+		sink.mu.Unlock()
+
+		var firstDone sync.WaitGroup
+		firstDone.Add(2)
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		for i := 0; i < 2; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				first, second := int64(1), int64(2)
+				if i == 1 {
+					first, second = 2, 1 // opposite lock order → deadlock
 				}
-				once.Do(func() { close(bar) })
-				<-bar
-				_, err := Run(txCtx, fmt.Sprintf("UPDATE %s SET seq = seq + 1 WHERE id = ?", isoTbl), []any{second}, WriteIntent())
-				return 0, err
-			})
-			errs[i] = e
-		}(i)
-	}
-	wg.Wait()
-	for i, e := range errs {
-		if e != nil {
-			t.Errorf("MySQL retry: worker %d must eventually commit (retry should have absorbed 1213), got %v", i, e)
+				done := false
+				_, e := Transaction(ctx, db, "mysql", o, func(txCtx *ExecutionContext) (int, error) {
+					if _, err := Run(txCtx, fmt.Sprintf("UPDATE %s SET seq = seq + 1 WHERE id = ?", isoTbl), []any{first}, WriteIntent()); err != nil {
+						return 0, err
+					}
+					// Signal "first lock held" exactly once per worker; wait until BOTH have.
+					if !done {
+						done = true
+						firstDone.Done()
+						firstDone.Wait()
+						releaseOnce.Do(func() { close(release) })
+						<-release
+					}
+					_, err := Run(txCtx, fmt.Sprintf("UPDATE %s SET seq = seq + 1 WHERE id = ?", isoTbl), []any{second}, WriteIntent())
+					return 0, err
+				})
+				errs[i] = e
+			}(i)
+		}
+		wg.Wait()
+		for i, e := range errs {
+			if e != nil {
+				t.Errorf("MySQL retry: worker %d must eventually commit (retry should have absorbed 1213), got %v", i, e)
+			}
+		}
+		_, beginTx, _, _, _ := sink.snapshot()
+		if beginTx > 2 {
+			deadlockFired = true
+			t.Logf("MySQL deadlock retry (typedOnly=%v): both committed after %d BeginTx (retry absorbed 1213)", typedOnly, beginTx)
 		}
 	}
-	_, beginTx, _, _, _ := sink.snapshot()
-	if beginTx <= 2 {
-		t.Logf("MySQL deadlock retry: beginTx=%d (deadlock may not have raced this run; both committed)", beginTx)
-	} else {
-		t.Logf("MySQL deadlock retry: both committed after %d BeginTx (retry absorbed 1213)", beginTx)
+	if typedOnly && !deadlockFired {
+		t.Errorf("MySQL typed-path proof inconclusive: no deadlock raced in 25 rounds (cannot confirm the typed 1213 classifier fired)")
+	}
+	if !deadlockFired {
+		t.Logf("MySQL deadlock retry: no deadlock raced (both committed serially); typed path unexercised this run")
 	}
 }
 
@@ -490,12 +528,16 @@ func TestTxBoundaryPostgres(t *testing.T) {
 	resetIso(t, db, "INTEGER")
 	isolationBehavior(t, db, "postgres")
 	resetIso(t, db, "INTEGER")
-	retryPgWriteSkew(t, db, sink)
+	retryPgWriteSkew(t, db, sink, false)
+	resetIso(t, db, "INTEGER")
+	// REGRESSION (audit #83): the TYPED-code path alone (string fallback disabled) must classify the
+	// live 40001 — proving errors.As reaches the concrete *pgconn.PgError through SqlFailure.Unwrap().
+	retryPgWriteSkew(t, db, sink, true)
 	resetIso(t, db, "INTEGER")
 	nonRetryableDoesNotRetry(t, db, sink, "postgres")
 	resetIso(t, db, "INTEGER")
 	nestedOneBeginCommit(t, db, sink, "postgres")
-	t.Log("PG TX-BOUNDARY PROOF: multi-op atomicity (1 BeginTx/COMMIT/*sql.Tx + A-rolls-back-when-B-fails) + guard + isolation + real-contention retry (40001) + nested — all green")
+	t.Log("PG TX-BOUNDARY PROOF: multi-op atomicity (1 BeginTx/COMMIT/*sql.Tx + A-rolls-back-when-B-fails) + guard + isolation + real-contention retry (40001, typed-path load-bearing) + nested — all green")
 }
 
 func TestTxBoundaryMysql(t *testing.T) {
@@ -513,10 +555,14 @@ func TestTxBoundaryMysql(t *testing.T) {
 	resetIso(t, db, "INT")
 	isolationBehavior(t, db, "mysql")
 	resetIso(t, db, "INT")
-	retryMysqlDeadlock(t, db, sink)
+	retryMysqlDeadlock(t, db, sink, false)
+	resetIso(t, db, "INT")
+	// REGRESSION (audit #83): the TYPED-code path alone (string fallback disabled) must classify the
+	// live 1213 — proving errors.As reaches the concrete *mysql.MySQLError through SqlFailure.Unwrap().
+	retryMysqlDeadlock(t, db, sink, true)
 	resetIso(t, db, "INT")
 	nonRetryableDoesNotRetry(t, db, sink, "mysql")
 	resetIso(t, db, "INT")
 	nestedOneBeginCommit(t, db, sink, "mysql")
-	t.Log("MYSQL TX-BOUNDARY PROOF: multi-op atomicity (1 BeginTx/COMMIT/*sql.Tx + A-rolls-back-when-B-fails) + guard + isolation + real-contention retry (1213) + nested — all green")
+	t.Log("MYSQL TX-BOUNDARY PROOF: multi-op atomicity (1 BeginTx/COMMIT/*sql.Tx + A-rolls-back-when-B-fails) + guard + isolation + real-contention retry (1213, typed-path load-bearing) + nested — all green")
 }

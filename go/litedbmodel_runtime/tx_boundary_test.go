@@ -265,6 +265,41 @@ func TestRetryableClassification(t *testing.T) {
 	}
 }
 
+// The typed-code path must be REACHABLE through a mapped SqlFailure (mapSqliteError wraps the concrete
+// driver error; SqlFailure.Unwrap() re-exposes it) — the regression guard against the errors.As block
+// silently rotting into dead code. With the string fallback DISABLED, a mapped *pgconn.PgError /
+// *mysql.MySQLError must STILL classify as retryable purely via errors.As on the wrapped error.
+func TestTypedRetryablePathReachableThroughMappedFailure(t *testing.T) {
+	// mapSqliteError treats a non-SQLite error as a live-DB error and wraps it (wrapped: err).
+	pgMapped := mapSqliteError(&pgconn.PgError{Code: "40001", Message: "could not serialize"})
+	myMapped := mapSqliteError(&gomysql.MySQLError{Number: 1213, Message: "Deadlock found"})
+
+	// errors.As must traverse the mapped SqlFailure → its wrapped concrete driver error.
+	var pg *pgconn.PgError
+	if !errors.As(error(pgMapped), &pg) || pg.Code != "40001" {
+		t.Fatalf("mapped PG failure must expose the concrete *pgconn.PgError via Unwrap(): got %v", pg)
+	}
+	var my *gomysql.MySQLError
+	if !errors.As(error(myMapped), &my) || my.Number != 1213 {
+		t.Fatalf("mapped MySQL failure must expose the concrete *mysql.MySQLError via Unwrap(): got %v", my)
+	}
+
+	// With the STRING fallback disabled, the TYPED path alone must classify the MAPPED failures as
+	// retryable — proving the typed extraction is load-bearing, not dead code behind string matching.
+	disableRetryStringFallback = true
+	defer func() { disableRetryStringFallback = false }()
+	if !IsRetryableTxError(error(pgMapped)) {
+		t.Errorf("mapped PG 40001 must be retryable via the TYPED path alone (string fallback disabled)")
+	}
+	if !IsRetryableTxError(error(myMapped)) {
+		t.Errorf("mapped MySQL 1213 must be retryable via the TYPED path alone (string fallback disabled)")
+	}
+	// A mapped non-retryable code must NOT be retryable even via the typed path.
+	if IsRetryableTxError(error(mapSqliteError(&pgconn.PgError{Code: "23505", Message: "unique"}))) {
+		t.Errorf("mapped PG 23505 (unique) must NOT be retryable")
+	}
+}
+
 func TestGuardOrderReadOnlyFirst(t *testing.T) {
 	// Read-only is rejected FIRST (more specific), even with no active tx.
 	e := CheckWriteAllowed("INSERT", "users", false, true)

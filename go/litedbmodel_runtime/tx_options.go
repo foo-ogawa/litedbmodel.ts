@@ -198,11 +198,16 @@ func DefaultTransactionOptions() TransactionOptions {
 //   - connection errors (either dialect): via [IsConnectionError] — a dropped/reset/refused
 //     connection is retryable (reconnect on the next attempt).
 //
-// The typed-code extraction (errors.As on the concrete driver error) makes the classification
-// driver-version-independent — pgx surfaces the SQLSTATE even for a serialization failure raised at
-// COMMIT time (verified: `*pgconn.PgError.Code == "40001"`), and go-sql-driver carries the MySQL
-// errno on `*mysql.MySQLError.Number` (e.g. 1213). The string fallback covers a re-surfaced /
-// wrapped [SqlFailure] whose Msg embeds the code text (both drivers' Error() also embed the code).
+// The typed-code extraction (errors.As on the concrete driver error) is the PRIMARY, load-bearing
+// mechanism — NOT dead code behind the string match. The live drivers' errors reach here wrapped in a
+// [SqlFailure] (mapSqliteError flattens the driver TEXT into Msg), but SqlFailure.Unwrap() re-exposes
+// the ORIGINAL concrete error, so errors.As traverses to the *pgconn.PgError / *mysql.MySQLError even
+// for a serialization failure raised at tx.Commit() time. The string match is a belt-and-suspenders
+// FALLBACK for an error that lost its type (e.g. a doubly-wrapped or re-constructed failure) — it is
+// deliberately EXERCISE-DISABLABLE (disableRetryStringFallback) so a live regression test can prove
+// the typed path alone still catches PG 40001 + MySQL 1213 (guarding against the typed block silently
+// rotting back to dead code). Mirrors TS `isRetryableTxError` / rust `is_retryable_tx_error`. A data
+// conflict (unique/FK/check) is NOT retryable — re-running would fail identically.
 func IsRetryableTxError(err error) bool {
 	if err == nil {
 		return false
@@ -210,21 +215,15 @@ func IsRetryableTxError(err error) bool {
 	if IsConnectionError(err) {
 		return true
 	}
-	// Stable CODE first — the concrete driver error types (survives wrapping via errors.As).
-	var pg *pgconn.PgError
-	if errors.As(err, &pg) {
-		if pg.Code == "40001" || pg.Code == "40P01" {
-			return true // serialization_failure / deadlock_detected
-		}
+	// PRIMARY: stable CODE via the concrete driver error type (reachable through SqlFailure.Unwrap()).
+	if retryableByTypedCode(err) {
+		return true
 	}
-	var my *gomysql.MySQLError
-	if errors.As(err, &my) {
-		if my.Number == 1213 || my.Number == 1205 {
-			return true // ER_LOCK_DEADLOCK / ER_LOCK_WAIT_TIMEOUT
-		}
+	// FALLBACK: the code / v1 message substrings (driver-version-independent phrasing) — belt-and-
+	// suspenders for a type-erased error. Disablable in tests to prove the typed path is load-bearing.
+	if disableRetryStringFallback {
+		return false
 	}
-	// Fallback: the code / v1 message substrings (driver-version-independent phrasing). Covers a
-	// mapped SqlFailure (its Msg embeds the driver Error() text, which includes the SQLSTATE / errno).
 	m := err.Error()
 	if strings.Contains(m, "40001") || strings.Contains(m, "40P01") {
 		return true
@@ -239,6 +238,36 @@ func IsRetryableTxError(err error) bool {
 		strings.Contains(m, "Deadlock found") ||
 		strings.Contains(m, "deadlock detected") ||
 		strings.Contains(m, "Lock wait timeout exceeded")
+}
+
+// disableRetryStringFallback, when set, makes [IsRetryableTxError] skip the message-substring
+// FALLBACK so the PRIMARY typed-code path ([retryableByTypedCode] via errors.As on the concrete
+// driver error) must stand on its own. It exists ONLY for the live regression test that proves the
+// typed extraction is genuinely load-bearing (the concrete *pgconn.PgError / *mysql.MySQLError is
+// reachable through SqlFailure.Unwrap()); production never sets it. Package-level (not concurrency-
+// safe) — the regression test runs it serially.
+var disableRetryStringFallback bool
+
+// retryableByTypedCode reports whether `err` (traversed via errors.As, so a mapped [SqlFailure]
+// reaches its wrapped concrete driver error through Unwrap()) carries a retryable PG SQLSTATE
+// (40001/40P01) or MySQL errno (1213/1205). This is the driver-version-independent PRIMARY classifier
+// — it does NOT string-match. It is the load-bearing live path: a PG 40001 raised at tx.Commit() is
+// wrapped by mapSqliteError into a SqlFailure whose Unwrap() re-exposes the *pgconn.PgError, and this
+// errors.As reaches its .Code.
+func retryableByTypedCode(err error) bool {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		if pg.Code == "40001" || pg.Code == "40P01" {
+			return true // serialization_failure / deadlock_detected
+		}
+	}
+	var my *gomysql.MySQLError
+	if errors.As(err, &my) {
+		if my.Number == 1213 || my.Number == 1205 {
+			return true // ER_LOCK_DEADLOCK / ER_LOCK_WAIT_TIMEOUT
+		}
+	}
+	return false
 }
 
 // IsConnectionError reports whether `err` is a broken/stale connection (retryable via reconnect) — a
