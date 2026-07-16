@@ -215,9 +215,24 @@ export class DBConditions {
     params: unknown[]
   ): string {
     if (Array.isArray(value)) {
-      // Multiple placeholders - push all values
+      // A single `?` receiving an array is the `IN (?)` list idiom
+      // (e.g. sql`${Col} IN (?)` or `col.notIn([...])`): expand the lone
+      // placeholder to match the array arity, so the one `?` becomes
+      // `?, ?, …`. When the key already has as many `?` as values (e.g.
+      // `col BETWEEN ? AND ?`), it is a positional match — leave it as-is.
+      const placeholderCount = (key.match(/\?/g) || []).length;
+      if (placeholderCount === 1 && value.length === 0) {
+        // Empty `IN (?)` list — expand to `IN (NULL)` (a valid, matches-nothing membership test)
+        // rather than the invalid `IN ()` or a `?` with no bound param. No params pushed.
+        return key.replace('?', 'NULL');
+      }
+      // Push all values regardless of expansion (positional binding order).
       for (const v of value) {
         params.push(v);
+      }
+      if (placeholderCount === 1 && value.length !== 1) {
+        const expanded = value.map(() => '?').join(', ');
+        return key.replace('?', expanded);
       }
     } else {
       // Single placeholder

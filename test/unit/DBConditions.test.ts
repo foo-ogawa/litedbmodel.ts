@@ -129,6 +129,43 @@ describe('DBConditions', () => {
       expect(params).toEqual(['active', 'pending']);
     });
 
+    it('should expand a lone `IN (?)` placeholder to match the array arity (sql`` / col.notIn idiom)', () => {
+      // A single `?` in the key receiving an array is the `IN (?)` list idiom (produced by
+      // `sql`${Col} IN (?)`` and `col.notIn([...])`). The compiler must expand that one `?` to
+      // `?, ?, …` so the placeholder count matches the bound values — otherwise a driver binds N
+      // params to 1 placeholder (e.g. PG: `IN ($1)` with 2 params → error).
+      const cond = new DBConditions({ 'status IN (?)': ['active', 'pending'] });
+      const params: unknown[] = [];
+      const sql = cond.compile(params);
+      expect(sql).toBe('status IN (?, ?)');
+      expect(params).toEqual(['active', 'pending']);
+    });
+
+    it('should expand `NOT IN (?)` (col.notIn) to match the array arity', () => {
+      const cond = new DBConditions({ 'age NOT IN (?)': [1, 2, 3] });
+      const params: unknown[] = [];
+      const sql = cond.compile(params);
+      expect(sql).toBe('age NOT IN (?, ?, ?)');
+      expect(params).toEqual([1, 2, 3]);
+    });
+
+    it('should expand an EMPTY `IN (?)` list to `IN (NULL)` (valid, matches nothing; no params)', () => {
+      const cond = new DBConditions({ 'status IN (?)': [] });
+      const params: unknown[] = [];
+      const sql = cond.compile(params);
+      expect(sql).toBe('status IN (NULL)');
+      expect(params).toEqual([]);
+    });
+
+    it('should leave a positional multi-placeholder key untouched (e.g. BETWEEN ? AND ?)', () => {
+      // Two placeholders + two values is a positional match — no expansion.
+      const cond = new DBConditions({ 'age BETWEEN ? AND ?': [18, 65] });
+      const params: unknown[] = [];
+      const sql = cond.compile(params);
+      expect(sql).toBe('age BETWEEN ? AND ?');
+      expect(params).toEqual([18, 65]);
+    });
+
     it('should handle DBDynamicValue', () => {
       const cond = new DBConditions({
         updated_at: new DBDynamicValue('NOW()', []),
