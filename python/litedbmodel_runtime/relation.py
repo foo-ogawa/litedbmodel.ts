@@ -16,6 +16,7 @@ import json
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from .driver import Driver
+from .errors import LimitExceededError
 from .exec_context import READ_INTENT, ExecutionContext, as_context, execute as seam_execute
 from .static_bundle import PG_ARRAY_CAST_TOKEN, render_placeholders, resolve_pg_array_cast
 
@@ -109,6 +110,16 @@ def run_relation_op(
         return {"sql": sql, "keys": keys, "batch": batch}
     t_cols = _target_key_cols(op)
     rows = seam_execute(ctx, sql, _bind_keys(op, keys), READ_INTENT)
+    # Hard-limit runaway guard (Phase E-2, epic #74; v1 ``_selectForRelation``; port of the TS
+    # ``runRelationOp`` guard). POST-fetch, if the batch TOTAL exceeds the baked cap, raise with the
+    # EXACT count (the batch is fetched in full, no N+1). ⚠️ field mapping: ``model`` = the relation
+    # TARGET TABLE, ``relation`` = the relation NAME. Absent ``op['hardLimit']`` ⇒ disabled / an
+    # intrinsic per-parent ``limit`` window ⇒ NO check. The native ports (#100-103) run the SAME check
+    # off the same JSON field. Raised BEFORE grouping/hydration so an over-cap read never assembles an
+    # unbounded result set. ONE guard point → both the eager (``read_bundle``) and lazy surfaces.
+    hard_limit = op.get("hardLimit")
+    if hard_limit is not None and len(rows) > hard_limit:
+        raise LimitExceededError(hard_limit, len(rows), "relation", op.get("targetTable"), op.get("name"))
     for row in rows:
         k = _key_identity([row[c] for c in t_cols])
         batch.setdefault(k, []).append(row)

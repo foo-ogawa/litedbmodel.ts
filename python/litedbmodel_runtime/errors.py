@@ -63,6 +63,57 @@ class SqlFailure(Exception):
             self.__cause__ = wrapped
 
 
+class LimitExceededError(Exception):
+    """The SHARED cross-language runaway-prevention error (Phase E-2, epic #74; Python port of the TS
+    ``LimitExceededError`` reference in ``src/scp/errors.ts``, #99).
+
+    Raised by the native read / relation post-fetch guard when a read (``context='find'``) or a
+    ``hasMany`` relation batch (``context='relation'``) returns MORE rows than the cap BAKED onto the
+    portable artifact (``ReadGraph.findGuard.hardLimit`` / ``RelationOp.hardLimit``), so an accidental
+    missing-WHERE / N+1 pattern fails LOUD instead of loading an unbounded result. NOT a
+    :class:`SqlFailure` (a runaway guard is a litedbmodel-level policy error, carrying no ``SQLITE_*``
+    code — so :func:`litedbmodel_runtime.static_bundle._re_error_to_sql_failure` propagates it
+    unchanged). Byte-for-byte with the TS reference:
+
+      - fields: ``limit`` (the cap), ``count`` (rows fetched), ``context`` (``'find'`` | ``'relation'``),
+        ``model`` (the read / relation-TARGET-TABLE), ``relation`` (the relation NAME, relation context);
+      - message: ``Query limit exceeded: <where> returned <count-phrase> records, but limit is <limit>.
+        This usually indicates a missing WHERE clause or an N+1 query pattern. Set a higher limit or use
+        pagination.`` — ``find`` reports ``more than <limit>`` (the N+1 fetch only KNOWS the total
+        exceeds the cap); ``relation`` reports the EXACT ``<count>`` (the batch is fetched in full).
+
+    The ``.name`` attribute mirrors the JS ``Error.name`` (``'LimitExceededError'``) so the conformance
+    runner asserts the same ``expectedError`` shape across every language port (#100-103).
+    """
+
+    def __init__(
+        self,
+        limit: int,
+        count: int,
+        context: str,
+        model: Optional[str] = None,
+        relation: Optional[str] = None,
+    ) -> None:
+        where = (
+            f"find() on {model if model is not None else 'unknown'}"
+            if context == "find"
+            else f"relation '{relation if relation is not None else 'unknown'}' on "
+            f"{model if model is not None else 'unknown'}"
+        )
+        count_phrase = f"more than {limit}" if context == "find" else f"{count}"
+        super().__init__(
+            f"Query limit exceeded: {where} returned {count_phrase} records, "
+            f"but limit is {limit}. This usually indicates a missing WHERE clause or "
+            f"an N+1 query pattern. Set a higher limit or use pagination."
+        )
+        self.name = "LimitExceededError"
+        self.limit = limit
+        self.count = count
+        self.context = context
+        self.model = model
+        self.relation = relation
+
+
 def _code_from_bettersqlite_tag(message: str) -> Optional[str]:
     """Extract a `SQLITE_*` code embedded by the TS seam (`[SQLITE_...] ...`) or a bare mention."""
     m = re.search(r"(SQLITE_[A-Z_]+)", message)
