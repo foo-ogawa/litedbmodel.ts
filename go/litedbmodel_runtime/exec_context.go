@@ -198,6 +198,16 @@ type ExecutionContext struct {
 	// ([WriteInReadOnly]). The explicit-ctx analogue of the TS async-local read-only marker; derived
 	// via [ExecutionContext.WithReadOnly].
 	readOnly bool
+	// routing is the Phase C (#89) connection-routing config (the multi-DB [ConnectionRegistry] + the
+	// [WriterStickyClock]). nil ⇒ the Phase A/B single-primary-db path (ConnectionFor returns the
+	// primary-db connection, byte-identical). Non-nil ⇒ ConnectionFor completes its resolution steps
+	// 2-4 (reader/writer split, writer-sticky, named-DB) via [resolvePool]. Set by [ContextForRouting].
+	routing *RoutingConfig
+	// writerScope is the Phase C (#89) [WithWriter] marker (the explicit-ctx analogue of the TS
+	// withWriter async-local): a READ in a writer scope routes to the WRITER pool (read-your-writes),
+	// and — because WithWriter also sets readOnly — any write is rejected. Derived via
+	// [ExecutionContext.WithWriter].
+	writerScope bool
 }
 
 // sharedEmptyChain is the Phase A middleware chain — an empty passthrough so [ContextForDB] can build
@@ -223,6 +233,23 @@ func ContextForDBWith(ctx context.Context, db SQLDB, middleware *MiddlewareChain
 	}
 	return &ExecutionContext{ctx: ctx, db: db, middleware: middleware}
 }
+
+// ContextForRouting builds a Phase C (#89) routed [ExecutionContext] over a [RoutingConfig] (the
+// multi-DB [ConnectionRegistry] + [WriterStickyClock]). Reads/writes resolve their pool via
+// [resolvePool] (reader/writer split, writer-sticky, named-DB); no primary db is threaded (the
+// routing registry owns the pools). Middleware defaults to the shared empty chain (Phase A
+// passthrough) when nil; a background Go context is used. A ctx built from a SINGLE-default registry
+// with Reader == Writer + a disabled sticky clock resolves byte-identically to the Phase A/B
+// single-pool path. This is the go analogue of the TS `new PooledAsyncContext(routing)`.
+func ContextForRouting(routing RoutingConfig, middleware *MiddlewareChain) *ExecutionContext {
+	if middleware == nil {
+		middleware = sharedEmptyChain
+	}
+	return &ExecutionContext{ctx: context.Background(), middleware: middleware, routing: &routing}
+}
+
+// Routing returns the Phase C routing config this ctx carries (nil for the Phase A/B primary-db path).
+func (c *ExecutionContext) Routing() *RoutingConfig { return c.routing }
 
 // Context returns the Go context.Context this ExecutionContext rides.
 func (c *ExecutionContext) Context() context.Context { return c.ctx }
@@ -250,28 +277,97 @@ func (c *ExecutionContext) ReadOnly() bool { return c.readOnly }
 // writer-pinned read scope that must never accidentally mutate. Shares the primary db + middleware +
 // Go context + pinned tx connection.
 func (c *ExecutionContext) WithReadOnly() *ExecutionContext {
-	return &ExecutionContext{ctx: c.ctx, db: c.db, middleware: c.middleware, pinned: c.pinned, readOnly: true}
+	return &ExecutionContext{ctx: c.ctx, db: c.db, middleware: c.middleware, pinned: c.pinned, readOnly: true, routing: c.routing, writerScope: c.writerScope}
 }
 
-// ConnectionFor resolves WHICH connection a statement runs on (§3). Phase A resolution: the tx-owned
-// (pinned) connection wins; else the primary db. Reader/writer split (§3-2/3) + named-DB routing
-// (§3-4) extend HERE in B/C/D — the seam does not change.
+// WithWriter derives a WRITER-scoped ctx (Phase C / #89 — the go analogue of the TS `withWriter`):
+// every READ this ctx issues routes to the WRITER pool (read-your-writes without replication lag),
+// and — because it ALSO sets the read-only marker — ANY write funneled through the GUARDED write seam
+// ([RunGuarded] / [ExecuteTransactionBundleCtx]) is rejected with [WriteInReadOnly] (v1 parity —
+// withWriter reads never mutate). Inside a transaction the tx-owned connection already wins in
+// ConnectionFor, so WithWriter there is a no-op on routing (matches v1 :2941). Shares the primary db +
+// middleware + Go context + pinned tx connection + routing.
+func (c *ExecutionContext) WithWriter() *ExecutionContext {
+	return &ExecutionContext{ctx: c.ctx, db: c.db, middleware: c.middleware, pinned: c.pinned, readOnly: true, routing: c.routing, writerScope: true}
+}
+
+// InWriterScope reports whether this is a [WithWriter]-scoped ctx (reads route to the writer).
+func (c *ExecutionContext) InWriterScope() bool { return c.writerScope }
+
+// ConnectionFor resolves WHICH connection a statement runs on (§3). Resolution order:
+//  1. the tx-owned (pinned) connection wins (Phase A — only the ctx holds the pin);
+//  2. else, if this ctx carries a Phase C [RoutingConfig], [resolvePool] picks the reader/writer pool
+//     of the named connection (steps 2-4) and the returned connection acquires/runs/releases one
+//     owned pooled connection per statement (the per-statement ownership the read fan-out uses);
+//  3. else (Phase A/B single-primary-db path), the primary db (byte-identical — routing nil).
+//
+// A routing-resolution error (an unknown named DB — a loud wiring bug) is deferred to the acquired
+// connection's Execute/Run: Go's Connection has no error return on ConnectionFor, so the error is
+// carried by a [failingConnection] whose Execute/Run surface it — the seam propagates it uniformly
+// (mirrors the TS synchronous throw inside connectionFor being surfaced through the seam).
 func (c *ExecutionContext) ConnectionFor(intent StatementIntent) Connection {
 	if c.pinned != nil {
 		return c.pinned
+	}
+	if c.routing != nil {
+		pool, err := resolvePool(intent, c.writerScope, *c.routing)
+		if err != nil {
+			return failingConnection{err: err}
+		}
+		return pooledStatementConnection{pool: pool}
 	}
 	return dbConnection{db: c.db}
 }
 
 // WithTxConnection derives a tx-scoped ctx pinning `conn` (every statement resolves it while this ctx
-// is used). The derived ctx shares the primary db + middleware chain + Go context; ConnectionFor
-// returns the pinned tx connection instead of the db. This is the Go analogue of the TS
+// is used). The derived ctx shares the primary db + middleware chain + Go context + routing;
+// ConnectionFor returns the pinned tx connection instead of the db. This is the Go analogue of the TS
 // withConnection(conn, true) / rust with_tx_connection.
 func (c *ExecutionContext) WithTxConnection(conn Connection) *ExecutionContext {
-	// A tx-scoped ctx INHERITS the read-only marker: a Transaction() opened inside a read-only scope
-	// is still read-only (v1 parity — withWriter reads never mutate).
-	return &ExecutionContext{ctx: c.ctx, db: c.db, middleware: c.middleware, pinned: conn, readOnly: c.readOnly}
+	// A tx-scoped ctx INHERITS the read-only + writer markers + routing: a Transaction() opened inside
+	// a read-only scope is still read-only (v1 parity — withWriter reads never mutate).
+	return &ExecutionContext{ctx: c.ctx, db: c.db, middleware: c.middleware, pinned: conn, readOnly: c.readOnly, routing: c.routing, writerScope: c.writerScope}
 }
+
+// pooledStatementConnection is the ConnectionFor result for the Phase C routing path: it acquires ONE
+// owned pooled connection, runs the statement, and releases it (acquire → run → release per statement)
+// — the go analogue of the TS PooledAsyncContext.connectionFor inline wrapper. This is the read
+// fan-out ownership model: each concurrent sibling statement acquires its own connection (bounded by
+// the pool's MaxOpenConns cap). A poisoned connection (a statement error) is released as DESTROYED so
+// it never re-enters the pool with a fired statement_timeout / aborted session.
+type pooledStatementConnection struct {
+	pool Pool
+}
+
+func (c pooledStatementConnection) Execute(sql string, args []any) ([]bc.Value, error) {
+	conn, err := c.pool.Acquire()
+	if err != nil {
+		return nil, err
+	}
+	rows, execErr := conn.Execute(sql, args)
+	_ = c.pool.Release(conn, execErr != nil)
+	return rows, execErr
+}
+
+func (c pooledStatementConnection) Run(sql string, args []any) (RunInfo, error) {
+	conn, err := c.pool.Acquire()
+	if err != nil {
+		return RunInfo{}, err
+	}
+	info, runErr := conn.Run(sql, args)
+	_ = c.pool.Release(conn, runErr != nil)
+	return info, runErr
+}
+
+// failingConnection carries a ConnectionFor resolution error (an unknown named DB) to the seam: its
+// Execute/Run return the error, so a loud routing failure is surfaced through the SAME central seam
+// as any driver error (mirrors the TS synchronous throw in connectionFor).
+type failingConnection struct {
+	err error
+}
+
+func (c failingConnection) Execute(string, []any) ([]bc.Value, error) { return nil, c.err }
+func (c failingConnection) Run(string, []any) (RunInfo, error)        { return RunInfo{}, c.err }
 
 // ── The central seam (§2) — the ONLY place SQL meets a connection ─────────────
 
@@ -438,6 +534,12 @@ func WithTransactionDecidedIsolated[R any](ctx *ExecutionContext, db TxDB, isola
 	if cErr := tx.Commit(); cErr != nil {
 		_ = tx.Rollback()
 		return zero, mapSqliteError(cErr)
+	}
+	// Phase C (#89): a SUCCESSFUL commit ARMS the writer-sticky clock (read-your-writes) — subsequent
+	// reads within writerStickyDuration route to the WRITER. No-op when the ctx carries no routing /
+	// no sticky clock (the Phase A/B path) or when sticky is disabled (.Mark checks .enabled).
+	if ctx.routing != nil && ctx.routing.Sticky != nil {
+		ctx.routing.Sticky.Mark()
 	}
 	return result, nil
 }
