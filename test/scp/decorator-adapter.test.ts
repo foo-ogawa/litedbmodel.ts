@@ -237,6 +237,48 @@ describe('F1 reads — find/findOne/findById/count byte-identical to hand-writte
     // The QUERY lowered onto the Select cte/cteParams ports (no base table).
     expect(adapter.readGraph).toBeDefined();
   });
+
+  // ── F1-audit coverage MINORs (Phase F-2 fold-in): the `group` port + the non-`text[]` array
+  //    column families (`int[]` / `numeric[]` / `boolean[]`) through the adapter read path. F1's read
+  //    tests covered neither, which is how the blanket-INTEGER default (fixed via option B) and the
+  //    array-outType gap slipped through. Each asserts the adapter bundle is byte-identical to the
+  //    hand-written SCP oracle for the SAME model + read shape. ──────────────────────────────────────
+
+  it('find with a GROUP BY port (group) — byte-identical', () => {
+    const spec = { select: ['author_id'], group: 'author_id', order: 'author_id ASC' };
+    const adapter = compileReadBundle(Post as never, 'find', findAuthoring('posts', spec), 'sqlite', { columnTypes: { title: 'TEXT' } });
+    const hand = handRead('find', ($: Recorded, L) => L.Select({ table: 'posts', select: ['author_id'], group: 'author_id', order: 'author_id ASC' }), { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TIMESTAMP' } });
+    expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
+  });
+
+  it('projects the non-text[] array column families (int[] / numeric[] / boolean[]) — byte-identical, array outType', () => {
+    @model('array_cols')
+    class ArrayCols {
+      @column() id?: number;
+      @column.intArray() ints?: number[];
+      @column.numericArray() nums?: number[];
+      @column.booleanArray() flags?: boolean[];
+      @column.stringArray() texts?: string[];
+    }
+    const cols = { array_cols: { id: 'INTEGER', ints: 'INT[]', nums: 'NUMERIC[]', flags: 'BOOLEAN[]', texts: 'TEXT[]' } };
+    const spec = { select: ['id', 'ints', 'nums', 'flags', 'texts'] };
+    const adapter = compileReadBundle(ArrayCols as never, 'find', findAuthoring('array_cols', spec), 'sqlite');
+    const hand = handRead('find', ($: Recorded, L) => L.Select({ table: 'array_cols', select: ['id', 'ints', 'nums', 'flags', 'texts'] }), cols);
+    expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
+    // The array columns produce a `{ arr: <element> }` outType (not a scalar) — the F2 outtype fix.
+    expect(adapter.readGraph).toBeDefined();
+  });
+
+  it('deriveModelColumns maps every array family to its §4.1 array token', () => {
+    @model('arr2')
+    class Arr2 {
+      @column.intArray() a?: number[];
+      @column.numericArray() b?: number[];
+      @column.booleanArray() c?: boolean[];
+      @column.stringArray() d?: string[];
+    }
+    expect(deriveModelColumns(Arr2 as never)).toEqual({ arr2: { a: 'INT[]', b: 'NUMERIC[]', c: 'BOOLEAN[]', d: 'TEXT[]' } });
+  });
 });
 
 // ── 3. Writes: create / createMany / update / updateMany / delete / upsert ────────────────────────
@@ -248,14 +290,18 @@ describe('F1 writes — create/update/delete byte-identical to hand-written SCP'
       returning: 'id, author_id, title',
     };
     const adapter = compileCommandBundle(Post as never, 'create', createAuthoring('posts', spec), NO_EFFECTS, 'create', 'sqlite');
-    const contract = compileEager('create', ($: Recorded, L) => L.Insert({ table: 'posts', 'values.author_id': $.author_id, 'values.title': $.title, returning: 'id, author_id, title' }), { columns: { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'INTEGER', created_at: 'TIMESTAMP' } } });
+    // Phase F-2 (#105 option B): `Post.title` is a bare `@column() title?: string`, so the adapter
+    // derives its SQL type from `design:type` (String → TEXT) — NOT the old blanket INTEGER default.
+    // The hand oracle uses the SAME correct types (author_id/id bare Number → INTEGER, title → TEXT).
+    const contract = compileEager('create', ($: Recorded, L) => L.Insert({ table: 'posts', 'values.author_id': $.author_id, 'values.title': $.title, returning: 'id, author_id, title' }), { columns: { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TIMESTAMP' } } });
     const hand = compileWriteBundle(contract, 'create', NO_EFFECTS, 'create', 'sqlite', contract.resolveColumnType);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
   });
 
   it('update byte-identical', () => {
     const adapter = compileCommandBundle(Post as never, 'update', updateAuthoring('posts', ($: Recorded) => ({ title: $.title }), ($: Recorded) => [whereEq($.id, $.id)], { returning: 'id, title' }), NO_EFFECTS, 'update', 'sqlite');
-    const contract = compileEager('update', ($: Recorded, L) => L.Update({ table: 'posts', where: [whereEq($.id, $.id)], 'set.title': $.title, returning: 'id, title' }), { columns: { posts: { id: 'INTEGER', title: 'INTEGER' } } });
+    // Phase F-2 (#105 option B): `Post.title` (bare string) → TEXT via design:type (not INTEGER).
+    const contract = compileEager('update', ($: Recorded, L) => L.Update({ table: 'posts', where: [whereEq($.id, $.id)], 'set.title': $.title, returning: 'id, title' }), { columns: { posts: { id: 'INTEGER', title: 'TEXT' } } });
     const hand = compileWriteBundle(contract, 'update', NO_EFFECTS, 'update', 'sqlite', contract.resolveColumnType);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
   });

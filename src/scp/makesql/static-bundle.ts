@@ -76,6 +76,7 @@ import {
   TUPLE_SENTINEL,
   SUBQUERY_SENTINEL,
   EXISTS_SENTINEL,
+  RAWPRED_SENTINEL,
 } from '../authoring-sql';
 
 // ── Expression IR alias (a value-spec / skip expression is a closed-set bc node) ──
@@ -341,6 +342,15 @@ function decodeSentinel(col: unknown, val: unknown, dialect: Dialect, at: string
     const sub = nestedSub(val, at);
     // v1 `DBExists` renders `<EXISTS|NOT EXISTS> (<inner SELECT 1 …>)`. Inner text v1-sourced.
     return { sql: `${keyword} (${sub.sql})`, params: sub.params };
+  }
+
+  if (head === RAWPRED_SENTINEL) {
+    // Phase F-2 (#105): a COMPLETE raw WHERE predicate carried verbatim (the whole `ConditionObject`
+    // compiled by v1 `DBConditions.compile()` upstream). Splice `sub.sql` verbatim (it already carries
+    // its own `?` placeholders) and defer `sub.params` 1:1 — no re-derivation, byte-true because the
+    // text IS v1's. The `?`→`$N` dialect renumber is the final render pass, so the spliced text stays `?`.
+    const sub = nestedSub(val, at);
+    return { sql: sub.sql, params: sub.params };
   }
 
   return undefined;
