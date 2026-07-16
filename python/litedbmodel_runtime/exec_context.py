@@ -373,8 +373,12 @@ def with_transaction_decided(
          statement ``body`` issues resolves THAT connection via the seam — never a fresh pooled one;
       3. run ``body(tx_ctx)`` → COMMIT / ROLLBACK on the OWNED connection per the returned decision;
          on any raised exception ROLLBACK (best-effort) and re-raise;
-      4. the owned connection is released (back to the pool, or destroyed if the ROLLBACK itself
-         failed — a poisoned connection must not re-enter the pool).
+      4. **release the owned connection EXACTLY ONCE in a ``finally``** (the SOLE releaser — the
+         :class:`TxConnection` never self-releases). It goes back to the pool on the clean paths, and
+         is **destroyed** when the connection is poisoned — a body error, OR a COMMIT/ROLLBACK that
+         itself raised (rare but real: a deferred-constraint violation or a dropped connection at
+         COMMIT). Without this ``finally`` a raising COMMIT would leak the connection (the pool would
+         shrink by one under repeated commit failures — the #78 audit defect).
 
     Concurrent calls (on distinct threads) each acquire a DISTINCT connection and pin it in their OWN
     contextvar scope, so their writes never cross-talk — the isolation the shared-slot model (the
@@ -385,18 +389,35 @@ def with_transaction_decided(
     tx_ctx = ctx.with_connection(_TxConnectionAdapter(tx), True)
 
     def scoped() -> Any:
+        # `destroy` starts True: the connection is only proven clean once a COMMIT/ROLLBACK completes
+        # without raising. ANY failure below (body error, or a commit/rollback that itself throws)
+        # leaves it True ⇒ the finally drops the poisoned connection instead of returning it.
+        destroy = True
         try:
-            decision = body(tx_ctx)
-        except BaseException:
-            # A body error rolls back (best-effort) and re-raises; the original failure is surfaced.
-            tx.rollback()
-            raise
-        if decision.rollback:
-            # A legitimate non-error rollback (e.g. a gate short-circuit): roll back, return the value.
-            tx.rollback()
+            try:
+                decision = body(tx_ctx)
+            except BaseException:
+                # A body error rolls back (BEST-EFFORT) then re-raises the ORIGINAL failure. A rollback
+                # that itself raises must NOT mask the body error — swallow it but keep destroy=True so
+                # the finally drops the poisoned connection. A clean rollback ⇒ back to the pool.
+                try:
+                    tx.rollback()
+                    destroy = False
+                except Exception:
+                    pass  # poisoned; destroy stays True. Original body error surfaces via `raise`.
+                raise
+            if decision.rollback:
+                # A legitimate non-error rollback (e.g. a gate short-circuit): roll back, return value.
+                tx.rollback()
+                destroy = False
+                return decision.value
+            tx.commit()
+            destroy = False
             return decision.value
-        tx.commit()
-        return decision.value
+        finally:
+            # The SINGLE release point — runs on every path (success, body error, raising
+            # commit/rollback). Idempotent on the TxConnection side, but this is the only caller.
+            tx.release(destroy)
 
     return run_with_pinned_context(tx_ctx, scoped)
 

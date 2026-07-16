@@ -37,9 +37,15 @@ class PreparedStatement(Protocol):
 class TxConnection(Protocol):
     """An OWNED transaction connection (Phase A / #78) — the Python analogue of v1 ``PoolTransaction``
     / go's ``*sql.Tx``. Acquired by :meth:`Driver.begin_tx`, it holds ONE connection for the
-    transaction's whole duration: every statement in the tx body runs on it (``all`` / ``run``), and
-    the tx ends by consuming the handle via :meth:`commit` / :meth:`rollback` (which run the
-    COMMIT/ROLLBACK on the SAME owned connection, then release it — back to the pool, or destroyed).
+    transaction's whole duration: every statement in the tx body runs on it (``all`` / ``run``), the
+    tx ends by running :meth:`commit` / :meth:`rollback` on the SAME owned connection, and the caller
+    then :meth:`release` s the connection EXACTLY ONCE (back to the pool, or destroyed if poisoned).
+
+    **Release ownership**: ``commit``/``rollback`` ONLY run the SQL — they do NOT release. The seam
+    combinator (``with_transaction_decided``) is the SOLE owner of :meth:`release`, calling it in a
+    ``finally`` so the owned connection is returned/destroyed on EVERY path (success, body error, AND a
+    commit/rollback that itself raises — the leak the self-release model missed). :meth:`release` is
+    idempotent (a second call is a no-op).
 
     Concurrent transactions each hold a DISTINCT handle over a DISTINCT pooled connection, so their
     writes never cross-talk — the isolation the removed driver-global ``_writer`` slot violated.
@@ -52,6 +58,12 @@ class TxConnection(Protocol):
     def commit(self) -> None: ...
 
     def rollback(self) -> None: ...
+
+    def release(self, destroy: bool) -> None:
+        """Release the owned connection EXACTLY ONCE (idempotent): back to the pool, or dropped when
+        ``destroy`` (a poisoned connection — a COMMIT/ROLLBACK that itself raised). Called by the seam
+        combinator in a ``finally``; never inside ``commit``/``rollback``."""
+        ...
 
 
 class Driver(Protocol):
@@ -152,6 +164,12 @@ class _SqliteTxConnection:
         except Exception:
             pass  # best-effort; the original failure is surfaced by the caller
 
+    def release(self, destroy: bool) -> None:
+        # SQLite is single-connection (the driver owns THE conn); there is no pool to return to and
+        # the shared conn is never dropped mid-life. A no-op — the combinator's finally still calls it
+        # uniformly so the release contract is honored across drivers.
+        pass
+
 
 # ── Live PostgreSQL / MySQL drivers (WS7g #36; async/pooled #40) ────────────────
 #
@@ -167,11 +185,13 @@ class _SqliteTxConnection:
 # (both DB-API drivers here use `%s`), and MySQL emulates the missing `RETURNING` at this seam
 # (strip → execute → re-select the inserted PK) — the WS6 TS ScpDialect behavior-by-convention.
 #
-# WRITE-TX STAYS SERIAL: the runtime issues `prepare("BEGIN"|"COMMIT"|"ROLLBACK").run([])`. On
-# `BEGIN` the driver PINS one pooled connection into a single writer slot and routes every
-# subsequent statement to it until `COMMIT`/`ROLLBACK` releases it — one connection, tx-DAG order,
-# gate-first short-circuit. Reads (no active tx) each check out + return a pooled connection. The
-# connections run with autocommit ON so the literal BEGIN…COMMIT bracket a REAL transaction.
+# WRITE-TX OWNS ITS CONNECTION (Phase A / #78): `begin_tx()` acquires ONE pooled connection, issues
+# BEGIN on it, and returns an OWNED `_PooledTxConnection`; every tx-body statement runs on THAT
+# connection (tx-DAG order, gate-first short-circuit), and the seam combinator ends the tx
+# (COMMIT/ROLLBACK) then releases the connection EXACTLY ONCE in a finally — back to the pool, or
+# destroyed if poisoned. There is NO driver-global writer slot, so concurrent transactions each own a
+# DISTINCT connection ⇒ isolated. Reads (no active tx) each check out + return a pooled connection.
+# The connections run with autocommit ON so the literal BEGIN…COMMIT bracket a REAL transaction.
 
 # The read plan's default concurrency (spec) — the pool is sized to match so `concurrency` sibling
 # relations can each hold a live connection without starving.
@@ -216,6 +236,21 @@ class _ConnectionPool:
 
     def release(self, conn: Any) -> None:
         self._free.put(conn)
+
+    def discard(self, conn: Any) -> None:
+        """Permanently drop a POISONED connection (a tx whose COMMIT/ROLLBACK itself raised): close it
+        and DECREMENT the opened count so a fresh connection can be opened in its place. Without the
+        decrement the pool's ``_opened < _max`` ceiling would count the dead connection forever and
+        capacity would shrink by one per discard — eventual exhaustion under repeated commit failures
+        (the deeper half of the #78 leak: releasing wasn't enough; the destroy path must re-open a slot).
+        """
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with self._lock:
+            if self._opened > 0:
+                self._opened -= 1
 
     def close(self) -> None:
         import queue as _queue
@@ -416,15 +451,20 @@ class _PooledTxConnection:
     """The OWNED tx handle over a POOLED live DB-API connection (§3) — the Python analogue of v1
     ``PoolTransaction``. It acquires ONE connection from the pool, issues BEGIN on it, and holds it
     for the transaction's whole duration: every tx-body statement (``all`` / ``run``) runs on THIS
-    connection, and :meth:`commit` / :meth:`rollback` end the tx on it and return it to the pool
-    (destroyed if the ROLLBACK itself fails — a poisoned connection must not re-enter the pool).
+    connection, and :meth:`commit` / :meth:`rollback` end the tx on it.
+
+    **Release ownership**: ``commit``/``rollback`` ONLY run the SQL (and let a failure propagate);
+    they do NOT return the connection. :meth:`release` (idempotent) is the SOLE releaser, called by the
+    seam combinator in a ``finally`` so the pooled connection is returned on EVERY path — including a
+    COMMIT/ROLLBACK that itself raises (the leak the old self-in-``commit`` release missed). ``destroy``
+    drops a poisoned connection instead of returning it to the pool.
 
     Concurrent transactions each hold a DISTINCT ``_PooledTxConnection`` over a DISTINCT pooled
     connection, so their writes never cross-talk — the isolation the removed driver-global ``_writer``
     slot violated.
     """
 
-    __slots__ = ("_pool", "_xform", "_emulate_returning", "_conn", "_done")
+    __slots__ = ("_pool", "_xform", "_emulate_returning", "_conn", "_released")
 
     def __init__(self, pool: "_ConnectionPool", xform, emulate_returning: bool) -> None:
         self._pool = pool
@@ -435,7 +475,7 @@ class _PooledTxConnection:
         cur.execute("BEGIN")
         cur.close()
         self._conn = conn
-        self._done = False
+        self._released = False
 
     def all(self, sql: str, params: Sequence[Any]) -> List[Dict[str, Any]]:
         return _conn_all(self._conn, sql, params, self._xform, self._emulate_returning)
@@ -444,30 +484,26 @@ class _PooledTxConnection:
         return _conn_run(self._conn, sql, params, self._xform)
 
     def commit(self) -> None:
+        # Runs the COMMIT only. A failure propagates so the combinator releases with destroy=True (a
+        # commit that raised leaves the connection in an unknown state — it must not re-enter the pool).
         cur = self._conn.cursor()
         cur.execute("COMMIT")
         cur.close()
-        self._release(destroy=False)
 
     def rollback(self) -> None:
-        try:
-            cur = self._conn.cursor()
-            cur.execute("ROLLBACK")
-            cur.close()
-            self._release(destroy=False)
-        except Exception:
-            # A failed ROLLBACK poisons the connection — drop it, never return it to the pool.
-            self._release(destroy=True)
+        # Runs the ROLLBACK only; a failure propagates (⇒ the combinator destroys the connection).
+        cur = self._conn.cursor()
+        cur.execute("ROLLBACK")
+        cur.close()
 
-    def _release(self, destroy: bool) -> None:
-        if self._done:
-            return
-        self._done = True
+    def release(self, destroy: bool) -> None:
+        if self._released:
+            return  # idempotent — the combinator's finally is the single releaser, but guard anyway
+        self._released = True
         if destroy:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
+            # A poisoned connection: DISCARD it (close + free a pool slot for a fresh one). Never
+            # return it to the pool, and never leave the pool's opened-count stuck at the ceiling.
+            self._pool.discard(self._conn)
         else:
             self._pool.release(self._conn)
 

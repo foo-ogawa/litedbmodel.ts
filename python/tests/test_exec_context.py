@@ -67,11 +67,14 @@ class _RecStmt:
 
 
 class _RecTx:
-    """A recording TxConnection: forwards to the SAME log so BEGIN/…/COMMIT ordering is asserted."""
+    """A recording TxConnection: forwards to the SAME log so BEGIN/…/COMMIT/RELEASE ordering is
+    asserted. ``fail_commit`` makes COMMIT raise (to drive the raising-commit release path)."""
 
-    def __init__(self, log, fail_on):
+    def __init__(self, log, fail_on, fail_commit=False):
         self._log = log
         self._fail_on = fail_on
+        self._fail_commit = fail_commit
+        self.released = None  # records the destroy flag the combinator releases with
         self._log.append("BEGIN")
 
     def all(self, sql, params):
@@ -82,21 +85,31 @@ class _RecTx:
 
     def commit(self):
         self._log.append("COMMIT")
+        if self._fail_commit:
+            raise RuntimeError("commit-boom")
 
     def rollback(self):
         self._log.append("ROLLBACK")
 
+    def release(self, destroy):
+        # The SINGLE release point (the combinator's finally). Record it exactly once for the leak guard.
+        self.released = destroy
+        self._log.append("RELEASE(destroy)" if destroy else "RELEASE")
+
 
 class _RecDriver:
-    def __init__(self, fail_on=None):
+    def __init__(self, fail_on=None, fail_commit=False):
         self.log = []
         self._fail_on = fail_on
+        self._fail_commit = fail_commit
+        self.last_tx = None  # the most recent tx handle (to inspect its release)
 
     def prepare(self, sql):
         return _RecStmt(self.log, sql, self._fail_on)
 
     def begin_tx(self):
-        return _RecTx(self.log, self._fail_on)
+        self.last_tx = _RecTx(self.log, self._fail_on, self._fail_commit)
+        return self.last_tx
 
 
 # ── Seam funnel + middleware ────────────────────────────────────────────────────
@@ -194,7 +207,9 @@ def test_with_transaction_commits_on_ok():
     ctx = context_for_driver(d)
     out = with_transaction(ctx, lambda tx: (run(tx, "INSERT INTO t VALUES (1)", [], WRITE_INTENT), 7)[1])
     assert out == 7
-    assert d.log == ["BEGIN", "INSERT INTO t VALUES (1)", "COMMIT"]
+    # COMMIT then the combinator's single RELEASE (clean → back to the pool, destroy=False).
+    assert d.log == ["BEGIN", "INSERT INTO t VALUES (1)", "COMMIT", "RELEASE"]
+    assert d.last_tx.released is False
 
 
 def test_with_transaction_rolls_back_on_err():
@@ -208,7 +223,9 @@ def test_with_transaction_rolls_back_on_err():
 
     with pytest.raises(RuntimeError):
         with_transaction(ctx, body)
-    assert d.log == ["BEGIN", "INSERT INTO t VALUES (1)", "BAD", "ROLLBACK"]
+    # A clean ROLLBACK on a body error ⇒ the connection returns to the pool (destroy=False).
+    assert d.log == ["BEGIN", "INSERT INTO t VALUES (1)", "BAD", "ROLLBACK", "RELEASE"]
+    assert d.last_tx.released is False
 
 
 def test_with_transaction_decided_rollback_returns_value():
@@ -221,7 +238,117 @@ def test_with_transaction_decided_rollback_returns_value():
 
     out = with_transaction_decided(ctx, body)
     assert out == "gated"
-    assert d.log == ["BEGIN", "INSERT INTO t VALUES (1)", "ROLLBACK"]
+    assert d.log == ["BEGIN", "INSERT INTO t VALUES (1)", "ROLLBACK", "RELEASE"]
+    assert d.last_tx.released is False
+
+
+def test_release_runs_exactly_once_on_raising_commit():
+    # LEAK REGRESSION GUARD (#78 audit): if COMMIT itself raises, the owned connection must STILL be
+    # released — destroyed (poisoned), EXACTLY ONCE — via the combinator's finally. Before the fix the
+    # release lived inside commit() (skipped when commit raised) ⇒ the connection leaked.
+    d = _RecDriver(fail_commit=True)
+    ctx = context_for_driver(d)
+
+    def body(tx):
+        run(tx, "INSERT INTO t VALUES (1)", [], WRITE_INTENT)
+        return None
+
+    with pytest.raises(RuntimeError, match="commit-boom"):
+        with_transaction(ctx, body)
+    # COMMIT raised → the connection is poisoned → RELEASE(destroy) runs once (not leaked).
+    assert d.log == ["BEGIN", "INSERT INTO t VALUES (1)", "COMMIT", "RELEASE(destroy)"]
+    assert d.last_tx.released is True
+    assert d.log.count("RELEASE(destroy)") == 1  # exactly once (no double-release)
+
+
+def test_sqlite_pool_not_leaked_on_raising_commit():
+    """A faithful pool-level leak guard over a real pooled-shaped driver: a tx whose COMMIT raises
+    must return the pool to its baseline free count (destroyed, not leaked). Uses a tiny fake pooled
+    driver mirroring _PooledTxConnection's acquire/BEGIN + commit/rollback/release contract."""
+    from litedbmodel_runtime.driver import RunInfo as _RunInfo
+
+    class _FakePool:
+        """Mirrors _ConnectionPool's opened-count accounting: acquire opens up to `size`; discard
+        closes AND frees a slot (decrements opened) so a fresh conn can replace a poisoned one."""
+
+        def __init__(self, size):
+            self.size = size
+            self.free = []
+            self.opened = 0
+            self.destroyed = []
+            self._next = 0
+
+        def acquire(self):
+            if self.free:
+                return self.free.pop()
+            assert self.opened < self.size, "pool exhausted (leak!) — acquire would block forever"
+            self.opened += 1
+            self._next += 1
+            return self._next
+
+        def release(self, conn):
+            self.free.append(conn)
+
+        def discard(self, conn):
+            self.destroyed.append(conn)
+            self.opened -= 1  # free the slot so a fresh connection can be opened (no capacity shrink)
+
+    class _FakeTx:
+        def __init__(self, pool, fail_commit):
+            self._pool = pool
+            self._fail_commit = fail_commit
+            self._conn = pool.acquire()  # BEGIN on the owned conn
+            self._released = False
+
+        def all(self, sql, params):
+            return []
+
+        def run(self, sql, params):
+            return _RunInfo(1, 0)
+
+        def commit(self):
+            if self._fail_commit:
+                raise RuntimeError("commit dropped the connection")
+
+        def rollback(self):
+            pass
+
+        def release(self, destroy):
+            if self._released:
+                return
+            self._released = True
+            if destroy:
+                self._pool.discard(self._conn)  # close + free the slot (no capacity shrink)
+            else:
+                self._pool.release(self._conn)
+
+    class _FakePooledDriver:
+        def __init__(self, pool, fail_commit):
+            self._pool = pool
+            self._fail_commit = fail_commit
+
+        def prepare(self, sql):
+            raise AssertionError("tx path must not hit prepare")
+
+        def begin_tx(self):
+            return _FakeTx(self._pool, self._fail_commit)
+
+    # A SMALL pool (size 2) run through MANY raising-COMMIT txs: if a raising commit leaked its
+    # connection (pre-fix) OR discard failed to free the pool slot (the deeper accounting bug), the
+    # pool's opened-count would stick at the ceiling and the 3rd+ acquire would assert "pool exhausted".
+    pool = _FakePool(2)
+    driver = _FakePooledDriver(pool, fail_commit=True)
+    ctx = context_for_driver(driver)
+    for _ in range(20):
+        with pytest.raises(RuntimeError, match="commit dropped"):
+            with_transaction(ctx, lambda tx: run(tx, "INSERT", [], WRITE_INTENT))
+    assert len(pool.destroyed) == 20  # every poisoned connection discarded, one per failing tx
+    assert pool.opened == 0  # discard freed every slot — capacity fully restored (no leak, no shrink)
+    # A subsequent CLEAN tx still acquires + commits + returns its connection — the pool functions.
+    driver_ok = _FakePooledDriver(pool, fail_commit=False)
+    ctx_ok = context_for_driver(driver_ok)
+    with_transaction(ctx_ok, lambda tx: run(tx, "INSERT", [], WRITE_INTENT))
+    assert pool.opened == 1 and len(pool.free) == 1  # one live, returned to free
 
 
 def test_tx_scoped_ctx_reports_in_transaction():

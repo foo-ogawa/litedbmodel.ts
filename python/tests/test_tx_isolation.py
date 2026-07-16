@@ -230,6 +230,61 @@ def _multi_stmt_atomicity(driver, dialect):
     assert got == want, f"{dialect}: id=10 ROLLED BACK (cross-statement atomicity); id=30 present, unaffected\n got={got}\nwant={want}"
 
 
+# ── (4) COMMIT-FAILURE POOL-LEAK GUARD (#78 audit) — a RAISING commit must not leak ──
+#
+# The realistic "commit itself raises" case on PG: a DEFERRABLE INITIALLY DEFERRED unique constraint
+# whose violation surfaces at COMMIT (not at the INSERT). Run MANY such failing txs through the
+# production path on a SMALL pool: if the owned connection leaked on each raising COMMIT (the pre-fix
+# self-release-in-commit bug), the pool would exhaust and the run would hang / error long before the
+# loop ends. After the fix, the combinator's finally releases (destroys) each poisoned connection, so
+# the pool never shrinks below capacity and a final CLEAN tx still commits. (PG-only: MySQL has no
+# deferred unique constraints; the unit test test_sqlite_pool_not_leaked_on_raising_commit covers the
+# pool accounting portably.)
+
+
+def _commit_failure_no_pool_leak_pg(driver):
+    # A table with a DEFERRABLE INITIALLY DEFERRED unique constraint: two inserts of the same key in
+    # one tx pass at INSERT time and only collide at COMMIT → COMMIT raises.
+    driver.exec_ddl([f"DROP TABLE IF EXISTS {ISO_TBL}"])
+    driver.exec_ddl(
+        [
+            f"CREATE TABLE {ISO_TBL} (id INTEGER PRIMARY KEY, worker INTEGER NOT NULL, seq INTEGER NOT NULL, "
+            f"k INTEGER, CONSTRAINT {ISO_TBL}_k_uniq UNIQUE (k) DEFERRABLE INITIALLY DEFERRED)"
+        ]
+    )
+    dup_bundle = {
+        "dialect": "postgres",
+        "transaction": {
+            "phase": "create",
+            "entityFrom": None,
+            "statements": [
+                {"id": "s0", "role": "body", "op": {"sql": f"INSERT INTO {ISO_TBL} (id, worker, seq, k) VALUES (?, 1, 0, 7)", "params": [{"ref": ["a"]}]}},
+                {"id": "s1", "role": "body", "op": {"sql": f"INSERT INTO {ISO_TBL} (id, worker, seq, k) VALUES (?, 1, 0, 7)", "params": [{"ref": ["b"]}]}},  # same k=7 → COMMIT fails
+            ],
+        },
+    }
+    # Many more iterations than the pool size: a per-iteration leak would exhaust it and hang/raise.
+    iterations = 40
+    for i in range(iterations):
+        raised = False
+        try:
+            execute_transaction_bundle(dup_bundle, {"a": 2 * i, "b": 2 * i + 1}, driver)
+        except Exception:
+            raised = True  # the deferred-unique violation surfaces at COMMIT → raises (GOOD)
+        assert raised, "the deferred-unique tx must FAIL at COMMIT"
+    # The pool survived (no leak) — a final CLEAN single-INSERT tx still commits.
+    driver.exec_ddl([f"DELETE FROM {ISO_TBL}"])
+    ok = execute_transaction_bundle(
+        {"dialect": "postgres", "transaction": {"phase": "create", "entityFrom": None, "statements": [
+            {"id": "s0", "role": "body", "op": {"sql": f"INSERT INTO {ISO_TBL} (id, worker, seq, k) VALUES (?, 5, 0, 99)", "params": [{"ref": ["a"]}]}}]}},
+        {"a": 500},
+        driver,
+    )
+    assert ok["committed"], "after 40 raising-COMMIT txs the pool must still serve a clean commit (no leak)"
+    rows = driver.prepare(f"SELECT id FROM {ISO_TBL}").all([])
+    assert [int(r["id"]) for r in rows] == [500]
+
+
 # ── The two live-DB entry points ────────────────────────────────────────────────
 
 
@@ -242,6 +297,16 @@ def test_tx_isolation_postgres():
         _single_stmt_atomicity(driver, "postgres")
         _reset(driver, "INTEGER")
         _multi_stmt_atomicity(driver, "postgres")
+    finally:
+        driver.close()
+
+
+def test_commit_failure_no_pool_leak_postgres():
+    # A DELIBERATELY SMALL pool (size 2): a per-commit-failure connection leak would exhaust it within
+    # the 40-iteration loop and hang/error, so a green run is a real no-leak proof of the finally-release.
+    driver = PostgresDriver.connect(pool_size=2, **_pg_cfg())
+    try:
+        _commit_failure_no_pool_leak_pg(driver)
     finally:
         driver.close()
 
