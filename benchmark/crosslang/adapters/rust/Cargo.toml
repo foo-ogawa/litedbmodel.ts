@@ -16,6 +16,12 @@ path = "src/orm.rs"
 # `Driver` seam `livedb_runner` uses.
 litedbmodel_runtime = { path = "../../../../rust/litedbmodel_runtime", features = ["livedb"] }
 behavior-contracts = "0.8.0"
+# RAW-DRIVER BASELINE (benchmark-only, sqlite): a BARE `rusqlite::Connection` used to run the
+# IDENTICAL final SQL + params the runtime issues, WITHOUT going through the shipped `Driver` seam /
+# Value codec — so `runtime÷baseline` measures litedbmodel_runtime's over-driver overhead. Pinned to
+# the SAME version the runtime's `SqliteDriver` uses internally (rust/Cargo.toml workspace dep) so the
+# `rusqlite::types::Value` family and the bundled amalgamation match byte-for-byte.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [profile.release]
 opt-level = 3

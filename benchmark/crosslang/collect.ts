@@ -64,7 +64,10 @@ function splitCsvLine(line: string): string[] {
 
 // ── per-language accumulator ────────────────────────────────────────────────────
 interface CellAccum {
-  latency: Record<string, Record<string, number[]>>; // [dialect][case] -> raw ms samples
+  latency: Record<string, Record<string, number[]>>; // [dialect][case] -> raw ms samples (RUNTIME)
+  // The raw-driver BASELINE latency samples (same SQL, no litedbmodel de-box). The collector emits
+  // a SEPARATE `impl: baseline` cell from these so report.ts's §② computes runtime÷baseline.
+  baselineLatency: Record<string, Record<string, number[]>>;
   tpElapsed: Record<string, Record<string, number>>;
   tpCompleted: Record<string, Record<string, number>>;
   costQueries: Record<string, Record<string, number>>;
@@ -77,7 +80,7 @@ interface CellAccum {
 }
 
 function emptyAccum(): CellAccum {
-  return { latency: {}, tpElapsed: {}, tpCompleted: {}, costQueries: {}, costRows: {}, skipped: {} };
+  return { latency: {}, baselineLatency: {}, tpElapsed: {}, tpCompleted: {}, costQueries: {}, costRows: {}, skipped: {} };
 }
 function nest<T>(m: Record<string, Record<string, T>>, dialect: string, caseId: string, v: T): void {
   (m[dialect] ??= {})[caseId] = v;
@@ -90,6 +93,9 @@ function accumulate(rows: CsvRow[]): CellAccum {
     switch (r.metric) {
       case 'latency_ms':
         ((a.latency[r.dialect] ??= {})[r.case] ??= []).push(num);
+        break;
+      case 'baseline_latency_ms':
+        ((a.baselineLatency[r.dialect] ??= {})[r.case] ??= []).push(num);
         break;
       case 'throughput_elapsed_ms': nest(a.tpElapsed, r.dialect, r.case, num); break;
       case 'throughput_completed': nest(a.tpCompleted, r.dialect, r.case, num); break;
@@ -105,6 +111,7 @@ function accumulate(rows: CsvRow[]): CellAccum {
   return a;
 }
 
+// The RUNTIME cell (production path) — carries cost/throughput/skip + the resource metrics.
 function toCell(language: string, a: CellAccum): CellResult {
   const dialects: Record<string, DialectResult> = {};
   // Union of every dialect that carried any signal (latency OR skip).
@@ -143,6 +150,26 @@ function toCell(language: string, a: CellAccum): CellResult {
   };
 }
 
+// The raw-driver BASELINE cell (identical SQL, bare driver) — latency only; report.ts §② divides
+// the runtime p50 by this baseline p50 per op×dialect. Returns undefined when NO baseline was
+// measured (so the report falls back to its "omitted, ≈1.0× by construction" rationale).
+function toBaselineCell(language: string, a: CellAccum): CellResult | undefined {
+  const dialectSet = new Set<string>(Object.keys(a.baselineLatency));
+  if (dialectSet.size === 0) return undefined;
+  const dialects: Record<string, DialectResult> = {};
+  for (const dialect of dialectSet) {
+    const cases: Record<string, CaseResult> = {};
+    for (const caseId of Object.keys(a.baselineLatency[dialect] ?? {})) {
+      const samples = a.baselineLatency[dialect][caseId];
+      if (!samples || samples.length === 0) continue;
+      cases[caseId] = { case: caseId, latency: summarizeLatency(samples) };
+    }
+    if (Object.keys(cases).length) dialects[dialect] = { cases };
+  }
+  if (Object.keys(dialects).length === 0) return undefined;
+  return { language, impl: 'baseline', dialects };
+}
+
 function iterationsOf(a: CellAccum): number {
   for (const byCase of Object.values(a.latency)) {
     for (const samples of Object.values(byCase)) if (samples.length) return samples.length;
@@ -174,7 +201,9 @@ function main(): void {
     iterations = Math.max(iterations, iterationsOf(accum));
     if (accum.warmup !== undefined) warmup = accum.warmup;
     cells.push(toCell(language, accum));
-    console.error(`  ✓ ${f} → ${language} (${rows.length} rows)`);
+    const baseline = toBaselineCell(language, accum);
+    if (baseline) cells.push(baseline);
+    console.error(`  ✓ ${f} → ${language} (${rows.length} rows${baseline ? ', +baseline' : ''})`);
   }
 
   const result: MatrixResult = {
