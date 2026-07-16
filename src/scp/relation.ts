@@ -37,6 +37,8 @@ import {
 } from './exec-context';
 import { materializeCell, sqlTypeToMaterializeClass, type MaterializeClass, type ColumnTypeResolver } from './coltype';
 import { parseProjectionColumn } from './makesql/outtype';
+import { resolveHasManyHardLimit } from './limit-config';
+import { LimitExceededError } from './errors';
 import {
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
@@ -77,6 +79,15 @@ export interface RelationDecl {
   readonly order?: string;
   /** Optional per-parent row limit (`hasMany` only). */
   readonly limit?: number;
+  /**
+   * Per-relation hard-limit override (Phase E-2, epic #74; v1 `@hasMany({ hardLimit })`): the
+   * batch-total cap for THIS relation, winning over the global `hasManyHardLimit`. `null` DISABLES
+   * the check for this relation even when the global is set; `undefined` ⇒ use the global. `hasMany`
+   * only (a single-cardinality relation fetches at most one child per parent). A relation with an
+   * intrinsic per-parent {@link limit} window skips the batch-total check regardless (its fanout is
+   * already bounded). See {@link import('./limit-config').resolveHasManyHardLimit}.
+   */
+  readonly hardLimit?: number | null;
   /** The target SQL dialect the batch SELECT is compiled for (default `'sqlite'`). */
   readonly dialect?: Dialect;
   /**
@@ -137,6 +148,16 @@ export interface RelationOp {
    * read — with ZERO per-read DB introspection. Absent ⇒ the child rows stay raw (no schema).
    */
   readonly materializers?: Readonly<Record<string, MaterializeClass>>;
+  /**
+   * Hard-limit runaway cap (Phase E-2, epic #74; v1 `_selectForRelation` `hasManyHardLimit`): the
+   * effective per-batch row cap RESOLVED at compile (per-relation override → global). When the batch
+   * fetches MORE than this TOTAL, {@link runRelationOp} throws {@link import('./errors').LimitExceededError}
+   * (`context: 'relation'`, EXACT count). Baked as a plain number on the JSON artifact so the native
+   * ports (#100-103) run the SAME post-fetch check with no config surface of their own. Absent ⇒ no
+   * check (disabled, or a relation with an intrinsic per-parent `limit` window whose fanout is already
+   * bounded). See {@link import('./limit-config').resolveHasManyHardLimit}.
+   */
+  readonly hardLimit?: number;
 }
 
 /** The reserved input head the relation batch query binds its deduped key array to. */
@@ -189,6 +210,15 @@ export function compileRelationOp(decl: RelationDecl, resolveColumnType?: Column
     select: [...decl.select],
     ...(Object.keys(materializers).length > 0 ? { materializers } : {}),
   };
+  // Hard-limit runaway cap (Phase E-2, epic #74; v1 `_selectForRelation`): resolve the effective
+  // batch-total cap ONCE at compile (per-relation override → global) and bake it onto the op as a
+  // plain number the native ports read. Only a `hasMany` is capped (single-cardinality fetches ≤1
+  // child per parent). A relation with an INTRINSIC per-parent `limit` window SKIPS the check — its
+  // fanout is already bounded per parent (v1 raw-SQL-with-LIMIT skip). `null` (per-relation or global)
+  // ⇒ disabled ⇒ the field is omitted (op stays byte-unchanged for the uncapped path).
+  const effectiveHardLimit =
+    decl.kind === 'hasMany' && decl.limit === undefined ? resolveHasManyHardLimit(decl.hardLimit) : null;
+  const guard = effectiveHardLimit !== null ? { hardLimit: effectiveHardLimit } : {};
   if (composite) {
     return {
       name: decl.name,
@@ -199,6 +229,7 @@ export function compileRelationOp(decl: RelationDecl, resolveColumnType?: Column
       ...conn,
       sql,
       ...target,
+      ...guard,
     };
   }
   return {
@@ -210,6 +241,7 @@ export function compileRelationOp(decl: RelationDecl, resolveColumnType?: Column
     ...conn,
     sql,
     ...target,
+    ...guard,
   };
 }
 
@@ -400,6 +432,14 @@ export function runRelationOp(
   // projects), so the relation path — like the primary read — never touches a driver directly.
   const boundParams = bindKeys(op, keys);
   const rawRows = (int64Child ? seamExecuteSafe(ctx, sql, boundParams) : seamExecute(ctx, sql, boundParams)) as Record<string, unknown>[];
+  // Hard-limit runaway guard (Phase E-2, epic #74; v1 `_selectForRelation`): POST-fetch, if the
+  // batch TOTAL exceeds the baked cap, throw with the EXACT count (the batch is fetched in full, no
+  // N+1). Absent `op.hardLimit` ⇒ disabled / intrinsic-limit relation ⇒ no check. The native ports
+  // (#100-103) run the SAME check off the same JSON field. Throws BEFORE grouping/hydration so an
+  // over-cap read never assembles an unbounded result set.
+  if (op.hardLimit !== undefined && rawRows.length > op.hardLimit) {
+    throw new LimitExceededError(op.hardLimit, rawRows.length, 'relation', op.targetTable, op.name);
+  }
   const rows = materializeChildRows(rawRows, childCols, int64Child);
   for (const row of rows) {
     const k = keyIdentity(tCols.map((c) => row[c]));

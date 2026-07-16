@@ -29,6 +29,8 @@ import {
   dialectFor,
   executeBundle,
   executeTransactionBundle,
+  readBundle,
+  LimitExceededError,
 } from '../dist/scp/index.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -106,10 +108,30 @@ function runVector(v: Json): { ok: boolean; detail?: string } {
     }
     if (v.kind === 'exec') {
       const db = seedDb(v.schema);
-      const result = encodeValue(executeBundle(v.bundle, decodeValue(v.input) as never, { db }));
+      const raw = v.withRelation !== undefined
+        ? readBundle(v.bundle, decodeValue(v.input) as never, { db, with: { [v.withRelation]: true } })
+        : executeBundle(v.bundle, decodeValue(v.input) as never, { db });
+      const result = encodeValue(raw);
       db.close();
       const ok = eq(result, v.expectedResult);
       return { ok, detail: ok ? undefined : `result mismatch` };
+    }
+    if (v.kind === 'expect-error') {
+      // Phase E-2 hard-limit guard: the cap is baked into the bundle (findGuard / relation hardLimit),
+      // so run it over-cap and assert the SAME LimitExceededError fields. No config surface needed.
+      const db = seedDb(v.schema);
+      let thrown: unknown;
+      try {
+        if (v.withRelation !== undefined) readBundle(v.bundle, decodeValue(v.input) as never, { db, with: { [v.withRelation]: true } });
+        else executeBundle(v.bundle, decodeValue(v.input) as never, { db });
+      } catch (e) { thrown = e; }
+      db.close();
+      if (!(thrown instanceof LimitExceededError)) {
+        return { ok: false, detail: `expected LimitExceededError, got ${thrown === undefined ? 'no throw' : thrown instanceof Error ? thrown.name : String(thrown)}` };
+      }
+      const got = { name: thrown.name, limit: thrown.limit, count: thrown.count, context: thrown.context, ...(thrown.model !== undefined ? { model: thrown.model } : {}), ...(thrown.relation !== undefined ? { relation: thrown.relation } : {}) };
+      const ok = eq(got, v.expectedError);
+      return { ok, detail: ok ? undefined : `error ${JSON.stringify(got)} != ${JSON.stringify(v.expectedError)}` };
     }
     if (v.kind === 'tx') {
       const db = seedDb(v.schema);

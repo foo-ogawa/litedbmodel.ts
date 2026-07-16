@@ -185,8 +185,17 @@ export type { ColumnRef, ParentRefValue, SubqueryCondition, KeyPair, CompositeKe
 export type { QuerySource, QueryViewOptions } from './authoring-sql';
 
 // Error Mapping (spec §11 item 5): driver error → SCP Failure + Policy Kind.
-export { mapSqliteError, SqlFailure } from './errors';
-export type { SqlFailureKind } from './errors';
+export { mapSqliteError, SqlFailure, LimitExceededError } from './errors';
+export type { SqlFailureKind, LimitExceededContext } from './errors';
+
+// Hard-limit runaway prevention (Phase E-2, epic #74; v1 `setLimitConfig`/`LimitExceededError`
+// parity): the global find/hasMany hard-limit config. Read at COMPILE time to bake the effective
+// caps onto the portable artifacts (the ReadGraph `findGuard` + each RelationOp `hardLimit`); the
+// TS runtime + the native ports throw `LimitExceededError` post-fetch when a read / relation batch
+// exceeds its cap. `null` disables; a per-relation `hardLimit` override wins; a relation with an
+// intrinsic per-parent `limit` window skips the batch-total check.
+export { setLimitConfig, getLimitConfig, resetLimitConfig, resolveFindHardLimit, resolveHasManyHardLimit } from './limit-config';
+export type { LimitConfig } from './limit-config';
 
 // FIND_FILTER fail-closed authoring guard (#47 Finding B / plan R8): a model declaring an
 // implicit per-model scope predicate cannot be SCP-compiled without folding it into the
