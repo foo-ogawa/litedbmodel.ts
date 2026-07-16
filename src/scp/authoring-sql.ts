@@ -200,3 +200,69 @@ export function whereExists(
 ): Recorded {
   return eq(sentinelRef($, EXISTS_SENTINEL, [not ? 'NOT EXISTS' : 'EXISTS']), sub) as unknown as Recorded;
 }
+
+// ── QUERY view-model authoring (#98, Phase E-3) — lowers onto the EXISTING Select cte/cteParams ────
+
+/**
+ * A model's declared QUERY — either a raw SQL SELECT string, or an `{ sql, params }`
+ * fragment carrying its own bound params (v1 `SqlFragment` shape; the SAME `{ sql, params? }`
+ * the subquery helpers above accept). A QUERY makes the model a READ-ONLY VIEW over the
+ * inner SELECT (v1 `DBModel.QUERY` — no `TABLE_NAME`; the read selects from the QUERY-as-CTE).
+ */
+export type QuerySource = string | { readonly sql: string; readonly params?: readonly Operand[] };
+
+/**
+ * Extra read ports for a QUERY view read — the SAME `Select` ports a normal read may carry
+ * (`where` / `order` / `limit` / `offset` / `group`), plus a QUERY-only `params` slot for a
+ * STRING query's bound values. It MUST NOT set `table` / `cte` / `cteParams` — {@link queryView}
+ * owns those (it IS the QUERY→CTE lowering).
+ */
+export type QueryViewOptions = Omit<Record<string, unknown>, 'table' | 'cte' | 'cteParams'>;
+
+/**
+ * The `Select` ports for reading a QUERY-based (view-model) model, matching v1
+ * (`DBModel._buildSelectSQL`, `:563-624`): a QUERY model has NO base table — the declared
+ * QUERY becomes a `WITH <alias> AS (<QUERY sql>) SELECT … FROM <alias>` and the read selects
+ * from that CTE. This lowers ONTO THE EXISTING `Select` `cte` / `cteParams` ports (no new IR,
+ * no native work): `table` and the `cte.name` are BOTH the alias (v1 `getCTEAlias`), so the
+ * emitted SQL is `WITH <alias> AS (<sql>) SELECT <select> FROM <alias> …` — the exact shape
+ * the LIVE-tested `CteLive` vector already exercises.
+ *
+ * Param order matches v1 (`:574-589`): the QUERY's own params bind FIRST (they are the CTE
+ * params — `cteParams` bind before JOIN/WHERE per the port contract, `catalog.ts:85-86`),
+ * then any WHERE params (added by the fragment tree at render). A string QUERY takes its
+ * params from `options.params`; a fragment QUERY prepends the fragment's own `params`, THEN
+ * `options.params` (v1 `_resolveQuery`, `:1447-1457` — fragment params, then `_queryParams`).
+ *
+ * @param query   the declared QUERY: raw SQL string, or `{ sql, params }` fragment.
+ * @param select  the projection over the QUERY's columns (the model's SELECT_COLUMN).
+ * @param options extra read ports (`where` / `order` / `limit` / `offset` / `group`) and the
+ *   optional QUERY-only `params` (string-query bound values); MUST NOT set
+ *   `table` / `cte` / `cteParams` — this helper owns them.
+ * @param alias   the CTE alias (v1 `getCTEAlias()` = `TABLE_NAME || 'derived'`); defaults to
+ *   `'derived'` (a QUERY model has no `TABLE_NAME`).
+ * @returns the `Select` ports object — pass to `L.Select(queryView(...))`.
+ */
+export function queryView(
+  query: QuerySource,
+  select: readonly string[],
+  options: QueryViewOptions = {},
+  alias = 'derived',
+): Record<string, unknown> {
+  const sql = typeof query === 'string' ? query : query.sql;
+  // v1 param order: a fragment QUERY's own params come first, then the extra `params`
+  // (v1 `_resolveQuery`: fragment.params, then `_queryParams`).
+  const fragmentParams: readonly Operand[] = typeof query === 'string' ? [] : (query.params ?? []);
+  const extra = ((options as { params?: readonly Operand[] }).params) ?? [];
+  const cteParams = [...fragmentParams, ...extra];
+  // The remaining read ports (drop the QUERY-only `params` key we consumed above).
+  const rest = { ...options } as Record<string, unknown>;
+  delete rest.params;
+  return {
+    table: alias,
+    select: select as readonly string[],
+    cte: { name: alias, sql },
+    cteParams,
+    ...rest,
+  };
+}

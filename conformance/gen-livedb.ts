@@ -77,6 +77,7 @@ import {
   whereTupleIn,
   whereInSubquery,
   whereExists,
+  queryView,
   when,
   ne,
   opt,
@@ -112,6 +113,8 @@ class Blog extends SemanticBehavior {
     docs2: { tenant_id: 'INTEGER', doc_id: 'INTEGER', owner_id: 'INTEGER', title: 'TEXT' },
     typed: { big: 'INTEGER', txt: 'TEXT', flag: 'INTEGER', ts: 'TEXT', amt: 'REAL', label: 'TEXT' },
     live_posts: { id: 'INTEGER', title: 'TEXT' },
+    // #98 QUERY view-model: the `derived` CTE alias (v1 `getCTEAlias` default) projects id/title.
+    derived: { id: 'INTEGER', title: 'TEXT' },
   };
 
   Feed($: In<{ author_id: number; status?: string; since: string; created_at: string; limit?: number }>) {
@@ -294,6 +297,56 @@ class Blog extends SemanticBehavior {
       table: 'posts', select: ['author_id', 'COUNT(*) as n'],
       group: 'author_id', append: 'HAVING COUNT(*) > 1 ORDER BY author_id ASC',
     });
+  }
+
+  // ── QUERY view-model reads (#98, Phase E-3): a model declares `static QUERY`; the read wraps it
+  // as `WITH <alias> AS (<QUERY>) SELECT … FROM <alias>` (v1 `DBModel._buildSelectSQL` view-model
+  // path). `queryView(...)` lowers a declared QUERY onto the EXISTING Select cte/cteParams ports —
+  // no new IR. Alias defaults to 'derived' (a QUERY model has no TABLE_NAME → v1 `getCTEAlias`).
+
+  /**
+   * QUERY view-model, STRING query (no QUERY params): `static QUERY = "SELECT id, title FROM posts
+   * WHERE status = 'live'"`. Reads produce `WITH derived AS (…) SELECT id, title FROM derived
+   * ORDER BY id ASC` → the two live posts (1, 3). Proves the STRING-QUERY → CTE lowering.
+   */
+  QueryViewString(_$: In<Record<string, never>>) {
+    return L.Select(queryView(
+      "SELECT id, title FROM posts WHERE status = 'live'",
+      ['id', 'title'],
+      { order: 'id ASC' },
+    ));
+  }
+  /**
+   * QUERY view-model, STRING query WITH params + a WHERE over the derived rows. The QUERY's `?`
+   * (`status = ?`) binds FIRST (as a `cteParams` value → v1 param order: CTE/QUERY before WHERE),
+   * then the WHERE-over-CTE param (`id > ?`) binds after — the read is `WITH derived AS (SELECT …
+   * WHERE status = ?) SELECT … FROM derived WHERE id > ? ORDER BY id ASC` → post 3 only (live &
+   * id 3 > 1). Proves QUERY params PREPEND the WHERE params (RED if the QUERY param is dropped or
+   * bound after the WHERE param).
+   */
+  QueryViewParams($: In<{ min_id: number }>) {
+    // `$.id` records a ref to physical column `id` (the derived CTE column); its VALUE is the
+    // runtime input `$.min_id`. `$.id` is a recorder proxy path — valid regardless of the declared
+    // input shape (only `min_id` is a runtime input; `id` is the column being compared).
+    const idCol = ($ as unknown as Record<string, Recorded>).id;
+    return L.Select(queryView(
+      'SELECT id, title FROM posts WHERE status = ?',
+      ['id', 'title'],
+      { params: ['live'], where: [whereGe(idCol, $.min_id)], order: 'id ASC' },
+    ));
+  }
+  /**
+   * QUERY view-model, SqlFragment query (`{ sql, params }`): the QUERY is a fragment carrying its
+   * OWN bound param (`author_id = ?` → 7). Reads produce `WITH derived AS (SELECT … WHERE
+   * author_id = ?) SELECT … FROM derived ORDER BY id ASC` → author 7's posts (1, 2). Proves the
+   * FRAGMENT-QUERY path prepends the fragment's own params (v1 `_resolveQuery`).
+   */
+  QueryViewFragment(_$: In<Record<string, never>>) {
+    return L.Select(queryView(
+      { sql: 'SELECT id, title FROM posts WHERE author_id = ?', params: [7] },
+      ['id', 'title'],
+      { order: 'id ASC' },
+    ));
   }
 
   // count() (#47 item 2 — v1 `DBModel._count`): `SELECT COUNT(*) as count FROM posts[ WHERE …]`.
@@ -1217,6 +1270,15 @@ function buildCorpus(): { suite: string; corpusVersion: number; note: string; ve
     { name: 'JoinAuthor: posts JOIN users ON author → author name per post [R5]', entry: 'JoinAuthor', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
     // R4 CTE: WITH live_posts AS (WHERE status='live') → live posts 1,3.
     { name: "CteLive: WITH live_posts AS (status='live') → posts 1,3 [R4]", entry: 'CteLive', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // #98 QUERY view-model (string, no params): WITH derived AS (status='live' literal) → posts 1,3.
+    { name: "QueryViewString: static QUERY string → WITH derived AS (…) → posts 1,3 [#98]", entry: 'QueryViewString', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // #98 QUERY view-model (string WITH param) + WHERE-over-CTE: QUERY param 'live' binds FIRST
+    // ($1 in the CTE), then WHERE `id >= $2` (min_id=2) filters the derived rows → the ONLY live
+    // post with id>=2 is post 3. Discriminating (≠ the no-WHERE [1,3]) so it RED-proves BOTH that
+    // the QUERY param prepends the WHERE param AND that the WHERE runs over the CTE.
+    { name: "QueryViewParams: QUERY(status=?) + WHERE id>=? (param prepend) → post 3 [#98]", entry: 'QueryViewParams', input: { min_id: 2 }, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
+    // #98 QUERY view-model (SqlFragment {sql, params}): fragment's own param author_id=7 → posts 1,2.
+    { name: "QueryViewFragment: QUERY fragment(author_id=?) → posts 1,2 [#98]", entry: 'QueryViewFragment', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
     // R6 append (HAVING): GROUP BY author_id HAVING COUNT(*) > 1 → only author 7 (2 posts).
     { name: 'HavingAuthor: GROUP BY author_id HAVING COUNT(*) > 1 → author 7 [R6]', entry: 'HavingAuthor', input: {}, relations: [], schemaSqlite: READ_SCHEMA_SQLITE, schemaPg: READ_SCHEMA_PG, schemaMysql: READ_SCHEMA_MYSQL },
     // #47 IS NOT NULL live cell: name IS NOT NULL → users 7,8 (9 is NULL, excluded).

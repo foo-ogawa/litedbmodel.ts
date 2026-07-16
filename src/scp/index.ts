@@ -170,7 +170,10 @@ export {
   whereTupleIn,
   whereInSubquery,
   whereExists,
+  // QUERY view-model authoring (#98): lowers a declared QUERY onto the Select cte/cteParams ports.
+  queryView,
 } from './authoring-sql';
+export type { QuerySource, QueryViewOptions } from './authoring-sql';
 
 // Error Mapping (spec §11 item 5): driver error → SCP Failure + Policy Kind.
 export { mapSqliteError, SqlFailure } from './errors';

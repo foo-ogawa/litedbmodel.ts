@@ -26,6 +26,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "limit": {
                         "coalesce": [
@@ -150,6 +160,14 @@
                           ]
                         }
                       }
+                    },
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
                     }
                   }
                 ],
@@ -200,6 +218,30 @@
                       1
                     ]
                   ]
+                },
+                "outputType": {
+                  "obj": {
+                    "authors": {
+                      "arr": {
+                        "arr": {
+                          "obj": {
+                            "id": "int",
+                            "name": "string"
+                          }
+                        }
+                      }
+                    },
+                    "posts": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             ]
@@ -350,6 +392,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "limit": {
                         "coalesce": [
@@ -474,6 +526,14 @@
                           ]
                         }
                       }
+                    },
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
                     }
                   }
                 ],
@@ -524,6 +584,30 @@
                       1
                     ]
                   ]
+                },
+                "outputType": {
+                  "obj": {
+                    "authors": {
+                      "arr": {
+                        "arr": {
+                          "obj": {
+                            "id": "int",
+                            "name": "string"
+                          }
+                        }
+                      }
+                    },
+                    "posts": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             ]
@@ -736,6 +820,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "limit": {
                         "coalesce": [
@@ -860,6 +954,14 @@
                           ]
                         }
                       }
+                    },
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
                     }
                   }
                 ],
@@ -910,6 +1012,30 @@
                       1
                     ]
                   ]
+                },
+                "outputType": {
+                  "obj": {
+                    "authors": {
+                      "arr": {
+                        "arr": {
+                          "obj": {
+                            "id": "int",
+                            "name": "string"
+                          }
+                        }
+                      }
+                    },
+                    "posts": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             ]
@@ -1060,6 +1186,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "limit": {
                         "coalesce": [
@@ -1184,6 +1320,14 @@
                           ]
                         }
                       }
+                    },
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
                     }
                   }
                 ],
@@ -1234,6 +1378,30 @@
                       1
                     ]
                   ]
+                },
+                "outputType": {
+                  "obj": {
+                    "authors": {
+                      "arr": {
+                        "arr": {
+                          "obj": {
+                            "id": "int",
+                            "name": "string"
+                          }
+                        }
+                      }
+                    },
+                    "posts": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             ]
@@ -1459,6 +1627,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "limit": {
                         "coalesce": [
@@ -1583,6 +1761,14 @@
                           ]
                         }
                       }
+                    },
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
                     }
                   }
                 ],
@@ -1633,6 +1819,30 @@
                       1
                     ]
                   ]
+                },
+                "outputType": {
+                  "obj": {
+                    "authors": {
+                      "arr": {
+                        "arr": {
+                          "obj": {
+                            "id": "int",
+                            "name": "string"
+                          }
+                        }
+                      }
+                    },
+                    "posts": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             ]
@@ -1783,6 +1993,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "limit": {
                         "coalesce": [
@@ -1907,6 +2127,14 @@
                           ]
                         }
                       }
+                    },
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
                     }
                   }
                 ],
@@ -1957,6 +2185,30 @@
                       1
                     ]
                   ]
+                },
+                "outputType": {
+                  "obj": {
+                    "authors": {
+                      "arr": {
+                        "arr": {
+                          "obj": {
+                            "id": "int",
+                            "name": "string"
+                          }
+                        }
+                      }
+                    },
+                    "posts": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             ]
@@ -2171,6 +2423,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -2225,6 +2485,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -2275,6 +2543,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -2329,6 +2605,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -2416,6 +2700,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -2470,6 +2762,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -2520,6 +2820,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -2574,6 +2882,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -2655,6 +2971,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -2709,6 +3033,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -2759,6 +3091,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -2813,6 +3153,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -2903,6 +3251,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "label": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "label ASC",
                       "select": {
@@ -2956,6 +3311,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "label": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -3006,6 +3368,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "label": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "label ASC",
                       "select": {
@@ -3059,6 +3428,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "label": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -3139,6 +3515,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "label": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "label ASC",
                       "select": {
@@ -3192,6 +3575,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "label": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -3242,6 +3632,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "label": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "label ASC",
                       "select": {
@@ -3295,6 +3692,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "label": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -3374,6 +3778,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "label": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "label ASC",
                       "select": {
@@ -3427,6 +3838,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "label": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -3477,6 +3895,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "label": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "label ASC",
                       "select": {
@@ -3530,6 +3955,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "label": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -3610,6 +4042,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "label": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "label ASC",
                       "select": {
@@ -3663,6 +4102,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "label": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -3713,6 +4159,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "label": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "label ASC",
                       "select": {
@@ -3766,6 +4219,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "label": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -3846,6 +4306,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "label": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "label ASC",
                       "select": {
@@ -3899,6 +4366,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "label": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -3949,6 +4423,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "label": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "label ASC",
                       "select": {
@@ -4002,6 +4483,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "label": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -4077,6 +4565,9 @@
                   {
                     "component": "Count",
                     "id": "n0",
+                    "outType": {
+                      "arr": "int"
+                    },
                     "ports": {
                       "table": "posts"
                     }
@@ -4096,6 +4587,9 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": "int"
                 }
               }
             ]
@@ -4128,6 +4622,9 @@
                   {
                     "component": "Count",
                     "id": "n0",
+                    "outType": {
+                      "arr": "int"
+                    },
                     "ports": {
                       "table": "posts"
                     }
@@ -4147,6 +4644,9 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": "int"
                 }
               }
             ]
@@ -4227,6 +4727,9 @@
                   {
                     "component": "Count",
                     "id": "n0",
+                    "outType": {
+                      "arr": "int"
+                    },
                     "ports": {
                       "table": "posts",
                       "where": {
@@ -4269,6 +4772,9 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": "int"
                 }
               }
             ]
@@ -4312,6 +4818,9 @@
                   {
                     "component": "Count",
                     "id": "n0",
+                    "outType": {
+                      "arr": "int"
+                    },
                     "ports": {
                       "table": "posts",
                       "where": {
@@ -4354,6 +4863,9 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": "int"
                 }
               }
             ]
@@ -4445,6 +4957,9 @@
                   {
                     "component": "Count",
                     "id": "n0",
+                    "outType": {
+                      "arr": "int"
+                    },
                     "ports": {
                       "table": "posts",
                       "where": {
@@ -4487,6 +5002,9 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": "int"
                 }
               }
             ]
@@ -4530,6 +5048,9 @@
                   {
                     "component": "Count",
                     "id": "n0",
+                    "outType": {
+                      "arr": "int"
+                    },
                     "ports": {
                       "table": "posts",
                       "where": {
@@ -4572,6 +5093,9 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": "int"
                 }
               }
             ]
@@ -4661,6 +5185,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int"
+                        }
+                      }
+                    },
                     "ports": {
                       "group": "author_id",
                       "order": "author_id ASC",
@@ -4688,6 +5219,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int"
+                    }
+                  }
                 }
               }
             ]
@@ -4728,6 +5266,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int"
+                        }
+                      }
+                    },
                     "ports": {
                       "group": "author_id",
                       "order": "author_id ASC",
@@ -4755,6 +5300,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int"
+                    }
+                  }
                 }
               }
             ]
@@ -4849,6 +5401,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -4916,6 +5476,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -4968,6 +5536,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -5035,6 +5611,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -5140,6 +5724,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -5195,6 +5787,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -5242,6 +5842,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -5297,6 +5905,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -5391,6 +6007,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -5453,6 +6077,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -5499,6 +6131,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -5561,6 +6201,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -5658,6 +6306,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -5705,6 +6361,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -5746,6 +6410,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -5793,6 +6465,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -5887,6 +6567,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -5943,6 +6631,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -5990,6 +6686,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -6046,6 +6750,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -6126,6 +6838,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "forUpdate": "true",
                       "order": "id ASC",
@@ -6176,6 +6896,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -6227,6 +6955,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "forUpdate": "true",
                       "order": "id ASC",
@@ -6277,6 +7013,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -6379,6 +7123,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -6435,6 +7187,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -6478,6 +7238,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -6534,6 +7302,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -6628,6 +7404,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -6684,6 +7468,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -6727,6 +7519,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -6783,6 +7583,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -6873,6 +7681,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -6923,6 +7739,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -6964,6 +7788,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -7014,6 +7846,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -7106,6 +7946,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -7156,6 +8004,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -7197,6 +8053,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -7247,6 +8111,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -7335,6 +8207,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "join": "JOIN users ON users.id = posts.author_id",
                       "order": "posts.id ASC",
@@ -7362,6 +8242,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "name": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -7398,6 +8286,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "join": "JOIN users ON users.id = posts.author_id",
                       "order": "posts.id ASC",
@@ -7425,6 +8321,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "name": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -7516,6 +8420,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "cte": {
                         "obj": {
@@ -7553,6 +8465,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -7591,6 +8511,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "cte": {
                         "obj": {
@@ -7628,6 +8556,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -7699,6 +8635,771 @@
       ]
     },
     {
+      "name": "QueryViewString: static QUERY string → WITH derived AS (…) → posts 1,3 [#98]",
+      "kind": "exec",
+      "input": {},
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "QueryViewString",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "QueryViewString",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "Select",
+                    "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
+                    "ports": {
+                      "cte": {
+                        "obj": {
+                          "name": "derived",
+                          "sql": "SELECT id, title FROM posts WHERE status = 'live'"
+                        }
+                      },
+                      "cteParams": {
+                        "arr": []
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "derived"
+                    }
+                  }
+                ],
+                "inputPorts": {},
+                "name": "QueryViewString",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "WITH derived AS (SELECT id, title FROM posts WHERE status = 'live') SELECT id, title FROM derived",
+                "params": []
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "QueryViewString",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "QueryViewString",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "Select",
+                    "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
+                    "ports": {
+                      "cte": {
+                        "obj": {
+                          "name": "derived",
+                          "sql": "SELECT id, title FROM posts WHERE status = 'live'"
+                        }
+                      },
+                      "cteParams": {
+                        "arr": []
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "derived"
+                    }
+                  }
+                ],
+                "inputPorts": {},
+                "name": "QueryViewString",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "WITH derived AS (SELECT id, title FROM posts WHERE status = 'live') SELECT id, title FROM derived",
+                "params": []
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO users VALUES (9, NULL)",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO users VALUES (9, NULL)",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "expectedResult": [
+        {
+          "id": 1,
+          "title": "Hello"
+        },
+        {
+          "id": 3,
+          "title": "Other"
+        }
+      ]
+    },
+    {
+      "name": "QueryViewParams: QUERY(status=?) + WHERE id>=? (param prepend) → post 3 [#98]",
+      "kind": "exec",
+      "input": {
+        "min_id": 2
+      },
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "QueryViewParams",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "QueryViewParams",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "Select",
+                    "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
+                    "ports": {
+                      "cte": {
+                        "obj": {
+                          "name": "derived",
+                          "sql": "SELECT id, title FROM posts WHERE status = ?"
+                        }
+                      },
+                      "cteParams": {
+                        "arr": [
+                          "live"
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "derived",
+                      "where": {
+                        "arr": [
+                          {
+                            "ge": [
+                              {
+                                "ref": [
+                                  "id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "min_id"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "id": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "min_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "QueryViewParams",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "WITH derived AS (SELECT id, title FROM posts WHERE status = ?) SELECT id, title FROM derived",
+                "params": [
+                  "live"
+                ]
+              },
+              {
+                "sql": "id >= ?",
+                "params": [
+                  {
+                    "ref": [
+                      "min_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "QueryViewParams",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "QueryViewParams",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "Select",
+                    "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
+                    "ports": {
+                      "cte": {
+                        "obj": {
+                          "name": "derived",
+                          "sql": "SELECT id, title FROM posts WHERE status = ?"
+                        }
+                      },
+                      "cteParams": {
+                        "arr": [
+                          "live"
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "derived",
+                      "where": {
+                        "arr": [
+                          {
+                            "ge": [
+                              {
+                                "ref": [
+                                  "id"
+                                ]
+                              },
+                              {
+                                "ref": [
+                                  "min_id"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "inputPorts": {
+                  "id": {
+                    "required": true,
+                    "type": "unknown"
+                  },
+                  "min_id": {
+                    "required": true,
+                    "type": "unknown"
+                  }
+                },
+                "name": "QueryViewParams",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "WITH derived AS (SELECT id, title FROM posts WHERE status = ?) SELECT id, title FROM derived",
+                "params": [
+                  "live"
+                ]
+              },
+              {
+                "sql": "id >= ?",
+                "params": [
+                  {
+                    "ref": [
+                      "min_id"
+                    ]
+                  }
+                ],
+                "whereFragment": true
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO users VALUES (9, NULL)",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO users VALUES (9, NULL)",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "expectedResult": [
+        {
+          "id": 3,
+          "title": "Other"
+        }
+      ]
+    },
+    {
+      "name": "QueryViewFragment: QUERY fragment(author_id=?) → posts 1,2 [#98]",
+      "kind": "exec",
+      "input": {},
+      "bundlePg": {
+        "dialect": "postgres",
+        "name": "QueryViewFragment",
+        "readGraph": {
+          "dialect": "postgres",
+          "name": "QueryViewFragment",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "Select",
+                    "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
+                    "ports": {
+                      "cte": {
+                        "obj": {
+                          "name": "derived",
+                          "sql": "SELECT id, title FROM posts WHERE author_id = ?"
+                        }
+                      },
+                      "cteParams": {
+                        "arr": [
+                          7
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "derived"
+                    }
+                  }
+                ],
+                "inputPorts": {},
+                "name": "QueryViewFragment",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "WITH derived AS (SELECT id, title FROM posts WHERE author_id = ?) SELECT id, title FROM derived",
+                "params": [
+                  7
+                ]
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "bundleMysql": {
+        "dialect": "mysql",
+        "name": "QueryViewFragment",
+        "readGraph": {
+          "dialect": "mysql",
+          "name": "QueryViewFragment",
+          "ir": {
+            "irVersion": 1,
+            "exprVersion": 2,
+            "components": [
+              {
+                "body": [
+                  {
+                    "component": "Select",
+                    "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
+                    "ports": {
+                      "cte": {
+                        "obj": {
+                          "name": "derived",
+                          "sql": "SELECT id, title FROM posts WHERE author_id = ?"
+                        }
+                      },
+                      "cteParams": {
+                        "arr": [
+                          7
+                        ]
+                      },
+                      "order": "id ASC",
+                      "select": {
+                        "arr": [
+                          "id",
+                          "title"
+                        ]
+                      },
+                      "table": "derived"
+                    }
+                  }
+                ],
+                "inputPorts": {},
+                "name": "QueryViewFragment",
+                "output": {
+                  "ref": [
+                    "n0"
+                  ]
+                },
+                "plan": {
+                  "concurrency": 16,
+                  "groups": [
+                    [
+                      0
+                    ]
+                  ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "statementsById": {
+            "n0": [
+              {
+                "sql": "WITH derived AS (SELECT id, title FROM posts WHERE author_id = ?) SELECT id, title FROM derived",
+                "params": [
+                  7
+                ]
+              },
+              {
+                "sql": " ORDER BY id ASC",
+                "params": []
+              }
+            ]
+          },
+          "optionalHeads": []
+        },
+        "optionalHeads": [],
+        "relations": {}
+      },
+      "schemaPg": [
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL, status TEXT, created_at TEXT NOT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, label TEXT)",
+        "CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT)",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO users VALUES (9, NULL)",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "schemaMysql": [
+        "CREATE TABLE posts (id INT PRIMARY KEY, author_id INT NOT NULL, title VARCHAR(255) NOT NULL, status VARCHAR(255), created_at VARCHAR(255) NOT NULL)",
+        "CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255))",
+        "CREATE TABLE tags (id INT PRIMARY KEY, post_id INT NOT NULL, label VARCHAR(255))",
+        "CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255))",
+        "INSERT INTO posts VALUES (1, 7, 'Hello', 'live', '2026-02-01')",
+        "INSERT INTO posts VALUES (2, 7, 'World', 'draft', '2026-03-01')",
+        "INSERT INTO posts VALUES (3, 8, 'Other', 'live', '2026-01-15')",
+        "INSERT INTO users VALUES (7, 'Ada')",
+        "INSERT INTO users VALUES (8, 'Alan')",
+        "INSERT INTO users VALUES (9, NULL)",
+        "INSERT INTO tags VALUES (10, 1, 'greeting')",
+        "INSERT INTO tags VALUES (11, 1, 'first')",
+        "INSERT INTO tags VALUES (12, 2, 'world')",
+        "INSERT INTO comments VALUES (100, 1, 'nice')",
+        "INSERT INTO comments VALUES (101, 1, 'agreed')",
+        "INSERT INTO comments VALUES (102, 2, 'hi')"
+      ],
+      "expectedResult": [
+        {
+          "id": 1,
+          "title": "Hello"
+        },
+        {
+          "id": 2,
+          "title": "World"
+        }
+      ]
+    },
+    {
       "name": "HavingAuthor: GROUP BY author_id HAVING COUNT(*) > 1 → author 7 [R6]",
       "kind": "exec",
       "input": {},
@@ -7717,6 +9418,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int"
+                        }
+                      }
+                    },
                     "ports": {
                       "append": "HAVING COUNT(*) > 1 ORDER BY author_id ASC",
                       "group": "author_id",
@@ -7744,6 +9452,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int"
+                    }
+                  }
                 }
               }
             ]
@@ -7784,6 +9499,13 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int"
+                        }
+                      }
+                    },
                     "ports": {
                       "append": "HAVING COUNT(*) > 1 ORDER BY author_id ASC",
                       "group": "author_id",
@@ -7811,6 +9533,13 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int"
+                    }
+                  }
                 }
               }
             ]
@@ -7898,6 +9627,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -7943,6 +9680,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "name": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -7984,6 +9729,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -8029,6 +9782,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "name": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -8121,6 +9882,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -8166,6 +9935,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "name": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -8207,6 +9984,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "name": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -8252,6 +10037,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "name": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -8340,6 +10133,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -8396,6 +10197,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -8439,6 +10248,14 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -8495,6 +10312,14 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -8590,6 +10415,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -8641,6 +10476,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -8730,6 +10575,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -8781,6 +10636,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -8960,6 +10825,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -9011,6 +10886,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -9100,6 +10985,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -9151,6 +11046,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -9352,6 +11257,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -9403,6 +11318,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -9492,6 +11417,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -9543,6 +11478,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -9749,6 +11694,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -9800,6 +11755,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -9889,6 +11854,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -9940,6 +11915,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -10200,6 +12185,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -10251,6 +12246,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -10340,6 +12345,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -10391,6 +12406,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -10529,6 +12554,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "int",
+                          "owner_id": "int",
+                          "tenant_id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -10580,6 +12615,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "int",
+                      "owner_id": "int",
+                      "tenant_id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -10668,6 +12713,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "int",
+                          "owner_id": "int",
+                          "tenant_id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -10719,6 +12774,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "int",
+                      "owner_id": "int",
+                      "tenant_id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -10934,6 +12999,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "int",
+                          "owner_id": "int",
+                          "tenant_id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -10985,6 +13060,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "int",
+                      "owner_id": "int",
+                      "tenant_id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -11073,6 +13158,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "int",
+                          "owner_id": "int",
+                          "tenant_id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -11124,6 +13219,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "int",
+                      "owner_id": "int",
+                      "tenant_id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -11293,6 +13398,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "int",
+                          "owner_id": "int",
+                          "tenant_id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -11344,6 +13459,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "int",
+                      "owner_id": "int",
+                      "tenant_id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -11432,6 +13557,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "int",
+                          "owner_id": "int",
+                          "tenant_id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -11483,6 +13618,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "int",
+                      "owner_id": "int",
+                      "tenant_id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -11613,6 +13758,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "int",
+                          "owner_id": "int",
+                          "tenant_id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -11664,6 +13819,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "int",
+                      "owner_id": "int",
+                      "tenant_id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -11732,6 +13897,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "doc_id": "int",
+                          "owner_id": "int",
+                          "tenant_id": "int",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "doc_id ASC",
                       "select": {
@@ -11783,6 +13958,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "doc_id": "int",
+                      "owner_id": "int",
+                      "tenant_id": "int",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -11950,6 +14135,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -12001,6 +14196,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
@@ -12063,6 +14268,16 @@
                   {
                     "component": "Select",
                     "id": "n0",
+                    "outType": {
+                      "arr": {
+                        "obj": {
+                          "author_id": "int",
+                          "id": "int",
+                          "status": "string",
+                          "title": "string"
+                        }
+                      }
+                    },
                     "ports": {
                       "order": "id ASC",
                       "select": {
@@ -12114,6 +14329,16 @@
                       0
                     ]
                   ]
+                },
+                "outputType": {
+                  "arr": {
+                    "obj": {
+                      "author_id": "int",
+                      "id": "int",
+                      "status": "string",
+                      "title": "string"
+                    }
+                  }
                 }
               }
             ]
