@@ -13,7 +13,48 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from typing import Any, Dict, List, Protocol, Sequence
+from typing import Any, Callable, Dict, List, Protocol, Sequence, Tuple
+
+
+# ── Row materialization: per-column-set dict builder (read-path hot loop, #63 §② perf) ──────────
+#
+# The read path turns each fetched driver tuple into the plain-dict row the runtime returns. The
+# naive `dict(zip(cols, row))` rebuilds a `zip` iterator per row and dispatches through `dict()`'s
+# generic iterable path 100× on a `Find all (limit 100)` — measured as the litedbmodel-over-raw
+# overhead the cross-language bench flags (SQLite §②). The columns of a given prepared statement are
+# FIXED, so we compile the tuple→dict mapping ONCE per distinct column-name set and cache it: the
+# per-row work becomes a straight-line dict literal keyed by fixed indices (no per-row zip, no
+# per-cell type dispatch). Output is byte-identical to `dict(zip(cols, row))` — same keys in column
+# order, duplicate column names dedupe keeping the last value (dict-literal + dict(zip) agree), and
+# `repr()`-quoted keys make any column name (spaces / quotes) safe. The read TYPE CONTRACT is
+# UNCHANGED: this only assembles the dict; it applies NO coercion of its own.
+
+_ROW_BUILDER_CACHE: "Dict[Tuple[str, ...], Callable[[Sequence[Any]], Dict[str, Any]]]" = {}
+
+
+def _make_row_builder(cols: "Tuple[str, ...]") -> "Callable[[Sequence[Any]], Dict[str, Any]]":
+    """Compile a straight-line ``row -> {col: row[i], …}`` builder for a fixed column tuple.
+
+    The dict-literal is emitted with ``repr``-quoted keys (any column name is safe) and fixed
+    positional indices, so the per-row cost is a single native dict construction — no ``zip``, no
+    per-cell dispatch. Semantically identical to ``dict(zip(cols, row))``: same insertion order,
+    duplicate names collapse to the last occurrence.
+    """
+    if not cols:
+        return lambda _r: {}
+    body = ", ".join(f"{c!r}: r[{i}]" for i, c in enumerate(cols))
+    ns: Dict[str, Any] = {}
+    exec(f"def _row_builder(r):\n    return {{{body}}}\n", ns)  # noqa: S102 — trusted DB column names, compiled once/col-set
+    return ns["_row_builder"]
+
+
+def _row_builder_for(description: Any) -> "Callable[[Sequence[Any]], Dict[str, Any]]":
+    """Return the cached (or freshly compiled) dict builder for a cursor ``description``."""
+    cols: Tuple[str, ...] = tuple(d[0] for d in description) if description is not None else ()
+    builder = _ROW_BUILDER_CACHE.get(cols)
+    if builder is None:
+        builder = _ROW_BUILDER_CACHE[cols] = _make_row_builder(cols)
+    return builder
 
 
 class RunInfo:
@@ -89,8 +130,11 @@ class _SqlitePrepared:
 
     def all(self, params: Sequence[Any]) -> List[Dict[str, Any]]:
         cur = self._conn.execute(self._sql, tuple(params))
-        cols = [c[0] for c in cur.description] if cur.description is not None else []
-        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        # Straight-line, per-column-set compiled dict builder (cached) instead of a per-row
+        # `dict(zip(cols, row))` — byte-identical rows, far less per-row overhead on multi-row reads
+        # (#63 §② SQLite `Find all` hot loop). No coercion: SQLite already returns native scalars.
+        build = _row_builder_for(cur.description)
+        rows = [build(r) for r in cur.fetchall()]
         cur.close()
         return rows
 
