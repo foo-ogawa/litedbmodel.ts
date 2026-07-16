@@ -19,6 +19,7 @@
 //!   - [`runtime`]       — the thin facade dispatching to the read graph executor + the gate-first
 //!     write transaction.
 
+pub mod connection_routing;
 pub mod dialect;
 pub mod driver;
 pub mod errors;
@@ -39,14 +40,27 @@ pub mod livedb;
 pub const VERSION: &str = "2.1.0";
 
 // ── public surface (mirrors the Python `__all__`) ──────────────────────────────
+pub use connection_routing::{
+    build_routing_config, resolve_pool, session_reset_statements, session_statements, BuiltPool,
+    Clock, ConfigDialect, ConnectionConfig, ConnectionRegistry, ConnectionRegistryBuilder,
+    ConnectionSetup, ManualClock, PoolFactory, PoolRole, ReaderWriterPools,
+    ResolvedConnectionConfig, RoutingConfig, RoutingHandle, StickyOptions, SystemClock,
+    WriterStickyClock, DEFAULT_CONNECTION,
+};
+#[cfg(feature = "livedb")]
+pub use connection_routing::{mysql_pool_factory, pg_pool_factory};
 pub use dialect::{dialect_for, to_dollar_placeholders, Dialect};
-pub use driver::{forwarding_tx, Driver, ForwardingTx, PreparedStatement, RunInfo, SqliteDriver};
+pub use driver::{
+    forwarding_tx, ConfiguredDriver, Driver, ForwardingTx, PreparedStatement, RunInfo, SqliteDriver,
+};
 pub use errors::{map_sqlite_error, re_error_to_sql_failure, SqlFailure};
 pub use exec_context::{
-    execute as seam_execute, for_driver, run as seam_run, run_guarded, transaction,
-    transaction_decided, with_transaction, with_transaction_decided,
-    with_transaction_decided_isolated, Connection, DriverConnection, ExecutionContext, Middleware,
-    MiddlewareChain, StatementIntent, TxConnection, TxConnectionRef, TxDecision,
+    execute as seam_execute, for_driver, for_routing, run as seam_run, run_guarded, transaction,
+    transaction_decided, transaction_decided_on, transaction_on, with_transaction,
+    with_transaction_decided, with_transaction_decided_isolated,
+    with_transaction_decided_isolated_on, Connection, DriverConnection, ExecutionContext,
+    Middleware, MiddlewareChain, SessionConnection, StatementIntent, TxConnection, TxConnectionRef,
+    TxDecision,
 };
 #[cfg(feature = "livedb")]
 pub use livedb::{MysqlDriver, PostgresDriver};
