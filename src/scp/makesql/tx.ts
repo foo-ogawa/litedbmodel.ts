@@ -49,7 +49,7 @@ import {
   contextForDriver,
   withTransactionAsync,
 } from '../exec-context';
-import { type TransactionOptions, runInTransactionScope } from '../tx-options';
+import { type TransactionOptions, runInTransactionScope, checkWriteAllowed } from '../tx-options';
 import { isConnectionError } from '../../connection-errors';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import {
@@ -1076,18 +1076,78 @@ async function execStatementAsync(
 }
 
 /**
- * Execute a derived {@link TransactionPlan} as ONE live PG / MySQL transaction with gate-first
- * short-circuit and **per-execution connection ownership** (§3). The whole tx runs on one owned
- * pooled connection (acquired + pinned by {@link withTransactionAsync}); concurrent
- * `executeTransactionAsync` calls on the SAME `ctx` each own a DISTINCT connection ⇒ isolated. The
- * async twin of {@link executeTransaction}; the structured {@link TransactionResult} is identical.
+ * Options for the live async write entry {@link executeTransactionAsync} — the tx {@link
+ * TransactionOptions} plus the write=tx `guard` policy (#86).
+ */
+export interface WriteExecOptions extends TransactionOptions {
+  /**
+   * Enforce the write=tx guard (#86 / #81 `checkWriteAllowed`): a write issued OUTSIDE a user
+   * `transaction(fn)` throws {@link WriteOutsideTransactionError}; a write in a {@link
+   * import('../tx-options').withReadOnly} scope throws {@link WriteInReadOnlyContextError}. This is
+   * the DEFAULT for the public write path — writes require an explicit transaction (v1 parity,
+   * `DBModel.ts:886`). Set `false` ONLY for the internal per-execution-ownership plane (the Phase A
+   * ownership proofs that drive the plan executor as its OWN auto-tx). @default true
+   */
+  readonly guard?: boolean;
+}
+
+/**
+ * Execute a derived {@link TransactionPlan} on a live PG / MySQL connection with gate-first
+ * short-circuit and **per-execution connection ownership** (§3). The live-DB WRITE entry (#86).
+ *
+ * ## Ambient-tx JOIN vs. its own envelope (the #86 core)
+ *
+ * `withTransactionAsync` (:495) decides the envelope:
+ *   - **inside a user `transaction(fn)`** (an outer connection is pinned in the ALS) → the write
+ *     JOINS the outer: its statements run on the outer's owned connection with NO new BEGIN/COMMIT,
+ *     so N writes in one boundary are ONE physical transaction (one BEGIN, one COMMIT, one conn);
+ *   - **outside any transaction** → it opens its OWN BEGIN…COMMIT on a freshly-acquired owned
+ *     connection (the per-execution auto-tx; concurrent calls each own a DISTINCT connection ⇒
+ *     isolated).
+ *
+ * ## write=tx guard (#86, wired here — fires at runtime, not a standalone helper)
+ *
+ * With `options.guard` (DEFAULT true), a write with NO ambient user tx is REJECTED via {@link
+ * checkWriteAllowed} BEFORE any SQL: `WriteOutsideTransactionError` (no active tx) /
+ * `WriteInReadOnlyContextError` (read-only scope). The check runs at ENTRY — before
+ * `withTransactionAsync` would open the write's own envelope — so it sees the CALLER's scope, exactly
+ * mirroring v1 `DBModel._checkWriteAllowed` (:886, called at the public write entry, not the plan
+ * executor). Inside a `transaction(fn)` the ambient marker is set ⇒ the guard passes and the write
+ * joins. The structured {@link TransactionResult} is identical to the sync {@link executeTransaction}.
  */
 export function executeTransactionAsync(
   ctx: PooledAsyncContext,
   plan: TransactionPlan,
   input: Scope,
   dialect: MakeSQLDialect = 'sqlite',
-  options: TransactionOptions = {},
+  options: WriteExecOptions = {},
+): Promise<TransactionResult> {
+  // write=tx guard (#86), enforced at ENTRY so it sees the CALLER's scope — a write inside a user
+  // `transaction(fn)` has the ambient "inside a tx" marker set (⇒ passes + JOINS the outer); a bare
+  // write outside any boundary has no marker (⇒ WriteOutsideTransactionError). Reject as a REJECTED
+  // promise (never a synchronous throw) since this entry is async. Tx-control statements the runtime
+  // itself issues (BEGIN/COMMIT) never pass through here — only data-write plans do.
+  if (options.guard !== false) {
+    // Run the guard, then the plan, as a REJECTED promise on failure (never a synchronous throw).
+    // `checkWriteAllowed` mirrors v1 ordering (:886): read-only is rejected FIRST
+    // (`WriteInReadOnlyContextError`), then a missing active tx (`WriteOutsideTransactionError`).
+    // Inside a user `transaction(fn)` the ambient marker is set ⇒ neither fires and the write JOINS
+    // the outer; outside any boundary the no-active-tx branch throws.
+    return Promise.resolve().then(() => {
+      checkWriteAllowed('WRITE', plan.statements[0]?.id);
+      return runTransactionPlanAsync(ctx, plan, input, dialect, options);
+    });
+  }
+  return runTransactionPlanAsync(ctx, plan, input, dialect, options);
+}
+
+/** The plan-executor body of {@link executeTransactionAsync}, split so the guard runs at entry. */
+function runTransactionPlanAsync(
+  ctx: PooledAsyncContext,
+  plan: TransactionPlan,
+  input: Scope,
+  dialect: MakeSQLDialect,
+  options: TransactionOptions,
 ): Promise<TransactionResult> {
   const isBatch =
     plan.entityFrom === null &&

@@ -549,3 +549,55 @@ export async function withTransactionAsync<R>(
     throw error;
   }
 }
+
+// ── The PUBLIC user-controlled transaction boundary (§ Phase B-core / #86) ─────
+
+/**
+ * **The public user-controlled transaction boundary** (#86) — the REAL transaction feature v2 was
+ * missing. `transaction(ctx, fn, options?)` opens ONE boundary the caller wraps around MULTIPLE
+ * arbitrary operations so they commit or roll back TOGETHER:
+ *
+ * ```ts
+ * await transaction(ctx, async () => {
+ *   await A.create(...);   // ← every op inside joins this ONE boundary:
+ *   await B.update(...);   //    one connection, one BEGIN…COMMIT, all-or-nothing.
+ * }, { isolation: 'serializable' });
+ * ```
+ *
+ * ## What it does (v1 `DBModel.transaction` :2787 parity, on the SCP seam)
+ *
+ * It acquires ONE pooled connection, issues the isolation-aware `BEGIN`
+ * ({@link import('./tx-options').beginStatements}), PINS that connection into the ALS ctx, runs
+ * `fn`, then `COMMIT` (or `ROLLBACK` on a body error / `options.rollbackOnly`), with the #81 retry
+ * loop (deadlock / serialization / connection error) wrapped around the WHOLE boundary. It is a thin
+ * façade over {@link withTransactionAsync}: the ONE mechanism — the same acquire → pin → BEGIN →
+ * body → COMMIT/ROLLBACK → release + retry — powers both.
+ *
+ * ## The ambient-tx JOIN — how operations participate (the core #86 fix)
+ *
+ * `fn` takes NO connection argument. Instead the pinned connection lives in the ALS
+ * ({@link currentPinnedAsyncConnection}) + the "inside a transaction" marker
+ * ({@link import('./tx-options').runInTransactionScope}). Every operation `fn` issues — a live-DB
+ * write via {@link import('./makesql/tx').executeTransactionAsync}, a read via the async read seam —
+ * detects that ambient pinned connection and runs its statements on THAT connection **without opening
+ * its own BEGIN/COMMIT** (`withTransactionAsync`'s nested-join, :495). So N operations inside one
+ * `transaction(fn)` produce exactly ONE BEGIN + ONE COMMIT on ONE connection. Outside a
+ * `transaction(fn)` the ambient pin is absent, so a bare write's own `executeTransactionAsync` sees
+ * no ambient tx and the write=tx guard fires ({@link WriteOutsideTransactionError}).
+ *
+ * NESTED `transaction()` joins the outer (one physical BEGIN/COMMIT; an inner error rolls back the
+ * WHOLE tx) — again via `withTransactionAsync`'s nested-join. Isolation/retry/rollbackOnly options on
+ * a nested call are ignored (the outer owns them). This is the API REFERENCE the native ports
+ * (#82-85) mirror.
+ */
+export function transaction<R>(
+  ctx: PooledAsyncContext,
+  fn: () => Promise<R>,
+  options: TransactionOptions = {},
+  dialect: Dialect = 'postgres',
+  isConnectionError: (e: Error) => boolean = defaultIsConnectionError,
+): Promise<R> {
+  // The boundary is `withTransactionAsync` with a body that ignores the tx ctx — ambient operations
+  // resolve the pinned connection through the ALS, not an explicit arg (v1 `txContext.run(func)`).
+  return withTransactionAsync(ctx, () => fn(), options, dialect, isConnectionError);
+}

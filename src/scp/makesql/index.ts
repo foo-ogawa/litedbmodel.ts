@@ -107,6 +107,7 @@ export type {
   SqliteDb,
   ShortCircuitReason,
   TransactionResult,
+  WriteExecOptions,
 } from './tx';
 
 // Authoring → makeSQL bundle (Phase A, epic #43/#45): the ADDITIVE producer that routes an

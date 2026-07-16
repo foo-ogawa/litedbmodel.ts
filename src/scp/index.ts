@@ -209,6 +209,7 @@ export {
   MiddlewareChain,
   PooledAsyncContext,
   withTransactionAsync,
+  transaction,
   runWithPinnedAsyncConnection,
   currentPinnedAsyncConnection,
 } from './exec-context';
@@ -290,6 +291,7 @@ export type {
   BaseWrite,
   TransactionResult,
   ShortCircuitReason,
+  WriteExecOptions,
 } from './makesql';
 
 // The Command bundle + 1-tx execution surface (WS5 — the write path of §2.3 / §6).

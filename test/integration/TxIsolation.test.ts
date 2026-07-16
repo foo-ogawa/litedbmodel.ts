@@ -227,10 +227,13 @@ async function runConcurrentTxs(
       // that still exercises concurrent overlap of N·2 transactions on the shared runtime/pool, and
       // the per-tx ownership must keep each BEGIN…COMMIT on its own connection.
       (async () => {
-        const r0 = await executeTransactionAsync(ctx, bundle0.transaction!, { id: 2 * k, worker: k, seq: 0 }, dialect);
+        // Phase A ownership plane: drive the plan executor as its OWN auto-tx (no user
+        // `transaction(fn)` boundary) — `guard:false` opts out of the #86 write=tx guard, which is a
+        // policy of the public write entry, not this internal per-execution-ownership proof.
+        const r0 = await executeTransactionAsync(ctx, bundle0.transaction!, { id: 2 * k, worker: k, seq: 0 }, dialect, { guard: false });
         expect(r0.committed).toBe(true);
         await new Promise((res) => setTimeout(res, 1)); // force interleave across workers
-        const r1 = await executeTransactionAsync(ctx, bundle0.transaction!, { id: 2 * k + 1, worker: k, seq: 1 }, dialect);
+        const r1 = await executeTransactionAsync(ctx, bundle0.transaction!, { id: 2 * k + 1, worker: k, seq: 1 }, dialect, { guard: false });
         expect(r1.committed).toBe(true);
       })(),
     ),
@@ -280,7 +283,7 @@ describe('Phase A #75 — concurrent-transaction isolation (per-execution connec
     const outcomes = await Promise.all(
       Array.from({ length: N }, (_, k) =>
         // worker 0 collides on id=0 (pre-seeded) → PK violation → whole tx ROLLBACK + error.
-        executeTransactionAsync(ctx, bundle.transaction!, { id: k, worker: k, seq: 0 }, 'postgres')
+        executeTransactionAsync(ctx, bundle.transaction!, { id: k, worker: k, seq: 0 }, 'postgres', { guard: false })
           .then((r) => ({ ok: true as const, r }))
           .catch((e) => ({ ok: false as const, e })),
       ),
@@ -333,8 +336,8 @@ describe('Phase A #75 — concurrent-transaction isolation (per-execution connec
     const okBundle = compileWriteBundle(contract, 'Insert', insertWrites, 'create', dialect);
 
     const [failOutcome, okOutcome] = await Promise.allSettled([
-      executeTransactionAsync(ctx, failing.transaction!, {}, dialect),
-      executeTransactionAsync(ctx, okBundle.transaction!, { id: 30, worker: 2, seq: 0 }, dialect),
+      executeTransactionAsync(ctx, failing.transaction!, {}, dialect, { guard: false }),
+      executeTransactionAsync(ctx, okBundle.transaction!, { id: 30, worker: 2, seq: 0 }, dialect, { guard: false }),
     ]);
 
     // The failing tx must have thrown (PK collision on its 2nd statement) — NOT a silent partial commit.
@@ -397,8 +400,8 @@ describe('Phase A #75 — concurrent-transaction isolation (per-execution connec
       // Launch BOTH transactions concurrently. Under the owned pool each holds its OWN connection ⇒
       // both COMMIT. Under the shared slot the barrier holds tx-A open at its INSERT while tx-B's
       // BEGIN arrives ⇒ tx-B collides with the held slot (the shared-writer bug).
-      const txA = executeTransactionAsync(ctx, bundle.transaction!, { id: 100, worker: 1, seq: 0 }, 'postgres');
-      const txB = executeTransactionAsync(ctx, bundle.transaction!, { id: 200, worker: 2, seq: 0 }, 'postgres');
+      const txA = executeTransactionAsync(ctx, bundle.transaction!, { id: 100, worker: 1, seq: 0 }, 'postgres', { guard: false });
+      const txB = executeTransactionAsync(ctx, bundle.transaction!, { id: 200, worker: 2, seq: 0 }, 'postgres', { guard: false });
       // Once both are in flight, release the barrier so tx-A can finish (only matters for the slot).
       if (release !== undefined) setTimeout(release, 50);
 
