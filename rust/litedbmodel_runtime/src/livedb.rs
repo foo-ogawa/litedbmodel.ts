@@ -225,6 +225,21 @@ impl Driver for PostgresDriver {
         Ok(Box::new(PgTx { rt: &self.rt, conn }))
     }
 
+    /// Check out ONE pooled connection WITHOUT issuing BEGIN (#93 seam-routed tx control): the tx
+    /// runtime pins THIS connection then seam-issues the SET + `BEGIN` + `COMMIT`/`ROLLBACK` on it, so a
+    /// registered middleware observes them. Concurrent `acquire_tx` calls still get DISTINCT pooled
+    /// connections ⇒ the concurrent-tx isolation is UNCHANGED (only WHERE the BEGIN text is issued moved
+    /// into the seam — the connection ownership is identical to [`Driver::begin_tx`]).
+    fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        let conn = self.rt.block_on(async {
+            self.pool
+                .get()
+                .await
+                .map_err(|e| driver_failure(format!("postgres pool get (tx): {e}")))
+        })?;
+        Ok(Box::new(PgTx { rt: &self.rt, conn }))
+    }
+
     /// Acquire ONE pooled connection with the SESSION-config `setup` statements applied (Phase C / #88
     /// `configuredPool`): NOT wrapped in a transaction (a session SET is a connection property; and a
     /// mid-statement `statement_timeout` firing must abort the STATEMENT, not a surrounding tx). Every
@@ -362,6 +377,24 @@ impl TxConnection for PgTx<'_> {
             changes: changes as i64,
             last_insert_rowid: 0, // PG has no lastInsertId; the RETURNING path uses execute()'s rows.
         })
+    }
+
+    fn release(self: Box<Self>, poison: bool) -> Result<(), SqlFailure> {
+        // The COMMIT/ROLLBACK was already seam-issued on this connection. Release = drop the pooled
+        // Object (deadpool returns it to the pool). `poison` ⇒ DESTROY it (do not return a
+        // possibly-broken connection): deadpool's `Object::take` detaches it so its Drop discards the
+        // connection instead of recycling. Dropped inside the runtime for consistency with the async
+        // pool machinery.
+        let PgTx { rt, conn } = *self;
+        rt.block_on(async move {
+            if poison {
+                let inner = deadpool_postgres::Object::take(conn);
+                drop(inner); // detached from the pool ⇒ destroyed, never recycled.
+            } else {
+                drop(conn); // returned to the pool clean.
+            }
+        });
+        Ok(())
     }
 
     fn commit(self: Box<Self>) -> Result<(), SqlFailure> {
@@ -1034,13 +1067,42 @@ async fn my_all_on_conn(
     my_rows_to_values(&rows)
 }
 
+/// Is `sql` a tx-control / SET statement MySQL rejects in the prepared-statement protocol (error
+/// 1295) and must run via `raw_sql`? BEGIN / START TRANSACTION / COMMIT / ROLLBACK / SET … (#93: the
+/// seam-issued tx-control on the tx-owned connection resolves through `MyTx::run` → here, so it MUST
+/// take the `raw_sql` path exactly as the pre-#93 driver-issued BEGIN/COMMIT/ROLLBACK did).
+fn my_is_raw_sql_stmt(sql: &str) -> bool {
+    let head = sql.trim_start().to_ascii_uppercase();
+    head.starts_with("BEGIN")
+        || head.starts_with("START TRANSACTION")
+        || head.starts_with("COMMIT")
+        || head.starts_with("ROLLBACK")
+        || head.starts_with("SET ")
+        || head.starts_with("SET\t")
+}
+
 /// Run one `run` (non-returning write) on a single MySQL connection — the SHARED body for the pooled
-/// write path and the tx-owned path (§3).
+/// write path and the tx-owned path (§3). A tx-control / SET literal (seam-issued BEGIN/COMMIT/ROLLBACK
+/// on the tx-owned connection, #93) takes the `raw_sql` path — MySQL rejects those in the
+/// prepared-statement protocol (error 1295).
 async fn my_run_on_conn(
     conn: &mut sqlx::MySqlConnection,
     sql: &str,
     params: &[Value],
 ) -> Result<RunInfo, SqlFailure> {
+    if my_is_raw_sql_stmt(sql) {
+        // BEGIN/COMMIT/ROLLBACK/SET carry no params; run via raw_sql (the pre-#93 driver path). The
+        // affected-row summary is irrelevant for tx-control (the tx runtime ignores it).
+        debug_assert!(params.is_empty(), "tx-control statement carries no params");
+        sqlx::raw_sql(sql)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| driver_failure(format!("mysql tx-control [{sql}]: {e}")))?;
+        return Ok(RunInfo {
+            changes: 0,
+            last_insert_rowid: 0,
+        });
+    }
     let q = bind_my(sqlx::query(sql), params)?;
     let res = q
         .execute(&mut *conn)
@@ -1142,6 +1204,22 @@ impl Driver for MysqlDriver {
         Ok(Box::new(MyTx { rt: &self.rt, conn }))
     }
 
+    /// Check out ONE pooled connection WITHOUT issuing BEGIN or the isolation SET (#93 seam-routed tx
+    /// control): the tx runtime pins THIS connection then seam-issues the SET + `BEGIN` + `COMMIT`/
+    /// `ROLLBACK` on it (via `MyTx::run` → `my_run_on_conn`'s raw_sql path for tx-control) so a
+    /// registered middleware observes them. Concurrent `acquire_tx` calls get DISTINCT connections ⇒ the
+    /// concurrent-tx isolation is UNCHANGED. NB the MySQL isolation SET-before-BEGIN order is preserved
+    /// because the tx runtime issues `before_begin` (the SET) THEN `BEGIN` through the seam in that order.
+    fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        let conn = self.rt.block_on(async {
+            self.pool
+                .acquire()
+                .await
+                .map_err(|e| driver_failure(format!("mysql acquire (tx): {e}")))
+        })?;
+        Ok(Box::new(MyTx { rt: &self.rt, conn }))
+    }
+
     /// Acquire ONE pooled connection with the SESSION-config `setup` statements applied (Phase C / #88
     /// `configuredPool`): NOT wrapped in a transaction. `finish` runs the RESET statements (clean) or
     /// drops the connection (poison). SET statements run via `raw_sql` (session SETs).
@@ -1231,6 +1309,25 @@ impl TxConnection for MyTx<'_> {
         let conn = &mut self.conn;
         self.rt
             .block_on(async move { my_run_on_conn(conn, sql, params).await })
+    }
+
+    fn release(self: Box<Self>, poison: bool) -> Result<(), SqlFailure> {
+        // The COMMIT/ROLLBACK was already seam-issued on this connection. Release = drop the
+        // PoolConnection INSIDE the runtime context (sqlx `PoolConnection` Drop requires a Tokio
+        // context; dropping it outside `block_on` panics under a current-thread runtime). `poison` ⇒
+        // DETACH it from the pool first so its Drop CLOSES the connection instead of recycling a
+        // possibly-broken one (`PoolConnection::detach` yields a plain `MySqlConnection` that is closed
+        // on drop).
+        let MyTx { rt, conn } = *self;
+        rt.block_on(async move {
+            if poison {
+                let detached = conn.detach();
+                drop(detached); // closed, never recycled.
+            } else {
+                drop(conn); // returned to the pool clean, inside the runtime.
+            }
+        });
+        Ok(())
     }
 
     fn commit(self: Box<Self>) -> Result<(), SqlFailure> {

@@ -55,6 +55,9 @@ impl Driver for SyncDriverRef<'_> {
     fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
         self.0.begin_tx()
     }
+    fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        self.0.acquire_tx()
+    }
 }
 unsafe impl Sync for SyncDriverRef<'_> {}
 

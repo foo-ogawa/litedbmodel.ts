@@ -93,6 +93,10 @@ impl Driver for RecordingDriver {
         self.record();
         self.inner.begin_tx_isolated(before, after)
     }
+    fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, litedbmodel_runtime::SqlFailure> {
+        self.record();
+        self.inner.acquire_tx()
+    }
     fn session_connection(
         &self,
         setup: &[String],

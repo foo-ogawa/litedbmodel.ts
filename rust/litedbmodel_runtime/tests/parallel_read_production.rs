@@ -68,6 +68,12 @@ impl Driver for LatencyDriver {
     {
         litedbmodel_runtime::forwarding_tx(self)
     }
+    fn acquire_tx(
+        &self,
+    ) -> Result<Box<dyn litedbmodel_runtime::TxConnection + '_>, litedbmodel_runtime::SqlFailure>
+    {
+        litedbmodel_runtime::forwarding_tx_no_begin(self)
+    }
 }
 
 struct LatencyStmt<'a> {
@@ -144,6 +150,12 @@ impl Driver for EchoDriver {
     ) -> Result<Box<dyn litedbmodel_runtime::TxConnection + '_>, litedbmodel_runtime::SqlFailure>
     {
         litedbmodel_runtime::forwarding_tx(self)
+    }
+    fn acquire_tx(
+        &self,
+    ) -> Result<Box<dyn litedbmodel_runtime::TxConnection + '_>, litedbmodel_runtime::SqlFailure>
+    {
+        litedbmodel_runtime::forwarding_tx_no_begin(self)
     }
 }
 struct EchoStmt(String);

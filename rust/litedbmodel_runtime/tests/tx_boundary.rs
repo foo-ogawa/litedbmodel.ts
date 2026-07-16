@@ -91,8 +91,20 @@ impl Driver for CountingDriver<'_> {
         before_begin: &[String],
         after_begin: &[String],
     ) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
-        self.begin_tx_calls.fetch_add(1, Ordering::SeqCst);
         let inner = self.inner.begin_tx_isolated(before_begin, after_begin)?;
+        Ok(Box::new(CountingTx {
+            inner,
+            commits: self.commits.clone(),
+            rollbacks: self.rollbacks.clone(),
+        }))
+    }
+    // #93: the tx runtime acquires the owned connection here (NO BEGIN) then seam-issues BEGIN/COMMIT/
+    // ROLLBACK — so this counts the ONE acquire (= one owned tx connection), and CountingTx::run counts
+    // the seam-issued BEGIN/COMMIT/ROLLBACK by inspecting the SQL. Same intent (ONE begin / ONE commit
+    // on ONE owned connection), now observed via the seam-routed path.
+    fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        self.begin_tx_calls.fetch_add(1, Ordering::SeqCst);
+        let inner = self.inner.acquire_tx()?;
         Ok(Box::new(CountingTx {
             inner,
             commits: self.commits.clone(),
@@ -112,7 +124,18 @@ impl TxConnection for CountingTx<'_> {
         self.inner.execute(sql, params)
     }
     fn run(&mut self, sql: &str, params: &[Value]) -> Result<RunInfo, SqlFailure> {
+        // #93: COMMIT/ROLLBACK are now seam-issued through `run` on the owned connection — count them
+        // HERE (the tx runtime no longer calls TxConnection::commit/rollback for the user boundary).
+        let head = sql.trim_start().to_ascii_uppercase();
+        if head.starts_with("COMMIT") {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+        } else if head.starts_with("ROLLBACK") {
+            self.rollbacks.fetch_add(1, Ordering::SeqCst);
+        }
         self.inner.run(sql, params)
+    }
+    fn release(self: Box<Self>, poison: bool) -> Result<(), SqlFailure> {
+        self.inner.release(poison)
     }
     fn commit(self: Box<Self>) -> Result<(), SqlFailure> {
         self.commits.fetch_add(1, Ordering::SeqCst);
