@@ -1055,7 +1055,13 @@ async function execStatementAsync(
     const insertId = Number(info.lastInsertRowid);
     let rows: Record<string, unknown>[];
     if (pk === null) {
-      rows = await seamExecuteAsync(ctx, `SELECT ${cols} FROM ${insertTable(writeSql)} WHERE id = ?`, [insertId], { write: true });
+      // Legacy auto-increment-`id` path (no PK hint). MySQL's insertId is the FIRST auto-inc id of
+      // the batch; a multi-row `createMany` inserts `changes` consecutive ids [insertId, insertId +
+      // changes). Re-select the whole range (mirrors the `pk.autoInc` branch below) so createMany
+      // returns ALL affected PKs, not just the first row's. A single-row insert (changes = 1)
+      // reduces to `id >= insertId AND id < insertId + 1`, i.e. the original single-row select.
+      const count = Math.max(1, info.changes);
+      rows = await seamExecuteAsync(ctx, `SELECT ${cols} FROM ${insertTable(writeSql)} WHERE id >= ? AND id < ?`, [insertId, insertId + count], { write: true });
     } else if (pk.autoInc && pk.cols.length === 1 && pk.cols[0] === pk.autoInc) {
       rows = await seamExecuteAsync(ctx, `SELECT ${cols} FROM ${insertTable(writeSql)} WHERE ${pk.autoInc} >= ? AND ${pk.autoInc} < ?`, [insertId, insertId + Math.max(1, info.changes)], { write: true });
     } else {
