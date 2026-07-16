@@ -52,6 +52,7 @@
 
 use behavior_contracts::Value;
 
+use crate::connection_routing::{resolve_pool, RoutingConfig};
 use crate::driver::{Driver, RunInfo};
 use crate::errors::SqlFailure;
 
@@ -141,6 +142,26 @@ pub trait TxConnection {
     fn commit(self: Box<Self>) -> Result<(), SqlFailure>;
     /// ROLLBACK on the owned connection, then release it (best-effort). Consumes the handle.
     fn rollback(self: Box<Self>) -> Result<(), SqlFailure>;
+}
+
+/// An OWNED, session-CONFIGURED connection (Phase C / #88 — the rust analogue of the TS
+/// `configuredPool`'s acquired connection). Acquired by [`Driver::session_connection`], it holds ONE
+/// pooled connection on which the SESSION-config SET statements (statement_timeout / search_path /
+/// charset) were already run at acquisition; every statement of ONE seam call runs on it (execute/run);
+/// and it is `finish`ed by running the RESET statements + releasing the connection back to the pool —
+/// so a session knob NEVER leaks to the next caller that draws the SAME pooled connection.
+///
+/// `poison` distinguishes a CLEAN release (run reset then return the connection) from a POISONED one (a
+/// statement errored — possibly aborted by a fired statement timeout; SKIP the reset and DROP the
+/// connection, exactly as the TS `configuredPool.release(conn, destroy)` does).
+pub trait SessionConnection {
+    /// Run a SELECT / RETURNING statement on this session-configured owned connection.
+    fn execute(&mut self, sql: &str, params: &[Value]) -> Result<Vec<Value>, SqlFailure>;
+    /// Run a non-returning write / DDL statement on this session-configured owned connection.
+    fn run(&mut self, sql: &str, params: &[Value]) -> Result<RunInfo, SqlFailure>;
+    /// Run the RESET statements (unless `poison`) and release the connection (dropped if `poison`).
+    /// Consumes the handle.
+    fn finish(self: Box<Self>, poison: bool) -> Result<(), SqlFailure>;
 }
 
 /// The shared, interior-mutable slot holding a tx's OWNED connection for the duration of a tx-scoped
@@ -285,7 +306,8 @@ fn wrap_chain<T>(
 /// connection (only present in a tx-scoped ctx). The base ctx has `'t == 'a` and no pin.
 pub struct ExecutionContext<'a, 't> {
     /// The primary driver — the non-tx connection provider (each `prepare` = one pooled conn for a
-    /// live driver; the SAME in-proc connection for SQLite).
+    /// live driver; the SAME in-proc connection for SQLite). Used when NO routing config is present
+    /// (the base [`for_driver`] path — byte-identical Phase A/B single-DB resolution).
     driver: &'a dyn Driver,
     /// The middleware chain wrapping every SQL (§4). Empty in Phase A.
     middleware: &'a MiddlewareChain,
@@ -299,6 +321,17 @@ pub struct ExecutionContext<'a, 't> {
     /// ([`crate::tx_options::write_in_read_only`]). The explicit-ctx analogue of the TS async-local
     /// read-only marker; derived via [`ExecutionContext::with_read_only`].
     read_only: bool,
+    /// The Phase C (#88) routing config (registry + writer-sticky): present ⇒ `connection_for`'s
+    /// steps 2-4 (named-DB → reader/writer split → writer-sticky) select the pool via
+    /// [`resolve_pool`]. Absent (the base [`for_driver`] ctx) ⇒ resolution stays on the single
+    /// `driver` above (byte-identical Phase A/B). Borrowed for `'a` (the routing outlives the ctx —
+    /// the caller owns it, e.g. from `set_config`).
+    routing: Option<&'a RoutingConfig>,
+    /// The Phase C (#88) writer-scope marker (mirror v1 `withWriter` / the TS `inWriterScope()`): a
+    /// READ in this scope routes to the WRITER pool (read-your-writes), and — because `with_writer`
+    /// ALSO sets `read_only` — a write in it is REJECTED. Threaded explicitly (the approved
+    /// rust-idiomatic decision — no task-local). Derived via [`ExecutionContext::with_writer`].
+    in_writer_scope: bool,
 }
 
 /// The shared empty (Phase A) middleware chain — a `'static` passthrough so [`for_driver`] can build
@@ -317,6 +350,31 @@ pub fn for_driver(driver: &dyn Driver) -> ExecutionContext<'_, '_> {
     ExecutionContext::new(driver, empty_chain())
 }
 
+/// **Phase C (#88) routed ctx.** Wrap a [`RoutingConfig`] (registry + writer-sticky) in an
+/// [`ExecutionContext`]: `connection_for`'s steps 2-4 (named-DB → reader/writer split → writer-sticky)
+/// select the pool via [`resolve_pool`]. The shared EMPTY middleware chain, no pinned tx connection.
+/// The rust analogue of building a TS `PooledAsyncContext` from a `RoutingConfig`.
+///
+/// A routing built from ONE driver (reader === writer, sticky disabled — via
+/// [`RoutingConfig::single`](crate::connection_routing::RoutingConfig::single) /
+/// [`ConnectionRegistry::single_default`](crate::connection_routing::ConnectionRegistry::single_default))
+/// routes every intent to that one driver ⇒ byte-identical to the base [`for_driver`] path.
+pub fn for_routing(routing: &RoutingConfig) -> Result<ExecutionContext<'_, '_>, SqlFailure> {
+    // The struct needs a base `&dyn Driver`, but with a routing config present the base is NEVER used
+    // (`connection_for` returns before the fallback whenever `routing.is_some()`). Point it at the
+    // default connection's writer driver (extracted from the registry) so the field is a live,
+    // routing-borrowed reference — never a dangling placeholder.
+    let base: &dyn Driver = routing.registry.pair_for(None)?.writer.as_ref();
+    Ok(ExecutionContext {
+        driver: base,
+        middleware: empty_chain(),
+        pinned: None,
+        read_only: false,
+        routing: Some(routing),
+        in_writer_scope: false,
+    })
+}
+
 impl<'a> ExecutionContext<'a, 'a> {
     /// Wrap a raw [`Driver`] with a caller-supplied [`MiddlewareChain`] (Phase A: pass an empty one;
     /// Phase D: a registered chain). The primary = the driver, no pinned tx connection, a single DB.
@@ -327,6 +385,8 @@ impl<'a> ExecutionContext<'a, 'a> {
             middleware,
             pinned: None,
             read_only: false,
+            routing: None,
+            in_writer_scope: false,
         }
     }
 }
@@ -341,6 +401,27 @@ impl<'a, 't> ExecutionContext<'a, 't> {
     /// executor threads share — the tx path never fans out, so this is the non-tx provider).
     pub fn driver(&self) -> &'a dyn Driver {
         self.driver
+    }
+
+    /// The WRITER driver a transaction runs against (Phase C / #88 named-DB tx routing — mirror the TS
+    /// `connectionPoolFor({write:true, db})`). A transaction is a write ⇒ the writer pool of the named
+    /// `connection` (or the default). WITHOUT a routing config (base ctx) ⇒ the single primary driver
+    /// (byte-identical Phase A/B). Loud on an unregistered connection name.
+    pub fn tx_driver(&self, connection: Option<&str>) -> Result<&'a dyn Driver, SqlFailure> {
+        match self.routing {
+            Some(routing) => Ok(routing.registry.pair_for(connection)?.writer.as_ref()),
+            None => Ok(self.driver),
+        }
+    }
+
+    /// Mark writer-stickiness on a committed write/tx (Phase C / #88 read-your-writes): subsequent
+    /// reads within `writer_sticky_duration` route to the writer pool. A no-op WITHOUT a routing config
+    /// (base ctx) or with sticky disabled (single-pool). The tx runtime calls this on a successful,
+    /// non-rollback-only COMMIT.
+    pub fn mark_sticky(&self) {
+        if let Some(routing) = self.routing {
+            routing.sticky.mark();
+        }
     }
 
     /// Is this a tx-scoped ctx (a pinned connection is present)? This is the explicit-ctx analogue of
@@ -367,23 +448,71 @@ impl<'a, 't> ExecutionContext<'a, 't> {
             middleware: self.middleware,
             pinned: self.pinned,
             read_only: true,
+            routing: self.routing,
+            in_writer_scope: self.in_writer_scope,
         }
     }
 
-    /// Resolve WHICH connection a statement runs on (§3). Phase A resolution: the tx-owned (pinned)
-    /// connection wins; else the primary driver. Reader/writer split (§3-2/3) + named-DB routing
-    /// (§3-4) extend HERE in B/C/D — the seam does not change.
-    fn connection_for<'s>(&'s self, _intent: &StatementIntent) -> Box<dyn Connection + 's> {
-        match self.pinned {
-            Some(slot) => Box::new(TxConnectionRef::new(slot)),
-            None => Box::new(DriverConnection::new(self.driver)),
+    /// Derive a WRITER-scoped ctx (Phase C / #88 — mirror v1 `withWriter` / the TS `withWriter`): every
+    /// READ this ctx issues routes to the WRITER pool (read-your-writes without replication lag), and —
+    /// because it ALSO enters a read-only scope — ANY write funneled through the GUARDED write seam
+    /// ([`run_guarded`]) is REJECTED ([`crate::tx_options::write_in_read_only`]). Nested `with_writer`
+    /// is idempotent. Inside a transaction the tx-owned connection already wins in `connection_for`, so
+    /// a `with_writer` there is a no-op on routing (matches v1). Threaded EXPLICITLY (the approved
+    /// rust-idiomatic decision — no task-local; the TS enters an async-local writer scope).
+    pub fn with_writer(&self) -> ExecutionContext<'a, 't> {
+        ExecutionContext {
+            driver: self.driver,
+            middleware: self.middleware,
+            pinned: self.pinned,
+            // The writer scope is dual (v1's single `writerContext` is BOTH): writer-routing AND
+            // read-only (write-reject). `with_read_only`'s half is set here too.
+            read_only: true,
+            routing: self.routing,
+            in_writer_scope: true,
         }
+    }
+
+    /// Is this ctx in a [`with_writer`] scope (reads route to the writer, writes rejected)?
+    pub fn in_writer_scope(&self) -> bool {
+        self.in_writer_scope
+    }
+
+    /// The routing config this ctx carries (Phase C / #88), if any. Absent ⇒ the base single-driver
+    /// path. The tx runtime reads `.sticky` off it to `.mark()` writer-stickiness on a committed write.
+    pub fn routing(&self) -> Option<&'a RoutingConfig> {
+        self.routing
+    }
+
+    /// Resolve WHICH connection a statement runs on (§3). Resolution order:
+    ///   1. the tx-owned (pinned) connection wins (Phase A — only the ctx holds the pin);
+    ///   2. else, WITH a routing config (Phase C): [`resolve_pool`] selects the pool
+    ///      (named-DB → reader/writer split → writer-sticky/with_writer);
+    ///   3. else (base ctx, no routing): the single primary driver (byte-identical Phase A/B).
+    ///
+    /// Fallible because named-DB routing loud-fails on an unregistered name (the resolution happens in
+    /// the seam, mirroring the TS `connectionFor` throw).
+    fn connection_for<'s>(
+        &'s self,
+        intent: &StatementIntent,
+    ) -> Result<Box<dyn Connection + 's>, SqlFailure> {
+        // STEP 1: the tx pin wins (per-execution ownership — the concurrent-tx fix).
+        if let Some(slot) = self.pinned {
+            return Ok(Box::new(TxConnectionRef::new(slot)));
+        }
+        // STEPS 2-4: routed resolution (named-DB → reader/writer split → writer-sticky/with_writer).
+        if let Some(routing) = self.routing {
+            let pool = resolve_pool(intent, routing, self.in_writer_scope)?;
+            return Ok(Box::new(DriverConnection::new(pool.as_ref())));
+        }
+        // Base ctx: the single primary driver (byte-identical Phase A/B single-DB path).
+        Ok(Box::new(DriverConnection::new(self.driver)))
     }
 
     /// Derive a tx-scoped ctx pinning `slot` (every statement resolves it while this ctx is used). The
-    /// derived ctx shares the primary driver + middleware chain; `connection_for` returns the pinned
-    /// tx connection instead of the driver. `'x` is the borrow of the slot (shorter than `'a`, the
-    /// driver borrow the tx handle inside the slot holds).
+    /// derived ctx shares the primary driver + middleware chain + routing; `connection_for` returns the
+    /// pinned tx connection instead of the driver. `'x` is the borrow of the slot (shorter than `'a`,
+    /// the driver borrow the tx handle inside the slot holds).
     pub fn with_tx_connection<'x>(&self, slot: &'x TxSlot<'a>) -> ExecutionContext<'a, 'x> {
         ExecutionContext {
             driver: self.driver,
@@ -392,6 +521,8 @@ impl<'a, 't> ExecutionContext<'a, 't> {
             // A tx-scoped ctx INHERITS the read-only marker: a `transaction()` opened inside a
             // read-only scope is still read-only (v1 parity — `with_writer` reads never mutate).
             read_only: self.read_only,
+            routing: self.routing,
+            in_writer_scope: self.in_writer_scope,
         }
     }
 }
@@ -406,7 +537,7 @@ pub fn execute(
     params: &[Value],
     intent: &StatementIntent,
 ) -> Result<Vec<Value>, SqlFailure> {
-    let conn = ctx.connection_for(intent);
+    let conn = ctx.connection_for(intent)?;
     ctx.middleware
         .wrap_read(sql, params, &move |s, p| conn.execute(s, p))
 }
@@ -419,7 +550,7 @@ pub fn run(
     params: &[Value],
     intent: &StatementIntent,
 ) -> Result<RunInfo, SqlFailure> {
-    let conn = ctx.connection_for(intent);
+    let conn = ctx.connection_for(intent)?;
     ctx.middleware
         .wrap_write(sql, params, &move |s, p| conn.run(s, p))
 }
@@ -497,11 +628,30 @@ pub fn with_transaction_decided_isolated<'a, R>(
     after_begin: &[String],
     body: impl FnOnce(&ExecutionContext) -> Result<TxDecision<R>, SqlFailure>,
 ) -> Result<R, SqlFailure> {
-    // Acquire the tx's OWNED connection (isolation prelude + BEGIN issued on it inside
-    // begin_tx_isolated) and hold it in the slot. The handle borrows the primary driver (`'a`); the
-    // slot holds it for the tx body's duration.
-    let tx: Box<dyn TxConnection + 'a> =
-        ctx.driver().begin_tx_isolated(before_begin, after_begin)?;
+    with_transaction_decided_isolated_on(ctx, None, before_begin, after_begin, body)
+}
+
+/// The named-connection form of [`with_transaction_decided_isolated`] (Phase C / #88): the tx's owned
+/// connection is acquired from the WRITER pool of the named `connection` (or the default) via
+/// [`ExecutionContext::tx_driver`] — so a named-DB `transaction()` runs its whole BEGIN…COMMIT on ONE
+/// pinned writer connection of THAT database (the active-tx pin then wins over routing for every
+/// statement in the body — the Phase A per-execution ownership is unbroken). WITHOUT a routing config
+/// (base ctx) `connection` must be `None` and this is byte-identical to
+/// [`with_transaction_decided_isolated`]. On a successful (non-rollback) COMMIT it `.mark()`s the
+/// writer-sticky clock (read-your-writes).
+pub fn with_transaction_decided_isolated_on<'a, R>(
+    ctx: &ExecutionContext<'a, '_>,
+    connection: Option<&str>,
+    before_begin: &[String],
+    after_begin: &[String],
+    body: impl FnOnce(&ExecutionContext) -> Result<TxDecision<R>, SqlFailure>,
+) -> Result<R, SqlFailure> {
+    // Acquire the tx's OWNED connection from the WRITER pool of the named connection (Phase C) — or the
+    // single primary driver (base ctx). isolation prelude + BEGIN issued on it inside
+    // begin_tx_isolated. The handle borrows the routing/driver (`'a`); the slot holds it for the body.
+    let tx: Box<dyn TxConnection + 'a> = ctx
+        .tx_driver(connection)?
+        .begin_tx_isolated(before_begin, after_begin)?;
     let slot: TxSlot<'a> = std::cell::RefCell::new(Some(tx));
     // Scope the tx-ctx borrow of `slot` so it ends before we take the handle back for commit/rollback.
     let result = {
@@ -515,11 +665,15 @@ pub fn with_transaction_decided_isolated<'a, R>(
     match (result, tx) {
         (Ok(TxDecision::Commit(r)), Some(tx)) => {
             tx.commit()?;
+            // WRITER-STICKY (Phase C / #88 read-your-writes): a committed write marks the sticky clock
+            // so subsequent reads within the window route to the writer. A no-op without routing.
+            ctx.mark_sticky();
             Ok(r)
         }
         (Ok(TxDecision::Rollback(r)), Some(tx)) => {
             // A legitimate non-error rollback (e.g. a gate short-circuit): roll back, return the
-            // value. A rollback failure here IS surfaced (the connection would be poisoned).
+            // value. A rollback committed NOTHING ⇒ it does NOT arm stickiness. A rollback failure
+            // here IS surfaced (the connection would be poisoned).
             tx.rollback()?;
             Ok(r)
         }
@@ -591,6 +745,22 @@ pub fn transaction<'a, R>(
     })
 }
 
+/// The named-connection form of [`transaction`] (Phase C / #88): the whole BEGIN…COMMIT runs on ONE
+/// pinned WRITER connection of the named `connection` (or the default). Mirrors the TS `transaction`'s
+/// `connection?` param (`connectionPoolFor({write:true, db})`). Without a routing config `connection`
+/// must be `None`.
+pub fn transaction_on<'a, R>(
+    ctx: &ExecutionContext<'a, '_>,
+    connection: Option<&str>,
+    dialect: crate::tx_options::Dialect,
+    options: &crate::tx_options::TransactionOptions,
+    body: impl Fn(&ExecutionContext) -> Result<R, SqlFailure>,
+) -> Result<R, SqlFailure> {
+    transaction_decided_on(ctx, connection, dialect, options, |tx_ctx| {
+        body(tx_ctx).map(TxDecision::Commit)
+    })
+}
+
 /// The [`TxDecision`]-returning form of [`transaction`] (Phase B / #82): `body` decides COMMIT vs
 /// ROLLBACK (a gate short-circuit returns [`TxDecision::Rollback`] with `committed:false` — a
 /// legitimate non-error outcome), an `Err` always rolls back + retries/re-raises. This is what the
@@ -613,11 +783,25 @@ pub fn transaction_decided<'a, R>(
     options: &crate::tx_options::TransactionOptions,
     body: impl Fn(&ExecutionContext) -> Result<TxDecision<R>, SqlFailure>,
 ) -> Result<R, SqlFailure> {
+    transaction_decided_on(ctx, None, dialect, options, body)
+}
+
+/// The named-connection form of [`transaction_decided`] (Phase C / #88): the tx's owned connection is
+/// the WRITER of the named `connection` (or the default). Mirrors the TS `withTransactionAsync`'s
+/// `connection?` param. Without a routing config `connection` must be `None` ⇒ byte-identical to
+/// [`transaction_decided`].
+pub fn transaction_decided_on<'a, R>(
+    ctx: &ExecutionContext<'a, '_>,
+    connection: Option<&str>,
+    dialect: crate::tx_options::Dialect,
+    options: &crate::tx_options::TransactionOptions,
+    body: impl Fn(&ExecutionContext) -> Result<TxDecision<R>, SqlFailure>,
+) -> Result<R, SqlFailure> {
     // NESTED-TX JOIN (mirror v1 `TransactionExecutor::transaction` depth+1): already inside a tx on
     // this ctx ⇒ join the outer. No new connection, no BEGIN/COMMIT — the inner body is part of the
-    // outer physical transaction. Isolation/retry/rollback_only on a nested call are ignored: the
-    // outer owns the envelope. A gate `Rollback` here still returns its value (the caller reports
-    // `committed:false`) WITHOUT rolling back the outer — the outer decides its own COMMIT/ROLLBACK.
+    // outer physical transaction. Isolation/retry/rollback_only/connection on a nested call are
+    // ignored: the outer owns the envelope. A gate `Rollback` here still returns its value (the caller
+    // reports `committed:false`) WITHOUT rolling back the outer — the outer decides its own COMMIT/ROLLBACK.
     if ctx.in_transaction() {
         return match body(ctx)? {
             TxDecision::Commit(r) | TxDecision::Rollback(r) => Ok(r),
@@ -637,9 +821,14 @@ pub fn transaction_decided<'a, R>(
     let mut attempt: u32 = 0;
     loop {
         attempt += 1;
-        // ONE attempt on a FRESH owned connection (a retry after a connection error thus RECONNECTS).
-        let outcome =
-            with_transaction_decided_isolated(ctx, &before_begin, &after_begin, |tx_ctx| {
+        // ONE attempt on a FRESH owned connection (a retry after a connection error thus RECONNECTS),
+        // acquired from the named connection's WRITER pool (Phase C) or the single primary driver.
+        let outcome = with_transaction_decided_isolated_on(
+            ctx,
+            connection,
+            &before_begin,
+            &after_begin,
+            |tx_ctx| {
                 let decided = body(tx_ctx)?;
                 // rollback_only (dry-run): a SUCCESSFUL commit becomes a ROLLBACK, still returning the
                 // body result — no committed change. An explicit gate Rollback stays a rollback.
@@ -650,7 +839,8 @@ pub fn transaction_decided<'a, R>(
                 } else {
                     decided
                 })
-            });
+            },
+        );
 
         match outcome {
             Ok(r) => return Ok(r),

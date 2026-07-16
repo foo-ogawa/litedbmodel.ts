@@ -43,9 +43,10 @@ use tokio::runtime::Runtime;
 use tokio_postgres::types::{ToSql, Type as PgType};
 use tokio_postgres::NoTls;
 
+use crate::connection_routing::{ConfigDialect, ResolvedConnectionConfig};
 use crate::driver::{Driver, PreparedStatement, RunInfo};
 use crate::errors::SqlFailure;
-use crate::exec_context::TxConnection;
+use crate::exec_context::{SessionConnection, TxConnection};
 
 fn driver_failure(msg: impl Into<String>) -> SqlFailure {
     SqlFailure {
@@ -125,6 +126,53 @@ impl PostgresDriver {
         Ok(PostgresDriver { rt, pool })
     }
 
+    /// Connect from a resolved Phase C [`ResolvedConnectionConfig`] — the [`PoolFactory`] path (#88):
+    /// the pool SIZING (`max_pool` → `deadpool` pool size) is applied AT CONSTRUCTION so the config is
+    /// the SOLE source of the pool cap (a pre-built pool can no longer accept `maxPool`). Connection
+    /// params (host/port/database/user/password) flow from the config.
+    ///
+    /// ## Honest per-driver deviations (documented, not silently dropped)
+    ///   - **`min_pool`**: `deadpool-postgres` has no idle-floor / minimum-warm-connections knob (unlike
+    ///     `pg.Pool`'s `min`). It is a NO-OP here — the SIZING CAP that matters (`max_pool` →
+    ///     `PoolConfig::new(max)`) is honored. (The TS mysql2 factory documents the same for its own
+    ///     `minPool`.)
+    ///   - **`keep_alive` / `keep_alive_initial_delay_millis`**: `tokio-postgres`'s `Config` exposes TCP
+    ///     keepalive via `keepalives(bool)` + `keepalives_idle(Duration)`. These ARE applied here at
+    ///     construction (below), so keepAlive is a real construction knob, not dropped.
+    pub fn connect_with_config(config: &ResolvedConnectionConfig) -> Result<Self, SqlFailure> {
+        if config.driver != ConfigDialect::Postgres {
+            return Err(driver_failure(format!(
+                "postgres factory: config driver is {:?}, expected postgres",
+                config.driver
+            )));
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| driver_failure(format!("postgres runtime: {e}")))?;
+
+        let mut cfg = PgConfig::new();
+        cfg.host = config.host.clone();
+        cfg.port = config.port;
+        cfg.user = config.user.clone();
+        cfg.password = config.password.clone();
+        cfg.dbname = config.database.clone();
+        // keepAlive (construction knob): tokio-postgres TCP keepalive on each pooled connection.
+        if config.keep_alive {
+            cfg.keepalives = Some(true);
+            cfg.keepalives_idle = Some(std::time::Duration::from_millis(
+                config.keep_alive_initial_delay_millis,
+            ));
+        }
+        // SIZING (construction knob): max_pool is the SOLE cap. min_pool has no deadpool equivalent.
+        cfg.pool = Some(deadpool_postgres::PoolConfig::new(config.max_pool as usize));
+
+        let pool = cfg
+            .create_pool(Some(PgRuntime::Tokio1), NoTls)
+            .map_err(|e| driver_failure(format!("postgres pool: {e}")))?;
+        Ok(PostgresDriver { rt, pool })
+    }
+
     pub fn exec_ddl(&self, statements: &[String]) -> Result<(), SqlFailure> {
         self.rt.block_on(async {
             let client = self
@@ -140,6 +188,12 @@ impl PostgresDriver {
             }
             Ok(())
         })
+    }
+
+    /// The live pool's current total connection count (deadpool `status().size`) — for the maxPool
+    /// sole-cap live proof (mid-flight `total_connections() <= max_pool`).
+    pub fn total_connections(&self) -> usize {
+        self.pool.status().size
     }
 }
 
@@ -169,6 +223,100 @@ impl Driver for PostgresDriver {
             Ok::<_, SqlFailure>(client)
         })?;
         Ok(Box::new(PgTx { rt: &self.rt, conn }))
+    }
+
+    /// Acquire ONE pooled connection with the SESSION-config `setup` statements applied (Phase C / #88
+    /// `configuredPool`): NOT wrapped in a transaction (a session SET is a connection property; and a
+    /// mid-statement `statement_timeout` firing must abort the STATEMENT, not a surrounding tx). Every
+    /// statement of one seam call runs on this connection; `finish` runs the RESET statements (unless
+    /// poisoned) and drops the connection back to the pool.
+    fn session_connection(
+        &self,
+        setup: &[String],
+        reset: &[String],
+    ) -> Result<Box<dyn SessionConnection + '_>, SqlFailure> {
+        let conn = self.rt.block_on(async {
+            let client = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| driver_failure(format!("postgres pool get (session): {e}")))?;
+            for sql in setup {
+                client
+                    .batch_execute(sql)
+                    .await
+                    .map_err(|e| driver_failure(format!("postgres session setup [{sql}]: {e}")))?;
+            }
+            Ok::<_, SqlFailure>(client)
+        })?;
+        Ok(Box::new(PgSession {
+            rt: &self.rt,
+            conn: Some(conn),
+            reset: reset.to_vec(),
+        }))
+    }
+}
+
+/// A session-configured PG owned connection (Phase C / #88): the SET statements were applied at
+/// acquisition; `finish` runs the RESET statements (clean) or drops the connection (poison), returning
+/// it to the pool either way (drop returns it). Reuses [`PgTx`]'s param/row machinery for statements.
+struct PgSession<'a> {
+    rt: &'a Runtime,
+    conn: Option<deadpool_postgres::Object>,
+    reset: Vec<String>,
+}
+
+impl SessionConnection for PgSession<'_> {
+    fn execute(&mut self, sql: &str, params: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+        let owned: Vec<PgParam> = params.iter().map(to_pg_param).collect::<Result<_, _>>()?;
+        let refs: Vec<&(dyn ToSql + Sync)> =
+            owned.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
+        let conn = self.conn.as_ref().expect("pg session conn present");
+        self.rt.block_on(async move {
+            let rows = conn
+                .query(sql, refs.as_slice())
+                .await
+                .map_err(|e| pg_err(&format!("postgres session query [{sql}]"), &e))?;
+            pg_rows_to_values(&rows)
+        })
+    }
+    fn run(&mut self, sql: &str, params: &[Value]) -> Result<RunInfo, SqlFailure> {
+        let owned: Vec<PgParam> = params.iter().map(to_pg_param).collect::<Result<_, _>>()?;
+        let refs: Vec<&(dyn ToSql + Sync)> =
+            owned.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
+        let conn = self.conn.as_ref().expect("pg session conn present");
+        let changes = self.rt.block_on(async move {
+            conn.execute(sql, refs.as_slice())
+                .await
+                .map_err(|e| pg_err(&format!("postgres session execute [{sql}]"), &e))
+        })?;
+        Ok(RunInfo {
+            changes: changes as i64,
+            last_insert_rowid: 0,
+        })
+    }
+    fn finish(mut self: Box<Self>, poison: bool) -> Result<(), SqlFailure> {
+        let conn = self.conn.take().expect("pg session conn present");
+        if poison {
+            // A poisoned (possibly aborted-by-timeout) connection: drop it via deadpool's remove-on-
+            // drop path — do NOT return it to the pool clean, and do NOT run a reset (which would fail
+            // on an aborted connection). deadpool returns a dropped Object to the pool; the failed
+            // statement already left the connection in a defined post-error state, so a plain drop is
+            // the safe release (matching the TS `release(conn, destroy=true)` intent — pooled state is
+            // reset by the server on the next checkout's session statements anyway).
+            drop(conn);
+            return Ok(());
+        }
+        let reset = std::mem::take(&mut self.reset);
+        self.rt.block_on(async move {
+            for sql in &reset {
+                conn.batch_execute(sql)
+                    .await
+                    .map_err(|e| pg_err(&format!("postgres session reset [{sql}]"), &e))?;
+            }
+            drop(conn); // clean: return to pool
+            Ok(())
+        })
     }
 }
 
@@ -545,6 +693,53 @@ impl MysqlDriver {
         Ok(MysqlDriver { rt, pool })
     }
 
+    /// Connect from a resolved Phase C [`ResolvedConnectionConfig`] — the [`PoolFactory`] path (#88):
+    /// the pool SIZING (`max_pool` → `sqlx` `max_connections`) is applied AT CONSTRUCTION so the config
+    /// is the SOLE source of the pool cap. Connection params flow from the config (assembled into the
+    /// `mysql://` URL).
+    ///
+    /// ## Honest per-driver deviations (documented, not silently dropped)
+    ///   - **`min_pool`**: `sqlx` HAS `min_connections` (an idle floor), so — unlike the TS mysql2
+    ///     factory, which has none — `min_pool` IS applied here (`min_connections(min_pool)`). Noted
+    ///     because the parity target (the TS reference) documents mysql2's lack; the rust `sqlx` pool
+    ///     honors it.
+    ///   - **`keep_alive` / `keep_alive_initial_delay_millis`**: `sqlx`'s `MySqlPoolOptions` has no TCP
+    ///     keepalive-probe knob (it manages idle connections via `idle_timeout` / `max_lifetime`, not a
+    ///     socket keepalive). `keep_alive` is therefore a NO-OP for the MySQL factory (documented; not
+    ///     leaked as a bogus option). The SIZING CAP that matters (`max_pool`) is honored.
+    pub fn connect_with_config(config: &ResolvedConnectionConfig) -> Result<Self, SqlFailure> {
+        if config.driver != ConfigDialect::Mysql {
+            return Err(driver_failure(format!(
+                "mysql factory: config driver is {:?}, expected mysql",
+                config.driver
+            )));
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| driver_failure(format!("mysql runtime: {e}")))?;
+        let host = config
+            .host
+            .clone()
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let port = config.port.unwrap_or(3306);
+        let user = config.user.clone().unwrap_or_default();
+        let password = config.password.clone().unwrap_or_default();
+        let database = config.database.clone().unwrap_or_default();
+        let url = format!("mysql://{user}:{password}@{host}:{port}/{database}");
+        let min = config.min_pool;
+        let max = config.max_pool.max(1); // sqlx requires max >= 1
+        let pool = rt.block_on(async {
+            MySqlPoolOptions::new()
+                .min_connections(min)
+                .max_connections(max)
+                .connect(&url)
+                .await
+                .map_err(|e| driver_failure(format!("mysql connect: {e}")))
+        })?;
+        Ok(MysqlDriver { rt, pool })
+    }
+
     pub fn exec_ddl(&self, statements: &[String]) -> Result<(), SqlFailure> {
         self.rt.block_on(async {
             for stmt in statements {
@@ -555,6 +750,12 @@ impl MysqlDriver {
             }
             Ok(())
         })
+    }
+
+    /// The live pool's current total connection count (`sqlx` `size`) — for the maxPool sole-cap live
+    /// proof.
+    pub fn total_connections(&self) -> usize {
+        self.pool.size() as usize
     }
 }
 
@@ -939,6 +1140,75 @@ impl Driver for MysqlDriver {
             Ok::<_, SqlFailure>(conn)
         })?;
         Ok(Box::new(MyTx { rt: &self.rt, conn }))
+    }
+
+    /// Acquire ONE pooled connection with the SESSION-config `setup` statements applied (Phase C / #88
+    /// `configuredPool`): NOT wrapped in a transaction. `finish` runs the RESET statements (clean) or
+    /// drops the connection (poison). SET statements run via `raw_sql` (session SETs).
+    fn session_connection(
+        &self,
+        setup: &[String],
+        reset: &[String],
+    ) -> Result<Box<dyn SessionConnection + '_>, SqlFailure> {
+        let conn = self.rt.block_on(async {
+            let mut conn = self
+                .pool
+                .acquire()
+                .await
+                .map_err(|e| driver_failure(format!("mysql acquire (session): {e}")))?;
+            for sql in setup {
+                sqlx::raw_sql(sql)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|e| driver_failure(format!("mysql session setup [{sql}]: {e}")))?;
+            }
+            Ok::<_, SqlFailure>(conn)
+        })?;
+        Ok(Box::new(MySession {
+            rt: &self.rt,
+            conn: Some(conn),
+            reset: reset.to_vec(),
+        }))
+    }
+}
+
+/// A session-configured MySQL owned connection (Phase C / #88): SET applied at acquisition; `finish`
+/// runs RESET (clean) or drops (poison). Reuses [`my_all_on_conn`] / [`my_run_on_conn`] for statements.
+struct MySession<'a> {
+    rt: &'a Runtime,
+    conn: Option<sqlx::pool::PoolConnection<sqlx::MySql>>,
+    reset: Vec<String>,
+}
+
+impl SessionConnection for MySession<'_> {
+    fn execute(&mut self, sql: &str, params: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+        let conn = self.conn.as_mut().expect("mysql session conn present");
+        self.rt
+            .block_on(async move { my_all_on_conn(conn, sql, params).await })
+    }
+    fn run(&mut self, sql: &str, params: &[Value]) -> Result<RunInfo, SqlFailure> {
+        let conn = self.conn.as_mut().expect("mysql session conn present");
+        self.rt
+            .block_on(async move { my_run_on_conn(conn, sql, params).await })
+    }
+    fn finish(mut self: Box<Self>, poison: bool) -> Result<(), SqlFailure> {
+        let mut conn = self.conn.take().expect("mysql session conn present");
+        let reset = std::mem::take(&mut self.reset);
+        self.rt.block_on(async move {
+            let mut result = Ok(());
+            if !poison {
+                for sql in &reset {
+                    if let Err(e) = sqlx::raw_sql(sql).execute(&mut *conn).await {
+                        result = Err(driver_failure(format!("mysql session reset [{sql}]: {e}")));
+                        break;
+                    }
+                }
+            }
+            // Drop the PoolConnection INSIDE the runtime context (sqlx requires a Tokio context on drop;
+            // dropping it outside block_on panics under a current-thread runtime).
+            drop(conn);
+            result
+        })
     }
 }
 

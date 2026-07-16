@@ -24,8 +24,13 @@ use behavior_contracts::Value;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::Connection;
 
+use std::sync::Arc;
+
+use crate::connection_routing::{
+    session_reset_statements, session_statements, ResolvedConnectionConfig,
+};
 use crate::errors::{map_sqlite_error, SqlFailure};
-use crate::exec_context::TxConnection;
+use crate::exec_context::{SessionConnection, TxConnection};
 
 /// The summary of a non-returning write: affected-row count + last insert rowid.
 #[derive(Debug, Clone, Copy)]
@@ -80,6 +85,40 @@ pub trait Driver {
         }
         Ok(tx)
     }
+
+    /// Acquire an OWNED connection with the SESSION-config `setup` statements already applied, plus the
+    /// `reset` statements to run when the returned handle is `finish`ed (Phase C / #88 — the rust
+    /// analogue of the TS `configuredPool` acquire/release). This is the primitive
+    /// [`ConfiguredDriver`] uses so a whole seam call (one `prepare(sql).all()/run()`) runs on ONE
+    /// pooled connection carrying the session knobs, and the knobs are RESET before the connection
+    /// returns to the pool — so they never leak to the next caller. A `setup` statement failure poisons
+    /// the connection (dropped, not returned).
+    ///
+    /// The default implementation acquires an owned connection via [`Driver::begin_tx`] (a transaction
+    /// handle IS an owned connection), runs `setup`, and wraps it in a [`SessionOverTx`] that runs
+    /// `reset` + COMMITs (a clean release) or ROLLBACKs (poison) on `finish`. Live pooled drivers
+    /// (PG/MySQL) OVERRIDE this to hold a plain pooled connection WITHOUT a transaction (a session SET +
+    /// a bare statement + a session RESET must NOT be wrapped in a tx — a fired statement_timeout mid-tx
+    /// would abort the tx, and a session SET is a connection property, not a tx one). The
+    /// single-connection sqlite seam uses this default (no server session ⇒ `setup`/`reset` are empty in
+    /// practice — sqlite emits no session statements).
+    fn session_connection(
+        &self,
+        setup: &[String],
+        reset: &[String],
+    ) -> Result<Box<dyn SessionConnection + '_>, SqlFailure> {
+        let mut tx = self.begin_tx()?;
+        for sql in setup {
+            if let Err(e) = tx.run(sql, &[]) {
+                let _ = tx.rollback(); // a failed session setup poisons the connection — drop it.
+                return Err(e);
+            }
+        }
+        Ok(Box::new(SessionOverTx {
+            tx: Some(tx),
+            reset: reset.to_vec(),
+        }))
+    }
 }
 
 /// Build the single-connection [`TxConnection`] for a driver that is genuinely ONE connection (the
@@ -110,6 +149,201 @@ impl TxConnection for ForwardingTx<'_> {
     }
     fn rollback(self: Box<Self>) -> Result<(), SqlFailure> {
         self.driver.prepare("ROLLBACK").run(&[]).map(|_| ())
+    }
+}
+
+/// The default [`SessionConnection`] built over a [`TxConnection`] owned handle (used by the
+/// single-connection sqlite seam + any driver that does not override [`Driver::session_connection`]).
+/// It runs the seam statement on the tx-owned connection and, on `finish`, runs the RESET statements
+/// then COMMITs (clean) / ROLLBACKs (poison). For sqlite the session `setup`/`reset` are empty in
+/// practice (no server session), so this collapses to a bare BEGIN…COMMIT around one statement —
+/// harmless (a single autocommit statement wrapped in a tx is byte-identical result-wise).
+struct SessionOverTx<'a> {
+    tx: Option<Box<dyn TxConnection + 'a>>,
+    reset: Vec<String>,
+}
+
+impl SessionConnection for SessionOverTx<'_> {
+    fn execute(&mut self, sql: &str, params: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+        self.tx
+            .as_mut()
+            .expect("session tx present")
+            .execute(sql, params)
+    }
+    fn run(&mut self, sql: &str, params: &[Value]) -> Result<RunInfo, SqlFailure> {
+        self.tx
+            .as_mut()
+            .expect("session tx present")
+            .run(sql, params)
+    }
+    fn finish(mut self: Box<Self>, poison: bool) -> Result<(), SqlFailure> {
+        let tx = self.tx.take().expect("session tx present");
+        if poison {
+            let _ = tx.rollback(); // poisoned: drop without resetting.
+            return Ok(());
+        }
+        // Clean: run the RESET statements on the owned connection, then COMMIT (release).
+        // A reset here forwards through the tx handle (single-connection). If a reset fails, roll back.
+        // NB: the resets are issued via a fresh execute on the owned handle.
+        let mut tx = tx;
+        for sql in &self.reset {
+            if let Err(e) = tx.run(sql, &[]) {
+                let _ = tx.rollback();
+                return Err(e);
+            }
+        }
+        tx.commit()
+    }
+}
+
+/// A session-CONFIGURED [`Driver`] wrapper (Phase C / #88 — the rust analogue of the TS
+/// `configuredPool`). Every `prepare(sql).all()/run()` acquires ONE owned connection via
+/// [`Driver::session_connection`] (with the SESSION `setup` SET statements applied), runs the target
+/// statement on it, then `finish`es the handle (running the RESET statements + releasing) — so a
+/// session knob (statement_timeout / search_path / charset) set for THIS configured connection does
+/// NOT leak to the next caller that draws the SAME pooled connection.
+///
+/// A config with NO session knobs (all defaults) ⇒ `setup`/`reset` are EMPTY ⇒ [`ConfiguredDriver`] is
+/// a transparent passthrough (byte-identical to the wrapped driver — backward-compat). Held as an
+/// `Arc<dyn Driver>` because a routing registry owns its drivers behind `Arc`.
+pub struct ConfiguredDriver {
+    inner: Arc<dyn Driver + Send + Sync>,
+    setup: Vec<String>,
+    reset: Vec<String>,
+}
+
+impl ConfiguredDriver {
+    /// Wrap `inner` with the SESSION statements derived from `config`. If `config` sets no session
+    /// knobs the wrapper is a transparent passthrough — but the caller ([`crate::connection_routing`]'s
+    /// build path) can skip wrapping entirely in that case for a true byte-identical zero-overhead path.
+    pub fn new(inner: Arc<dyn Driver + Send + Sync>, config: &ResolvedConnectionConfig) -> Self {
+        ConfiguredDriver {
+            inner,
+            setup: session_statements(config),
+            reset: session_reset_statements(config),
+        }
+    }
+
+    /// The session SET statements this configured driver applies at each checkout (diagnostics/tests).
+    pub fn session(&self) -> &[String] {
+        &self.setup
+    }
+}
+
+impl Driver for ConfiguredDriver {
+    fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
+        Box::new(ConfiguredPrepared {
+            driver: self,
+            sql: sql.to_string(),
+        })
+    }
+
+    /// A tx on a configured driver acquires a session-configured owned connection (SET applied), issues
+    /// BEGIN on it, and delegates every statement + COMMIT/ROLLBACK to it. The isolation prelude is
+    /// forwarded to the inner driver's `begin_tx_isolated`, and the SESSION setup/reset ride the owned
+    /// connection around the whole tx (finish runs the resets after COMMIT/ROLLBACK).
+    fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        self.begin_tx_isolated(&[], &[])
+    }
+
+    fn begin_tx_isolated(
+        &self,
+        before_begin: &[String],
+        after_begin: &[String],
+    ) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+        // The tx owns one inner connection; the session SET statements run as part of the tx prelude
+        // (before the isolation SET and BEGIN), and the reset statements run just before COMMIT/ROLLBACK
+        // via the ConfiguredTx wrapper. Compose the session setup with the isolation before_begin.
+        let mut before: Vec<String> = self.setup.clone();
+        before.extend_from_slice(before_begin);
+        let tx = self.inner.begin_tx_isolated(&before, after_begin)?;
+        Ok(Box::new(ConfiguredTx {
+            inner: Some(tx),
+            reset: self.reset.clone(),
+        }))
+    }
+}
+
+/// A prepared statement on a [`ConfiguredDriver`]: acquire a session-configured owned connection, run
+/// the statement, then finish (reset + release). One connection per seam call — the session knobs
+/// apply to exactly this statement and are reset before the connection returns to the pool.
+struct ConfiguredPrepared<'a> {
+    driver: &'a ConfiguredDriver,
+    sql: String,
+}
+
+impl PreparedStatement for ConfiguredPrepared<'_> {
+    fn all(&mut self, params: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+        let mut conn = self
+            .driver
+            .inner
+            .session_connection(&self.driver.setup, &self.driver.reset)?;
+        match conn.execute(&self.sql, params) {
+            Ok(rows) => {
+                conn.finish(false)?; // clean: reset + release
+                Ok(rows)
+            }
+            Err(e) => {
+                // Poisoned (e.g. a fired statement_timeout aborts the connection): skip reset, drop it.
+                let _ = conn.finish(true);
+                Err(e)
+            }
+        }
+    }
+    fn run(&mut self, params: &[Value]) -> Result<RunInfo, SqlFailure> {
+        let mut conn = self
+            .driver
+            .inner
+            .session_connection(&self.driver.setup, &self.driver.reset)?;
+        match conn.run(&self.sql, params) {
+            Ok(info) => {
+                conn.finish(false)?;
+                Ok(info)
+            }
+            Err(e) => {
+                let _ = conn.finish(true);
+                Err(e)
+            }
+        }
+    }
+}
+
+/// The tx handle over a [`ConfiguredDriver`]: it delegates every statement to the inner tx-owned
+/// connection and, on commit/rollback, runs the RESET statements first (so the session knobs do not
+/// leak when the connection returns to the pool), then COMMIT/ROLLBACK.
+struct ConfiguredTx<'a> {
+    inner: Option<Box<dyn TxConnection + 'a>>,
+    reset: Vec<String>,
+}
+
+impl TxConnection for ConfiguredTx<'_> {
+    fn execute(&mut self, sql: &str, params: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+        self.inner
+            .as_mut()
+            .expect("configured tx present")
+            .execute(sql, params)
+    }
+    fn run(&mut self, sql: &str, params: &[Value]) -> Result<RunInfo, SqlFailure> {
+        self.inner
+            .as_mut()
+            .expect("configured tx present")
+            .run(sql, params)
+    }
+    fn commit(mut self: Box<Self>) -> Result<(), SqlFailure> {
+        let mut inner = self.inner.take().expect("configured tx present");
+        // Reset the session knobs BEFORE COMMIT (still on the owned connection).
+        for sql in &self.reset {
+            if let Err(e) = inner.run(sql, &[]) {
+                let _ = inner.rollback();
+                return Err(e);
+            }
+        }
+        inner.commit()
+    }
+    fn rollback(mut self: Box<Self>) -> Result<(), SqlFailure> {
+        let inner = self.inner.take().expect("configured tx present");
+        // On rollback the connection state is discarded anyway; skip the reset and just roll back.
+        inner.rollback()
     }
 }
 
