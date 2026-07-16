@@ -212,7 +212,17 @@ type RelationBatch map[string][]bc.Value
 // column for composite) BEFORE the `?`→`$N` render; on a NON-empty key set execute binding the keys
 // (single array / per-column arrays / JSON tuples) and group the child rows by target-key identity.
 // An EMPTY key set issues NO query, matching TS.
+//
+// Backward-compat wrapper (§6): wraps `db` in a thin ExecutionContext and delegates to the
+// ctx-threaded core, so an existing caller passing a raw db keeps its byte-identical behavior.
 func RunRelationOp(op RelationOp, parents []bc.Value, db SQLDB) (RelationBatch, error) {
+	return runRelationOpCtx(ContextForDB(db), op, parents)
+}
+
+// runRelationOpCtx runs ONE relation batch op through the CENTRAL SEAM (§2): the batched child SELECT
+// funnels through Execute(ctx, …, ReadIntent) — the resolved connection is the tx-owned one when the
+// relation runs inside a tx-scoped ctx, else the primary db. This is the ctx-threaded core.
+func runRelationOpCtx(ctx *ExecutionContext, op RelationOp, parents []bc.Value) (RelationBatch, error) {
 	pCols := op.parentKeyCols()
 	keys := dedupeKeys(parents, pCols)
 	batch := RelationBatch{}
@@ -231,7 +241,7 @@ func RunRelationOp(op RelationOp, parents []bc.Value, db SQLDB) (RelationBatch, 
 		return batch, nil
 	}
 	tCols := op.targetKeyCols()
-	rows, err := queryRows(db, sqlText, bindKeys(op, keys))
+	rows, err := Execute(ctx, sqlText, bindKeys(op, keys), ReadIntent())
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +325,7 @@ func driverForOp(op RelationOp, db SQLDB, connections map[string]SQLDB) (SQLDB, 
 // hydrated result is byte-identical to ReadBundle's.
 func StitchRelation(opJObj *bc.JObj, parents []bc.Value, db SQLDB) ([]bc.Value, error) {
 	op := relationOpFromJObj(opJObj)
-	batch, err := RunRelationOp(op, parents, db)
+	batch, err := runRelationOpCtx(ContextForDB(db), op, parents)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +338,10 @@ func StitchRelation(opJObj *bc.JObj, parents []bc.Value, db SQLDB) ([]bc.Value, 
 }
 
 func ReadBundle(bundle *SqlBundle, relations *bc.JObj, input *bc.Obj, db SQLDB, withNames []string, connections map[string]SQLDB) (bc.Value, error) {
-	out, err := ExecuteBundle(bundle, input, db)
+	// One ExecutionContext for the primary read; a cross-DB relation derives a distinct ctx over its
+	// tagged connection (§6 — the same single-DB, empty-middleware backward-compat wrapper per DB).
+	primaryCtx := ContextForDB(db)
+	out, err := executeBundleCtx(primaryCtx, bundle, input)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +363,11 @@ func ReadBundle(bundle *SqlBundle, relations *bc.JObj, input *bc.Obj, db SQLDB, 
 		if err != nil {
 			return nil, err
 		}
-		batch, err := RunRelationOp(op, rows, relDB)
+		relCtx := primaryCtx
+		if relDB != db {
+			relCtx = ContextForDB(relDB)
+		}
+		batch, err := runRelationOpCtx(relCtx, op, rows)
 		if err != nil {
 			return nil, err
 		}

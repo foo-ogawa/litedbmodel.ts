@@ -108,7 +108,12 @@ func gateShortCircuit(gate string, r execStatementResult) (ShortCircuitReason, e
 // placeholders (the SAME assemble the read path uses). A SELECT (leading verb) or a RETURNING write
 // returns rows (changes = row count); a non-returning write returns changes = affected. A driver
 // error is a mapped SqlFailure.
-func execTxStatement(db SQLDB, op *bc.JObj, scope *bc.Obj, dialect Dialect) (execStatementResult, error) {
+//
+// Every statement runs through the CENTRAL SEAM on the tx-scoped ctx (§2/§3): the seam resolves the
+// tx's OWNED connection (per-execution ownership) and runs there — a SELECT/RETURNING via Execute, a
+// non-returning write via Run. No direct db.Query / db.Exec — the tx-owned *sql.Tx is the ONLY driver
+// contact (both carry WriteIntent: a tx statement always targets the writer / tx connection).
+func execTxStatement(ctx *ExecutionContext, op *bc.JObj, scope *bc.Obj, dialect Dialect) (execStatementResult, error) {
 	rendered, err := renderTxOp(op, scope, dialect.Name())
 	if err != nil {
 		return execStatementResult{}, err
@@ -123,17 +128,17 @@ func execTxStatement(db SQLDB, op *bc.JObj, scope *bc.Obj, dialect Dialect) (exe
 	}
 	hasReturn := selectPrefixRe.MatchString(head) || returningRe.MatchString(rendered.SQL)
 	if hasReturn {
-		rows, err := queryRows(db, rendered.SQL, args)
+		rows, err := Execute(ctx, rendered.SQL, args, WriteIntent())
 		if err != nil {
 			return execStatementResult{}, err
 		}
 		return execStatementResult{rows: rows, changes: int64(len(rows))}, nil
 	}
-	changes, _, err := execWrite(db, rendered.SQL, args)
+	info, err := Run(ctx, rendered.SQL, args, WriteIntent())
 	if err != nil {
 		return execStatementResult{}, err
 	}
-	return execStatementResult{rows: nil, changes: changes}, nil
+	return execStatementResult{rows: nil, changes: info.Changes}, nil
 }
 
 // txPlanStatements reads the plan's ordered statements, entityFrom, and returns them.
@@ -203,32 +208,31 @@ func ExecuteTransactionBundle(bundle *SqlBundle, input *bc.Obj, db TxDB) (Transa
 	if err != nil {
 		return TransactionResult{}, err
 	}
-	return executeTransaction(db, bundle.Transaction, input, dialect)
+	// Backward-compat wrapper (§6): wrap `db` in a thin ExecutionContext whose ConnectionFor resolves
+	// the tx-owned *sql.Tx once WithTransactionDecided pins it. `db` must be BOTH the base connection
+	// provider (SQLDB) and tx-capable (TxDB) — a *sql.DB is both.
+	baseDB, ok := db.(SQLDB)
+	if !ok {
+		return TransactionResult{}, fmt.Errorf("scp write: transaction db is not a base SQLDB connection provider")
+	}
+	return executeTransactionCtx(ContextForDB(baseDB), db, bundle.Transaction, input, dialect)
 }
 
-// executeTransaction runs a plan as one transaction with gate-first short-circuit (byte-true to
-// write-runtime.ts executeTransaction): statements run in the plan's fixed order; a failing gate
-// ROLLBACKs and the remaining statements never execute. On success COMMITs and returns the
-// `$.entity` RETURNING row.
-func executeTransaction(db TxDB, plan *bc.JObj, input *bc.Obj, dialect Dialect) (TransactionResult, error) {
+// executeTransactionCtx runs a plan as one transaction with **per-execution connection ownership**
+// (§3) + gate-first short-circuit (byte-true to write-runtime.ts executeTransaction). It hands the
+// whole plan to [WithTransactionDecided], which acquires ONE *sql.Tx (Go's connection-owning
+// primitive — BEGIN issued by database/sql), pins it into a tx-scoped ctx so every statement resolves
+// THAT connection via the seam, and COMMITs / ROLLBACKs it on the SAME *sql.Tx per the body's
+// decision. Statements run in the plan's fixed order; a failing gate returns a ROLLBACK decision
+// (committed:false — a legitimate outcome, NOT an error) and the tail never executes; a driver error
+// returns an error (⇒ rollback + re-raise). On success COMMITs and returns the `$.entity` RETURNING
+// row. Concurrent transactions each own a DISTINCT *sql.Tx ⇒ isolated (no shared-tx state).
+func executeTransactionCtx(ctx *ExecutionContext, db TxDB, plan *bc.JObj, input *bc.Obj, dialect Dialect) (TransactionResult, error) {
 	statements, entityFrom, err := parseTxPlan(plan)
 	if err != nil {
 		return TransactionResult{}, err
 	}
-	tx, err := db.Begin()
-	if err != nil {
-		return TransactionResult{}, mapSqliteError(err)
-	}
 
-	// The evolving scope: input names at the top level (bc flat scope) + the body RETURNING row
-	// exposed under `__entity` once the body runs. Defaults live in the plan/schema (no ad-hoc code
-	// default is injected here).
-	scope := bc.NewObj()
-	for _, k := range input.Keys {
-		scope.Set(k, input.Vals[k])
-	}
-	var entity *bc.Obj
-	var executed []string
 	// Batch mode (createMany/updateMany/deleteMany): gate-free, ref-free plan (entityFrom empty, every
 	// statement a plain body) — accumulate each body statement's RETURNING rows in order.
 	isBatch := entityFrom == ""
@@ -238,64 +242,71 @@ func executeTransaction(db TxDB, plan *bc.JObj, input *bc.Obj, dialect Dialect) 
 			break
 		}
 	}
-	var returnedRows [][]bc.Value
 
-	for _, stmt := range statements {
-		result, err := execTxStatement(tx, stmt.op, scope, dialect)
-		if err != nil {
-			_ = tx.Rollback()
-			return TransactionResult{}, err
+	return WithTransactionDecided(ctx, db, func(txCtx *ExecutionContext) (TransactionResult, TxDecision, error) {
+		// The evolving scope: input names at the top level (bc flat scope) + the body RETURNING row
+		// exposed under `__entity` once the body runs. Defaults live in the plan/schema (no ad-hoc
+		// code default is injected here).
+		scope := bc.NewObj()
+		for _, k := range input.Keys {
+			scope.Set(k, input.Vals[k])
 		}
-		executed = append(executed, stmt.id)
+		var entity *bc.Obj
+		var executed []string
+		var returnedRows [][]bc.Value
 
-		// Gate-first: a failing gate short-circuits — ROLLBACK and STOP (tail never executes).
-		if stmt.gate != "" {
-			reason, gErr := gateShortCircuit(stmt.gate, result)
-			if gErr != nil {
-				// Unknown gate rule (fail-closed): ROLLBACK and surface the error — never COMMIT.
-				_ = tx.Rollback()
-				return TransactionResult{}, gErr
+		for _, stmt := range statements {
+			result, err := execTxStatement(txCtx, stmt.op, scope, dialect)
+			if err != nil {
+				// A driver error ⇒ the combinator ROLLBACKs the owned *sql.Tx + re-raises.
+				return TransactionResult{}, Commit(), err
 			}
-			if reason != "" {
-				if rbErr := tx.Rollback(); rbErr != nil {
-					return TransactionResult{}, mapSqliteError(rbErr)
+			executed = append(executed, stmt.id)
+
+			// Gate-first: a failing gate short-circuits — ROLLBACK and STOP (tail never executes).
+			if stmt.gate != "" {
+				reason, gErr := gateShortCircuit(stmt.gate, result)
+				if gErr != nil {
+					// Unknown gate rule (fail-closed): ROLLBACK + surface the error — never COMMIT.
+					return TransactionResult{}, Commit(), gErr
 				}
-				return TransactionResult{
-					Committed:    false,
-					ShortCircuit: &ShortCircuit{StatementID: stmt.id, Reason: reason},
-					Entity:       nil,
-					Executed:     executed,
-				}, nil
+				if reason != "" {
+					// A failed gate: the combinator ROLLBACKs the owned *sql.Tx and returns this
+					// value (committed:false) — a legitimate outcome, NOT an error.
+					return TransactionResult{
+						Committed:    false,
+						ShortCircuit: &ShortCircuit{StatementID: stmt.id, Reason: reason},
+						Entity:       nil,
+						Executed:     executed,
+					}, Rollback(), nil
+				}
 			}
-		}
 
-		// Capture the SOLE body RETURNING row as `$.entity` (WS5 single-write back-compat).
-		if stmt.id == entityFrom {
-			if len(result.rows) > 0 {
+			// Capture the SOLE body RETURNING row as `$.entity` (WS5 single-write back-compat).
+			if stmt.id == entityFrom {
+				if len(result.rows) > 0 {
+					if row, ok := result.rows[0].(*bc.Obj); ok {
+						entity = row
+						scope.Set(entityRoot, entity)
+					}
+				}
+			}
+
+			// WS8a composite: bind THIS statement's RETURNING row under its `binds` name so a later
+			// `$.ref.<binds>.<field>` resolves against it (the tx-DAG data-dependency edge). Self-
+			// describing — the runtime binds the row the plan told it to; no re-derivation.
+			if stmt.binds != "" && len(result.rows) > 0 {
 				if row, ok := result.rows[0].(*bc.Obj); ok {
-					entity = row
-					scope.Set(entityRoot, entity)
+					scope.Set(stmt.binds, row)
 				}
 			}
-		}
 
-		// WS8a composite: bind THIS statement's RETURNING row under its `binds` name so a later
-		// `$.ref.<binds>.<field>` resolves against it (the tx-DAG data-dependency edge). Self-
-		// describing — the runtime binds the row the plan told it to; no re-derivation.
-		if stmt.binds != "" && len(result.rows) > 0 {
-			if row, ok := result.rows[0].(*bc.Obj); ok {
-				scope.Set(stmt.binds, row)
+			if isBatch && stmt.role == "body" && len(result.rows) > 0 {
+				returnedRows = append(returnedRows, result.rows)
 			}
 		}
 
-		if isBatch && stmt.role == "body" && len(result.rows) > 0 {
-			returnedRows = append(returnedRows, result.rows)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		_ = tx.Rollback()
-		return TransactionResult{}, mapSqliteError(err)
-	}
-	return TransactionResult{Committed: true, Entity: entity, Executed: executed, ReturnedRows: returnedRows}, nil
+		// All statements succeeded: COMMIT the owned *sql.Tx and return the entity.
+		return TransactionResult{Committed: true, Entity: entity, Executed: executed, ReturnedRows: returnedRows}, Commit(), nil
+	})
 }

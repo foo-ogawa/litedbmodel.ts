@@ -96,10 +96,18 @@ func BundleFromJObj(obj *bc.JObj) (*SqlBundle, error) {
 // REAL SQL. This is the SAME code path a consumer runtime follows — it consumes ONLY the serialized
 // bundle + bc runtime-core, never re-running litedbmodel's Backend-Compile.
 func ExecuteBundle(bundle *SqlBundle, input *bc.Obj, db SQLDB) (bc.Value, error) {
+	return executeBundleCtx(ContextForDB(db), bundle, input)
+}
+
+// executeBundleCtx is the ctx-threaded core of ExecuteBundle: it drives the read graph over an
+// [ExecutionContext] so every SQL funnels through the central seam. ExecuteBundle is the
+// backward-compat wrapper (§6); ReadBundle threads the SAME ctx here so its primary read + relation
+// batches share one execution context.
+func executeBundleCtx(ctx *ExecutionContext, bundle *SqlBundle, input *bc.Obj) (bc.Value, error) {
 	if bundle.ReadGraph == nil {
 		return nil, fmt.Errorf("scp runtime: bundle '%s' carries no read graph (single-statement writes ride the write path)", bundle.Name)
 	}
-	return ExecuteReadGraph(bundle.ReadGraph, input, db)
+	return executeReadGraphCtx(ctx, bundle.ReadGraph, input)
 }
 
 // reErrorToSqlFailure re-surfaces a structured SqlFailure from a bc OP_FAILED whose message embeds

@@ -435,7 +435,17 @@ func (g *ReadGraph) primaryNodeID() (string, error) {
 // (ExecCtx above). Exported so the codegen bench cell's generated-module handler runs the SAME
 // render+execute the interpreter handler runs — the ONLY difference being that the generated
 // de-interpreted module (NOT RunBehavior) drives the call. Byte-identical rows to the ir path.
+//
+// Backward-compat wrapper (§6): wraps `db` in a thin ExecutionContext and delegates to the
+// ctx-threaded core, so an existing caller passing a raw db keeps its byte-identical behavior.
 func RenderExecuteNode(g *ReadGraph, nodeID, dialect string, scope *bc.Obj, db SQLDB) ([]bc.Value, error) {
+	return renderExecuteNodeCtx(ContextForDB(db), g, nodeID, dialect, scope)
+}
+
+// renderExecuteNodeCtx renders ONE read node's static statements and runs REAL SQL through the
+// CENTRAL SEAM (§2): renderStatements → Execute(ctx, …, ReadIntent) → the resolved connection. This
+// is the ctx-threaded core; RenderExecuteNode is the backward-compat wrapper.
+func renderExecuteNodeCtx(ctx *ExecutionContext, g *ReadGraph, nodeID, dialect string, scope *bc.Obj) ([]bc.Value, error) {
 	stmts, ok := g.StatementsByID[nodeID]
 	if !ok {
 		return nil, fmt.Errorf("static-bundle: no statements for node '%s'", nodeID)
@@ -448,7 +458,7 @@ func RenderExecuteNode(g *ReadGraph, nodeID, dialect string, scope *bc.Obj, db S
 	for i, p := range rendered.Params {
 		args[i] = toDriverParam(p)
 	}
-	rows, qerr := queryRows(db, rendered.SQL, args)
+	rows, qerr := Execute(ctx, rendered.SQL, args, ReadIntent())
 	if qerr != nil {
 		return nil, mapSqliteError(qerr)
 	}
@@ -467,9 +477,18 @@ func (g *ReadGraph) PrimaryNodeID() (string, error) { return g.primaryNodeID() }
 // Every statement's SQL is fixed text carried verbatim; only the deferred typed param slots + skip are
 // evaluated. Byte-identical to the former RunBehavior path for the closed read-graph shapes the
 // makeSQL corpus emits (single sequential componentRef reads + a single relationKind:single map).
+//
+// Backward-compat wrapper (§6): wraps `db` in a thin ExecutionContext and delegates to the
+// ctx-threaded core, so an existing caller passing a raw db keeps its byte-identical behavior.
 func ExecuteReadGraph(g *ReadGraph, input *bc.Obj, db SQLDB) (bc.Value, error) {
+	return executeReadGraphCtx(ContextForDB(db), g, input)
+}
+
+// executeReadGraphCtx is the ctx-threaded core of ExecuteReadGraph: normalize the input, then run the
+// native walker over the [ExecutionContext] (every SQL through the central seam).
+func executeReadGraphCtx(ctx *ExecutionContext, g *ReadGraph, input *bc.Obj) (bc.Value, error) {
 	normalized := normalizeReadGraphInput(g, input)
-	out, err := executeReadGraphNative(g, normalized, db)
+	out, err := executeReadGraphNative(ctx, g, normalized)
 	if err != nil {
 		return nil, reErrorToSqlFailure(err)
 	}
@@ -482,7 +501,7 @@ func ExecuteReadGraph(g *ReadGraph, input *bc.Obj, db SQLDB) (bc.Value, error) {
 // Expression IR (the per-statement param slots are still evaluated natively by renderStatements, the
 // typed-param-binding contract). Fail-closed: an out-of-set body node / output ref panics-equivalent
 // (returns an error) rather than silently degrading.
-func executeReadGraphNative(g *ReadGraph, scope *bc.Obj, db SQLDB) (bc.Value, error) {
+func executeReadGraphNative(ctx *ExecutionContext, g *ReadGraph, scope *bc.Obj) (bc.Value, error) {
 	comp := g.primaryComponent
 	if comp == nil {
 		return nil, fmt.Errorf("static-bundle: read graph has no component")
@@ -538,7 +557,7 @@ func executeReadGraphNative(g *ReadGraph, scope *bc.Obj, db SQLDB) (bc.Value, er
 					elemScope.Set(k, scope.Vals[k])
 				}
 				elemScope.Set(asVar, pr)
-				childRows, err := RenderExecuteNode(g, id, g.Dialect, elemScope, db)
+				childRows, err := renderExecuteNodeCtx(ctx, g, id, g.Dialect, elemScope)
 				if err != nil {
 					return err
 				}
@@ -551,7 +570,7 @@ func executeReadGraphNative(g *ReadGraph, scope *bc.Obj, db SQLDB) (bc.Value, er
 		if _, has := g.StatementsByID[id]; !has {
 			return fmt.Errorf("static-bundle: read graph body node '%s' has no static statements (out-of-set shape)", id)
 		}
-		rows, err := RenderExecuteNode(g, id, g.Dialect, scope, db)
+		rows, err := renderExecuteNodeCtx(ctx, g, id, g.Dialect, scope)
 		if err != nil {
 			return err
 		}
