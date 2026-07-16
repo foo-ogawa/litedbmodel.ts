@@ -123,6 +123,16 @@ export function sqlTypeToMaterializeClass(sqlType: string): MaterializeClass {
     .replace(/\b(UNSIGNED|ZEROFILL|PRECISION)\b/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+  // An ARRAY column (`TEXT[]` / `INT[]` / `NUMERIC[]` / `BOOLEAN[]` / `TIMESTAMP[]` / …) de-boxes as
+  // `passthrough`: the driver's own array typeCast already parses the wire form into a JS array whose
+  // ELEMENTS match the declared element outType, so the read path leaves the value unchanged (no
+  // per-cell coercion — a scalar materialize class does not apply to a whole list). The element base
+  // type is still validated (an unknown element type on a DECLARED array column is a hard error too).
+  const arrayMatch = /^(.+?)\s*\[\s*\]$/.exec(t);
+  if (arrayMatch !== null) {
+    sqlTypeToMaterializeClass(arrayMatch[1].trim()); // validate the element base type (throws if unknown)
+    return 'passthrough';
+  }
   switch (t) {
     // 32-bit int family: JS number holds the full range exactly.
     case 'INTEGER':

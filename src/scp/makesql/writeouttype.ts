@@ -58,7 +58,9 @@ const SHORT_CIRCUIT_TYPE: PortableType = { obj: { statementId: 'string', reason:
  */
 function targetAndReturning(sql: string): { table: string; returning: string[] | null } {
   const s = sql.trim();
-  const ins = /^INSERT\s+(?:IGNORE\s+)?INTO\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(s);
+  // `INSERT INTO` / `INSERT IGNORE INTO` (MySQL DO-NOTHING) / `INSERT OR IGNORE INTO` (SQLite
+  // DO-NOTHING, v1 `sqliteSqlBuilder`) — the target table follows either conflict-ignore verb.
+  const ins = /^INSERT\s+(?:IGNORE\s+|OR\s+IGNORE\s+)?INTO\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(s);
   const upd = /^UPDATE\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(s);
   const del = /^DELETE\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(s);
   const m = ins ?? upd ?? del;

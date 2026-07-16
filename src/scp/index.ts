@@ -451,6 +451,39 @@ export {
 } from './typed-object';
 export type { HydrateFactory, ReadOptions } from './typed-object';
 
+// ── Phase F-1 (#104): the decorator → SCP authoring ADAPTER. Translates the `@model` / `@column` /
+// `@hasMany` decorator metadata into the SCP authoring it lowers to (columns → `static columns`;
+// find/count → eager Select/Count; create/update/delete → write bundles; relations → RelationDecl →
+// RelationOp). Standalone + unit-proven byte-identical to the hand-written SCP behavior; does NOT yet
+// rewire DBModel's methods (F2). TS-only, zero BC. Mirrors graphddb's collector→define→compile.
+export {
+  deriveModelColumns,
+  columnSqlType,
+  tableNameOf,
+  COLUMN_FAMILY_SQL_TYPE,
+  DEFAULT_UNCAST_SQL_TYPE,
+  findAuthoring,
+  countAuthoring,
+  compileReadBundle,
+  createAuthoring,
+  updateAuthoring,
+  deleteAuthoring,
+  compileCommandBundle,
+  compileCreateBundle,
+  compileUpdateBundle,
+  compileDeleteBundle,
+  modelColumnResolver,
+  deriveRelationDecls,
+  relationDeclOf,
+  compileRelationOps,
+} from './decorator-adapter';
+export type {
+  ModelClassLike,
+  DeriveColumnsOptions,
+  ReadAuthoringSpec,
+  InsertAuthoringSpec,
+} from './decorator-adapter';
+
 // Re-export bc's shared authoring vocabulary so authors import the whole surface from
 // litedbmodel (leaf vocabulary is the Catalog; expressions/structured control are bc's —
 // C2). There is NO litedbmodel-local authoring opcode beyond the Catalog.
