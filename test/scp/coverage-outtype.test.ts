@@ -75,6 +75,15 @@ describe('#59 coverage — sqlTypeToMaterializeClass (TS read-path int32/int64/d
   it('unknown SQL type is a HARD error', () => {
     expect(() => sqlTypeToMaterializeClass('GEOMETRY')).toThrow(/no materialization class/i);
   });
+
+  it('array columns (@column.*Array) → passthrough; a bad element type still HARD-errors', () => {
+    // An array column de-boxes as passthrough (the driver typeCast already yields a JS array whose
+    // elements match the outType). The element base type is validated (Phase F-1 decorator adapter).
+    for (const t of ['TEXT[]', 'INT[]', 'INTEGER[]', 'NUMERIC[]', 'BOOLEAN[]', 'TIMESTAMP[]', 'UUID[]']) {
+      expect(sqlTypeToMaterializeClass(t)).toBe('passthrough');
+    }
+    expect(() => sqlTypeToMaterializeClass('GEOMETRY[]')).toThrow(/no materialization class/i);
+  });
 });
 
 describe('#59 coverage — materializeCell (per-cell JS coercion)', () => {
