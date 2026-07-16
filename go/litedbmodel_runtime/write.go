@@ -10,6 +10,7 @@
 package litedbmodel_runtime
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"regexp"
@@ -191,9 +192,13 @@ func parseTxPlan(plan *bc.JObj) (statements []txStatement, entityFrom string, er
 	return statements, entityFrom, nil
 }
 
-// TxDB is the transaction-capable database/sql surface (a *sql.DB satisfies Begin).
+// TxDB is the transaction-capable database/sql surface (a *sql.DB satisfies both). Begin opens a
+// bare tx (the Phase A path); BeginTx opens one with a context.Context + isolation (Phase B / #83 —
+// database/sql applies the per-dialect isolation on the tx's connection atomically: PG issues
+// `BEGIN ISOLATION LEVEL …`, MySQL a preceding `SET TRANSACTION ISOLATION LEVEL …`).
 type TxDB interface {
 	Begin() (*sql.Tx, error)
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }
 
 // ExecuteTransactionBundle executes a §8 bundle's derived transaction plan (spec §6/§8) as ONE
@@ -201,6 +206,44 @@ type TxDB interface {
 // write-runtime.ts executeTransaction). It consumes ONLY the serialized plan (pure JSON) + the
 // render pipeline + a SQL driver, never re-deriving the plan.
 func ExecuteTransactionBundle(bundle *SqlBundle, input *bc.Obj, db TxDB) (TransactionResult, error) {
+	// Backward-compat wrapper (§6): wrap `db` in a thin ExecutionContext whose ConnectionFor resolves
+	// the tx-owned *sql.Tx once the combinator pins it, and drive the write plan as its OWN auto-tx
+	// with the write=tx guard OFF (the internal per-execution-ownership plane the Phase A ownership
+	// proofs + the conformance/livedb runners use — they run a plan directly, NOT inside a user
+	// Transaction()). BYTE-IDENTICAL to the pre-#83 behavior. `db` must be BOTH the base connection
+	// provider (SQLDB) and tx-capable (TxDB) — a *sql.DB is both. A user-facing write instead rides
+	// [ExecuteTransactionBundleCtx] with the guard ON.
+	baseDB, ok := db.(SQLDB)
+	if !ok {
+		return TransactionResult{}, fmt.Errorf("scp write: transaction db is not a base SQLDB connection provider")
+	}
+	return ExecuteTransactionBundleCtx(bundle, input, ContextForDB(baseDB), db, false)
+}
+
+// ExecuteTransactionBundleCtx executes a §8 bundle's derived transaction plan on an explicit
+// [ExecutionContext] (Phase B / #83) — the ctx-threaded write entry that JOINS an ambient user
+// [Transaction] or (outside one) opens its own guarded auto-tx.
+//
+// # Ambient-tx JOIN vs. its own envelope (the #86 core; go = explicit ctx)
+//
+// It drives [TransactionDecided], which decides the envelope from the passed ctx:
+//   - inside a user Transaction() (ctx.InTransaction() is true — a connection is pinned) → the plan
+//     JOINS: its statements run on the outer's owned *sql.Tx with NO new BEGIN/COMMIT, so N writes in
+//     one boundary are ONE physical transaction (one BEGIN, one COMMIT, one conn);
+//   - outside any transaction (a base ctx) → it opens its OWN BEGIN…COMMIT on a freshly-acquired
+//     owned *sql.Tx (the per-execution auto-tx; concurrent calls each own a DISTINCT *sql.Tx ⇒
+//     isolated). No isolation/retry here — those ride the user Transaction() options; a bare auto-tx
+//     uses the defaults (a bare BEGIN) with retry OFF (Phase A byte-identical behavior).
+//
+// # write=tx guard (#86)
+//
+// With `guard` true (the DEFAULT for a user-facing write), a write with NO ambient user tx is
+// REJECTED via [CheckWriteAllowed] BEFORE any SQL: [WriteOutsideTransaction] (no active tx) /
+// [WriteInReadOnly] (read-only scope, checked first). Inside a Transaction() the ctx is tx-scoped ⇒
+// the guard passes and the write joins. `guard` is INTERNAL-only (never exposed on a user-facing
+// surface — per the #86 audit note): the conformance / livedb / ownership-proof paths pass `false`
+// to run a plan as its own auto-tx.
+func ExecuteTransactionBundleCtx(bundle *SqlBundle, input *bc.Obj, ctx *ExecutionContext, db TxDB, guard bool) (TransactionResult, error) {
 	if bundle.Transaction == nil {
 		return TransactionResult{}, fmt.Errorf("scp write: this bundle carries no transaction plan (not a write-time-relations Command bundle)")
 	}
@@ -208,29 +251,38 @@ func ExecuteTransactionBundle(bundle *SqlBundle, input *bc.Obj, db TxDB) (Transa
 	if err != nil {
 		return TransactionResult{}, err
 	}
-	// Backward-compat wrapper (§6): wrap `db` in a thin ExecutionContext whose ConnectionFor resolves
-	// the tx-owned *sql.Tx once WithTransactionDecided pins it. `db` must be BOTH the base connection
-	// provider (SQLDB) and tx-capable (TxDB) — a *sql.DB is both.
-	baseDB, ok := db.(SQLDB)
-	if !ok {
-		return TransactionResult{}, fmt.Errorf("scp write: transaction db is not a base SQLDB connection provider")
-	}
-	return executeTransactionCtx(ContextForDB(baseDB), db, bundle.Transaction, input, dialect)
+	return executeTransactionCtx(ctx, db, bundle.Transaction, input, dialect, guard)
 }
 
 // executeTransactionCtx runs a plan as one transaction with **per-execution connection ownership**
 // (§3) + gate-first short-circuit (byte-true to write-runtime.ts executeTransaction). It hands the
-// whole plan to [WithTransactionDecided], which acquires ONE *sql.Tx (Go's connection-owning
-// primitive — BEGIN issued by database/sql), pins it into a tx-scoped ctx so every statement resolves
-// THAT connection via the seam, and COMMITs / ROLLBACKs it on the SAME *sql.Tx per the body's
-// decision. Statements run in the plan's fixed order; a failing gate returns a ROLLBACK decision
+// whole plan to [TransactionDecided], which — outside a user Transaction() — acquires ONE *sql.Tx
+// (Go's connection-owning primitive — BEGIN issued by database/sql), pins it into a tx-scoped ctx so
+// every statement resolves THAT connection via the seam, and COMMITs / ROLLBACKs it on the SAME
+// *sql.Tx per the body's decision; inside one it JOINS the ambient tx (no new BEGIN/COMMIT).
+// Statements run in the plan's fixed order; a failing gate returns a ROLLBACK decision
 // (committed:false — a legitimate outcome, NOT an error) and the tail never executes; a driver error
 // returns an error (⇒ rollback + re-raise). On success COMMITs and returns the `$.entity` RETURNING
 // row. Concurrent transactions each own a DISTINCT *sql.Tx ⇒ isolated (no shared-tx state).
-func executeTransactionCtx(ctx *ExecutionContext, db TxDB, plan *bc.JObj, input *bc.Obj, dialect Dialect) (TransactionResult, error) {
+func executeTransactionCtx(ctx *ExecutionContext, db TxDB, plan *bc.JObj, input *bc.Obj, dialect Dialect, guard bool) (TransactionResult, error) {
 	statements, entityFrom, err := parseTxPlan(plan)
 	if err != nil {
 		return TransactionResult{}, err
+	}
+
+	// write=tx guard (#86), enforced at ENTRY so it sees the CALLER's ctx: a write inside a user
+	// Transaction() has a tx-scoped ctx (⇒ passes + JOINS the outer); a bare write outside any
+	// boundary has a base ctx (⇒ WriteOutsideTransaction); a write in a read-only scope ⇒
+	// WriteInReadOnly (checked first). Tx-control statements the runtime itself issues (BEGIN/COMMIT/
+	// SET) never pass through here — only data-write plans do.
+	if guard {
+		firstID := ""
+		if len(statements) > 0 {
+			firstID = statements[0].id
+		}
+		if gErr := CheckWriteAllowed("WRITE", firstID, ctx.InTransaction(), ctx.ReadOnly()); gErr != nil {
+			return TransactionResult{}, gErr
+		}
 	}
 
 	// Batch mode (createMany/updateMany/deleteMany): gate-free, ref-free plan (entityFrom empty, every
@@ -243,7 +295,14 @@ func executeTransactionCtx(ctx *ExecutionContext, db TxDB, plan *bc.JObj, input 
 		}
 	}
 
-	return WithTransactionDecided(ctx, db, func(txCtx *ExecutionContext) (TransactionResult, TxDecision, error) {
+	// The write-tx auto-tx defaults (no isolation / no retry / no RollbackOnly) when this plan opens
+	// its OWN envelope (outside a user Transaction()). Inside one, TransactionDecided JOINS and ignores
+	// these — the outer's options own the envelope. Retry is OFF here: a bare plan auto-tx matches the
+	// Phase A byte-identical behavior; the user Transaction() boundary owns retry.
+	autoOpts := DefaultTransactionOptions()
+	autoOpts.RetryOnError = false
+
+	return TransactionDecided(ctx, db, dialect.Name(), autoOpts, func(txCtx *ExecutionContext) (TransactionResult, TxDecision, error) {
 		// The evolving scope: input names at the top level (bc flat scope) + the body RETURNING row
 		// exposed under `__entity` once the body runs. Defaults live in the plan/schema (no ad-hoc
 		// code default is injected here).

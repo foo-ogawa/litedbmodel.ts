@@ -54,6 +54,8 @@ package litedbmodel_runtime
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"time"
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
 )
@@ -191,6 +193,11 @@ type ExecutionContext struct {
 	// pinned is the tx-owned connection (present ⇒ this is a tx-scoped ctx; every statement resolves
 	// it). nil outside a transaction.
 	pinned Connection
+	// readOnly is the READ-ONLY marker (Phase B / #83 write=tx guard — mirror v1 `withWriter` / the
+	// TS `withReadOnly` ALS marker / rust `read_only`): a write in a read-only-scoped ctx is REJECTED
+	// ([WriteInReadOnly]). The explicit-ctx analogue of the TS async-local read-only marker; derived
+	// via [ExecutionContext.WithReadOnly].
+	readOnly bool
 }
 
 // sharedEmptyChain is the Phase A middleware chain — an empty passthrough so [ContextForDB] can build
@@ -227,8 +234,24 @@ func (c *ExecutionContext) Middleware() *MiddlewareChain { return c.middleware }
 // concurrent sibling relations share — the tx path never fans out, so this is the non-tx provider).
 func (c *ExecutionContext) DB() SQLDB { return c.db }
 
-// InTransaction reports whether this is a tx-scoped ctx (a pinned connection is present).
+// InTransaction reports whether this is a tx-scoped ctx (a pinned connection is present). This is
+// the explicit-ctx analogue of the TS async-local "inside a transaction" marker — the write=tx guard
+// reads it, and the public [Transaction] boundary reads it for NESTED-tx join detection.
 func (c *ExecutionContext) InTransaction() bool { return c.pinned != nil }
+
+// ReadOnly reports whether this is a READ-ONLY-scoped ctx (Phase B / #83 write=tx guard). A write
+// here is REJECTED ([WriteInReadOnly]) — the explicit-ctx analogue of the TS `withReadOnly` / v1
+// `withWriter` read-only marker. Derived via [ExecutionContext.WithReadOnly].
+func (c *ExecutionContext) ReadOnly() bool { return c.readOnly }
+
+// WithReadOnly derives a READ-ONLY-scoped ctx (mirror v1 `withWriter` / the TS `withReadOnly` / rust
+// `with_read_only`): reads are allowed, but ANY write funneled through the GUARDED write seam
+// ([RunGuarded] / [ExecuteTransactionBundleCtx]) is rejected with [WriteInReadOnly]. Used for a
+// writer-pinned read scope that must never accidentally mutate. Shares the primary db + middleware +
+// Go context + pinned tx connection.
+func (c *ExecutionContext) WithReadOnly() *ExecutionContext {
+	return &ExecutionContext{ctx: c.ctx, db: c.db, middleware: c.middleware, pinned: c.pinned, readOnly: true}
+}
 
 // ConnectionFor resolves WHICH connection a statement runs on (§3). Phase A resolution: the tx-owned
 // (pinned) connection wins; else the primary db. Reader/writer split (§3-2/3) + named-DB routing
@@ -245,7 +268,9 @@ func (c *ExecutionContext) ConnectionFor(intent StatementIntent) Connection {
 // returns the pinned tx connection instead of the db. This is the Go analogue of the TS
 // withConnection(conn, true) / rust with_tx_connection.
 func (c *ExecutionContext) WithTxConnection(conn Connection) *ExecutionContext {
-	return &ExecutionContext{ctx: c.ctx, db: c.db, middleware: c.middleware, pinned: conn}
+	// A tx-scoped ctx INHERITS the read-only marker: a Transaction() opened inside a read-only scope
+	// is still read-only (v1 parity — withWriter reads never mutate).
+	return &ExecutionContext{ctx: c.ctx, db: c.db, middleware: c.middleware, pinned: conn, readOnly: c.readOnly}
 }
 
 // ── The central seam (§2) — the ONLY place SQL meets a connection ─────────────
@@ -266,6 +291,20 @@ func Run(ctx *ExecutionContext, sql string, args []any, intent StatementIntent) 
 	return ctx.middleware.wrapWrite(sql, args, func(s string, p []any) (RunInfo, error) {
 		return conn.Run(s, p)
 	})
+}
+
+// RunGuarded is the GUARDED write seam (Phase B / #83): enforce the write=tx guard
+// ([CheckWriteAllowed]) for a DATA-mutating statement, then delegate to [Run]. A write issued
+// OUTSIDE a transaction is rejected with [WriteOutsideTransaction]; a write in a
+// [ExecutionContext.WithReadOnly] scope is rejected with [WriteInReadOnly] (read-only checked FIRST,
+// v1 order). Tx-control statements (BEGIN/COMMIT/ROLLBACK/SET) are NOT guarded — the tx runtime
+// issues them to OPEN the very scope the guard checks. The guard reads the CALLER's ctx markers
+// (InTransaction / ReadOnly) — the explicit-ctx analogue of the TS async-local markers.
+func RunGuarded(ctx *ExecutionContext, sql string, args []any, operation string, model string) (RunInfo, error) {
+	if err := CheckWriteAllowed(operation, model, ctx.InTransaction(), ctx.ReadOnly()); err != nil {
+		return RunInfo{}, err
+	}
+	return Run(ctx, sql, args, WriteIntent())
 }
 
 // ── Per-execution transaction ownership (§3) — the concurrent-tx fix ──────────
@@ -324,9 +363,58 @@ func Rollback() TxDecision { return TxDecision{Rollback: true} }
 // shared-slot model would violate. This mirrors the TS withTransactionAsync (#75) / rust
 // with_transaction_decided (#76).
 func WithTransactionDecided[R any](ctx *ExecutionContext, db TxDB, body func(txCtx *ExecutionContext) (R, TxDecision, error)) (R, error) {
+	return WithTransactionDecidedIsolated(ctx, db, IsolationNone, "", body)
+}
+
+// sqlIsolation maps a portable [IsolationLevel] to the database/sql isolation the tx-owning BeginTx
+// applies on the connection (Phase B / #83). database/sql issues the per-dialect isolation SQL
+// atomically with the BEGIN — PG `BEGIN ISOLATION LEVEL <phrase>`, MySQL a preceding `SET
+// TRANSACTION ISOLATION LEVEL <phrase>` — so the runtime never hand-issues the SET (the [BeginStatements]
+// SQL-text form is retained for TS parity / conformance). [IsolationNone] ⇒ sql.LevelDefault (a bare
+// BEGIN, byte-identical to Phase A).
+func sqlIsolation(level IsolationLevel) (sql.IsolationLevel, error) {
+	switch level {
+	case IsolationNone:
+		return sql.LevelDefault, nil
+	case IsolationReadCommitted:
+		return sql.LevelReadCommitted, nil
+	case IsolationRepeatableRead:
+		return sql.LevelRepeatableRead, nil
+	case IsolationSerializable:
+		return sql.LevelSerializable, nil
+	default:
+		return sql.LevelDefault, txFailure(fmt.Sprintf("scp tx: unknown isolation level '%d'", int(level)))
+	}
+}
+
+// WithTransactionDecidedIsolated is the isolation-aware form of [WithTransactionDecided] (Phase B /
+// #83): it opens the tx's OWNED connection with the requested per-transaction `isolation` (via
+// db.BeginTx + sql.TxOptions — database/sql issues the matching per-dialect isolation SQL on the
+// tx's connection). `dialectName` gates the SQLite hard-error (SQLite has no per-tx level — mirror
+// [isolationPrelude]). [IsolationNone] ⇒ a bare BEGIN, byte-identical to [WithTransactionDecided].
+// This is the ONE mechanism the public [Transaction] boundary and the write-tx plan executor both
+// drive; the retry loop + nested-join live in [TransactionDecided], while THIS runs exactly ONE
+// attempt on a freshly-acquired owned connection.
+func WithTransactionDecidedIsolated[R any](ctx *ExecutionContext, db TxDB, isolation IsolationLevel, dialectName string, body func(txCtx *ExecutionContext) (R, TxDecision, error)) (R, error) {
 	var zero R
-	// Acquire the tx's OWNED connection (BEGIN issued by database/sql inside Begin).
-	tx, err := db.Begin()
+	// Validate the isolation prelude first (fail-closed: SQLite + a level is a hard error) BEFORE
+	// acquiring a connection — an unsupported isolation must not open a tx it can't honor.
+	if isolation != IsolationNone {
+		if _, _, err := isolationPrelude(dialectName, isolation); err != nil {
+			return zero, err
+		}
+	}
+	iso, err := sqlIsolation(isolation)
+	if err != nil {
+		return zero, err
+	}
+	// Acquire the tx's OWNED connection (isolation + BEGIN issued atomically by database/sql on the
+	// tx's connection inside BeginTx).
+	goCtx := ctx.ctx
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
+	tx, err := db.BeginTx(goCtx, &sql.TxOptions{Isolation: iso})
 	if err != nil {
 		return zero, mapSqliteError(err)
 	}
@@ -362,4 +450,119 @@ func WithTransaction[R any](ctx *ExecutionContext, db TxDB, body func(txCtx *Exe
 		r, err := body(txCtx)
 		return r, Commit(), err
 	})
+}
+
+// ── The PUBLIC user-controlled transaction boundary (Phase B-core / #86, go port) ──
+
+// Transaction is **the public user-controlled transaction boundary** (#86, go port of the TS
+// `transaction` / rust `transaction`) — the REAL transaction feature v2 was missing.
+// `Transaction(ctx, db, dialect, options, body)` opens ONE boundary the caller wraps around MULTIPLE
+// arbitrary operations so they commit or roll back TOGETHER:
+//
+//	Transaction(ctx, db, "postgres", opts, func(txCtx *ExecutionContext) error {
+//	    _, err := ExecuteTransactionBundleCtx(aBundle, aInput, txCtx, true) // ← every op inside JOINS
+//	    if err != nil { return err }                                        //    this ONE boundary:
+//	    _, err = ExecuteTransactionBundleCtx(bBundle, bInput, txCtx, true)  //    one conn, one BEGIN…COMMIT
+//	    return err
+//	})
+//
+// # What it does (v1 `DBModel.transaction` :2787 parity, on the SCP seam)
+//
+// It acquires ONE owned *sql.Tx, issues the isolation-aware BEGIN (via db.BeginTx +
+// sql.TxOptions{Isolation} — database/sql emits the per-dialect isolation SQL), pins that connection
+// into a tx-scoped [ExecutionContext], runs `body(txCtx)`, then COMMITs (or ROLLBACKs on a body
+// error / options.RollbackOnly), with the #81 retry loop (deadlock / serialization / connection
+// error) wrapped around the WHOLE boundary — a FRESH owned *sql.Tx per attempt. It drives
+// [WithTransactionDecidedIsolated] per attempt (the ONE mechanism).
+//
+// # The ambient-tx JOIN — how operations participate (the core #86 fix; go = explicit ctx)
+//
+// `body` receives the tx-scoped ctx EXPLICITLY (the go-idiomatic decision — no task-local; the TS
+// pins it in an async-local, go/rust thread it by argument). Every operation `body` issues receives
+// THAT ctx: a write via [ExecuteTransactionBundleCtx], a read via the read seam. Because that ctx's
+// InTransaction() is already true (a connection is pinned), the write's own tx-bracketing DETECTS
+// the ambient tx and JOINS it — running its statements on the pinned owned *sql.Tx WITHOUT opening
+// its own BEGIN/COMMIT (see [TransactionDecided]'s nested-join). So N operations inside one
+// Transaction() produce exactly ONE BEGIN + ONE COMMIT on ONE connection. Outside a Transaction()
+// the ctx's InTransaction() is false, so a bare guarded write is rejected with
+// [WriteOutsideTransaction].
+//
+// NESTED Transaction() joins the outer (one physical BEGIN/COMMIT; an inner error rolls back the
+// WHOLE tx). Isolation/retry/RollbackOnly options on a nested call are IGNORED (the outer owns them).
+func Transaction[R any](ctx *ExecutionContext, db TxDB, dialectName string, options TransactionOptions, body func(txCtx *ExecutionContext) (R, error)) (R, error) {
+	return TransactionDecided(ctx, db, dialectName, options, func(txCtx *ExecutionContext) (R, TxDecision, error) {
+		r, err := body(txCtx)
+		return r, Commit(), err
+	})
+}
+
+// TransactionDecided is the [TxDecision]-returning form of [Transaction] (Phase B / #83): `body`
+// decides COMMIT vs ROLLBACK (a gate short-circuit returns a [Rollback] decision with committed:false
+// — a legitimate non-error outcome), an error always rolls back + retries/re-raises. This is what the
+// write-tx plan executor ([ExecuteTransactionBundleCtx]) drives, so a gate-first plan run inside a
+// user Transaction() short-circuits correctly while still JOINING.
+//
+// Handles the three Phase B concerns the plain [WithTransactionDecided] does not:
+//  1. nested-join — if ctx.InTransaction() is already true (an outer Transaction() pinned a
+//     connection), run `body` on the OUTER ctx with NO new BEGIN/COMMIT/acquire (the inner body is
+//     part of the outer physical tx; an inner error propagates and rolls back the WHOLE tx);
+//  2. RollbackOnly — a successful Commit(r) is rewritten to Rollback(r) (the body result is returned
+//     but NO change commits — dry-run/preview);
+//  3. retry — a retryable failure (deadlock / serialization / connection error, via
+//     [IsRetryableTxError]) re-runs the WHOLE boundary on a FRESH owned *sql.Tx, up to RetryLimit,
+//     with exponential backoff RetryDurationMs · 2^(k-1). A non-retryable error re-raises immediately.
+func TransactionDecided[R any](ctx *ExecutionContext, db TxDB, dialectName string, options TransactionOptions, body func(txCtx *ExecutionContext) (R, TxDecision, error)) (R, error) {
+	var zero R
+	// NESTED-TX JOIN (mirror v1 depth+1): already inside a tx on this ctx ⇒ join the outer. No new
+	// connection, no BEGIN/COMMIT — the inner body is part of the outer physical transaction.
+	// Isolation/retry/RollbackOnly on a nested call are ignored: the outer owns the envelope. A gate
+	// Rollback here still returns its value (the caller reports committed:false) WITHOUT rolling back
+	// the outer — the outer decides its own COMMIT/ROLLBACK.
+	if ctx.InTransaction() {
+		r, _, err := body(ctx)
+		if err != nil {
+			return zero, err
+		}
+		return r, nil
+	}
+
+	// A zero RetryLimit (e.g. a hand-built options value) floors to 1 — always at least one attempt.
+	retryLimit := 1
+	if options.RetryOnError {
+		retryLimit = options.RetryLimit
+		if retryLimit < 1 {
+			retryLimit = 1
+		}
+	}
+	rollbackOnly := options.RollbackOnly
+
+	attempt := 0
+	for {
+		attempt++
+		// ONE attempt on a FRESH owned *sql.Tx (a retry after a connection error thus RECONNECTS).
+		result, err := WithTransactionDecidedIsolated(ctx, db, options.Isolation, dialectName, func(txCtx *ExecutionContext) (R, TxDecision, error) {
+			r, decision, bErr := body(txCtx)
+			if bErr != nil {
+				return zero, Commit(), bErr
+			}
+			// RollbackOnly (dry-run): a SUCCESSFUL commit becomes a ROLLBACK, still returning the body
+			// result — no committed change. An explicit gate Rollback stays a rollback.
+			if rollbackOnly {
+				return r, Rollback(), nil
+			}
+			return r, decision, nil
+		})
+		if err == nil {
+			return result, nil
+		}
+		if attempt < retryLimit && IsRetryableTxError(err) {
+			// Exponential backoff before RETRYing the whole transaction on a fresh connection.
+			backoff := time.Duration(options.RetryDurationMs) * time.Millisecond * time.Duration(int64(1)<<(attempt-1))
+			if backoff > 0 {
+				time.Sleep(backoff)
+			}
+			continue
+		}
+		return zero, err
+	}
 }
