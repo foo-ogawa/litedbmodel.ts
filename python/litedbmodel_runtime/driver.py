@@ -37,15 +37,17 @@ class PreparedStatement(Protocol):
 class TxConnection(Protocol):
     """An OWNED transaction connection (Phase A / #78) — the Python analogue of v1 ``PoolTransaction``
     / go's ``*sql.Tx``. Acquired by :meth:`Driver.begin_tx`, it holds ONE connection for the
-    transaction's whole duration: every statement in the tx body runs on it (``all`` / ``run``), the
-    tx ends by running :meth:`commit` / :meth:`rollback` on the SAME owned connection, and the caller
-    then :meth:`release` s the connection EXACTLY ONCE (back to the pool, or destroyed if poisoned).
+    transaction's whole duration: EVERY statement in the tx — the body (``all`` / ``run``) AND the
+    tx-control (BEGIN / COMMIT / ROLLBACK / the isolation SET) — runs on it via ``run`` / ``all``. The
+    tx-control is issued THROUGH the exec-context seam by ``with_transaction_decided`` (Phase D / #95,
+    middleware-visible), NOT by this handle. The caller then :meth:`release` s the connection EXACTLY
+    ONCE (back to the pool, or destroyed if poisoned).
 
-    **Release ownership**: ``commit``/``rollback`` ONLY run the SQL — they do NOT release. The seam
+    **Release ownership**: this handle is the connection OWNER, not the tx-control issuer. The seam
     combinator (``with_transaction_decided``) is the SOLE owner of :meth:`release`, calling it in a
-    ``finally`` so the owned connection is returned/destroyed on EVERY path (success, body error, AND a
-    commit/rollback that itself raises — the leak the self-release model missed). :meth:`release` is
-    idempotent (a second call is a no-op).
+    ``finally`` so the owned connection is returned/destroyed on EVERY path (success, BEGIN error, body
+    error, AND a commit/rollback that itself raises — the leak the self-release model missed).
+    :meth:`release` is idempotent (a second call is a no-op).
 
     Concurrent transactions each hold a DISTINCT handle over a DISTINCT pooled connection, so their
     writes never cross-talk — the isolation the removed driver-global ``_writer`` slot violated.
@@ -55,14 +57,10 @@ class TxConnection(Protocol):
 
     def run(self, sql: str, params: Sequence[Any]) -> RunInfo: ...
 
-    def commit(self) -> None: ...
-
-    def rollback(self) -> None: ...
-
     def release(self, destroy: bool) -> None:
         """Release the owned connection EXACTLY ONCE (idempotent): back to the pool, or dropped when
-        ``destroy`` (a poisoned connection — a COMMIT/ROLLBACK that itself raised). Called by the seam
-        combinator in a ``finally``; never inside ``commit``/``rollback``."""
+        ``destroy`` (a poisoned connection — a BEGIN/COMMIT/ROLLBACK that itself raised). Called by the
+        seam combinator in a ``finally``; the tx-control SQL itself is issued through the seam."""
         ...
 
 
@@ -71,15 +69,12 @@ class Driver(Protocol):
 
     def prepare(self, sql: str) -> PreparedStatement: ...
 
-    def begin_tx(self, before: Sequence[str] = (), after: Sequence[str] = ()) -> TxConnection:
-        """Acquire an OWNED :class:`TxConnection` for a transaction (per-execution connection
-        ownership, §3; BEGIN issued on the acquired connection). The central seam's
-        ``with_transaction`` pins the returned handle so every statement in the tx body runs on it.
-
-        ``before`` / ``after`` are the per-transaction isolation prelude statements (Phase B / #84):
-        ``before`` runs on the acquired connection BEFORE the driver's own ``BEGIN`` (MySQL — the SET
-        scopes the next tx), ``after`` runs right AFTER it (Postgres — the SET is the first in-tx
-        statement). Empty ⇒ a bare ``BEGIN`` (the Phase A behavior, byte-identical)."""
+    def begin_tx(self) -> TxConnection:
+        """Acquire + OWN a :class:`TxConnection` for a transaction (per-execution connection ownership,
+        §3). The central seam's ``with_transaction`` pins the returned handle so every statement in the
+        tx body runs on it, and issues the isolation SET + BEGIN/COMMIT/ROLLBACK THROUGH the seam on this
+        connection (Phase D / #95, middleware-visible) — this method only acquires the owned connection.
+        Empty prelude ⇒ a bare ``BEGIN`` (the Phase A behavior, byte-identical statements + connection)."""
         ...
 
 
@@ -134,18 +129,15 @@ class SqliteDriver:
     def prepare(self, sql: str) -> _SqlitePrepared:
         return _SqlitePrepared(self.conn, sql)
 
-    def begin_tx(self, before: Sequence[str] = (), after: Sequence[str] = ()) -> "_SqliteTxConnection":
-        """Acquire the OWNED tx connection (§3). SQLite is single-connection, so the tx owns THE conn:
-        BEGIN is issued on it here, every tx statement runs on it, and COMMIT/ROLLBACK end it — the
-        SAME single-conn BEGIN…COMMIT bracket the pre-seam ``prepare("BEGIN").run([])`` path ran,
-        byte-identical.
+    def begin_tx(self) -> "_SqliteTxConnection":
+        """Own the OWNED tx connection (§3). SQLite is single-connection, so the tx owns THE conn: every
+        tx statement runs on it. tx-control (BEGIN / COMMIT / ROLLBACK) is issued THROUGH the seam by the
+        combinator on THIS connection (Phase D / #95, middleware-visible) — the SAME single-conn
+        BEGIN…COMMIT bracket the pre-seam path ran, byte-identical (same literal statements, same conn).
 
-        SQLite has NO per-transaction isolation level, so ``before``/``after`` must be empty (the
-        Phase B contract already loud-rejects an isolation request for SQLite before it reaches here —
-        this asserts the invariant defensively)."""
-        if before or after:
-            raise ValueError("scp tx: SQLite does not support a per-transaction isolation prelude")
-        self.conn.execute("BEGIN")
+        SQLite has NO per-transaction isolation level; the Phase B contract loud-rejects an isolation
+        request for SQLite BEFORE it reaches here (:func:`isolation_prelude`), so the combinator issues a
+        bare BEGIN with no prelude on this path."""
         return _SqliteTxConnection(self.conn)
 
     def close(self) -> None:
@@ -153,7 +145,10 @@ class SqliteDriver:
 
 
 class _SqliteTxConnection:
-    """The OWNED tx handle over a stdlib ``sqlite3`` connection (single-conn; the tx owns THE conn)."""
+    """The OWNED tx handle over a stdlib ``sqlite3`` connection (single-conn; the tx owns THE conn).
+    Both tx-body statements AND tx-control (BEGIN/COMMIT/ROLLBACK) run on THIS conn via :meth:`run`,
+    routed THROUGH the seam by the combinator (Phase D / #95) — so a middleware observes them. This
+    handle owns the conn (there is no pool to return to); it no longer issues tx-control itself."""
 
     __slots__ = ("_conn",)
 
@@ -164,16 +159,9 @@ class _SqliteTxConnection:
         return _SqlitePrepared(self._conn, sql).all(params)
 
     def run(self, sql: str, params: Sequence[Any]) -> RunInfo:
+        # Serves tx-body writes AND tx-control (BEGIN/COMMIT/ROLLBACK) — the SAME literal statements the
+        # pre-seam path ran on THIS conn, byte-identical.
         return _SqlitePrepared(self._conn, sql).run(params)
-
-    def commit(self) -> None:
-        self._conn.execute("COMMIT")
-
-    def rollback(self) -> None:
-        try:
-            self._conn.execute("ROLLBACK")
-        except Exception:
-            pass  # best-effort; the original failure is surfaced by the caller
 
     def release(self, destroy: bool) -> None:
         # SQLite is single-connection (the driver owns THE conn); there is no pool to return to and
@@ -470,15 +458,17 @@ class _PooledPrepared:
 
 class _PooledTxConnection:
     """The OWNED tx handle over a POOLED live DB-API connection (§3) — the Python analogue of v1
-    ``PoolTransaction``. It acquires ONE connection from the pool, issues BEGIN on it, and holds it
-    for the transaction's whole duration: every tx-body statement (``all`` / ``run``) runs on THIS
-    connection, and :meth:`commit` / :meth:`rollback` end the tx on it.
+    ``PoolTransaction``. It acquires ONE connection from the pool and HOLDS it for the transaction's
+    whole duration: every tx-body statement AND every tx-control statement (BEGIN / COMMIT / ROLLBACK /
+    the isolation SET) runs on THIS connection via :meth:`run` — routed THROUGH the exec-context seam by
+    the combinator, so a registered middleware observes the runtime tx-control (Phase D / #95, full TS
+    parity). This handle no longer issues tx-control SQL itself; it is the connection OWNER (acquire /
+    release / discard), not the tx-control issuer.
 
-    **Release ownership**: ``commit``/``rollback`` ONLY run the SQL (and let a failure propagate);
-    they do NOT return the connection. :meth:`release` (idempotent) is the SOLE releaser, called by the
-    seam combinator in a ``finally`` so the pooled connection is returned on EVERY path — including a
-    COMMIT/ROLLBACK that itself raises (the leak the old self-in-``commit`` release missed). ``destroy``
-    drops a poisoned connection instead of returning it to the pool.
+    **Release ownership**: :meth:`release` (idempotent) is the SOLE releaser, called by the seam
+    combinator in a ``finally`` so the pooled connection is returned on EVERY path — including a
+    COMMIT/ROLLBACK that itself raises (the leak the old self-in-``commit`` release missed — #78).
+    ``destroy`` drops a poisoned connection instead of returning it to the pool.
 
     Concurrent transactions each hold a DISTINCT ``_PooledTxConnection`` over a DISTINCT pooled
     connection, so their writes never cross-talk — the isolation the removed driver-global ``_writer``
@@ -492,49 +482,27 @@ class _PooledTxConnection:
         pool: "_ConnectionPool",
         xform,
         emulate_returning: bool,
-        before: Sequence[str] = (),
-        after: Sequence[str] = (),
     ) -> None:
         self._pool = pool
         self._xform = xform
         self._emulate_returning = emulate_returning
-        conn = pool.acquire()
-        try:
-            cur = conn.cursor()
-            # Isolation prelude (Phase B / #84): MySQL's `SET TRANSACTION ISOLATION LEVEL …` runs
-            # BEFORE BEGIN (it scopes the next tx); PG's runs AFTER BEGIN (first in-tx statement).
-            for stmt in before:
-                cur.execute(stmt)
-            cur.execute("BEGIN")
-            for stmt in after:
-                cur.execute(stmt)
-            cur.close()
-        except Exception:
-            # A prelude/BEGIN failure must not leak the freshly-acquired connection: drop it (a
-            # half-opened tx leaves the connection in an unknown state) and re-raise.
-            pool.discard(conn)
-            raise
-        self._conn = conn
+        # Acquire + OWN one connection. tx-control (isolation SET / BEGIN / COMMIT / ROLLBACK) is issued
+        # by the combinator THROUGH the seam on THIS pinned connection (Phase D / #95) — NOT here — so a
+        # prelude/BEGIN failure is handled by the combinator's discard-on-poison finally (destroy=True),
+        # exactly like a body-statement failure. `pool.acquire()` either returns an owned conn or raises
+        # before ownership (nothing to discard).
+        self._conn = pool.acquire()
         self._released = False
 
     def all(self, sql: str, params: Sequence[Any]) -> List[Dict[str, Any]]:
         return _conn_all(self._conn, sql, params, self._xform, self._emulate_returning)
 
     def run(self, sql: str, params: Sequence[Any]) -> RunInfo:
+        # Serves BOTH tx-body writes AND tx-control (BEGIN/COMMIT/ROLLBACK/SET). tx-control carries no
+        # params, so `xform` is a no-op on it. A failure propagates so the combinator releases with
+        # destroy=True (a raised COMMIT/BEGIN leaves the connection in an unknown state — it must not
+        # re-enter the pool).
         return _conn_run(self._conn, sql, params, self._xform)
-
-    def commit(self) -> None:
-        # Runs the COMMIT only. A failure propagates so the combinator releases with destroy=True (a
-        # commit that raised leaves the connection in an unknown state — it must not re-enter the pool).
-        cur = self._conn.cursor()
-        cur.execute("COMMIT")
-        cur.close()
-
-    def rollback(self) -> None:
-        # Runs the ROLLBACK only; a failure propagates (⇒ the combinator destroys the connection).
-        cur = self._conn.cursor()
-        cur.execute("ROLLBACK")
-        cur.close()
 
     def release(self, destroy: bool) -> None:
         if self._released:
@@ -582,12 +550,13 @@ class _PooledDriver:
     def prepare(self, sql: str) -> _PooledPrepared:
         return _PooledPrepared(self, sql)
 
-    def begin_tx(self, before: Sequence[str] = (), after: Sequence[str] = ()) -> _PooledTxConnection:
-        """Acquire an OWNED :class:`_PooledTxConnection` for a transaction (§3): ONE pooled connection,
-        the isolation prelude + BEGIN issued on it, held for the tx's whole duration. Concurrent
-        ``begin_tx`` calls (distinct threads) acquire DISTINCT connections ⇒ isolated — the
-        concurrent-tx fix. ``before``/``after`` carry the per-tx isolation prelude (Phase B / #84)."""
-        return _PooledTxConnection(self._pool, self._xform, self._emulate_returning, before, after)
+    def begin_tx(self) -> _PooledTxConnection:
+        """Acquire + OWN one :class:`_PooledTxConnection` for a transaction (§3): ONE pooled connection,
+        held for the tx's whole duration. Concurrent ``begin_tx`` calls (distinct threads) acquire
+        DISTINCT connections ⇒ isolated — the concurrent-tx fix. tx-control (the isolation SET / BEGIN /
+        COMMIT / ROLLBACK) is issued THROUGH the seam by the combinator on this pinned connection
+        (Phase D / #95, middleware-visible), NOT here — so this method just acquires the owned conn."""
+        return _PooledTxConnection(self._pool, self._xform, self._emulate_returning)
 
     def close(self) -> None:
         self._pool.close()

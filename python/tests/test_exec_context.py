@@ -67,29 +67,30 @@ class _RecStmt:
 
 
 class _RecTx:
-    """A recording TxConnection: forwards to the SAME log so BEGIN/…/COMMIT/RELEASE ordering is
-    asserted. ``fail_commit`` makes COMMIT raise (to drive the raising-commit release path)."""
+    """A recording TxConnection (Phase D / #95 contract): the connection OWNER. tx-control
+    (BEGIN/COMMIT/ROLLBACK) is issued by the combinator THROUGH the seam via :meth:`run`, so it lands in
+    the SAME log naturally (the SQL string is 'BEGIN'/'COMMIT'/'ROLLBACK') — no self-issued BEGIN in
+    ``__init__``, no ``commit``/``rollback`` methods. ``fail_commit`` makes the COMMIT ``run`` raise (to
+    drive the raising-commit release path). BEGIN/…/COMMIT/RELEASE ordering is asserted as before."""
 
     def __init__(self, log, fail_on, fail_commit=False):
         self._log = log
         self._fail_on = fail_on
         self._fail_commit = fail_commit
         self.released = None  # records the destroy flag the combinator releases with
-        self._log.append("BEGIN")
 
     def all(self, sql, params):
         return _RecStmt(self._log, sql, self._fail_on).all(params)
 
     def run(self, sql, params):
-        return _RecStmt(self._log, sql, self._fail_on).run(params)
-
-    def commit(self):
-        self._log.append("COMMIT")
-        if self._fail_commit:
+        # Serves BOTH tx-body writes AND tx-control (BEGIN/COMMIT/ROLLBACK) — routed through the seam by
+        # the combinator on this owned connection. A COMMIT that must fail raises here (the connection is
+        # then poisoned ⇒ the combinator releases with destroy=True).
+        head = sql.strip().split(" ", 1)[0].upper()
+        if self._fail_commit and head == "COMMIT":
+            self._log.append("COMMIT")
             raise RuntimeError("commit-boom")
-
-    def rollback(self):
-        self._log.append("ROLLBACK")
+        return _RecStmt(self._log, sql, self._fail_on).run(params)
 
     def release(self, destroy):
         # The SINGLE release point (the combinator's finally). Record it exactly once for the leak guard.
@@ -107,10 +108,9 @@ class _RecDriver:
     def prepare(self, sql):
         return _RecStmt(self.log, sql, self._fail_on)
 
-    def begin_tx(self, before=(), after=()):
-        # This recording driver models the SQLite single-conn tx (no per-tx isolation prelude); the
-        # prelude args are accepted for the Phase B signature but must be empty here.
-        assert not before and not after, "recording SQLite driver takes no isolation prelude"
+    def begin_tx(self):
+        # New contract: acquire + OWN the connection only. tx-control is issued by the combinator through
+        # the seam (via _RecTx.run), so BEGIN is logged when the seam issues it — not here.
         self.last_tx = _RecTx(self.log, self._fail_on, self._fail_commit)
         return self.last_tx
 
@@ -300,21 +300,19 @@ def test_sqlite_pool_not_leaked_on_raising_commit():
         def __init__(self, pool, fail_commit):
             self._pool = pool
             self._fail_commit = fail_commit
-            self._conn = pool.acquire()  # BEGIN on the owned conn
+            self._conn = pool.acquire()  # acquire + OWN the conn (tx-control comes through the seam)
             self._released = False
 
         def all(self, sql, params):
             return []
 
         def run(self, sql, params):
-            return _RunInfo(1, 0)
-
-        def commit(self):
-            if self._fail_commit:
+            # tx-control (BEGIN/COMMIT/ROLLBACK) is issued through the seam onto this owned conn. A
+            # failing COMMIT poisons the connection ⇒ the combinator releases with destroy=True (the #78
+            # discard). The pool-leak accounting is what this test exercises.
+            if self._fail_commit and sql.strip().upper().startswith("COMMIT"):
                 raise RuntimeError("commit dropped the connection")
-
-        def rollback(self):
-            pass
+            return _RunInfo(1, 0)
 
         def release(self, destroy):
             if self._released:
@@ -333,7 +331,7 @@ def test_sqlite_pool_not_leaked_on_raising_commit():
         def prepare(self, sql):
             raise AssertionError("tx path must not hit prepare")
 
-        def begin_tx(self, before=(), after=()):
+        def begin_tx(self):
             return _FakeTx(self._pool, self._fail_commit)
 
     # A SMALL pool (size 2) run through MANY raising-COMMIT txs: if a raising commit leaked its
