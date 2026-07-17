@@ -44,6 +44,8 @@ benchmark/node_modules/
 
 # Language runtime build artifacts (WS7 multi-language scaffold)
 rust/target/
+# The E1 proof crate is a standalone workspace, so it builds into its OWN target/ (not rust/target/).
+rust/e1_native_proof/target/
 go/bin/
 php/vendor/
 php/composer.lock

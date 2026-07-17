@@ -64,6 +64,8 @@ import type { DialectName } from './dialect';
 import type { RelationOp } from './relation';
 import type { ReadGraph, StaticStatement } from './makesql/static-bundle';
 import type { TransactionPlan } from './makesql/tx';
+import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql/makesql';
+import { renderPlaceholders } from './makesql/handler';
 import { sqlTypeToBcScalar, type BcScalar, type ColumnTypeResolver } from './coltype';
 
 /**
@@ -555,6 +557,188 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
   return { ...ir, components };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// E1 (#116, epic #115) — the SQL-PORT lowering: bake the per-op SQL as a NATIVE LITERAL.
+//
+// The lowering above ({@link lowerReadGraphForTypedNative}) STRIPS the SQL out of the module and
+// leaves it in the runtime-read JSON `SqlCatalogCompanion`, so the "native" module cannot actually
+// execute anything on its own — a consumer must parse JSON at runtime to recover the query. This
+// lowering removes that: it renders each read node's per-dialect SQL STATICALLY (the SAME assembly
+// `renderStatements` performs, minus the per-input value evaluation) and emits it as a STATIC STRING
+// port (`sql`) plus one typed port per bound `?` (`p0`, `p1`, …).
+//
+// bc's typed-native emitter is SQL-AGNOSTIC — it bakes any port its `portIsStatic` predicate covers
+// as a native literal (exactly how graphddb gets `f_table:"UserPermissions"`). EMPIRICALLY VERIFIED
+// against bc 0.8.0's `rust-typed-native`: a static-string `sql` port bakes as
+// `f_sql: "SELECT … WHERE email = ? LIMIT ?".to_string()`, a single-segment input ref bakes as
+// `f_p0: in_.email.clone()`, and a bare number literal bakes as `f_p1: 1i64` — all on the CONCRETE
+// `PortsNR<Comp><node>` struct, zero boxed `Value`, zero bc-runtime import.
+//
+// A thin, op-agnostic hand-written native `exec(sql, params)` seam consumes the baked ports and
+// drives the driver, so the generated module needs NO JSON companion for the read path.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Render a read node's compiled {@link StaticStatement}s to ONE static per-dialect SQL string +
+ * the ordered deferred value-specs bound to its `?` placeholders.
+ *
+ * This mirrors the mode-2 runtime assembly (`renderStatements` in `./makesql/static-bundle`) EXACTLY
+ * — same ` WHERE `/` AND ` connector resolution, same {@link composeMakeSQL} concatenation, same
+ * {@link renderPlaceholders} dialect pass — with the ONE difference that the params stay as
+ * value-spec IR instead of being evaluated against a concrete input scope. The SQL TEXT is therefore
+ * identical to what the thin runtime renders, by construction (not by a parallel hand-rolled
+ * re-implementation).
+ *
+ * Fail-closed on a `skip`-carrying statement: a skip means the statement DROPS for some inputs, so
+ * the node's SQL text is input-DEPENDENT and has no single static literal. That shape needs a
+ * per-skip-subset lowering (one baked SQL per present-set) — NOT a silently-wrong single literal.
+ */
+function renderStaticSql(
+  statements: readonly StaticStatement[],
+  dialect: DialectName,
+  nodeId: string,
+  reasons: string[],
+): { sql: string; params: readonly unknown[] } | undefined {
+  const nodes: MakeSQL[] = [];
+  let whereSeen = false;
+  for (const stmt of statements) {
+    if (stmt.skip !== undefined) {
+      reasons.push(
+        `node '${nodeId}': statement ${JSON.stringify(stmt.sql)} carries a 'skip' presence expression — its SQL text is ` +
+          `INPUT-DEPENDENT (the fragment drops for some inputs), so the node has no single static SQL literal to bake. ` +
+          `A skip-carrying read needs a per-present-set lowering (one baked SQL per skip subset); it is NOT lowered here ` +
+          `rather than baking a silently-wrong always-present literal.`,
+      );
+      return undefined;
+    }
+    let sql = stmt.sql;
+    if (stmt.whereFragment === true) {
+      sql = (whereSeen ? ' AND ' : ' WHERE ') + stmt.sql;
+      whereSeen = true;
+    }
+    nodes.push({ sql, params: [...stmt.params] as SqlParam[] });
+  }
+  // `composeMakeSQL` validates the `?`/param count 1:1 and concatenates — the SAME call the runtime
+  // makes. A value-spec param is not a nested `MakeSQL`, so it re-emits its `?` and rides through.
+  const assembled = composeMakeSQL(nodes);
+  return { sql: renderPlaceholders(assembled.sql, dialect), params: assembled.params };
+}
+
+/**
+ * Lower ONE bound `?` value-spec to the native port node bc will bake, or record why it cannot.
+ *
+ * The COVERED param shapes (E1 — verified against bc 0.8.0 `portIsStatic`/`inferPortType`):
+ *  - a bare INTEGER/FLOAT literal (e.g. the `LIMIT 1` count) → the literal itself; bc bakes `1i64`.
+ *  - a single-segment, non-opt `{ref:[head]}` → the same ref; bc bakes `in_.<head>.clone()`, typed
+ *    from the component's `inputPorts` (which {@link deriveHeadTypesFromStatements} types from the
+ *    schema SoT).
+ *
+ * Everything else fails CLOSED with the exact offending shape named — no boxed escape, no silent
+ * default-dropping. In particular a `coalesce([{refOpt:[head]}, N])` (the optional-LIMIT default)
+ * is NOT covered: bc's `portIsStatic` rejects a `coalesce` operator, and rewriting it to a bare
+ * `{ref:[head]}` (what the pre-E1 lowering does) would SILENTLY DROP the default — sound only
+ * because the pre-E1 module never executes its own ports (the JSON companion does). Once the ports
+ * ARE the execution inputs, that rewrite becomes a correctness bug, so it is rejected here.
+ */
+function paramPortFor(param: unknown, index: number, nodeId: string, reasons: string[]): unknown | undefined {
+  if (typeof param === 'number' && Number.isFinite(param)) return param;
+  const path = refPathOf(param);
+  if (path !== undefined && path.length === 1) {
+    const keys = Object.keys(param as object);
+    if (keys[0] === 'refOpt') {
+      reasons.push(
+        `node '${nodeId}' param p${index}: an OPTIONAL head ref ({refOpt:${JSON.stringify(path)}}) has no native non-Option ` +
+          `port type on bc's typed-native input struct — not lowered (E1 covers required scalar heads + literals).`,
+      );
+      return undefined;
+    }
+    return { ref: path };
+  }
+  reasons.push(
+    `node '${nodeId}' param p${index}: value-spec ${JSON.stringify(param)} is not a shape bc's typed-native emitter bakes ` +
+      `as a native port (covered: a bare number literal, or a single-segment required {ref:[head]}). Rewriting it to a bare ` +
+      `ref would silently drop its semantics (e.g. a coalesce default), so it fails closed.`,
+  );
+  return undefined;
+}
+
+/**
+ * Lower a read bundle's REAL Select-node `ComponentGraphIR` into a NEW, CODEGEN-ONLY IR whose nodes
+ * carry the rendered per-dialect SQL as a STATIC port (`sql`) + one typed port per bound `?`
+ * (`p0`…`pN`) — the shape bc's typed-native emitter bakes as native literals / typed input reads
+ * (E1, #116). The generated module then CARRIES its own SQL: no runtime JSON companion read.
+ *
+ * Scope (E1 proof): a plain `Select`/`Count` componentRef chain whose params are required scalar
+ * heads / bare literals. A `map`/`cond` node, a `skip`-carrying (input-dependent-SQL) statement, an
+ * IN-list array param, and an optional-`coalesce` param all fail CLOSED with a precise reason —
+ * they are the declared E2+ follow-ons, never silently mis-lowered.
+ *
+ * Does NOT mutate `bundle`/`bundle.readGraph`: a fresh IR object is returned, exactly like
+ * {@link lowerReadGraphForTypedNative}. The native `executeReadGraph` keeps consuming the real
+ * `readGraph.ir`, and the frozen makeSQL conformance corpus is untouched (this changes no compiled
+ * statement — it only RE-EXPRESSES already-compiled statements as ports).
+ */
+export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnType: ColumnTypeResolver): ComponentGraphIR {
+  const ir = readGraph.ir;
+  const reasons: string[] = [];
+  const components = ir.components.map((c) => {
+    const inputPortTypes = new Map<string, BcScalar>();
+    const body = c.body.map((n) => {
+      if ('cond' in n) {
+        reasons.push(`node '${(n as unknown as { id?: string }).id ?? '<cond>'}': a 'cond' node is not lowered by the E1 SQL-port lowering`);
+        return n;
+      }
+      if ('map' in n) {
+        reasons.push(
+          `node '${n.id}': a 'map' (relation) node is not lowered by the E1 SQL-port lowering — its per-element SQL binds the ` +
+            `mapped parent row, which needs the element-field port shape (declared E2+ follow-on).`,
+        );
+        return n;
+      }
+      const stmts = readGraph.statementsById[n.id] ?? [];
+      // Type each genuine bound head from the schema SoT — the SAME derivation the pre-E1 lowering
+      // uses (unchanged), so the input struct's field types are identical.
+      const { byHead, arrayHeads, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType);
+      for (const [, reason] of unresolved) reasons.push(`node '${n.id}': ${reason}`);
+      for (const [head, elem] of arrayHeads) {
+        reasons.push(
+          `node '${n.id}': input head '${head}' (element scalar '${elem}') is bound by an IN-list / array param — the E1 ` +
+            `SQL-port lowering does not yet bake an array bind (the single-JSON / '= ANY' param needs an encode step in the ` +
+            `exec seam; declared E2+ follow-on).`,
+        );
+      }
+      for (const [head, scalar] of byHead) {
+        const prior = inputPortTypes.get(head);
+        if (prior !== undefined && prior !== scalar) {
+          reasons.push(`input head '${head}' resolves to conflicting scalar types ('${prior}' vs '${scalar}') across nodes`);
+          continue;
+        }
+        inputPortTypes.set(head, scalar);
+      }
+      const rendered = renderStaticSql(stmts, readGraph.dialect, n.id, reasons);
+      if (rendered === undefined) return n;
+      // The E1 port shape: the rendered SQL as a STATIC string port bc bakes as a native literal,
+      // plus one typed port per bound `?` in placeholder order.
+      const newPorts: Record<string, unknown> = { sql: rendered.sql };
+      rendered.params.forEach((p, i) => {
+        const port = paramPortFor(p, i, n.id, reasons);
+        if (port !== undefined) newPorts[`p${i}`] = port;
+      });
+      return { ...n, ports: newPorts };
+    });
+    if (reasons.length > 0) throw new TypedNativeCoverageError(c.name, reasons);
+    // Only the heads the lowered ports genuinely reference get an `InNR` field (identical rule to
+    // the pre-E1 lowering: a WHERE COLUMN-NAME MARKER head is never bound, so it carries no field).
+    const inputPorts: Record<string, PortSchema> = {};
+    for (const [name, scalar] of inputPortTypes) {
+      const schema = (c.inputPorts ?? {})[name];
+      inputPorts[name] = schema === undefined ? { required: true, type: scalar } : { ...schema, type: scalar };
+    }
+    return { ...c, body, inputPorts } as unknown as Component;
+  });
+  return { ...ir, components };
+}
+
 /**
  * Resolve the READ codegen emitter for a target language, or throw. No fallback: a language
  * without a registered endpoint is a bc capability gap that fails LOUDLY (never a silent
@@ -619,6 +803,32 @@ function needsHeadLowering(_emitter: string): boolean {
 }
 
 /**
+ * Options for {@link generateCodegenArtifact}.
+ */
+export interface CodegenOptions {
+  /**
+   * Drive the E1 (#116) SQL-PORT lowering ({@link lowerReadGraphForNativeSql}): bake the read's
+   * rendered per-dialect SQL into the module as a NATIVE LITERAL port (`f_sql`) with typed param
+   * ports, so the generated module carries its own query and needs NO runtime JSON companion read.
+   *
+   * OPT-IN at E1 (proof-of-approach), deliberately NOT the default for any language yet, because the
+   * two lowerings' coverage predicates mean DIFFERENT things and the E1 one is (today) narrower:
+   *
+   *  - pre-E1 "covered" = the module emitted with no boxed ports. It does NOT imply the module can
+   *    execute: the actual SQL was stripped out and left in the `SqlCatalogCompanion` for a runtime
+   *    JSON read, so a `map` relation / a `skip`-guarded fragment / an IN-list array head all
+   *    "cover" while the module still cannot run standalone.
+   *  - E1 "covered" = the module BAKES executable SQL. That fails closed on exactly those three
+   *    shapes today (input-dependent SQL text needs a per-skip-subset bake; a map child's per-element
+   *    SQL needs the element-field port shape; an array bind needs an encode step in the exec seam).
+   *
+   * So switching a language's default to this lowering would NARROW its declared typed-native
+   * coverage until those are lowered — a scope call for the epic owner, not a silent flip here.
+   */
+  readonly nativeSql?: boolean;
+}
+
+/**
  * Generate the mode-3 READ codegen artifact for ONE §8 READ bundle in ONE target language. Lowers
  * the bundle's real Select-node read graph into the native-scalar-port IR
  * ({@link lowerReadGraphForTypedNative}) FIRST — for go/rust's typed-NATIVE endpoint (bc#77/#90,
@@ -638,6 +848,7 @@ export function generateCodegenArtifact(
   registeredLanguages: readonly string[],
   resolveColumnType: ColumnTypeResolver,
   runtimeImport?: string,
+  options?: CodegenOptions,
 ): CodegenArtifact {
   if (bundle.readGraph === undefined) {
     throw new Error(
@@ -649,11 +860,16 @@ export function generateCodegenArtifact(
   const emitter = typedEmitterFor(language, registeredLanguages);
   // The portable IR exists ONLY transiently here as the generator's input — it is NOT part of the
   // codegen OUTPUT (no artifact field, no file, no binary; the codegen path never reads IR data).
-  // ALL read endpoints (go/rust typed-native AND TS boxed typescript-typed) are fed the SAME
-  // genuine-bound-head lowering (#12 regression fix — see needsHeadLowering).
-  const ir = needsHeadLowering(emitter)
-    ? lowerReadGraphForTypedNative(bundle.readGraph, resolveColumnType)
-    : bundleToPortableIR(bundle);
+  //
+  // E1 (#116), OPT-IN: the SQL-PORT lowering bakes the read's rendered per-dialect SQL into the
+  // module as a native literal (`f_sql`) with typed param ports, so the module needs NO runtime JSON
+  // companion read. Not a default for any language yet — see `CodegenOptions.nativeSql` for why
+  // (the two lowerings' coverage predicates differ; flipping a default would narrow coverage).
+  const ir = options?.nativeSql === true
+    ? lowerReadGraphForNativeSql(bundle.readGraph, resolveColumnType)
+    : needsHeadLowering(emitter)
+      ? lowerReadGraphForTypedNative(bundle.readGraph, resolveColumnType)
+      : bundleToPortableIR(bundle);
   // bc 0.8.0 (scp-only-authoring, SA3/SA7): `generateModule` fail-closes on un-tokened IR
   // (`NON_COMPILED_IR`). This `ir` is DERIVED from `compileBehaviors`' real read graph (additively
   // lowered/annotated), so it carries no in-process provenance token. Re-adopt it at this generation

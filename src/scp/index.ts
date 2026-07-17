@@ -415,6 +415,7 @@ export {
   generateCodegenArtifact,
   bundleToPortableIR,
   lowerReadGraphForTypedNative,
+  lowerReadGraphForNativeSql,
   codegenEmitterFor,
   typedEmitterFor,
   codegenExecuteBundleForTest,
@@ -422,6 +423,7 @@ export {
 } from './codegen';
 export type {
   CodegenLanguage,
+  CodegenOptions,
   SqlCatalogCompanion,
   CodegenArtifact,
 } from './codegen';

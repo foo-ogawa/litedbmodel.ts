@@ -1,0 +1,17 @@
+# E1 (#116, epic #115) PROOF-OF-APPROACH — the native SQL-port read, end-to-end.
+#
+# A STANDALONE crate (its own `[workspace]`, deliberately NOT a member of the rust/ workspace) so the
+# proof cannot perturb the conformance bar's build/lock, and so the dependency surface is provably
+# minimal: `rusqlite` ONLY. There is no `behavior_contracts` dep here at all — that is the point: the
+# generated module (src/generated_findunique.rs) carries its own SQL as a baked literal and compiles
+# against nothing but `std`, and the exec seam below drives the driver directly.
+[workspace]
+
+[package]
+name = "e1_native_proof"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
