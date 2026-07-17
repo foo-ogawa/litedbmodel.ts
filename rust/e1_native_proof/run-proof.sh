@@ -14,52 +14,55 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROOF_DIR=/tmp/e1proof
-MODULE="$PROOF_DIR/generated_findunique.rs"
+MODULES=(generated_findunique generated_byids)
 fail=0
 
-if [[ ! -f "$MODULE" ]]; then
-  echo "FATAL: $MODULE missing — run: npx vitest run test/scp/e1-native-sql-port.test.ts" >&2
-  exit 2
-fi
+for m in "${MODULES[@]}"; do
+  if [[ ! -f "$PROOF_DIR/$m.rs" ]]; then
+    echo "FATAL: $PROOF_DIR/$m.rs missing — run: npx vitest run test/scp/e1-native-sql-port.test.ts" >&2
+    exit 2
+  fi
+  # Keep the crate's copy of each module in lockstep with the freshly emitted one.
+  cp "$PROOF_DIR/$m.rs" "$HERE/src/$m.rs"
+done
 
-# Keep the crate's copy of the module in lockstep with the freshly emitted one.
-cp "$MODULE" "$HERE/src/generated_findunique.rs"
-
-echo "── leg 1: the generated module compiles RUNTIME-FREE (no --extern behavior_contracts) ──"
 work="$(mktemp -d)"
-if rustc --edition 2021 --crate-type lib --emit metadata -o "$work/out.rmeta" "$MODULE" 2>"$work/err"; then
-  echo "  PASS  rustc --emit metadata (std only)"
-else
-  echo "  FAIL  rustc rejected the module:"; sed 's/^/        /' "$work/err"; fail=1
-fi
+
+echo "── leg 1: each generated module compiles RUNTIME-FREE (no --extern behavior_contracts) ──"
+for m in "${MODULES[@]}"; do
+  if rustc --edition 2021 --crate-type lib --emit metadata -o "$work/$m.rmeta" "$PROOF_DIR/$m.rs" 2>"$work/err"; then
+    echo "  PASS  $m: rustc --emit metadata (std only)"
+  else
+    echo "  FAIL  $m: rustc rejected the module:"; sed 's/^/        /' "$work/err"; fail=1
+  fi
+done
 
 echo "── leg 2: purity — no runtime / boxing / JSON primitive in code (comments stripped) ──"
-stripped="$work/stripped.rs"
-perl -0777 -pe 's{("(?:[^"\\]|\\.)*")|//[^\n]*|/\*.*?\*/}{defined $1 ? $1 : ""}ges' "$MODULE" > "$stripped"
-for m in 'serde_json' 'Box<dyn' 'dyn Any' 'run_behavior' 'behavior_contracts' 'RawValue' 'obj_native' 'run_plan'; do
-  if grep -qF -- "$m" "$stripped"; then echo "  FAIL  found '$m'"; fail=1; else echo "  PASS  no '$m'"; fi
+for m in "${MODULES[@]}"; do
+  stripped="$work/$m.stripped.rs"
+  perl -0777 -pe 's{("(?:[^"\\]|\\.)*")|//[^\n]*|/\*.*?\*/}{defined $1 ? $1 : ""}ges' "$PROOF_DIR/$m.rs" > "$stripped"
+  bad=0
+  for marker in 'serde_json' 'Box<dyn' 'dyn Any' 'run_behavior' 'behavior_contracts' 'RawValue' 'obj_native' 'run_plan'; do
+    if grep -qF -- "$marker" "$stripped"; then echo "  FAIL  $m: found '$marker'"; bad=1; fail=1; fi
+  done
+  [[ $bad -eq 0 ]] && echo "  PASS  $m: no runtime/boxing/JSON primitive"
+  # each module must carry its own SQL as a baked literal
+  if grep -qE 'f_sql: "(SELECT|INSERT|UPDATE|DELETE)[^"]*"\.to_string\(\)' "$stripped"; then
+    echo "  PASS  $m: the SQL is baked as a native literal IN the module"
+  else
+    echo "  FAIL  $m: the module does not carry its SQL"; fail=1
+  fi
 done
-if grep -qF 'SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT ?' "$stripped"; then
-  echo "  PASS  the SQL is baked as a native literal IN the module"
-else
-  echo "  FAIL  the module does not carry its SQL"; fail=1
-fi
 
 echo "── leg 3: execution byte-equality vs the mode-2 executeBundle oracle ──"
 cargo build --quiet --manifest-path "$HERE/Cargo.toml" || { echo "  FAIL  proof crate build"; exit 1; }
 BIN="$HERE/target/debug/e1_native_proof"
-# Replay each oracle input through the generated module + exec seam; compare byte-for-byte.
-while IFS=$'\t' read -r email expected; do
-  actual="$("$BIN" "$PROOF_DIR/proof.db" "$email")"
-  if [[ "$actual" == "$expected" ]]; then
-    echo "  PASS  $email -> $actual"
-  else
-    echo "  FAIL  $email"; echo "        rust  : $actual"; echo "        oracle: $expected"; fail=1
-  fi
-done < <(node -e '
-  const o = require("/tmp/e1proof/oracles.json");
-  for (const [k, v] of Object.entries(o)) process.stdout.write(k + "\t" + JSON.stringify(v) + "\n");
-')
+
+# findUnique — a required scalar head. byIds — the IN-list array bind (incl. the EMPTY list).
+# The driver passes each input verbatim and fails on a non-zero exit, so a panic cannot pass as an
+# empty result (a bash read-loop previously did exactly that — a false PASS).
+node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" findunique "$PROOF_DIR/oracles.json" || fail=1
+node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" byids "$PROOF_DIR/oracles_byids.json" || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then echo "E1 PROOF: ALL LEGS PASS"; else echo "E1 PROOF: FAILURES ABOVE"; fi

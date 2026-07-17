@@ -642,6 +642,14 @@ function renderStaticSql(
  */
 function paramPortFor(param: unknown, index: number, nodeId: string, reasons: string[]): unknown | undefined {
   if (typeof param === 'number' && Number.isFinite(param)) return param;
+  // An IN-list / array-bound param (`{__jsonArray:{ref:[head]},dialect}`, ONE `?` inside the
+  // `IN (…)`/`= ANY(?)` subquery). bc#110 gives typed-native a native ARRAY port for this head, so
+  // the port is the SAME single-segment ref — the caller types its `inputPorts` entry as
+  // `{type:'array', elemType}` and bc bakes `f_pN: Vec<ElemT> = in_.<head>.clone()`. The dialect's
+  // array-ENCODE (the single-JSON bind for sqlite/mysql, the array bind for pg) is the exec seam's
+  // job — it is a driver-binding concern, not a SQL-text one (the text is already baked).
+  const arrHead = arrayHeadNameOf(param);
+  if (arrHead !== undefined) return { ref: [arrHead] };
   const path = refPathOf(param);
   if (path !== undefined && path.length === 1) {
     const keys = Object.keys(param as object);
@@ -656,8 +664,9 @@ function paramPortFor(param: unknown, index: number, nodeId: string, reasons: st
   }
   reasons.push(
     `node '${nodeId}' param p${index}: value-spec ${JSON.stringify(param)} is not a shape bc's typed-native emitter bakes ` +
-      `as a native port (covered: a bare number literal, or a single-segment required {ref:[head]}). Rewriting it to a bare ` +
-      `ref would silently drop its semantics (e.g. a coalesce default), so it fails closed.`,
+      `as a native port (covered: a bare number literal, a single-segment required {ref:[head]}, or an IN-list ` +
+      `{__jsonArray:{ref:[head]}} array bind). Rewriting it to a bare ref would silently drop its semantics ` +
+      `(e.g. a coalesce default), so it fails closed.`,
   );
   return undefined;
 }
@@ -683,6 +692,7 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
   const reasons: string[] = [];
   const components = ir.components.map((c) => {
     const inputPortTypes = new Map<string, BcScalar>();
+    const inputPortElemTypes = new Map<string, BcScalar>();
     const body = c.body.map((n) => {
       if ('cond' in n) {
         reasons.push(`node '${(n as unknown as { id?: string }).id ?? '<cond>'}': a 'cond' node is not lowered by the E1 SQL-port lowering`);
@@ -700,12 +710,16 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       // uses (unchanged), so the input struct's field types are identical.
       const { byHead, arrayHeads, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType);
       for (const [, reason] of unresolved) reasons.push(`node '${n.id}': ${reason}`);
+      // IN-list / array-bound heads (bc#110): a native ARRAY input port carrying the ELEMENT scalar.
+      // bc does NOT infer element types (consumer-interface C3), so the elemType comes from the
+      // schema SoT (the IN-list column's resolved scalar), exactly as the pre-E1 lowering supplies it.
       for (const [head, elem] of arrayHeads) {
-        reasons.push(
-          `node '${n.id}': input head '${head}' (element scalar '${elem}') is bound by an IN-list / array param — the E1 ` +
-            `SQL-port lowering does not yet bake an array bind (the single-JSON / '= ANY' param needs an encode step in the ` +
-            `exec seam; declared E2+ follow-on).`,
-        );
+        const prior = inputPortElemTypes.get(head);
+        if (prior !== undefined && prior !== elem) {
+          reasons.push(`input head '${head}' resolves to conflicting array element scalar types ('${prior}' vs '${elem}') across nodes`);
+          continue;
+        }
+        inputPortElemTypes.set(head, elem);
       }
       for (const [head, scalar] of byHead) {
         const prior = inputPortTypes.get(head);
@@ -733,6 +747,12 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
     for (const [name, scalar] of inputPortTypes) {
       const schema = (c.inputPorts ?? {})[name];
       inputPorts[name] = schema === undefined ? { required: true, type: scalar } : { ...schema, type: scalar };
+    }
+    // bc#110 native array port → `Vec<ElemT>` fed from the input struct field (no boxed Value, no
+    // serde_json on the hot path); the seam performs the dialect's array bind/encode.
+    for (const [name, elem] of inputPortElemTypes) {
+      const schema = (c.inputPorts ?? {})[name];
+      inputPorts[name] = { ...(schema ?? { required: true }), type: 'array', elemType: elem };
     }
     return { ...c, body, inputPorts } as unknown as Component;
   });

@@ -47,6 +47,10 @@ import {
   whereEq,
   whereIn,
   inColumn,
+  coalesce,
+  opt,
+  ne,
+  when,
   schemaColumnTypeResolver,
   generateCodegenArtifact,
   TypedNativeCoverageError,
@@ -73,12 +77,31 @@ class OrmReads extends SemanticBehavior {
       limit: 1,
     });
   }
-  /** An IN-list read — the array-bound head E1 does NOT yet bake (declared E2+ follow-on). */
+  /** An IN-list read — the array-bound head bakes as a native `Vec<i64>` port (bc#110). */
   ByIds($: { ids: unknown }) {
     return L.Select({
       table: 'benchmark_users',
       select: ['id', 'email', 'name'],
       where: [whereIn(inColumn($ as never, 'id'), $.ids)],
+      order: 'id ASC',
+    });
+  }
+  /** An OPTIONAL-limit read — its `LIMIT ?` param is `coalesce(opt($.limit), 20)` (the #122 shape). */
+  Recent($: { limit: unknown }) {
+    return L.Select({
+      table: 'benchmark_users',
+      select: ['id', 'email', 'name'],
+      order: 'id ASC',
+      limit: coalesce(opt($.limit), 20),
+    });
+  }
+  /** A SKIP-guarded read — the `name = ?` fragment DROPS when `name` is absent (the skip shape). */
+  ByName($: { id: unknown; name: unknown }) {
+    return L.Select({
+      table: 'benchmark_users',
+      select: ['id', 'email', 'name'],
+      where: [whereEq(($ as never)['id'], $.id), when(ne(opt($.name), null), () => whereEq(($ as never)['name'], $.name))],
+      order: 'id ASC',
     });
   }
 }
@@ -135,19 +158,38 @@ describe('E1 — bc bakes a full-SQL static port + typed param ports (the empiri
   });
 });
 
-describe('E1 — the lowering fails CLOSED on every shape it cannot bake (no silent mis-lowering)', () => {
-  it('an IN-list / array-bound head is rejected, naming the shape', () => {
+describe('E2 — IN-list: the array-bound head bakes as a native Vec<ElemT> port (bc#110)', () => {
+  it('bakes the json_each SQL + a native Vec<i64> array port fed from the input struct', () => {
     const bundle = compileBundle(CONTRACT, 'ByIds', [], 'sqlite', undefined, RESOLVE);
+    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    expect(code).toContain('f_sql: "SELECT id, email, name FROM benchmark_users WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id ASC".to_string()');
+    expect(code).toContain('pub f_p0: Vec<i64>');
+    expect(code).toContain('f_p0: in_.ids.clone()');
+    expect(code).toContain('pub ids: Vec<i64>');
+    // The `@in` sentinel is a WHERE COLUMN-NAME MARKER, never a bound value — it must NOT reach the
+    // input struct (it has no native port type and would emit an unresolvable field).
+    expect(code).not.toContain('@in');
+    // zero-boxing: the array rides natively, no serde_json on the hot path.
+    expect(stripRustComments(code)).not.toContain('serde_json');
+  });
+});
+
+describe('E1/E2 — the lowering fails CLOSED on every shape it cannot bake (no silent mis-lowering)', () => {
+  it('a coalesce/optional-default param is rejected, naming the shape (see #122)', () => {
+    // bc's portIsStatic rejects a `coalesce` operator port outright, and a cond-node-computed value
+    // cannot be referenced from a port either — so the default CANNOT be baked as a bc port. The
+    // lowering therefore refuses rather than rewriting to a bare ref (which would drop the default).
+    const bundle = compileBundle(CONTRACT, 'Recent', [], 'sqlite', undefined, RESOLVE);
     expect(() => generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true })).toThrow(
       TypedNativeCoverageError,
     );
     expect(() => generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true })).toThrow(
-      /IN-list \/ array param/,
+      /is not a shape bc's typed-native emitter bakes/,
     );
   });
 
   it('the pre-E1 lowering still covers those shapes (E1 is opt-in; no coverage was silently narrowed)', () => {
-    const bundle = compileBundle(CONTRACT, 'ByIds', [], 'sqlite', undefined, RESOLVE);
+    const bundle = compileBundle(CONTRACT, 'Recent', [], 'sqlite', undefined, RESOLVE);
     // Same bundle, default (pre-E1) lowering → still generates, exactly as before this change.
     expect(() => generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE)).not.toThrow();
   });
@@ -201,13 +243,19 @@ const DB_PATH = join(PROOF_DIR, 'proof.db');
 
 /** The inputs the rust leg replays; each is checked against the mode-2 `executeBundle` oracle. */
 const PROOF_INPUTS = ['user500@example.com', 'user1@example.com', 'user42@example.com', 'nobody@example.com'];
+/** IN-list inputs — incl. the EMPTY list (the #46 case that must yield zero rows, not an error). */
+const BYIDS_INPUTS: number[][] = [[1, 2, 3], [42], [], [7, 7, 9], [999999]];
 
-describe('E1 — emit module + seeded DB + mode-2 oracles for the rust execution leg', () => {
-  it('writes /tmp/e1proof/{generated_findunique.rs,proof.db,oracles.json}', () => {
+describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execution leg', () => {
+  it('writes /tmp/e1proof/{generated_*.rs,proof.db,oracles.json}', () => {
     mkdirSync(PROOF_DIR, { recursive: true });
     const bundle = findUniqueBundle();
     const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
     writeFileSync(join(PROOF_DIR, 'generated_findunique.rs'), art.module.code);
+
+    const byIdsBundle = compileBundle(CONTRACT, 'ByIds', [], 'sqlite', undefined, RESOLVE);
+    const byIdsArt = generateCodegenArtifact(byIdsBundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
+    writeFileSync(join(PROOF_DIR, 'generated_byids.rs'), byIdsArt.module.code);
 
     // ONE seeded sqlite DB FILE shared by BOTH legs — the oracle and the rust run read byte-identical
     // data, so an equality pass cannot come from two independently-seeded DBs happening to agree.
@@ -219,10 +267,15 @@ describe('E1 — emit module + seeded DB + mode-2 oracles for the rust execution
 
     const oracles: Record<string, unknown> = {};
     for (const email of PROOF_INPUTS) oracles[email] = executeBundle(bundle, { email } as never, { db: db as never });
+    const byIdsOracles: Record<string, unknown> = {};
+    for (const ids of BYIDS_INPUTS) byIdsOracles[ids.join(',')] = executeBundle(byIdsBundle, { ids } as never, { db: db as never });
     db.close();
 
     writeFileSync(join(PROOF_DIR, 'oracles.json'), JSON.stringify(oracles, null, 2));
+    writeFileSync(join(PROOF_DIR, 'oracles_byids.json'), JSON.stringify(byIdsOracles, null, 2));
     expect(JSON.stringify(oracles['user500@example.com'])).toBe('[{"id":500,"email":"user500@example.com","name":"User 500"}]');
     expect(JSON.stringify(oracles['nobody@example.com'])).toBe('[]');
+    // the empty IN-list must be zero rows (not an error) — the #46 case.
+    expect(JSON.stringify(byIdsOracles[''])).toBe('[]');
   });
 });
