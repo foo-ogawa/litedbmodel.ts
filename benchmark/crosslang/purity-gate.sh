@@ -1,20 +1,14 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════════════
-# NATIVE-ONLY runtime PURITY GATE (owner order, fail-closed):
+# NATIVE-ONLY runtime PURITY GATE (fail-closed):
 #   The shipped rust/go runtimes execute every read/write via native code — the bc IR
-#   interpreter (run_behavior / RunBehavior) is DELETED from both (#8), rust carries NO
+#   interpreter (run_behavior / RunBehavior) is absent from both, rust carries NO
 #   serde_json CODE, go carries NO encoding/json on the exec path. This gate FAILS if any
 #   is reintroduced.
 #
-#   (#63 cleanup: the earlier codegen-CELL checks are removed with the retired typed-native
-#   codegen-module cells — rust-codegen / ts codegen-cell / go cgcell·cgplans·cgmods /
-#   lm_codegen — which covered none of the 19 ORM ops and are deleted. The unified bench's
-#   ONE production path per language is the shipped thin runtime + real driver; its exec/ir
-#   bench cells legitimately use serde_json/encoding/json to READ the shared orm-plan.json
+#   The bench cells legitimately use serde_json/encoding/json to READ the shared orm-plan.json
 #   artifact (the SSoT of baked SQL+params) and assemble their flat-CSV output — that bench-side
-#   JSON is NOT gated here; purity applies to litedbmodel's OWN runtime source, per the #63 rescope.
-#   (The old NDJSON stdio harness protocol is gone — each language now runs standalone and writes a
-#   flat CSV; a separate collector aggregates. See run.ts / collect.ts.)
+#   JSON is NOT gated here; purity applies to litedbmodel's OWN runtime source.
 # grep で残骸が 1 件でも出たら exit 1。ベンチ/CI の前提ゲートとして回す。
 # ════════════════════════════════════════════════════════════════════════════
 set -u
@@ -22,9 +16,9 @@ cd "$(dirname "$0")/../.."
 
 FAIL=0
 
-# The NATIVE-ONLY runtimes (epic #44 native-only, #8): rust/go run every read/write via generated
+# The NATIVE-ONLY runtimes: rust/go run every read/write via generated
 # native code (static SQL text + typed param binding). The IR interpreter (bc run_behavior /
-# RunBehavior) is DELETED from both; rust drops serde_json, go drops encoding/json OPERATIONS from
+# RunBehavior) is absent from both; rust carries no serde_json, go no encoding/json OPERATIONS on
 # the exec path. This gate FAILS if either is reintroduced.
 RUST_RT=rust/litedbmodel_runtime/src
 GO_RT=go/litedbmodel_runtime
@@ -74,10 +68,9 @@ if [ -n "$hits" ]; then
 else
   echo "✓ rust runtime src: no serde_json/serde code"
 fi
-# OWNER RE-SCOPE (#63): the earlier `cargo tree -i serde_json` (dependency-tree) assertion is
-# DROPPED — it is a whole-tree check that would wrongly fail once the runtime links a real DB driver
-# (tokio-postgres/sqlx), whose transitive serde_json is EXPLICITLY ALLOWED (driver serde is fine;
-# purity is about litedbmodel's OWN code). The meaningful, retained invariant is the OWN-SOURCE check
+# Driver serde is EXPLICITLY ALLOWED: the runtime links real DB drivers (tokio-postgres/sqlx)
+# whose transitive serde_json is fine — purity is about litedbmodel's OWN code, not its deps. The
+# invariant is the OWN-SOURCE check
 # above (no `serde_json::`/`use serde…` CODE in the runtime crate source) + the Cargo.toml
 # `behavior-contracts default-features=false` pin (drops bc's `ir` feature). That is what guarantees
 # litedbmodel's own exec/codegen never marshals via serde — the transitive driver edge does not.

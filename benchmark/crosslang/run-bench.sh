@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════════════
-# Cross-language bench driver (epic #63) — the standalone-CSV flow.
+# Cross-language bench driver — the standalone-CSV flow.
 # ════════════════════════════════════════════════════════════════════════════
 #
 # Brings the live DBs up (PG :5433 + MySQL :3307), sets the measurement BUDGETS via

@@ -1,8 +1,8 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Unified ORM-bench DOMAIN (epic #63) — schema + seed for the 19-op cross-lang bench.
+// Unified ORM-bench DOMAIN — schema + seed for the 19-op cross-lang bench.
 // ════════════════════════════════════════════════════════════════════════════
 //
-// The SAME tables + seed the #64 v1 SQL golden captured against (test/parity/
+// The SAME tables + seed the v1 SQL golden captured against (test/parity/
 // v1-sql-golden.test.ts): benchmark_users / benchmark_posts / benchmark_comments +
 // the composite-key tenant_* tables. Every language's live leg creates these in an
 // ISOLATED per-bench namespace (PG schema `scp_ts_bench` via search_path, MySQL

@@ -1,10 +1,10 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Unified ORM-op statement PLAN (epic #63) — the language-neutral SSoT.
+// Unified ORM-op statement PLAN — the language-neutral SSoT.
 // ════════════════════════════════════════════════════════════════════════════
 //
 // The cross-language bench measures each language's THIN GENERIC RUNTIME executing
 // the SAME 19 ORM-comparison ops (benchmark/benchmark.ts → the litedbmodel column,
-// captured as the #64 v1 SQL golden and proven byte-parity by the #65 v2 SCP path)
+// captured as the v1 SQL golden and byte-parity with the v2 SCP path)
 // DB-backed on all three real dialects (sqlite in-proc / mysql :3307 / postgres :5433),
 // driver-included.
 //
@@ -12,7 +12,7 @@
 // `{ sql, params }` the v2 SCP makeSQL compile path emits (compileSelect / compileInsert
 // / compileInsertMany / compileUpdateSingle / compileUpdateMany / compileDelete /
 // compileSingleKeyUnlimited / compileCompositeKeyUnlimited). That SQL is byte-identical
-// to what the ORM-bench litedbmodel column runs (the #65 parity gate asserts it), so the
+// to what the ORM-bench litedbmodel column runs (the parity gate asserts it), so the
 // TS cross-lang numbers are consistent with the ORM-bench litedbmodel column BY
 // CONSTRUCTION (same op, same v2 path, same SQL).
 //
@@ -35,7 +35,7 @@
 import * as lm from '../../dist/scp/index.mjs';
 
 // Local type aliases (the bundle does not re-export the compile-arg types by name; the shapes below
-// match src/scp/makesql exactly — asserted byte-for-byte by the #65 parity test).
+// match src/scp/makesql exactly — asserted byte-for-byte by the parity test).
 type Dialect = 'sqlite' | 'mysql' | 'postgres';
 interface MakeSQL {
   readonly [k: string]: unknown;
@@ -58,7 +58,7 @@ const dbCast = lm.dbCast as (v: unknown, cast: string) => unknown;
 export const ORM_DIALECTS = ['sqlite', 'mysql', 'postgres'] as const;
 export type OrmDialect = (typeof ORM_DIALECTS)[number];
 
-// ── The 19 ORM ops (== #64 golden == #65 parity == benchmark.ts testCategories) ─
+// ── The 19 ORM ops (== benchmark.ts testCategories) ─
 // Order + labels mirror benchmark/benchmark.ts exactly. `write` marks the ten ops whose
 // logical op mutates (they run inside a transaction: BEGIN … COMMIT).
 export interface OrmOpMeta {
@@ -159,7 +159,7 @@ export type OpPlan = ReadPlan | WritePlan;
 // The full artifact: op id → dialect → plan.
 export type OrmPlanArtifact = Record<string, Record<OrmDialect, OpPlan>>;
 
-// ── SCP render helpers (identical to the #65 parity test) ─────────────────────
+// ── SCP render helpers (identical to the parity test) ─────────────────────
 function render(node: MakeSQL, dialect: Dialect): { sql: string; params: unknown[] } {
   const asm = assembleMakeSQL(node);
   return { sql: renderPlaceholders(asm.sql, dialect), params: asm.params as unknown[] };

@@ -1,4 +1,4 @@
-// Shared timing helpers (epic #44). Warmup + measured per-iteration latency
+// Shared timing helpers. Warmup + measured per-iteration latency
 // sampling and a bounded-concurrency throughput probe. Sync-op friendly: the
 // litedbmodel exec surfaces are synchronous (in-proc better-sqlite3), so `op`
 // may return a value or a Promise; both are awaited.

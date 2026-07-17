@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Cross-lang bench SELF-CHECK (epic #63) — anti-sham gates for the 19-op model.
+// Cross-lang bench SELF-CHECK — anti-sham gates for the 19-op model.
 // ════════════════════════════════════════════════════════════════════════════
 //
 // Fast, fail-closed gates that make the unified bench honest (no subset, no fabricated
@@ -9,8 +9,6 @@
 //      EXPECTED rows/op (the ORM-bench logical work). A parser-invalid / wrong-work op fails.
 //   3. FAIRNESS — the rows/op the executor observes matches the golden expectation, i.e. the
 //      SAME v2 SCP SQL the ORM-bench litedbmodel column runs (the TS==ORM consistency anchor).
-//
-// (The old #44 codegen-module anti-sham gates are gone — there is no codegen-module cell.)
 
 import { buildOrmPlanArtifact, ORM_OPS, ORM_OP_IDS } from './orm-plan.js';
 import { sqliteDriver } from './orm-exec-ts.js';
@@ -41,7 +39,7 @@ const EXPECTED: Record<string, number> = {
 };
 
 async function main(): Promise<void> {
-  console.log('=== litedbmodel #63 cross-lang self-check (coverage + execute + rows/op fairness) ===');
+  console.log('=== litedbmodel cross-lang self-check (coverage + execute + rows/op fairness) ===');
   let failures = 0;
 
   // 1. COVERAGE — exactly the 19 ORM ops, no subset, no stray.
