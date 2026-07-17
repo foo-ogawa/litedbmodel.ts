@@ -188,10 +188,34 @@ describe('E1/E2 — the lowering fails CLOSED on every shape it cannot bake (no 
     );
   });
 
+  it('a SKIP-guarded fragment is rejected: its SQL text is input-dependent (no single literal)', () => {
+    // The `name = ?` fragment DROPS when `name` is absent, so the node has no ONE static SQL. The
+    // owner-approved design is a generic exec seam taking SKIP ARGS over baked fragments (bc covers
+    // the pieces: a static string-array port bakes the fragments, a bool input port bakes the skip
+    // arg) — until that lands, this fails closed rather than baking an always-present literal.
+    const bundle = compileBundle(CONTRACT, 'ByName', [], 'sqlite', undefined, RESOLVE);
+    expect(() => generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true })).toThrow(
+      /carries a 'skip' presence expression/,
+    );
+  });
+
   it('the pre-E1 lowering still covers those shapes (E1 is opt-in; no coverage was silently narrowed)', () => {
-    const bundle = compileBundle(CONTRACT, 'Recent', [], 'sqlite', undefined, RESOLVE);
-    // Same bundle, default (pre-E1) lowering → still generates, exactly as before this change.
-    expect(() => generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE)).not.toThrow();
+    for (const entry of ['Recent', 'ByName']) {
+      const bundle = compileBundle(CONTRACT, entry, [], 'sqlite', undefined, RESOLVE);
+      // Same bundle, default (pre-E1) lowering → still generates, exactly as before this change.
+      expect(() => generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE)).not.toThrow();
+    }
+  });
+
+  it('a WRITE bundle is still refused — it carries no graph to lower (see report: writes need head typing from values.*/set.* ports)', () => {
+    // Writes ARE row-returning ops (executeStaticWrite returns RETURNING rows, else
+    // [{changes,lastInsertRowid}]), and their statement is the SAME sql+scalar-ref shape a read has —
+    // so the lowering itself already fits. What is missing is upstream: compileBundle discards the
+    // write's component graph, and head typing is derived by regex from `SELECT … FROM <t>`, which
+    // does not match INSERT/UPDATE. Documented here so the gap cannot be mistaken for "unsupported".
+    expect(() => generateCodegenArtifact({ dialect: 'sqlite', name: 'Create', optionalHeads: [], relations: {} } as never, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true })).toThrow(
+      /has no readGraph/,
+    );
   });
 });
 
