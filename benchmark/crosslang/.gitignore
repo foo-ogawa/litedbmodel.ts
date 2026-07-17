@@ -3,18 +3,13 @@
 # Per-language standalone-bench CSVs (each bench writes .results/<lang>.csv; the collector reads
 # them → CROSS-LANG.md). Raw per-run output, regenerated every run — NEVER commit.
 .results/
-# Compiled rust adapter (the lm_orm ORM-plan executor) build dir
-adapters/rust/target/
-# Compiled TS adapter — the bench runner is esbuild-bundled to plain JS at run time (run.ts's build
-# step) and launched with bare `node` so esbuild/tsx is NOT resident in the MEASURED process. Like the
-# rust/go native binaries above, this is regenerated every run — NEVER commit.
-adapters/ts/orm-runner.built.mjs
-# Python bytecode
-adapters/python/__pycache__/
+
+# Compiled adapter build output — regenerated at run time (NEVER commit).
+adapters/*/target/
+adapters/*/*.built.mjs
 **/__pycache__/
 
-# Generated build output — regenerated at run time (NEVER commit). Ignore everything under
-# generated/ EXCEPT the committed, drift-checked orm-plan.json artifact (the language-neutral
-# SSoT every runtime consumes).
+# BC-codegen output — regenerated from the SCP declaration by codegen-build.mjs and
+# byte-verified by the drift gate; committed intentionally per the rebuild (epic #107).
+# No hand-rolled plan artifact is ever committed here.
 generated/*
-!generated/orm-plan.json
