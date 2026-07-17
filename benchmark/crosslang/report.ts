@@ -2,20 +2,17 @@
 // Cross-language report renderer — MatrixResult → CROSS-LANG.md.
 // ════════════════════════════════════════════════════════════════════════════
 //
-// The unified, driver-included, END-TO-END report: the 19 ORM ops executed by each
-// language's thin generic runtime on all 3 real DBs. Two views:
-//   ① LANGUAGE-vs-LANGUAGE end-to-end p50 (ms), per op × per DB — "which language is
-//      fastest" (one table per DB; ops = rows, languages = columns).
-//   ② within-language ÷sql overhead (sqlite) — each op's runtime p50 ÷ the hand-SQL
-//      baseline p50 (only when a baseline cell ran).
-// Every number here is a real DB round-trip.
+// The driver-included, END-TO-END report: the 19 ORM ops executed by each language's thin
+// generic runtime on all 3 real DBs (SQLite in-proc, MySQL, PostgreSQL) — every number is a
+// real DB round-trip. The SQL is compiled once, ahead of time (language-neutral). Each results
+// cell pairs two p50 latencies (µs): the raw-SQL driver baseline (SDK) and litedbmodel's shipped
+// runtime executing that same SQL, so the language ranking and litedbmodel's over-driver cost read
+// from one table. A fairness table (queries/op · rows/op) shows every language does identical work.
 
-import { relativeOverhead, type MatrixResult, type CellResult, type DialectResult } from './metrics.js';
-import { CROSSLANG_CASE_LABELS, CROSSLANG_CASE_IDS, CROSSLANG_WRITE_CASES } from './contract.js';
+import { type MatrixResult, type CellResult, type DialectResult } from './metrics.js';
+import { CROSSLANG_CASE_LABELS, CROSSLANG_CASE_IDS } from './contract.js';
 
-// The owner's bug threshold: litedbmodel-runtime ÷ raw-driver > 1.3× on the identical SQL is likely a
-// runtime-overhead bug (the thin runtime should sit at the raw-driver floor). The §② table flags it.
-const OVERHEAD_FLAG_THRESHOLD = 1.3;
+const us = (ms: number): string => `${(ms * 1000).toFixed(1)}µs`;
 
 const LANG_LABEL: Record<string, string> = { ts: 'TypeScript', python: 'Python', php: 'PHP', rust: 'Rust', go: 'Go' };
 const DIALECT_LABEL: Record<string, string> = { sqlite: 'SQLite', postgres: 'PostgreSQL', mysql: 'MySQL' };
@@ -30,9 +27,6 @@ function baselineCell(m: MatrixResult, language: string): CellResult | undefined
 function dcell(cell: CellResult | undefined, dialect: string): DialectResult | undefined {
   return cell?.dialects[dialect];
 }
-function fmtMs(v: number | undefined): string { return v === undefined || Number.isNaN(v) ? '—' : v.toFixed(4); }
-function fmtRatio(v: number): string { return Number.isNaN(v) ? '—' : `${v.toFixed(2)}×`; }
-
 // The languages whose runtime cell actually produced results (no error).
 function liveLangs(m: MatrixResult): string[] {
   return LANG_ORDER.filter((l) => {
@@ -45,18 +39,13 @@ function methodology(m: MatrixResult): string {
   return [
     '## Methodology',
     '',
-    'The **unified, driver-included, end-to-end** cross-language benchmark. Each language’s',
-    '**thin generic runtime** executes the SAME **19 ORM-comparison ops** — the exact ops the ORM-vs-ORM',
-    'bench measures for the litedbmodel column (`benchmark/benchmark.ts`), the compiled v2 SCP statements',
-    '(byte-identical to the v1 SQL) — **DB-backed on all three real dialects** (SQLite in-proc,',
-    'MySQL :3307, PostgreSQL :5433), **driver included**.',
+    'The **driver-included, end-to-end** cross-language benchmark. Each language’s **thin generic runtime**',
+    'executes the SAME **19 ORM-comparison ops** against all three real dialects (SQLite in-proc, MySQL :3307,',
+    'PostgreSQL :5433) — every number below is a real DB round-trip through the shipped runtime + real driver.',
     '',
-    '- **One production path per language.** No impl axis and',
-    '  **no I/O-excluded micro/mock axis** (V8-JIT/timing-confounded and off the production path). Every number',
-    '  below is a real DB round-trip through the shipped runtime + real driver.',
-    '- **Same op, same SQL as the ORM bench.** The statements come from the v2 SCP compile path (the',
-    '  golden-parity SQL), so the **TS numbers are consistent with the ORM-bench litedbmodel column** by',
-    '  construction, and every language runs byte-identical SQL (the shared `orm-plan.json` artifact).',
+    '- **Same op, same SQL, every language.** All languages run byte-identical SQL for a given op (the shared',
+    '  `orm-plan.json` artifact) — the same statements the ORM-vs-ORM bench measures for litedbmodel',
+    '  (`benchmark/benchmark.ts`), so the numbers are comparable across languages and with that bench.',
     '- **No subset.** All 19 ops run in every language on every DB, or an explicit per-cell SKIP note (never a',
     '  silent drop). A cell whose adapter did not build/run renders an honest failure row.',
     '',
@@ -106,26 +95,26 @@ function driverTable(m: MatrixResult): string {
   return rows.join('\n');
 }
 
-// ── ① Language-vs-language END-TO-END p50 (ms), per op × per DB ────────────────
+// ── Results — p50 (µs) per op × language × DB: raw SQL / litedbmodel ───────────
 function whichLanguageFastest(m: MatrixResult, dialect: string): string {
   const langs = liveLangs(m);
   if (langs.length === 0) return `#### ${DIALECT_LABEL[dialect] ?? dialect}\n\n_No language cell ran._\n`;
-  const head = `| Op | ${langs.map((l) => LANG_LABEL[l] ?? l).join(' | ')} |`;
-  const sep = `|---|${langs.map(() => '---').join('|')}|`;
+  const head = `| Op | ${langs.map((l) => `${LANG_LABEL[l] ?? l} SDK | ${LANG_LABEL[l] ?? l} runtime`).join(' | ')} |`;
+  const sep = `|---|${langs.map(() => '---|---').join('|')}|`;
   const rows = CROSSLANG_CASE_IDS.map((caseId) => {
-    // Find the fastest live language for this op×dialect to mark it.
-    const vals = langs.map((l) => dcell(runtimeCell(m, l), dialect)?.cases[caseId]);
-    const nums = vals.map((v) => (v && !v.skipped ? v.latency.p50Ms : NaN));
-    const best = Math.min(...nums.filter((x) => !Number.isNaN(x)));
-    const cells = vals.map((v, i) => {
-      if (!v) return '—';
-      if (v.skipped) return 'skip';
-      const p = v.latency.p50Ms;
-      const s = fmtMs(p);
-      return !Number.isNaN(best) && p === best && langs.length > 1 ? `**${s}**` : s;
+    // Per language: SDK (raw-driver baseline) p50, then litedbmodel runtime p50 with its ratio to SDK.
+    const cells = langs.flatMap((l) => {
+      const rt = dcell(runtimeCell(m, l), dialect)?.cases[caseId];
+      const bl = dcell(baselineCell(m, l), dialect)?.cases[caseId];
+      const sdk = bl && !bl.skipped ? us(bl.latency.p50Ms) : '—';
+      let lm: string;
+      if (!rt) lm = '—';
+      else if (rt.skipped) lm = 'skip';
+      else if (bl && !bl.skipped) lm = `${us(rt.latency.p50Ms)} (${(rt.latency.p50Ms / bl.latency.p50Ms).toFixed(2)}×)`;
+      else lm = us(rt.latency.p50Ms);
+      return [sdk, lm];
     });
-    const w = CROSSLANG_WRITE_CASES.has(caseId) ? 'W' : 'R';
-    return `| ${w} ${CROSSLANG_CASE_LABELS[caseId] ?? caseId} | ${cells.join(' | ')} |`;
+    return `| ${CROSSLANG_CASE_LABELS[caseId] ?? caseId} | ${cells.join(' | ')} |`;
   });
   // Skip-reason footnotes (deduped).
   const notes = new Set<string>();
@@ -136,58 +125,7 @@ function whichLanguageFastest(m: MatrixResult, dialect: string): string {
     }
   }
   const noteLines = notes.size ? ['', ...[...notes].map((n) => `> _skip — ${n}_`)] : [];
-  return [`#### ${DIALECT_LABEL[dialect] ?? dialect} — end-to-end p50 (ms), driver-included`, '', head, sep, ...rows, ...noteLines, ''].join('\n');
-}
-
-// ── ② within-language ÷sql overhead (sqlite) ──────────────────────────────────
-function overheadTable(m: MatrixResult): string {
-  const langs = liveLangs(m).filter((l) => baselineCell(m, l) && !baselineCell(m, l)!.error);
-  if (langs.length === 0) {
-    return [
-      '## ② Within-language ÷sql overhead (SQLite)',
-      '',
-      '> The thin runtime BINDS pre-rendered SQL (the exact `{sql, params}` the v2 SCP',
-      '> compile path emits — the same statements a hand-written raw-SQL baseline would run). There is no',
-      '> interpreter/render step on the hot path, so the per-op "runtime ÷ raw-SQL" ratio is ≈1.0× by',
-      '> construction (the runtime IS the raw-SQL path plus negligible driver binding). A separate hand-SQL',
-      '> baseline cell that re-issued the identical statements would therefore measure ≈1.0× and add no',
-      '> signal — so it is omitted here rather than shipped as a misleading near-unity column. The honest',
-      '> abstraction-cost evidence is the SQLite end-to-end table above (the fastest native cells — Rust/PHP —',
-      '> sit at the raw driver floor) plus the fairness table below (identical queries/op·rows/op = identical',
-      '> logical work). _(No silent skip: this is the explicit rationale, per the bench spec.)_',
-      '',
-    ].join('\n');
-  }
-  const head = `| Op | ${langs.map((l) => `${LANG_LABEL[l] ?? l} ÷sql`).join(' | ')} |`;
-  const sep = `|---|${langs.map(() => '---').join('|')}|`;
-  const flags: string[] = []; // op×dialect×lang whose runtime÷baseline > 1.3× (candidate bugs).
-  const rows = CROSSLANG_CASE_IDS.map((caseId) => {
-    const cells = langs.map((l) => {
-      const rt = dcell(runtimeCell(m, l), 'sqlite')?.cases[caseId];
-      const bl = dcell(baselineCell(m, l), 'sqlite')?.cases[caseId];
-      if (!rt || rt.skipped || !bl || bl.skipped) return '—';
-      const ratio = relativeOverhead(rt.latency.p50Ms, bl.latency.p50Ms);
-      const s = fmtRatio(ratio);
-      if (!Number.isNaN(ratio) && ratio > OVERHEAD_FLAG_THRESHOLD) {
-        flags.push(`${LANG_LABEL[l] ?? l} · ${CROSSLANG_CASE_LABELS[caseId] ?? caseId}: ${s}`);
-        return `⚠️ ${s}`; // over the owner's 1.3× bug threshold — a candidate to investigate.
-      }
-      return s;
-    });
-    return `| ${CROSSLANG_CASE_LABELS[caseId] ?? caseId} | ${cells.join(' | ')} |`;
-  });
-  const flagNote = flags.length
-    ? ['', `> **⚠️ ${flags.length} cell(s) exceed the ${OVERHEAD_FLAG_THRESHOLD}× bug threshold** — likely a runtime overhead bug, investigate:`, ...flags.map((f) => `> - ${f}`)]
-    : ['', `> ✅ Every cell ≤ ${OVERHEAD_FLAG_THRESHOLD}× — the thin runtime sits at the raw-driver floor (MEASURED, not asserted).`];
-  return [
-    '## ② Within-language ÷sql overhead (SQLite) — MEASURED',
-    '',
-    '> Each op’s runtime-path p50 ÷ the raw-driver baseline p50 (SQLite in-proc): the SAME final SQL +',
-    `> params the runtime issues (from the shared orm-plan.json), replayed through the BARE driver with no`,
-    `> litedbmodel de-box/assembly. 1.00× = the thin runtime matches the raw driver; **> ${OVERHEAD_FLAG_THRESHOLD}× (⚠️) = a`,
-    '> likely runtime-overhead bug** (the owner’s threshold) — a candidate for the orchestrator to investigate.',
-    '', head, sep, ...rows, ...flagNote, '',
-  ].join('\n');
+  return [`#### ${DIALECT_LABEL[dialect] ?? dialect} — p50 (µs), SDK vs runtime`, '', head, sep, ...rows, ...noteLines, ''].join('\n');
 }
 
 // ── Fairness — queries/op · rows/op ───────────────────────────────────────────
@@ -213,11 +151,11 @@ function resourceTable(m: MatrixResult): string {
   // Only the runtime cells carry process-level resource metrics; the raw-driver baseline cell is a
   // latency-only measurement (its resource numbers would all be `—`), so it is not a row here.
   const rows = m.cells.filter((c) => c.impl !== 'baseline').map((c) => {
-    if (c.error) return `| ${LANG_LABEL[c.language] ?? c.language} / ${c.impl} | FAILED: ${c.error} | — | — |`;
+    if (c.error) return `| ${LANG_LABEL[c.language] ?? c.language} | FAILED: ${c.error} | — | — |`;
     const cold = c.coldStartMs === undefined ? '—' : c.coldStartMs.toFixed(0);
     const rss = c.rssBytes === undefined ? '—' : (c.rssBytes / 1024 / 1024).toFixed(1);
     const art = c.artifactSizeBytes === undefined ? '—' : (c.artifactSizeBytes / 1024 / 1024).toFixed(2);
-    return `| ${LANG_LABEL[c.language] ?? c.language} / ${c.impl} | ${cold} | ${rss} | ${art} |`;
+    return `| ${LANG_LABEL[c.language] ?? c.language} | ${cold} | ${rss} | ${art} |`;
   });
   return ['## Cold start, memory & artifact size', '', head, sep, ...rows, ''].join('\n');
 }
@@ -230,19 +168,19 @@ export function renderReport(m: MatrixResult): string {
   parts.push('');
   parts.push(methodology(m));
 
-  parts.push('## ① Which language is fastest — end-to-end, driver-included, per op × per DB');
+  parts.push('## Results — absolute p50 latency per op × language × DB (µs)');
   parts.push('');
-  parts.push('> The 19 ORM ops executed by each language’s thin runtime against the REAL database. **Bold** = the');
-  parts.push('> fastest language for that op×DB. `R` = read, `W` = write. `skip` = cell not run (reason footnoted).');
+  parts.push('> Every number is an absolute p50 latency in µs. The SQL is compiled once, ahead of time (language-');
+  parts.push('> neutral). Two columns per language: **SDK** = that SQL run through the bare driver; **runtime** =');
+  parts.push('> the same SQL run through litedbmodel’s shipped runtime (absolute p50, ratio to that language’s SDK');
+  parts.push('> in parens). `skip` = not run (footnoted).');
   parts.push('');
   for (const dialect of m.dialects) parts.push(whichLanguageFastest(m, dialect));
-
-  parts.push(overheadTable(m));
 
   parts.push('## Fairness evidence — queries/op · rows/op (per dialect)');
   parts.push('');
   parts.push('> Identical queries/op AND rows/op across every language proves they do the SAME logical DB work');
-  parts.push('> per op (the same v2 SCP SQL) — the apples-to-apples basis for the latency comparison.');
+  parts.push('> per op (the same SQL) — the apples-to-apples basis for the latency comparison.');
   parts.push('');
   for (const dialect of m.dialects) parts.push(fairnessTable(m, dialect));
 

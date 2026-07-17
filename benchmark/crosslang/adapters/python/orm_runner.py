@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ORM-plan STANDALONE bench entry point — Python (epic #63).
+"""ORM-plan STANDALONE bench entry point — Python.
 
 The orchestrator (run.ts) spawns this as `python3 orm_runner.py` — ONE standalone process that
 runs ALL 19 ops × 3 dialects, self-measures, and writes a FLAT CSV to

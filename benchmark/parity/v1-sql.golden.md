@@ -1,4 +1,4 @@
-# litedbmodel v1 ORM-path SQL parity golden (#64)
+# litedbmodel v1 ORM-path SQL parity golden
 
 Captured live via `SqlLoggerMiddleware.execute` (driver-reach hook) by running each
 bench op once against a real seeded DB, for all three dialects. No SQL is hand-written.

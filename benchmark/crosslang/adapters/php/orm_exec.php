@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * ORM-plan EXECUTOR + live smoke — PHP (epic #63).
+ * ORM-plan EXECUTOR + live smoke — PHP.
  *
  * Port of the PROVEN TS reference (benchmark/crosslang/orm-exec-ts.ts + orm-smoke.ts). Loads the
  * committed language-neutral artifact benchmark/crosslang/generated/orm-plan.json and executes ALL

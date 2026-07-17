@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-// TS ORM-plan bench — STANDALONE CSV writer (epic #63) — the reference.
+// TS ORM-plan bench — STANDALONE CSV writer — the reference.
 // ════════════════════════════════════════════════════════════════════════════
 //
 // ONE standalone process (no stdin/stdout protocol): loads the shared 19-op plan
@@ -125,7 +125,7 @@ async function benchCell(drv: OrmDriver, baseline: OrmDriver | null, caseId: str
 
 async function main(): Promise<void> {
   // cold = process start → runtime ready (interpreter + module/artifact load), measured BEFORE any
-  // driver connect — the same point the old harness read as the `ready` line (drivers were lazy).
+  // driver connect — the first real connection (drivers connect lazily).
   const coldMs = Math.max(0, Date.now() - SPAWNED_AT);
 
   for (const dialect of ORM_DIALECTS) {

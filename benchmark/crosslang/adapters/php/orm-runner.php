@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * ORM-plan STANDALONE bench entry point — PHP (epic #63).
+ * ORM-plan STANDALONE bench entry point — PHP.
  *
  * The orchestrator (run.ts) spawns this as `php orm-runner.php` — ONE standalone process that runs
  * ALL 19 ops × 3 dialects, self-measures, and writes a FLAT CSV to

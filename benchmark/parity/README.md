@@ -1,4 +1,4 @@
-# v1 ORM-path SQL parity golden (#64)
+# v1 ORM-path SQL parity golden
 
 This directory holds the **parity SSoT**: the actual SQL that the litedbmodel **v1**
 ORM path emits for every op in the ORM-comparison bench

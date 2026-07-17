@@ -14,7 +14,7 @@ adapters/python/__pycache__/
 **/__pycache__/
 
 # Generated build output — regenerated at run time (NEVER commit). Ignore everything under
-# generated/ EXCEPT the committed, drift-checked #63 orm-plan.json artifact (the language-neutral
+# generated/ EXCEPT the committed, drift-checked orm-plan.json artifact (the language-neutral
 # SSoT every runtime consumes).
 generated/*
 !generated/orm-plan.json

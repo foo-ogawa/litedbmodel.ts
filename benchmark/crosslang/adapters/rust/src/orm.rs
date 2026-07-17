@@ -1,4 +1,4 @@
-//! ORM-plan EXECUTOR + live smoke — Rust (epic #63), the `lm_orm` binary.
+//! ORM-plan EXECUTOR + live smoke — Rust, the `lm_orm` binary.
 //!
 //! Port of the PROVEN TS reference (benchmark/crosslang/orm-exec-ts.ts + orm-smoke.ts). Loads the
 //! committed language-neutral artifact benchmark/crosslang/generated/orm-plan.json and executes ALL
@@ -448,10 +448,10 @@ fn str_list(node: &J, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Adapt a DDL statement's COLUMN TYPES to the shipped Rust `livedb` cell decoder (the #44 adapter
+/// Adapt a DDL statement's COLUMN TYPES to the shipped Rust `livedb` cell decoder (the adapter
 /// convention: each language adapts column types to its driver). The typed binary decoder maps
 /// TIMESTAMP → String (rejected by the tokio-postgres/sqlx binary protocol) and MySQL BOOLEAN →
-/// String; storing them as TEXT/INT (as the sqlite + #44 schemas already do) makes `SELECT *` read
+/// String; storing them as TEXT/INT (as the sqlite schemas already do) makes `SELECT *` read
 /// them via the shipped seam. Data + row counts are UNCHANGED (seed never inserts these columns;
 /// created_at/updated_at use DEFAULT). Only the STORAGE TYPE differs — no SQL/logic is reimplemented.
 fn adapt_ddl_for_rust_decoder(ddl: &[String], dialect: &str) -> Vec<String> {

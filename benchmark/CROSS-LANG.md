@@ -4,22 +4,17 @@
 
 ## Methodology
 
-The **unified, driver-included, end-to-end** cross-language benchmark. Each language’s
-**thin generic runtime** executes the SAME **19 ORM-comparison ops** — the exact ops the ORM-vs-ORM
-bench measures for the litedbmodel column (`benchmark/benchmark.ts`), the compiled v2 SCP statements
-(byte-identical to the v1 SQL) — **DB-backed on all three real dialects** (SQLite in-proc,
-MySQL :3307, PostgreSQL :5433), **driver included**.
+The **driver-included, end-to-end** cross-language benchmark. Each language’s **thin generic runtime**
+executes the SAME **19 ORM-comparison ops** against all three real dialects (SQLite in-proc, MySQL :3307,
+PostgreSQL :5433) — every number below is a real DB round-trip through the shipped runtime + real driver.
 
-- **One production path per language.** No impl axis and
-  **no I/O-excluded micro/mock axis** (V8-JIT/timing-confounded and off the production path). Every number
-  below is a real DB round-trip through the shipped runtime + real driver.
-- **Same op, same SQL as the ORM bench.** The statements come from the v2 SCP compile path (the
-  golden-parity SQL), so the **TS numbers are consistent with the ORM-bench litedbmodel column** by
-  construction, and every language runs byte-identical SQL (the shared `orm-plan.json` artifact).
+- **Same op, same SQL, every language.** All languages run byte-identical SQL for a given op (the shared
+  `orm-plan.json` artifact) — the same statements the ORM-vs-ORM bench measures for litedbmodel
+  (`benchmark/benchmark.ts`), so the numbers are comparable across languages and with that bench.
 - **No subset.** All 19 ops run in every language on every DB, or an explicit per-cell SKIP note (never a
   silent drop). A cell whose adapter did not build/run renders an honest failure row.
 
-_Generated 2026-07-16T23:32:15.400Z — warmup 30, 150 measured iterations. Dialects: sqlite, mysql, postgres._
+_Generated 2026-07-17T03:04:11.902Z — warmup 50, 300 measured iterations. Dialects: sqlite, mysql, postgres._
 
 _Environment: **native arm64 (Apple Silicon)** — go arm64, node arm64, rust `aarch64-apple-darwin`._
 
@@ -48,120 +43,89 @@ _Environment: **native arm64 (Apple Silicon)** — go arm64, node arm64, rust `a
 > **4. TS PG/MySQL ride the async pool path** (`pg` / `mysql2`, Node has no sync networked driver); SQLite
 > is sync better-sqlite3. TS numbers match the ORM-bench litedbmodel column (same op, same v2 SQL).
 
-## ① Which language is fastest — end-to-end, driver-included, per op × per DB
+## Results — absolute p50 latency per op × language × DB (µs)
 
-> The 19 ORM ops executed by each language’s thin runtime against the REAL database. **Bold** = the
-> fastest language for that op×DB. `R` = read, `W` = write. `skip` = cell not run (reason footnoted).
+> Every number is an absolute p50 latency in µs. The SQL is compiled once, ahead of time (language-
+> neutral). Two columns per language: **SDK** = that SQL run through the bare driver; **runtime** =
+> the same SQL run through litedbmodel’s shipped runtime (absolute p50, ratio to that language’s SDK
+> in parens). `skip` = not run (footnoted).
 
-#### SQLite — end-to-end p50 (ms), driver-included
+#### SQLite — p50 (µs), SDK vs runtime
 
-| Op | TypeScript | Python | PHP | Rust | Go |
-|---|---|---|---|---|---|
-| R Find all (limit 100) | 0.0744 | 0.1038 | **0.0658** | 0.1032 | 0.1673 |
-| R Filter, paginate & sort | **0.0345** | 0.0711 | 0.0531 | 0.0427 | 0.0705 |
-| R Nested find all (include posts) | **0.2667** | 0.4683 | 0.2951 | 0.3558 | 0.5753 |
-| R Find first | 0.0119 | 0.0115 | 0.0093 | **0.0086** | 0.0200 |
-| R Nested find first (include posts) | **0.0313** | 0.0717 | 0.0364 | 0.0333 | 0.0621 |
-| R Find unique (by email) | 0.0063 | 0.0063 | 0.0054 | **0.0052** | 0.0147 |
-| R Nested find unique (include posts) | **0.0232** | 0.0654 | 0.0311 | 0.0295 | 0.0538 |
-| W Create | 0.0115 | 0.0134 | 0.0093 | **0.0085** | 0.0268 |
-| W Nested create (with post) | 0.0172 | 0.0208 | 0.0149 | **0.0138** | 0.0298 |
-| W Update | 0.0071 | 0.0089 | 0.0043 | **0.0033** | 0.0178 |
-| W Nested update (update user + post) | **0.0235** | 0.0510 | 0.0444 | 0.0255 | 0.0591 |
-| W Upsert | 0.0161 | 0.0233 | 0.0152 | **0.0152** | 0.0282 |
-| W Nested upsert (user + post) | 0.0179 | 0.0209 | 0.0177 | **0.0155** | 0.0377 |
-| W Delete | 0.0141 | 0.0184 | 0.0130 | **0.0110** | 0.0304 |
-| W Create Many (10 records) | **0.0279** | 0.0397 | 0.0350 | 0.0304 | 0.0687 |
-| W Upsert Many (10 records) | **0.0285** | 0.0405 | 0.0379 | 0.0330 | 0.0702 |
-| W Update Many (10 different values) | **0.0455** | 0.0836 | 0.0649 | 0.0567 | 0.1070 |
-| R Nested relations (100->1000->10000) | **0.5656** | 1.1728 | 0.6284 | 0.7930 | 1.2578 |
-| R Nested relations (composite key, 5 tenants) | **0.2469** | 0.2784 | 0.3766 | 0.3378 | 0.4642 |
+| Op | TypeScript SDK | TypeScript runtime | Python SDK | Python runtime | PHP SDK | PHP runtime | Rust SDK | Rust runtime | Go SDK | Go runtime |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Find all (limit 100) | 76.7µs | 75.7µs (0.99×) | 81.9µs | 99.3µs (1.21×) | 62.6µs | 62.5µs (1.00×) | 99.1µs | 105.7µs (1.07×) | 156.5µs | 161.5µs (1.03×) |
+| Filter, paginate & sort | 33.7µs | 33.3µs (0.99×) | 58.7µs | 63.3µs (1.08×) | 42.6µs | 42.1µs (0.99×) | 42.4µs | 43.5µs (1.03×) | 69.5µs | 68.0µs (0.98×) |
+| Nested find all (include posts) | 258.5µs | 265.4µs (1.03×) | 375.6µs | 438.3µs (1.17×) | 246.7µs | 248.0µs (1.01×) | 359.4µs | 380.3µs (1.06×) | 548.0µs | 558.8µs (1.02×) |
+| Find first | 11.8µs | 12.0µs (1.01×) | 9.2µs | 10.9µs (1.19×) | 8.6µs | 8.7µs (1.01×) | 8.0µs | 8.2µs (1.02×) | 19.0µs | 19.4µs (1.02×) |
+| Nested find first (include posts) | 31.7µs | 33.2µs (1.05×) | 63.8µs | 68.1µs (1.07×) | 33.0µs | 33.5µs (1.02×) | 33.2µs | 33.4µs (1.01×) | 56.5µs | 56.8µs (1.01×) |
+| Find unique (by email) | 6.0µs | 5.9µs (0.99×) | 4.3µs | 5.7µs (1.32×) | 5.2µs | 5.3µs (1.01×) | 5.0µs | 5.2µs (1.03×) | 14.1µs | 14.2µs (1.01×) |
+| Nested find unique (include posts) | 23.4µs | 22.0µs (0.94×) | 58.0µs | 60.0µs (1.04×) | 28.4µs | 28.3µs (1.00×) | 29.2µs | 29.8µs (1.02×) | 53.9µs | 51.2µs (0.95×) |
+| Create | 11.8µs | 12.3µs (1.04×) | 11.9µs | 12.4µs (1.04×) | 8.8µs | 9.3µs (1.06×) | 7.4µs | 8.0µs (1.09×) | 26.4µs | 26.3µs (1.00×) |
+| Nested create (with post) | 17.9µs | 17.8µs (1.00×) | 19.3µs | 19.7µs (1.02×) | 15.3µs | 15.3µs (1.00×) | 12.3µs | 12.8µs (1.04×) | 27.9µs | 27.9µs (1.00×) |
+| Update | 7.6µs | 7.7µs (1.01×) | 8.2µs | 8.6µs (1.06×) | 4.0µs | 4.1µs (1.02×) | 2.6µs | 3.1µs (1.17×) | 16.5µs | 18.8µs (1.13×) |
+| Nested update (update user + post) | 23.6µs | 32.3µs (1.37×) | 50.7µs | 68.5µs (1.35×) | 39.9µs | 56.1µs (1.41×) | 21.4µs | 29.9µs (1.40×) | 61.3µs | 76.9µs (1.26×) |
+| Upsert | 16.9µs | 15.7µs (0.93×) | 19.5µs | 20.4µs (1.04×) | 14.2µs | 14.5µs (1.02×) | 13.7µs | 14.0µs (1.02×) | 29.8µs | 29.6µs (0.99×) |
+| Nested upsert (user + post) | 17.7µs | 18.6µs (1.05×) | 18.5µs | 19.3µs (1.05×) | 16.0µs | 16.3µs (1.02×) | 13.5µs | 14.1µs (1.05×) | 36.9µs | 38.1µs (1.03×) |
+| Delete | 13.6µs | 13.5µs (0.99×) | 17.2µs | 17.5µs (1.02×) | 12.1µs | 12.4µs (1.03×) | 9.5µs | 10.2µs (1.07×) | 31.4µs | 30.5µs (0.97×) |
+| Create Many (10 records) | 27.8µs | 27.4µs (0.99×) | 39.0µs | 39.6µs (1.02×) | 35.3µs | 35.8µs (1.01×) | 33.0µs | 33.3µs (1.01×) | 70.8µs | 70.8µs (1.00×) |
+| Upsert Many (10 records) | 29.3µs | 29.8µs (1.02×) | 40.6µs | 41.2µs (1.02×) | 37.8µs | 38.0µs (1.01×) | 36.3µs | 36.3µs (1.00×) | 77.4µs | 74.0µs (0.96×) |
+| Update Many (10 different values) | 46.7µs | 45.5µs (0.97×) | 82.6µs | 80.9µs (0.98×) | 57.7µs | 57.8µs (1.00×) | 53.9µs | 56.5µs (1.05×) | 103.0µs | 100.0µs (0.97×) |
+| Nested relations (100->1000->10000) | 551.7µs | 573.2µs (1.04×) | 963.0µs | 1199.9µs (1.25×) | 603.1µs | 611.0µs (1.01×) | 825.0µs | 889.0µs (1.08×) | 1241.7µs | 1297.2µs (1.04×) |
+| Nested relations (composite key, 5 tenants) | 214.9µs | 222.0µs (1.03×) | 256.1µs | 264.9µs (1.03×) | 343.0µs | 350.3µs (1.02×) | 334.8µs | 341.7µs (1.02×) | 421.5µs | 420.3µs (1.00×) |
 
-#### MySQL — end-to-end p50 (ms), driver-included
+#### MySQL — p50 (µs), SDK vs runtime
 
-| Op | TypeScript | Python | PHP | Rust | Go |
-|---|---|---|---|---|---|
-| R Find all (limit 100) | 0.4508 | 3.1429 | 0.6689 | 0.6835 | **0.3294** |
-| R Filter, paginate & sort | 0.4705 | 0.8278 | 0.5838 | 0.5608 | **0.2845** |
-| R Nested find all (include posts) | 1.1410 | 6.9363 | 1.8514 | 1.6580 | **0.9250** |
-| R Find first | 0.2953 | 0.4163 | 0.4290 | 0.4066 | **0.2049** |
-| R Nested find first (include posts) | 0.6373 | 0.8721 | 0.9887 | 0.9264 | **0.4898** |
-| R Find unique (by email) | 0.2478 | 0.3242 | 0.4397 | 0.4414 | **0.2064** |
-| R Nested find unique (include posts) | 0.6838 | 0.7975 | 0.8686 | 0.9360 | **0.4936** |
-| W Create | 0.8454 | **0.7405** | 0.9624 | 1.3088 | 0.9529 |
-| W Nested create (with post) | **0.9593** | 1.0097 | 1.3280 | 1.9436 | 1.3215 |
-| W Update | 0.7995 | **0.7251** | 0.7955 | 1.2284 | 0.8037 |
-| W Nested update (update user + post) | **0.8970** | 1.2221 | 2.0874 | 2.0560 | 1.3838 |
-| W Upsert | **0.7262** | 0.7674 | 2.2379 | 1.3370 | 0.9307 |
-| W Nested upsert (user + post) | **0.9550** | 0.9754 | 4.1741 | 1.7532 | 1.7825 |
-| W Delete | 1.0961 | **1.0250** | 2.0932 | 1.8075 | 1.9378 |
-| W Create Many (10 records) | **0.7557** | 0.8594 | 1.5840 | 1.3610 | 2.2068 |
-| W Upsert Many (10 records) | **0.8270** | 0.9894 | 1.5340 | 1.4214 | 1.1142 |
-| W Update Many (10 different values) | **0.7521** | 0.8615 | 0.9774 | 1.2426 | 1.1298 |
-| R Nested relations (100->1000->10000) | 2.3869 | 16.5634 | 3.4490 | 3.2759 | **2.3272** |
-| R Nested relations (composite key, 5 tenants) | **1.0858** | 4.6092 | 1.5786 | 1.9340 | 1.2621 |
+| Op | TypeScript SDK | TypeScript runtime | Python SDK | Python runtime | PHP SDK | PHP runtime | Rust SDK | Rust runtime | Go SDK | Go runtime |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Find all (limit 100) | 373.7µs | 397.0µs (1.06×) | 2556.0µs | 2922.4µs (1.14×) | 516.6µs | 490.0µs (0.95×) | — | 1004.3µs | 323.8µs | 319.8µs (0.99×) |
+| Filter, paginate & sort | 345.7µs | 376.1µs (1.09×) | 769.7µs | 1044.2µs (1.36×) | 499.4µs | 445.7µs (0.89×) | — | 735.9µs | 264.2µs | 260.9µs (0.99×) |
+| Nested find all (include posts) | 985.9µs | 1009.7µs (1.02×) | 6914.4µs | 7933.0µs (1.15×) | 1295.9µs | 1232.6µs (0.95×) | — | 2156.3µs | 901.8µs | 969.2µs (1.07×) |
+| Find first | 245.8µs | 202.8µs (0.82×) | 321.0µs | 329.0µs (1.03×) | 301.4µs | 359.3µs (1.19×) | — | 452.8µs | 193.3µs | 188.3µs (0.97×) |
+| Nested find first (include posts) | 538.4µs | 490.0µs (0.91×) | 744.1µs | 848.8µs (1.14×) | 678.0µs | 757.5µs (1.12×) | — | 1149.0µs | 488.4µs | 498.4µs (1.02×) |
+| Find unique (by email) | 216.5µs | 200.0µs (0.92×) | 307.6µs | 326.6µs (1.06×) | 357.1µs | 295.5µs (0.83×) | — | 504.5µs | 191.6µs | 214.7µs (1.12×) |
+| Nested find unique (include posts) | 650.0µs | 604.5µs (0.93×) | 725.1µs | 715.9µs (0.99×) | 798.5µs | 720.5µs (0.90×) | — | 1023.0µs | 488.4µs | 474.0µs (0.97×) |
+| Create | 760.0µs | 777.0µs (1.02×) | 778.4µs | 723.2µs (0.93×) | 699.0µs | 738.9µs (1.06×) | — | 1482.4µs | 908.7µs | 886.5µs (0.98×) |
+| Nested create (with post) | 973.6µs | 1018.6µs (1.05×) | 952.0µs | 1122.6µs (1.18×) | 1021.6µs | 1101.8µs (1.08×) | — | 2201.8µs | 1300.7µs | 1289.3µs (0.99×) |
+| Update | 702.3µs | 665.0µs (0.95×) | 599.7µs | 658.5µs (1.10×) | 731.8µs | 674.0µs (0.92×) | — | 1206.8µs | 832.2µs | 789.1µs (0.95×) |
+| Nested update (update user + post) | 1056.9µs | 1082.7µs (1.02×) | 1045.5µs | 1155.5µs (1.11×) | 1125.5µs | 1299.3µs (1.15×) | — | 2117.5µs | 1418.0µs | 1489.0µs (1.05×) |
+| Upsert | 728.9µs | 834.5µs (1.14×) | 665.1µs | 698.5µs (1.05×) | 793.7µs | 653.4µs (0.82×) | — | 1344.7µs | 889.8µs | 884.6µs (0.99×) |
+| Nested upsert (user + post) | 1003.5µs | 1025.1µs (1.02×) | 1086.8µs | 1032.2µs (0.95×) | 1193.5µs | 1169.1µs (0.98×) | — | 1897.2µs | 1332.0µs | 1405.5µs (1.06×) |
+| Delete | 1020.1µs | 1000.3µs (0.98×) | 1011.3µs | 1148.3µs (1.14×) | 1261.9µs | 1229.5µs (0.97×) | — | 1862.9µs | 1345.0µs | 1437.0µs (1.07×) |
+| Create Many (10 records) | 798.4µs | 805.7µs (1.01×) | 913.3µs | 899.9µs (0.99×) | 1144.8µs | 1005.4µs (0.88×) | — | 1472.9µs | 955.2µs | 963.1µs (1.01×) |
+| Upsert Many (10 records) | 833.6µs | 742.7µs (0.89×) | 815.8µs | 989.7µs (1.21×) | 910.0µs | 931.8µs (1.02×) | — | 1432.3µs | 1016.0µs | 971.7µs (0.96×) |
+| Update Many (10 different values) | 775.6µs | 707.0µs (0.91×) | 675.9µs | 729.0µs (1.08×) | 780.6µs | 778.0µs (1.00×) | — | 1367.5µs | 904.8µs | 888.3µs (0.98×) |
+| Nested relations (100->1000->10000) | 2111.2µs | 2408.3µs (1.14×) | 13939.4µs | 16552.8µs (1.19×) | 2879.1µs | 2650.3µs (0.92×) | — | 3601.2µs | 2289.1µs | 2235.9µs (0.98×) |
+| Nested relations (composite key, 5 tenants) | 858.7µs | 1089.8µs (1.27×) | 5561.4µs | 4534.7µs (0.82×) | 1732.2µs | 1752.6µs (1.01×) | — | 1720.9µs | 916.8µs | 1095.1µs (1.19×) |
 
-#### PostgreSQL — end-to-end p50 (ms), driver-included
+#### PostgreSQL — p50 (µs), SDK vs runtime
 
-| Op | TypeScript | Python | PHP | Rust | Go |
-|---|---|---|---|---|---|
-| R Find all (limit 100) | 0.4557 | 2.7729 | 0.6776 | 0.3520 | **0.3212** |
-| R Filter, paginate & sort | 0.3610 | 1.5197 | 0.5502 | 0.3382 | **0.2657** |
-| R Nested find all (include posts) | 1.2547 | 9.2809 | 2.0002 | 0.9960 | **0.7549** |
-| R Find first | **0.2202** | 0.6399 | 0.5907 | 0.2305 | 0.2296 |
-| R Nested find first (include posts) | 0.4456 | 0.9015 | 1.2237 | **0.4278** | 0.5161 |
-| R Find unique (by email) | 0.2438 | 0.3875 | 0.5800 | **0.2003** | 0.2487 |
-| R Nested find unique (include posts) | 0.4753 | 0.8397 | 1.3497 | **0.4522** | 0.4835 |
-| W Create | **0.5179** | 0.7073 | 0.9116 | 0.6648 | 0.7312 |
-| W Nested create (with post) | 0.8722 | 1.1321 | 1.4791 | **0.8490** | 1.0252 |
-| W Update | 0.7026 | 0.7965 | 0.8209 | **0.6467** | 0.7475 |
-| W Nested update (update user + post) | **0.8665** | 1.0627 | 1.4857 | 0.8734 | 0.8770 |
-| W Upsert | **0.6186** | 0.8716 | 1.0153 | 0.6468 | 0.6835 |
-| W Nested upsert (user + post) | **0.7613** | 1.0998 | 1.4938 | 0.8190 | 0.8737 |
-| W Delete | 0.8303 | 1.0854 | 1.5213 | 0.8436 | **0.7309** |
-| W Create Many (10 records) | 0.7638 | 0.9932 | 1.0227 | 0.6817 | **0.6803** |
-| W Upsert Many (10 records) | 0.8022 | 1.0879 | 1.3603 | 0.8370 | **0.6813** |
-| W Update Many (10 different values) | 0.7490 | 1.0023 | 1.1046 | 0.7097 | **0.6942** |
-| R Nested relations (100->1000->10000) | 1.8847 | 20.2354 | 2.9922 | 2.0225 | **1.5100** |
-| R Nested relations (composite key, 5 tenants) | 1.6260 | 5.7423 | 1.9692 | 0.9251 | **0.8487** |
-
-## ② Within-language ÷sql overhead (SQLite) — MEASURED
-
-> Each op’s runtime-path p50 ÷ the raw-driver baseline p50 (SQLite in-proc): the SAME final SQL +
-> params the runtime issues (from the shared orm-plan.json), replayed through the BARE driver with no
-> litedbmodel de-box/assembly. 1.00× = the thin runtime matches the raw driver; **> 1.3× (⚠️) = a
-> likely runtime-overhead bug** (the owner’s threshold) — a candidate for the orchestrator to investigate.
-
-| Op | TypeScript ÷sql | Python ÷sql | PHP ÷sql | Rust ÷sql | Go ÷sql |
-|---|---|---|---|---|---|
-| Find all (limit 100) | 0.99× | 1.18× | 1.01× | 1.04× | 0.99× |
-| Filter, paginate & sort | 0.99× | 1.14× | 1.14× | 1.01× | 1.01× |
-| Nested find all (include posts) | 1.05× | 1.19× | 1.03× | 0.99× | 1.03× |
-| Find first | 1.05× | 1.17× | 1.03× | 1.04× | 1.00× |
-| Nested find first (include posts) | 0.99× | 1.04× | 1.00× | 1.03× | 0.98× |
-| Find unique (by email) | 1.08× | ⚠️ 1.33× | 1.02× | 1.02× | 1.04× |
-| Nested find unique (include posts) | 1.04× | 1.06× | 0.99× | 0.98× | 0.94× |
-| Create | 1.07× | 1.07× | 1.00× | 1.06× | 0.96× |
-| Nested create (with post) | 1.03× | 0.98× | 0.94× | 1.07× | 1.03× |
-| Update | 0.97× | 1.04× | 1.05× | 1.18× | 0.98× |
-| Nested update (update user + post) | 1.07× | 1.28× | ⚠️ 1.34× | 1.24× | 1.14× |
-| Upsert | 0.99× | 1.01× | 1.03× | 1.03× | 1.01× |
-| Nested upsert (user + post) | 0.93× | 1.04× | 1.10× | 1.08× | 1.01× |
-| Delete | 1.00× | 1.05× | 1.02× | 1.11× | 1.00× |
-| Create Many (10 records) | 1.07× | 1.05× | 0.99× | 0.98× | 1.02× |
-| Upsert Many (10 records) | 0.98× | 1.01× | 0.97× | 0.97× | 1.02× |
-| Update Many (10 different values) | 0.92× | 1.03× | 1.04× | 1.06× | 1.02× |
-| Nested relations (100->1000->10000) | 0.97× | 1.16× | 0.88× | 1.03× | 1.01× |
-| Nested relations (composite key, 5 tenants) | 1.08× | 1.05× | 1.04× | 1.03× | 1.09× |
-
-> **⚠️ 2 cell(s) exceed the 1.3× bug threshold** — likely a runtime overhead bug, investigate:
-> - Python · Find unique (by email): 1.33×
-> - PHP · Nested update (update user + post): 1.34×
+| Op | TypeScript SDK | TypeScript runtime | Python SDK | Python runtime | PHP SDK | PHP runtime | Rust SDK | Rust runtime | Go SDK | Go runtime |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Find all (limit 100) | 412.5µs | 435.5µs (1.06×) | 2512.9µs | 5951.4µs (2.37×) | 1012.5µs | 1223.3µs (1.21×) | — | 379.5µs | 308.5µs | 293.3µs (0.95×) |
+| Filter, paginate & sort | 311.5µs | 338.8µs (1.09×) | 853.5µs | 1025.5µs (1.20×) | 714.2µs | 753.2µs (1.05×) | — | 261.8µs | 234.8µs | 248.2µs (1.06×) |
+| Nested find all (include posts) | 965.4µs | 927.0µs (0.96×) | 8578.8µs | 8121.3µs (0.95×) | 4212.2µs | 1665.1µs (0.40×) | — | 978.9µs | 686.9µs | 701.4µs (1.02×) |
+| Find first | 198.4µs | 209.1µs (1.05×) | 954.1µs | 1076.3µs (1.13×) | 1867.1µs | 1856.3µs (0.99×) | — | 203.1µs | 191.3µs | 192.8µs (1.01×) |
+| Nested find first (include posts) | 446.2µs | 437.2µs (0.98×) | 2087.0µs | 3061.7µs (1.47×) | 3306.7µs | 3764.3µs (1.14×) | — | 406.5µs | 386.1µs | 366.5µs (0.95×) |
+| Find unique (by email) | 204.1µs | 197.8µs (0.97×) | 1017.6µs | 830.8µs (0.82×) | 728.2µs | 1600.1µs (2.20×) | — | 233.3µs | 213.6µs | 199.4µs (0.93×) |
+| Nested find unique (include posts) | 415.5µs | 406.3µs (0.98×) | 1574.0µs | 1736.6µs (1.10×) | 3412.5µs | 1377.9µs (0.40×) | — | 437.5µs | 410.7µs | 420.8µs (1.02×) |
+| Create | 506.0µs | 507.3µs (1.00×) | 1821.7µs | 865.0µs (0.47×) | 2823.3µs | 3178.3µs (1.13×) | — | 591.3µs | 599.5µs | 562.1µs (0.94×) |
+| Nested create (with post) | 788.2µs | 763.1µs (0.97×) | 1144.0µs | 3066.5µs (2.68×) | 1506.9µs | 1739.0µs (1.15×) | — | 803.9µs | 774.2µs | 817.6µs (1.06×) |
+| Update | 593.4µs | 636.8µs (1.07×) | 722.0µs | 695.6µs (0.96×) | 891.4µs | 934.5µs (1.05×) | — | 601.3µs | 596.0µs | 527.1µs (0.88×) |
+| Nested update (update user + post) | 953.8µs | 853.5µs (0.89×) | 964.7µs | 988.9µs (1.03×) | 1440.5µs | 1522.1µs (1.06×) | — | 835.1µs | 853.8µs | 890.8µs (1.04×) |
+| Upsert | 681.2µs | 705.5µs (1.04×) | 755.4µs | 778.9µs (1.03×) | 958.1µs | 961.5µs (1.00×) | — | 596.3µs | 681.5µs | 582.2µs (0.85×) |
+| Nested upsert (user + post) | 900.4µs | 778.2µs (0.86×) | 999.8µs | 1017.4µs (1.02×) | 1521.7µs | 1488.3µs (0.98×) | — | 867.3µs | 883.1µs | 908.4µs (1.03×) |
+| Delete | 814.4µs | 853.7µs (1.05×) | 1055.1µs | 946.9µs (0.90×) | 1417.0µs | 1566.5µs (1.11×) | — | 898.7µs | 771.0µs | 811.3µs (1.05×) |
+| Create Many (10 records) | 662.7µs | 717.0µs (1.08×) | 852.6µs | 909.3µs (1.07×) | 975.1µs | 964.4µs (0.99×) | — | 655.9µs | 621.4µs | 575.1µs (0.93×) |
+| Upsert Many (10 records) | 959.5µs | 847.4µs (0.88×) | 896.9µs | 899.9µs (1.00×) | 1116.5µs | 1090.0µs (0.98×) | — | 748.1µs | 704.6µs | 692.3µs (0.98×) |
+| Update Many (10 different values) | 617.7µs | 778.6µs (1.26×) | 808.3µs | 841.6µs (1.04×) | 982.4µs | 1003.9µs (1.02×) | — | 642.0µs | 762.3µs | 618.0µs (0.81×) |
+| Nested relations (100->1000->10000) | 2043.5µs | 2102.8µs (1.03×) | 15547.7µs | 17748.8µs (1.14×) | 2466.8µs | 2617.7µs (1.06×) | — | 2149.9µs | 1436.1µs | 1781.1µs (1.24×) |
+| Nested relations (composite key, 5 tenants) | 1099.7µs | 863.2µs (0.78×) | 4910.7µs | 5048.3µs (1.03×) | 2379.3µs | 2021.5µs (0.85×) | — | 1002.3µs | 693.4µs | 734.5µs (1.06×) |
 
 ## Fairness evidence — queries/op · rows/op (per dialect)
 
 > Identical queries/op AND rows/op across every language proves they do the SAME logical DB work
-> per op (the same v2 SCP SQL) — the apples-to-apples basis for the latency comparison.
+> per op (the same SQL) — the apples-to-apples basis for the latency comparison.
 
 #### SQLite — queries/op · rows/op
 
@@ -239,9 +203,9 @@ _Environment: **native arm64 (Apple Silicon)** — go arm64, node arm64, rust `a
 
 | Cell | Cold start (ms) | RSS (MB) | Artifact size (MB) |
 |---|---|---|---|
-| Go / runtime | 8 | 27.7 | 19.23 |
-| PHP / runtime | 0 | 8.0 | — |
-| Python / runtime | 3 | 46.5 | — |
-| Rust / runtime | 16 | 19.4 | 5.58 |
-| TypeScript / runtime | 3 | 162.7 | — |
+| Go | 8 | 27.1 | 19.23 |
+| PHP | 0 | 10.0 | — |
+| Python | 3 | 51.6 | — |
+| Rust | 6 | 18.5 | 5.58 |
+| TypeScript | 4 | 179.7 | — |
 

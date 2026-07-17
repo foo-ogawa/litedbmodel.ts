@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ORM-plan EXECUTOR + live smoke — Python (epic #63).
+"""ORM-plan EXECUTOR + live smoke — Python.
 
 Port of the PROVEN TS reference (benchmark/crosslang/orm-exec-ts.ts + orm-smoke.ts). Loads the
 committed language-neutral artifact benchmark/crosslang/generated/orm-plan.json and executes ALL
@@ -30,7 +30,7 @@ from litedbmodel_runtime.driver import SqliteDriver  # noqa: E402
 
 ARTIFACT_PATH = HERE.parent.parent / "generated" / "orm-plan.json"
 
-# Isolated namespace (never the shared testdb fixture tables); mirrors the #44 adapter convention.
+# Isolated namespace (never the shared testdb fixture tables); mirrors the adapter convention.
 PG_SCHEMA_NAME = "scp_python_bench"
 MYSQL_DB_NAME = "scp_python_bench"
 
