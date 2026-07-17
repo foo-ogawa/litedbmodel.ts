@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Cross-language metric computation (epic #44) — PURE functions, no I/O.
+// Cross-language metric computation — PURE functions, no I/O.
 // ════════════════════════════════════════════════════════════════════════════
 //
 // All percentile / throughput / aggregation math lives here so it is computed
@@ -63,7 +63,7 @@ export function coldStartMs(spawnedAtEpochMs: number, readyAtEpochMs: number): n
 }
 
 // Relative overhead of an impl vs its same-language `sql` baseline, a MULTIPLE of
-// baseline latency (impl ÷ sql). This is the MAIN signal of #44: the abstraction
+// baseline latency (impl ÷ sql). This is the MAIN signal: the abstraction
 // cost of each exec surface over hand-written raw SQL. >1 = slower than baseline.
 export function relativeOverhead(implMs: number, baselineMs: number): number {
   if (!(baselineMs > 0)) return NaN;
@@ -83,8 +83,8 @@ export interface CaseResult {
   skipped?: string;
 }
 
-// Per-dialect results for one cell: the DB-backed op results for THAT dialect (#63:
-// the I/O-excluded micro axis is GONE — every measured op is DB-backed).
+// Per-dialect results for one cell: the DB-backed op results for THAT dialect
+// (every measured op is DB-backed).
 export interface DialectResult {
   cases: Record<string, CaseResult>;
 }

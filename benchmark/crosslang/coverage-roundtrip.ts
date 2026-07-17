@@ -1,13 +1,13 @@
 // ════════════════════════════════════════════════════════════════════════════
-// ALL-TYPE coverage round-trip verifier (issue #59) — typed de-box conversion audit
+// ALL-TYPE coverage round-trip verifier — typed de-box conversion audit
 // ════════════════════════════════════════════════════════════════════════════
 //
-// Verifies the TS read-path TYPED DE-BOX (owner-approved #59 contract) end-to-end for the
+// Verifies the TS read-path TYPED DE-BOX end-to-end for the
 // ALL-TYPE coverage table across ALL THREE dialects (SQLite in-proc + LIVE Postgres + LIVE
 // MySQL): the DB value → driver wire → materialized JS value → EXPECTED round-trip, asserting
 // each column materializes to BOTH the right JS TYPE and the exact VALUE.
 //
-// The TS read-path materialization contract (driven by the SQL column type, #59):
+// The TS read-path materialization contract (driven by the SQL column type):
 //   • 32-bit int  (INT/INTEGER/SMALLINT/TINYINT/MEDIUMINT)  → JS number   (exact, JSON-safe)
 //   • 64-bit int  (BIGINT/INT8)                             → JS string   (value-preserving,
 //                     exact + JSON-safe; a number rounds past 2^53, a bigint throws in JSON)
@@ -18,7 +18,7 @@
 //   • date/time   (DATE/TIMESTAMP/TIMESTAMPTZ/DATETIME/TIME)→ JS string   (TZ-attached; NOT a Date)
 //   • json        (JSON/JSONB)                              → JSON text (string) or driver-parsed
 //
-// bc 0.6.0 has NO date/decimal portable scalar (behavior-contracts#84 deferred), so date→string
+// bc has NO date/decimal portable scalar, so date→string
 // and decimal→string are value-preserving; and BIGINT→string mirrors them (bigint is not
 // JSON-safe). The read path applies these via `materializeCell` driven by the coltype resolver;
 // the drivers are configured (better-sqlite3 safeIntegers, pg date type parsers, mysql2
@@ -29,7 +29,7 @@
 //     `executeBundleAsync`) returns, run against all three LIVE drivers. This is what this
 //     coverage-roundtrip tool executes + asserts vs EXPECTED, per column, for BOTH type and value.
 //   • GENERATED (native) — verified at the TYPE-DERIVATION level only (the emitted rust struct
-//     field types); its native VALUE run is deferred to the #44 cross-lang re-bench.
+//     field types).
 
 import Database from 'better-sqlite3';
 import pgModule from 'pg';
@@ -122,9 +122,9 @@ function canonicalJson(v: unknown): string {
 
 // ── Step 1: outType derivation (dialect-independent; the native struct field type per column) ──
 function assertTypeDerivation(): void {
-  console.log('=== #59 step 1: outType derivation (GENERATED/native struct field type per column) ===');
-  // The codegen outType resolver comes from the model's INLINE `static columns` declaration (issue
-  // #59), carried on the contract — the SAME declared types the read path de-boxes from.
+  console.log('=== step 1: outType derivation (GENERATED/native struct field type per column) ===');
+  // The codegen outType resolver comes from the model's INLINE `static columns` declaration,
+  // carried on the contract — the SAME declared types the read path de-boxes from.
   const bundle = lm.compileBundle(readsContract, COVERAGE_ENTRY, [], 'sqlite', undefined, readsContract.resolveColumnType);
   const ir: unknown = (bundle as { readGraph?: { ir?: unknown } }).readGraph?.ir;
   const rowObj = findRowObj(ir);
@@ -166,7 +166,7 @@ function unwrapRowObj(t: unknown): Record<string, string> | undefined {
 
 // ── Step 2: DYNAMIC value + type round-trip per dialect ───────────────────────
 function verifyDialect(dialect: string, rows: Row[]): void {
-  console.log(`\n=== #59 step 2 [${dialect}]: DYNAMIC (TS read path) type+value round-trip vs EXPECTED ===`);
+  console.log(`\n=== step 2 [${dialect}]: DYNAMIC (TS read path) type+value round-trip vs EXPECTED ===`);
   if (rows.length !== COVERAGE_EXPECTED.length) {
     failures.push({ where: `${dialect}.rowcount`, detail: `read ${rows.length} rows, expected ${COVERAGE_EXPECTED.length}` });
     console.log(`  FAIL: row count ${rows.length} ≠ ${COVERAGE_EXPECTED.length}`); return;
@@ -234,7 +234,7 @@ async function readMysql(): Promise<Row[]> {
 
 async function main(): Promise<void> {
   console.log('════════════════════════════════════════════════════════════════');
-  console.log(' litedbmodel #59 — ALL-TYPE coverage typed de-box round-trip audit');
+  console.log(' litedbmodel — ALL-TYPE coverage typed de-box round-trip audit');
   console.log('════════════════════════════════════════════════════════════════\n');
 
   assertTypeDerivation();
@@ -253,7 +253,7 @@ async function main(): Promise<void> {
     for (const f of failures) console.error(`  • ${f.where}: ${f.detail}`);
     process.exit(1);
   }
-  console.log('\n✅ #59 coverage audit PASSED: outType derivation correct for all columns; the TS read-path de-box materializes every column to the right JS type AND exact value across sqlite/postgres/mysql — INT32→number, BIGINT→string (exact, JSON-safe), decimal→string, date→TZ-string, bool→boolean, json→structural. The previous i64-rounding and DATE-TZ-shift holes are GONE.');
+  console.log('\n✅ coverage audit PASSED: outType derivation correct for all columns; the TS read-path de-box materializes every column to the right JS type AND exact value across sqlite/postgres/mysql — INT32→number, BIGINT→string (exact, JSON-safe), decimal→string, date→TZ-string, bool→boolean, json→structural.');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

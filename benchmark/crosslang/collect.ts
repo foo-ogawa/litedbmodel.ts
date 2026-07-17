@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Cross-language bench COLLECTOR (epic #63) — .results/*.csv → CROSS-LANG.md.
+// Cross-language bench COLLECTOR — .results/*.csv → CROSS-LANG.md.
 // ════════════════════════════════════════════════════════════════════════════
 //
 // The ONLY program that produces the report (strict responsibility separation: the

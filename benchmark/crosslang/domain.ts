@@ -1,11 +1,10 @@
 // ════════════════════════════════════════════════════════════════════════════
-// Shared benchmark domain (epic #44) — schema, seed data, authored behaviors,
+// Shared benchmark domain — schema, seed data, authored behaviors,
 // fixed inputs, and the hand-optimized raw-SQL baseline.
 // ════════════════════════════════════════════════════════════════════════════
 //
 // EVERY language's thin generic runtime runs the SAME 19 access patterns against the
-// SAME dataset — ONE production path per language (the old impl axis of sql/codegen/ir/
-// dynamic/prepared cells is gone, #63), so only the runtime-layer overhead differs. The
+// SAME dataset — ONE production path per language, so only the runtime-layer overhead differs. The
 // behaviors are authored ONCE here with the litedbmodel public authoring API and compiled
 // to SqlBundles; those bundles (baked into the shared orm-plan.json artifact) are what each
 // language's standalone runtime consumes. The raw-SQL baseline strings are the hand-written
@@ -43,19 +42,19 @@ export const SCHEMA: readonly string[] = [
    );`,
   // Gate guard tables for the write-tx case (spec §6 shape).
   `CREATE TABLE uniq (name TEXT NOT NULL, s0 TEXT, f0 TEXT);`,
-  // ── ALL-TYPE coverage table (issue #59) ────────────────────────────────────
+  // ── ALL-TYPE coverage table ────────────────────────────────────────────────
   // Every §4.1 SQL type + a NULLABLE variant of each, so the typed de-box round-trip
   // (DB value → wire → concrete struct → expected) is exercised for the FULL type set,
   // not just int/text/json. The `deriveReadOutTypes` derivation types each column's bc
   // scalar from THIS DDL (the §4.1 SoT); the round-trip verifier (`coverage-roundtrip.ts`)
   // asserts each column materializes to the correct bc scalar AND the value survives.
   //
-  // date → string and decimal → string are INTENTIONAL (owner-approved re-scope; #59):
-  // bc 0.6.0 has NO date/decimal portable scalar (PORTABLE_SCALAR_TYPES = string|int|
-  // float|bool|null; behavior-contracts#84 deferred), so these two columns are
+  // date → string and decimal → string are INTENTIONAL:
+  // bc has NO date/decimal portable scalar (PORTABLE_SCALAR_TYPES = string|int|
+  // float|bool|null), so these two columns are
   // VALUE-PRESERVING string round-trips — the compromise is marked in code, never silent.
   //
-  // int32 vs int64 SPLIT (issue #59 TS read-path de-box): the coverage table has BOTH a
+  // int32 vs int64 SPLIT (TS read-path de-box): the coverage table has BOTH a
   // 32-bit `int32_val` (INT → JS number, exact + JSON-safe) AND a 64-bit `int64_val` (BIGINT
   // → value-preserving decimal STRING, exact + JSON-safe; a JS number rounds past 2^53 and a
   // JS bigint throws in JSON.stringify — so string, mirroring decimal/date→string). The read
@@ -64,8 +63,8 @@ export const SCHEMA: readonly string[] = [
   // SQLite decimal storage: `dec_val`/`decn_val` map to bc scalar `string` (§4.1 decimal→
   // string), so — matching that representation — the SQLite column is declared **TEXT**,
   // NOT DECIMAL. A DECIMAL/NUMERIC column has SQLite NUMERIC affinity, which coerces the
-  // stored value to REAL and DROPS precision on an 18-digit decimal (a hole this table used
-  // to exhibit). A TEXT-affinity column stores the exact digit string, so decimal round-
+  // stored value to REAL and DROPS precision on an 18-digit decimal. A TEXT-affinity column
+  // stores the exact digit string, so decimal round-
   // trips EXACTLY on SQLite too — the correct SQLite DDL for a string-represented decimal.
   // PG/MySQL keep real DECIMAL/NUMERIC (their drivers already return it as an exact string).
   // The `int64_val` SQLite column stays BIGINT (integer affinity is fine; the read path puts
@@ -91,7 +90,7 @@ export const SCHEMA: readonly string[] = [
    );`,
 ];
 
-// ── Coverage seed (issue #59): representative + BOUNDARY values for every type ──
+// ── Coverage seed: representative + BOUNDARY values for every type ──
 // One "full" row (id=1) with every column non-null at a boundary value, and one
 // "null" row (id=2) whose nullable variants are all NULL (non-null columns still carry
 // their own boundary values). The verifier reads BOTH rows and checks the typed de-box
@@ -112,10 +111,10 @@ export interface CoverageRow {
   int32_val: number; // INT → JS number (exact, JSON-safe): the 32-bit class stays a number
   int64_val: string; // BIGINT → value-preserving decimal STRING (exact + JSON-safe; i64 max rounds as a number)
   real_val: number;
-  dec_val: string; // decimal → string (bc#84 gap: no bc decimal scalar — value/precision-preserving)
+  dec_val: string; // decimal → string (no bc decimal scalar — value/precision-preserving)
   text_val: string;
   bool_val: boolean;
-  date_val: string; // date → string (bc#84 gap: no bc date scalar — value-preserving string)
+  date_val: string; // date → string (no bc date scalar — value-preserving string)
   json_val: unknown;
   int32n_val: number | null;
   int64n_val: string | null;
@@ -178,32 +177,32 @@ export const COVERAGE_COLUMNS = [
 
 // The expected bc scalar per coverage column (the §4.1 mapping — what `deriveReadOutTypes`
 // MUST produce, i.e. the concrete native struct field type the codegen path materializes).
-// date/decimal → 'string' are the bc#84-gap value-preserving representations.
+// date/decimal → 'string' are value-preserving representations (no bc date/decimal scalar).
 // The expected bc portable scalar per coverage column. Both int32 and int64 are the bc `int`
 // scalar (the width split is a TS READ-PATH materialization concern, not a portable-type one;
-// see COVERAGE_EXPECTED_MATERIALIZE). date/decimal/json → 'string' are the bc#84-gap / JSON-text
-// value-preserving representations.
+// see COVERAGE_EXPECTED_MATERIALIZE). date/decimal/json → 'string' are the value-preserving /
+// JSON-text representations.
 export const COVERAGE_EXPECTED_SCALAR: Record<string, 'int' | 'float' | 'string' | 'bool'> = {
   id: 'int',
   int32_val: 'int',
   int64_val: 'int',
   real_val: 'float',
-  dec_val: 'string', // bc#84 gap: no bc decimal scalar — precision-preserving string
+  dec_val: 'string', // no bc decimal scalar — precision-preserving string
   text_val: 'string',
   bool_val: 'bool',
-  date_val: 'string', // bc#84 gap: no bc date scalar — value-preserving string
+  date_val: 'string', // no bc date scalar — value-preserving string
   json_val: 'string', // JSON column → JSON text (string); TS convenience de/serializes
   int32n_val: 'int',
   int64n_val: 'int',
   realn_val: 'float',
-  decn_val: 'string', // bc#84 gap
+  decn_val: 'string', // no bc decimal scalar
   textn_val: 'string',
   booln_val: 'bool',
-  daten_val: 'string', // bc#84 gap
+  daten_val: 'string', // no bc date scalar
   jsonn_val: 'string',
 };
 
-// The expected TS READ-PATH materialized JS form per column (issue #59 de-box): the split of the
+// The expected TS READ-PATH materialized JS form per column (de-box): the split of the
 // `int` scalar into number (INT32) vs string (INT64), plus date→string and bool→boolean. Used by
 // the round-trip verifier to assert each column materializes to the RIGHT JS type on the read path.
 export const COVERAGE_EXPECTED_MATERIALIZE: Record<string, 'number' | 'bigint-string' | 'float' | 'string' | 'bool' | 'json'> = {
@@ -305,7 +304,7 @@ export function freshDb(): InstanceType<typeof Database> {
   db.pragma('foreign_keys = ON');
   for (const s of SCHEMA) db.exec(s);
   seed(db);
-  seedCoverage(db); // issue #59: the ALL-TYPE coverage table + boundary-value rows
+  seedCoverage(db); // the ALL-TYPE coverage table + boundary-value rows
   return db;
 }
 
@@ -330,7 +329,7 @@ export const INPUTS = {
 } as const;
 
 // ── Authored read behaviors (compiled to SqlBundles each language's runtime consumes) ──
-// ── Inline typed-column declaration (issue #59) — the BC-native column-type SoT ────
+// ── Inline typed-column declaration — the BC-native column-type SoT ────
 // Each read/write projects from THESE declared types (bc never infers types; the consumer inline-
 // annotates them, exactly as graphddb declares its typed entity columns). Declared ONCE per table
 // here; the read projections + relation projections + write RETURNING columns resolve their types
@@ -353,7 +352,7 @@ export const MODEL_COLUMNS = {
 } as const;
 
 export class Reads extends lm.SemanticBehavior {
-  // Inline typed-column declaration (issue #59): the reads project from these declared types.
+  // Inline typed-column declaration: the reads project from these declared types.
   static columns = MODEL_COLUMNS;
 
   // find: eq + SKIP-optional status + range, ORDER BY.
@@ -385,10 +384,10 @@ export class Reads extends lm.SemanticBehavior {
     });
   }
 
-  // coverage (issue #59): a find over the ALL-TYPE coverage table binding a scalar eq
+  // coverage: a find over the ALL-TYPE coverage table binding a scalar eq
   // param (`id`). Projects EVERY column so the typed de-box materializes the full type set
   // (int/real/decimal/text/bool/date/json + nullable variants) into a concrete row struct.
-  // Scalar-eq only ⇒ typed-native-coverable (no array/IN-list head — #60's uncovered port).
+  // Scalar-eq only ⇒ typed-native-coverable (no array/IN-list head).
   CoverageFind($: any) {
     return L.Select({
       table: 'coverage',
@@ -439,7 +438,7 @@ export const REL_HAS_MANY_LIMIT: any = {
 
 // ── Authored write behavior (single base write; gate contract for the tx case) ──
 export class Writes extends lm.SemanticBehavior {
-  // Inline typed-column declaration (issue #59): the write RETURNING columns type from these.
+  // Inline typed-column declaration: the write RETURNING columns type from these.
   static columns = MODEL_COLUMNS;
 
   Create($: any) {
@@ -466,7 +465,7 @@ export const writeGateContract = lm.entityWrites<Writes>((w: any) => ({
 }));
 
 // Register the models. Column types come from the INLINE `static columns` declaration on each class
-// (issue #59) — the contract precomputes BOTH the codegen outType resolver and the TS read-path
+// — the contract precomputes BOTH the codegen outType resolver and the TS read-path
 // materialize resolver from it ONCE, so every read de-boxes (INT→number / BIGINT→string /
 // DATE→string / BOOLEAN→boolean) with ZERO external DDL / ZERO per-read DB introspection.
 export const readsContract = lm.publishBehaviors(Reads);
@@ -598,9 +597,9 @@ export const READ_ENTRY: Record<string, string> = {
   hasManyLimit: 'Posts',
 };
 
-// The coverage read (issue #59), kept SEPARATE from the frozen 8-case perf matrix
-// (CROSSLANG_CASE_IDS) — it is a correctness/round-trip case, wired here so a later
-// re-bench (or the `coverage-roundtrip` verifier) resolves the SAME entry + input.
+// The coverage read, kept SEPARATE from the perf matrix
+// (CROSSLANG_CASE_IDS) — it is a correctness/round-trip case, wired here so the
+// `coverage-roundtrip` verifier resolves the SAME entry + input.
 export const COVERAGE_ENTRY = 'CoverageFind';
 export const COVERAGE_INPUT = { min_id: 1 } as const; // id >= 1 ⇒ both seeded rows
 
@@ -611,7 +610,7 @@ export const READ_RELATION: Record<string, { decl: any; withName: string } | und
   hasManyLimit: { decl: REL_HAS_MANY_LIMIT, withName: 'recent' },
 };
 
-// ── Real-DB (PG / MySQL) schema + seed for the DB-backed axis (#44 gap #2) ─────
+// ── Real-DB (PG / MySQL) schema + seed for the DB-backed axis ─────
 // Every language's DB-backed cell creates its OWN bench tables (drop-then-create) in
 // an ISOLATED namespace, seeds the SAME 8-user/40-post/200-comment dataset the SQLite
 // cells use, and runs the 8 cases against the REAL dockerized DB. The table names are
@@ -622,7 +621,7 @@ export const READ_RELATION: Record<string, { decl: any; withName: string } | und
 // After seeding explicit ids the PG sequence is bumped past the seeded max (see
 // `pgSeqResetStatements`) so the write cases' new rows don't collide.
 //
-// #53 follow-up (independent audit): this bench MUST NOT touch the shared `testdb`
+// This bench MUST NOT touch the shared `testdb`
 // fixture tables that `test/fixtures/init.sql` seeds for the integration suite. Every
 // language isolates into its OWN `scp_<lang>_bench` schema (PG, via search_path) /
 // database (MySQL) — Rust/Go/PHP already do this (see their adapters' `PG_SCHEMA_NAME`/
@@ -638,11 +637,11 @@ export const PG_SCHEMA: readonly string[] = [
   `CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)`,
   // `s0` binds `author_id` (always numeric) — INTEGER, matching the conformance corpus's
   // proven-working `uniq` schema (gen-livedb.ts). A TEXT s0 works under the permissive
-  // text-protocol drivers (pg / psycopg) but pgx's strict binary protocol (Go, #53) rejects an
+  // text-protocol drivers (pg / psycopg) but pgx's strict binary protocol (Go) rejects an
   // int64 arg for a text column ("unable to encode into text format") — INTEGER is correct for
   // every driver since the column only ever stores a numeric author_id.
   `CREATE TABLE uniq (name TEXT NOT NULL, s0 INTEGER, f0 TEXT)`,
-  // Coverage table (issue #59), PG dialect. `NUMERIC` → bc string (precision-preserving),
+  // Coverage table, PG dialect. `NUMERIC` → bc string (precision-preserving),
   // `DOUBLE PRECISION` → bc float, `BOOLEAN` → bc bool, `DATE` → bc string, `JSONB` → bc
   // string (JSON text). The DDL token drives the §4.1 scalar; the round-trip verifier
   // checks each column materializes to the correct bc scalar on the LIVE PG driver.
@@ -679,7 +678,7 @@ export const MYSQL_SCHEMA: readonly string[] = [
   `CREATE TABLE comments (id INT PRIMARY KEY, post_id INT NOT NULL, body VARCHAR(255) NOT NULL, created_at VARCHAR(255) NOT NULL)`,
   // `s0` binds `author_id` (always numeric) — INT, matching the PG schema's fix above.
   `CREATE TABLE uniq (name VARCHAR(255) NOT NULL, s0 INT, f0 VARCHAR(255))`,
-  // Coverage table (issue #59), MySQL dialect. `DECIMAL` → bc string (precision), `DOUBLE`
+  // Coverage table, MySQL dialect. `DECIMAL` → bc string (precision), `DOUBLE`
   // → bc float, `BOOLEAN` (TINYINT(1) alias) → bc bool, `DATE` → bc string, `JSON` → bc
   // string. MySQL DECIMAL is the classic single-driver precision hole (mysql2 returns it as
   // a STRING already, PG as string, SQLite as REAL/text) — the verifier compares the string
@@ -735,7 +734,7 @@ export function seedStatementsShared(): string[] {
 // Env-driven connection config (matches docker-compose.test.yml + WS6 host defaults:
 // PG 5433, MySQL 3307 when the livedb override republishes the ports to the host).
 //
-// #53 follow-up: TS is isolated into its OWN `scp_ts_bench` namespace (mirroring the
+// TS is isolated into its OWN `scp_ts_bench` namespace (mirroring the
 // Rust/Go/PHP adapters' `scp_<lang>_bench`), never the shared `testdb` fixture tables
 // `test/fixtures/init.sql` seeds for the integration suite.
 //   - PG: `PG_BOOT_CONN` connects to the base `testdb` (bootstrap-only, to CREATE SCHEMA

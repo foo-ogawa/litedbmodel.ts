@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-// TS ORM-plan EXECUTOR (epic #63) — the thin generic statement executor + the 3 drivers.
+// TS ORM-plan EXECUTOR — the thin generic statement executor + the 3 drivers.
 // ════════════════════════════════════════════════════════════════════════════
 //
 // Executes an OpPlan (from orm-plan.ts) DB-backed against a real driver. It binds the
@@ -12,7 +12,7 @@
 // mirror of SQL generation). The row/param binding is the ONLY per-language surface.
 //
 // TS is the REFERENCE + the ORM-consistency anchor: the SQL is byte-identical to the
-// benchmark.ts litedbmodel column (#65 parity), so TS cross-lang numbers == ORM column.
+// benchmark.ts litedbmodel column (byte-identical), so TS cross-lang numbers == ORM column.
 
 import Database from 'better-sqlite3';
 import { Pool } from 'pg';

@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-// ORM-plan ARTIFACT generator (epic #63) — the language-neutral JSON every runtime reads.
+// ORM-plan ARTIFACT generator — the language-neutral JSON every runtime reads.
 // ════════════════════════════════════════════════════════════════════════════
 //
 // Emits benchmark/crosslang/generated/orm-plan.json: the 19 ORM ops' per-dialect statement
@@ -32,9 +32,9 @@ function buildArtifact(): unknown {
     };
   }
   return {
-    $schema: 'litedbmodel cross-lang ORM-plan artifact (epic #63)',
+    $schema: 'litedbmodel cross-lang ORM-plan artifact',
     note:
-      'The 19 ORM-comparison ops (== #64 v1 SQL golden == #65 v2 SCP parity == benchmark.ts litedbmodel ' +
+      'The 19 ORM-comparison ops (== benchmark.ts litedbmodel ' +
       'column), rendered per dialect via the v2 SCP makeSQL compile path. Every language executes THESE ' +
       'statements through its shipped runtime driver seam (no compiler at exec time). Relation stages ' +
       'carry baked SQL + a bind protocol (bindKind). Regenerate: tsx benchmark/crosslang/gen-orm-plan.ts.',

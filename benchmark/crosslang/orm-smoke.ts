@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-// TS ORM-plan LIVE SMOKE (epic #63) — every 19 ops × 3 real DBs execute DB-backed.
+// TS ORM-plan LIVE SMOKE — every 19 ops × 3 real DBs execute DB-backed.
 // ════════════════════════════════════════════════════════════════════════════
 //
 // Runs each of the 19 ORM ops once per dialect against the REAL databases (sqlite
