@@ -9,24 +9,25 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ART = join(HERE, '.artifacts');
 const lang = process.argv[2] ?? 'rust';
-const BIN = {
-  rust: join(HERE, 'adapters/rust/target/release/orm_bench_rust'),
-  go: join(HERE, 'adapters/go/orm_bench_go'),
+// Per-lang command to run one op × cell (rust/go = compiled binary; ts = tsx script).
+const CMD = {
+  rust: (a) => [join(HERE, 'adapters/rust/target/release/orm_bench_rust'), ...a],
+  go: (a) => [join(HERE, 'adapters/go/orm_bench_go'), ...a],
+  ts: (a) => ['npx', 'tsx', join(HERE, 'adapters/ts/main.ts'), ...a],
 }[lang];
-if (!BIN || !existsSync(BIN)) {
-  console.error(`no ${lang} binary at ${BIN} — build it first`);
-  process.exit(2);
-}
+if (!CMD) { console.error(`unknown lang '${lang}'`); process.exit(2); }
 
 const oracle = JSON.parse(readFileSync(join(ART, 'oracle.json'), 'utf8'));
 const READ = new Set(['findAll', 'filterPaginateSort', 'findFirst', 'findUnique']);
-// All 19 ORM ops (rust cell complete).
-const OPS = [
+const ALL19 = [
   'findAll', 'filterPaginateSort', 'findFirst', 'findUnique',
   'nestedFindAll', 'nestedFindFirst', 'nestedFindUnique', 'nestedRelations', 'compositeRelations',
   'create', 'update', 'upsert', 'createMany', 'upsertMany', 'updateMany',
   'delete', 'nestedCreate', 'nestedUpdate', 'nestedUpsert',
 ];
+const FLAT10 = ['findAll', 'filterPaginateSort', 'findFirst', 'findUnique', 'create', 'update', 'upsert', 'createMany', 'upsertMany', 'updateMany'];
+// rust + go are complete (19); ts covers the 10 flat ops this round.
+const OPS = lang === 'ts' ? FLAT10 : ALL19;
 
 let fail = 0;
 console.log(`op                    native   sdk    (vs mode-2 oracle)`);
@@ -38,7 +39,8 @@ for (const op of OPS) {
     // fresh DB copy per invocation (a write mutates it; reads are harmless but copy for uniformity)
     const work = join(ART, `bench.${op}.${cell}.db`);
     copyFileSync(join(ART, 'bench.db'), work);
-    const p = spawnSync(BIN, ['run', op, work, cell], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const [c0, ...cargs] = CMD(['run', op, work, cell]);
+    const p = spawnSync(c0, cargs, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     rmSync(work, { force: true });
     if (p.status !== 0) { results[cell] = `EXIT ${p.status}: ${(p.stderr || '').trim().split('\n')[0].slice(0, 60)}`; continue; }
     const got = (p.stdout || '').trim();
