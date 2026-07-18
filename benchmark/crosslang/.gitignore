@@ -1,15 +1,1 @@
-# Transient run output
-.crosslang-results.json
-# Per-language standalone-bench CSVs (each bench writes .results/<lang>.csv; the collector reads
-# them → CROSS-LANG.md). Raw per-run output, regenerated every run — NEVER commit.
 .results/
-
-# Compiled adapter build output — regenerated at run time (NEVER commit).
-adapters/*/target/
-adapters/*/*.built.mjs
-**/__pycache__/
-
-# BC-codegen output — regenerated from the SCP declaration by codegen-build.mjs and
-# byte-verified by the drift gate; committed intentionally per the rebuild (epic #107).
-# No hand-rolled plan artifact is ever committed here.
-generated/*
