@@ -165,6 +165,36 @@ where
     Ok(item_keys.iter().map(|k| groups.get(k).cloned().unwrap_or_default()).collect())
 }
 
+/// The generic BATCH-WRITE exec (E3/#118 — createMany / updateMany / upsertMany, ONE statement for N
+/// records). Given the ONE baked json_each batch `sql` + the records as PARALLEL columns (`columns[j]`
+/// names `cells[j]`), it ZIPS them into the `[{col:val,…},…]` JSON the baked `json_each(?)` /
+/// `JSON_TABLE(?)` expands and runs the statement ONCE. `cells[j][i]` is the ALREADY-JSON-ENCODED
+/// value of column j, row i — a string column is pre-quoted (`"foo"`), a numeric KEY column is bare
+/// (`42`) so `json_extract(…) = <int column>` matches (type-aware encoding is the caller's job, since
+/// only it knows each column's type). The seam owns the zip + the bind; the write twin of
+/// `query_batched_relation`.
+pub fn query_batch_write<Row>(
+    conn: &Connection,
+    sql: &str,
+    columns: &[&str],
+    cells: &[&[String]],
+    decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<Row>,
+) -> rusqlite::Result<Vec<Row>> {
+    let n = if cells.is_empty() { 0 } else { cells[0].len() };
+    let mut objs: Vec<String> = Vec::with_capacity(n);
+    for i in 0..n {
+        let fields: Vec<String> = columns.iter().enumerate().map(|(j, c)| format!("{}:{}", json_str(c), cells[j][i])).collect();
+        objs.push(format!("{{{}}}", fields.join(",")));
+    }
+    let json = format!("[{}]", objs.join(","));
+    // The baked batch SQL binds the SAME records-JSON to EVERY `?` (createMany: one; updateMany: one
+    // per SET clause + the WHERE). None of these baked batch SQLs carry a `?` inside a string literal,
+    // so counting `?` gives the bind count. Still ONE statement for N records either way.
+    let n_params = sql.matches('?').count();
+    let params: Vec<Param> = (0..n_params).map(|_| Param::Text(json.clone())).collect();
+    query(conn, sql, &params, decode)
+}
+
 /// The single summary row a NON-RETURNING write hands back: `{changes, lastInsertRowid}` — exactly
 /// the shape the mode-2 `executeStaticWrite` returns (and the shape the codegen lowering bakes as the
 /// write node's outType when there is no RETURNING clause).

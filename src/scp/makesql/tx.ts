@@ -34,6 +34,7 @@
 
 import { evaluateExpression, type Scope, type Value } from 'behavior-contracts';
 import { assembleMakeSQL, type MakeSQL } from './makesql';
+import { sqliteInsertJson, mysqlInsertJson, sqliteUpdateManyJson, mysqlUpdateManyJson } from './json-batch';
 import { renderPlaceholders, type Dialect as MakeSQLDialect } from './handler';
 import { formatterFor } from './compile';
 import { mapSqliteError } from '../errors';
@@ -459,6 +460,18 @@ function returningTail(ports: Record<string, unknown>): string {
  * setting the key column to itself is a harmless no-op. This shared compiler is what BOTH the runtime
  * (`executeStaticWrite`) and codegen read, so an authored upsert executes AND bakes identically.
  */
+/** Map the `onConflict`/`onConflictAction` ports to the {@link JsonInsertOptions} upsert fields (the
+ * batch json_each builder's own shape) — so a batch UPSERT (upsertMany) reuses the SAME conflict verbs
+ * as the single upsert (E2). Absent `onConflict` ⇒ a plain batch INSERT. */
+function onConflictJsonOpts(ports: Record<string, unknown>, cols: readonly string[]): { onConflict?: string[]; onConflictUpdate?: 'all'; onConflictIgnore?: boolean } {
+  const conflict = stringPort(ports, 'onConflict');
+  if (conflict === undefined) return {};
+  const onConflict = conflict.split(',').map((c) => c.trim()).filter((c) => c.length > 0);
+  const action = stringPort(ports, 'onConflictAction') ?? 'update';
+  void cols;
+  return action === 'ignore' ? { onConflict, onConflictIgnore: true } : { onConflict, onConflictUpdate: 'all' };
+}
+
 function onConflictTail(dialect: MakeSQLDialect, ports: Record<string, unknown>, cols: readonly string[]): string {
   const conflict = stringPort(ports, 'onConflict');
   if (conflict === undefined) return '';
@@ -532,6 +545,22 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
       const cols = Object.keys(values);
       if (cols.length === 0) throw new Error(`compileWriteNode: Insert requires at least one 'values.<field>' port`);
       const sorted = [...cols].sort();
+      // E3 (#118) BATCH insert (createMany / upsertMany): a `batch:'true'` marker means each
+      // `values.<col>` port is a PARALLEL ARRAY of that column's values (bc has no Vec<struct>, so the
+      // records ride as one scalar array per column). Reuse the EXISTING json_each batch f_sql (its
+      // text depends only on the columns + onConflict/returning — value-length-independent, so FIXED
+      // and bakeable); the ONE JSON `?` binds a `{__batchRows}` marker the runtime/codegen build from
+      // the parallel arrays at execute time (NOT literalized). One statement for N records.
+      if (stringPort(ports, 'batch') === 'true') {
+        if (dialect === 'postgres') {
+          throw new Error(`compileWriteNode: batch insert on postgres uses the UNNEST form (not yet wired for the native codegen path — the sqlite/mysql json_each form is; pg is the fan-out concern).`);
+        }
+        const shapeOpts = { tableName: table, columns: sorted, records: [] as Record<string, unknown>[], ...onConflictJsonOpts(ports, sorted), ...(stringPort(ports, 'returning') !== undefined ? { returning: stringPort(ports, 'returning') } : {}) };
+        const shape = dialect === 'mysql' ? mysqlInsertJson(shapeOpts) : sqliteInsertJson(shapeOpts);
+        // The ONE json param = a deferred marker carrying the columns + their parallel array refs.
+        const marker = { __batchRows: { columns: sorted, refs: sorted.map((c) => values[c]), dialect } };
+        return { sql: shape.sql, params: [marker] };
+      }
       // v1 `DBModel._insert` emits `?::<sqlCast>` PER COLUMN on Postgres (skipping timestamp/date);
       // the placeholder list is thus per-column, NOT a uniform `?` join (the latent H1 divergence).
       const placeholders = sorted.map((c) => castPlaceholder(dialect, sqlCastMap, c)).join(', ');
@@ -543,6 +572,29 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
       const set = collectFamily(ports, 'set');
       const setCols = Object.keys(set);
       if (setCols.length === 0) throw new Error(`compileWriteNode: Update requires at least one 'set.<field>' port`);
+      // E3 (#118) BATCH update (updateMany): `batch:'true'` — the `key.<col>` family names the match
+      // key(s) (parallel arrays), the `set.<col>` family the columns to set (parallel arrays). Reuse
+      // the EXISTING json_each/JSON_TABLE batch UPDATE (`sqliteUpdateManyJson`): its text depends only
+      // on the key + update columns, so it's FIXED and bakeable. It binds the ONE records-JSON to
+      // MULTIPLE `?` (one per SET clause + the WHERE) — each is the SAME `__batchRows` marker, so the
+      // runtime evalSpec (and the codegen seam) build the SAME JSON per `?`. ONE statement for N rows.
+      if (stringPort(ports, 'batch') === 'true') {
+        if (dialect === 'postgres') {
+          throw new Error(`compileWriteNode: batch update on postgres uses the UNNEST form (not wired for the native codegen path — sqlite/mysql json_each/JSON_TABLE is; pg is the fan-out concern).`);
+        }
+        const key = collectFamily(ports, 'key');
+        const keyCols = Object.keys(key).sort();
+        if (keyCols.length === 0) throw new Error(`compileWriteNode: batch Update requires at least one 'key.<field>' port`);
+        const updateCols = [...setCols].sort();
+        const shapeOpts = { tableName: table, keyColumns: keyCols, updateColumns: updateCols, records: [] as Record<string, unknown>[], ...(stringPort(ports, 'returning') !== undefined ? { returning: stringPort(ports, 'returning') } : {}) };
+        const shape = dialect === 'mysql' ? mysqlUpdateManyJson(shapeOpts) : sqliteUpdateManyJson(shapeOpts);
+        // The JSON carries BOTH the key + update columns (in that order); one marker per `?`.
+        const columns = [...keyCols, ...updateCols];
+        const refs = [...keyCols.map((c) => key[c]), ...updateCols.map((c) => set[c])];
+        const nQ = (shape.sql.match(/\?/g) ?? []).length;
+        const marker = { __batchRows: { columns, refs, dialect } };
+        return { sql: shape.sql, params: Array.from({ length: nQ }, () => marker) };
+      }
       const where = lowerWherePort(ports, 'Update');
       if (where.sql === '') throw new Error(`compileWriteNode: Update requires a 'where' port`);
       // v1 `DBModel._update` emits `<c> = ?::<sqlCast>` PER COLUMN on Postgres (skipping timestamp/date).

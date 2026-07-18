@@ -631,6 +631,25 @@ const WRITE_SUMMARY_OUT_TYPE = { arr: { obj: { changes: 'int', lastInsertRowid: 
  * NAME, and its type resolves from the schema SoT. WHERE-bound heads (Update/Delete) keep the shared
  * fragment deriver, with the table supplied from the `table` port.
  */
+/** The `{__batchRows:{columns, refs, dialect}}` marker of a batch INSERT statement (createMany /
+ * upsertMany), or undefined. The statement is a single json_each batch write whose ONE `?` binds this
+ * marker; `refs[i]` is the parallel array of column `columns[i]`. */
+function batchRowsMarkerOf(stmts: readonly StaticStatement[]): { columns: string[]; refs: unknown[] } | undefined {
+  if (stmts.length !== 1) return undefined;
+  const p = stmts[0].params;
+  // createMany binds the marker to ONE `?`; updateMany binds the SAME marker to MANY `?` (one per SET
+  // clause + the WHERE). All params must be the __batchRows marker; they carry the same columns/refs.
+  if (p.length === 0) return undefined;
+  const first = p[0];
+  if (first === null || typeof first !== 'object' || Array.isArray(first) || !('__batchRows' in (first as object))) return undefined;
+  for (const m of p) {
+    if (m === null || typeof m !== 'object' || Array.isArray(m) || !('__batchRows' in (m as object))) return undefined;
+  }
+  const br = (first as { __batchRows: { columns?: unknown; refs?: unknown } }).__batchRows;
+  if (!Array.isArray(br.columns) || !Array.isArray(br.refs) || br.columns.length !== br.refs.length) return undefined;
+  return { columns: br.columns as string[], refs: br.refs as unknown[] };
+}
+
 function deriveWriteHeadTypes(
   ports: Record<string, unknown>,
   table: string,
@@ -846,6 +865,40 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       if (table === undefined) {
         reasons.push(`node '${n.id}': ${component} node has no literal 'table' port — cannot resolve its column types`);
         return n;
+      }
+      // E3 (#118) BATCH write (createMany / upsertMany): the single statement is the json_each batch
+      // form whose ONE `?` binds a `__batchRows` marker. Bake the f_sql + one native ARRAY port per
+      // column (Vec<scalar>, bc#110 — the records ride as parallel column arrays, since bc has no
+      // Vec<struct>). The generic seam zips the parallel arrays into the `[{col:val,…},…]` JSON and
+      // binds the ONE `?` — one statement for N records. This is the write twin of the relation batch.
+      const batch = isWrite ? batchRowsMarkerOf(stmts) : undefined;
+      if (batch !== undefined) {
+        const rendered = renderStaticSql(stmts, readGraph.dialect, n.id, reasons);
+        if (rendered === undefined) return n;
+        const newPorts: Record<string, unknown> = { sql: rendered.sql };
+        batch.columns.forEach((col, i) => {
+          const ref = batch.refs[i];
+          const path = refPathOf(ref);
+          if (path === undefined || path.length !== 1) {
+            reasons.push(`node '${n.id}' batch column '${col}': the value must bind a single-segment array ref ({ref:[head]}) (got ${JSON.stringify(ref)})`);
+            return;
+          }
+          newPorts[`v${i}`] = { ref: path }; // the parallel column array (bc bakes Vec<ElemT>)
+          const elem = sqlTypeToBcScalar(resolveColumnType(table, col));
+          const prior = inputPortElemTypes.get(path[0]);
+          if (prior !== undefined && prior !== elem) {
+            reasons.push(`input head '${path[0]}' resolves to conflicting array element scalar types ('${prior}' vs '${elem}')`);
+          } else {
+            inputPortElemTypes.set(path[0], elem);
+          }
+        });
+        // A batch with NO RETURNING hands back the summary row (like a single non-returning write).
+        const lowered = { ...n, ports: newPorts };
+        if (nodePorts.returning === undefined) {
+          correctedOutType.set(n.id, WRITE_SUMMARY_OUT_TYPE);
+          return { ...lowered, outType: WRITE_SUMMARY_OUT_TYPE } as typeof lowered;
+        }
+        return lowered;
       }
       // Type each genuine bound head from the schema SoT — the SAME derivation the pre-E1 lowering
       // uses (unchanged), so the input struct's field types are identical. A map node passes its

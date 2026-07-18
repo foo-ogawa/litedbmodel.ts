@@ -13,6 +13,7 @@
 
 mod generated_bymaybe;
 mod generated_byids;
+mod generated_createmany;
 mod generated_createuser;
 mod generated_deleteuser;
 mod generated_feed;
@@ -22,11 +23,13 @@ mod generated_relbatch;
 mod generated_relsingle;
 mod generated_renameuser;
 mod generated_tenantfeed;
+mod generated_updatemany;
 mod generated_upsert;
+mod generated_upsertmany;
 mod seam;
 
 use rusqlite::Connection;
-use seam::{json_str, query, query_batched_relation, query_skip, Param, WhereFrag};
+use seam::{json_str, query, query_batch_write, query_batched_relation, query_skip, Param, WhereFrag};
 
 // ── per-op adapters ──────────────────────────────────────────────────────────────────────────
 //
@@ -288,6 +291,75 @@ impl generated_recent::HandlerNRRecent for RecentSeam<'_> {
     }
 }
 
+// E3 (#118) createMany — ONE json_each batch INSERT for N records (parallel column arrays).
+struct CreateManySeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_createmany::HandlerNRCreateMany for CreateManySeam<'_> {
+    fn node_n0(
+        &self,
+        ports: &generated_createmany::PortsNRCreateManyN0,
+        _bound: Option<String>,
+    ) -> Option<generated_createmany::RawRowNRCreateManyN0> {
+        // the parallel column arrays (emails, names) + their column names → the seam zips + runs ONCE.
+        let ev: Vec<String> = ports.f_v0.iter().map(|s| json_str(s)).collect();
+        let nv: Vec<String> = ports.f_v1.iter().map(|s| json_str(s)).collect();
+        let val = query_batch_write(self.conn, &ports.f_sql, &["email", "name"], &[&ev, &nv], |r| {
+            Ok(generated_createmany::T0 { id: r.get(0)?, email: r.get(1)?, name: r.get(2)? })
+        });
+        Some(match val {
+            Ok(val) => generated_createmany::RawRowNRCreateManyN0 { is_error: false, err: String::new(), val },
+            Err(e) => generated_createmany::RawRowNRCreateManyN0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+}
+
+// E3 (#118) updateMany — ONE json_each batch UPDATE keyed by id. The numeric KEY column is encoded
+// BARE in the JSON (so `json_extract(…) = <int id>` matches); the string SET column is quoted.
+struct UpdateManySeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_updatemany::HandlerNRUpdateMany for UpdateManySeam<'_> {
+    fn node_n0(
+        &self,
+        ports: &generated_updatemany::PortsNRUpdateManyN0,
+        _bound: Option<String>,
+    ) -> Option<generated_updatemany::RawRowNRUpdateManyN0> {
+        let ids: Vec<String> = ports.f_v0.iter().map(|id| id.to_string()).collect(); // numeric key → bare
+        let names: Vec<String> = ports.f_v1.iter().map(|s| json_str(s)).collect(); // string → quoted
+        let val = query_batch_write(self.conn, &ports.f_sql, &["id", "name"], &[&ids, &names], |r| {
+            Ok(generated_updatemany::T0 { id: r.get(0)?, email: r.get(1)?, name: r.get(2)? })
+        });
+        Some(match val {
+            Ok(val) => generated_updatemany::RawRowNRUpdateManyN0 { is_error: false, err: String::new(), val },
+            Err(e) => generated_updatemany::RawRowNRUpdateManyN0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+}
+
+// E2 (#117) upsertMany — batch + onConflict: ONE json_each INSERT … ON CONFLICT … DO UPDATE. Same
+// seam as createMany; only the baked f_sql carries the ON CONFLICT clause.
+struct UpsertManySeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_upsertmany::HandlerNRUpsertMany for UpsertManySeam<'_> {
+    fn node_n0(
+        &self,
+        ports: &generated_upsertmany::PortsNRUpsertManyN0,
+        _bound: Option<String>,
+    ) -> Option<generated_upsertmany::RawRowNRUpsertManyN0> {
+        let ev: Vec<String> = ports.f_v0.iter().map(|s| json_str(s)).collect();
+        let nv: Vec<String> = ports.f_v1.iter().map(|s| json_str(s)).collect();
+        let val = query_batch_write(self.conn, &ports.f_sql, &["email", "name"], &[&ev, &nv], |r| {
+            Ok(generated_upsertmany::T0 { id: r.get(0)?, email: r.get(1)?, name: r.get(2)? })
+        });
+        Some(match val {
+            Ok(val) => generated_upsertmany::RawRowNRUpsertManyN0 { is_error: false, err: String::new(), val },
+            Err(e) => generated_upsertmany::RawRowNRUpsertManyN0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+}
+
 // E2 (#117) upsert — INSERT … ON CONFLICT … DO UPDATE … RETURNING. A RETURNING write like Insert:
 // the module bakes the FULL upsert SQL; the seam just runs it (insert-path OR conflict-path, one stmt).
 struct UpsertSeam<'a> {
@@ -539,6 +611,35 @@ fn main() {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
             let out = generated_createuser::run_native_raw_struct_CreateUser(&CreateUserSeam { conn: &conn }, generated_createuser::InNRCreateUser { email, name })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(&conn));
+        }
+        // createmany: <emails_csv> <names_csv> — ONE json_each batch insert for N records. {result, state}.
+        "createmany" => {
+            let emails: Vec<String> = args.get(3).expect("emails").split(',').map(|s| s.to_string()).collect();
+            let names: Vec<String> = args.get(4).expect("names").split(',').map(|s| s.to_string()).collect();
+            let out = generated_createmany::run_native_raw_struct_CreateMany(&CreateManySeam { conn: &conn }, generated_createmany::InNRCreateMany { emails, names })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(&conn));
+            eprintln!("queries={}", seam::QUERY_COUNT.load(std::sync::atomic::Ordering::SeqCst));
+        }
+        // upsertmany: <emails_csv> <names_csv> — ONE json_each INSERT … ON CONFLICT batch. {result, state}.
+        "upsertmany" => {
+            let emails: Vec<String> = args.get(3).expect("emails").split(',').map(|s| s.to_string()).collect();
+            let names: Vec<String> = args.get(4).expect("names").split(',').map(|s| s.to_string()).collect();
+            let out = generated_upsertmany::run_native_raw_struct_UpsertMany(&UpsertManySeam { conn: &conn }, generated_upsertmany::InNRUpsertMany { emails, names })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(&conn));
+            eprintln!("queries={}", seam::QUERY_COUNT.load(std::sync::atomic::Ordering::SeqCst));
+        }
+        // updatemany: <ids_csv> <names_csv> — ONE json_each batch UPDATE keyed by id. {result, state}.
+        "updatemany" => {
+            let ids: Vec<i64> = args.get(3).expect("ids").split(',').map(|s| s.parse().expect("id")).collect();
+            let names: Vec<String> = args.get(4).expect("names").split(',').map(|s| s.to_string()).collect();
+            let out = generated_updatemany::run_native_raw_struct_UpdateMany(&UpdateManySeam { conn: &conn }, generated_updatemany::InNRUpdateMany { ids, names })
                 .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(&conn));

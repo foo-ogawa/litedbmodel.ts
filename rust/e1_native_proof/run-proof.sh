@@ -14,7 +14,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROOF_DIR=/tmp/e1proof
-MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_feed generated_tenantfeed generated_relbatch generated_relsingle generated_createuser generated_renameuser generated_deleteuser generated_upsert)
+MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_feed generated_tenantfeed generated_relbatch generated_relsingle generated_createuser generated_renameuser generated_deleteuser generated_upsert generated_createmany generated_upsertmany generated_updatemany)
 WRITE_OPS=(createuser renameuser deleteuser)
 fail=0
 
@@ -80,6 +80,16 @@ if [[ "$qc" == "2" ]]; then
   echo "  PASS  relbatch(tenant 1, 4 users) issued $qc queries (1 parent + 1 BATCHED child, not N+1)"
 else
   echo "  FAIL  relbatch issued $qc queries (expected 2 — batched; 5 would be N+1)"; fail=1
+fi
+
+echo "── leg 3d: BATCH write issues ONE statement for N records (not N) ──"
+# createMany of 10 records: 1 batch INSERT + 1 state-read = 2 queries. An N+1 cell would be 10+1 = 11.
+cmwork="$PROOF_DIR/proof.db.cmqc.work"; cp "$PROOF_DIR/write_seed.db" "$cmwork"
+cmqc="$("$BIN" createmany "$cmwork" "$(printf 'q%s@x.com,' 0 1 2 3 4 5 6 7 8 9 | sed 's/,$//')" "$(printf 'N%s,' 0 1 2 3 4 5 6 7 8 9 | sed 's/,$//')" 2>&1 >/dev/null | sed -n 's/^queries=//p')"
+if [[ "$cmqc" == "2" ]]; then
+  echo "  PASS  createMany(10 records) issued $cmqc queries (1 BATCH insert + 1 state-read, not 11 = N+1)"
+else
+  echo "  FAIL  createMany issued $cmqc queries (expected 2; 11 would be N+1)"; fail=1
 fi
 
 echo "── leg 3b: WRITE execution + resulting DB state vs the mode-2 oracle (fresh copy per run) ──"

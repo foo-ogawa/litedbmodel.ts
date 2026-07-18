@@ -106,6 +106,9 @@ const WRITE_PORTS: Record<string, PortSchema> = {
   returning: P('string'),
   onConflict: P('string'),
   onConflictAction: P('string'),
+  // E3 (#118) batch marker: `'true'` ⇒ each `values.<col>` port is a PARALLEL ARRAY (createMany /
+  // upsertMany — one scalar array per column, since bc has no Vec<struct>). One json_each statement.
+  batch: P('string'),
   // PRIMARY KEY descriptor for the MySQL RETURNING emulation (INSERT…RETURNING): `pk` is a
   // comma-separated PK column list, `autoInc` names the single AUTO_INCREMENT column (absent for a
   // client-supplied PK). Consumed by compileWriteNode → mysqlPkHint so the emulation re-selects by
@@ -203,6 +206,9 @@ export const WRITE_PORT_FAMILIES: readonly string[] = [
   'values.',
   'set.',
   'sqlCast.',
+  // E3 (#118) batch UPDATE (updateMany): the `key.<col>` family names the match key column(s) whose
+  // PARALLEL ARRAY keys the batch (mirrors `set.<col>` for the updated columns).
+  'key.',
 ];
 
 /**

@@ -126,6 +126,18 @@ class OrmWrites extends SemanticBehavior {
   UpsertUser($: { email: unknown; name: unknown }) {
     return L.Insert({ table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, onConflict: 'email', onConflictAction: 'update', returning: 'id, email, name' });
   }
+  /** E3 (#118) createMany — ONE json_each batch INSERT for N records (parallel column arrays). */
+  CreateMany($: { emails: unknown; names: unknown }) {
+    return L.Insert({ table: 'benchmark_users', batch: 'true', 'values.email': $.emails, 'values.name': $.names, returning: 'id, email, name' });
+  }
+  /** E2 (#117) upsertMany — batch + onConflict: ONE json_each INSERT … ON CONFLICT … DO UPDATE. */
+  UpsertMany($: { emails: unknown; names: unknown }) {
+    return L.Insert({ table: 'benchmark_users', batch: 'true', 'values.email': $.emails, 'values.name': $.names, onConflict: 'email', onConflictAction: 'update', returning: 'id, email, name' });
+  }
+  /** E3 (#118) updateMany — ONE json_each batch UPDATE keyed by id, setting name for N rows. */
+  UpdateMany($: { ids: unknown; names: unknown }) {
+    return L.Update({ table: 'benchmark_users', batch: 'true', 'key.id': $.ids, 'set.name': $.names, returning: 'id, email, name' });
+  }
 }
 
 /** A SKIP op on benchmark_posts — the `published = ?` fragment DROPS when `published` is absent. */
@@ -417,6 +429,27 @@ describe('E3 — writes bake through the SAME lowering as reads (owner: read/wri
     expect(code).toContain('f_p0: in_.email.clone()');
     expect(code).toContain('f_p1: in_.name.clone()');
   });
+
+  it('E3 (#118) createMany bakes ONE json_each batch INSERT + parallel column ARRAY ports (not N stmts)', () => {
+    const b = compileBundle(WRITE_CONTRACT, 'CreateMany', [], 'sqlite', undefined, RESOLVE);
+    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE).module.code;
+    // ONE json_each statement (records ride the JSON param), NOT a per-row VALUES(?,?) list.
+    expect(code).toContain('f_sql: "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, \'$.email\'), json_extract(value, \'$.name\') FROM json_each(?) RETURNING id, email, name".to_string()');
+    expect(code).not.toContain('VALUES (?, ?)'); // NOT the multi-VALUES per-row form
+    // records as PARALLEL scalar array ports (bc has no Vec<struct>); the seam zips into the JSON.
+    expect(code).toContain('pub f_v0: Vec<String>');
+    expect(code).toContain('pub f_v1: Vec<String>');
+    expect(code).toContain('f_v0: in_.emails.clone()');
+    expect(code).toContain('f_v1: in_.names.clone()');
+    expect(stripRustComments(code)).not.toContain('serde_json');
+  });
+
+  it('E2 (#117) upsertMany bakes the batch json_each with ON CONFLICT (batch + upsert combined)', () => {
+    const b = compileBundle(WRITE_CONTRACT, 'UpsertMany', [], 'sqlite', undefined, RESOLVE);
+    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE).module.code;
+    expect(code).toContain('FROM json_each(?) WHERE true ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name');
+    expect(code).toContain('pub f_v0: Vec<String>');
+  });
 });
 
 /** Strip rust line/block comments, preserving string literals (so header prose never false-positives). */
@@ -606,6 +639,10 @@ function tableState(db: InstanceType<typeof Database>): unknown {
   return db.prepare('SELECT id, email, name FROM benchmark_users ORDER BY id').all();
 }
 
+/** 10 records for the createMany batch (no comma in values — the harness passes them CSV). */
+const BATCH_EMAILS = Array.from({ length: 10 }, (_, i) => `batch${i}@example.com`);
+const BATCH_NAMES = Array.from({ length: 10 }, (_, i) => `Batch ${i}`);
+
 // `key` names the oracle case (distinct per input); `op` names the rust dispatch + generated module
 // (shared across a module's cases — upsert reuses ONE module for both its insert-path + conflict-path).
 interface WriteCase { key: string; op: string; entry: keyof OrmWrites & string; args: string[]; input: Record<string, unknown>; }
@@ -616,6 +653,24 @@ const WRITE_CASES: WriteCase[] = [
   // E2 upsert — the SAME module, two paths: INSERT (new email → id 4) and CONFLICT (user1 exists → updates name).
   { key: 'upsert_insert', op: 'upsert', entry: 'UpsertUser', args: ['zed@example.com', 'Zed'], input: { email: 'zed@example.com', name: 'Zed' } },
   { key: 'upsert_conflict', op: 'upsert', entry: 'UpsertUser', args: ['user1@example.com', 'Renamed One'], input: { email: 'user1@example.com', name: 'Renamed One' } },
+  // E3 createMany — 10 NEW records in ONE json_each statement (no conflict with the 3-row seed).
+  {
+    key: 'createmany', op: 'createmany', entry: 'CreateMany',
+    args: [BATCH_EMAILS.join(','), BATCH_NAMES.join(',')],
+    input: { emails: BATCH_EMAILS, names: BATCH_NAMES },
+  },
+  // E2 upsertMany — batch + onConflict: user1/user2 EXIST → updated; newX NEW → inserted. ONE statement.
+  {
+    key: 'upsertmany', op: 'upsertmany', entry: 'UpsertMany',
+    args: ['user1@example.com,user2@example.com,newX@example.com', 'Up One,Up Two,New X'],
+    input: { emails: ['user1@example.com', 'user2@example.com', 'newX@example.com'], names: ['Up One', 'Up Two', 'New X'] },
+  },
+  // E3 updateMany — set names for ids 1,2,3 in ONE json_each batch UPDATE.
+  {
+    key: 'updatemany', op: 'updatemany', entry: 'UpdateMany',
+    args: ['1,2,3', 'Upd One,Upd Two,Upd Three'],
+    input: { ids: [1, 2, 3], names: ['Upd One', 'Upd Two', 'Upd Three'] },
+  },
 ];
 
 describe('E3 — emit write modules + a clean seed DB + {result, state} oracles', () => {

@@ -855,6 +855,29 @@ function toDriverParam(v: Value): unknown {
 
 /** Evaluate one deferred value-spec against the input scope (handling the JSON-array marker). */
 function evalSpec(spec: ValueSpec, scope: Scope): unknown {
+  // E3 (#118) batch marker: `{__batchRows:{columns, refs, dialect}}` — the ONE json_each param of a
+  // batch INSERT (createMany / upsertMany). Each `refs[j]` evaluates to a PARALLEL ARRAY of column
+  // `columns[j]`; zip them into `[{col:val,…},…]` and JSON-encode (server-side `json_each`/`JSON_TABLE`
+  // expands N records). This is the runtime twin of the codegen seam's zip — SAME batch JSON contract.
+  if (spec !== null && typeof spec === 'object' && !Array.isArray(spec) && '__batchRows' in (spec as object)) {
+    const m = (spec as { __batchRows: { columns: string[]; refs: ValueSpec[]; dialect: Dialect } }).__batchRows;
+    const arrays = m.refs.map((r) => {
+      const a = evaluateExpression(r, scope);
+      if (!Array.isArray(a)) throw new Error('static-bundle: __batchRows column ref did not evaluate to an array');
+      return a as Value[];
+    });
+    const n = arrays.length === 0 ? 0 : arrays[0].length;
+    const rows: Record<string, unknown>[] = [];
+    for (let i = 0; i < n; i++) {
+      const row: Record<string, unknown> = {};
+      m.columns.forEach((c, j) => {
+        const v = arrays[j][i];
+        row[c] = m.dialect === 'mysql' && typeof v === 'boolean' ? (v ? 1 : 0) : toDriverParam(v);
+      });
+      rows.push(row);
+    }
+    return JSON.stringify(rows);
+  }
   if (spec !== null && typeof spec === 'object' && !Array.isArray(spec) && '__jsonArray' in (spec as object)) {
     const marker = spec as { __jsonArray: ValueSpec; dialect: Dialect };
     const arr = evaluateExpression(marker.__jsonArray, scope);
