@@ -25,9 +25,8 @@ const ALL19 = [
   'create', 'update', 'upsert', 'createMany', 'upsertMany', 'updateMany',
   'delete', 'nestedCreate', 'nestedUpdate', 'nestedUpsert',
 ];
-const FLAT10 = ['findAll', 'filterPaginateSort', 'findFirst', 'findUnique', 'create', 'update', 'upsert', 'createMany', 'upsertMany', 'updateMany'];
-// rust + go are complete (19); ts covers the 10 flat ops this round.
-const OPS = lang === 'ts' ? FLAT10 : ALL19;
+// rust + go + ts all complete (19).
+const OPS = ALL19;
 
 let fail = 0;
 console.log(`op                    native   sdk    (vs mode-2 oracle)`);
