@@ -14,7 +14,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROOF_DIR=/tmp/e1proof
-MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_feed generated_tenantfeed generated_relbatch generated_relsingle generated_createuser generated_renameuser generated_deleteuser generated_upsert generated_createmany generated_upsertmany generated_updatemany)
+MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_feed generated_tenantfeed generated_relbatch generated_relsingle generated_createuser generated_renameuser generated_deleteuser generated_upsert generated_createmany generated_upsertmany generated_updatemany generated_txdelete generated_txnestedcreate generated_txnestedupdate generated_txnestedupsert generated_txrollback)
 WRITE_OPS=(createuser renameuser deleteuser)
 fail=0
 
@@ -97,6 +97,14 @@ echo "── leg 3b: WRITE execution + resulting DB state vs the mode-2 oracle (
 # {result, state}; the oracle carries the mode-2 {result, state}. compare_write.mjs copies the seed
 # per case, runs the op, and asserts both — and fails on a non-zero exit (crash-path safe).
 node "$HERE/compare_write.mjs" "$BIN" "$PROOF_DIR/write_seed.db" "$PROOF_DIR/oracles_write.json" || fail=1
+
+echo "── leg 3e: TRANSACTION execution — RETURNING chain + BEGIN/COMMIT/ROLLBACK vs the mode-2 oracle ──"
+# E5 (#120): each RETURNING-chained tx op (delete / nestedCreate / nestedUpdate / nestedUpsert) + the
+# ROLLBACK control runs on a FRESH copy of the users+posts seed. The binary prints {result:{committed},
+# state:{users,posts}}; the oracle carries the mode-2 executeTransactionBundle {committed} + resulting
+# state. The state proves the chain (post.author_id IS the user's RETURNING id) and the rollback control
+# proves atomicity (statement 2 fails → statement 1's effect undone → committed:false, state unchanged).
+node "$HERE/compare_write.mjs" "$BIN" "$PROOF_DIR/tx_seed.db" "$PROOF_DIR/oracles_tx.json" || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then echo "E1 PROOF: ALL LEGS PASS"; else echo "E1 PROOF: FAILURES ABOVE"; fi

@@ -212,6 +212,29 @@ pub fn execute(conn: &Connection, sql: &str, params: &[Param]) -> rusqlite::Resu
     Ok(WriteSummary { changes: changes as i64, last_insert_rowid: conn.last_insert_rowid() })
 }
 
+/// The TRANSACTION ENVELOPE (E5/#120 — RETURNING-chained multi-statement writes). The generated chain
+/// runner orchestrates the statements + the RETURNING→next wiring (baked); the BEGIN … COMMIT / ROLLBACK
+/// envelope is the SEAM's concern (owner: the statements + wiring are the chain's, the transaction is the
+/// runtime's). Run `body` between BEGIN and COMMIT on `conn`; on any `Err` from the chain (a statement
+/// failed under its fail policy — a constraint violation, etc.) ROLLBACK and propagate the error, so a
+/// partial chain leaves the DB UNCHANGED (atomicity). Generic over the chain's Ok/Err types — it knows
+/// only "run, commit-or-rollback", never the op. BEGIN/COMMIT/ROLLBACK are `execute_batch` (no bound
+/// params, and — unlike [`query`] — they do NOT touch `QUERY_COUNT`, which counts only data queries).
+pub fn transaction<T, E>(conn: &Connection, body: impl FnOnce(&Connection) -> Result<T, E>) -> Result<T, E> {
+    conn.execute_batch("BEGIN").expect("tx BEGIN");
+    match body(conn) {
+        Ok(v) => {
+            conn.execute_batch("COMMIT").expect("tx COMMIT");
+            Ok(v)
+        }
+        Err(e) => {
+            // Best-effort ROLLBACK (mirrors the mode-2 executeTransaction catch); surface the chain error.
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
 // ── canonical JSON out (hand-rolled — the runtime carries no external JSON crate) ──
 
 pub fn json_str(s: &str) -> String {

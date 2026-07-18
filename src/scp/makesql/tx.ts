@@ -122,6 +122,21 @@ export interface TxOp {
    * the REAL PK — not a hardcoded `WHERE id = ?` (which breaks for UUID / composite PKs).
    */
   readonly pk?: { readonly columns: readonly string[]; readonly autoInc: string | null };
+  /**
+   * NATIVE-CODEGEN typing metadata (E5/#120 — the RETURNING-chained tx chain). Additive: the runtime
+   * tx ({@link executeTransaction}) IGNORES it; the codegen chain lowering
+   * ({@link import('../codegen').lowerTransactionForNativeChain}) reads it to type each statement's
+   * native param ports + its produced-row struct WITHOUT re-parsing the rendered SQL. The SHARED
+   * {@link compileWriteNode} emits it from the structured ports it already has (one compiler feeds both
+   * the runtime and the codegen chain). Present on a single-statement Insert/Update/Delete op; absent
+   * on a batch op (its `?` binds a `{__batchRows}` marker, not a column). `bindColumns[i]` is the table
+   * column the i-th `?` binds (parallel to `params`; `null` when the param is not a plain column value).
+   */
+  readonly writeMeta?: {
+    readonly table: string;
+    readonly bindColumns: readonly (string | null)[];
+    readonly returning: readonly string[];
+  };
 }
 
 /** The role a transaction statement plays (drives the runtime's gate-first interpretation). */
@@ -408,41 +423,53 @@ function v1EqualityWhereText(columns: readonly string[]): string {
   return v1ConditionText(conditions);
 }
 
-/** Lower one where-member Expression node → a `<sql, params>` WHERE fragment (deferred params). */
-function lowerWhereMember(node: unknown, at: string): { sql: string; params: TxExpr[] } {
+/**
+ * Lower one where-member Expression node → a `<sql, params, columns>` WHERE fragment (deferred
+ * params). `columns[i]` is the table column the i-th emitted param binds — parallel to `params` — so
+ * the native-codegen chain types each WHERE-bound `?` from its column (see {@link TxOp.writeMeta}).
+ */
+function lowerWhereMember(node: unknown, at: string): { sql: string; params: TxExpr[]; columns: string[] } {
   const op = opKey(node);
   if (op === undefined) throw new Error(`compileWriteNode: ${at}: a where member must be a single-operator Expression node`);
   if (op === 'eq') {
     const [col, val] = binOperands(node, op, at);
     const column = columnOf(col, at);
-    if (val === null) return { sql: v1ConditionText({ [column]: null }), params: [] };
-    return { sql: v1ConditionText({ [column]: PROBE }), params: [val] };
+    if (val === null) return { sql: v1ConditionText({ [column]: null }), params: [], columns: [] };
+    return { sql: v1ConditionText({ [column]: PROBE }), params: [val], columns: [column] };
   }
   if (op in CMP_OPS) {
     const [col, val] = binOperands(node, op, at);
     const column = columnOf(col, at);
-    if (op === 'ne' && val === null) return { sql: v1ConditionText({ [`${column} IS NOT NULL`]: true }), params: [] };
-    return { sql: v1ConditionText({ [`${column} ${CMP_OPS[op]} ?`]: PROBE }), params: [val] };
+    if (op === 'ne' && val === null) return { sql: v1ConditionText({ [`${column} IS NOT NULL`]: true }), params: [], columns: [] };
+    return { sql: v1ConditionText({ [`${column} ${CMP_OPS[op]} ?`]: PROBE }), params: [val], columns: [column] };
   }
   throw new Error(`compileWriteNode: ${at}: unsupported where operator '${op}' (write path supports eq/ne/lt/le/gt/ge)`);
 }
 
-function lowerWherePort(ports: Record<string, unknown>, at: string): { sql: string; params: TxExpr[] } {
+function lowerWherePort(ports: Record<string, unknown>, at: string): { sql: string; params: TxExpr[]; columns: string[] } {
   const v = ports.where;
-  if (v === undefined) return { sql: '', params: [] };
+  if (v === undefined) return { sql: '', params: [], columns: [] };
   if (typeof v !== 'object' || v === null || !('arr' in v) || !Array.isArray((v as { arr: unknown }).arr)) {
     throw new Error(`compileWriteNode: ${at}: 'where' must be an {arr:[…]} literal`);
   }
   const members = (v as { arr: unknown[] }).arr;
   const parts: string[] = [];
   const params: TxExpr[] = [];
+  const columns: string[] = [];
   members.forEach((m, i) => {
     const f = lowerWhereMember(m, `${at}.where[${i}]`);
     parts.push(f.sql);
     params.push(...f.params);
+    columns.push(...f.columns);
   });
   // Join with the SAME ` AND ` connector `DBConditions.compile` uses (parts.join(' AND ')).
-  return { sql: parts.join(' AND '), params };
+  return { sql: parts.join(' AND '), params, columns };
+}
+
+/** The RETURNING column names (`['id','author_id']`), or `[]` when the op has no RETURNING clause. */
+function returningColumns(ports: Record<string, unknown>): string[] {
+  const r = stringPort(ports, 'returning');
+  return r === undefined ? [] : r.split(',').map((c) => c.trim()).filter((c) => c.length > 0);
 }
 
 function returningTail(ports: Record<string, unknown>): string {
@@ -566,7 +593,9 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
       const placeholders = sorted.map((c) => castPlaceholder(dialect, sqlCastMap, c)).join(', ');
       const sql = `INSERT INTO ${table} (${sorted.join(', ')}) VALUES (${placeholders})${onConflictTail(dialect, ports, sorted)}${returningTail(ports)}`;
       const pk = pkPort(ports);
-      return { sql, params: sorted.map((c) => values[c]), ...(pk !== undefined ? { pk } : {}) };
+      // The `?`s bind the value columns in sorted order (the ON CONFLICT / RETURNING tails add no `?`).
+      const writeMeta = { table, bindColumns: sorted, returning: returningColumns(ports) };
+      return { sql, params: sorted.map((c) => values[c]), ...(pk !== undefined ? { pk } : {}), writeMeta };
     }
     case 'Update': {
       const set = collectFamily(ports, 'set');
@@ -600,13 +629,17 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
       // v1 `DBModel._update` emits `<c> = ?::<sqlCast>` PER COLUMN on Postgres (skipping timestamp/date).
       const setClauses = setCols.map((c) => `${c} = ${castPlaceholder(dialect, sqlCastMap, c)}`).join(', ');
       const sql = `UPDATE ${table} SET ${setClauses} WHERE ${where.sql}${returningTail(ports)}`;
-      return { sql, params: [...setCols.map((c) => set[c]), ...where.params] };
+      // The `?`s bind the SET columns (in setCols order) then the WHERE columns (`where.columns`).
+      const writeMeta = { table, bindColumns: [...setCols, ...where.columns], returning: returningColumns(ports) };
+      return { sql, params: [...setCols.map((c) => set[c]), ...where.params], writeMeta };
     }
     case 'Delete': {
       const where = lowerWherePort(ports, 'Delete');
       if (where.sql === '') throw new Error(`compileWriteNode: Delete requires a 'where' port`);
       const sql = `DELETE FROM ${table} WHERE ${where.sql}${returningTail(ports)}`;
-      return { sql, params: where.params };
+      // The `?`s bind the WHERE columns; a DELETE has no SET/VALUES params.
+      const writeMeta = { table, bindColumns: where.columns, returning: returningColumns(ports) };
+      return { sql, params: where.params, writeMeta };
     }
     default:
       throw new Error(`compileWriteNode: catalog component '${component}' has no write compile (SQL writes: Insert/Update/Delete)`);

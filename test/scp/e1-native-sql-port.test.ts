@@ -54,7 +54,12 @@ import {
   schemaColumnTypeResolver,
   generateCodegenArtifact,
   TypedNativeCoverageError,
+  deriveTransactionPlan,
+  compileWriteNode,
+  executeTransactionBundle,
 } from '../../src/scp/index';
+import type { TransactionPlan } from '../../src/scp/makesql/tx';
+import type { SqlBundle } from '../../src/scp/runtime';
 import { runRelationOp, distributeToParent, type RelationDecl } from '../../src/scp/relation';
 import { registeredLanguages } from 'behavior-contracts';
 import Database from 'better-sqlite3';
@@ -712,5 +717,261 @@ describe('E3 — emit write modules + a clean seed DB + {result, state} oracles'
     expect((oracles.upsert_conflict.result as { id: number; name: string }[])[0]).toMatchObject({ id: 1, name: 'Renamed One' });
     expect((oracles.upsert_conflict.state as { id: number }[]).length).toBe(3); // conflict updated, no new row
     expect((oracles.upsert_insert.state as { id: number }[]).length).toBe(4); // insert added a row
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// E5 (#120) — multi-statement RETURNING-chained TRANSACTIONS bake as ONE native componentRef chain.
+//
+// A composite/nested Command derives (tx.ts `deriveTransactionPlan`) to a `TransactionPlan` — the SoT
+// for the statement ORDER + the RETURNING→next wiring. `lowerTransactionForNativeChain` RE-EXPRESSES
+// that plan as one bc componentRef chain: each statement a node with its baked `f_sql` + typed ports;
+// a later statement's `$.ref.<name>.<field>` param bakes as a NATIVE read of the producer node's
+// RETURNING row (`cell_<producer>.<field>`). The generated runner chains the statements; the ONE
+// generic exec seam wraps it in the BEGIN…COMMIT / ROLLBACK envelope.
+//
+// The 4 ops (delete / nestedCreate / nestedUpdate / nestedUpsert) + a ROLLBACK control are built here
+// from the SAME `deriveTransactionPlan` + `compileWriteNode` the runtime composite path uses, emitted
+// as native modules, and their execution is proven byte-equal to the mode-2 `executeTransactionBundle`
+// oracle (result + resulting DB state) by the out-of-process rust legs.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+/** Compile a structured write node → its `TxOp` (the shared write compiler, with native `writeMeta`). */
+const txNode = (id: string, component: string, ports: Record<string, unknown>) =>
+  compileWriteNode({ id, component, ports } as never, 'sqlite');
+
+/** Build a tx `SqlBundle` (transaction plan, no single-statement readGraph) — the composite shape. */
+function txBundleOf(name: string, plan: TransactionPlan): SqlBundle {
+  const first = plan.statements[0].op;
+  return { dialect: 'sqlite', name, statement: { sql: first.sql, params: first.params }, optionalHeads: [], relations: {}, transaction: plan } as unknown as SqlBundle;
+}
+
+/** The 5 E5 transaction plans (4 ops + a rollback control), each a gate-free RETURNING-chained body. */
+function txPlans(): Record<string, { plan: TransactionPlan; module: string }> {
+  return {
+    // delete: INSERT user RETURNING id → DELETE that user by the RETURNING id (chained).
+    txdelete: {
+      module: 'TxDelete',
+      plan: deriveTransactionPlan('create', [
+        { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
+        { op: txNode('d', 'Delete', { table: 'benchmark_users', where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user', 'id'] }] }] } }), label: 'Delete user', name: 'deleted', effects: {} },
+      ], { effects: {} }),
+    },
+    // nestedCreate: INSERT user RETURNING id → INSERT post whose author_id IS the RETURNING id.
+    txnestedcreate: {
+      module: 'TxNestedCreate',
+      plan: deriveTransactionPlan('create', [
+        { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
+        { op: txNode('p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
+      ], { effects: {} }),
+    },
+    // nestedUpdate: UPDATE user + UPDATE post (two writes, one atomic tx; keyed by the same input).
+    txnestedupdate: {
+      module: 'TxNestedUpdate',
+      plan: deriveTransactionPlan('update', [
+        { op: txNode('u', 'Update', { table: 'benchmark_users', 'set.name': { ref: ['name'] }, where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user_id'] }] }] }, returning: 'id, name' }), label: 'Update user', name: 'user', effects: {} },
+        { op: txNode('p', 'Update', { table: 'benchmark_posts', 'set.title': { ref: ['title'] }, where: { arr: [{ eq: [{ ref: ['author_id'] }, { ref: ['user_id'] }] }] }, returning: 'id, title' }), label: 'Update post', name: 'post', effects: {} },
+      ], { effects: {} }),
+    },
+    // nestedUpsert: upsert user ON CONFLICT(email) RETURNING id → INSERT post using the RETURNING id.
+    // The RETURNING id is the SAME whether the upsert took the INSERT path (new email) or the UPDATE
+    // path (existing email) — so the chained post.author_id is correct on both.
+    txnestedupsert: {
+      module: 'TxNestedUpsert',
+      plan: deriveTransactionPlan('create', [
+        { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, onConflict: 'email', onConflictAction: 'update', returning: 'id' }), label: 'Upsert user', name: 'user', effects: {} },
+        { op: txNode('p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
+      ], { effects: {} }),
+    },
+    // ROLLBACK control: INSERT fresh user RETURNING id → INSERT a user whose email COLLIDES with a
+    // seeded row (UNIQUE(email)). Statement 2 fails → the whole tx ROLLS BACK → statement 1's insert is
+    // undone → the users table is left UNCHANGED. Proves the seam's BEGIN…ROLLBACK atomicity envelope.
+    txrollback: {
+      module: 'TxRollback',
+      plan: deriveTransactionPlan('create', [
+        { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
+        { op: txNode('d', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['dup_email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert dup', name: 'dup', effects: {} },
+      ], { effects: {} }),
+    },
+  };
+}
+
+describe('E5 (#120) — the tx-chain lowering bakes each statement + the RETURNING→next wire natively', () => {
+  it('nestedCreate: both statements baked as native SQL literals; post.author_id reads the user RETURNING id', () => {
+    const { txnestedcreate } = txPlans();
+    const code = generateCodegenArtifact(txBundleOf(txnestedcreate.module, txnestedcreate.plan), 'rust', REGISTERED, RESOLVE).module.code;
+    // Statement 1 (INSERT user RETURNING id) baked as a native literal.
+    expect(code).toContain('f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id".to_string()');
+    // Statement 2 (INSERT post) baked as a native literal.
+    expect(code).toContain('f_sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title".to_string()');
+    // THE WIRE: statement 2's author_id port is a NATIVE read of statement 1's RETURNING row — not an
+    // input, not a boxed lookup. `cell_tx_body_0.borrow().id` is the chained id (i64, from the outType).
+    expect(code).toContain('f_p0: cell_tx_body_0.borrow().id');
+    // statement 1's input ports are native scalars from the schema.
+    expect(code).toContain('f_p0: in_.email.clone()');
+    expect(stripRustComments(code)).not.toContain('serde_json');
+  });
+
+  it('delete: the DELETE binds the RETURNING id natively; its non-returning row is the summary', () => {
+    const { txdelete } = txPlans();
+    const code = generateCodegenArtifact(txBundleOf(txdelete.module, txdelete.plan), 'rust', REGISTERED, RESOLVE).module.code;
+    expect(code).toContain('f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id".to_string()');
+    expect(code).toContain('f_sql: "DELETE FROM benchmark_users WHERE id = ?".to_string()');
+    expect(code).toContain('f_p0: cell_tx_body_0.borrow().id'); // DELETE targets the inserted id
+    expect(code).toContain('pub changes: i64'); // the non-returning DELETE's produced row is the summary
+  });
+
+  it('nestedUpsert: the ON CONFLICT upsert RETURNING id chains into the post insert', () => {
+    const { txnestedupsert } = txPlans();
+    const code = generateCodegenArtifact(txBundleOf(txnestedupsert.module, txnestedupsert.plan), 'rust', REGISTERED, RESOLVE).module.code;
+    expect(code).toContain('ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id');
+    expect(code).toContain('f_p0: cell_tx_body_0.borrow().id');
+  });
+
+  it('every generated tx module is runtime-free (std only, no bc runtime / JSON / boxed Value)', () => {
+    for (const { module, plan } of Object.values(txPlans())) {
+      const code = stripRustComments(generateCodegenArtifact(txBundleOf(module, plan), 'rust', REGISTERED, RESOLVE).module.code);
+      const uses = [...code.matchAll(/^\s*(?:use|extern crate)\s+([^;]+);/gm)].map((m) => m[1].trim());
+      expect(uses).toEqual(['std::cell::RefCell']);
+      for (const marker of ['serde_json', 'behavior_contracts', 'run_behavior', 'RawValue', 'Box<dyn', 'dyn Any', 'Value::']) {
+        expect(code).not.toContain(marker);
+      }
+    }
+  });
+
+  it('NEGATIVE control — the RETURNING wire is load-bearing: mis-wiring it bakes a DIFFERENT port AND diverges at runtime', () => {
+    // A mutant nestedCreate whose post.author_id binds an INPUT head (`{ref:['author_id']}`) instead of
+    // the producer's RETURNING id (`{ref:['user','id']}`). If the wire were ignored, this would bake +
+    // execute identically to the correct op — proving the green is NOT a tautology, it must NOT.
+    const mutant = deriveTransactionPlan('create', [
+      { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
+      { op: txNode('p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['author_id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
+    ], { effects: {} });
+    const mutantCode = generateCodegenArtifact(txBundleOf('TxMutant', mutant), 'rust', REGISTERED, RESOLVE).module.code;
+    // STATIC: the mis-wired port bakes as an INPUT read, NOT the producer cell — the two wirings bake
+    // demonstrably different native code (so a codegen regression that dropped the wire changes the bytes).
+    expect(mutantCode).toContain('f_p0: in_.author_id');
+    expect(mutantCode).not.toContain('f_p0: cell_tx_body_0.borrow().id');
+
+    // DYNAMIC: run the mode-2 oracle for BOTH the correct op and the mutant against the SAME fresh seed.
+    // The correct op's post.author_id is the NEW user's id (4); the mutant's is the raw input (999). They
+    // DIFFER — so the byte-equal leg would FAIL a mis-wired native module (the comparison discriminates).
+    const { txnestedcreate } = txPlans();
+    const runState = (plan: TransactionPlan, input: Record<string, unknown>) => {
+      const p = join(PROOF_DIR, 'tx_neg.db');
+      freshTxDb(p).close();
+      const db = new Database(p);
+      db.pragma('foreign_keys = ON');
+      executeTransactionBundle(txBundleOf('N', plan), input as never, { db: db as never });
+      const posts = db.prepare('SELECT author_id FROM benchmark_posts ORDER BY id').all() as { author_id: number }[];
+      db.close();
+      rmSync(p);
+      return posts[posts.length - 1].author_id;
+    };
+    const correct = runState(txnestedcreate.plan, { email: 'zed@example.com', name: 'Zed', title: 'T' });
+    const broken = runState(mutant, { email: 'zed@example.com', name: 'Zed', title: 'T', author_id: 999 });
+    expect(correct).toBe(4); // the chained RETURNING id
+    expect(broken).toBe(999); // the mis-wired input value
+    expect(correct).not.toBe(broken); // the wire genuinely determines the row — green is not a tautology
+  });
+
+  it('a GATE statement fails closed (the native chain covers gate-free RETURNING chains only)', () => {
+    // A composite carrying a requires-gate short-circuits with {committed:false, shortCircuit} — a shape
+    // the native struct chain does not model. The lowering must REFUSE it (never bake an always-commit
+    // chain), naming the gap.
+    const gated = deriveTransactionPlan('create', [
+      { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: { requires: [{ kind: 'requires' as const, table: 'benchmark_users', keys: { id: '$.input.gate_id' } }] } },
+      { op: txNode('p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id' }), label: 'Insert post', name: 'post', effects: {} },
+    ], { effects: {} });
+    expect(() => generateCodegenArtifact(txBundleOf('TxGated', gated), 'rust', REGISTERED, RESOLVE)).toThrow(/gate\/non-body statement/);
+  });
+});
+
+// ── the E5 exec proof: emit the tx modules + a users+posts seed + the executeTransactionBundle oracle ──
+/** A fresh users+posts seed (SMALL — legible full-state comparison). */
+function freshTxDb(path?: string): InstanceType<typeof Database> {
+  if (path !== undefined && existsSync(path)) rmSync(path);
+  const db = new Database(path ?? ':memory:');
+  db.pragma('foreign_keys = ON');
+  for (const s of ddl('sqlite')) db.exec(s);
+  for (let id = 1; id <= 3; id++) db.prepare('INSERT INTO benchmark_users (id, email, name) VALUES (?, ?, ?)').run(id, `user${id}@example.com`, `User ${id}`);
+  // A post owned by user 2 (nestedUpdate retitles it; the others leave it untouched).
+  db.prepare('INSERT INTO benchmark_posts (id, title, author_id) VALUES (?, ?, ?)').run(1, 'Post B', 2);
+  return db;
+}
+function txState(db: InstanceType<typeof Database>): unknown {
+  return {
+    users: db.prepare('SELECT id, email, name FROM benchmark_users ORDER BY id').all(),
+    posts: db.prepare('SELECT id, title, author_id FROM benchmark_posts ORDER BY id').all(),
+  };
+}
+const TX_SEED = join(PROOF_DIR, 'tx_seed.db');
+
+interface TxCase { key: string; module: string; op: string; args: string[]; input: Record<string, unknown> }
+const TX_CASES: TxCase[] = [
+  { key: 'txdelete', module: 'txdelete', op: 'txdelete', args: ['zed@example.com', 'Zed'], input: { email: 'zed@example.com', name: 'Zed' } },
+  { key: 'txnestedcreate', module: 'txnestedcreate', op: 'txnestedcreate', args: ['zed@example.com', 'Zed', 'Hello World'], input: { email: 'zed@example.com', name: 'Zed', title: 'Hello World' } },
+  { key: 'txnestedupdate', module: 'txnestedupdate', op: 'txnestedupdate', args: ['2', 'User Two Renamed', 'Post B Renamed'], input: { user_id: 2, name: 'User Two Renamed', title: 'Post B Renamed' } },
+  // upsert INSERT path (fresh email → new user id 4 → post author_id 4).
+  { key: 'txnestedupsert_insert', module: 'txnestedupsert', op: 'txnestedupsert', args: ['zed@example.com', 'Zed', 'Zed Post'], input: { email: 'zed@example.com', name: 'Zed', title: 'Zed Post' } },
+  // upsert CONFLICT path (existing user1 email → UPDATE returns id 1 → post author_id 1).
+  { key: 'txnestedupsert_conflict', module: 'txnestedupsert', op: 'txnestedupsert', args: ['user1@example.com', 'User One Up', 'One Post'], input: { email: 'user1@example.com', name: 'User One Up', title: 'One Post' } },
+  // ROLLBACK control: stmt 2 collides on user1's email → the tx rolls back → state == seed, committed false.
+  { key: 'txrollback', module: 'txrollback', op: 'txrollback', args: ['fresh@example.com', 'user1@example.com', 'Fresh'], input: { email: 'fresh@example.com', dup_email: 'user1@example.com', name: 'Fresh' } },
+];
+
+describe('E5 (#120) — emit tx modules + a users+posts seed + {result, state} executeTransactionBundle oracles', () => {
+  it('writes /tmp/e1proof/{generated_tx*.rs, tx_seed.db, oracles_tx.json}', () => {
+    mkdirSync(PROOF_DIR, { recursive: true });
+    freshTxDb(TX_SEED).close();
+
+    const plans = txPlans();
+    const emitted = new Set<string>();
+    const oracles: Record<string, { result: unknown; state: unknown; op: string; args: string[] }> = {};
+
+    for (const tc of TX_CASES) {
+      const { module, plan } = plans[tc.module];
+      if (!emitted.has(tc.op)) {
+        const art = generateCodegenArtifact(txBundleOf(module, plan), 'rust', REGISTERED, RESOLVE);
+        writeFileSync(join(PROOF_DIR, `generated_${tc.op}.rs`), art.module.code);
+        emitted.add(tc.op);
+      }
+      // The mode-2 oracle runs the tx on a FRESH file-seeded DB (the rust leg opens the copied seed
+      // fresh) — same as the write oracle. executeTransactionBundle THROWS on a statement failure (it
+      // ROLLBACKs then rethrows); the rollback control catches that → {committed:false} + the (undone) state.
+      const oraclePath = join(PROOF_DIR, `tx_oracle_${tc.key}.db`);
+      freshTxDb(oraclePath).close();
+      const db = new Database(oraclePath);
+      db.pragma('foreign_keys = ON');
+      let committed: boolean;
+      try {
+        const r = executeTransactionBundle(txBundleOf(module, plan), tc.input as never, { db: db as never }) as { committed: boolean };
+        committed = r.committed;
+      } catch {
+        committed = false; // a statement failed → executeTransaction rolled back and rethrew
+      }
+      const state = txState(db);
+      db.close();
+      rmSync(oraclePath);
+      oracles[tc.key] = { result: { committed }, state, op: tc.op, args: tc.args };
+    }
+    writeFileSync(join(PROOF_DIR, 'oracles_tx.json'), JSON.stringify(oracles, null, 2));
+
+    // Sanity — the oracle state proves the CHAIN is real (not trivially both-empty):
+    // nestedCreate: a new user (id 4) + a post whose author_id IS that chained id 4.
+    const nc = oracles.txnestedcreate.state as { users: { id: number }[]; posts: { author_id: number }[] };
+    expect(nc.users.map((u) => u.id)).toEqual([1, 2, 3, 4]);
+    expect(nc.posts.find((p) => p.author_id === 4)).toBeDefined();
+    expect(oracles.txnestedcreate.result).toEqual({ committed: true });
+    // delete: user inserted (id 4) then deleted by that id → users back to the seed (chain targeted id 4).
+    expect((oracles.txdelete.state as { users: unknown[] }).users.length).toBe(3);
+    // upsert conflict: user1 updated (no new row), post author_id 1 (the UPDATE-path RETURNING id).
+    const uc = oracles.txnestedupsert_conflict.state as { users: { id: number; name: string }[]; posts: { author_id: number }[] };
+    expect(uc.users.length).toBe(3);
+    expect(uc.users.find((u) => u.id === 1)!.name).toBe('User One Up');
+    expect(uc.posts.some((p) => p.author_id === 1)).toBe(true);
+    // ROLLBACK: committed false AND the users table is UNCHANGED (statement 1's insert was undone).
+    expect(oracles.txrollback.result).toEqual({ committed: false });
+    expect((oracles.txrollback.state as { users: unknown[] }).users.length).toBe(3);
   });
 });

@@ -101,7 +101,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -339,7 +351,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -523,7 +547,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert post",
               "binds": "post"
@@ -561,7 +597,19 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "comments",
+                  "bindColumns": [
+                    "body",
+                    "post_id"
+                  ],
+                  "returning": [
+                    "id",
+                    "post_id",
+                    "body"
+                  ]
+                }
               },
               "label": "Insert comment",
               "binds": "comment"
@@ -683,7 +731,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert post",
               "binds": "post"
@@ -721,7 +781,19 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "comments",
+                  "bindColumns": [
+                    "body",
+                    "post_id"
+                  ],
+                  "returning": [
+                    "id",
+                    "post_id",
+                    "body"
+                  ]
+                }
               },
               "label": "Insert comment",
               "binds": "comment"

@@ -289,13 +289,15 @@ describe('WS7f codegen — in-process equivalence of the TS codegen artifact vs 
   }
 });
 
-describe('WS7f codegen — TX (multi-write DAG) bundles stay on the existing write/tx execution path (out of codegen scope)', () => {
+describe('WS7f codegen — GATED tx-DAG bundles stay on the interpreter tx path (gate coverage gap)', () => {
   for (const v of TX_VECTORS) {
-    it(`generateCodegenArtifact refuses this tx bundle; executeTransactionBundle reproduces the vector — ${v.name}`, () => {
-      // A SINGLE write is now a codegen case (read/write unified). A TX bundle is the gate-first
-      // multi-write DAG (a `transaction` plan, no component graph) — still out of codegen scope, so
-      // it carries no graph to lower and is refused. Its execution stays on executeTransactionBundle.
-      expect(() => generateCodegenArtifact(v.bundle, 'typescript', REGISTERED, () => 'INTEGER')).toThrow(/carries no component graph/);
+    it(`generateCodegenArtifact refuses this GATED tx bundle; executeTransactionBundle reproduces the vector — ${v.name}`, () => {
+      // A SINGLE write and a gate-free RETURNING-chained transaction are now codegen cases (E5/#120:
+      // `lowerTransactionForNativeChain` bakes the chain — see e1-native-sql-port.test.ts). These
+      // vectors are GATED multi-write DAGs (requires/unique/idempotency/derive/emit) — a gate statement
+      // short-circuits with a {committed:false, shortCircuit} result the native struct chain does not
+      // model, so the lowering fails closed (naming the gate) and execution stays on the interpreter tx.
+      expect(() => generateCodegenArtifact(v.bundle, 'typescript', REGISTERED, () => 'INTEGER')).toThrow(/gate\/non-body statement/);
 
       const input = decodeValue(v.input) as Record<string, unknown>;
       const db = seedDb(v.schema);

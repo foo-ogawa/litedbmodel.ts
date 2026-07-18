@@ -1150,6 +1150,164 @@ function injectBatchedRelations(
   return { ...ir, components };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// NATIVE RETURNING-CHAINED TRANSACTIONS (E5/#120) — bake a multi-statement tx as a componentRef CHAIN.
+//
+// A composite/nested Command derives (in tx.ts) to a `TransactionPlan`: an ordered list of statements
+// where a later statement binds an earlier statement's RETURNING row (`$.ref.<name>.<field>` →
+// `{ref:[name,field]}`) into its own params. That imperative plan is the SoT for ordering + the
+// RETURNING→next wiring; here it is RE-EXPRESSED (not re-derived) as one bc componentRef chain so the
+// SAME typed-native emitter that bakes reads/writes bakes the whole transaction:
+//
+//   • each statement → a componentRef node with its baked `f_sql` literal + typed param ports;
+//   • a `{ref:[writeName,field]}` param rewrites to `{ref:[producerNodeId,field]}` + sets the node's
+//     `parent` = the producer — the SAME sequential-componentRef data-flow a single-key `.map` uses
+//     (bc bakes the consumer's port as a NATIVE read of the producer's row: `cell_<producer>.<field>`);
+//   • a PRODUCING statement's outType is a SINGLE `{obj:…}` (the RETURNING row) — REQUIRED: bc resolves
+//     `{ref:[node,field]}` only against a single-row struct, not a row LIST (empirically verified).
+//
+// The generated runner chains the statements; the ONE generic exec seam wraps the whole runner in the
+// transaction envelope (BEGIN … COMMIT, ROLLBACK on failure) — the envelope is the seam's concern, the
+// statements + wiring are the SAME as any other write. NOT a parallel tx model: the ordering + binds
+// come from the plan `deriveTransactionPlan` already produced.
+//
+// COVERED: gate-free, pure-`body` RETURNING-chained chains (the E5 ops delete / nestedCreate /
+// nestedUpdate / nestedUpsert). A gate statement (requires/unique/idempotency) short-circuits with a
+// `{committed:false, shortCircuit}` result the struct chain does not model — FAIL CLOSED (escalate),
+// never a silently-wrong always-commit chain.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+/** Map a tx statement's leading SQL verb to its catalog component name (diagnostics + handler split). */
+function txVerbComponent(sql: string): string {
+  if (/^\s*INSERT\b/i.test(sql)) return 'Insert';
+  if (/^\s*UPDATE\b/i.test(sql)) return 'Update';
+  if (/^\s*DELETE\b/i.test(sql)) return 'Delete';
+  return 'Write';
+}
+
+/** A non-RETURNING write's produced row is the summary `{changes, lastInsertRowid}` — a SINGLE obj (the
+ * tx chain models every statement's produced value as one row, not a list). */
+const TX_SUMMARY_ROW_TYPE = { obj: { changes: 'int', lastInsertRowid: 'int' } };
+
+/**
+ * Lower a {@link TransactionPlan} into a bc {@link ComponentGraphIR} that bakes the whole
+ * RETURNING-chained transaction as ONE native componentRef chain (E5/#120). See the block comment
+ * above. Fails closed (naming the shape) on any statement it cannot bake natively — a gate statement,
+ * a batch op (no `writeMeta`), a non-ref param, an unresolvable column, or a multi-producer fan-in.
+ */
+export function lowerTransactionForNativeChain(
+  plan: TransactionPlan,
+  resolveColumnType: ColumnTypeResolver,
+  dialect: DialectName,
+  name: string,
+): ComponentGraphIR {
+  const reasons: string[] = [];
+  // Gate / non-body statements are not modelled by the native struct chain (they carry short-circuit
+  // control flow, not a produced row) — fail closed rather than bake a chain that always commits.
+  const nonBody = plan.statements.filter((s) => s.role !== 'body' || s.gate !== undefined);
+  if (nonBody.length > 0) {
+    throw new TypedNativeCoverageError(name, [
+      `transaction carries ${nonBody.length} gate/non-body statement(s) (${nonBody
+        .map((s) => `${s.id}:${s.role}${s.gate !== undefined ? `/${s.gate}` : ''}`)
+        .join(', ')}); the native RETURNING-chain covers gate-free pure-body chains only. A gate statement ` +
+        `short-circuits with a {committed:false, shortCircuit} result the struct chain does not model — ` +
+        `run this Command on the interpreter tx path (executeTransaction) or add native gate coverage.`,
+    ]);
+  }
+
+  // Each producing statement's binds-name → its node id, for cross-statement RETURNING ref rewiring.
+  const producerByName = new Map<string, string>();
+  for (const s of plan.statements) if (s.binds !== undefined) producerByName.set(s.binds, s.id);
+
+  const inputScalars = new Map<string, BcScalar>();
+  const outTypeById = new Map<string, unknown>();
+
+  const body = plan.statements.map((s) => {
+    const meta = s.op.writeMeta;
+    if (meta === undefined) {
+      reasons.push(
+        `statement '${s.id}' op carries no writeMeta — the native tx chain covers single-statement ` +
+          `Insert/Update/Delete only (a batch op binds a {__batchRows} marker, not columns).`,
+      );
+      return { id: s.id, component: 'Write', ports: {}, outType: TX_SUMMARY_ROW_TYPE };
+    }
+    const ports: Record<string, unknown> = { sql: renderPlaceholders(s.op.sql, dialect) };
+    const producers = new Set<string>();
+    s.op.params.forEach((p, i) => {
+      const ref = refPathOf(p);
+      if (ref === undefined) {
+        reasons.push(`statement '${s.id}' param ${i} (${JSON.stringify(p)}) is not a {ref:[…]} — the native tx chain binds only input refs or prior-statement RETURNING refs.`);
+        return;
+      }
+      if (ref.length === 1) {
+        // An INPUT head: type it from the column this `?` binds (writeMeta.bindColumns, §4.1 schema SoT).
+        const col = meta.bindColumns[i];
+        if (col == null) {
+          reasons.push(`statement '${s.id}' param ${i} refs input head '${ref[0]}' but binds no column (bindColumns[${i}] is null) — cannot type the native port.`);
+          return;
+        }
+        const scalar = sqlTypeToBcScalar(resolveColumnType(meta.table, col));
+        const prior = inputScalars.get(ref[0]);
+        if (prior !== undefined && prior !== scalar) {
+          reasons.push(`input head '${ref[0]}' resolves to conflicting scalar types ('${prior}' vs '${scalar}') across statements.`);
+          return;
+        }
+        inputScalars.set(ref[0], scalar);
+        ports[`p${i}`] = { ref: [ref[0]] };
+      } else if (ref.length === 2) {
+        // A prior-statement RETURNING ref: {ref:[writeName, field]} → {ref:[producerNodeId, field]}.
+        const producerId = producerByName.get(ref[0]);
+        if (producerId === undefined || producerId === s.id) {
+          reasons.push(`statement '${s.id}' param ${i} refs '${ref[0]}.${ref[1]}' which is not an earlier statement's RETURNING bind — cannot wire natively.`);
+          return;
+        }
+        producers.add(producerId);
+        ports[`p${i}`] = { ref: [producerId, ref[1]] };
+      } else {
+        reasons.push(`statement '${s.id}' param ${i} ref path ${JSON.stringify(ref)} has ${ref.length} segments — the native tx chain covers 1-segment (input) or 2-segment (prior RETURNING) refs only.`);
+      }
+    });
+    if (producers.size > 1) {
+      reasons.push(`statement '${s.id}' references ${producers.size} distinct producer statements (${[...producers].join(', ')}) — the native tx chain covers a linear chain (one parent per node); a fan-in needs a richer wire.`);
+    }
+    // Every produced value is a SINGLE obj: the RETURNING row (typed per column), or the summary row.
+    const outType =
+      meta.returning.length > 0
+        ? { obj: Object.fromEntries(meta.returning.map((col) => [col, sqlTypeToBcScalar(resolveColumnType(meta.table, col))])) }
+        : TX_SUMMARY_ROW_TYPE;
+    outTypeById.set(s.id, outType);
+    const parent = producers.size === 1 ? [...producers][0] : undefined;
+    return { id: s.id, component: txVerbComponent(s.op.sql), ports, outType, ...(parent !== undefined ? { parent } : {}) };
+  });
+
+  if (reasons.length > 0) throw new TypedNativeCoverageError(name, reasons);
+
+  const inputPorts: Record<string, PortSchema> = {};
+  for (const [head, scalar] of inputScalars) inputPorts[head] = { required: true, type: scalar };
+
+  // Output Φ: an object keyed by each statement's binds-name (its node id if unnamed) → its produced
+  // single-row struct. The runner returns EVERY statement's RETURNING row so the seam/consumer can read
+  // the whole transaction's result (the chained ids included).
+  const outputObj: Record<string, unknown> = {};
+  const outputTypeObj: Record<string, unknown> = {};
+  for (const s of plan.statements) {
+    const key = s.binds ?? s.id;
+    outputObj[key] = { ref: [s.id] };
+    outputTypeObj[key] = outTypeById.get(s.id);
+  }
+
+  const component = {
+    name,
+    inputPorts,
+    body,
+    output: { obj: outputObj },
+    outputType: { obj: outputTypeObj },
+    // Sequential stages: a tx runs its statements IN ORDER (the RETURNING chain + deterministic order).
+    plan: { concurrency: 1, groups: plan.statements.map((_, i) => [i]) },
+  } as unknown as Component;
+  return { irVersion: 1, exprVersion: 2, components: [component] };
+}
+
 /**
  * Resolve the READ codegen emitter for a target language, or throw. No fallback: a language
  * without a registered endpoint is a bc capability gap that fails LOUDLY (never a silent
@@ -1214,6 +1372,17 @@ export function generateCodegenArtifact(
   resolveColumnType: ColumnTypeResolver,
   runtimeImport?: string,
 ): CodegenArtifact {
+  const emitter = typedEmitterFor(language, registeredLanguages);
+  // A COMPOSITE / nested Command carries a `transaction` plan but NO single-statement `readGraph` (it is
+  // a multi-statement RETURNING chain, not one Select/Insert). Re-express its plan as ONE native
+  // componentRef chain (E5/#120) — the SAME typed-native emitter bakes every statement's SQL + the
+  // RETURNING→next wiring. The generic exec seam wraps the generated runner in the tx envelope.
+  if (bundle.readGraph === undefined && bundle.transaction !== undefined) {
+    const txIr = lowerTransactionForNativeChain(bundle.transaction, resolveColumnType, bundle.dialect, bundle.name);
+    const txCompiled = loadCompiledIR(txIr);
+    const txModule = generateModule(txCompiled, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
+    return { language: language as CodegenLanguage, module: txModule, companion: companionOf(bundle), bundle };
+  }
   if (bundle.readGraph === undefined) {
     throw new Error(
       `litedbmodel codegen: bundle '${bundle.name}' carries no component graph to generate from. Reads AND ` +
@@ -1221,7 +1390,6 @@ export function generateCodegenArtifact(
         `with neither was produced by some other path, and there is nothing to lower. No-assume, no-fallback.`,
     );
   }
-  const emitter = typedEmitterFor(language, registeredLanguages);
   // The portable IR exists ONLY transiently here as the generator's input — it is NOT part of the
   // codegen OUTPUT (no artifact field, no file, no binary; the codegen path never reads IR data).
   //

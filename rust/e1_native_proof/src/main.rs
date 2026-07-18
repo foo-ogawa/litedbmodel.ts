@@ -23,6 +23,11 @@ mod generated_relbatch;
 mod generated_relsingle;
 mod generated_renameuser;
 mod generated_tenantfeed;
+mod generated_txdelete;
+mod generated_txnestedcreate;
+mod generated_txnestedupdate;
+mod generated_txnestedupsert;
+mod generated_txrollback;
 mod generated_updatemany;
 mod generated_upsert;
 mod generated_upsertmany;
@@ -447,6 +452,149 @@ impl generated_deleteuser::HandlerNRDeleteUser for DeleteUserSeam<'_> {
     }
 }
 
+// ── E5 (#120): tx-chain handlers. Each node_tx_body_* runs its statement's BAKED f_sql on the pinned
+//    tx connection (RETURNING → `query`, non-returning → `execute`) and decodes its SINGLE produced row.
+//    The generated runner chains them (a `{ref:[producer,field]}` param bakes as `cell_<producer>.<f>`);
+//    the seam's `transaction` envelope (dispatch below) wraps the whole runner in BEGIN…COMMIT/ROLLBACK.
+
+struct TxDeleteSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_txdelete::HandlerNRTxDelete for TxDeleteSeam<'_> {
+    fn node_tx_body_0(&self, ports: &generated_txdelete::PortsNRTxDeleteTxBody0, _b: Option<String>) -> Option<generated_txdelete::RawRowNRTxDeleteTxBody0> {
+        let params = [Param::Text(ports.f_p0.clone()), Param::Text(ports.f_p1.clone())];
+        let rows = query(self.conn, &ports.f_sql, &params, |r| Ok(r.get::<_, i64>(0)?));
+        Some(match rows {
+            Ok(v) if !v.is_empty() => generated_txdelete::RawRowNRTxDeleteTxBody0 { is_error: false, err: String::new(), id: v[0] },
+            Ok(_) => generated_txdelete::RawRowNRTxDeleteTxBody0 { is_error: true, err: "INSERT…RETURNING produced no row".into(), ..Default::default() },
+            Err(e) => generated_txdelete::RawRowNRTxDeleteTxBody0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+    fn node_tx_body_1(&self, ports: &generated_txdelete::PortsNRTxDeleteTxBody1, _b: Option<String>) -> Option<generated_txdelete::RawRowNRTxDeleteTxBody1> {
+        // A non-returning DELETE — `execute`, its produced row is the {changes, lastInsertRowid} summary.
+        let params = [Param::Int(ports.f_p0)];
+        Some(match seam::execute(self.conn, &ports.f_sql, &params) {
+            Ok(s) => generated_txdelete::RawRowNRTxDeleteTxBody1 { is_error: false, err: String::new(), changes: s.changes, lastInsertRowid: s.last_insert_rowid },
+            Err(e) => generated_txdelete::RawRowNRTxDeleteTxBody1 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+}
+
+struct TxNestedCreateSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_txnestedcreate::HandlerNRTxNestedCreate for TxNestedCreateSeam<'_> {
+    fn node_tx_body_0(&self, ports: &generated_txnestedcreate::PortsNRTxNestedCreateTxBody0, _b: Option<String>) -> Option<generated_txnestedcreate::RawRowNRTxNestedCreateTxBody0> {
+        let params = [Param::Text(ports.f_p0.clone()), Param::Text(ports.f_p1.clone())];
+        let rows = query(self.conn, &ports.f_sql, &params, |r| Ok(r.get::<_, i64>(0)?));
+        Some(match rows {
+            Ok(v) if !v.is_empty() => generated_txnestedcreate::RawRowNRTxNestedCreateTxBody0 { is_error: false, err: String::new(), id: v[0] },
+            Ok(_) => generated_txnestedcreate::RawRowNRTxNestedCreateTxBody0 { is_error: true, err: "INSERT…RETURNING produced no row".into(), ..Default::default() },
+            Err(e) => generated_txnestedcreate::RawRowNRTxNestedCreateTxBody0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+    fn node_tx_body_1(&self, ports: &generated_txnestedcreate::PortsNRTxNestedCreateTxBody1, _b: Option<String>) -> Option<generated_txnestedcreate::RawRowNRTxNestedCreateTxBody1> {
+        // f_p0 = the CHAINED author_id (the user's RETURNING id, native i64); f_p1 = the title.
+        let params = [Param::Int(ports.f_p0), Param::Text(ports.f_p1.clone())];
+        let rows = query(self.conn, &ports.f_sql, &params, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)));
+        Some(match rows {
+            Ok(v) if !v.is_empty() => generated_txnestedcreate::RawRowNRTxNestedCreateTxBody1 { is_error: false, err: String::new(), id: v[0].0, author_id: v[0].1, title: v[0].2.clone() },
+            Ok(_) => generated_txnestedcreate::RawRowNRTxNestedCreateTxBody1 { is_error: true, err: "INSERT…RETURNING produced no row".into(), ..Default::default() },
+            Err(e) => generated_txnestedcreate::RawRowNRTxNestedCreateTxBody1 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+}
+
+struct TxNestedUpdateSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_txnestedupdate::HandlerNRTxNestedUpdate for TxNestedUpdateSeam<'_> {
+    fn node_tx_body_0(&self, ports: &generated_txnestedupdate::PortsNRTxNestedUpdateTxBody0, _b: Option<String>) -> Option<generated_txnestedupdate::RawRowNRTxNestedUpdateTxBody0> {
+        let params = [Param::Text(ports.f_p0.clone()), Param::Int(ports.f_p1)];
+        let rows = query(self.conn, &ports.f_sql, &params, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)));
+        Some(match rows {
+            Ok(v) if !v.is_empty() => generated_txnestedupdate::RawRowNRTxNestedUpdateTxBody0 { is_error: false, err: String::new(), id: v[0].0, name: v[0].1.clone() },
+            Ok(_) => generated_txnestedupdate::RawRowNRTxNestedUpdateTxBody0 { is_error: true, err: "UPDATE…RETURNING produced no row".into(), ..Default::default() },
+            Err(e) => generated_txnestedupdate::RawRowNRTxNestedUpdateTxBody0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+    fn node_tx_body_1(&self, ports: &generated_txnestedupdate::PortsNRTxNestedUpdateTxBody1, _b: Option<String>) -> Option<generated_txnestedupdate::RawRowNRTxNestedUpdateTxBody1> {
+        let params = [Param::Text(ports.f_p0.clone()), Param::Int(ports.f_p1)];
+        let rows = query(self.conn, &ports.f_sql, &params, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)));
+        Some(match rows {
+            Ok(v) if !v.is_empty() => generated_txnestedupdate::RawRowNRTxNestedUpdateTxBody1 { is_error: false, err: String::new(), id: v[0].0, title: v[0].1.clone() },
+            Ok(_) => generated_txnestedupdate::RawRowNRTxNestedUpdateTxBody1 { is_error: true, err: "UPDATE…RETURNING produced no row".into(), ..Default::default() },
+            Err(e) => generated_txnestedupdate::RawRowNRTxNestedUpdateTxBody1 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+}
+
+struct TxNestedUpsertSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_txnestedupsert::HandlerNRTxNestedUpsert for TxNestedUpsertSeam<'_> {
+    fn node_tx_body_0(&self, ports: &generated_txnestedupsert::PortsNRTxNestedUpsertTxBody0, _b: Option<String>) -> Option<generated_txnestedupsert::RawRowNRTxNestedUpsertTxBody0> {
+        let params = [Param::Text(ports.f_p0.clone()), Param::Text(ports.f_p1.clone())];
+        let rows = query(self.conn, &ports.f_sql, &params, |r| Ok(r.get::<_, i64>(0)?));
+        Some(match rows {
+            Ok(v) if !v.is_empty() => generated_txnestedupsert::RawRowNRTxNestedUpsertTxBody0 { is_error: false, err: String::new(), id: v[0] },
+            Ok(_) => generated_txnestedupsert::RawRowNRTxNestedUpsertTxBody0 { is_error: true, err: "upsert…RETURNING produced no row".into(), ..Default::default() },
+            Err(e) => generated_txnestedupsert::RawRowNRTxNestedUpsertTxBody0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+    fn node_tx_body_1(&self, ports: &generated_txnestedupsert::PortsNRTxNestedUpsertTxBody1, _b: Option<String>) -> Option<generated_txnestedupsert::RawRowNRTxNestedUpsertTxBody1> {
+        let params = [Param::Int(ports.f_p0), Param::Text(ports.f_p1.clone())];
+        let rows = query(self.conn, &ports.f_sql, &params, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)));
+        Some(match rows {
+            Ok(v) if !v.is_empty() => generated_txnestedupsert::RawRowNRTxNestedUpsertTxBody1 { is_error: false, err: String::new(), id: v[0].0, author_id: v[0].1, title: v[0].2.clone() },
+            Ok(_) => generated_txnestedupsert::RawRowNRTxNestedUpsertTxBody1 { is_error: true, err: "INSERT…RETURNING produced no row".into(), ..Default::default() },
+            Err(e) => generated_txnestedupsert::RawRowNRTxNestedUpsertTxBody1 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+}
+
+struct TxRollbackSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_txrollback::HandlerNRTxRollback for TxRollbackSeam<'_> {
+    fn node_tx_body_0(&self, ports: &generated_txrollback::PortsNRTxRollbackTxBody0, _b: Option<String>) -> Option<generated_txrollback::RawRowNRTxRollbackTxBody0> {
+        let params = [Param::Text(ports.f_p0.clone()), Param::Text(ports.f_p1.clone())];
+        let rows = query(self.conn, &ports.f_sql, &params, |r| Ok(r.get::<_, i64>(0)?));
+        Some(match rows {
+            Ok(v) if !v.is_empty() => generated_txrollback::RawRowNRTxRollbackTxBody0 { is_error: false, err: String::new(), id: v[0] },
+            Ok(_) => generated_txrollback::RawRowNRTxRollbackTxBody0 { is_error: true, err: "INSERT…RETURNING produced no row".into(), ..Default::default() },
+            Err(e) => generated_txrollback::RawRowNRTxRollbackTxBody0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+    fn node_tx_body_1(&self, ports: &generated_txrollback::PortsNRTxRollbackTxBody1, _b: Option<String>) -> Option<generated_txrollback::RawRowNRTxRollbackTxBody1> {
+        // This INSERT collides on UNIQUE(email) → the driver returns Err → is_error → the runner Errs →
+        // the seam's transaction ROLLS BACK statement 0's insert (atomicity).
+        let params = [Param::Text(ports.f_p0.clone()), Param::Text(ports.f_p1.clone())];
+        let rows = query(self.conn, &ports.f_sql, &params, |r| Ok(r.get::<_, i64>(0)?));
+        Some(match rows {
+            Ok(v) if !v.is_empty() => generated_txrollback::RawRowNRTxRollbackTxBody1 { is_error: false, err: String::new(), id: v[0] },
+            Ok(_) => generated_txrollback::RawRowNRTxRollbackTxBody1 { is_error: true, err: "INSERT…RETURNING produced no row".into(), ..Default::default() },
+            Err(e) => generated_txrollback::RawRowNRTxRollbackTxBody1 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+}
+
+/// The users+posts DB state, for the tx write-state assertion — byte-matching the mode-2 oracle's
+/// `txState` (`{users:[{id,email,name}…], posts:[{id,title,author_id}…]}`).
+fn tx_state(conn: &Connection) -> String {
+    let users = query(conn, "SELECT id, email, name FROM benchmark_users ORDER BY id", &[], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+    })
+    .expect("users state read");
+    let posts = query(conn, "SELECT id, title, author_id FROM benchmark_posts ORDER BY id", &[], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+    })
+    .expect("posts state read");
+    let u: Vec<String> = users.iter().map(|(id, e, n)| format!("{{\"id\":{},\"email\":{},\"name\":{}}}", id, json_str(e), json_str(n))).collect();
+    let p: Vec<String> = posts.iter().map(|(id, t, a)| format!("{{\"id\":{},\"title\":{},\"author_id\":{}}}", id, json_str(t), a)).collect();
+    format!("{{\"users\":[{}],\"posts\":[{}]}}", u.join(","), p.join(","))
+}
+
 fn row_or_err_fu(v: rusqlite::Result<Vec<generated_findunique::T0>>) -> generated_findunique::RawRowNRFindUniqueN0 {
     match v {
         Ok(val) => generated_findunique::RawRowNRFindUniqueN0 { is_error: false, err: String::new(), val },
@@ -668,6 +816,53 @@ fn main() {
             // The non-returning summary row: [{changes, lastInsertRowid}].
             let s: Vec<String> = out.iter().map(|r| format!("{{\"changes\":{},\"lastInsertRowid\":{}}}", r.changes, r.lastInsertRowid)).collect();
             println!("{{\"result\":[{}],\"state\":{}}}", s.join(","), table_state(&conn));
+        }
+        // E5 (#120): RETURNING-chained transactions. The seam's `transaction` envelope wraps the whole
+        // generated chain runner in BEGIN…COMMIT / ROLLBACK; on any statement failure the chain Errs and
+        // the tx rolls back (committed:false), leaving the DB unchanged. Output {result:{committed}, state}.
+        "txdelete" => {
+            let email = args.get(3).expect("email").clone();
+            let name = args.get(4).expect("name").clone();
+            let r = seam::transaction(&conn, |c| {
+                generated_txdelete::run_native_raw_struct_TxDelete(&TxDeleteSeam { conn: c }, generated_txdelete::InNRTxDelete { email, name })
+            });
+            println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", r.is_ok(), tx_state(&conn));
+        }
+        "txnestedcreate" => {
+            let email = args.get(3).expect("email").clone();
+            let name = args.get(4).expect("name").clone();
+            let title = args.get(5).expect("title").clone();
+            let r = seam::transaction(&conn, |c| {
+                generated_txnestedcreate::run_native_raw_struct_TxNestedCreate(&TxNestedCreateSeam { conn: c }, generated_txnestedcreate::InNRTxNestedCreate { email, name, title })
+            });
+            println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", r.is_ok(), tx_state(&conn));
+        }
+        "txnestedupdate" => {
+            let user_id: i64 = args.get(3).expect("user_id").parse().expect("user_id int");
+            let name = args.get(4).expect("name").clone();
+            let title = args.get(5).expect("title").clone();
+            let r = seam::transaction(&conn, |c| {
+                generated_txnestedupdate::run_native_raw_struct_TxNestedUpdate(&TxNestedUpdateSeam { conn: c }, generated_txnestedupdate::InNRTxNestedUpdate { name, user_id, title })
+            });
+            println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", r.is_ok(), tx_state(&conn));
+        }
+        "txnestedupsert" => {
+            let email = args.get(3).expect("email").clone();
+            let name = args.get(4).expect("name").clone();
+            let title = args.get(5).expect("title").clone();
+            let r = seam::transaction(&conn, |c| {
+                generated_txnestedupsert::run_native_raw_struct_TxNestedUpsert(&TxNestedUpsertSeam { conn: c }, generated_txnestedupsert::InNRTxNestedUpsert { email, name, title })
+            });
+            println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", r.is_ok(), tx_state(&conn));
+        }
+        "txrollback" => {
+            let email = args.get(3).expect("email").clone();
+            let dup_email = args.get(4).expect("dup_email").clone();
+            let name = args.get(5).expect("name").clone();
+            let r = seam::transaction(&conn, |c| {
+                generated_txrollback::run_native_raw_struct_TxRollback(&TxRollbackSeam { conn: c }, generated_txrollback::InNRTxRollback { email, name, dup_email })
+            });
+            println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", r.is_ok(), tx_state(&conn));
         }
         other => panic!("unknown op '{other}'"),
     }
