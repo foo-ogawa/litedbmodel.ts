@@ -890,7 +890,7 @@ function coalesceOptHead(param: unknown): { head: string; scalar: BcScalar } | u
   return { head: path[0], scalar: Number.isInteger(dflt) ? 'int' : 'float' };
 }
 
-function paramPortFor(param: unknown, index: number, nodeId: string, reasons: string[]): unknown | undefined {
+function paramPortFor(param: unknown, index: number, nodeId: string, reasons: string[], elementVar?: string): unknown | undefined {
   if (typeof param === 'number' && Number.isFinite(param)) return param;
   // A `coalesce(opt(head), literal)` default (#122): bc 0.8.5 bakes it as `in_.<head>.unwrap_or(lit)`
   // over an OPTIONAL input port — the default is preserved natively (NOT dropped by rewriting to a
@@ -906,6 +906,12 @@ function paramPortFor(param: unknown, index: number, nodeId: string, reasons: st
   const arrHead = arrayHeadNameOf(param);
   if (arrHead !== undefined) return { ref: [arrHead] };
   const path = refPathOf(param);
+  // A map ELEMENT-FIELD ref (`{ref:[$e0, field]}`, first segment = the map's `as` var) — the mapped
+  // parent row's field. bc types it from the map's `over` element struct (the parent node's outType),
+  // so emit it verbatim; it is NOT a component input head (the caller excludes it from inputPorts).
+  if (elementVar !== undefined && path !== undefined && path.length === 2 && path[0] === elementVar) {
+    return { ref: path };
+  }
   if (path !== undefined && path.length === 1) {
     const keys = Object.keys(param as object);
     if (keys[0] === 'refOpt') {
@@ -961,32 +967,46 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
         reasons.push(`node '${(n as unknown as { id?: string }).id ?? '<cond>'}': a 'cond' node is not lowered by the E1 SQL-port lowering`);
         return n;
       }
-      if ('map' in n) {
-        reasons.push(
-          `node '${n.id}': a 'map' (relation) node is not lowered by the E1 SQL-port lowering — its per-element SQL binds the ` +
-            `mapped parent row, which needs the element-field port shape (declared E2+ follow-on).`,
-        );
+      const stmts = readGraph.statementsById[n.id] ?? [];
+      // A `map` (relation) node runs a per-parent-element child Select — its ports live on `n.map`
+      // and its child statements bind the mapped parent row via `{ref:[$e0, field]}` element-field
+      // refs (bc types them from the parent node's outType; NOT component input heads). Everything
+      // else — the SQL baking, the head typing, the param ports — is the SAME as a plain read (this
+      // is ONE lowering, branching only on where the ports live + the element-var exclusion).
+      const isMap = 'map' in n;
+      if ('cond' in n) {
+        reasons.push(`node '${(n as unknown as { id?: string }).id ?? '<cond>'}': a 'cond' node is not lowered by the SQL-port lowering`);
         return n;
       }
-      const stmts = readGraph.statementsById[n.id] ?? [];
-      const component = (n as unknown as { component?: string }).component ?? '';
+      const mapObj = isMap ? (n as unknown as { map: { as?: string; component?: string; ports: Record<string, unknown> } }).map : undefined;
+      const elementVar = isMap ? mapObj?.as : undefined;
+      const component = isMap ? (mapObj?.component ?? '') : ((n as unknown as { component?: string }).component ?? '');
       const isWrite = WRITE_COMPONENTS.has(component);
       if (!isWrite && !READ_COMPONENTS.has(component)) {
         reasons.push(`node '${n.id}': component '${component}' is not a SQL CRUD node the SQL-port lowering bakes (Select/Count/Insert/Update/Delete)`);
         return n;
       }
+      if (isMap && (isWrite || elementVar === undefined)) {
+        reasons.push(`node '${n.id}': a map node must run a Select/Count child with an 'as' element var (got component '${component}', as '${elementVar ?? '<none>'}')`);
+        return n;
+      }
+      if (isMap && hasSkipStatement(stmts)) {
+        reasons.push(`node '${n.id}': a map node with a SKIP-guarded child fragment is not yet lowered (single-key relations do not skip)`);
+        return n;
+      }
       // The node's authored `table` port — the SoT for every column type below. Every CRUD node
-      // (read AND write) carries it, which is exactly why read/write need no separate path here.
-      const nodePorts = (n as unknown as { ports: Record<string, unknown> }).ports;
+      // (read AND write, plain AND map-child) carries it.
+      const nodePorts = isMap ? mapObj!.ports : (n as unknown as { ports: Record<string, unknown> }).ports;
       const table = typeof nodePorts.table === 'string' ? nodePorts.table : undefined;
       if (table === undefined) {
         reasons.push(`node '${n.id}': ${component} node has no literal 'table' port — cannot resolve its column types`);
         return n;
       }
       // Type each genuine bound head from the schema SoT — the SAME derivation the pre-E1 lowering
-      // uses (unchanged), so the input struct's field types are identical. A write additionally
-      // types the heads its `values.*`/`set.*` ports bind (the ports name the column; the SQL does not).
-      const { byHead, arrayHeads, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType, undefined, table);
+      // uses (unchanged), so the input struct's field types are identical. A map node passes its
+      // element var so element-field refs are excluded from head typing. A write additionally types
+      // the heads its `values.*`/`set.*` ports bind (the ports name the column; the SQL does not).
+      const { byHead, arrayHeads, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType, elementVar, table);
       for (const [, reason] of unresolved) reasons.push(`node '${n.id}': ${reason}`);
       if (isWrite) {
         for (const [head, scalar] of deriveWriteHeadTypes(nodePorts, table, resolveColumnType, n.id, reasons)) {
@@ -1070,13 +1090,20 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       const rendered = renderStaticSql(stmts, readGraph.dialect, n.id, reasons);
       if (rendered === undefined) return n;
       // The single-`sql` port shape: the rendered SQL as a STATIC string port bc bakes as a native
-      // literal, plus one typed port per bound `?` in placeholder order.
+      // literal, plus one typed port per bound `?` in placeholder order. For a map node the params may
+      // include element-field refs (`{ref:[$e0, field]}`), which `paramPortFor` passes through (bc
+      // types them from the parent outType).
       const newPorts: Record<string, unknown> = { sql: rendered.sql };
       rendered.params.forEach((p, i) => {
-        const port = paramPortFor(p, i, n.id, reasons);
+        const port = paramPortFor(p, i, n.id, reasons, elementVar);
         if (port !== undefined) newPorts[`p${i}`] = port;
         recordCoalesce(p);
       });
+      // A map node's ports live on `n.map`; the runner drives its child per parent element (bc emits
+      // the batch/per-element structs). A plain read/write carries `n.ports`.
+      if (isMap) {
+        return { ...n, map: { ...mapObj, ports: newPorts } } as typeof n;
+      }
       // A write with NO RETURNING hands back the single summary row `[{changes, lastInsertRowid}]`,
       // NOT the determined empty-row list its compile-time outType carries (that stamp existed only
       // to satisfy bc's all-nodes-typed gate, back when writes were never typed-codegen'd). Correct it

@@ -15,6 +15,7 @@ mod generated_bymaybe;
 mod generated_byids;
 mod generated_createuser;
 mod generated_deleteuser;
+mod generated_feed;
 mod generated_findunique;
 mod generated_recent;
 mod generated_renameuser;
@@ -61,6 +62,43 @@ impl generated_byids::HandlerNRByIds for ByIdsSeam<'_> {
             Ok(generated_byids::T0 { id: r.get(0)?, email: r.get(1)?, name: r.get(2)? })
         });
         Some(row_or_err_bi(val))
+    }
+}
+
+struct FeedSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_feed::HandlerNRPostsWithAuthor for FeedSeam<'_> {
+    // n0: the parent posts read — the module baked its SQL; the seam just runs it.
+    fn node_n0(
+        &self,
+        ports: &generated_feed::PortsNRPostsWithAuthorN0,
+        _bound: Option<String>,
+    ) -> Option<generated_feed::RawRowNRPostsWithAuthorN0> {
+        let params = [Param::Int(ports.f_p0)];
+        let val = query(self.conn, &ports.f_sql, &params, |r| {
+            Ok(generated_feed::T0 { id: r.get(0)?, title: r.get(1)?, author_id: r.get(2)? })
+        });
+        Some(match val {
+            Ok(val) => generated_feed::RawRowNRPostsWithAuthorN0 { is_error: false, err: String::new(), val },
+            Err(e) => generated_feed::RawRowNRPostsWithAuthorN0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+    // n1: the per-PARENT-ELEMENT child lookup — the module drives this once per post, binding
+    // ports.f_p0 = that post's author_id (a NATIVE element-field access, `oel_n1.author_id`).
+    fn node_n1(
+        &self,
+        ports: &generated_feed::PortsNRPostsWithAuthorN1,
+        _bound: Option<String>,
+    ) -> Option<generated_feed::RawElemNRPostsWithAuthorN1> {
+        let params = [Param::Int(ports.f_p0)];
+        let val = query(self.conn, &ports.f_sql, &params, |r| {
+            Ok(generated_feed::T1 { id: r.get(0)?, name: r.get(1)? })
+        });
+        Some(match val {
+            Ok(val) => generated_feed::RawElemNRPostsWithAuthorN1 { is_error: false, err: String::new(), val },
+            Err(e) => generated_feed::RawElemNRPostsWithAuthorN1 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
     }
 }
 
@@ -231,6 +269,26 @@ fn main() {
                 .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));
+        }
+        // feed: <author_id> — a single-key relation (posts + per-post author). Output {authors, posts}.
+        "feed" => {
+            let author_id: i64 = args.get(3).expect("author_id").parse().expect("author_id int");
+            let out = generated_feed::run_native_raw_struct_PostsWithAuthor(&FeedSeam { conn: &conn }, generated_feed::InNRPostsWithAuthor { author_id })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let authors: Vec<String> = out
+                .authors
+                .iter()
+                .map(|inner| {
+                    let items: Vec<String> = inner.iter().map(|a| format!("{{\"id\":{},\"name\":{}}}", a.id, json_str(&a.name))).collect();
+                    format!("[{}]", items.join(","))
+                })
+                .collect();
+            let posts: Vec<String> = out
+                .posts
+                .iter()
+                .map(|p| format!("{{\"id\":{},\"title\":{},\"author_id\":{}}}", p.id, json_str(&p.title), p.author_id))
+                .collect();
+            println!("{{\"authors\":[{}],\"posts\":[{}]}}", authors.join(","), posts.join(","));
         }
         // bymaybe: <author_id> <published or ''>  ("" published = absent → the skip fragment drops)
         "bymaybe" => {

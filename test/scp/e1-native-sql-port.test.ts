@@ -139,11 +139,28 @@ class PostReads extends SemanticBehavior {
   }
 }
 
+/** A single-key relation (E4/#119): posts + each post's author (belongsTo), on the SQL-baking lowering. */
+const REL_COLUMNS = {
+  benchmark_posts: { id: 'INTEGER', title: 'TEXT', content: 'TEXT', published: 'INTEGER', author_id: 'INTEGER', created_at: 'TEXT' },
+  benchmark_users: { id: 'INTEGER', email: 'TEXT', name: 'TEXT', created_at: 'TEXT', updated_at: 'TEXT' },
+} as const;
+class FeedReads extends SemanticBehavior {
+  static columns = REL_COLUMNS;
+  PostsWithAuthor($: { author_id: unknown }) {
+    const posts = L.Select({ table: 'benchmark_posts', select: ['id', 'title', 'author_id'], where: [whereEq(($ as never)['author_id'], $.author_id)], order: 'id ASC' });
+    const authors = (posts as unknown as { map(fn: (p: never) => unknown): unknown }).map(($p: never) =>
+      L.Select({ table: 'benchmark_users', select: ['id', 'name'], where: [whereEq(($p as never)['id'], ($p as never)['author_id'])] }),
+    );
+    return { posts, authors };
+  }
+}
+
 const RESOLVE = schemaColumnTypeResolver(ddl('sqlite'));
 const CONTRACT = publishBehaviors(OrmReads);
 const WRITE_CONTRACT = publishBehaviors(OrmWrites);
 const POST_CONTRACT = publishBehaviors(PostReads);
 const POST_RESOLVE = schemaColumnTypeResolver(ddl('sqlite'));
+const FEED_CONTRACT = publishBehaviors(FeedReads);
 const EXPECTED_SQL = 'SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT ?';
 
 function findUniqueBundle() {
@@ -234,6 +251,22 @@ describe('skip — a SKIP-optional WHERE fragment bakes fragmented; the seam dro
     expect(code).toContain('f_w1: "published = ?".to_string()');
     expect(code).toContain('f_w1p0: in_.published'); // skip fragment head (Option<i64> — presence)
     expect(code).toContain('pub published: Option<i64>');
+    expect(stripRustComments(code)).not.toContain('serde_json');
+  });
+});
+
+describe('E4 (#119) — a single-key map relation bakes; the child binds the parent element field natively', () => {
+  it('bakes parent + per-element child SQL; the element-field ref is a native i64 (from the parent outType)', () => {
+    const bundle = compileBundle(FEED_CONTRACT, 'PostsWithAuthor', [], 'sqlite', undefined, RESOLVE);
+    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    // parent (n0) SQL baked
+    expect(code).toContain('f_sql: "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = ? ORDER BY id ASC".to_string()');
+    // child (n1) SQL baked; its param binds the mapped parent element's author_id — NOT an input head
+    expect(code).toContain('f_sql: "SELECT id, name FROM benchmark_users WHERE id = ?".to_string()');
+    expect(code).toContain('f_p0: oel_n1.author_id'); // native element-field access, typed i64 from the parent
+    // the ONLY component input is author_id; the element var never leaks into InNR
+    expect(code).toContain('pub author_id: i64');
+    expect(code).not.toContain('$e0');
     expect(stripRustComments(code)).not.toContain('serde_json');
   });
 });
@@ -354,6 +387,11 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     const byMaybeArt = generateCodegenArtifact(byMaybeBundle, 'rust', REGISTERED, POST_RESOLVE, undefined, { nativeSql: true });
     writeFileSync(join(PROOF_DIR, 'generated_bymaybe.rs'), byMaybeArt.module.code);
 
+    // E4 map relation: posts + per-post author. Output {authors, posts}.
+    const feedBundle = compileBundle(FEED_CONTRACT, 'PostsWithAuthor', [], 'sqlite', undefined, RESOLVE);
+    const feedArt = generateCodegenArtifact(feedBundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
+    writeFileSync(join(PROOF_DIR, 'generated_feed.rs'), feedArt.module.code);
+
     // ONE seeded sqlite DB FILE shared by BOTH legs — the oracle and the rust run read byte-identical
     // data, so an equality pass cannot come from two independently-seeded DBs happening to agree.
     if (existsSync(DB_PATH)) rmSync(DB_PATH);
@@ -375,14 +413,21 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     byMaybeOracles['7|'] = executeBundle(byMaybeBundle, { author_id: 7 } as never, { db: db as never });
     byMaybeOracles['7|1'] = executeBundle(byMaybeBundle, { author_id: 7, published: 1 } as never, { db: db as never });
     byMaybeOracles['7|0'] = executeBundle(byMaybeBundle, { author_id: 7, published: 0 } as never, { db: db as never });
+    // E4 map: author 7 (has 2 posts), author 1, author 999 (no posts → empty relation).
+    const feedOracles: Record<string, unknown> = {};
+    for (const aid of [7, 1, 999]) feedOracles[String(aid)] = executeBundle(feedBundle, { author_id: aid } as never, { db: db as never });
     db.close();
 
     writeFileSync(join(PROOF_DIR, 'oracles.json'), JSON.stringify(oracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_byids.json'), JSON.stringify(byIdsOracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_recent.json'), JSON.stringify(recentOracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_bymaybe.json'), JSON.stringify(byMaybeOracles, null, 2));
+    writeFileSync(join(PROOF_DIR, 'oracles_feed.json'), JSON.stringify(feedOracles, null, 2));
     // the skip actually drops: absent published returns >= as many rows as present-filtered.
     expect((byMaybeOracles['7|'] as unknown[]).length).toBeGreaterThanOrEqual((byMaybeOracles['7|1'] as unknown[]).length);
+    // the relation resolves: author 7 has 2 posts, each with its author list; author 999 has none.
+    expect(((feedOracles['7'] as { posts: unknown[] }).posts).length).toBe(2);
+    expect(((feedOracles['999'] as { posts: unknown[] }).posts).length).toBe(0);
     // the default actually takes effect: absent limit returns 20 rows (the seed has 111).
     expect((recentOracles[''] as unknown[]).length).toBe(20);
     expect((recentOracles['3'] as unknown[]).length).toBe(3);
