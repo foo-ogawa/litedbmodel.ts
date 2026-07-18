@@ -12,6 +12,16 @@ self-measure and write a flat CSV; a separate collector aggregates. No stdio-pro
 | **rust-native** | the `rust-typed-native` generated module + the generic `exec` seam (`rust/e1_native_proof`): baked-SQL native literals, direct bind/exec/decode. | yes — `rustc --emit metadata` with **no** `--extern behavior_contracts`; purity greps 0 |
 | **go-native** | the `go-typed-native` generated module + a generic `exec` seam (`go-cell/`, the go twin of the rust seam), driven by `mattn/go-sqlite3` (cgo, the same C sqlite engine as rust/ts). | yes — `go list -deps` shows **no** behavior-contracts runtime |
 
+**Scaled relation sweep.** Beyond the fixed ops, the sweep runs the SAME batched relation at growing
+child counts (`relScale` 10 / 100 / 1000 / 10000, one indexed author per scale in `rel.db`) so per-row
+decode/clone/alloc cost — invisible at the 4-child scale — becomes measurable. This exposed a real
+**O(N)** inefficiency in the rust seam's `query_batched_relation`: the alignment step cloned every
+parent's child Vec (`groups.get(k).cloned()`). Fixed by **moving** the Vec out (`groups.remove(k)`, valid
+since a relation's parent keys are distinct) — zero child clones — plus capacity reservations and dropping
+the `Child: Clone` bound. `query_batch_write` now clones the records-JSON `n_params-1` times (0 for
+createMany's single `?`). The go seam was already clone-free (slice-header assignment); it got capacity
+reservations for parity. Measured effect: ~2% at 10 children → ~13% at 10000. Generated modules untouched.
+
 **Prepared-statement reuse (applied to all three cells).** The baked SQL is static, so a real native
 runtime prepares each op's statement once and reuses it. This is applied **symmetrically**: rust uses
 `prepare_cached`, go a per-SQL `*sql.Stmt` cache, and the ts-IR cell wraps the driver in a

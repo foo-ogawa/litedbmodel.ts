@@ -16,7 +16,7 @@
 import { writeFileSync, copyFileSync, rmSync, existsSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { executeBundle, readBundle } from '../../../dist/scp/index.cjs'; // bundled instance (tsx-loadable)
-import { benchOps } from './behaviors';
+import { benchOps, REL_SCALES } from './behaviors';
 
 /** Wrap a better-sqlite3 Database so `.prepare(sql)` returns a CACHED statement (reused across calls),
  * forwarding every other method to the real db. The interpreter still walks the IR + boxes per call —
@@ -45,8 +45,8 @@ function timeUs(fn: () => void): number {
 }
 
 function main(): void {
-  const [readDbPath, writeSeed, warmupS, itersS, outCsv] = process.argv.slice(2);
-  if (!outCsv) throw new Error('usage: tsx ts-ir.ts <read_db> <write_db> <warmup> <iters> <out_csv>');
+  const [readDbPath, writeSeed, relDbPath, warmupS, itersS, outCsv] = process.argv.slice(2);
+  if (!outCsv) throw new Error('usage: tsx ts-ir.ts <read_db> <write_db> <rel_db> <warmup> <iters> <out_csv>');
   const WARMUP = Number(warmupS);
   const ITERS = Number(itersS);
 
@@ -91,6 +91,19 @@ function main(): void {
     };
     for (let i = 0; i < WARMUP; i++) run(`w${i}`);
     for (let i = 0; i < ITERS; i++) record('createmany', timeUs(() => run(`${i}_${process.hrtime.bigint()}`)));
+  }
+
+  // ── SCALED relation sweep — the SAME relsingle op at growing child counts (10 → 10000) ──
+  {
+    const b = ops.get('relsingle')!.bundle;
+    const relDb = cachingDb(new Database(relDbPath, { readonly: true }));
+    for (const sc of REL_SCALES) {
+      const run = () => readBundle(b, { author_id: sc.author } as never, { db: relDb as never, with: { comments: true } as never });
+      const wu = Math.min(WARMUP, sc.iters);
+      for (let i = 0; i < wu; i++) run();
+      for (let i = 0; i < sc.iters; i++) record(sc.id, timeUs(run));
+    }
+    (relDb as never as { close(): void }).close();
   }
 
   (readDb as never as { close(): void }).close();

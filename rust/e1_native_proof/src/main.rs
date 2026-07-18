@@ -634,7 +634,11 @@ fn now_us() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros()
 }
 
-fn run_bench(read_db: &str, write_db: &str, warmup: usize, iters: usize, out_csv: &str) {
+// The scaled-relation sweep — (op id, author, iters). Matches benchmark/crosslang/latency/behaviors.ts
+// REL_SCALES; the rel.db seed defines each author's child count (10 / 100 / 1000 / 10000).
+const REL_SCALES: &[(&str, i64, usize)] = &[("rel10", 101, 5000), ("rel100", 102, 5000), ("rel1000", 103, 2000), ("rel10000", 104, 300)];
+
+fn run_bench(read_db: &str, write_db: &str, rel_db: &str, warmup: usize, iters: usize, out_csv: &str) {
     use std::io::Write;
     let mut csv = std::fs::File::create(out_csv).expect("create csv");
     writeln!(csv, "op,us").unwrap();
@@ -702,20 +706,37 @@ fn run_bench(read_db: &str, write_db: &str, warmup: usize, iters: usize, out_csv
             writeln!(csv, "createmany,{:.3}", t0.elapsed().as_nanos() as f64 / 1000.0).unwrap();
         }
     }
-    eprintln!("rust-native bench done: {} ops × {} iters → {}", 4, iters, out_csv);
+    // ── SCALED relation sweep — the SAME relsingle (ByAuthor + batched comments) at growing child counts
+    //    (10 → 10000). Exposes the seam's per-parent alignment cost, which scales with total children. ──
+    {
+        let conn = Connection::open(rel_db).expect("open rel db");
+        for (op, author, scale_iters) in REL_SCALES {
+            for _ in 0..warmup.min(*scale_iters) {
+                let _ = generated_relsingle::run_native_raw_struct_ByAuthor(&RelSingleSeam { conn: &conn }, generated_relsingle::InNRByAuthor { author_id: *author });
+            }
+            for _ in 0..*scale_iters {
+                let t0 = std::time::Instant::now();
+                let out = generated_relsingle::run_native_raw_struct_ByAuthor(&RelSingleSeam { conn: &conn }, generated_relsingle::InNRByAuthor { author_id: *author }).unwrap();
+                std::hint::black_box(&out);
+                writeln!(csv, "{},{:.3}", op, t0.elapsed().as_nanos() as f64 / 1000.0).unwrap();
+            }
+        }
+    }
+    eprintln!("rust-native bench done: 4 base ops + {} rel scales → {}", REL_SCALES.len(), out_csv);
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let op = args.get(1).expect("usage: e1_native_proof <op> <db> <args...>");
-    // Latency bench: `bench <read_db> <write_db> <warmup> <iters> <out_csv>`.
+    // Latency bench: `bench <read_db> <write_db> <rel_db> <warmup> <iters> <out_csv>`.
     if op == "bench" {
         let read_db = args.get(2).expect("bench <read_db>");
         let write_db = args.get(3).expect("bench <write_db>");
-        let warmup: usize = args.get(4).expect("bench <warmup>").parse().expect("warmup");
-        let iters: usize = args.get(5).expect("bench <iters>").parse().expect("iters");
-        let out_csv = args.get(6).expect("bench <out_csv>");
-        run_bench(read_db, write_db, warmup, iters, out_csv);
+        let rel_db = args.get(4).expect("bench <rel_db>");
+        let warmup: usize = args.get(5).expect("bench <warmup>").parse().expect("warmup");
+        let iters: usize = args.get(6).expect("bench <iters>").parse().expect("iters");
+        let out_csv = args.get(7).expect("bench <out_csv>");
+        run_bench(read_db, write_db, rel_db, warmup, iters, out_csv);
         return;
     }
     let db_path = args.get(2).expect("usage: e1_native_proof <op> <db> <args...>");

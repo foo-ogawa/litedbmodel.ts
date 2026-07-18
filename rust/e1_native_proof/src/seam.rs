@@ -157,11 +157,12 @@ pub fn query_batched_relation<Child, Key>(
 ) -> rusqlite::Result<Vec<Vec<Child>>>
 where
     Key: Eq + std::hash::Hash + Clone,
-    Child: Clone,
 {
     // DISTINCT parent keys — the ONE query binds only these (the dedup the runtime relation does).
-    let mut seen: std::collections::HashSet<Key> = std::collections::HashSet::new();
-    let mut distinct: Vec<Key> = Vec::new();
+    // Reserve up-front (no rehash/regrow); a repeat clones the key once into the set, uniques once into
+    // the vec (for `Key = i64` this is a Copy, i.e. free — the O(N) cost is the child rows, handled below).
+    let mut seen: std::collections::HashSet<Key> = std::collections::HashSet::with_capacity(item_keys.len());
+    let mut distinct: Vec<Key> = Vec::with_capacity(item_keys.len());
     for k in item_keys {
         if seen.insert(k.clone()) {
             distinct.push(k.clone());
@@ -169,13 +170,16 @@ where
     }
     let json = encode_json(&distinct);
     let children = query(conn, sql, &[Param::Text(json)], decode)?; // <-- ONE query for all parents
-    // group children by their target key
-    let mut groups: std::collections::HashMap<Key, Vec<Child>> = std::collections::HashMap::new();
+    // Group children by their target key (reserved to the distinct-parent count).
+    let mut groups: std::collections::HashMap<Key, Vec<Child>> = std::collections::HashMap::with_capacity(distinct.len());
     for ch in children {
         groups.entry(child_key(&ch)).or_default().push(ch);
     }
-    // align a child list to EACH parent item, in order
-    Ok(item_keys.iter().map(|k| groups.get(k).cloned().unwrap_or_default()).collect())
+    // Align: MOVE each parent's child list out (`remove`) instead of cloning it. A relation's parent rows
+    // are DISTINCT (each parent key appears once in `item_keys`), so `remove` hands each key's Vec out
+    // exactly once — O(1) per parent, ZERO Child clones (was O(total children) String allocations via
+    // `.cloned()`). A key not present (parent with no children) yields an empty Vec.
+    Ok(item_keys.iter().map(|k| groups.remove(k).unwrap_or_default()).collect())
 }
 
 /// The generic BATCH-WRITE exec (E3/#118 — createMany / updateMany / upsertMany, ONE statement for N
@@ -204,7 +208,15 @@ pub fn query_batch_write<Row>(
     // per SET clause + the WHERE). None of these baked batch SQLs carry a `?` inside a string literal,
     // so counting `?` gives the bind count. Still ONE statement for N records either way.
     let n_params = sql.matches('?').count();
-    let params: Vec<Param> = (0..n_params).map(|_| Param::Text(json.clone())).collect();
+    // Bind the SAME records-JSON to every `?`, cloning it only n_params-1 times (the LAST param MOVES the
+    // owned json — so createMany's single-`?` shape clones ZERO times; updateMany's few `?` clone a few).
+    let mut params: Vec<Param> = Vec::with_capacity(n_params);
+    if n_params > 0 {
+        for _ in 1..n_params {
+            params.push(Param::Text(json.clone()));
+        }
+        params.push(Param::Text(json));
+    }
     query(conn, sql, &params, decode)
 }
 

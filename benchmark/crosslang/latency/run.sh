@@ -51,15 +51,15 @@ fi
 
 echo "── step 3/5: run the rust-native cell (fresh write seed) ──"
 cp "$ART/write.db" "$ART/rust_write.db"
-"$RUST_BIN" bench "$ART/read.db" "$ART/rust_write.db" "$WARMUP" "$ITERS" "$RESULTS/rust.csv" || { echo "  FAIL rust cell"; fail=1; }
+"$RUST_BIN" bench "$ART/read.db" "$ART/rust_write.db" "$ART/rel.db" "$WARMUP" "$ITERS" "$RESULTS/rust.csv" || { echo "  FAIL rust cell"; fail=1; }
 
 echo "── step 4/5: run the go-native cell (fresh write seed) ──"
 cp "$ART/write.db" "$ART/go_write.db"
-"$GO_BIN" "$ART/read.db" "$ART/go_write.db" "$WARMUP" "$ITERS" "$RESULTS/go.csv" || { echo "  FAIL go cell"; fail=1; }
+"$GO_BIN" "$ART/read.db" "$ART/go_write.db" "$ART/rel.db" "$WARMUP" "$ITERS" "$RESULTS/go.csv" || { echo "  FAIL go cell"; fail=1; }
 
 echo "── step 5/5: run the ts-IR interpreter cell (standalone tsx) + collect the table ──"
 cp "$ART/write.db" "$ART/ts_write.db"
-npx tsx "$HERE/ts-ir.ts" "$ART/read.db" "$ART/ts_write.db" "$WARMUP" "$ITERS" "$RESULTS/ts_ir.csv" || { echo "  FAIL ts cell"; fail=1; }
+npx tsx "$HERE/ts-ir.ts" "$ART/read.db" "$ART/ts_write.db" "$ART/rel.db" "$WARMUP" "$ITERS" "$RESULTS/ts_ir.csv" || { echo "  FAIL ts cell"; fail=1; }
 rm -f "$ART/rust_write.db" "$ART/go_write.db" "$ART/ts_write.db"
 node "$HERE/collect.mjs"
 

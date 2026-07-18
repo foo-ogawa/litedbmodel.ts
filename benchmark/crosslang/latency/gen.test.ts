@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 import { generateCodegenArtifact } from '../../../dist/scp/index.cjs'; // SAME bundled instance as behaviors.ts / ts-ir.ts
 import { registeredLanguages } from 'behavior-contracts'; // strings only; vitest resolves bc here
 import { ddl, seedStatements } from '../orm-domain';
-import { benchOps, RESOLVE } from './behaviors';
+import { benchOps, RESOLVE, REL_SCALES } from './behaviors';
 
 const HERE = __dirname;
 const ART = join(HERE, '.artifacts');
@@ -87,5 +87,44 @@ describe('latency-bench gen — go modules + seeds + fairness manifest', () => {
     expect(readFileSync(join(ART, 'baked-sql.json'), 'utf8').length).toBeGreaterThan(0);
     expect(existsSync(readDb)).toBe(true);
     expect(existsSync(writeDb)).toBe(true);
+  });
+
+  it('writes the SCALED relation seed (rel.db) — one author per child-count scale', () => {
+    const relDb = join(ART, 'rel.db');
+    if (existsSync(relDb)) rmSync(relDb);
+    const db = new Database(relDb);
+    for (const s of ddl('sqlite')) db.exec(s);
+    // INDEX the join keys — without them every relation call full-scans the 11k-comment table, and that
+    // scan (identical for all cells) DOMINATES + buries the per-cell decode/clone/stitch cost we want to
+    // measure. With the indexes the query is an index-seek fetching exactly the N children, so the
+    // measured latency is the per-cell processing of those N rows — where the O(N) clone/alloc shows.
+    db.exec('CREATE INDEX idx_posts_author ON benchmark_posts(author_id)');
+    db.exec('CREATE INDEX idx_comments_post ON benchmark_comments(post_id)');
+    const insPost = db.prepare('INSERT INTO benchmark_posts (id, title, author_id) VALUES (?, ?, ?)');
+    const insComment = db.prepare('INSERT INTO benchmark_comments (id, body, post_id) VALUES (?, ?, ?)');
+    let pid = 0;
+    let cid = 0;
+    const tx = db.transaction(() => {
+      for (const sc of REL_SCALES) {
+        for (let p = 0; p < sc.posts; p++) {
+          pid++;
+          insPost.run(pid, `post-${pid}`, sc.author);
+          for (let c = 0; c < sc.commentsPerPost; c++) {
+            cid++;
+            insComment.run(cid, `comment-${cid}`, pid);
+          }
+        }
+      }
+    });
+    tx();
+    // Assert each scale's author yields exactly its declared child count (fairness: the seed IS the shape).
+    for (const sc of REL_SCALES) {
+      const n = (db.prepare(
+        'SELECT COUNT(*) AS n FROM benchmark_comments c JOIN benchmark_posts p ON c.post_id = p.id WHERE p.author_id = ?',
+      ).get(sc.author) as { n: number }).n;
+      expect(n).toBe(sc.children);
+    }
+    db.close();
+    expect(existsSync(relDb)).toBe(true);
   });
 });

@@ -20,12 +20,16 @@ const mean = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : NaN);
 
 const CELL_ORDER = ['ts_ir', 'rust', 'go'];
 const CELL_LABEL = { ts_ir: 'ts-IR (interp)', rust: 'rust-native', go: 'go-native' };
-const OP_ORDER = ['findunique', 'relsingle', 'createuser', 'createmany'];
+const OP_ORDER = ['findunique', 'relsingle', 'createuser', 'createmany', 'rel10', 'rel100', 'rel1000', 'rel10000'];
 const OP_LABEL = {
   findunique: 'findUnique (point read)',
-  relsingle: 'relComments (batched relation)',
+  relsingle: 'relComments (batched relation, 4 children)',
   createuser: 'createUser (single write)',
   createmany: 'createMany (batch write ×10)',
+  rel10: 'relScale (10 children)',
+  rel100: 'relScale (100 children)',
+  rel1000: 'relScale (1000 children)',
+  rel10000: 'relScale (10000 children)',
 };
 
 // cell → op → samples[]

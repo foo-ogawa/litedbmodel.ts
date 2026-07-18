@@ -35,15 +35,25 @@ func openDB(path string) *sql.DB {
 
 var sink int64 // prevents the compiler from eliminating the "unused" typed result
 
+// relScale — (csv op id, author, iters). Matches behaviors.ts REL_SCALES; rel.db defines each author's
+// child count (10 / 100 / 1000 / 10000).
+type relScale struct {
+	op     string
+	author int64
+	iters  int
+}
+
+var relScales = []relScale{{"rel10", 101, 5000}, {"rel100", 102, 5000}, {"rel1000", 103, 2000}, {"rel10000", 104, 300}}
+
 func main() {
 	args := os.Args
-	if len(args) < 6 {
-		panic("usage: go-cell <read_db> <write_db> <warmup> <iters> <out_csv>")
+	if len(args) < 7 {
+		panic("usage: go-cell <read_db> <write_db> <rel_db> <warmup> <iters> <out_csv>")
 	}
-	readDB, writeDB := args[1], args[2]
-	warmup, _ := strconv.Atoi(args[3])
-	iters, _ := strconv.Atoi(args[4])
-	outCsv := args[5]
+	readDB, writeDB, relDB := args[1], args[2], args[3]
+	warmup, _ := strconv.Atoi(args[4])
+	iters, _ := strconv.Atoi(args[5])
+	outCsv := args[6]
 
 	f, err := os.Create(outCsv)
 	if err != nil {
@@ -135,5 +145,30 @@ func main() {
 		}
 		db.Close()
 	}
-	fmt.Fprintf(os.Stderr, "go-native bench done: 4 ops × %d iters → %s (sink=%d)\n", iters, outCsv, sink)
+	// ── SCALED relation sweep — the SAME relsingle at growing child counts (10 → 10000) ──
+	{
+		db := openDB(relDB)
+		h := relSingleH{db: newSeamDB(db)}
+		for _, sc := range relScales {
+			wu := warmup
+			if sc.iters < wu {
+				wu = sc.iters
+			}
+			for i := 0; i < wu; i++ {
+				_, _ = relsingle.RunNativeRawStruct_ByAuthor(h, relsingle.In_ByAuthor{Author_id: sc.author})
+			}
+			for i := 0; i < sc.iters; i++ {
+				t0 := time.Now()
+				out, err := relsingle.RunNativeRawStruct_ByAuthor(h, relsingle.In_ByAuthor{Author_id: sc.author})
+				us := float64(time.Since(t0).Nanoseconds()) / 1000.0
+				if err != nil {
+					panic(err)
+				}
+				sink += int64(len(out.Rows) + len(out.Comments))
+				fmt.Fprintf(w, "%s,%.3f\n", sc.op, us)
+			}
+		}
+		db.Close()
+	}
+	fmt.Fprintf(os.Stderr, "go-native bench done: 4 base ops + %d rel scales → %s (sink=%d)\n", len(relScales), outCsv, sink)
 }

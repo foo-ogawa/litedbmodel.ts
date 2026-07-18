@@ -89,3 +89,23 @@ export function benchOps(): BenchOp[] {
     { id: 'createmany', kind: 'write', bundle: compileBundle(WRITES, 'CreateMany', [], 'sqlite', undefined, RESOLVE) },
   ];
 }
+
+/** The scaled-relation sweep — the SAME ByAuthor+comments op (op id `relsingle`) run at growing child
+ * counts to expose the seam's O(N) clone/alloc (buried at the 2-post scale). Each scale is a dedicated
+ * author in `rel.db` with `posts` posts × `commentsPerPost` comments = `children` total children. The
+ * cells (rust/go/ts) hardcode the SAME (author, iters) — the seed here defines each author's child count,
+ * so the three cells provably run the same shape. Iters shrink as N grows (stable p50 without a huge run). */
+export interface RelScale {
+  readonly id: string; // csv op id: rel10 / rel100 / rel1000 / rel10000
+  readonly author: number;
+  readonly posts: number;
+  readonly commentsPerPost: number;
+  readonly children: number; // posts × commentsPerPost
+  readonly iters: number;
+}
+export const REL_SCALES: readonly RelScale[] = [
+  { id: 'rel10', author: 101, posts: 10, commentsPerPost: 1, children: 10, iters: 5000 },
+  { id: 'rel100', author: 102, posts: 100, commentsPerPost: 1, children: 100, iters: 5000 },
+  { id: 'rel1000', author: 103, posts: 100, commentsPerPost: 10, children: 1000, iters: 2000 },
+  { id: 'rel10000', author: 104, posts: 100, commentsPerPost: 100, children: 10000, iters: 300 },
+];

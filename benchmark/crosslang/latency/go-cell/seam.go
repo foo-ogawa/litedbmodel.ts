@@ -113,6 +113,9 @@ func jsonStr(s string) string {
 // `json_each(?)` IN-list), group children by their target key, and return the per-parent lists ALIGNED
 // to itemKeys. The go twin of the rust seam's query_batched_relation.
 func QueryBatchedRelation[T any](s *seamDB, query string, itemKeys []int64, decode func(*sql.Rows) (T, error), childKey func(T) int64) ([][]T, error) {
+	// Reserve up-front (no map/slice regrow). go's dedup keys are int64 (no clone); the ALIGNMENT below
+	// assigns the grouped SLICE HEADER (pointer+len), NOT a copy of the child elements — so go never had
+	// rust's O(N) child-clone; the fix here is capacity reservation + explicit documentation of parity.
 	seen := make(map[int64]bool, len(itemKeys))
 	distinct := make([]int64, 0, len(itemKeys))
 	for _, k := range itemKeys {
@@ -137,7 +140,7 @@ func QueryBatchedRelation[T any](s *seamDB, query string, itemKeys []int64, deco
 	}
 	out := make([][]T, len(itemKeys))
 	for i, k := range itemKeys {
-		out[i] = groups[k] // nil (empty) when a parent has no children
+		out[i] = groups[k] // slice-header assignment (no element copy); nil when a parent has no children
 	}
 	return out, nil
 }
