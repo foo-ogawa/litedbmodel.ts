@@ -1,5 +1,5 @@
 {
-  "$schema": "litedbmodel v1 ORM-path SQL parity golden",
+  "$schema": "litedbmodel v1 ORM-path SQL parity golden (#64)",
   "generatedBy": "benchmark/parity/capture-v1-sql.ts",
   "note": "Every SQL string was captured live via SqlLoggerMiddleware.execute (driver-reach hook) while running each op once against a real seeded DB. `?` placeholders are the litedbmodel portable form; the postgres driver rewrites `?`->`$N` internally (post-middleware). MySQL strips RETURNING and issues an internal follow-up SELECT below the middleware. Transaction BEGIN/COMMIT run as raw connection.query() below the middleware and are not captured.",
   "seed": {

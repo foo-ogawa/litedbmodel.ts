@@ -1,0 +1,71 @@
+{
+  "irVersion": 1,
+  "exprVersion": 2,
+  "components": [
+    {
+      "body": [
+        {
+          "component": "Insert",
+          "id": "n0",
+          "outType": {
+            "arr": {
+              "obj": {
+                "id": "int",
+                "email": "string",
+                "name": "string"
+              }
+            }
+          },
+          "ports": {
+            "sql": "INSERT INTO benchmark_users (email, name) SELECT JSON_UNQUOTE(jt.email), JSON_UNQUOTE(jt.name) FROM JSON_TABLE(?, '$[*]' COLUMNS(email JSON PATH '$.email', name JSON PATH '$.name')) jt RETURNING id, email, name",
+            "v0": {
+              "ref": [
+                "emails"
+              ]
+            },
+            "v1": {
+              "ref": [
+                "names"
+              ]
+            }
+          }
+        }
+      ],
+      "inputPorts": {
+        "emails": {
+          "required": true,
+          "type": "array",
+          "elemType": "string"
+        },
+        "names": {
+          "required": true,
+          "type": "array",
+          "elemType": "string"
+        }
+      },
+      "name": "CreateMany",
+      "output": {
+        "ref": [
+          "n0"
+        ]
+      },
+      "plan": {
+        "concurrency": 16,
+        "groups": [
+          [
+            0
+          ]
+        ]
+      },
+      "outputType": {
+        "arr": {
+          "obj": {
+            "id": "int",
+            "email": "string",
+            "name": "string"
+          }
+        }
+      }
+    }
+  ]
+}

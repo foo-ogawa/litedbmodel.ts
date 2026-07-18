@@ -35,6 +35,8 @@
 import { evaluateExpression, type Scope, type Value } from 'behavior-contracts';
 import { assembleMakeSQL, type MakeSQL } from './makesql';
 import { sqliteInsertJson, mysqlInsertJson, sqliteUpdateManyJson, mysqlUpdateManyJson } from './json-batch';
+import { postgresSqlBuilder } from '../../drivers/PostgresSqlBuilder';
+import { sqlTypeToBcScalar, sqlTypeToMaterializeClass, type ColumnTypeResolver } from '../coltype';
 import { renderPlaceholders, type Dialect as MakeSQLDialect } from './handler';
 import { formatterFor } from './compile';
 import { mapSqliteError } from '../errors';
@@ -516,6 +518,74 @@ function onConflictTail(dialect: MakeSQLDialect, ports: Record<string, unknown>,
 }
 
 /**
+ * A per-column raw VALUE SPECIMEN whose {@link import('../../drivers/PostgresSqlBuilder').inferPgType}
+ * matches the column's SCHEMA SQL type, so the PG batch UNNEST cast (`?::<pgType>[]`) the original
+ * `buildInsert`/`buildUpdateMany` emits is derived from the schema SoT — NOT from the runtime values
+ * the symbolic codegen path never sees. int32→number / int64→bigint / bool→boolean / date→Date /
+ * float→non-integer number / string(+decimal/uuid/json)→string, reproducing each `inferPgType` branch.
+ * Ambiguous only for a REAL column whose live value is integer-valued (v1 would infer `int`, not
+ * `numeric`); the bench columns (text/int/bigint) are unambiguous. Unknown SQL types are a hard error
+ * (fail-closed) via the §4.1 classifiers.
+ */
+function pgTypeSpecimen(sqlType: string): unknown {
+  const klass = sqlTypeToMaterializeClass(sqlType);
+  if (klass === 'int32') return 0;
+  if (klass === 'int64') return 0n;
+  if (klass === 'bool') return false;
+  if (klass === 'date') return new Date(0);
+  // passthrough: float / decimal(→string) / text / uuid / json — split by the bc scalar.
+  const scalar = sqlTypeToBcScalar(sqlType);
+  if (scalar === 'float') return 0.5; // a non-integer number ⇒ inferPgType 'numeric'
+  return ''; // string family (text / varchar / uuid / decimal / json) ⇒ inferPgType 'text'
+}
+
+/**
+ * Compile a PG BATCH Insert/Update to its byte-identical v1 UNNEST form for the NATIVE codegen path,
+ * by driving the ORIGINAL `postgresSqlBuilder` (never a re-roll) with schema-typed specimen records
+ * (so the emitted `?::<pgType>[]` casts come from the schema SoT). Each `?` binds a per-column
+ * {@link BatchArrayMarker} — the PG (v1) twin of the sqlite/mysql (v2) `{__batchRows}` JSON marker:
+ * `refs[i]` is the WHOLE array for column `columns[i]`. codegen types the SAME array-input head off
+ * both markers (one shared path); the per-driver seam binds each PG marker as a `<elem>[]` array.
+ * Length-independent (the UNNEST text depends only on columns + types + onConflict/returning), so
+ * FIXED and bakeable.
+ */
+function pgBatchArrayParams(cols: string[], refFor: (c: string) => TxExpr, dialect: MakeSQLDialect): TxExpr[] {
+  return cols.map((c) => ({ __batchArray: { column: c, ref: refFor(c), dialect } }) as unknown as TxExpr);
+}
+
+function pgBatchInsert(table: string, sorted: string[], values: Record<string, TxExpr>, ports: Record<string, unknown>, resolve: ColumnTypeResolver, dialect: MakeSQLDialect): TxOp {
+  const specimen = Object.fromEntries(sorted.map((c) => [c, pgTypeSpecimen(resolve(table, c))]));
+  const records = [specimen, specimen]; // 2 rows ⇒ UNNEST branch (records.length > 1)
+  const { sql } = postgresSqlBuilder.buildInsert({
+    tableName: table, columns: sorted, records, rawRecords: records,
+    ...onConflictJsonOpts(ports, sorted),
+    ...(stringPort(ports, 'returning') !== undefined ? { returning: stringPort(ports, 'returning') } : {}),
+  });
+  return { sql, params: pgBatchArrayParams(sorted, (c) => values[c], dialect) };
+}
+
+function pgBatchUpdate(table: string, keyCols: string[], updateCols: string[], key: Record<string, TxExpr>, set: Record<string, TxExpr>, ports: Record<string, unknown>, resolve: ColumnTypeResolver, dialect: MakeSQLDialect): TxOp {
+  const allCols = [...keyCols, ...updateCols];
+  const specimen = Object.fromEntries(allCols.map((c) => [c, pgTypeSpecimen(resolve(table, c))]));
+  const records = [specimen, specimen];
+  // The pg batch UPDATE aliases the table `AS t` and the value source `AS v(keyCols…)`, so a BARE
+  // RETURNING column that is also a key column (in `v`) is ambiguous. v1's `DBModel.updateMany`
+  // qualifies RETURNING with the `t` alias via `buildReturning(table, cols, 't')` — reuse the SAME
+  // builder so the qualified RETURNING is byte-identical to v1 (never a hand-roll).
+  const returningPort = stringPort(ports, 'returning');
+  const returning = returningPort === undefined
+    ? undefined
+    : postgresSqlBuilder.buildReturning(table, returningPort.split(',').map((c) => c.trim()).filter((c) => c.length > 0), 't');
+  const { sql } = postgresSqlBuilder.buildUpdateMany({
+    tableName: table, keyColumns: keyCols, updateColumns: updateCols, records, rawRecords: records,
+    ...(returning !== undefined ? { returning } : {}),
+  });
+  // One array param per UNNEST column in [keyCols…, updateCols…] order (matches buildUpdateMany).
+  const refFor = (c: string): TxExpr => (keyCols.includes(c) ? key[c] : set[c]);
+  return { sql, params: pgBatchArrayParams(allCols, refFor, dialect) };
+}
+
+/**
  * Read the optional PRIMARY KEY descriptor ports of an Insert node (for the MySQL RETURNING
  * emulation). `pk` is a comma-separated column list (`'doc_id'` / `'order_id,line_no'`); `autoInc`
  * names the single AUTO_INCREMENT column, or is absent for a client-supplied PK. Absent `pk`
@@ -559,7 +629,7 @@ export function stripMysqlPkHint(sql: string): string {
  * the reduced bridge's `compileNode` for the write path (the tx-DAG base writes). INSERT columns
  * are CANONICAL (alphabetical) sorted — the v2 write-path SSoT (matches `DBModel._insert`).
  */
-export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 'sqlite'): TxOp {
+export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 'sqlite', resolveColumnType?: ColumnTypeResolver): TxOp {
   const { component, ports } = node;
   const table = stringPort(ports, 'table');
   if (table === undefined) throw new Error(`compileWriteNode: ${component} node requires a literal 'table' port`);
@@ -580,7 +650,8 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
       // the parallel arrays at execute time (NOT literalized). One statement for N records.
       if (stringPort(ports, 'batch') === 'true') {
         if (dialect === 'postgres') {
-          throw new Error(`compileWriteNode: batch insert on postgres uses the UNNEST form (not yet wired for the native codegen path — the sqlite/mysql json_each form is; pg is the fan-out concern).`);
+          if (resolveColumnType === undefined) throw new Error(`compileWriteNode: batch insert on postgres needs the column-type resolver (schema SoT) to derive the UNNEST element casts — pass it through compileBundle.`);
+          return pgBatchInsert(table, sorted, values, ports, resolveColumnType, dialect);
         }
         const shapeOpts = { tableName: table, columns: sorted, records: [] as Record<string, unknown>[], ...onConflictJsonOpts(ports, sorted), ...(stringPort(ports, 'returning') !== undefined ? { returning: stringPort(ports, 'returning') } : {}) };
         const shape = dialect === 'mysql' ? mysqlInsertJson(shapeOpts) : sqliteInsertJson(shapeOpts);
@@ -608,13 +679,14 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
       // MULTIPLE `?` (one per SET clause + the WHERE) — each is the SAME `__batchRows` marker, so the
       // runtime evalSpec (and the codegen seam) build the SAME JSON per `?`. ONE statement for N rows.
       if (stringPort(ports, 'batch') === 'true') {
-        if (dialect === 'postgres') {
-          throw new Error(`compileWriteNode: batch update on postgres uses the UNNEST form (not wired for the native codegen path — sqlite/mysql json_each/JSON_TABLE is; pg is the fan-out concern).`);
-        }
         const key = collectFamily(ports, 'key');
         const keyCols = Object.keys(key).sort();
         if (keyCols.length === 0) throw new Error(`compileWriteNode: batch Update requires at least one 'key.<field>' port`);
         const updateCols = [...setCols].sort();
+        if (dialect === 'postgres') {
+          if (resolveColumnType === undefined) throw new Error(`compileWriteNode: batch update on postgres needs the column-type resolver (schema SoT) to derive the UNNEST element casts — pass it through compileBundle.`);
+          return pgBatchUpdate(table, keyCols, updateCols, key, set, ports, resolveColumnType, dialect);
+        }
         const shapeOpts = { tableName: table, keyColumns: keyCols, updateColumns: updateCols, records: [] as Record<string, unknown>[], ...(stringPort(ports, 'returning') !== undefined ? { returning: stringPort(ports, 'returning') } : {}) };
         const shape = dialect === 'mysql' ? mysqlUpdateManyJson(shapeOpts) : sqliteUpdateManyJson(shapeOpts);
         // The JSON carries BOTH the key + update columns (in that order); one marker per `?`.

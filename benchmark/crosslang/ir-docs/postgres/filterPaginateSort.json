@@ -1,0 +1,68 @@
+{
+  "irVersion": 1,
+  "exprVersion": 2,
+  "components": [
+    {
+      "body": [
+        {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+            "arr": {
+              "obj": {
+                "id": "int",
+                "title": "string",
+                "content": "string",
+                "published": "bool",
+                "author_id": "int",
+                "created_at": "string"
+              }
+            }
+          },
+          "ports": {
+            "sql": "SELECT id, title, content, published, author_id, created_at FROM benchmark_posts WHERE published = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+            "p0": {
+              "ref": [
+                "published"
+              ]
+            },
+            "p1": 20,
+            "p2": 10
+          }
+        }
+      ],
+      "inputPorts": {
+        "published": {
+          "required": true,
+          "type": "bool"
+        }
+      },
+      "name": "FilterPaginateSort",
+      "output": {
+        "ref": [
+          "n0"
+        ]
+      },
+      "plan": {
+        "concurrency": 16,
+        "groups": [
+          [
+            0
+          ]
+        ]
+      },
+      "outputType": {
+        "arr": {
+          "obj": {
+            "id": "int",
+            "title": "string",
+            "content": "string",
+            "published": "bool",
+            "author_id": "int",
+            "created_at": "string"
+          }
+        }
+      }
+    }
+  ]
+}

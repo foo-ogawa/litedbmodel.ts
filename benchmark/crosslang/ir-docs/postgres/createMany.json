@@ -1,0 +1,71 @@
+{
+  "irVersion": 1,
+  "exprVersion": 2,
+  "components": [
+    {
+      "body": [
+        {
+          "component": "Insert",
+          "id": "n0",
+          "outType": {
+            "arr": {
+              "obj": {
+                "id": "int",
+                "email": "string",
+                "name": "string"
+              }
+            }
+          },
+          "ports": {
+            "sql": "INSERT INTO benchmark_users (email, name) SELECT v.email, v.name FROM UNNEST($1::text[], $2::text[]) AS v(email, name) RETURNING id, email, name",
+            "v0": {
+              "ref": [
+                "emails"
+              ]
+            },
+            "v1": {
+              "ref": [
+                "names"
+              ]
+            }
+          }
+        }
+      ],
+      "inputPorts": {
+        "emails": {
+          "required": true,
+          "type": "array",
+          "elemType": "string"
+        },
+        "names": {
+          "required": true,
+          "type": "array",
+          "elemType": "string"
+        }
+      },
+      "name": "CreateMany",
+      "output": {
+        "ref": [
+          "n0"
+        ]
+      },
+      "plan": {
+        "concurrency": 16,
+        "groups": [
+          [
+            0
+          ]
+        ]
+      },
+      "outputType": {
+        "arr": {
+          "obj": {
+            "id": "int",
+            "email": "string",
+            "name": "string"
+          }
+        }
+      }
+    }
+  ]
+}

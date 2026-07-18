@@ -20,6 +20,7 @@ import { spawnSync } from 'node:child_process';
 // The bundled instance (inlines the ESM-only behavior-contracts) so this runs standalone under tsx.
 import { lowerBundleToPortableIrDoc } from '../../dist/scp/index.cjs';
 import { buildOps, type BenchOp } from './ops';
+import type { OrmDialect } from './orm-domain';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ADAPTERS = join(HERE, 'adapters');
@@ -29,20 +30,22 @@ const BC_CLI = process.env.BC_CLI ?? resolve(HERE, '../../../behavior-contracts/
 
 const LANGS = ['rust', 'go', 'ts'] as const;
 type Lang = (typeof LANGS)[number];
+const DIALECTS = ['sqlite', 'postgres', 'mysql'] as const;
 const EMITTER: Record<Lang, string> = { rust: 'rust-typed-native', go: 'go-typed-native', ts: 'typescript-typed' };
 const EXT: Record<Lang, string> = { rust: 'rs', go: 'go', ts: 'ts' };
 
-/** Write an op's portable IR doc (the build-time codegen input the CLI consumes). Returns its path. */
-function writeIrDoc(op: BenchOp): string {
-  mkdirSync(IR_DOCS, { recursive: true });
-  const p = join(IR_DOCS, `${op.id}.json`);
+/** Write an op's per-dialect portable IR doc (the build-time codegen input the CLI consumes). Returns its path. */
+function writeIrDoc(op: BenchOp, dialect: OrmDialect): string {
+  const dir = join(IR_DOCS, dialect);
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, `${op.id}.json`);
   writeFileSync(p, JSON.stringify(lowerBundleToPortableIrDoc(op.bundle, op.resolve), null, 2) + '\n');
   return p;
 }
 
 /** Generate one op's module for one language by shelling out to `bc generate` over the op's IR doc. */
-function genModule(op: BenchOp, lang: Lang): string {
-  const docPath = writeIrDoc(op);
+function genModule(op: BenchOp, lang: Lang, dialect: OrmDialect): string {
+  const docPath = writeIrDoc(op, dialect);
   const res = spawnSync('node', [BC_CLI, 'generate', '--lang', EMITTER[lang], '--in', docPath], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
@@ -57,29 +60,38 @@ function genModule(op: BenchOp, lang: Lang): string {
   return code;
 }
 
-/** The committed path for an op's generated module (go gets a per-op subdir). */
-function modulePath(op: BenchOp, lang: Lang): string {
-  const base = join(ADAPTERS, lang, 'generated');
+/** The committed path for an op's generated per-dialect module (go gets a per-op subdir). */
+function modulePath(op: BenchOp, lang: Lang, dialect: OrmDialect): string {
+  const base = join(ADAPTERS, lang, 'generated', dialect);
   if (lang === 'go') return join(base, op.id.toLowerCase(), 'gen.go');
   return join(base, `gen_${op.id.toLowerCase()}.${EXT[lang]}`);
 }
 
-function generate(lang: Lang): { count: number } {
-  const ops = buildOps();
+function generate(lang: Lang, dialect: OrmDialect): { count: number } {
+  const ops = buildOps(dialect);
   for (const op of ops) {
-    const p = modulePath(op, lang);
+    const p = modulePath(op, lang, dialect);
     mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, genModule(op, lang));
+    writeFileSync(p, genModule(op, lang, dialect));
+  }
+  // Rust: emit the per-dialect module tree (mod.rs) so main.rs cfg-selects one `use gen::*` line.
+  if (lang === 'rust') {
+    const dir = join(ADAPTERS, 'rust', 'generated', dialect);
+    const mods = ops.map((op) => `pub mod gen_${op.id.toLowerCase()};`).sort().join('\n');
+    writeFileSync(join(dir, 'mod.rs'),
+      `// Generated module tree for one dialect — declares the ${ops.length} CLI-generated op modules. main.rs\n` +
+      `// cfg-selects generated/<dialect>/mod.rs by the build feature; \`use gen::*\` brings the op modules\n` +
+      `// into scope so the dialect-agnostic handlers reference them unqualified.\n${mods}\n`);
   }
   return { count: ops.length };
 }
 
 /** Drift gate: regenerate in memory, diff against the committed module. Returns the drifted op ids. */
-function check(lang: Lang): { ok: boolean; drifted: string[] } {
+function check(lang: Lang, dialect: OrmDialect): { ok: boolean; drifted: string[] } {
   const drifted: string[] = [];
-  for (const op of buildOps()) {
-    const p = modulePath(op, lang);
-    const fresh = genModule(op, lang);
+  for (const op of buildOps(dialect)) {
+    const p = modulePath(op, lang, dialect);
+    const fresh = genModule(op, lang, dialect);
     if (!existsSync(p)) {
       drifted.push(`${op.id} (missing)`);
       continue;
@@ -90,35 +102,38 @@ function check(lang: Lang): { ok: boolean; drifted: string[] } {
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
-function langsFromArgs(argv: string[]): Lang[] {
-  const i = argv.indexOf('--lang');
-  if (i === -1 || !argv[i + 1]) return [...LANGS];
-  const l = argv[i + 1] as Lang;
-  if (!LANGS.includes(l)) throw new Error(`unknown --lang '${l}' (rust|go|ts)`);
-  return [l];
+function pickFromArgs<T extends string>(argv: string[], flag: string, all: readonly T[]): T[] {
+  const i = argv.indexOf(flag);
+  if (i === -1 || !argv[i + 1]) return [...all];
+  const v = argv[i + 1] as T;
+  if (!all.includes(v)) throw new Error(`unknown ${flag} '${v}' (${all.join('|')})`);
+  return [v];
 }
 
 function main(): void {
   const [cmd, ...rest] = process.argv.slice(2);
-  const langs = langsFromArgs(rest);
+  const langs = pickFromArgs(rest, '--lang', LANGS);
+  const dialects = pickFromArgs(rest, '--dialect', DIALECTS);
   if (cmd === 'generate') {
-    for (const lang of langs) {
-      const { count } = generate(lang);
-      process.stdout.write(`generated ${count} ${lang} modules → adapters/${lang}/generated/\n`);
-    }
+    for (const dialect of dialects)
+      for (const lang of langs) {
+        const { count } = generate(lang, dialect);
+        process.stdout.write(`generated ${count} ${lang} modules → adapters/${lang}/generated/${dialect}/\n`);
+      }
   } else if (cmd === 'check') {
     let bad = false;
-    for (const lang of langs) {
-      const { ok, drifted } = check(lang);
-      if (ok) process.stdout.write(`codegen drift gate: ${lang} up to date\n`);
-      else {
-        bad = true;
-        process.stderr.write(`codegen DRIFT (${lang}): ${drifted.join(', ')}\n  re-bake: npx tsx benchmark/crosslang/codegen-build.ts generate --lang ${lang}\n`);
+    for (const dialect of dialects)
+      for (const lang of langs) {
+        const { ok, drifted } = check(lang, dialect);
+        if (ok) process.stdout.write(`codegen drift gate: ${lang}/${dialect} up to date\n`);
+        else {
+          bad = true;
+          process.stderr.write(`codegen DRIFT (${lang}/${dialect}): ${drifted.join(', ')}\n  re-bake: npx tsx benchmark/crosslang/codegen-build.ts generate --lang ${lang} --dialect ${dialect}\n`);
+        }
       }
-    }
     process.exit(bad ? 1 : 0);
   } else {
-    process.stderr.write('usage: codegen-build.ts <generate|check> [--lang rust|go|ts]\n');
+    process.stderr.write('usage: codegen-build.ts <generate|check> [--lang rust|go|ts] [--dialect sqlite|postgres|mysql]\n');
     process.exit(2);
   }
 }

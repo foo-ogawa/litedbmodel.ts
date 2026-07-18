@@ -186,6 +186,20 @@ export interface SeedStmt {
   readonly params: readonly unknown[];
 }
 
+/**
+ * A DETERMINISTIC, distinct, monotonic-with-`seq` `created_at` string. `filterPaginateSort` does
+ * `ORDER BY created_at DESC` + projects `created_at`, so the seed MUST pin it (the old
+ * `DEFAULT NOW()`/`datetime('now')` made every row ~equal → the sort was an all-ties tie-break, stable
+ * only within one shared db, and the format differed by dialect). Base `2020-01-01 00:00:00` + `seq`
+ * seconds, formatted `YYYY-MM-DD HH:MM:SS` — a literal every dialect stores + reads back identically
+ * (sqlite TEXT / pg + mysql TIMESTAMP; the read path canonicalizes the TIMESTAMP back to this string).
+ */
+export function seedCreatedAt(seq: number): string {
+  const d = new Date(Date.UTC(2020, 0, 1, 0, 0, 0) + seq * 1000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
 export function seedStatements(dialect: OrmDialect): SeedStmt[] {
   const bool = (b: boolean) => (dialect === 'postgres' ? b : b ? 1 : 0);
   const out: SeedStmt[] = [];
@@ -203,8 +217,8 @@ export function seedStatements(dialect: OrmDialect): SeedStmt[] {
     for (let p = 0; p < SEED.postsPerUser; p++) {
       const published = postId % 3 === 0;
       out.push({
-        sql: 'INSERT INTO benchmark_posts (id, title, content, published, author_id) VALUES (?, ?, ?, ?, ?)',
-        params: [postId, `Post ${postId}`, `Content ${postId}`, bool(published), uid],
+        sql: 'INSERT INTO benchmark_posts (id, title, content, published, author_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        params: [postId, `Post ${postId}`, `Content ${postId}`, bool(published), uid, seedCreatedAt(postId)],
       });
       postId++;
     }

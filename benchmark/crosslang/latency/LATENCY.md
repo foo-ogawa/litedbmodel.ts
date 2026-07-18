@@ -9,29 +9,29 @@ Two speedup framings are shown so nothing hides: **p50** (median, robust) and **
 
 | op | cell | p50 µs | p99 µs | mean µs | ops/sec | p50 vs ts-IR | throughput vs ts-IR |
 |---|---|--:|--:|--:|--:|--:|--:|
-| findUnique (point read) | ts-IR (interp) | 11.58 | 20.46 | 12.60 | 79365 | — (baseline) | — (baseline) |
-|  | rust-native | 6.96 | 12.46 | 7.31 | 136786 | 1.66× faster | 1.72× faster |
-|  | go-native | 15.75 | 65.21 | 20.68 | 48366 | 1.36× slower | 1.64× slower |
-| relComments (batched relation, 4 children) | ts-IR (interp) | 38.13 | 53.50 | 39.46 | 25345 | — (baseline) | — (baseline) |
-|  | rust-native | 53.42 | 67.92 | 54.27 | 18428 | 1.40× slower | 1.38× slower |
-|  | go-native | 70.00 | 311.08 | 81.38 | 12288 | 1.84× slower | 2.06× slower |
-| createUser (single write) | ts-IR (interp) | 337.25 | 1183.08 | 383.17 | 2610 | — (baseline) | — (baseline) |
-|  | rust-native | 343.71 | 838.63 | 378.19 | 2644 | 1.02× slower | 1.01× faster |
-|  | go-native | 902.92 | 6748.33 | 1278.55 | 782 | 2.68× slower | 3.34× slower |
-| createMany (batch write ×10) | ts-IR (interp) | 475.54 | 1702.96 | 538.65 | 1856 | — (baseline) | — (baseline) |
-|  | rust-native | 469.25 | 2460.67 | 559.28 | 1788 | 1.01× faster | 1.04× slower |
-|  | go-native | 482.83 | 2097.88 | 578.54 | 1728 | 1.02× slower | 1.07× slower |
-| relScale (10 children) | ts-IR (interp) | 31.50 | 43.29 | 32.68 | 30600 | — (baseline) | — (baseline) |
-|  | rust-native | 34.13 | 93.58 | 39.17 | 25532 | 1.08× slower | 1.20× slower |
-|  | go-native | 37.79 | 48.13 | 38.93 | 25687 | 1.20× slower | 1.19× slower |
-| relScale (100 children) | ts-IR (interp) | 175.92 | 354.63 | 180.07 | 5554 | — (baseline) | — (baseline) |
-|  | rust-native | 168.50 | 292.96 | 175.06 | 5712 | 1.04× faster | 1.03× faster |
-|  | go-native | 183.67 | 420.83 | 193.62 | 5165 | 1.04× slower | 1.08× slower |
-| relScale (1000 children) | ts-IR (interp) | 740.08 | 1083.67 | 754.36 | 1326 | — (baseline) | — (baseline) |
-|  | rust-native | 552.79 | 1085.75 | 571.55 | 1750 | 1.34× faster | 1.32× faster |
-|  | go-native | 843.38 | 2081.33 | 897.63 | 1114 | 1.14× slower | 1.19× slower |
-| relScale (10000 children) | ts-IR (interp) | 6577.50 | 9944.38 | 6805.16 | 147 | — (baseline) | — (baseline) |
-|  | rust-native | 4293.33 | 29231.21 | 5189.60 | 193 | 1.53× faster | 1.31× faster |
-|  | go-native | 8620.21 | 10744.96 | 8751.08 | 114 | 1.31× slower | 1.29× slower |
+| findUnique (point read) | ts-IR (interp) | 14.00 | 21.25 | 14.52 | 68884 | — (baseline) | — (baseline) |
+|  | rust-native | 7.13 | 18.83 | 7.82 | 127839 | 1.96× faster | 1.86× faster |
+|  | go-native | 11.63 | 20.13 | 12.54 | 79740 | 1.20× faster | 1.16× faster |
+| relComments (batched relation, 4 children) | ts-IR (interp) | 44.58 | 103.67 | 50.12 | 19952 | — (baseline) | — (baseline) |
+|  | rust-native | 53.21 | 75.38 | 55.06 | 18163 | 1.19× slower | 1.10× slower |
+|  | go-native | 50.33 | 71.83 | 61.12 | 16361 | 1.13× slower | 1.22× slower |
+| createUser (single write) | ts-IR (interp) | 400.83 | 1611.17 | 450.68 | 2219 | — (baseline) | — (baseline) |
+|  | rust-native | 364.88 | 3087.67 | 465.56 | 2148 | 1.10× faster | 1.03× slower |
+|  | go-native | 363.46 | 1196.38 | 401.96 | 2488 | 1.10× faster | 1.12× faster |
+| createMany (batch write ×10) | ts-IR (interp) | 573.25 | 5900.29 | 798.66 | 1252 | — (baseline) | — (baseline) |
+|  | rust-native | 496.25 | 2087.13 | 577.10 | 1733 | 1.16× faster | 1.38× faster |
+|  | go-native | 490.75 | 1253.92 | 529.04 | 1890 | 1.17× faster | 1.51× faster |
+| relScale (10 children) | ts-IR (interp) | 33.38 | 53.29 | 35.33 | 28307 | — (baseline) | — (baseline) |
+|  | rust-native | 32.54 | 66.17 | 34.69 | 28829 | 1.03× faster | 1.02× faster |
+|  | go-native | 38.25 | 54.04 | 40.36 | 24777 | 1.15× slower | 1.14× slower |
+| relScale (100 children) | ts-IR (interp) | 180.08 | 512.04 | 196.52 | 5089 | — (baseline) | — (baseline) |
+|  | rust-native | 155.67 | 191.04 | 158.11 | 6325 | 1.16× faster | 1.24× faster |
+|  | go-native | 185.67 | 372.88 | 192.30 | 5200 | 1.03× slower | 1.02× faster |
+| relScale (1000 children) | ts-IR (interp) | 756.17 | 1053.54 | 781.11 | 1280 | — (baseline) | — (baseline) |
+|  | rust-native | 551.54 | 804.21 | 561.87 | 1780 | 1.37× faster | 1.39× faster |
+|  | go-native | 830.50 | 1173.67 | 855.14 | 1169 | 1.10× slower | 1.09× slower |
+| relScale (10000 children) | ts-IR (interp) | 6644.75 | 7457.67 | 6699.77 | 149 | — (baseline) | — (baseline) |
+|  | rust-native | 4303.63 | 4705.08 | 4315.79 | 232 | 1.54× faster | 1.55× faster |
+|  | go-native | 7946.08 | 11231.00 | 8285.81 | 121 | 1.20× slower | 1.24× slower |
 
 Raw per-iteration samples: `.results/<cell>.csv`; per-op summary: `.results/summary.csv`.

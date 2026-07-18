@@ -36,6 +36,14 @@ export function sqlTypeToBcScalar(sqlType: string): BcScalar {
     case 'INT2':
     case 'INT4':
     case 'INT8':
+    // PostgreSQL auto-increment pseudo-types: a SERIAL column is an int4 (BIGSERIAL an int8) with a
+    // sequence default — the READ type is a plain integer.
+    case 'SERIAL':
+    case 'SERIAL4':
+    case 'BIGSERIAL':
+    case 'SERIAL8':
+    case 'SMALLSERIAL':
+    case 'SERIAL2':
       return 'int';
     // int と real は明確に分離。
     case 'REAL':
@@ -142,10 +150,17 @@ export function sqlTypeToMaterializeClass(sqlType: string): MaterializeClass {
     case 'MEDIUMINT':
     case 'INT2':
     case 'INT4':
+    // PostgreSQL SERIAL family maps to its underlying int width (SERIAL=int4, SMALLSERIAL=int2).
+    case 'SERIAL':
+    case 'SERIAL4':
+    case 'SMALLSERIAL':
+    case 'SERIAL2':
       return 'int32';
     // 64-bit int: needs JS bigint for exactness.
     case 'BIGINT':
     case 'INT8':
+    case 'BIGSERIAL':
+    case 'SERIAL8':
       return 'int64';
     case 'BOOLEAN':
     case 'BOOL':

@@ -1,27 +1,20 @@
-//! The exec seam — the ENTIRE native runtime a baked-SQL op needs.
+//! The exec seam — the ENTIRE native runtime a baked-SQL op needs, over a DRIVER ABSTRACTION.
 //!
 //! Owner's canonical model: "native runtime = 「SQL・params・SKIP引数の汎用クエリ実行関数」だけ".
-//! This module is that generic query-exec function and nothing else. It is OP-AGNOSTIC: it knows
-//! only a SQL string, an ordered param list, and (for a read) how to decode one row. It has no
-//! knowledge of the op, the table, the projection, the behavior, or any IR — all of that lives in
-//! the SQL the generated module baked as a native literal.
+//! This module is that generic query-exec function and nothing else. It is OP-AGNOSTIC (knows only a
+//! SQL string, an ordered param list, and how to decode one row) AND now DIALECT-AGNOSTIC: a single
+//! `Db` backend + a `Cell` row-accessor trait abstract over the built driver, so the SAME handlers run
+//! against sqlite (rusqlite) or postgres (postgres crate). One dialect per binary (cargo feature).
 //!
-//! Read and write share ONE flow (owner: "ReadもWriteもSQLを作ってBCで実行するという流れに違いは
-//! ない。明確に分ける必要はないし、分けてはいけない"): the module bakes the SQL either way, and the
-//! seam runs it. The ONLY difference is which driver call collects the result — `query` for a row
-//! list (SELECT, or a write with RETURNING) vs `execute` for an affected-row count. That is a
-//! driver-shape detail, not a separate path.
+//! Read and write share ONE flow: the module bakes the SQL either way; the seam runs it. The only
+//! per-dialect concerns the seam owns are the DRIVER BIND (a scalar vs a `<elem>[]` array) and, for a
+//! batch/relation, the array-param shape (v2 single-JSON `json_each(?)` vs v1 `= ANY($1)` / `UNNEST`).
 
-use rusqlite::Connection;
-
-/// A bound param — the closed set the baked native ports lower to.
-///
-/// `Array` is the IN-list / array-bound head (bc#110 bakes it as a native `Vec<ElemT>` port). SQL
-/// text for the IN-list is already baked (`id IN (SELECT value FROM json_each(?))` on sqlite/mysql,
-/// `= ANY(?)` on pg), so the seam's only job is the driver BIND: sqlite/mysql take the array as ONE
-/// single-JSON param, which is what `encode_json_array` produces. This is a binding concern, not a
-/// SQL-text concern — the same reason the TS runtime encodes it at bind time (`evalSpec`'s
-/// `__jsonArray` marker), so the two agree by construction.
+// ── The bound-param closed set (dialect-independent) ──────────────────────────────────────────────
+/// A bound param — the closed set the baked native ports lower to. `ArrayInt`/`ArrayText` are the
+/// array-bound heads (IN-list bc#110 relations, and the pg `__batchArray` UNNEST columns): sqlite/mysql
+/// bind them as ONE single-JSON param (`encode_json_array`), postgres binds them as a native `<elem>[]`.
+#[derive(Debug)]
 pub enum Param {
     Int(i64),
     Real(f64),
@@ -32,239 +25,409 @@ pub enum Param {
 
 /// JSON-encode an array param for the single-JSON IN-list bind (sqlite/mysql). Byte-equal to the TS
 /// runtime's `JSON.stringify(arr)` for the scalar element types the lowering admits.
+#[cfg(feature = "sqlite")]
 fn encode_json_array(p: &Param) -> Option<String> {
     match p {
-        Param::ArrayInt(v) => Some(format!(
-            "[{}]",
-            v.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")
-        )),
-        Param::ArrayText(v) => Some(format!(
-            "[{}]",
-            v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(",")
-        )),
+        Param::ArrayInt(v) => Some(format!("[{}]", v.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))),
+        Param::ArrayText(v) => Some(format!("[{}]", v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(","))),
         _ => None,
     }
 }
 
-impl rusqlite::ToSql for Param {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        // An array param binds as ONE single-JSON value (the baked `json_each(?)` expands it
-        // server-side) — exactly the TS runtime's sqlite/mysql IN-list bind.
-        if let Some(json) = encode_json_array(self) {
-            return Ok(rusqlite::types::ToSqlOutput::from(json));
-        }
-        Ok(match self {
-            Param::Int(v) => rusqlite::types::ToSqlOutput::from(*v),
-            Param::Real(v) => rusqlite::types::ToSqlOutput::from(*v),
-            Param::Text(v) => rusqlite::types::ToSqlOutput::from(v.as_str()),
-            Param::ArrayInt(_) | Param::ArrayText(_) => unreachable!("handled above"),
-        })
-    }
-}
-
-/// A process-wide count of DB queries the seam has issued — the definitive proof that a batched
-/// relation runs ONE child query for all parents (not N+1). The relation proof reads it before/after
-/// and asserts the delta is 2 (one parent read + one batched child), not 1+N. Feature-gated
-/// (`count-queries`, default ON): the PROOF legs need it, but the LATENCY bench builds
-/// `--no-default-features` so the counting atomic NEVER runs inside the timed hot path.
+/// A process-wide count of DB queries the seam issued — the N+1-avoidance proof (delta==2 for a batched
+/// relation, not 1+N). Feature-gated so the latency bench never touches the atomic in the timed path.
 pub static QUERY_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
 #[inline(always)]
 fn count_query() {
     #[cfg(feature = "count-queries")]
     QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The generic READ exec: run `sql` with `params`, decode each row via `decode`. The baked SQL is
-/// STATIC (a native literal), so `prepare_cached` compiles it ONCE and reuses the prepared statement on
-/// every subsequent call (a real native runtime's win over re-parsing per call).
-pub fn query<T>(
-    conn: &Connection,
-    sql: &str,
-    params: &[Param],
-    decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
-) -> rusqlite::Result<Vec<T>> {
-    count_query();
-    let mut stmt = conn.prepare_cached(sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| decode(r))?;
-    rows.collect()
+/// The single summary row a NON-RETURNING write hands back — the shape mode-2 `executeStaticWrite`
+/// returns (and the codegen bakes as a no-RETURNING write's outType).
+pub struct WriteSummary {
+    pub changes: i64,
+    pub last_insert_rowid: i64,
 }
 
-/// ONE WHERE fragment handed to [`query_skip`]: the bare predicate SQL (baked literal, no connector),
-/// its bound params, and the SKIP ARG — `present`. A required fragment passes `present: true`; a
-/// skip-optional fragment passes `present: <optional head>.is_some()` (the bc#139 Option presence).
+// ══ Row-cell accessor abstraction — one decode closure over EITHER driver's row ═══════════════════════
+/// A read cell accessor by column index — the ONLY row surface the handlers' decode closures use, so a
+/// closure (`Foo { id: col(r, 0), .. }`) compiles against sqlite or postgres unchanged. Each impl reads
+/// the driver's native cell and coerces to the closed value set (a pg TIMESTAMP → the canonical
+/// `YYYY-MM-DD HH:MM:SS` string the sqlite oracle stores as TEXT; a pg int4 → i64; a pg BOOLEAN → bool).
+pub trait Cell {
+    fn i64(&self, i: usize) -> i64;
+    fn text(&self, i: usize) -> String;
+    fn opt_text(&self, i: usize) -> Option<String>;
+    fn boolean(&self, i: usize) -> bool;
+}
+
+/// Decode ONE column into `T`, dispatched by the target field type — so a decode closure is written once
+/// (`col(r, 3)`) and the field's type (i64 / String / bool for the pg-only `published`) selects the read.
+pub trait FromCell: Sized {
+    fn from_cell(c: &dyn Cell, i: usize) -> Self;
+}
+impl FromCell for i64 {
+    fn from_cell(c: &dyn Cell, i: usize) -> Self { c.i64(i) }
+}
+impl FromCell for String {
+    fn from_cell(c: &dyn Cell, i: usize) -> Self { c.text(i) }
+}
+impl FromCell for bool {
+    fn from_cell(c: &dyn Cell, i: usize) -> Self { c.boolean(i) }
+}
+impl FromCell for Option<String> {
+    fn from_cell(c: &dyn Cell, i: usize) -> Self { c.opt_text(i) }
+}
+/// `col(r, i)` — the decode-closure accessor (type inferred from the destination field).
+#[inline]
+pub fn col<T: FromCell>(c: &dyn Cell, i: usize) -> T {
+    T::from_cell(c, i)
+}
+
+/// Serialize the `published` projection as the canonical `0`/`1` int the oracle emits, regardless of the
+/// dialect's column type (sqlite/mysql `INTEGER`/`TINYINT` → i64; pg `BOOLEAN` → bool). `canonVal`
+/// (oracle.ts) already maps a boolean to `'1'/'0'`, so this is the native twin of that canonicalization.
+pub trait AsI64 {
+    fn as_i64(&self) -> i64;
+}
+impl AsI64 for i64 {
+    fn as_i64(&self) -> i64 { *self }
+}
+impl AsI64 for bool {
+    fn as_i64(&self) -> i64 { *self as i64 }
+}
+
+/// ONE WHERE fragment for [`query_skip`]: bare predicate SQL (baked, no connector), its params, and the
+/// SKIP ARG `present` (a required frag passes `true`; a skip-optional frag passes `<head>.is_some()`).
 pub struct WhereFrag<'a> {
     pub sql: &'a str,
     pub present: bool,
     pub params: Vec<Param>,
 }
 
-/// The generic SKIP-aware READ exec (owner's model: "SQL・params・SKIP引数の汎用クエリ実行関数だけ").
-/// It ASSEMBLES the query from baked literals: `head` + the PRESENT `frags` joined with ` WHERE `/
-/// ` AND ` + `tail`, binding each present fragment's params in order followed by the tail params. This
-/// is NATIVE string assembly over baked fragments — no IR walk, no JSON, no dispatch; the seam knows
-/// only fragments + presence bits + params. The resulting SQL is byte-identical to the mode-2 runtime
-/// (same fragment order, same connectors), so a skipped fragment drops in place exactly as mode-2
-/// drops it. (sqlite/mysql keep `?`; a pg `?`→`$N` renumber would happen HERE, post-assembly.)
-pub fn query_skip<T>(
-    conn: &Connection,
-    head: &str,
-    frags: &[WhereFrag],
-    tail: &str,
-    tail_params: &[Param],
-    decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
-) -> rusqlite::Result<Vec<T>> {
-    let mut sql = String::from(head);
-    let mut params: Vec<&Param> = Vec::new();
-    let mut first = true;
-    for f in frags {
-        if !f.present {
-            continue;
-        }
-        sql.push_str(if first { " WHERE " } else { " AND " });
-        sql.push_str(f.sql);
-        first = false;
-        for p in &f.params {
-            params.push(p);
-        }
-    }
-    sql.push_str(tail);
-    for p in tail_params {
-        params.push(p);
-    }
-    count_query();
-    // The assembled text is stable for a given present-set (baked fragments), so `prepare_cached` reuses
-    // the compiled statement across calls with the same present-set.
-    let mut stmt = conn.prepare_cached(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(params.into_iter()), |r| decode(r))?;
-    rows.collect()
-}
+// ══ SQLite backend (rusqlite) ═════════════════════════════════════════════════════════════════════════
+#[cfg(feature = "sqlite")]
+mod sqlite_backend {
+    use super::*;
+    use rusqlite::Connection;
 
-/// The generic BATCHED-RELATION exec (E4/#119 — the N+1-avoided native relation). Given the ONE
-/// baked batched child SQL + the per-parent key(s), it: collects the DISTINCT parent keys, runs the
-/// query ONCE (binding the deduped keys as the single JSON-array param the baked `json_each(?)` /
-/// `= ANY(?)` form expects), groups the returned children by their target key, and returns the
-/// per-parent child lists ALIGNED to `item_keys` (one list per parent, in order). This is the whole
-/// relation runtime — one query, no N+1, no per-row `= ?`. The caller (per-op glue) supplies the
-/// key extraction, the dialect JSON encoding, and the row decode; the dedup + group + align live HERE.
-pub fn query_batched_relation<Child, Key>(
-    conn: &Connection,
-    sql: &str,
-    item_keys: &[Key],
-    encode_json: impl Fn(&[Key]) -> String,
-    decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<Child>,
-    child_key: impl Fn(&Child) -> Key,
-) -> rusqlite::Result<Vec<Vec<Child>>>
+    /// The seam's DB handle — a rusqlite connection (baked SQL → `prepare_cached` compiles once, reused).
+    pub struct Db {
+        pub conn: Connection,
+    }
+    impl Db {
+        pub fn open(target: &str) -> Db {
+            Db { conn: Connection::open(target).expect("open sqlite db") }
+        }
+    }
+
+    impl rusqlite::ToSql for Param {
+        fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+            // An array param binds as ONE single-JSON value (the baked `json_each(?)` expands it).
+            if let Some(json) = encode_json_array(self) {
+                return Ok(rusqlite::types::ToSqlOutput::from(json));
+            }
+            Ok(match self {
+                Param::Int(v) => rusqlite::types::ToSqlOutput::from(*v),
+                Param::Real(v) => rusqlite::types::ToSqlOutput::from(*v),
+                Param::Text(v) => rusqlite::types::ToSqlOutput::from(v.as_str()),
+                Param::ArrayInt(_) | Param::ArrayText(_) => unreachable!("handled above"),
+            })
+        }
+    }
+
+    impl Cell for rusqlite::Row<'_> {
+        fn i64(&self, i: usize) -> i64 { self.get(i).expect("cell i64") }
+        fn text(&self, i: usize) -> String { self.get(i).expect("cell text") }
+        fn opt_text(&self, i: usize) -> Option<String> { self.get(i).expect("cell opt_text") }
+        fn boolean(&self, i: usize) -> bool { self.get::<_, i64>(i).expect("cell bool") != 0 }
+    }
+
+    pub fn query<T>(db: &Db, sql: &str, params: &[Param], decode: impl Fn(&dyn Cell) -> T) -> Result<Vec<T>, String> {
+        count_query();
+        let mut stmt = db.conn.prepare_cached(sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |r| Ok(decode(r as &dyn Cell)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<T>>>().map_err(|e| e.to_string())
+    }
+
+    pub fn query_skip<T>(db: &Db, head: &str, frags: &[WhereFrag], tail: &str, tail_params: &[Param], decode: impl Fn(&dyn Cell) -> T) -> Result<Vec<T>, String> {
+        let mut sql = String::from(head);
+        let mut params: Vec<&Param> = Vec::new();
+        let mut first = true;
+        for f in frags {
+            if !f.present { continue; }
+            sql.push_str(if first { " WHERE " } else { " AND " });
+            sql.push_str(f.sql);
+            first = false;
+            for p in &f.params { params.push(p); }
+        }
+        sql.push_str(tail);
+        for p in tail_params { params.push(p); }
+        count_query();
+        let mut stmt = db.conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.into_iter()), |r| Ok(decode(r as &dyn Cell)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<T>>>().map_err(|e| e.to_string())
+    }
+
+    pub fn execute(db: &Db, sql: &str, params: &[Param]) -> Result<WriteSummary, String> {
+        count_query();
+        let changes = db.conn.prepare_cached(sql).map_err(|e| e.to_string())?.execute(rusqlite::params_from_iter(params.iter())).map_err(|e| e.to_string())?;
+        Ok(WriteSummary { changes: changes as i64, last_insert_rowid: db.conn.last_insert_rowid() })
+    }
+
+    pub fn transaction<T, E>(db: &Db, body: impl FnOnce(&Db) -> Result<T, E>) -> Result<T, E> {
+        db.conn.execute_batch("BEGIN").expect("tx BEGIN");
+        match body(db) {
+            Ok(v) => { db.conn.execute_batch("COMMIT").expect("tx COMMIT"); Ok(v) }
+            Err(e) => { let _ = db.conn.execute_batch("ROLLBACK"); Err(e) }
+        }
+    }
+
+    /// BATCH-WRITE bind (v2): ZIP the parallel column arrays into the `[{col:val,…},…]` JSON the baked
+    /// `json_each(?)` / `JSON_TABLE(?)` expands, and bind the SAME JSON to every `?` (createMany: one;
+    /// updateMany: one per SET clause + the WHERE). ONE statement for N records. `arrays[j]` is column
+    /// `columns[j]`'s whole array (Int keys bare, Text quoted — the type-aware JSON encoding).
+    pub fn query_batch_write<T>(db: &Db, sql: &str, columns: &[&str], arrays: &[&Param], decode: impl Fn(&dyn Cell) -> T) -> Result<Vec<T>, String> {
+        let n = arrays.first().map(|a| array_len(a)).unwrap_or(0);
+        let mut objs: Vec<String> = Vec::with_capacity(n);
+        for i in 0..n {
+            let fields: Vec<String> = columns.iter().enumerate().map(|(j, c)| format!("{}:{}", json_str(c), array_json_cell(arrays[j], i))).collect();
+            objs.push(format!("{{{}}}", fields.join(",")));
+        }
+        let json = format!("[{}]", objs.join(","));
+        let n_params = sql.matches('?').count();
+        let mut params: Vec<Param> = Vec::with_capacity(n_params);
+        if n_params > 0 {
+            for _ in 1..n_params { params.push(Param::Text(json.clone())); }
+            params.push(Param::Text(json));
+        }
+        query(db, sql, &params, decode)
+    }
+
+    /// BATCHED-RELATION bind (v2): bind the deduped keys as the ONE single-JSON param the baked
+    /// `json_each(?)` form expects. Unified signature with the pg backend (which ignores `json` and uses
+    /// `key_arrays`) so the per-op relation handler is dialect-agnostic.
+    pub fn relation_child<Child>(db: &Db, sql: &str, _key_arrays: &[Param], json: String, decode: impl Fn(&dyn Cell) -> Child) -> Result<Vec<Child>, String> {
+        query(db, sql, &[Param::Text(json)], decode)
+    }
+    /// The value of column-array `p` at row `i`, JSON-encoded for the zip (Int bare, Text quoted).
+    fn array_json_cell(p: &Param, i: usize) -> String {
+        match p {
+            Param::ArrayInt(v) => v[i].to_string(),
+            Param::ArrayText(v) => json_str(&v[i]),
+            _ => panic!("batch-write column array must be Array{{Int,Text}}"),
+        }
+    }
+    fn array_len(p: &Param) -> usize {
+        match p { Param::ArrayInt(v) => v.len(), Param::ArrayText(v) => v.len(), _ => 0 }
+    }
+}
+#[cfg(feature = "sqlite")]
+pub use sqlite_backend::*;
+
+// ══ PostgreSQL backend (postgres crate) ════════════════════════════════════════════════════════════════
+#[cfg(feature = "postgres")]
+mod pg_backend {
+    use super::*;
+    use postgres::types::{IsNull, ToSql, Type};
+    use postgres::{Client, NoTls, Row};
+    use std::cell::RefCell;
+    use std::error::Error;
+
+    /// The seam's DB handle — a blocking postgres client (the query needs `&mut`, so it rides a `RefCell`
+    /// to keep the seam's `&Db` shape identical to sqlite's).
+    pub struct Db {
+        pub client: RefCell<Client>,
+    }
+    impl Db {
+        pub fn open(target: &str) -> Db {
+            Db { client: RefCell::new(Client::connect(target, NoTls).expect("connect postgres")) }
+        }
+    }
+
+    // Bind a Param to postgres, coercing an i64/i64-array to the column's NARROWER int type (pg parses
+    // `WHERE id = $1` as int4, `$1::int[]` as int4[]) so the wire format matches — v1's `::int[]` cast
+    // stays byte-identical while the seam supplies the right width.
+    impl ToSql for Param {
+        fn to_sql(&self, ty: &Type, out: &mut bytes::BytesMut) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+            match self {
+                Param::Int(v) => match *ty {
+                    Type::INT4 => (*v as i32).to_sql(ty, out),
+                    Type::INT2 => (*v as i16).to_sql(ty, out),
+                    Type::BOOL => (*v != 0).to_sql(ty, out), // `published = $1` binds a BOOLEAN (1→true)
+                    _ => v.to_sql(ty, out),
+                },
+                Param::Real(v) => v.to_sql(ty, out),
+                Param::Text(v) => v.to_sql(ty, out),
+                Param::ArrayInt(v) => match *ty {
+                    Type::INT4_ARRAY => v.iter().map(|x| *x as i32).collect::<Vec<i32>>().to_sql(ty, out),
+                    Type::INT2_ARRAY => v.iter().map(|x| *x as i16).collect::<Vec<i16>>().to_sql(ty, out),
+                    _ => v.to_sql(ty, out),
+                },
+                Param::ArrayText(v) => v.to_sql(ty, out),
+            }
+        }
+        fn accepts(_ty: &Type) -> bool { true } // the baked SQL casts (`$1::int[]`) drive coercion in to_sql
+        postgres::types::to_sql_checked!();
+    }
+
+    impl Cell for Row {
+        fn i64(&self, i: usize) -> i64 {
+            match *self.columns()[i].type_() {
+                Type::INT8 => self.get::<usize, i64>(i),
+                Type::INT2 => self.get::<usize, i16>(i) as i64,
+                _ => self.get::<usize, i32>(i) as i64, // INT4 (incl. SERIAL id / INTEGER fks)
+            }
+        }
+        fn text(&self, i: usize) -> String {
+            match *self.columns()[i].type_() {
+                // A TIMESTAMP read canonicalizes to the `YYYY-MM-DD HH:MM:SS` string the sqlite oracle
+                // stores as TEXT (the coltype `date` read-materialization contract).
+                Type::TIMESTAMP => self.get::<usize, chrono::NaiveDateTime>(i).format("%Y-%m-%d %H:%M:%S").to_string(),
+                _ => self.get::<usize, String>(i),
+            }
+        }
+        fn opt_text(&self, i: usize) -> Option<String> { self.get::<usize, Option<String>>(i) }
+        fn boolean(&self, i: usize) -> bool { self.get::<usize, bool>(i) }
+    }
+
+    fn param_refs<'a>(params: &'a [Param]) -> Vec<&'a (dyn ToSql + Sync)> {
+        params.iter().map(|p| p as &(dyn ToSql + Sync)).collect()
+    }
+
+    pub fn query<T>(db: &Db, sql: &str, params: &[Param], decode: impl Fn(&dyn Cell) -> T) -> Result<Vec<T>, String> {
+        count_query();
+        let refs = param_refs(params);
+        let rows = db.client.borrow_mut().query(sql, &refs).map_err(|e| e.to_string())?;
+        Ok(rows.iter().map(|r| decode(r as &dyn Cell)).collect())
+    }
+
+    pub fn query_skip<T>(db: &Db, head: &str, frags: &[WhereFrag], tail: &str, tail_params: &[Param], decode: impl Fn(&dyn Cell) -> T) -> Result<Vec<T>, String> {
+        // Assemble baked fragments (same order/connectors as mode-2), then renumber `?`→`$N` for pg.
+        let mut sql = String::from(head);
+        let mut params: Vec<Param> = Vec::new();
+        let mut first = true;
+        for f in frags {
+            if !f.present { continue; }
+            sql.push_str(if first { " WHERE " } else { " AND " });
+            sql.push_str(f.sql);
+            first = false;
+            for p in &f.params { params.push(clone_param(p)); }
+        }
+        sql.push_str(tail);
+        for p in tail_params { params.push(clone_param(p)); }
+        let sql = renumber(&sql);
+        query(db, &sql, &params, decode)
+    }
+
+    pub fn execute(db: &Db, sql: &str, params: &[Param]) -> Result<WriteSummary, String> {
+        count_query();
+        let refs = param_refs(params);
+        let changes = db.client.borrow_mut().execute(sql, &refs).map_err(|e| e.to_string())?;
+        Ok(WriteSummary { changes: changes as i64, last_insert_rowid: 0 }) // pg has no lastInsertRowid; RETURNING is used
+    }
+
+    pub fn transaction<T, E>(db: &Db, body: impl FnOnce(&Db) -> Result<T, E>) -> Result<T, E> {
+        db.client.borrow_mut().batch_execute("BEGIN").expect("tx BEGIN");
+        match body(db) {
+            Ok(v) => { db.client.borrow_mut().batch_execute("COMMIT").expect("tx COMMIT"); Ok(v) }
+            Err(e) => { let _ = db.client.borrow_mut().batch_execute("ROLLBACK"); Err(e) }
+        }
+    }
+
+    /// BATCH-WRITE bind (v1 UNNEST): bind each column's WHOLE array as a native `<elem>[]` param — one
+    /// `$n::T[]` per column (the baked `UNNEST($1::int[],$2::text[])` form). ONE statement for N records.
+    pub fn query_batch_write<T>(db: &Db, sql: &str, _columns: &[&str], arrays: &[&Param], decode: impl Fn(&dyn Cell) -> T) -> Result<Vec<T>, String> {
+        let params: Vec<Param> = arrays.iter().map(|a| clone_param(a)).collect();
+        query(db, sql, &params, decode)
+    }
+
+    /// BATCHED-RELATION bind (v1): the child SQL is `= ANY(?::@@PG_ARRAY_CAST@@)` / composite
+    /// `UNNEST(?::@@PG_ARRAY_CAST@@, …)` with `?` placeholders + the deferred cast marker (#46). Resolve
+    /// the cast(s) to `int[]` (the bench's relation keys are all integer) and renumber `?`→`$N`, then bind
+    /// the deduped key column array(s) as native `int[]`. Unified signature with the sqlite backend (which
+    /// ignores `key_arrays` and uses `json`).
+    pub fn relation_child<Child>(db: &Db, sql: &str, key_arrays: &[Param], _json: String, decode: impl Fn(&dyn Cell) -> Child) -> Result<Vec<Child>, String> {
+        let resolved = renumber(&sql.replace("@@PG_ARRAY_CAST@@", "int[]"));
+        query(db, &resolved, key_arrays, decode)
+    }
+
+    fn clone_param(p: &Param) -> Param {
+        match p {
+            Param::Int(v) => Param::Int(*v),
+            Param::Real(v) => Param::Real(*v),
+            Param::Text(v) => Param::Text(v.clone()),
+            Param::ArrayInt(v) => Param::ArrayInt(v.clone()),
+            Param::ArrayText(v) => Param::ArrayText(v.clone()),
+        }
+    }
+    /// Rewrite positional `?` placeholders to pg `$1..$N` (left to right). Baked batch/main SQL already
+    /// emits `$N`; only the relation child fragments carry `?`.
+    fn renumber(sql: &str) -> String {
+        let mut out = String::with_capacity(sql.len() + 8);
+        let mut n = 0;
+        for c in sql.chars() {
+            if c == '?' { n += 1; out.push('$'); out.push_str(&n.to_string()); } else { out.push(c); }
+        }
+        out
+    }
+}
+#[cfg(feature = "postgres")]
+pub use pg_backend::*;
+
+// ══ Dialect-independent relation dedup + group + align (E4/#119) ══════════════════════════════════════
+/// Group the ONE batched child query's rows by their target key, then align to `item_keys` (one child
+/// list per parent, in order). MOVE each parent's list out (`remove`) — parents are distinct, zero clones.
+pub fn align_children<Child, Key>(item_keys: &[Key], distinct_children: Vec<Child>, child_key: impl Fn(&Child) -> Key) -> Vec<Vec<Child>>
 where
     Key: Eq + std::hash::Hash + Clone,
 {
-    // DISTINCT parent keys — the ONE query binds only these (the dedup the runtime relation does).
-    // Reserve up-front (no rehash/regrow); a repeat clones the key once into the set, uniques once into
-    // the vec (for `Key = i64` this is a Copy, i.e. free — the O(N) cost is the child rows, handled below).
+    let mut groups: std::collections::HashMap<Key, Vec<Child>> = std::collections::HashMap::new();
+    for ch in distinct_children {
+        groups.entry(child_key(&ch)).or_default().push(ch);
+    }
+    item_keys.iter().map(|k| groups.remove(k).unwrap_or_default()).collect()
+}
+/// The DISTINCT keys of `item_keys`, first-seen order (the dedup a batched relation binds).
+pub fn distinct_keys<Key: Eq + std::hash::Hash + Clone>(item_keys: &[Key]) -> Vec<Key> {
     let mut seen: std::collections::HashSet<Key> = std::collections::HashSet::with_capacity(item_keys.len());
     let mut distinct: Vec<Key> = Vec::with_capacity(item_keys.len());
     for k in item_keys {
-        if seen.insert(k.clone()) {
-            distinct.push(k.clone());
-        }
+        if seen.insert(k.clone()) { distinct.push(k.clone()); }
     }
-    let json = encode_json(&distinct);
-    let children = query(conn, sql, &[Param::Text(json)], decode)?; // <-- ONE query for all parents
-    // Group children by their target key (reserved to the distinct-parent count).
-    let mut groups: std::collections::HashMap<Key, Vec<Child>> = std::collections::HashMap::with_capacity(distinct.len());
-    for ch in children {
-        groups.entry(child_key(&ch)).or_default().push(ch);
-    }
-    // Align: MOVE each parent's child list out (`remove`) instead of cloning it. A relation's parent rows
-    // are DISTINCT (each parent key appears once in `item_keys`), so `remove` hands each key's Vec out
-    // exactly once — O(1) per parent, ZERO Child clones (was O(total children) String allocations via
-    // `.cloned()`). A key not present (parent with no children) yields an empty Vec.
-    Ok(item_keys.iter().map(|k| groups.remove(k).unwrap_or_default()).collect())
+    distinct
 }
 
-/// The generic BATCH-WRITE exec (E3/#118 — createMany / updateMany / upsertMany, ONE statement for N
-/// records). Given the ONE baked json_each batch `sql` + the records as PARALLEL columns (`columns[j]`
-/// names `cells[j]`), it ZIPS them into the `[{col:val,…},…]` JSON the baked `json_each(?)` /
-/// `JSON_TABLE(?)` expands and runs the statement ONCE. `cells[j][i]` is the ALREADY-JSON-ENCODED
-/// value of column j, row i — a string column is pre-quoted (`"foo"`), a numeric KEY column is bare
-/// (`42`) so `json_extract(…) = <int column>` matches (type-aware encoding is the caller's job, since
-/// only it knows each column's type). The seam owns the zip + the bind; the write twin of
-/// `query_batched_relation`.
-pub fn query_batch_write<Row>(
-    conn: &Connection,
+/// The generic BATCHED-RELATION exec (E4/#119, N+1-avoided): dedup the parent keys, run the ONE child
+/// query (the backend [`relation_child`] binds the deduped keys — sqlite as one JSON param, pg as native
+/// `int[]`), group by target key, and align per-parent to `item_keys`. Dialect-INDEPENDENT: the caller
+/// supplies BOTH the sqlite JSON encoding AND the pg key-array(s) (the backend uses whichever it needs),
+/// plus the key extraction — the whole relation runtime, ONE query, no N+1.
+pub fn query_batched_relation<Child, Key>(
+    db: &Db,
     sql: &str,
-    columns: &[&str],
-    cells: &[&[String]],
-    decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<Row>,
-) -> rusqlite::Result<Vec<Row>> {
-    let n = if cells.is_empty() { 0 } else { cells[0].len() };
-    let mut objs: Vec<String> = Vec::with_capacity(n);
-    for i in 0..n {
-        let fields: Vec<String> = columns.iter().enumerate().map(|(j, c)| format!("{}:{}", json_str(c), cells[j][i])).collect();
-        objs.push(format!("{{{}}}", fields.join(",")));
-    }
-    let json = format!("[{}]", objs.join(","));
-    // The baked batch SQL binds the SAME records-JSON to EVERY `?` (createMany: one; updateMany: one
-    // per SET clause + the WHERE). None of these baked batch SQLs carry a `?` inside a string literal,
-    // so counting `?` gives the bind count. Still ONE statement for N records either way.
-    let n_params = sql.matches('?').count();
-    // Bind the SAME records-JSON to every `?`, cloning it only n_params-1 times (the LAST param MOVES the
-    // owned json — so createMany's single-`?` shape clones ZERO times; updateMany's few `?` clone a few).
-    let mut params: Vec<Param> = Vec::with_capacity(n_params);
-    if n_params > 0 {
-        for _ in 1..n_params {
-            params.push(Param::Text(json.clone()));
-        }
-        params.push(Param::Text(json));
-    }
-    query(conn, sql, &params, decode)
-}
-
-/// The single summary row a NON-RETURNING write hands back: `{changes, lastInsertRowid}` — exactly
-/// the shape the mode-2 `executeStaticWrite` returns (and the shape the codegen lowering bakes as the
-/// write node's outType when there is no RETURNING clause).
-pub struct WriteSummary {
-    pub changes: i64,
-    pub last_insert_rowid: i64,
-}
-
-/// The generic WRITE exec: run `sql` with `params`, return the affected-row summary. SAME flow as
-/// [`query`] — same baked SQL, same params, same seam. Read and write are ONE flow (owner): the
-/// module bakes the SQL either way; the only difference is that a bare write collects an affected-row
-/// summary while a SELECT / RETURNING write collects a row list (that is a driver-shape detail).
-pub fn execute(conn: &Connection, sql: &str, params: &[Param]) -> rusqlite::Result<WriteSummary> {
-    count_query();
-    // Static baked SQL → `prepare_cached` compiles once and reuses the statement (vs `conn.execute`,
-    // which re-prepares every call).
-    let changes = conn.prepare_cached(sql)?.execute(rusqlite::params_from_iter(params.iter()))?;
-    Ok(WriteSummary { changes: changes as i64, last_insert_rowid: conn.last_insert_rowid() })
-}
-
-/// The TRANSACTION ENVELOPE (E5/#120 — RETURNING-chained multi-statement writes). The generated chain
-/// runner orchestrates the statements + the RETURNING→next wiring (baked); the BEGIN … COMMIT / ROLLBACK
-/// envelope is the SEAM's concern (owner: the statements + wiring are the chain's, the transaction is the
-/// runtime's). Run `body` between BEGIN and COMMIT on `conn`; on any `Err` from the chain (a statement
-/// failed under its fail policy — a constraint violation, etc.) ROLLBACK and propagate the error, so a
-/// partial chain leaves the DB UNCHANGED (atomicity). Generic over the chain's Ok/Err types — it knows
-/// only "run, commit-or-rollback", never the op. BEGIN/COMMIT/ROLLBACK are `execute_batch` (no bound
-/// params, and — unlike [`query`] — they do NOT touch `QUERY_COUNT`, which counts only data queries).
-pub fn transaction<T, E>(conn: &Connection, body: impl FnOnce(&Connection) -> Result<T, E>) -> Result<T, E> {
-    conn.execute_batch("BEGIN").expect("tx BEGIN");
-    match body(conn) {
-        Ok(v) => {
-            conn.execute_batch("COMMIT").expect("tx COMMIT");
-            Ok(v)
-        }
-        Err(e) => {
-            // Best-effort ROLLBACK (mirrors the mode-2 executeTransaction catch); surface the chain error.
-            let _ = conn.execute_batch("ROLLBACK");
-            Err(e)
-        }
-    }
+    item_keys: &[Key],
+    encode_json: impl Fn(&[Key]) -> String,
+    key_arrays: impl Fn(&[Key]) -> Vec<Param>,
+    decode: impl Fn(&dyn Cell) -> Child,
+    child_key: impl Fn(&Child) -> Key,
+) -> Result<Vec<Vec<Child>>, String>
+where
+    Key: Eq + std::hash::Hash + Clone,
+{
+    let distinct = distinct_keys(item_keys);
+    let json = encode_json(&distinct);
+    let arrays = key_arrays(&distinct);
+    let children = relation_child(db, sql, &arrays, json, decode)?;
+    Ok(align_children(item_keys, children, child_key))
 }
 
 // ── canonical JSON out (hand-rolled — the runtime carries no external JSON crate) ──
-
 pub fn json_str(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {

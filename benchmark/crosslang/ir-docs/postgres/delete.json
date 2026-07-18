@@ -1,0 +1,103 @@
+{
+  "irVersion": 1,
+  "exprVersion": 2,
+  "components": [
+    {
+      "name": "Delete",
+      "inputPorts": {
+        "email": {
+          "required": true,
+          "type": "string"
+        },
+        "name": {
+          "required": true,
+          "type": "string"
+        }
+      },
+      "body": [
+        {
+          "id": "tx_body_0",
+          "component": "Insert",
+          "ports": {
+            "sql": "INSERT INTO benchmark_users (email, name) VALUES ($1, $2) RETURNING id",
+            "p0": {
+              "ref": [
+                "email"
+              ]
+            },
+            "p1": {
+              "ref": [
+                "name"
+              ]
+            }
+          },
+          "outType": {
+            "obj": {
+              "id": "int"
+            }
+          }
+        },
+        {
+          "id": "tx_body_1",
+          "component": "Delete",
+          "ports": {
+            "sql": "DELETE FROM benchmark_users WHERE id = $1",
+            "p0": {
+              "ref": [
+                "tx_body_0",
+                "id"
+              ]
+            }
+          },
+          "outType": {
+            "obj": {
+              "changes": "int",
+              "lastInsertRowid": "int"
+            }
+          },
+          "parent": "tx_body_0"
+        }
+      ],
+      "output": {
+        "obj": {
+          "user": {
+            "ref": [
+              "tx_body_0"
+            ]
+          },
+          "deleted": {
+            "ref": [
+              "tx_body_1"
+            ]
+          }
+        }
+      },
+      "outputType": {
+        "obj": {
+          "user": {
+            "obj": {
+              "id": "int"
+            }
+          },
+          "deleted": {
+            "obj": {
+              "changes": "int",
+              "lastInsertRowid": "int"
+            }
+          }
+        }
+      },
+      "plan": {
+        "concurrency": 1,
+        "groups": [
+          [
+            0
+          ],
+          [
+            1
+          ]
+        ]
+      }
+    }
+  ]
+}

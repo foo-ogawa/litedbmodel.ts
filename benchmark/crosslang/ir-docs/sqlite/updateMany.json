@@ -1,0 +1,71 @@
+{
+  "irVersion": 1,
+  "exprVersion": 2,
+  "components": [
+    {
+      "body": [
+        {
+          "component": "Update",
+          "id": "n0",
+          "outType": {
+            "arr": {
+              "obj": {
+                "id": "int",
+                "email": "string",
+                "name": "string"
+              }
+            }
+          },
+          "ports": {
+            "sql": "UPDATE benchmark_users SET name = (SELECT json_extract(je.value, '$.name') FROM json_each(?) je WHERE json_extract(je.value, '$.id') = benchmark_users.id LIMIT 1) WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?)) RETURNING id, email, name",
+            "v0": {
+              "ref": [
+                "ids"
+              ]
+            },
+            "v1": {
+              "ref": [
+                "names"
+              ]
+            }
+          }
+        }
+      ],
+      "inputPorts": {
+        "ids": {
+          "required": true,
+          "type": "array",
+          "elemType": "int"
+        },
+        "names": {
+          "required": true,
+          "type": "array",
+          "elemType": "string"
+        }
+      },
+      "name": "UpdateMany",
+      "output": {
+        "ref": [
+          "n0"
+        ]
+      },
+      "plan": {
+        "concurrency": 16,
+        "groups": [
+          [
+            0
+          ]
+        ]
+      },
+      "outputType": {
+        "arr": {
+          "obj": {
+            "id": "int",
+            "email": "string",
+            "name": "string"
+          }
+        }
+      }
+    }
+  ]
+}

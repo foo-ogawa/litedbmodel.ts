@@ -631,23 +631,43 @@ const WRITE_SUMMARY_OUT_TYPE = { arr: { obj: { changes: 'int', lastInsertRowid: 
  * NAME, and its type resolves from the schema SoT. WHERE-bound heads (Update/Delete) keep the shared
  * fragment deriver, with the table supplied from the `table` port.
  */
-/** The `{__batchRows:{columns, refs, dialect}}` marker of a batch INSERT statement (createMany /
- * upsertMany), or undefined. The statement is a single json_each batch write whose ONE `?` binds this
- * marker; `refs[i]` is the parallel array of column `columns[i]`. */
+/**
+ * The parallel-column-array binding of a BATCH write statement (createMany / upsertMany / updateMany),
+ * as `{columns, refs}` where `refs[i]` is the WHOLE array for column `columns[i]` — or undefined for a
+ * non-batch statement. ONE derivation for BOTH dialect marker shapes (the write twin of the relation
+ * batch), so codegen types the SAME array-input head off either:
+ *
+ *  - sqlite/mysql (v2): the single json_each/JSON_TABLE statement whose `?`(s) all bind the SAME
+ *    `{__batchRows:{columns, refs}}` marker (one `?` for createMany; one per SET clause + WHERE for
+ *    updateMany — all carrying the same columns/refs).
+ *  - postgres (v1): the UNNEST statement whose `?`s each bind a distinct per-column
+ *    `{__batchArray:{column, ref}}` marker (byte-identical to v1; the parity rule keeps pg on UNNEST).
+ */
 function batchRowsMarkerOf(stmts: readonly StaticStatement[]): { columns: string[]; refs: unknown[] } | undefined {
   if (stmts.length !== 1) return undefined;
   const p = stmts[0].params;
-  // createMany binds the marker to ONE `?`; updateMany binds the SAME marker to MANY `?` (one per SET
-  // clause + the WHERE). All params must be the __batchRows marker; they carry the same columns/refs.
   if (p.length === 0) return undefined;
-  const first = p[0];
-  if (first === null || typeof first !== 'object' || Array.isArray(first) || !('__batchRows' in (first as object))) return undefined;
-  for (const m of p) {
-    if (m === null || typeof m !== 'object' || Array.isArray(m) || !('__batchRows' in (m as object))) return undefined;
+  const isObj = (m: unknown): m is Record<string, unknown> => m !== null && typeof m === 'object' && !Array.isArray(m);
+  // v2 (sqlite/mysql): every `?` binds the same `__batchRows` marker.
+  if (p.every((m) => isObj(m) && '__batchRows' in m)) {
+    const br = (p[0] as { __batchRows: { columns?: unknown; refs?: unknown } }).__batchRows;
+    if (!Array.isArray(br.columns) || !Array.isArray(br.refs) || br.columns.length !== br.refs.length) return undefined;
+    return { columns: br.columns as string[], refs: br.refs as unknown[] };
   }
-  const br = (first as { __batchRows: { columns?: unknown; refs?: unknown } }).__batchRows;
-  if (!Array.isArray(br.columns) || !Array.isArray(br.refs) || br.columns.length !== br.refs.length) return undefined;
-  return { columns: br.columns as string[], refs: br.refs as unknown[] };
+  // v1 (postgres): each `?` binds a distinct per-column `__batchArray` marker — assemble the parallel
+  // columns/refs from them (same shape the v2 marker carries whole).
+  if (p.every((m) => isObj(m) && '__batchArray' in m)) {
+    const columns: string[] = [];
+    const refs: unknown[] = [];
+    for (const m of p) {
+      const ba = (m as { __batchArray: { column?: unknown; ref?: unknown } }).__batchArray;
+      if (typeof ba.column !== 'string' || ba.ref === undefined) return undefined;
+      columns.push(ba.column);
+      refs.push(ba.ref);
+    }
+    return { columns, refs };
+  }
+  return undefined;
 }
 
 function deriveWriteHeadTypes(

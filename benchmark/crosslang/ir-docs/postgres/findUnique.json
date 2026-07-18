@@ -1,0 +1,61 @@
+{
+  "irVersion": 1,
+  "exprVersion": 2,
+  "components": [
+    {
+      "body": [
+        {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+            "arr": {
+              "obj": {
+                "id": "int",
+                "email": "string",
+                "name": "string"
+              }
+            }
+          },
+          "ports": {
+            "sql": "SELECT id, email, name FROM benchmark_users WHERE email = $1 LIMIT $2",
+            "p0": {
+              "ref": [
+                "email"
+              ]
+            },
+            "p1": 1
+          }
+        }
+      ],
+      "inputPorts": {
+        "email": {
+          "required": true,
+          "type": "string"
+        }
+      },
+      "name": "FindUnique",
+      "output": {
+        "ref": [
+          "n0"
+        ]
+      },
+      "plan": {
+        "concurrency": 16,
+        "groups": [
+          [
+            0
+          ]
+        ]
+      },
+      "outputType": {
+        "arr": {
+          "obj": {
+            "id": "int",
+            "email": "string",
+            "name": "string"
+          }
+        }
+      }
+    }
+  ]
+}

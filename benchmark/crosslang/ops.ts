@@ -29,10 +29,14 @@ import type { ColumnTypeResolver } from '../../src/scp/coltype';
 import type { RelationDecl } from '../../src/scp/relation';
 import type { SqlBundle } from '../../src/scp/runtime';
 import type { TransactionPlan } from '../../src/scp/makesql/tx';
-import { ddl } from './orm-domain';
+import { ddl, type OrmDialect } from './orm-domain';
 
 const L = components();
-export const RESOLVE: ColumnTypeResolver = schemaColumnTypeResolver(ddl('sqlite'));
+/** The §4.1 column-type resolver for a dialect (drives native port typing + read materialize). */
+export function resolveFor(dialect: OrmDialect): ColumnTypeResolver {
+  return schemaColumnTypeResolver(ddl(dialect));
+}
+export const RESOLVE: ColumnTypeResolver = resolveFor('sqlite'); // back-compat default
 
 const USER_COLUMNS = {
   benchmark_users: { id: 'INTEGER', email: 'TEXT', name: 'TEXT', created_at: 'TEXT', updated_at: 'TEXT' },
@@ -116,50 +120,50 @@ const TENANTS = publishBehaviors(TenantReads);
 const WRITES = publishBehaviors(UserWrites);
 
 // ── Relations (declared batch ops, N+1-avoided) ───────────────────────────────
-const POSTS_OF_USER: RelationDecl = {
+const postsOfUser = (dialect: OrmDialect): RelationDecl => ({
   name: 'posts', kind: 'hasMany', targetTable: 'benchmark_posts', select: ['id', 'title', 'author_id'],
-  parentKey: 'id', targetKey: 'author_id', order: 'id ASC', dialect: 'sqlite',
-} as unknown as RelationDecl;
-const COMMENTS_OF_POST: RelationDecl = {
+  parentKey: 'id', targetKey: 'author_id', order: 'id ASC', dialect,
+} as unknown as RelationDecl);
+const commentsOfPost = (dialect: OrmDialect): RelationDecl => ({
   name: 'comments', kind: 'hasMany', targetTable: 'benchmark_comments', select: ['id', 'body', 'post_id'],
-  parentKey: 'id', targetKey: 'post_id', order: 'id ASC', dialect: 'sqlite',
-} as unknown as RelationDecl;
-const POSTS_COMPOSITE: RelationDecl = {
+  parentKey: 'id', targetKey: 'post_id', order: 'id ASC', dialect,
+} as unknown as RelationDecl);
+const postsComposite = (dialect: OrmDialect): RelationDecl => ({
   name: 'posts', kind: 'hasMany', targetTable: 'benchmark_tenant_posts', select: ['tenant_id', 'post_id', 'user_id', 'title'],
-  parentKeys: ['tenant_id', 'user_id'], targetKeys: ['tenant_id', 'user_id'], order: 'post_id ASC', dialect: 'sqlite',
-} as unknown as RelationDecl;
+  parentKeys: ['tenant_id', 'user_id'], targetKeys: ['tenant_id', 'user_id'], order: 'post_id ASC', dialect,
+} as unknown as RelationDecl);
 
 // ── TX ops (RETURNING-chained; E5) — built from the shared compiler + deriveTransactionPlan ──
-const txNode = (id: string, component: string, ports: Record<string, unknown>) => compileWriteNode({ id, component, ports } as never, 'sqlite');
-function nestedCreatePlan(): TransactionPlan {
+const txNode = (dialect: OrmDialect, id: string, component: string, ports: Record<string, unknown>) => compileWriteNode({ id, component, ports } as never, dialect);
+function nestedCreatePlan(dialect: OrmDialect): TransactionPlan {
   return deriveTransactionPlan('create', [
-    { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
-    { op: txNode('p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
+    { op: txNode(dialect, 'u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
+    { op: txNode(dialect, 'p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
   ], { effects: {} }) as unknown as TransactionPlan;
 }
-function nestedUpdatePlan(): TransactionPlan {
+function nestedUpdatePlan(dialect: OrmDialect): TransactionPlan {
   return deriveTransactionPlan('update', [
-    { op: txNode('u', 'Update', { table: 'benchmark_users', 'set.name': { ref: ['name'] }, where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user_id'] }] }] }, returning: 'id, name' }), label: 'Update user', name: 'user', effects: {} },
-    { op: txNode('p', 'Update', { table: 'benchmark_posts', 'set.title': { ref: ['title'] }, where: { arr: [{ eq: [{ ref: ['author_id'] }, { ref: ['user_id'] }] }] }, returning: 'id, title' }), label: 'Update post', name: 'post', effects: {} },
+    { op: txNode(dialect, 'u', 'Update', { table: 'benchmark_users', 'set.name': { ref: ['name'] }, where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user_id'] }] }] }, returning: 'id, name' }), label: 'Update user', name: 'user', effects: {} },
+    { op: txNode(dialect, 'p', 'Update', { table: 'benchmark_posts', 'set.title': { ref: ['title'] }, where: { arr: [{ eq: [{ ref: ['author_id'] }, { ref: ['user_id'] }] }] }, returning: 'id, title' }), label: 'Update post', name: 'post', effects: {} },
   ], { effects: {} }) as unknown as TransactionPlan;
 }
-function nestedUpsertPlan(): TransactionPlan {
+function nestedUpsertPlan(dialect: OrmDialect): TransactionPlan {
   return deriveTransactionPlan('create', [
-    { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, onConflict: 'email', onConflictAction: 'update', returning: 'id' }), label: 'Upsert user', name: 'user', effects: {} },
-    { op: txNode('p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
+    { op: txNode(dialect, 'u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, onConflict: 'email', onConflictAction: 'update', returning: 'id' }), label: 'Upsert user', name: 'user', effects: {} },
+    { op: txNode(dialect, 'p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
   ], { effects: {} }) as unknown as TransactionPlan;
 }
 // delete: benchmark.ts's op is create-then-delete (a 2-statement tx — insert a fresh user, delete it by
 // the RETURNING id), NOT a single DELETE. Matches the E5 txdelete shape.
-function deletePlan(): TransactionPlan {
+function deletePlan(dialect: OrmDialect): TransactionPlan {
   return deriveTransactionPlan('create', [
-    { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
-    { op: txNode('d', 'Delete', { table: 'benchmark_users', where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user', 'id'] }] }] } }), label: 'Delete user', name: 'deleted', effects: {} },
+    { op: txNode(dialect, 'u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
+    { op: txNode(dialect, 'd', 'Delete', { table: 'benchmark_users', where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user', 'id'] }] }] } }), label: 'Delete user', name: 'deleted', effects: {} },
   ], { effects: {} }) as unknown as TransactionPlan;
 }
-function txBundle(name: string, plan: TransactionPlan): SqlBundle {
+function txBundle(dialect: OrmDialect, name: string, plan: TransactionPlan): SqlBundle {
   const first = plan.statements[0].op;
-  return { dialect: 'sqlite', name, statement: { sql: first.sql, params: first.params }, optionalHeads: [], relations: {}, transaction: plan } as unknown as SqlBundle;
+  return { dialect, name, statement: { sql: first.sql, params: first.params }, optionalHeads: [], relations: {}, transaction: plan } as unknown as SqlBundle;
 }
 
 // ── The 19-op registry ────────────────────────────────────────────────────────
@@ -172,44 +176,51 @@ export interface BenchOp {
   readonly withRel?: string; // relation name to prefetch (read+rel ops)
 }
 
-const B = (id: string, kind: BenchOp['kind'], bundle: SqlBundle, input: Record<string, unknown>, withRel?: string): BenchOp =>
-  ({ id, kind, bundle, resolve: RESOLVE, input, ...(withRel ? { withRel } : {}) });
-
 const BATCH_EMAILS = Array.from({ length: 10 }, (_, i) => `many${i}@bench.com`);
 const BATCH_NAMES = Array.from({ length: 10 }, (_, i) => `Many ${i}`);
 
-export function buildOps(): BenchOp[] {
-  const rc = RESOLVE;
-  void rc;
+/**
+ * Build the 19-op registry for a dialect. All per-dialect SQL is GENERATED here
+ * (compileBundle/compileWriteNode/relation `dialect`) — pg=v1 byte-golden,
+ * mysql/sqlite=v2 JSON-array single-param (per litedbmodel-v1-v2-sql-parity-rule).
+ */
+export function buildOps(dialect: OrmDialect = 'sqlite'): BenchOp[] {
+  const d = dialect;
+  const rv = resolveFor(d);
+  const POSTS_OF_USER = postsOfUser(d);
+  const COMMENTS_OF_POST = commentsOfPost(d);
+  const POSTS_COMPOSITE = postsComposite(d);
+  const B = (id: string, kind: BenchOp['kind'], bundle: SqlBundle, input: Record<string, unknown>, withRel?: string): BenchOp =>
+    ({ id, kind, bundle, resolve: rv, input, ...(withRel ? { withRel } : {}) });
   return [
     // ── reads (single Select) ──
-    B('findAll', 'read', compileBundle(USERS, 'FindAll', [], 'sqlite', undefined, RESOLVE), {}),
-    B('filterPaginateSort', 'read', compileBundle(POSTS, 'FilterPaginateSort', [], 'sqlite', undefined, RESOLVE), { published: 1 }),
-    B('findFirst', 'read', compileBundle(USERS, 'FindFirst', [], 'sqlite', undefined, RESOLVE), { name: 'User%' }),
-    B('findUnique', 'read', compileBundle(USERS, 'FindUnique', [], 'sqlite', undefined, RESOLVE), { email: 'user500@example.com' }),
+    B('findAll', 'read', compileBundle(USERS, 'FindAll', [], d, undefined, rv), {}),
+    B('filterPaginateSort', 'read', compileBundle(POSTS, 'FilterPaginateSort', [], d, undefined, rv), { published: 1 }),
+    B('findFirst', 'read', compileBundle(USERS, 'FindFirst', [], d, undefined, rv), { name: 'User%' }),
+    B('findUnique', 'read', compileBundle(USERS, 'FindUnique', [], d, undefined, rv), { email: 'user500@example.com' }),
     // ── reads + relation (parent Select + ONE batched relation level) ──
-    B('nestedFindAll', 'read+rel', compileBundle(USERS, 'FindAll', [POSTS_OF_USER], 'sqlite', undefined, RESOLVE), {}, 'posts'),
-    B('nestedFindFirst', 'read+rel', compileBundle(USERS, 'FindFirst', [POSTS_OF_USER], 'sqlite', undefined, RESOLVE), { name: 'User%' }, 'posts'),
-    B('nestedFindUnique', 'read+rel', compileBundle(USERS, 'FindUnique', [POSTS_OF_USER], 'sqlite', undefined, RESOLVE), { email: 'user1@example.com' }, 'posts'),
+    B('nestedFindAll', 'read+rel', compileBundle(USERS, 'FindAll', [POSTS_OF_USER], d, undefined, rv), {}, 'posts'),
+    B('nestedFindFirst', 'read+rel', compileBundle(USERS, 'FindFirst', [POSTS_OF_USER], d, undefined, rv), { name: 'User%' }, 'posts'),
+    B('nestedFindUnique', 'read+rel', compileBundle(USERS, 'FindUnique', [POSTS_OF_USER], d, undefined, rv), { email: 'user1@example.com' }, 'posts'),
     // nestedRelations / compositeRelations: benchmark.ts defines these as 3-LEVEL chains
     // (users→posts→comments / tenant_users→tenant_posts→tenant_comments). compileBundle bakes ONE
     // relation level, so these are the DEEP 2-level slice (the proven leaf edge) — the full 3-level
     // native chain is a surface gap (see report). Byte-equal to the oracle for the 2-level shape.
-    B('nestedRelations', 'read+rel', compileBundle(POSTS, 'ByAuthor', [COMMENTS_OF_POST], 'sqlite', undefined, RESOLVE), { author_id: 7 }, 'comments'),
-    B('compositeRelations', 'read+rel', compileBundle(TENANTS, 'ByTenant', [POSTS_COMPOSITE], 'sqlite', undefined, RESOLVE), { tenant_id: 1 }, 'posts'),
+    B('nestedRelations', 'read+rel', compileBundle(POSTS, 'ByAuthor', [COMMENTS_OF_POST], d, undefined, rv), { author_id: 7 }, 'comments'),
+    B('compositeRelations', 'read+rel', compileBundle(TENANTS, 'ByTenant', [POSTS_COMPOSITE], d, undefined, rv), { tenant_id: 1 }, 'posts'),
     // ── single writes ──
-    B('create', 'write', compileBundle(WRITES, 'Create', [], 'sqlite', undefined, RESOLVE), { email: 'new@bench.com', name: 'New' }),
-    B('update', 'write', compileBundle(WRITES, 'Update', [], 'sqlite', undefined, RESOLVE), { id: 100, name: 'Updated 100' }),
+    B('create', 'write', compileBundle(WRITES, 'Create', [], d, undefined, rv), { email: 'new@bench.com', name: 'New' }),
+    B('update', 'write', compileBundle(WRITES, 'Update', [], d, undefined, rv), { id: 100, name: 'Updated 100' }),
     // delete = create-then-delete tx (benchmark.ts) — see deletePlan.
-    B('delete', 'tx', txBundle('Delete', deletePlan()), { email: 'del0@bench.com', name: 'Del' }),
-    B('upsert', 'write', compileBundle(WRITES, 'Upsert', [], 'sqlite', undefined, RESOLVE), { email: 'user1@example.com', name: 'Upserted One' }),
+    B('delete', 'tx', txBundle(d, 'Delete', deletePlan(d)), { email: 'del0@bench.com', name: 'Del' }),
+    B('upsert', 'write', compileBundle(WRITES, 'Upsert', [], d, undefined, rv), { email: 'user1@example.com', name: 'Upserted One' }),
     // ── batch writes ──
-    B('createMany', 'batch', compileBundle(WRITES, 'CreateMany', [], 'sqlite', undefined, RESOLVE), { emails: BATCH_EMAILS, names: BATCH_NAMES }),
-    B('upsertMany', 'batch', compileBundle(WRITES, 'UpsertMany', [], 'sqlite', undefined, RESOLVE), { emails: ['user1@example.com', 'user2@example.com', ...BATCH_EMAILS.slice(0, 8)], names: BATCH_NAMES }),
-    B('updateMany', 'batch', compileBundle(WRITES, 'UpdateMany', [], 'sqlite', undefined, RESOLVE), { ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], names: BATCH_NAMES }),
+    B('createMany', 'batch', compileBundle(WRITES, 'CreateMany', [], d, undefined, rv), { emails: BATCH_EMAILS, names: BATCH_NAMES }),
+    B('upsertMany', 'batch', compileBundle(WRITES, 'UpsertMany', [], d, undefined, rv), { emails: ['user1@example.com', 'user2@example.com', ...BATCH_EMAILS.slice(0, 8)], names: BATCH_NAMES }),
+    B('updateMany', 'batch', compileBundle(WRITES, 'UpdateMany', [], d, undefined, rv), { ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], names: BATCH_NAMES }),
     // ── nested-write transactions (RETURNING-chained) ──
-    B('nestedCreate', 'tx', txBundle('NestedCreate', nestedCreatePlan()), { email: 'nc@bench.com', name: 'NC', title: 'NC Post' }),
-    B('nestedUpdate', 'tx', txBundle('NestedUpdate', nestedUpdatePlan()), { user_id: 7, name: 'NU', title: 'NU Post' }),
-    B('nestedUpsert', 'tx', txBundle('NestedUpsert', nestedUpsertPlan()), { email: 'user1@example.com', name: 'NUp', title: 'NUp Post' }),
+    B('nestedCreate', 'tx', txBundle(d, 'NestedCreate', nestedCreatePlan(d)), { email: 'nc@bench.com', name: 'NC', title: 'NC Post' }),
+    B('nestedUpdate', 'tx', txBundle(d, 'NestedUpdate', nestedUpdatePlan(d)), { user_id: 7, name: 'NU', title: 'NU Post' }),
+    B('nestedUpsert', 'tx', txBundle(d, 'NestedUpsert', nestedUpsertPlan(d)), { email: 'user1@example.com', name: 'NUp', title: 'NUp Post' }),
   ];
 }

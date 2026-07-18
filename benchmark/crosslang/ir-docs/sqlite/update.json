@@ -1,0 +1,69 @@
+{
+  "irVersion": 1,
+  "exprVersion": 2,
+  "components": [
+    {
+      "body": [
+        {
+          "component": "Update",
+          "id": "n0",
+          "outType": {
+            "arr": {
+              "obj": {
+                "id": "int",
+                "email": "string",
+                "name": "string"
+              }
+            }
+          },
+          "ports": {
+            "sql": "UPDATE benchmark_users SET name = ? WHERE id = ? RETURNING id, email, name",
+            "p0": {
+              "ref": [
+                "name"
+              ]
+            },
+            "p1": {
+              "ref": [
+                "id"
+              ]
+            }
+          }
+        }
+      ],
+      "inputPorts": {
+        "name": {
+          "required": true,
+          "type": "string"
+        },
+        "id": {
+          "required": true,
+          "type": "int"
+        }
+      },
+      "name": "Update",
+      "output": {
+        "ref": [
+          "n0"
+        ]
+      },
+      "plan": {
+        "concurrency": 16,
+        "groups": [
+          [
+            0
+          ]
+        ]
+      },
+      "outputType": {
+        "arr": {
+          "obj": {
+            "id": "int",
+            "email": "string",
+            "name": "string"
+          }
+        }
+      }
+    }
+  ]
+}

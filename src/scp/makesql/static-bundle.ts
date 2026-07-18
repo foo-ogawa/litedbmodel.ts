@@ -878,6 +878,16 @@ function evalSpec(spec: ValueSpec, scope: Scope): unknown {
     }
     return JSON.stringify(rows);
   }
+  // PG (v1) batch UNNEST param: `{__batchArray:{column, ref, dialect}}` — the ref evaluates to the
+  // WHOLE array for one column; the statement's `?::<elem>[]` cast binds it as a PG array (one `?` per
+  // column). The v1 twin of the `__batchRows` JSON marker (postgres-only; the parity rule keeps pg on
+  // UNNEST). No JSON encoding — the driver binds the JS array directly (each cell driver-normalized).
+  if (spec !== null && typeof spec === 'object' && !Array.isArray(spec) && '__batchArray' in (spec as object)) {
+    const m = (spec as { __batchArray: { column: string; ref: ValueSpec; dialect: Dialect } }).__batchArray;
+    const a = evaluateExpression(m.ref, scope);
+    if (!Array.isArray(a)) throw new Error(`static-bundle: __batchArray column '${m.column}' ref did not evaluate to an array`);
+    return (a as Value[]).map((e) => toDriverParam(e));
+  }
   if (spec !== null && typeof spec === 'object' && !Array.isArray(spec) && '__jsonArray' in (spec as object)) {
     const marker = spec as { __jsonArray: ValueSpec; dialect: Dialect };
     const arr = evaluateExpression(marker.__jsonArray, scope);
@@ -1005,10 +1015,10 @@ export function executeStaticWrite(bundle: StaticBundle, input: Scope, db: DbOrC
 // ============================================================================
 
 /** Compile ONE authored SQL node (Select or CRUD write) into its static statements. */
-function compileNodeStatements(node: RefLike, dialect: Dialect): StaticStatement[] {
+function compileNodeStatements(node: RefLike, dialect: Dialect, resolveColumnType?: ColumnTypeResolver): StaticStatement[] {
   const component = 'map' in node ? (node as MapNode).map.component : node.component;
   if (component === 'Select' || component === 'Count') return compileSelectNode(node, dialect);
-  const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> }, dialect);
+  const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> }, dialect, resolveColumnType);
   return [{ sql: op.sql, params: op.params }];
 }
 
@@ -1105,7 +1115,7 @@ export function compileReadGraph(
       // than feed it to `compileNodeStatements` as a catalog ref.
       throw new Error(`static-bundle: read component '${component.name}' node '${n.id}' is a fanout node, not supported by litedbmodel (bc FanoutNode)`);
     }
-    statementsById[n.id] = compileNodeStatements(n, dialect);
+    statementsById[n.id] = compileNodeStatements(n, dialect, resolveColumnType);
   }
 
   // Hard-limit runaway guard for the top-level read (Phase E-2, epic #74; v1 `DBModel` find
@@ -1157,7 +1167,7 @@ export function compileReadGraph(
     name: component.name,
     ir,
     statementsById,
-    optionalHeads: [...optionalHeadsOfComponent(component, dialect)],
+    optionalHeads: [...optionalHeadsOfComponent(component, dialect, resolveColumnType)],
     ...(materializers !== undefined && materializers.size > 0 ? { materializersByNode: Object.fromEntries(materializers) } : {}),
     ...(findGuard !== undefined ? { findGuard } : {}),
   };
@@ -1487,7 +1497,7 @@ export function renderReadPrimary(graph: ReadGraph, input: Scope): { sql: string
 }
 
 /** Optional heads across ALL SQL nodes of a component (schema + SKIP-guard + refOpt). */
-function optionalHeadsOfComponent(component: Component, dialect: Dialect): Set<string> {
+function optionalHeadsOfComponent(component: Component, dialect: Dialect, resolveColumnType?: ColumnTypeResolver): Set<string> {
   const optional = new Set<string>();
   for (const [port, schema] of Object.entries(component.inputPorts)) {
     if (schema.required !== true) optional.add(port);
@@ -1496,7 +1506,7 @@ function optionalHeadsOfComponent(component: Component, dialect: Dialect): Set<s
   for (const n of component.body) {
     if ('cond' in n) continue;
     if (isFanout(n)) continue; // bc FanoutNode: litedbmodel never emits it; carries no ref-opt heads.
-    const stmts = compileNodeStatements(n, dialect);
+    const stmts = compileNodeStatements(n, dialect, resolveColumnType);
     for (const stmt of stmts) {
       for (const p of stmt.params) collectRefOptHeads(p, optional);
       if (stmt.skip !== undefined) collectRefOptHeads(stmt.skip, optional);
