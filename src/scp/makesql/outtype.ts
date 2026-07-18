@@ -238,9 +238,21 @@ function nodeTypes(node: RefLike, resolveColumnType: ColumnTypeResolver): NodeTy
     const outType: PortableType = isMap(node) ? { arr: { arr: row } } : { arr: row };
     return { outType, materializers };
   }
+  // A WRITE node (Insert/Update/Delete). Read and write are ONE flow — both make SQL and execute it,
+  // and both hand back ROWS (`executeStaticWrite` returns the RETURNING rows, else the single
+  // `[{changes, lastInsertRowid}]` summary row) — so a write node is typed here rather than being a
+  // separate path. The type comes from {@link crudNodeAsType}, the SAME derivation the authoring
+  // layer's `.as` stamp uses (single SoT: the two can never diverge). A write with no RETURNING types
+  // as the determined empty-row list `{arr:{obj:{}}}`; its executed summary-row shape is supplied by
+  // the codegen lowering, which is where the row struct must match what the exec seam returns.
+  if (component === 'Insert' || component === 'Update' || component === 'Delete') {
+    const materializers: Record<string, MaterializeClass> = {};
+    const outType = crudNodeAsType(component, ports, resolveColumnType, at, materializers);
+    return { outType, materializers };
+  }
   throw new Error(
-    `outtype: ${at}: component '${component}' has no typed outType (typed read de-box covers Select/Count only). ` +
-      `A write / unknown node cannot be de-boxed here — no-assume, no-fallback.`,
+    `outtype: ${at}: component '${component}' has no typed outType (typed de-box covers Select/Count + ` +
+      `Insert/Update/Delete). An unknown node cannot be de-boxed here — no-assume, no-fallback.`,
   );
 }
 
@@ -333,6 +345,7 @@ export function crudNodeAsType(
   ports: Record<string, unknown>,
   resolveColumnType: ColumnTypeResolver,
   at: string,
+  materializers: Record<string, MaterializeClass> = {},
 ): PortableType {
   const table = ports['table'];
   if (typeof table !== 'string') {
@@ -366,7 +379,7 @@ export function crudNodeAsType(
     }
     const cols = returning.split(',').map((c) => c.trim()).filter((c) => c.length > 0);
     if (cols.length === 0) return { arr: { obj: {} } };
-    return { arr: rowObjType(table, cols, resolveColumnType, at, {}) };
+    return { arr: rowObjType(table, cols, resolveColumnType, at, materializers) };
   }
   throw new Error(`outtype: ${at}: no pre-compile output type for component '${component}' (typed CRUD covers Select/Insert/Update/Delete; Count is static via catalog elemType).`);
 }

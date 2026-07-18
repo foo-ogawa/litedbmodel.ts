@@ -106,8 +106,26 @@ class OrmReads extends SemanticBehavior {
   }
 }
 
+/** Write ops — read and write go through the SAME lowering + SAME generic exec seam (owner: one flow). */
+class OrmWrites extends SemanticBehavior {
+  static columns = USER_COLUMNS;
+  /** INSERT … RETURNING — a row-returning write. */
+  CreateUser($: { email: unknown; name: unknown }) {
+    return L.Insert({ table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id, email, name' });
+  }
+  /** UPDATE … WHERE … RETURNING — SET value + WHERE-bound head, both typed from the authored ports. */
+  RenameUser($: { id: unknown; name: unknown }) {
+    return L.Update({ table: 'benchmark_users', 'set.name': $.name, where: [whereEq(($ as never)['id'], $.id)], returning: 'id, email, name' });
+  }
+  /** DELETE … WHERE — a NON-returning write: the summary row [{changes, lastInsertRowid}]. */
+  DeleteUser($: { id: unknown }) {
+    return L.Delete({ table: 'benchmark_users', where: [whereEq(($ as never)['id'], $.id)] });
+  }
+}
+
 const RESOLVE = schemaColumnTypeResolver(ddl('sqlite'));
 const CONTRACT = publishBehaviors(OrmReads);
+const WRITE_CONTRACT = publishBehaviors(OrmWrites);
 const EXPECTED_SQL = 'SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT ?';
 
 function findUniqueBundle() {
@@ -207,15 +225,36 @@ describe('E1/E2 — the lowering fails CLOSED on every shape it cannot bake (no 
     }
   });
 
-  it('a WRITE bundle is still refused — it carries no graph to lower (see report: writes need head typing from values.*/set.* ports)', () => {
-    // Writes ARE row-returning ops (executeStaticWrite returns RETURNING rows, else
-    // [{changes,lastInsertRowid}]), and their statement is the SAME sql+scalar-ref shape a read has —
-    // so the lowering itself already fits. What is missing is upstream: compileBundle discards the
-    // write's component graph, and head typing is derived by regex from `SELECT … FROM <t>`, which
-    // does not match INSERT/UPDATE. Documented here so the gap cannot be mistaken for "unsupported".
+  it('a bundle with neither a graph nor a statement is refused (nothing to generate)', () => {
     expect(() => generateCodegenArtifact({ dialect: 'sqlite', name: 'Create', optionalHeads: [], relations: {} } as never, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true })).toThrow(
-      /has no readGraph/,
+      /carries no component graph/,
     );
+  });
+});
+
+describe('E3 — writes bake through the SAME lowering as reads (owner: read/write are one flow)', () => {
+  it('Insert bakes RETURNING SQL + value heads typed from values.* ports', () => {
+    const b = compileBundle(WRITE_CONTRACT, 'CreateUser', [], 'sqlite', undefined, RESOLVE);
+    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    expect(code).toContain('f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id, email, name".to_string()');
+    expect(code).toContain('f_p0: in_.email.clone()');
+    expect(code).toContain('f_p1: in_.name.clone()');
+  });
+
+  it('Update bakes SET+WHERE SQL; the WHERE-bound head is typed from the authored where port (no FROM regex)', () => {
+    const b = compileBundle(WRITE_CONTRACT, 'RenameUser', [], 'sqlite', undefined, RESOLVE);
+    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    expect(code).toContain('f_sql: "UPDATE benchmark_users SET name = ? WHERE id = ? RETURNING id, email, name".to_string()');
+    expect(code).toContain('f_p0: in_.name.clone()');
+    expect(code).toContain('f_p1: in_.id'); // id typed i64 (native, no clone)
+  });
+
+  it('Delete (no RETURNING) bakes the summary-row outType [{changes, lastInsertRowid}]', () => {
+    const b = compileBundle(WRITE_CONTRACT, 'DeleteUser', [], 'sqlite', undefined, RESOLVE);
+    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    expect(code).toContain('f_sql: "DELETE FROM benchmark_users WHERE id = ?".to_string()');
+    expect(code).toContain('pub changes: i64');
+    expect(code).toContain('pub lastInsertRowid: i64');
   });
 });
 
@@ -301,5 +340,63 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     expect(JSON.stringify(oracles['nobody@example.com'])).toBe('[]');
     // the empty IN-list must be zero rows (not an error) — the #46 case.
     expect(JSON.stringify(byIdsOracles[''])).toBe('[]');
+  });
+});
+
+// ── writes: a write MUTATES state, so each op runs against a FRESH copy of a clean seed, and the
+//    oracle captures BOTH the returned rows/summary AND the resulting table state ──────────────
+const WRITE_SEED = join(PROOF_DIR, 'write_seed.db');
+
+/** A fresh seeded DB (SMALL — 3 rows — so the full-state comparison is legible). */
+function freshWriteDb(path?: string): InstanceType<typeof Database> {
+  if (path !== undefined && existsSync(path)) rmSync(path);
+  const db = new Database(path ?? ':memory:');
+  db.pragma('foreign_keys = ON');
+  for (const s of ddl('sqlite')) db.exec(s);
+  for (let id = 1; id <= 3; id++) db.prepare('INSERT INTO benchmark_users (id, email, name) VALUES (?, ?, ?)').run(id, `user${id}@example.com`, `User ${id}`);
+  return db;
+}
+function tableState(db: InstanceType<typeof Database>): unknown {
+  return db.prepare('SELECT id, email, name FROM benchmark_users ORDER BY id').all();
+}
+
+interface WriteCase { op: string; entry: keyof OrmWrites & string; args: string[]; input: Record<string, unknown>; }
+const WRITE_CASES: WriteCase[] = [
+  { op: 'createuser', entry: 'CreateUser', args: ['zed@example.com', 'Zed'], input: { email: 'zed@example.com', name: 'Zed' } },
+  { op: 'renameuser', entry: 'RenameUser', args: ['2', 'Renamed Two'], input: { id: 2, name: 'Renamed Two' } },
+  { op: 'deleteuser', entry: 'DeleteUser', args: ['1'], input: { id: 1 } },
+];
+
+describe('E3 — emit write modules + a clean seed DB + {result, state} oracles', () => {
+  it('writes /tmp/e1proof/{generated_<write>.rs, write_seed.db, oracles_write.json}', () => {
+    mkdirSync(PROOF_DIR, { recursive: true });
+    // A clean 3-row seed the harness copies before each write run (a write mutates its copy).
+    freshWriteDb(WRITE_SEED).close();
+
+    const oracles: Record<string, unknown> = {};
+    for (const wc of WRITE_CASES) {
+      const bundle = compileBundle(WRITE_CONTRACT, wc.entry, [], 'sqlite', undefined, RESOLVE);
+      const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
+      writeFileSync(join(PROOF_DIR, `generated_${wc.op}.rs`), art.module.code);
+      // The mode-2 oracle runs the write on a FRESH connection over a file-seeded DB, exactly as the
+      // rust leg does (rust opens the copied seed file fresh). This matters for a non-RETURNING
+      // write's `lastInsertRowid`: on a connection that just ran the seed INSERTs it would report the
+      // seed's last id; on a fresh connection (the real per-op case) it reports 0. Seeding on one
+      // connection and operating on another makes both legs agree AND reflects real deployment.
+      const oraclePath = join(PROOF_DIR, `oracle_${wc.op}.db`);
+      freshWriteDb(oraclePath).close();
+      const db = new Database(oraclePath);
+      db.pragma('foreign_keys = ON');
+      const result = executeBundle(bundle, wc.input as never, { db: db as never });
+      const state = tableState(db);
+      db.close();
+      rmSync(oraclePath);
+      oracles[wc.op] = { result, state };
+    }
+    writeFileSync(join(PROOF_DIR, 'oracles_write.json'), JSON.stringify(oracles, null, 2));
+
+    // sanity: the INSERT returns the new row; the DELETE removes id=1.
+    expect((oracles.createuser as { result: { id: number }[] }).result[0].email).toBe('zed@example.com');
+    expect((oracles.deleteuser as { state: { id: number }[] }).state.some((r) => r.id === 1)).toBe(false);
   });
 });

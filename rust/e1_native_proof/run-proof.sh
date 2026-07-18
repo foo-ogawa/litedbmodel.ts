@@ -14,7 +14,8 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROOF_DIR=/tmp/e1proof
-MODULES=(generated_findunique generated_byids)
+MODULES=(generated_findunique generated_byids generated_createuser generated_renameuser generated_deleteuser)
+WRITE_OPS=(createuser renameuser deleteuser)
 fail=0
 
 for m in "${MODULES[@]}"; do
@@ -63,6 +64,12 @@ BIN="$HERE/target/debug/e1_native_proof"
 # empty result (a bash read-loop previously did exactly that — a false PASS).
 node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" findunique "$PROOF_DIR/oracles.json" || fail=1
 node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" byids "$PROOF_DIR/oracles_byids.json" || fail=1
+
+echo "── leg 3b: WRITE execution + resulting DB state vs the mode-2 oracle (fresh copy per run) ──"
+# A write MUTATES its DB, so each op runs on a FRESH copy of the clean seed. The binary prints
+# {result, state}; the oracle carries the mode-2 {result, state}. compare_write.mjs copies the seed
+# per case, runs the op, and asserts both — and fails on a non-zero exit (crash-path safe).
+node "$HERE/compare_write.mjs" "$BIN" "$PROOF_DIR/write_seed.db" "$PROOF_DIR/oracles_write.json" || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then echo "E1 PROOF: ALL LEGS PASS"; else echo "E1 PROOF: FAILURES ABOVE"; fi

@@ -64,6 +64,7 @@ import type { DialectName } from './dialect';
 import type { RelationOp } from './relation';
 import type { ReadGraph, StaticStatement } from './makesql/static-bundle';
 import type { TransactionPlan } from './makesql/tx';
+import { IN_SENTINEL } from './makesql/tx';
 import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql/makesql';
 import { renderPlaceholders } from './makesql/handler';
 import { sqlTypeToBcScalar, type BcScalar, type ColumnTypeResolver } from './coltype';
@@ -261,16 +262,20 @@ function deriveHeadTypesFromStatements(
   statements: readonly StaticStatement[],
   resolveColumnType: ColumnTypeResolver,
   elementVar?: string,
+  tableFromPort?: string,
 ): { byHead: Map<string, BcScalar>; arrayHeads: Map<string, BcScalar>; unresolved: Map<string, string> } {
   const byHead = new Map<string, BcScalar>();
   const arrayHeads = new Map<string, BcScalar>();
   const unresolved = new Map<string, string>();
 
-  // The head statement (`SELECT … FROM <table>`) — always statements[0] (compileSelectNode always
-  // pushes it first); its table name resolves every WHERE fragment's column type.
+  // The owning table resolves every WHERE fragment's column type. `tableFromPort` is the node's
+  // authored `table` port — the real SoT, and the ONLY thing that works for a write (an
+  // `INSERT INTO t (…) VALUES …` / `UPDATE t SET …` has no `FROM <t>` to match at all). When absent
+  // (the pre-E1 read caller) it falls back to matching the `SELECT … FROM <table>` head statement,
+  // which `compileSelectNode` always pushes first — behaviour unchanged for that caller.
   const head = statements[0];
   const tableMatch = head === undefined ? null : SELECT_FROM_TABLE.exec(head.sql);
-  const table = tableMatch?.[1];
+  const table = tableFromPort ?? tableMatch?.[1];
 
   for (const stmt of statements) {
     // The LIMIT clause (` LIMIT ?`) is NOT a whereFragment — its param is `coalesce(refOpt(limit), N)`
@@ -624,6 +629,107 @@ function renderStaticSql(
   return { sql: renderPlaceholders(assembled.sql, dialect), params: assembled.params };
 }
 
+/** The catalog components the E1/E2 SQL-port lowering bakes. Read and write are ONE flow: both make
+ * SQL and execute it, and both hand back rows — so they lower identically and are NOT split. */
+const READ_COMPONENTS = new Set(['Select', 'Count']);
+const WRITE_COMPONENTS = new Set(['Insert', 'Update', 'Delete']);
+
+/** A write node's `values.<col>` / `set.<col>` port names — the column each bound head writes. */
+const WRITE_VALUE_PORT = /^(?:values|set)\.(.+)$/;
+
+/**
+ * The SQL row shape `executeStaticWrite` returns for a write with NO RETURNING clause: the single
+ * summary row `[{changes, lastInsertRowid}]`. A write's authored/compile-time `outType` is the
+ * determined empty-row list `{arr:{obj:{}}}` (it existed only to satisfy bc's all-nodes-typed gate,
+ * since writes were never typed-codegen'd) — that is NOT what the op actually returns, so the
+ * codegen IR must carry the REAL shape: the generated module's row struct has to match what the exec
+ * seam hands back, or the module would be typed a lie.
+ */
+const WRITE_SUMMARY_OUT_TYPE = { arr: { obj: { changes: 'int', lastInsertRowid: 'int' } } };
+
+/**
+ * Type a WRITE node's bound heads from its AUTHORED PORTS — the real SoT — rather than by regexing
+ * the compiled SQL.
+ *
+ * The read deriver ({@link deriveHeadTypesFromStatements}) recovers a fragment's column by matching
+ * the statement text and the table by matching `SELECT … FROM <t>`. Neither works for a write: an
+ * `INSERT INTO t (…) VALUES (?, ?)` / `UPDATE t SET …` carries no `FROM <t>` at all (only DELETE does,
+ * and only by accident), and a value bind's column appears in the INSERT column list, not next to its
+ * `?`. The authored ports already state both facts exactly — `table: 'benchmark_users'` and
+ * `values.email: {ref:['email']}` — so the column each head writes is read straight off the port
+ * NAME, and its type resolves from the schema SoT. WHERE-bound heads (Update/Delete) keep the shared
+ * fragment deriver, with the table supplied from the `table` port.
+ */
+function deriveWriteHeadTypes(
+  ports: Record<string, unknown>,
+  table: string,
+  resolveColumnType: ColumnTypeResolver,
+  nodeId: string,
+  reasons: string[],
+): Map<string, BcScalar> {
+  const byHead = new Map<string, BcScalar>();
+  const record = (head: string, column: string): void => {
+    const scalar = sqlTypeToBcScalar(resolveColumnType(table, column));
+    const prior = byHead.get(head);
+    if (prior !== undefined && prior !== scalar) {
+      reasons.push(`node '${nodeId}': input head '${head}' resolves to conflicting scalar types ('${prior}' vs '${scalar}')`);
+      return;
+    }
+    byHead.set(head, scalar);
+  };
+  // The written values (`values.<col>` / `set.<col>`): the port NAME states the column, the port
+  // VALUE names the bound head. This is the write's SoT — the compiled SQL carries the column in the
+  // INSERT column list, nowhere near its `?`, so the ports (not the text) are the correct source.
+  for (const [port, value] of Object.entries(ports)) {
+    const m = WRITE_VALUE_PORT.exec(port);
+    if (m === null) continue;
+    const path = refPathOf(value);
+    if (path === undefined) continue; // a literal value binds no head (nothing to type)
+    if (path.length !== 1) {
+      reasons.push(
+        `node '${nodeId}' port '${port}': a written value must bind a single-segment head ({ref:[head]}) to lower ` +
+          `natively (got ${JSON.stringify(value)}).`,
+      );
+      continue;
+    }
+    record(path[0], m[1]);
+  }
+  // The WHERE-bound heads (Update/Delete): the authored `where` port is the SoT for their column too
+  // (an `UPDATE t SET … WHERE id = ?` statement has no `FROM <t>` for the fragment deriver to key
+  // off). Each `eq`/cmp member is `<colRef> <op> <valueRef>`: the LHS ref's last segment is the
+  // column, the RHS single-segment ref is the bound head. This reuses the SAME closed WHERE shape the
+  // read path constrains; anything else fails closed at the node's param lowering below, not here.
+  const where = ports.where;
+  if (typeof where === 'object' && where !== null && 'arr' in where && Array.isArray((where as { arr: unknown[] }).arr)) {
+    for (const member of (where as { arr: unknown[] }).arr) {
+      const parsed = writeWhereScalarBind(member);
+      if (parsed !== undefined) record(parsed.head, parsed.column);
+    }
+  }
+  return byHead;
+}
+
+/** A write WHERE member `<colRef> <eq|cmp> <valueRef>` → its `{head, column}`, or undefined when the
+ * member is not that closed scalar shape (a group / sentinel / literal — left for the node's param
+ * lowering to type or fail-close, never guessed here). */
+function writeWhereScalarBind(member: unknown): { head: string; column: string } | undefined {
+  if (member === null || typeof member !== 'object' || Array.isArray(member)) return undefined;
+  const keys = Object.keys(member as object);
+  if (keys.length !== 1) return undefined;
+  const op = keys[0];
+  if (op !== 'eq' && op !== 'ne' && op !== 'lt' && op !== 'le' && op !== 'gt' && op !== 'ge') return undefined;
+  const args = (member as Record<string, unknown>)[op];
+  if (!Array.isArray(args) || args.length !== 2) return undefined;
+  const colPath = refPathOf(args[0]);
+  const valPath = refPathOf(args[1]);
+  if (colPath === undefined || valPath === undefined || valPath.length !== 1) return undefined;
+  // The LHS names the column (its last segment); a sentinel-headed LHS (IN/immediate/…) is not a plain
+  // column and is skipped (typed via the param path instead).
+  const column = colPath[colPath.length - 1];
+  if (colPath[0] === IN_SENTINEL) return undefined;
+  return { head: valPath[0], column };
+}
+
 /**
  * Lower ONE bound `?` value-spec to the native port node bc will bake, or record why it cannot.
  *
@@ -693,6 +799,11 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
   const components = ir.components.map((c) => {
     const inputPortTypes = new Map<string, BcScalar>();
     const inputPortElemTypes = new Map<string, BcScalar>();
+    // A node whose outType this lowering CORRECTED (a no-RETURNING write → the summary shape): the
+    // component `outputType` must follow, since the output Φ is a bare `{ref:[nodeId]}`. Tracked so
+    // the corrected type propagates to the runner's return type (else the node row and the runner
+    // output disagree — a self-inconsistent module).
+    const correctedOutType = new Map<string, unknown>();
     const body = c.body.map((n) => {
       if ('cond' in n) {
         reasons.push(`node '${(n as unknown as { id?: string }).id ?? '<cond>'}': a 'cond' node is not lowered by the E1 SQL-port lowering`);
@@ -706,10 +817,30 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
         return n;
       }
       const stmts = readGraph.statementsById[n.id] ?? [];
+      const component = (n as unknown as { component?: string }).component ?? '';
+      const isWrite = WRITE_COMPONENTS.has(component);
+      if (!isWrite && !READ_COMPONENTS.has(component)) {
+        reasons.push(`node '${n.id}': component '${component}' is not a SQL CRUD node the SQL-port lowering bakes (Select/Count/Insert/Update/Delete)`);
+        return n;
+      }
+      // The node's authored `table` port — the SoT for every column type below. Every CRUD node
+      // (read AND write) carries it, which is exactly why read/write need no separate path here.
+      const nodePorts = (n as unknown as { ports: Record<string, unknown> }).ports;
+      const table = typeof nodePorts.table === 'string' ? nodePorts.table : undefined;
+      if (table === undefined) {
+        reasons.push(`node '${n.id}': ${component} node has no literal 'table' port — cannot resolve its column types`);
+        return n;
+      }
       // Type each genuine bound head from the schema SoT — the SAME derivation the pre-E1 lowering
-      // uses (unchanged), so the input struct's field types are identical.
-      const { byHead, arrayHeads, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType);
+      // uses (unchanged), so the input struct's field types are identical. A write additionally
+      // types the heads its `values.*`/`set.*` ports bind (the ports name the column; the SQL does not).
+      const { byHead, arrayHeads, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType, undefined, table);
       for (const [, reason] of unresolved) reasons.push(`node '${n.id}': ${reason}`);
+      if (isWrite) {
+        for (const [head, scalar] of deriveWriteHeadTypes(nodePorts, table, resolveColumnType, n.id, reasons)) {
+          byHead.set(head, scalar);
+        }
+      }
       // IN-list / array-bound heads (bc#110): a native ARRAY input port carrying the ELEMENT scalar.
       // bc does NOT infer element types (consumer-interface C3), so the elemType comes from the
       // schema SoT (the IN-list column's resolved scalar), exactly as the pre-E1 lowering supplies it.
@@ -738,9 +869,27 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
         const port = paramPortFor(p, i, n.id, reasons);
         if (port !== undefined) newPorts[`p${i}`] = port;
       });
-      return { ...n, ports: newPorts };
+      // A write with NO RETURNING hands back the single summary row `[{changes, lastInsertRowid}]`,
+      // NOT the determined empty-row list its compile-time outType carries (that stamp existed only
+      // to satisfy bc's all-nodes-typed gate, back when writes were never typed-codegen'd). Correct it
+      // HERE — the module's row struct must describe what the exec seam actually returns.
+      const lowered = { ...n, ports: newPorts };
+      if (isWrite && nodePorts.returning === undefined) {
+        correctedOutType.set(n.id, WRITE_SUMMARY_OUT_TYPE);
+        return { ...lowered, outType: WRITE_SUMMARY_OUT_TYPE } as typeof lowered;
+      }
+      return lowered;
     });
     if (reasons.length > 0) throw new TypedNativeCoverageError(c.name, reasons);
+    // Propagate a corrected node outType to the component `outputType` when the output Φ is a bare
+    // ref to that node (`{ref:[nodeId]}`) — the single-write shape. Without this the runner's return
+    // type stays the stale empty-row list while the node produces the summary row: a type mismatch
+    // inside the generated module.
+    const outputRef = refPathOf((c as unknown as { output?: unknown }).output);
+    const componentOutputType =
+      outputRef !== undefined && outputRef.length === 1 && correctedOutType.has(outputRef[0])
+        ? correctedOutType.get(outputRef[0])
+        : (c as unknown as { outputType?: unknown }).outputType;
     // Only the heads the lowered ports genuinely reference get an `InNR` field (identical rule to
     // the pre-E1 lowering: a WHERE COLUMN-NAME MARKER head is never bound, so it carries no field).
     const inputPorts: Record<string, PortSchema> = {};
@@ -754,7 +903,7 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       const schema = (c.inputPorts ?? {})[name];
       inputPorts[name] = { ...(schema ?? { required: true }), type: 'array', elemType: elem };
     }
-    return { ...c, body, inputPorts } as unknown as Component;
+    return { ...c, body, inputPorts, outputType: componentOutputType } as unknown as Component;
   });
   return { ...ir, components };
 }
@@ -859,8 +1008,12 @@ export interface CodegenOptions {
  * struct, exactly as go/rust already handled it (#12 regression: TS previously fed the raw IR and
  * emitted a stray `created_at` binding → `unknown binding: created_at` at execution).
  *
- * WRITE bundles are OUT OF SCOPE (#60 milestone 1: writes stay on the existing write/tx execution
- * path, never a codegen module) — throws if `bundle.readGraph` is absent.
+ * A WRITE bundle is codegen'd through the SAME lowering and the SAME generic exec seam as a read —
+ * read and write are ONE flow (both make SQL and execute it; both hand back rows), so they are NOT
+ * split. `compileBundle` carries the write's component graph alongside its compiled `statement`, so
+ * `bundle.readGraph` is present for a write too and the lowering bakes its `INSERT`/`UPDATE`/`DELETE`
+ * exactly as it bakes a `SELECT`. A bundle carrying NEITHER a graph nor a statement is still a hard
+ * error (nothing to generate).
  */
 export function generateCodegenArtifact(
   bundle: SqlBundle,
@@ -872,9 +1025,9 @@ export function generateCodegenArtifact(
 ): CodegenArtifact {
   if (bundle.readGraph === undefined) {
     throw new Error(
-      `litedbmodel codegen (#60 m1): bundle '${bundle.name}' has no readGraph — WRITE bundles are not ` +
-        `codegen-module cases (they stay on the existing write/tx execution path). Only READ bundles ` +
-        `are generated through generateCodegenArtifact.`,
+      `litedbmodel codegen: bundle '${bundle.name}' carries no component graph to generate from. Reads AND ` +
+        `writes both compile one (compileBundle keeps the write's graph alongside its statement) — a bundle ` +
+        `with neither was produced by some other path, and there is nothing to lower. No-assume, no-fallback.`,
     );
   }
   const emitter = typedEmitterFor(language, registeredLanguages);

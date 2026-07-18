@@ -204,9 +204,12 @@ describe('WS7f codegen — bc READ emitter capability (#60 m1: typed-native go/r
     expect(() => codegenEmitterFor('go', ['typescript'])).toThrow(/ESCALATE to bc/);
   });
 
-  it('generateCodegenArtifact refuses a WRITE bundle (no readGraph) — writes are not codegen-module cases', () => {
+  it('generateCodegenArtifact refuses a bundle carrying NEITHER a graph nor a statement (nothing to generate)', () => {
+    // Read/write are ONE flow now (owner): a single-write bundle carries a component graph (compileBundle
+    // keeps it alongside the statement) and DOES codegen — see e1-native-sql-port.test.ts. Only a bundle
+    // with no graph at all (e.g. a bare tx/DAG fixture) is refused.
     expect(() => generateCodegenArtifact({ dialect: 'sqlite', name: 'Create', optionalHeads: [], relations: {} } as SqlBundle, 'typescript', REGISTERED, () => 'INTEGER')).toThrow(
-      /has no readGraph/,
+      /carries no component graph/,
     );
   });
 });
@@ -283,10 +286,13 @@ describe('WS7f codegen — in-process equivalence of the TS codegen artifact vs 
   }
 });
 
-describe('WS7f codegen — WRITE (tx) bundles stay on the existing write/tx execution path (#60 m1: NOT codegen-module cases)', () => {
+describe('WS7f codegen — TX (multi-write DAG) bundles stay on the existing write/tx execution path (out of codegen scope)', () => {
   for (const v of TX_VECTORS) {
     it(`generateCodegenArtifact refuses this tx bundle; executeTransactionBundle reproduces the vector — ${v.name}`, () => {
-      expect(() => generateCodegenArtifact(v.bundle, 'typescript', REGISTERED, () => 'INTEGER')).toThrow(/has no readGraph/);
+      // A SINGLE write is now a codegen case (read/write unified). A TX bundle is the gate-first
+      // multi-write DAG (a `transaction` plan, no component graph) — still out of codegen scope, so
+      // it carries no graph to lower and is refused. Its execution stays on executeTransactionBundle.
+      expect(() => generateCodegenArtifact(v.bundle, 'typescript', REGISTERED, () => 'INTEGER')).toThrow(/carries no component graph/);
 
       const input = decodeValue(v.input) as Record<string, unknown>;
       const db = seedDb(v.schema);

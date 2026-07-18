@@ -204,10 +204,17 @@ export function compileBundle(
   if (isWriteComponent(component)) {
     const writeNode = primaryNodeOf(component)!;
     const op = compileWriteNode(writeNode as never, dialectName);
+    // The write's component GRAPH survives alongside its single compiled `statement`. Read and write
+    // are ONE flow (they must not be split): the graph is what a codegen lowering needs in order to
+    // bake the write's SQL into a native module, exactly as a read's does. It is ADDITIVE — mode-2
+    // execution still dispatches on `statement` FIRST (see `executeBundle`), so the write's runtime
+    // path is byte-unchanged; the graph is inert unless a codegen consumer asks for it.
+    const graph = compileReadGraph(contract, dialectName, entry, findFilterModel, resolveColumnType);
     return {
       dialect: dialectName,
       name: component.name,
       statement: { sql: op.sql, params: op.params },
+      readGraph: graph,
       optionalHeads: [],
       relations: relationOps,
     };

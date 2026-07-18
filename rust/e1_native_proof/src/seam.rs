@@ -74,11 +74,21 @@ pub fn query<T>(
     rows.collect()
 }
 
-/// The generic WRITE exec: run `sql` with `params`, return the affected-row count. Same flow as
-/// [`query`] — same baked SQL, same params, same seam; only the driver's result collection differs.
-pub fn execute(conn: &Connection, sql: &str, params: &[Param]) -> rusqlite::Result<usize> {
-    let mut stmt = conn.prepare(sql)?;
-    stmt.execute(rusqlite::params_from_iter(params.iter()))
+/// The single summary row a NON-RETURNING write hands back: `{changes, lastInsertRowid}` — exactly
+/// the shape the mode-2 `executeStaticWrite` returns (and the shape the codegen lowering bakes as the
+/// write node's outType when there is no RETURNING clause).
+pub struct WriteSummary {
+    pub changes: i64,
+    pub last_insert_rowid: i64,
+}
+
+/// The generic WRITE exec: run `sql` with `params`, return the affected-row summary. SAME flow as
+/// [`query`] — same baked SQL, same params, same seam. Read and write are ONE flow (owner): the
+/// module bakes the SQL either way; the only difference is that a bare write collects an affected-row
+/// summary while a SELECT / RETURNING write collects a row list (that is a driver-shape detail).
+pub fn execute(conn: &Connection, sql: &str, params: &[Param]) -> rusqlite::Result<WriteSummary> {
+    let changes = conn.execute(sql, rusqlite::params_from_iter(params.iter()))?;
+    Ok(WriteSummary { changes: changes as i64, last_insert_rowid: conn.last_insert_rowid() })
 }
 
 // ── canonical JSON out (hand-rolled — the runtime carries no external JSON crate) ──
