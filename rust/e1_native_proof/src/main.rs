@@ -15,6 +15,7 @@ mod generated_byids;
 mod generated_createuser;
 mod generated_deleteuser;
 mod generated_findunique;
+mod generated_recent;
 mod generated_renameuser;
 mod seam;
 
@@ -59,6 +60,28 @@ impl generated_byids::HandlerNRByIds for ByIdsSeam<'_> {
             Ok(generated_byids::T0 { id: r.get(0)?, email: r.get(1)?, name: r.get(2)? })
         });
         Some(row_or_err_bi(val))
+    }
+}
+
+struct RecentSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_recent::HandlerNRRecent for RecentSeam<'_> {
+    fn node_n0(
+        &self,
+        ports: &generated_recent::PortsNRRecentN0,
+        _bound: Option<String>,
+    ) -> Option<generated_recent::RawRowNRRecentN0> {
+        // #122: the baked LIMIT param is `in_.limit.unwrap_or(20)` — already an i64 by the time the
+        // seam sees it (the default resolved natively in the module). The seam binds it plainly.
+        let params = [Param::Int(ports.f_p0)];
+        let val = query(self.conn, &ports.f_sql, &params, |r| {
+            Ok(generated_recent::T0 { id: r.get(0)?, email: r.get(1)?, name: r.get(2)? })
+        });
+        Some(match val {
+            Ok(val) => generated_recent::RawRowNRRecentN0 { is_error: false, err: String::new(), val },
+            Err(e) => generated_recent::RawRowNRRecentN0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
     }
 }
 
@@ -175,6 +198,15 @@ fn main() {
             let raw = args.get(3).expect("byids needs <ids>");
             let ids: Vec<i64> = if raw.is_empty() { vec![] } else { raw.split(',').map(|s| s.parse().expect("id")).collect() };
             let out = generated_byids::run_native_raw_struct_ByIds(&ByIdsSeam { conn: &conn }, generated_byids::InNRByIds { ids })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            println!("{}", user_rows_json(&items));
+        }
+        // recent: <limit>  ("" = absent → the baked .unwrap_or(20) default takes effect)
+        "recent" => {
+            let raw = args.get(3).expect("recent needs <limit or ''>");
+            let limit: Option<i64> = if raw.is_empty() { None } else { Some(raw.parse().expect("limit")) };
+            let out = generated_recent::run_native_raw_struct_Recent(&RecentSeam { conn: &conn }, generated_recent::InNRRecent { limit })
                 .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));

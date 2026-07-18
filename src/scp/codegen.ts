@@ -746,8 +746,32 @@ function writeWhereScalarBind(member: unknown): { head: string; column: string }
  * because the pre-E1 module never executes its own ports (the JSON companion does). Once the ports
  * ARE the execution inputs, that rewrite becomes a correctness bug, so it is rejected here.
  */
+/** A `coalesce([{refOpt:[head]}, <numeric literal>])` param (the optional-LIMIT default, #122) → its
+ * `{head, scalar}`, or undefined. bc 0.8.5 (#139) bakes this natively as `in_.<head>.unwrap_or(<lit>)`
+ * over an OPTIONAL input port — so the default is PRESERVED, not dropped. The head's scalar comes from
+ * the literal default (an int literal ⇒ int, a fractional/exponent literal ⇒ float); the optional ref
+ * inner and the default must agree, which the LIMIT contract guarantees (both are the row count). */
+function coalesceOptHead(param: unknown): { head: string; scalar: BcScalar } | undefined {
+  if (param === null || typeof param !== 'object' || Array.isArray(param)) return undefined;
+  const args = (param as Record<string, unknown>).coalesce;
+  if (!Array.isArray(args) || args.length !== 2) return undefined;
+  const [refPart, dflt] = args;
+  if (typeof dflt !== 'number' || !Number.isFinite(dflt)) return undefined;
+  if (refPart === null || typeof refPart !== 'object' || Array.isArray(refPart)) return undefined;
+  const keys = Object.keys(refPart as object);
+  if (keys.length !== 1 || keys[0] !== 'refOpt') return undefined;
+  const path = (refPart as Record<string, unknown>).refOpt;
+  if (!Array.isArray(path) || path.length !== 1 || typeof path[0] !== 'string') return undefined;
+  return { head: path[0], scalar: Number.isInteger(dflt) ? 'int' : 'float' };
+}
+
 function paramPortFor(param: unknown, index: number, nodeId: string, reasons: string[]): unknown | undefined {
   if (typeof param === 'number' && Number.isFinite(param)) return param;
+  // A `coalesce(opt(head), literal)` default (#122): bc 0.8.5 bakes it as `in_.<head>.unwrap_or(lit)`
+  // over an OPTIONAL input port — the default is preserved natively (NOT dropped by rewriting to a
+  // bare ref, as the pre-#139 lowering did). Emit the coalesce node verbatim; the caller types the
+  // head as an optional input port (see `coalesceOptHead`).
+  if (coalesceOptHead(param) !== undefined) return param;
   // An IN-list / array-bound param (`{__jsonArray:{ref:[head]},dialect}`, ONE `?` inside the
   // `IN (…)`/`= ANY(?)` subquery). bc#110 gives typed-native a native ARRAY port for this head, so
   // the port is the SAME single-segment ref — the caller types its `inputPorts` entry as
@@ -799,6 +823,9 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
   const components = ir.components.map((c) => {
     const inputPortTypes = new Map<string, BcScalar>();
     const inputPortElemTypes = new Map<string, BcScalar>();
+    // Heads bound by a `coalesce(opt(head), default)` param (#122): they lower to an OPTIONAL input
+    // port (`{required:false, type}` → `Option<T>`), which bc 0.8.5 reads via `.unwrap_or(default)`.
+    const optionalHeadTypes = new Map<string, BcScalar>();
     // A node whose outType this lowering CORRECTED (a no-RETURNING write → the summary shape): the
     // component `outputType` must follow, since the output Φ is a bare `{ref:[nodeId]}`. Tracked so
     // the corrected type propagates to the runner's return type (else the node row and the runner
@@ -868,6 +895,18 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       rendered.params.forEach((p, i) => {
         const port = paramPortFor(p, i, n.id, reasons);
         if (port !== undefined) newPorts[`p${i}`] = port;
+        // Record a coalesce-default head so it becomes an OPTIONAL input port (#122). The deriver
+        // above also typed it (in `byHead`, as a LIMIT int) — the optional entry wins when building
+        // `inputPorts` so `absent` is a real `None` the baked `.unwrap_or(default)` resolves.
+        const co = coalesceOptHead(p);
+        if (co !== undefined) {
+          const prior = optionalHeadTypes.get(co.head);
+          if (prior !== undefined && prior !== co.scalar) {
+            reasons.push(`input head '${co.head}' resolves to conflicting optional scalar types ('${prior}' vs '${co.scalar}')`);
+          } else {
+            optionalHeadTypes.set(co.head, co.scalar);
+          }
+        }
       });
       // A write with NO RETURNING hands back the single summary row `[{changes, lastInsertRowid}]`,
       // NOT the determined empty-row list its compile-time outType carries (that stamp existed only
@@ -894,6 +933,7 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
     // the pre-E1 lowering: a WHERE COLUMN-NAME MARKER head is never bound, so it carries no field).
     const inputPorts: Record<string, PortSchema> = {};
     for (const [name, scalar] of inputPortTypes) {
+      if (optionalHeadTypes.has(name)) continue; // an optional-default head is emitted below, not as a required scalar
       const schema = (c.inputPorts ?? {})[name];
       inputPorts[name] = schema === undefined ? { required: true, type: scalar } : { ...schema, type: scalar };
     }
@@ -902,6 +942,12 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
     for (const [name, elem] of inputPortElemTypes) {
       const schema = (c.inputPorts ?? {})[name];
       inputPorts[name] = { ...(schema ?? { required: true }), type: 'array', elemType: elem };
+    }
+    // #122: a coalesce-default head is an OPTIONAL input port (`{required:false, type}` → `Option<T>`);
+    // bc 0.8.5 reads it via the baked `.unwrap_or(default)`, so the default takes effect when absent.
+    for (const [name, scalar] of optionalHeadTypes) {
+      const schema = (c.inputPorts ?? {})[name];
+      inputPorts[name] = { ...(schema ?? {}), required: false, type: scalar };
     }
     return { ...c, body, inputPorts, outputType: componentOutputType } as unknown as Component;
   });

@@ -192,20 +192,20 @@ describe('E2 — IN-list: the array-bound head bakes as a native Vec<ElemT> port
   });
 });
 
-describe('E1/E2 — the lowering fails CLOSED on every shape it cannot bake (no silent mis-lowering)', () => {
-  it('a coalesce/optional-default param is rejected, naming the shape (see #122)', () => {
-    // bc's portIsStatic rejects a `coalesce` operator port outright, and a cond-node-computed value
-    // cannot be referenced from a port either — so the default CANNOT be baked as a bc port. The
-    // lowering therefore refuses rather than rewriting to a bare ref (which would drop the default).
+describe('#122 — a coalesce(opt(limit), N) LIMIT default bakes NATIVE, preserving the default (bc 0.8.5 #139)', () => {
+  it('bakes an OPTIONAL input port + `in_.limit.unwrap_or(20i64)` — the default is not dropped', () => {
     const bundle = compileBundle(CONTRACT, 'Recent', [], 'sqlite', undefined, RESOLVE);
-    expect(() => generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true })).toThrow(
-      TypedNativeCoverageError,
-    );
-    expect(() => generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true })).toThrow(
-      /is not a shape bc's typed-native emitter bakes/,
-    );
+    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    expect(code).toContain('f_sql: "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT ?".to_string()');
+    // the default is BAKED — absent limit resolves to 20, not dropped and not a silent 0.
+    expect(code).toContain('in_.limit.unwrap_or(20i64)');
+    // the head is an OPTIONAL input port (Option<i64>), the native representation of "absent".
+    expect(code).toContain('pub limit: Option<i64>');
+    expect(stripRustComments(code)).not.toContain('serde_json');
   });
+});
 
+describe('E1/E2 — the lowering fails CLOSED on every shape it cannot bake (no silent mis-lowering)', () => {
   it('a SKIP-guarded fragment is rejected: its SQL text is input-dependent (no single literal)', () => {
     // The `name = ?` fragment DROPS when `name` is absent, so the node has no ONE static SQL. The
     // owner-approved design is a generic exec seam taking SKIP ARGS over baked fragments (bc covers
@@ -320,6 +320,12 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     const byIdsArt = generateCodegenArtifact(byIdsBundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
     writeFileSync(join(PROOF_DIR, 'generated_byids.rs'), byIdsArt.module.code);
 
+    // #122: the optional-LIMIT read — its baked `.unwrap_or(20)` must make an ABSENT limit fall back
+    // to 20 and a PRESENT limit take effect, both byte-equal to the oracle.
+    const recentBundle = compileBundle(CONTRACT, 'Recent', [], 'sqlite', undefined, RESOLVE);
+    const recentArt = generateCodegenArtifact(recentBundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
+    writeFileSync(join(PROOF_DIR, 'generated_recent.rs'), recentArt.module.code);
+
     // ONE seeded sqlite DB FILE shared by BOTH legs — the oracle and the rust run read byte-identical
     // data, so an equality pass cannot come from two independently-seeded DBs happening to agree.
     if (existsSync(DB_PATH)) rmSync(DB_PATH);
@@ -332,10 +338,18 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     for (const email of PROOF_INPUTS) oracles[email] = executeBundle(bundle, { email } as never, { db: db as never });
     const byIdsOracles: Record<string, unknown> = {};
     for (const ids of BYIDS_INPUTS) byIdsOracles[ids.join(',')] = executeBundle(byIdsBundle, { ids } as never, { db: db as never });
+    // #122: absent limit (key `""`) → default 20; present limit (`3`) → 3 rows.
+    const recentOracles: Record<string, unknown> = {};
+    recentOracles[''] = executeBundle(recentBundle, {} as never, { db: db as never });
+    recentOracles['3'] = executeBundle(recentBundle, { limit: 3 } as never, { db: db as never });
     db.close();
 
     writeFileSync(join(PROOF_DIR, 'oracles.json'), JSON.stringify(oracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_byids.json'), JSON.stringify(byIdsOracles, null, 2));
+    writeFileSync(join(PROOF_DIR, 'oracles_recent.json'), JSON.stringify(recentOracles, null, 2));
+    // the default actually takes effect: absent limit returns 20 rows (the seed has 111).
+    expect((recentOracles[''] as unknown[]).length).toBe(20);
+    expect((recentOracles['3'] as unknown[]).length).toBe(3);
     expect(JSON.stringify(oracles['user500@example.com'])).toBe('[{"id":500,"email":"user500@example.com","name":"User 500"}]');
     expect(JSON.stringify(oracles['nobody@example.com'])).toBe('[]');
     // the empty IN-list must be zero rows (not an error) — the #46 case.
