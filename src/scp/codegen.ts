@@ -198,6 +198,43 @@ function companionOf(bundle: SqlBundle): SqlCatalogCompanion {
 // directly). Purely a generation-time input to `generateModule`.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Build a component's typed `inputPorts` from the heads a lowering collected — the SINGLE shared tail
+ * both lowerings use (the SQL-baking lowering and the legacy companion lowering
+ * {@link lowerReadGraphForTypedNative}). Extracted so the two never carry drifting copies of this
+ * schema-building logic (the reason: a bug fix / a new port kind must land in ONE place).
+ *
+ *  - `scalars` — required native-scalar heads (`{required:true, type}`).
+ *  - `elems` — IN-list / array heads (`{type:'array', elemType}` → `Vec<ElemT>`; bc#110).
+ *  - `optionals` — coalesce-default heads (`{required:false, type}` → `Option<T>`; bc#139/#122). An
+ *    optional entry WINS over a required-scalar entry for the same head (so `absent` is a real `None`).
+ *
+ * A head present ONLY as a WHERE COLUMN-NAME MARKER (never bound) is not in any set, so it gets no
+ * `InNR` field — sound: the covered plane never reads it (see the note at the legacy call site).
+ */
+function buildInputPorts(
+  c: { inputPorts?: Record<string, PortSchema> },
+  scalars: Map<string, BcScalar>,
+  elems: Map<string, BcScalar>,
+  optionals: Map<string, BcScalar>,
+): Record<string, PortSchema> {
+  const inputPorts: Record<string, PortSchema> = {};
+  for (const [name, scalar] of scalars) {
+    if (optionals.has(name)) continue; // the optional entry below wins (absent must be a real None)
+    const schema = (c.inputPorts ?? {})[name];
+    inputPorts[name] = schema === undefined ? { required: true, type: scalar } : { ...schema, type: scalar };
+  }
+  for (const [name, elem] of elems) {
+    const schema = (c.inputPorts ?? {})[name];
+    inputPorts[name] = { ...(schema ?? { required: true }), type: 'array', elemType: elem };
+  }
+  for (const [name, scalar] of optionals) {
+    const schema = (c.inputPorts ?? {})[name];
+    inputPorts[name] = { ...(schema ?? {}), required: false, type: scalar };
+  }
+  return inputPorts;
+}
+
 /** A head could not be typed for typed-native codegen — the read is NOT typed-native-coverable. */
 export class TypedNativeCoverageError extends Error {
   constructor(
@@ -532,31 +569,11 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
         : { ...n, ports: newPorts };
     });
     if (reasons.length > 0) throw new TypedNativeCoverageError(c.name, reasons);
-    // Only emit an `inputPorts` entry for a head the COVERED plane actually references (a
-    // native-scalar port on some node's lowered ports). bc's authoring layer registers an
-    // `inputPorts` entry for every `$.head` the authored method SOURCE accesses — including a
-    // head used ONLY as a WHERE-fragment's LHS COLUMN-name marker (e.g. `whereGe($.created_at,
-    // $.since)` accesses `$.created_at` to name the column, never as a bound RHS value), which
-    // never appears in the surrogate `__scope` obj at all. Keeping such a stray entry with its
-    // original `unknown` schema type would emit an unresolvable `InNR<Comp>.field: Value` (bc's
-    // typed-native `InNR` struct declares a field for EVERY declared inputPort) — a compile error,
-    // since the covered module imports no `Value` type. Dropping it is sound: the covered plane
-    // never reads it (no lowered port references it), so omitting the `InNR` field changes nothing
-    // observable — every REAL WHERE-bound head is still typed + present (typed above, in `byHead`).
-    const inputPorts: Record<string, PortSchema> = {};
-    for (const [name, scalar] of inputPortTypes) {
-      const schema = (c.inputPorts ?? {})[name];
-      inputPorts[name] = schema === undefined ? { required: true, type: scalar } : { ...schema, type: scalar };
-    }
-    // IN-list / array-bound heads (bc#110): a native ARRAY input port carrying the ELEMENT scalar as
-    // `elemType`. bc's typed-native emitter lowers this to `Vec<ElemT>`/`[]ElemT` fed natively from
-    // the input struct field — NO boxed `Value`, NO serde_json/encoding-json on the read hot path.
-    // bc does NOT infer element types (consumer-interface C3), so litedbmodel supplies `elemType`
-    // from the schema SoT (the IN-list column's resolved scalar).
-    for (const [name, elem] of inputPortElemTypes) {
-      const schema = (c.inputPorts ?? {})[name];
-      inputPorts[name] = { ...(schema ?? { required: true }), type: 'array', elemType: elem };
-    }
+    // Build the typed `inputPorts` via the SHARED tail (see {@link buildInputPorts}) — the same
+    // logic the SQL-baking lowering uses, kept in ONE place. A head present ONLY as a WHERE
+    // COLUMN-NAME MARKER (e.g. `whereGe($.created_at, $.since)` names `created_at`, never binds it)
+    // is in neither map, so it gets no `InNR` field — sound, since the covered plane never reads it.
+    const inputPorts = buildInputPorts(c, inputPortTypes, inputPortElemTypes, new Map());
     return { ...c, body, inputPorts } as unknown as Component;
   });
   return { ...ir, components };
@@ -581,6 +598,22 @@ export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumn
 //
 // A thin, op-agnostic hand-written native `exec(sql, params)` seam consumes the baked ports and
 // drives the driver, so the generated module needs NO JSON companion for the read path.
+//
+// ── UNIFICATION STATUS (owner standing rule: ONE lowering, no parallel reimplementations) ──
+// This SQL-baking lowering is the intended SOLE lowering. It already covers reads (Select/Count),
+// writes (Insert/Update/Delete), IN-list array binds (bc#110), and the coalesce default (#122).
+// {@link lowerReadGraphForTypedNative} (the legacy companion lowering — ships SQL in the JSON
+// companion instead of baking it) still exists for exactly TWO reasons, both tracked to closure:
+//   1. `map` relations — the baking lowering does not YET emit the map element-field ports (bc DOES
+//      bake them, verified; this is codegen work, not a bc gap). Until then map rides the legacy path.
+//   2. `skip`-guarded fragments — a skip makes the SQL text input-dependent; the owner-approved design
+//      is a generic exec seam taking SKIP args over baked fragments (bc#139 supplies the Option
+//      presence). Blocked on that seam.
+// The two lowerings already SHARE their head-typing (`deriveHeadTypesFromStatements`) and inputPorts
+// building ({@link buildInputPorts}) — no duplicated schema logic. When (1) and (2) land, the baking
+// lowering becomes the default for every read shape, {@link lowerReadGraphForTypedNative} and the
+// `CodegenOptions.nativeSql` selector are DELETED, and the JSON companion is retired for reads. Do
+// NOT add a third lowering in the meantime.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -733,18 +766,17 @@ function writeWhereScalarBind(member: unknown): { head: string; column: string }
 /**
  * Lower ONE bound `?` value-spec to the native port node bc will bake, or record why it cannot.
  *
- * The COVERED param shapes (E1 — verified against bc 0.8.0 `portIsStatic`/`inferPortType`):
+ * The COVERED param shapes (verified against bc 0.8.5 `portIsStatic`/`inferPortType`/#139):
  *  - a bare INTEGER/FLOAT literal (e.g. the `LIMIT 1` count) → the literal itself; bc bakes `1i64`.
- *  - a single-segment, non-opt `{ref:[head]}` → the same ref; bc bakes `in_.<head>.clone()`, typed
- *    from the component's `inputPorts` (which {@link deriveHeadTypesFromStatements} types from the
- *    schema SoT).
+ *  - a single-segment, non-opt `{ref:[head]}` → the same ref; bc bakes `in_.<head>.clone()`.
+ *  - a `coalesce([{refOpt:[head]}, <lit>])` (optional-LIMIT default, #122) → the coalesce node
+ *    verbatim; bc 0.8.5 bakes `in_.<head>.unwrap_or(<lit>)` over an OPTIONAL input port (the caller
+ *    types the head via {@link coalesceOptHead}). The default is PRESERVED — never dropped.
+ *  - an IN-list `{__jsonArray:{ref:[head]}}` array bind → the single-segment ref; the head is typed
+ *    as a native array port (bc#110) and the seam performs the dialect's array encode.
  *
  * Everything else fails CLOSED with the exact offending shape named — no boxed escape, no silent
- * default-dropping. In particular a `coalesce([{refOpt:[head]}, N])` (the optional-LIMIT default)
- * is NOT covered: bc's `portIsStatic` rejects a `coalesce` operator, and rewriting it to a bare
- * `{ref:[head]}` (what the pre-E1 lowering does) would SILENTLY DROP the default — sound only
- * because the pre-E1 module never executes its own ports (the JSON companion does). Once the ports
- * ARE the execution inputs, that rewrite becomes a correctness bug, so it is rejected here.
+ * default-dropping.
  */
 /** A `coalesce([{refOpt:[head]}, <numeric literal>])` param (the optional-LIMIT default, #122) → its
  * `{head, scalar}`, or undefined. bc 0.8.5 (#139) bakes this natively as `in_.<head>.unwrap_or(<lit>)`
@@ -931,24 +963,9 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
         : (c as unknown as { outputType?: unknown }).outputType;
     // Only the heads the lowered ports genuinely reference get an `InNR` field (identical rule to
     // the pre-E1 lowering: a WHERE COLUMN-NAME MARKER head is never bound, so it carries no field).
-    const inputPorts: Record<string, PortSchema> = {};
-    for (const [name, scalar] of inputPortTypes) {
-      if (optionalHeadTypes.has(name)) continue; // an optional-default head is emitted below, not as a required scalar
-      const schema = (c.inputPorts ?? {})[name];
-      inputPorts[name] = schema === undefined ? { required: true, type: scalar } : { ...schema, type: scalar };
-    }
-    // bc#110 native array port → `Vec<ElemT>` fed from the input struct field (no boxed Value, no
-    // serde_json on the hot path); the seam performs the dialect's array bind/encode.
-    for (const [name, elem] of inputPortElemTypes) {
-      const schema = (c.inputPorts ?? {})[name];
-      inputPorts[name] = { ...(schema ?? { required: true }), type: 'array', elemType: elem };
-    }
-    // #122: a coalesce-default head is an OPTIONAL input port (`{required:false, type}` → `Option<T>`);
-    // bc 0.8.5 reads it via the baked `.unwrap_or(default)`, so the default takes effect when absent.
-    for (const [name, scalar] of optionalHeadTypes) {
-      const schema = (c.inputPorts ?? {})[name];
-      inputPorts[name] = { ...(schema ?? {}), required: false, type: scalar };
-    }
+    // The SHARED tail (see {@link buildInputPorts}): required scalars + bc#110 array ports + bc#139
+    // optional-default ports (#122). The SAME builder the legacy lowering uses — one place only.
+    const inputPorts = buildInputPorts(c, inputPortTypes, inputPortElemTypes, optionalHeadTypes);
     return { ...c, body, inputPorts, outputType: componentOutputType } as unknown as Component;
   });
   return { ...ir, components };
