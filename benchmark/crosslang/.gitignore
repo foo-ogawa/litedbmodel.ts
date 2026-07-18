@@ -1,1 +1,5 @@
 .results/
+.artifacts/
+adapters/rust/target/
+adapters/rust/Cargo.lock
+latency/go-cell/go_bench_cell

@@ -1,0 +1,16 @@
+# Main-bench RUST cell — the CLI-generated typed-native modules + the generic exec seam. STANDALONE crate
+# (own [workspace]); deps = rusqlite ONLY (no behavior_contracts — the generated modules are runtime-free).
+[workspace]
+
+[package]
+name = "orm_bench_rust"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "orm_bench_rust"
+path = "src/main.rs"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
