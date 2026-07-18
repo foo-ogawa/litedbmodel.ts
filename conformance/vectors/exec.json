@@ -179,7 +179,7 @@
                     "type": "unknown"
                   },
                   "limit": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   },
                   "since": {
@@ -187,7 +187,7 @@
                     "type": "unknown"
                   },
                   "status": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   }
                 },
@@ -337,8 +337,8 @@
             ]
           },
           "optionalHeads": [
-            "status",
-            "limit"
+            "limit",
+            "status"
           ],
           "materializersByNode": {
             "n0": {
@@ -351,8 +351,8 @@
           }
         },
         "optionalHeads": [
-          "status",
-          "limit"
+          "limit",
+          "status"
         ],
         "relations": {
           "author": {
@@ -605,7 +605,7 @@
                     "type": "unknown"
                   },
                   "limit": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   },
                   "since": {
@@ -613,7 +613,7 @@
                     "type": "unknown"
                   },
                   "status": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   }
                 },
@@ -763,8 +763,8 @@
             ]
           },
           "optionalHeads": [
-            "status",
-            "limit"
+            "limit",
+            "status"
           ],
           "materializersByNode": {
             "n0": {
@@ -777,8 +777,8 @@
           }
         },
         "optionalHeads": [
-          "status",
-          "limit"
+          "limit",
+          "status"
         ],
         "relations": {
           "author": {
