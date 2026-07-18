@@ -22,6 +22,7 @@ mod generated_relbatch;
 mod generated_relsingle;
 mod generated_renameuser;
 mod generated_tenantfeed;
+mod generated_upsert;
 mod seam;
 
 use rusqlite::Connection;
@@ -287,6 +288,28 @@ impl generated_recent::HandlerNRRecent for RecentSeam<'_> {
     }
 }
 
+// E2 (#117) upsert — INSERT … ON CONFLICT … DO UPDATE … RETURNING. A RETURNING write like Insert:
+// the module bakes the FULL upsert SQL; the seam just runs it (insert-path OR conflict-path, one stmt).
+struct UpsertSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_upsert::HandlerNRUpsertUser for UpsertSeam<'_> {
+    fn node_n0(
+        &self,
+        ports: &generated_upsert::PortsNRUpsertUserN0,
+        _bound: Option<String>,
+    ) -> Option<generated_upsert::RawRowNRUpsertUserN0> {
+        let params = [Param::Text(ports.f_p0.clone()), Param::Text(ports.f_p1.clone())];
+        let val = query(self.conn, &ports.f_sql, &params, |r| {
+            Ok(generated_upsert::T0 { id: r.get(0)?, email: r.get(1)?, name: r.get(2)? })
+        });
+        Some(match val {
+            Ok(val) => generated_upsert::RawRowNRUpsertUserN0 { is_error: false, err: String::new(), val },
+            Err(e) => generated_upsert::RawRowNRUpsertUserN0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+}
+
 struct CreateUserSeam<'a> {
     conn: &'a Connection,
 }
@@ -516,6 +539,15 @@ fn main() {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
             let out = generated_createuser::run_native_raw_struct_CreateUser(&CreateUserSeam { conn: &conn }, generated_createuser::InNRCreateUser { email, name })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(&conn));
+        }
+        // upsert: <email> <name> — INSERT or (on email conflict) UPDATE. {result, state}.
+        "upsert" => {
+            let email = args.get(3).expect("email").clone();
+            let name = args.get(4).expect("name").clone();
+            let out = generated_upsert::run_native_raw_struct_UpsertUser(&UpsertSeam { conn: &conn }, generated_upsert::InNRUpsertUser { email, name })
                 .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(&conn));

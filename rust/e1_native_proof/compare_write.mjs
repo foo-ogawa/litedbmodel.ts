@@ -10,18 +10,14 @@ import { spawnSync } from 'node:child_process';
 const [bin, seed, oraclePath] = process.argv.slice(2);
 const oracles = JSON.parse(readFileSync(oraclePath, 'utf8'));
 
-// op → the CLI args the binary expects (mirrors WRITE_CASES in the TS leg).
-const ARGS = {
-  createuser: ['zed@example.com', 'Zed'],
-  renameuser: ['2', 'Renamed Two'],
-  deleteuser: ['1'],
-};
-
 let fail = 0;
-for (const [op, expected] of Object.entries(oracles)) {
-  const work = `${seed}.${op}.work`;
+// Each oracle case carries its own rust `op` (the dispatch + shared module) + `args` — so upsert's
+// two paths (insert / conflict) drive the ONE upsert module with different inputs.
+for (const [key, expected] of Object.entries(oracles)) {
+  const work = `${seed}.${key}.work`;
   copyFileSync(seed, work); // fresh copy — the write mutates THIS, never the seed
-  const p = spawnSync(bin, [op, work, ...(ARGS[op] ?? [])], { encoding: 'utf8' });
+  const p = spawnSync(bin, [expected.op, work, ...(expected.args ?? [])], { encoding: 'utf8' });
+  const op = key;
   if (p.status !== 0) {
     console.log(`  FAIL  ${op} — exited ${p.status}: ${(p.stderr || '').trim().split('\n').slice(0, 3).join(' | ')}`);
     fail = 1;

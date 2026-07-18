@@ -450,6 +450,32 @@ function returningTail(ports: Record<string, unknown>): string {
 }
 
 /**
+ * The upsert `ON CONFLICT` / `ON DUPLICATE KEY` tail of an `Insert`, from the `onConflict` (the
+ * conflict-target column list) + `onConflictAction` (`'update'` default / `'ignore'`) ports. Absent
+ * `onConflict` ⇒ a plain INSERT (no tail). Per-dialect verbs, byte-matching the JSON-batch upsert
+ * form (`sqliteInsertJson`): pg/sqlite `ON CONFLICT (k) DO UPDATE SET c = excluded.c` / `DO NOTHING`;
+ * mysql `ON DUPLICATE KEY UPDATE c = VALUES(c)` (mysql ignores the target list). The DO-UPDATE sets
+ * every inserted column to its excluded value (`onConflictUpdate:'all'` — the v1 builder fallback);
+ * setting the key column to itself is a harmless no-op. This shared compiler is what BOTH the runtime
+ * (`executeStaticWrite`) and codegen read, so an authored upsert executes AND bakes identically.
+ */
+function onConflictTail(dialect: MakeSQLDialect, ports: Record<string, unknown>, cols: readonly string[]): string {
+  const conflict = stringPort(ports, 'onConflict');
+  if (conflict === undefined) return '';
+  const action = stringPort(ports, 'onConflictAction') ?? 'update';
+  const conflictCols = conflict.split(',').map((c) => c.trim()).filter((c) => c.length > 0);
+  if (action === 'ignore') {
+    return dialect === 'mysql'
+      ? ` ON DUPLICATE KEY UPDATE ${conflictCols[0]} = ${conflictCols[0]}` // mysql no-op update = IGNORE-equivalent
+      : ` ON CONFLICT (${conflictCols.join(', ')}) DO NOTHING`;
+  }
+  if (dialect === 'mysql') {
+    return ` ON DUPLICATE KEY UPDATE ${cols.map((c) => `${c} = VALUES(${c})`).join(', ')}`;
+  }
+  return ` ON CONFLICT (${conflictCols.join(', ')}) DO UPDATE SET ${cols.map((c) => `${c} = excluded.${c}`).join(', ')}`;
+}
+
+/**
  * Read the optional PRIMARY KEY descriptor ports of an Insert node (for the MySQL RETURNING
  * emulation). `pk` is a comma-separated column list (`'doc_id'` / `'order_id,line_no'`); `autoInc`
  * names the single AUTO_INCREMENT column, or is absent for a client-supplied PK. Absent `pk`
@@ -509,7 +535,7 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
       // v1 `DBModel._insert` emits `?::<sqlCast>` PER COLUMN on Postgres (skipping timestamp/date);
       // the placeholder list is thus per-column, NOT a uniform `?` join (the latent H1 divergence).
       const placeholders = sorted.map((c) => castPlaceholder(dialect, sqlCastMap, c)).join(', ');
-      const sql = `INSERT INTO ${table} (${sorted.join(', ')}) VALUES (${placeholders})${returningTail(ports)}`;
+      const sql = `INSERT INTO ${table} (${sorted.join(', ')}) VALUES (${placeholders})${onConflictTail(dialect, ports, sorted)}${returningTail(ports)}`;
       const pk = pkPort(ports);
       return { sql, params: sorted.map((c) => values[c]), ...(pk !== undefined ? { pk } : {}) };
     }

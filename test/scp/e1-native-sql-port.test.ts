@@ -122,6 +122,10 @@ class OrmWrites extends SemanticBehavior {
   DeleteUser($: { id: unknown }) {
     return L.Delete({ table: 'benchmark_users', where: [whereEq(($ as never)['id'], $.id)] });
   }
+  /** E2 (#117) UPSERT — INSERT … ON CONFLICT … DO UPDATE … RETURNING (insert-path AND conflict-path). */
+  UpsertUser($: { email: unknown; name: unknown }) {
+    return L.Insert({ table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, onConflict: 'email', onConflictAction: 'update', returning: 'id, email, name' });
+  }
 }
 
 /** A SKIP op on benchmark_posts — the `published = ?` fragment DROPS when `published` is absent. */
@@ -404,6 +408,15 @@ describe('E3 — writes bake through the SAME lowering as reads (owner: read/wri
     expect(code).toContain('pub changes: i64');
     expect(code).toContain('pub lastInsertRowid: i64');
   });
+
+  it('E2 (#117) upsert bakes INSERT … ON CONFLICT … DO UPDATE … RETURNING through the SAME write path', () => {
+    const b = compileBundle(WRITE_CONTRACT, 'UpsertUser', [], 'sqlite', undefined, RESOLVE);
+    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE).module.code;
+    // the FULL upsert is baked (single statement), NOT a plain INSERT — insert-path + conflict-path.
+    expect(code).toContain('f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id, email, name".to_string()');
+    expect(code).toContain('f_p0: in_.email.clone()');
+    expect(code).toContain('f_p1: in_.name.clone()');
+  });
 });
 
 /** Strip rust line/block comments, preserving string literals (so header prose never false-positives). */
@@ -593,11 +606,16 @@ function tableState(db: InstanceType<typeof Database>): unknown {
   return db.prepare('SELECT id, email, name FROM benchmark_users ORDER BY id').all();
 }
 
-interface WriteCase { op: string; entry: keyof OrmWrites & string; args: string[]; input: Record<string, unknown>; }
+// `key` names the oracle case (distinct per input); `op` names the rust dispatch + generated module
+// (shared across a module's cases — upsert reuses ONE module for both its insert-path + conflict-path).
+interface WriteCase { key: string; op: string; entry: keyof OrmWrites & string; args: string[]; input: Record<string, unknown>; }
 const WRITE_CASES: WriteCase[] = [
-  { op: 'createuser', entry: 'CreateUser', args: ['zed@example.com', 'Zed'], input: { email: 'zed@example.com', name: 'Zed' } },
-  { op: 'renameuser', entry: 'RenameUser', args: ['2', 'Renamed Two'], input: { id: 2, name: 'Renamed Two' } },
-  { op: 'deleteuser', entry: 'DeleteUser', args: ['1'], input: { id: 1 } },
+  { key: 'createuser', op: 'createuser', entry: 'CreateUser', args: ['zed@example.com', 'Zed'], input: { email: 'zed@example.com', name: 'Zed' } },
+  { key: 'renameuser', op: 'renameuser', entry: 'RenameUser', args: ['2', 'Renamed Two'], input: { id: 2, name: 'Renamed Two' } },
+  { key: 'deleteuser', op: 'deleteuser', entry: 'DeleteUser', args: ['1'], input: { id: 1 } },
+  // E2 upsert — the SAME module, two paths: INSERT (new email → id 4) and CONFLICT (user1 exists → updates name).
+  { key: 'upsert_insert', op: 'upsert', entry: 'UpsertUser', args: ['zed@example.com', 'Zed'], input: { email: 'zed@example.com', name: 'Zed' } },
+  { key: 'upsert_conflict', op: 'upsert', entry: 'UpsertUser', args: ['user1@example.com', 'Renamed One'], input: { email: 'user1@example.com', name: 'Renamed One' } },
 ];
 
 describe('E3 — emit write modules + a clean seed DB + {result, state} oracles', () => {
@@ -606,17 +624,21 @@ describe('E3 — emit write modules + a clean seed DB + {result, state} oracles'
     // A clean 3-row seed the harness copies before each write run (a write mutates its copy).
     freshWriteDb(WRITE_SEED).close();
 
-    const oracles: Record<string, unknown> = {};
+    const oracles: Record<string, { result: unknown; state: unknown; op: string; args: string[] }> = {};
+    const emittedModules = new Set<string>();
     for (const wc of WRITE_CASES) {
       const bundle = compileBundle(WRITE_CONTRACT, wc.entry, [], 'sqlite', undefined, RESOLVE);
-      const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE);
-      writeFileSync(join(PROOF_DIR, `generated_${wc.op}.rs`), art.module.code);
+      if (!emittedModules.has(wc.op)) {
+        const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE);
+        writeFileSync(join(PROOF_DIR, `generated_${wc.op}.rs`), art.module.code);
+        emittedModules.add(wc.op);
+      }
       // The mode-2 oracle runs the write on a FRESH connection over a file-seeded DB, exactly as the
       // rust leg does (rust opens the copied seed file fresh). This matters for a non-RETURNING
       // write's `lastInsertRowid`: on a connection that just ran the seed INSERTs it would report the
       // seed's last id; on a fresh connection (the real per-op case) it reports 0. Seeding on one
       // connection and operating on another makes both legs agree AND reflects real deployment.
-      const oraclePath = join(PROOF_DIR, `oracle_${wc.op}.db`);
+      const oraclePath = join(PROOF_DIR, `oracle_${wc.key}.db`);
       freshWriteDb(oraclePath).close();
       const db = new Database(oraclePath);
       db.pragma('foreign_keys = ON');
@@ -624,12 +646,16 @@ describe('E3 — emit write modules + a clean seed DB + {result, state} oracles'
       const state = tableState(db);
       db.close();
       rmSync(oraclePath);
-      oracles[wc.op] = { result, state };
+      // Carry the rust op + args so the harness dispatches the shared module with the right input.
+      oracles[wc.key] = { result, state, op: wc.op, args: wc.args };
     }
     writeFileSync(join(PROOF_DIR, 'oracles_write.json'), JSON.stringify(oracles, null, 2));
 
-    // sanity: the INSERT returns the new row; the DELETE removes id=1.
-    expect((oracles.createuser as { result: { id: number }[] }).result[0].email).toBe('zed@example.com');
-    expect((oracles.deleteuser as { state: { id: number }[] }).state.some((r) => r.id === 1)).toBe(false);
+    // sanity: INSERT returns the new row; DELETE removes id=1; upsert-conflict UPDATES user1's name.
+    expect((oracles.createuser.result as { id: number }[])[0].email).toBe('zed@example.com');
+    expect((oracles.deleteuser.state as { id: number }[]).some((r) => r.id === 1)).toBe(false);
+    expect((oracles.upsert_conflict.result as { id: number; name: string }[])[0]).toMatchObject({ id: 1, name: 'Renamed One' });
+    expect((oracles.upsert_conflict.state as { id: number }[]).length).toBe(3); // conflict updated, no new row
+    expect((oracles.upsert_insert.state as { id: number }[]).length).toBe(4); // insert added a row
   });
 });
