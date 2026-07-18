@@ -625,9 +625,99 @@ fn table_state(conn: &Connection) -> String {
     user_rows_json(&rows)
 }
 
+// ── LATENCY BENCH (payoff proof): the rust-native cell. Same 4 ops as the go + ts-IR cells, same seed,
+//    same iteration count. Times the WHOLE hot path (build input → RunNativeRawStruct = bind + exec +
+//    decode into the typed struct) and writes RAW per-iteration samples (µs) as flat CSV `op,us` — the
+//    collector aggregates p50/p99/ops-sec (measurement vs aggregation stay separate, per metrics.ts).
+//    Reads run on a read-only seed; writes run on a fresh mutable copy with a UNIQUE input per iteration.
+fn now_us() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros()
+}
+
+fn run_bench(read_db: &str, write_db: &str, warmup: usize, iters: usize, out_csv: &str) {
+    use std::io::Write;
+    let mut csv = std::fs::File::create(out_csv).expect("create csv");
+    writeln!(csv, "op,us").unwrap();
+
+    // ── findunique (point read) — read-only ──
+    {
+        let conn = Connection::open(read_db).expect("open read db");
+        let emails: Vec<String> = (0..).map(|i| format!("user{}@example.com", (i % 100) + 1)).take(warmup + iters).collect();
+        for e in emails.iter().take(warmup) {
+            let _ = generated_findunique::run_native_raw_struct_FindUnique(&FindUniqueSeam { conn: &conn }, generated_findunique::InNRFindUnique { email: e.clone() });
+        }
+        for e in emails.iter().skip(warmup) {
+            let t0 = std::time::Instant::now();
+            let out = generated_findunique::run_native_raw_struct_FindUnique(&FindUniqueSeam { conn: &conn }, generated_findunique::InNRFindUnique { email: e.clone() }).unwrap();
+            std::hint::black_box(&out);
+            writeln!(csv, "findunique,{:.3}", t0.elapsed().as_nanos() as f64 / 1000.0).unwrap();
+        }
+    }
+    // ── relsingle (batched relation: parent posts + one batched comments query) — read-only ──
+    {
+        let conn = Connection::open(read_db).expect("open read db");
+        for _ in 0..warmup {
+            let _ = generated_relsingle::run_native_raw_struct_ByAuthor(&RelSingleSeam { conn: &conn }, generated_relsingle::InNRByAuthor { author_id: 7 });
+        }
+        for _ in 0..iters {
+            let t0 = std::time::Instant::now();
+            let out = generated_relsingle::run_native_raw_struct_ByAuthor(&RelSingleSeam { conn: &conn }, generated_relsingle::InNRByAuthor { author_id: 7 }).unwrap();
+            std::hint::black_box(&out);
+            writeln!(csv, "relsingle,{:.3}", t0.elapsed().as_nanos() as f64 / 1000.0).unwrap();
+        }
+    }
+    // ── createuser (single write, RETURNING) — mutable, UNIQUE email per iteration ──
+    {
+        let conn = Connection::open(write_db).expect("open write db");
+        let mk = |i: usize| format!("cu{}_{}@example.com", now_us(), i);
+        for i in 0..warmup {
+            let _ = generated_createuser::run_native_raw_struct_CreateUser(&CreateUserSeam { conn: &conn }, generated_createuser::InNRCreateUser { email: mk(i), name: "Bench".into() });
+        }
+        for i in 0..iters {
+            let email = format!("cu_{}_{}@example.com", i, now_us());
+            let t0 = std::time::Instant::now();
+            let out = generated_createuser::run_native_raw_struct_CreateUser(&CreateUserSeam { conn: &conn }, generated_createuser::InNRCreateUser { email, name: "Bench".into() }).unwrap();
+            std::hint::black_box(&out);
+            writeln!(csv, "createuser,{:.3}", t0.elapsed().as_nanos() as f64 / 1000.0).unwrap();
+        }
+    }
+    // ── createmany (batch write: ONE json_each INSERT for 10 records) — mutable, UNIQUE rows per iter ──
+    {
+        let conn = Connection::open(write_db).expect("open write db");
+        let batch = |iter: usize| -> (Vec<String>, Vec<String>) {
+            let ts = now_us();
+            let emails: Vec<String> = (0..10).map(|k| format!("cm_{}_{}_{}@example.com", iter, k, ts)).collect();
+            let names: Vec<String> = (0..10).map(|k| format!("BM{}_{}", iter, k)).collect();
+            (emails, names)
+        };
+        for i in 0..warmup {
+            let (emails, names) = batch(1_000_000 + i);
+            let _ = generated_createmany::run_native_raw_struct_CreateMany(&CreateManySeam { conn: &conn }, generated_createmany::InNRCreateMany { emails, names });
+        }
+        for i in 0..iters {
+            let (emails, names) = batch(i);
+            let t0 = std::time::Instant::now();
+            let out = generated_createmany::run_native_raw_struct_CreateMany(&CreateManySeam { conn: &conn }, generated_createmany::InNRCreateMany { emails, names }).unwrap();
+            std::hint::black_box(&out);
+            writeln!(csv, "createmany,{:.3}", t0.elapsed().as_nanos() as f64 / 1000.0).unwrap();
+        }
+    }
+    eprintln!("rust-native bench done: {} ops × {} iters → {}", 4, iters, out_csv);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let op = args.get(1).expect("usage: e1_native_proof <op> <db> <args...>");
+    // Latency bench: `bench <read_db> <write_db> <warmup> <iters> <out_csv>`.
+    if op == "bench" {
+        let read_db = args.get(2).expect("bench <read_db>");
+        let write_db = args.get(3).expect("bench <write_db>");
+        let warmup: usize = args.get(4).expect("bench <warmup>").parse().expect("warmup");
+        let iters: usize = args.get(5).expect("bench <iters>").parse().expect("iters");
+        let out_csv = args.get(6).expect("bench <out_csv>");
+        run_bench(read_db, write_db, warmup, iters, out_csv);
+        return;
+    }
     let db_path = args.get(2).expect("usage: e1_native_proof <op> <db> <args...>");
     let conn = Connection::open(db_path).expect("open db");
 
