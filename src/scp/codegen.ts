@@ -980,6 +980,123 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
   return { ...ir, components };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// NATIVE BATCHED relations (E4/#119) — bake a RelationDecl batch op as a bc BATCHED-MAP node.
+//
+// A RelationDecl relation (belongsTo/hasMany) is a BATCH: pull ALL parents' children in ONE child
+// query (N+1-avoided — the bench baseline + the litedbmodel runtime both batch). Its batched child
+// SQL is already compiled (`RelationOp.sql`: `= ANY(?)` / `unnest(?,?)` on PG, `json_each(?)` tuple
+// membership on mysql/sqlite — value-length-independent, so the text is FIXED and BAKEABLE).
+//
+// bc's BATCHED MAP (`map.batched:true`, verified) is the exact native primitive: its runner collects
+// every parent element's ports into ONE `items: Vec<PortsNR>` and calls the handler ONCE, requiring a
+// per-parent-aligned result. So we inject a batched-map node whose element ports carry the batched
+// `f_sql` + the parent's key column(s) (`f_k0`, `f_k1`, … — native scalars bc types from the parent
+// outType). The ONE generic exec seam's batched handler collects the DISTINCT parent keys, runs the
+// ONE baked query, groups children by the target key(s), and returns the per-parent lists aligned —
+// no per-row `= ?`, no N+1. This is the SAME lowering + SAME seam (no parallel relation mechanism):
+// the relation is just another baked node.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+/** The reserved element var a batched-relation node binds its parent-key element fields under. */
+const RELATION_ELEM_VAR = '$rel';
+
+/** Build the child-row `obj` PortableType from a relation op's projected `select` columns, typed via
+ * the schema (the child table's column types) — the SAME resolver the primary read uses. */
+function relationChildRowType(relOp: RelationOp, resolveColumnType: ColumnTypeResolver): unknown {
+  const table = relOp.targetTable;
+  const cols = relOp.select;
+  if (table === undefined || cols === undefined || cols.length === 0) {
+    throw new Error(`litedbmodel codegen: relation '${relOp.name}' has no targetTable/select to type its child row (batched-native relations need the projected columns).`);
+  }
+  const obj: Record<string, BcScalar> = {};
+  for (const col of cols) obj[col] = sqlTypeToBcScalar(resolveColumnType(table, col));
+  return { obj };
+}
+
+/**
+ * Inject each `bundle.relations` RelationDecl batch op into the ALREADY-LOWERED codegen IR as a bc
+ * BATCHED-MAP node, and extend the component output to `{ rows, <relName>… }` so the runner returns
+ * the parent rows PLUS the per-parent child lists. Runs AFTER {@link lowerReadGraphForNativeSql}
+ * because the injected node is ALREADY in lowered port shape (baked `sql` + native key ports) — it
+ * does not go through the authored-port lowering.
+ *
+ * Single-relation, hasMany/belongsTo, over the PRIMARY read node. The parent keys become element-field
+ * ports `{ref:[$rel, <parentKey>]}` (bc bakes each as a native scalar read off the parent element);
+ * the batched `f_sql` is baked verbatim. Multiple relations inject multiple sibling batched-map nodes.
+ */
+function injectBatchedRelations(
+  ir: ComponentGraphIR,
+  relations: Record<string, RelationOp>,
+  resolveColumnType: ColumnTypeResolver,
+): ComponentGraphIR {
+  const relNames = Object.keys(relations);
+  if (relNames.length === 0) return ir;
+  const components = ir.components.map((c) => {
+    // Skip a read that already carries an INLINE `.map` relation node: its relations are represented
+    // (and baked) as inline maps in the read graph, so `bundle.relations` is the redundant
+    // runtime-companion form — injecting it would DOUBLE the relation. Only a plain parent read (no
+    // inline map) draws its relations purely from `bundle.relations` → inject the batched form.
+    if (c.body.some((n) => 'map' in n)) return c;
+    // The PRIMARY read node the relations hang off — the first plain componentRef (non-map/cond).
+    const primary = c.body.find((n) => !('map' in n) && !('cond' in n)) as { id: string } | undefined;
+    if (primary === undefined) return c;
+    const relNodes = relNames.map((name) => {
+      const relOp = relations[name];
+      const parentKeys = relOp.parentKeys ?? (relOp.parentKey !== undefined ? [relOp.parentKey] : []);
+      if (parentKeys.length === 0) {
+        throw new Error(`litedbmodel codegen: relation '${name}' has no parentKey(s) to key the batch — cannot lower natively.`);
+      }
+      const childRow = relationChildRowType(relOp, resolveColumnType);
+      // hasMany → a LIST per parent (`arr<arr<child>>`); belongsTo/hasOne → one child per parent
+      // (`arr<child>`). The seam returns the aligned per-parent result either way.
+      const outType = relOp.kind === 'hasMany' ? { arr: { arr: childRow } } : { arr: childRow };
+      // The lowered element ports: the baked batched SQL + one native scalar port per parent key.
+      const ports: Record<string, unknown> = { sql: relOp.sql };
+      parentKeys.forEach((k, i) => {
+        ports[`k${i}`] = { ref: [RELATION_ELEM_VAR, k] };
+      });
+      return {
+        id: `rel_${name}`,
+        map: {
+          as: RELATION_ELEM_VAR,
+          component: 'Select',
+          over: { ref: [primary.id] },
+          batched: true,
+          relationKind: 'connection',
+          ports,
+        },
+        outType,
+      };
+    });
+    // Extend the output Φ: `{ rows: <primary>, <relName>: <relNode>… }`.
+    const outputObj: Record<string, unknown> = { rows: { ref: [primary.id] } };
+    const outputTypeObj: Record<string, unknown> = { rows: (primary as unknown as { outType: unknown }).outType };
+    relNames.forEach((name, i) => {
+      outputObj[name] = { ref: [relNodes[i].id] };
+      outputTypeObj[name] = relNodes[i].outType;
+    });
+    // Extend the exec `plan.groups` (body-index stages): each injected relation is its OWN sequential
+    // stage after the primary (a map node cannot be a member of a PARALLEL stage — bc requires
+    // parallel-stage members to be plain componentRef point reads). The indices are the appended
+    // nodes' positions (original body length onward).
+    const origLen = c.body.length;
+    const prevPlan = (c as unknown as { plan?: { concurrency?: number; groups?: number[][] } }).plan;
+    const plan = {
+      concurrency: prevPlan?.concurrency ?? 16,
+      groups: [...(prevPlan?.groups ?? [c.body.map((_, i) => i)]), ...relNodes.map((_, i) => [origLen + i])],
+    };
+    return {
+      ...c,
+      body: [...c.body, ...relNodes],
+      plan,
+      output: { obj: outputObj },
+      outputType: { obj: outputTypeObj },
+    } as unknown as Component;
+  });
+  return { ...ir, components };
+}
+
 /**
  * Resolve the READ codegen emitter for a target language, or throw. No fallback: a language
  * without a registered endpoint is a bc capability gap that fails LOUDLY (never a silent
@@ -1060,7 +1177,11 @@ export function generateCodegenArtifact(
   // query and needs NO runtime JSON companion read. It covers every read shape (scalar/optional/
   // coalesce params, IN-list arrays, skip-optional WHERE fragments, single-key map relations) and
   // writes. There is NO second lowering and NO opt-in flag — this is the only path.
-  const ir = lowerReadGraphForNativeSql(bundle.readGraph, resolveColumnType);
+  const readIr = lowerReadGraphForNativeSql(bundle.readGraph, resolveColumnType);
+  // NATIVE BATCHED relations (E4/#119): inject each `bundle.relations` RelationDecl batch op as a bc
+  // batched-map node so the read module runs its relations NATIVELY (ONE batched child query, not the
+  // runtime companion stitch). Additive — a bundle with no relations is unchanged.
+  const ir = injectBatchedRelations(readIr, bundle.relations, resolveColumnType);
   // bc 0.8.0 (scp-only-authoring, SA3/SA7): `generateModule` fail-closes on un-tokened IR
   // (`NON_COMPILED_IR`). This `ir` is DERIVED from `compileBehaviors`' real read graph (additively
   // lowered/annotated), so it carries no in-process provenance token. Re-adopt it at this generation

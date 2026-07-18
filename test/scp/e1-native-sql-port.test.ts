@@ -55,6 +55,7 @@ import {
   generateCodegenArtifact,
   TypedNativeCoverageError,
 } from '../../src/scp/index';
+import { runRelationOp, distributeToParent, type RelationDecl } from '../../src/scp/relation';
 import { registeredLanguages } from 'behavior-contracts';
 import Database from 'better-sqlite3';
 import { ddl, seedStatements } from '../../benchmark/crosslang/orm-domain';
@@ -178,6 +179,41 @@ const POST_CONTRACT = publishBehaviors(PostReads);
 const POST_RESOLVE = schemaColumnTypeResolver(ddl('sqlite'));
 const FEED_CONTRACT = publishBehaviors(FeedReads);
 const TENANT_CONTRACT = publishBehaviors(TenantFeedReads);
+
+/** The NATIVE BATCHED relation (E4/#119, the real deliverable): a parent read + a hasMany
+ * RelationDecl batch — ONE child query for all parents, NOT the per-element `.map` (N+1). */
+class TenantUsersRead extends SemanticBehavior {
+  static columns = TENANT_COLUMNS;
+  ByTenant($: { tenant_id: unknown }) {
+    return L.Select({ table: 'benchmark_tenant_users', select: ['tenant_id', 'user_id', 'name'], where: [whereEq(($ as never)['tenant_id'], $.tenant_id)], order: 'user_id ASC' });
+  }
+}
+const TENANT_USERS_CONTRACT = publishBehaviors(TenantUsersRead);
+/** composite-key hasMany: users → posts joined on BOTH (tenant_id, user_id). */
+const POSTS_COMPOSITE_REL: RelationDecl = {
+  name: 'posts', kind: 'hasMany', targetTable: 'benchmark_tenant_posts',
+  select: ['tenant_id', 'post_id', 'user_id', 'title'],
+  parentKeys: ['tenant_id', 'user_id'], targetKeys: ['tenant_id', 'user_id'],
+  order: 'post_id ASC', dialect: 'sqlite',
+} as unknown as RelationDecl;
+
+/** SINGLE-key batched relation (nestedRelations): posts → comments by post_id (one key). */
+const SINGLE_REL_COLUMNS = {
+  benchmark_posts: { id: 'INTEGER', title: 'TEXT', content: 'TEXT', published: 'INTEGER', author_id: 'INTEGER', created_at: 'TEXT' },
+  benchmark_comments: { id: 'INTEGER', body: 'TEXT', post_id: 'INTEGER', created_at: 'TEXT' },
+} as const;
+class PostsRead extends SemanticBehavior {
+  static columns = SINGLE_REL_COLUMNS;
+  ByAuthor($: { author_id: unknown }) {
+    return L.Select({ table: 'benchmark_posts', select: ['id', 'title', 'author_id'], where: [whereEq(($ as never)['author_id'], $.author_id)], order: 'id ASC' });
+  }
+}
+const POSTS_SINGLE_CONTRACT = publishBehaviors(PostsRead);
+const COMMENTS_SINGLE_REL: RelationDecl = {
+  name: 'comments', kind: 'hasMany', targetTable: 'benchmark_comments',
+  select: ['id', 'body', 'post_id'], parentKey: 'id', targetKey: 'post_id', order: 'id ASC', dialect: 'sqlite',
+} as unknown as RelationDecl;
+
 const EXPECTED_SQL = 'SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT ?';
 
 function findUniqueBundle() {
@@ -299,6 +335,31 @@ describe('E4 (#119) — a single-key map relation bakes; the child binds the par
     expect(code).toContain('pub f_p0: i64');
     expect(code).toContain('pub f_p1: i64');
     expect(stripRustComments(code)).not.toContain('serde_json');
+  });
+});
+
+describe('E4 (#119) — NATIVE BATCHED relation: ONE child query for all parents (not N+1)', () => {
+  it('bakes the BATCHED child SQL (json_each tuple membership), NOT a per-row `= ?`; keys as native ports', () => {
+    const bundle = compileBundle(TENANT_USERS_CONTRACT, 'ByTenant', [POSTS_COMPOSITE_REL], 'sqlite', undefined, RESOLVE);
+    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE).module.code;
+    // the child SQL is the BATCHED form (one query, json_each over the deduped key tuples) — the
+    // batched relation the runtime issues, NOT the per-parent `WHERE tenant_id=? AND user_id=?`.
+    expect(code).toContain('WHERE EXISTS (SELECT 1 FROM json_each(?) je WHERE json_extract(je.value, \'$[0]\') = benchmark_tenant_posts.tenant_id AND json_extract(je.value, \'$[1]\') = benchmark_tenant_posts.user_id)');
+    expect(code).not.toContain('WHERE tenant_id = ? AND user_id = ?'); // NOT the per-row form
+    // the batched map: the handler gets ALL parents at once (a Batch of items)
+    expect(code).toContain('items: Vec<PortsNRByTenantRelPosts>');
+    // both parent keys bake as native i64 element ports (the seam collects distinct + binds ONE json)
+    expect(code).toContain('f_k0: oel_rel_posts.tenant_id');
+    expect(code).toContain('f_k1: oel_rel_posts.user_id');
+    expect(stripRustComments(code)).not.toContain('serde_json');
+  });
+
+  it('SINGLE-key (nestedRelations): bakes the batched `post_id IN (json_each(?))`, one key port', () => {
+    const bundle = compileBundle(POSTS_SINGLE_CONTRACT, 'ByAuthor', [COMMENTS_SINGLE_REL], 'sqlite', undefined, RESOLVE);
+    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE).module.code;
+    expect(code).toContain('f_sql: "SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC".to_string()');
+    expect(code).toContain('f_k0: oel_rel_comments.id');
+    expect(code).toContain('items: Vec<PortsNRByAuthorRelComments>');
   });
 });
 
@@ -429,6 +490,16 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     const tenantArt = generateCodegenArtifact(tenantBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_tenantfeed.rs'), tenantArt.module.code);
 
+    // E4 NATIVE BATCHED relation: users + a hasMany composite RelationDecl (ONE child query).
+    const relBundle = compileBundle(TENANT_USERS_CONTRACT, 'ByTenant', [POSTS_COMPOSITE_REL], 'sqlite', undefined, RESOLVE);
+    const relArt = generateCodegenArtifact(relBundle, 'rust', REGISTERED, RESOLVE);
+    writeFileSync(join(PROOF_DIR, 'generated_relbatch.rs'), relArt.module.code);
+
+    // E4 NATIVE BATCHED single-key relation (nestedRelations): posts + comments by post_id.
+    const relSingleBundle = compileBundle(POSTS_SINGLE_CONTRACT, 'ByAuthor', [COMMENTS_SINGLE_REL], 'sqlite', undefined, RESOLVE);
+    const relSingleArt = generateCodegenArtifact(relSingleBundle, 'rust', REGISTERED, RESOLVE);
+    writeFileSync(join(PROOF_DIR, 'generated_relsingle.rs'), relSingleArt.module.code);
+
     // ONE seeded sqlite DB FILE shared by BOTH legs — the oracle and the rust run read byte-identical
     // data, so an equality pass cannot come from two independently-seeded DBs happening to agree.
     if (existsSync(DB_PATH)) rmSync(DB_PATH);
@@ -456,6 +527,25 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     // composite map: tenant 1 (4 users × 2 posts each) and tenant 999 (empty).
     const tenantOracles: Record<string, unknown> = {};
     for (const tid of [1, 999]) tenantOracles[String(tid)] = executeBundle(tenantBundle, { tenant_id: tid } as never, { db: db as never });
+    // BATCHED relation oracle: the mode-2 runtime batched path (runRelationOp = ONE query +
+    // distributeToParent groups per parent). The native module must byte-match this {rows, posts}.
+    const relOracles: Record<string, unknown> = {};
+    const relOp = relBundle.relations.posts;
+    for (const tid of [1, 2, 999]) {
+      const users = executeBundle(relBundle, { tenant_id: tid } as never, { db: db as never }) as Record<string, unknown>[];
+      const { batch } = runRelationOp(relOp as never, users as never, db as never);
+      const posts = users.map((u) => distributeToParent(relOp as never, u as never, batch as never));
+      relOracles[String(tid)] = { rows: users, posts };
+    }
+    // single-key batched relation oracle (posts + comments).
+    const relSingleOracles: Record<string, unknown> = {};
+    const relSingleOp = relSingleBundle.relations.comments;
+    for (const aid of [1, 7, 999]) {
+      const posts = executeBundle(relSingleBundle, { author_id: aid } as never, { db: db as never }) as Record<string, unknown>[];
+      const { batch } = runRelationOp(relSingleOp as never, posts as never, db as never);
+      const comments = posts.map((p) => distributeToParent(relSingleOp as never, p as never, batch as never));
+      relSingleOracles[String(aid)] = { rows: posts, comments };
+    }
     db.close();
 
     writeFileSync(join(PROOF_DIR, 'oracles.json'), JSON.stringify(oracles, null, 2));
@@ -464,8 +554,13 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     writeFileSync(join(PROOF_DIR, 'oracles_bymaybe.json'), JSON.stringify(byMaybeOracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_feed.json'), JSON.stringify(feedOracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_tenantfeed.json'), JSON.stringify(tenantOracles, null, 2));
+    writeFileSync(join(PROOF_DIR, 'oracles_relbatch.json'), JSON.stringify(relOracles, null, 2));
+    writeFileSync(join(PROOF_DIR, 'oracles_relsingle.json'), JSON.stringify(relSingleOracles, null, 2));
     expect(((tenantOracles['1'] as { users: unknown[] }).users).length).toBe(4);
     expect(((tenantOracles['999'] as { users: unknown[] }).users).length).toBe(0);
+    // the batched relation stitched: tenant 1 → 4 users, each with their own 2 posts.
+    expect(((relOracles['1'] as { posts: unknown[][] }).posts).length).toBe(4);
+    expect(((relOracles['1'] as { posts: unknown[][] }).posts).every((p) => p.length === 2)).toBe(true);
     // the skip actually drops: absent published returns >= as many rows as present-filtered.
     expect((byMaybeOracles['7|'] as unknown[]).length).toBeGreaterThanOrEqual((byMaybeOracles['7|1'] as unknown[]).length);
     // the relation resolves: author 7 has 2 posts, each with its author list; author 999 has none.

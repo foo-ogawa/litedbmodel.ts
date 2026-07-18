@@ -62,6 +62,11 @@ impl rusqlite::ToSql for Param {
     }
 }
 
+/// A process-wide count of DB queries the seam has issued — the definitive proof that a batched
+/// relation runs ONE child query for all parents (not N+1). The relation proof reads it before/after
+/// and asserts the delta is 2 (one parent read + one batched child), not 1+N.
+pub static QUERY_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// The generic READ exec: run `sql` with `params`, decode each row via `decode`.
 pub fn query<T>(
     conn: &Connection,
@@ -69,6 +74,7 @@ pub fn query<T>(
     params: &[Param],
     decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> rusqlite::Result<Vec<T>> {
+    QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| decode(r))?;
     rows.collect()
@@ -119,6 +125,44 @@ pub fn query_skip<T>(
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.into_iter()), |r| decode(r))?;
     rows.collect()
+}
+
+/// The generic BATCHED-RELATION exec (E4/#119 — the N+1-avoided native relation). Given the ONE
+/// baked batched child SQL + the per-parent key(s), it: collects the DISTINCT parent keys, runs the
+/// query ONCE (binding the deduped keys as the single JSON-array param the baked `json_each(?)` /
+/// `= ANY(?)` form expects), groups the returned children by their target key, and returns the
+/// per-parent child lists ALIGNED to `item_keys` (one list per parent, in order). This is the whole
+/// relation runtime — one query, no N+1, no per-row `= ?`. The caller (per-op glue) supplies the
+/// key extraction, the dialect JSON encoding, and the row decode; the dedup + group + align live HERE.
+pub fn query_batched_relation<Child, Key>(
+    conn: &Connection,
+    sql: &str,
+    item_keys: &[Key],
+    encode_json: impl Fn(&[Key]) -> String,
+    decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<Child>,
+    child_key: impl Fn(&Child) -> Key,
+) -> rusqlite::Result<Vec<Vec<Child>>>
+where
+    Key: Eq + std::hash::Hash + Clone,
+    Child: Clone,
+{
+    // DISTINCT parent keys — the ONE query binds only these (the dedup the runtime relation does).
+    let mut seen: std::collections::HashSet<Key> = std::collections::HashSet::new();
+    let mut distinct: Vec<Key> = Vec::new();
+    for k in item_keys {
+        if seen.insert(k.clone()) {
+            distinct.push(k.clone());
+        }
+    }
+    let json = encode_json(&distinct);
+    let children = query(conn, sql, &[Param::Text(json)], decode)?; // <-- ONE query for all parents
+    // group children by their target key
+    let mut groups: std::collections::HashMap<Key, Vec<Child>> = std::collections::HashMap::new();
+    for ch in children {
+        groups.entry(child_key(&ch)).or_default().push(ch);
+    }
+    // align a child list to EACH parent item, in order
+    Ok(item_keys.iter().map(|k| groups.get(k).cloned().unwrap_or_default()).collect())
 }
 
 /// The single summary row a NON-RETURNING write hands back: `{changes, lastInsertRowid}` — exactly

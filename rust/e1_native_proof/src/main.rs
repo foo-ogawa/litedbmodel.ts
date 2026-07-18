@@ -18,12 +18,14 @@ mod generated_deleteuser;
 mod generated_feed;
 mod generated_findunique;
 mod generated_recent;
+mod generated_relbatch;
+mod generated_relsingle;
 mod generated_renameuser;
 mod generated_tenantfeed;
 mod seam;
 
 use rusqlite::Connection;
-use seam::{json_str, query, query_skip, Param, WhereFrag};
+use seam::{json_str, query, query_batched_relation, query_skip, Param, WhereFrag};
 
 // ── per-op adapters ──────────────────────────────────────────────────────────────────────────
 //
@@ -99,6 +101,100 @@ impl generated_feed::HandlerNRPostsWithAuthor for FeedSeam<'_> {
         Some(match val {
             Ok(val) => generated_feed::RawElemNRPostsWithAuthorN1 { is_error: false, err: String::new(), val },
             Err(e) => generated_feed::RawElemNRPostsWithAuthorN1 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+}
+
+// The NATIVE BATCHED relation (E4/#119): parent read + a hasMany relation resolved in ONE batched
+// child query. The bench op#19 compositeRelations surface — but batched, not N+1.
+struct RelBatchSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_relbatch::HandlerNRByTenant for RelBatchSeam<'_> {
+    fn node_n0(
+        &self,
+        ports: &generated_relbatch::PortsNRByTenantN0,
+        _bound: Option<String>,
+    ) -> Option<generated_relbatch::RawRowNRByTenantN0> {
+        let val = query(self.conn, &ports.f_sql, &[Param::Int(ports.f_p0)], |r| {
+            Ok(generated_relbatch::T0 { tenant_id: r.get(0)?, user_id: r.get(1)?, name: r.get(2)? })
+        });
+        Some(match val {
+            Ok(val) => generated_relbatch::RawRowNRByTenantN0 { is_error: false, err: String::new(), val },
+            Err(e) => generated_relbatch::RawRowNRByTenantN0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+    // The BATCHED relation handler — receives ALL parents' composite keys at once; runs ONE query.
+    fn node_rel_posts(
+        &self,
+        ports: &generated_relbatch::PortsNRByTenantRelPostsBatch,
+        _bound: Option<String>,
+    ) -> Option<generated_relbatch::RawRowNRByTenantRelPosts> {
+        // each parent's composite key (tenant_id, user_id) — all items share the same baked f_sql.
+        let item_keys: Vec<(i64, i64)> = ports.items.iter().map(|it| (it.f_k0, it.f_k1)).collect();
+        let sql = &ports.items[0].f_sql;
+        let res = query_batched_relation(
+            self.conn,
+            sql,
+            &item_keys,
+            // composite tuple JSON for the baked `json_each(?)` membership: `[[t,u],…]` (distinct).
+            |ks| format!("[{}]", ks.iter().map(|(t, u)| format!("[{},{}]", t, u)).collect::<Vec<_>>().join(",")),
+            |r| Ok(generated_relbatch::T1 { tenant_id: r.get(0)?, post_id: r.get(1)?, user_id: r.get(2)?, title: r.get(3)? }),
+            |c| (c.tenant_id, c.user_id), // target-key grouping
+        );
+        Some(match res {
+            Ok(lists) => generated_relbatch::RawRowNRByTenantRelPosts {
+                is_error: false,
+                err: String::new(),
+                rows: lists.into_iter().map(|val| generated_relbatch::RawElemNRByTenantRelPosts { is_error: false, err: String::new(), val }).collect(),
+            },
+            Err(e) => generated_relbatch::RawRowNRByTenantRelPosts { is_error: true, err: e.to_string(), rows: vec![] },
+        })
+    }
+}
+
+// The SINGLE-key native batched relation (nestedRelations): posts → comments by post_id, ONE query.
+struct RelSingleSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_relsingle::HandlerNRByAuthor for RelSingleSeam<'_> {
+    fn node_n0(
+        &self,
+        ports: &generated_relsingle::PortsNRByAuthorN0,
+        _bound: Option<String>,
+    ) -> Option<generated_relsingle::RawRowNRByAuthorN0> {
+        let val = query(self.conn, &ports.f_sql, &[Param::Int(ports.f_p0)], |r| {
+            Ok(generated_relsingle::T0 { id: r.get(0)?, title: r.get(1)?, author_id: r.get(2)? })
+        });
+        Some(match val {
+            Ok(val) => generated_relsingle::RawRowNRByAuthorN0 { is_error: false, err: String::new(), val },
+            Err(e) => generated_relsingle::RawRowNRByAuthorN0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+    fn node_rel_comments(
+        &self,
+        ports: &generated_relsingle::PortsNRByAuthorRelCommentsBatch,
+        _bound: Option<String>,
+    ) -> Option<generated_relsingle::RawRowNRByAuthorRelComments> {
+        // single key per parent (post id). ONE batched child query over the deduped ids.
+        let item_keys: Vec<i64> = ports.items.iter().map(|it| it.f_k0).collect();
+        let sql = &ports.items[0].f_sql;
+        let res = query_batched_relation(
+            self.conn,
+            sql,
+            &item_keys,
+            // single-key JSON: a flat array `[k1,k2,…]` for the baked `json_each(?)` IN-list.
+            |ks| format!("[{}]", ks.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(",")),
+            |r| Ok(generated_relsingle::T1 { id: r.get(0)?, body: r.get(1)?, post_id: r.get(2)? }),
+            |c| c.post_id, // target-key grouping
+        );
+        Some(match res {
+            Ok(lists) => generated_relsingle::RawRowNRByAuthorRelComments {
+                is_error: false,
+                err: String::new(),
+                rows: lists.into_iter().map(|val| generated_relsingle::RawElemNRByAuthorRelComments { is_error: false, err: String::new(), val }).collect(),
+            },
+            Err(e) => generated_relsingle::RawRowNRByAuthorRelComments { is_error: true, err: e.to_string(), rows: vec![] },
         })
     }
 }
@@ -307,6 +403,49 @@ fn main() {
                 .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));
+        }
+        // relbatch: <tenant_id> — the NATIVE BATCHED composite relation (ONE child query). {rows, posts}.
+        "relbatch" => {
+            let tenant_id: i64 = args.get(3).expect("tenant_id").parse().expect("tenant_id int");
+            let out = generated_relbatch::run_native_raw_struct_ByTenant(&RelBatchSeam { conn: &conn }, generated_relbatch::InNRByTenant { tenant_id })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let rows: Vec<String> = out
+                .rows
+                .iter()
+                .map(|u| format!("{{\"tenant_id\":{},\"user_id\":{},\"name\":{}}}", u.tenant_id, u.user_id, json_str(&u.name)))
+                .collect();
+            let posts: Vec<String> = out
+                .posts
+                .iter()
+                .map(|inner| {
+                    let items: Vec<String> = inner
+                        .iter()
+                        .map(|p| format!("{{\"tenant_id\":{},\"post_id\":{},\"user_id\":{},\"title\":{}}}", p.tenant_id, p.post_id, p.user_id, json_str(&p.title)))
+                        .collect();
+                    format!("[{}]", items.join(","))
+                })
+                .collect();
+            println!("{{\"rows\":[{}],\"posts\":[{}]}}", rows.join(","), posts.join(","));
+            // Proof of BATCHING: the whole op issued exactly 2 queries (1 parent + 1 batched child)
+            // regardless of parent count — NOT 1+N. Printed to stderr for the harness to assert.
+            eprintln!("queries={}", seam::QUERY_COUNT.load(std::sync::atomic::Ordering::SeqCst));
+        }
+        // relsingle: <author_id> — the NATIVE BATCHED single-key relation (posts + comments). {rows, comments}.
+        "relsingle" => {
+            let author_id: i64 = args.get(3).expect("author_id").parse().expect("author_id int");
+            let out = generated_relsingle::run_native_raw_struct_ByAuthor(&RelSingleSeam { conn: &conn }, generated_relsingle::InNRByAuthor { author_id })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let rows: Vec<String> = out.rows.iter().map(|p| format!("{{\"id\":{},\"title\":{},\"author_id\":{}}}", p.id, json_str(&p.title), p.author_id)).collect();
+            let comments: Vec<String> = out
+                .comments
+                .iter()
+                .map(|inner| {
+                    let items: Vec<String> = inner.iter().map(|c| format!("{{\"id\":{},\"body\":{},\"post_id\":{}}}", c.id, json_str(&c.body), c.post_id)).collect();
+                    format!("[{}]", items.join(","))
+                })
+                .collect();
+            println!("{{\"rows\":[{}],\"comments\":[{}]}}", rows.join(","), comments.join(","));
+            eprintln!("queries={}", seam::QUERY_COUNT.load(std::sync::atomic::Ordering::SeqCst));
         }
         // tenantfeed: <tenant_id> — a COMPOSITE-key relation (users + per-user posts joined on BOTH
         // tenant_id AND user_id). Output {posts:[[...]], users:[...]}.
