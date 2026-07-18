@@ -2,4 +2,5 @@
 .artifacts/
 adapters/rust/target/
 adapters/rust/Cargo.lock
+adapters/go/orm_bench_go
 latency/go-cell/go_bench_cell

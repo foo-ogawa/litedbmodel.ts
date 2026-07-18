@@ -9,7 +9,10 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ART = join(HERE, '.artifacts');
 const lang = process.argv[2] ?? 'rust';
-const BIN = { rust: join(HERE, 'adapters/rust/target/release/orm_bench_rust') }[lang];
+const BIN = {
+  rust: join(HERE, 'adapters/rust/target/release/orm_bench_rust'),
+  go: join(HERE, 'adapters/go/orm_bench_go'),
+}[lang];
 if (!BIN || !existsSync(BIN)) {
   console.error(`no ${lang} binary at ${BIN} — build it first`);
   process.exit(2);
