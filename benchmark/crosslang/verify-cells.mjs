@@ -17,8 +17,13 @@ if (!BIN || !existsSync(BIN)) {
 
 const oracle = JSON.parse(readFileSync(join(ART, 'oracle.json'), 'utf8'));
 const READ = new Set(['findAll', 'filterPaginateSort', 'findFirst', 'findUnique']);
-// This round's rust cell covers the 10 flat ops (read+rel + tx are the next slice).
-const OPS = ['findAll', 'filterPaginateSort', 'findFirst', 'findUnique', 'create', 'update', 'upsert', 'createMany', 'upsertMany', 'updateMany'];
+// All 19 ORM ops (rust cell complete).
+const OPS = [
+  'findAll', 'filterPaginateSort', 'findFirst', 'findUnique',
+  'nestedFindAll', 'nestedFindFirst', 'nestedFindUnique', 'nestedRelations', 'compositeRelations',
+  'create', 'update', 'upsert', 'createMany', 'upsertMany', 'updateMany',
+  'delete', 'nestedCreate', 'nestedUpdate', 'nestedUpsert',
+];
 
 let fail = 0;
 console.log(`op                    native   sdk    (vs mode-2 oracle)`);
