@@ -1,55 +1,33 @@
 /**
- * litedbmodel v2 SCP — mode-3 codegen (WS7f, #35; spec §9 exec-mode 3 / §10 / §11; makeSQL flip,
- * epic #43/#45 Phase B; #60 milestone 1 — typed-NATIVE READ codegen, bc#77/#90).
+ * litedbmodel v2 SCP — mode-3 codegen (spec §9 exec-mode 3 / §10 / §11; makeSQL flip, epic #43/#45).
  *
- * The static-codegen execution mode ("Codegen・静的（全言語）— IR → 各言語ソース生成 runtime≈0,
- * 入力は可搬IRのみ, bc#13 共有 generator に SQL catalog を供給" — spec §9). It takes a §8 STATIC
- * makeSQL {@link SqlBundle} and, per target language, emits:
+ * The static-codegen execution mode ("Codegen・静的（全言語）— IR → 各言語ソース生成 runtime≈0" —
+ * spec §9). It takes a §8 STATIC makeSQL {@link SqlBundle} and, per target language, emits:
  *
- *  1. **Behavior module** — bc's SHARED generator run over the bundle's portable IR through bc's
- *     de-interpreted, RUNTIME-FREE emitter. For a READ bundle covered by bc's typed-NATIVE
- *     endpoint (`rust-typed-native` / `go-typed-native`, bc#77/#90 — the 1.0 read de-box: fully
- *     concrete `HandlerNR<Comp>`/`InNR<Comp>`/`PortsNR<Comp><node>`/`RawRowNR<Comp><node>` structs,
- *     ZERO boxed `Value`/`RawValue`, ZERO IR baked into the module), the CODEGEN-ONLY lowering
- *     below ({@link lowerReadGraphForTypedNative}) makes the read's shape structurally ELIGIBLE
- *     (derives each real Select-node's referenced heads from its statements → individual scalar ref
- *     ports + types the component's `inputPorts` from the schema) before handing it to bc. For a WRITE bundle, or a
- *     READ shape typed-native does not (yet) cover, codegen uses bc's existing de-interpreted
- *     STRAIGHT-LINE endpoint (`<lang>-straightline`, bc#75) — see {@link typedEmitterFor}.
- *  2. **SQL catalog companion** — the pure-JSON STATIC makeSQL catalog (per-node statement
- *     templates / relations / transaction). A codegen consumer's thin SQL layer reads it to
- *     evaluate skip + value-specs → assemble → render → execute (identically to the mode-2 runtime).
+ *  1. **Behavior module** — bc's SHARED generator run over the ONE SQL-baking lowering
+ *     ({@link lowerReadGraphForNativeSql}): each read/write node's rendered per-dialect SQL is baked
+ *     into the module as a native string LITERAL (`f_sql`) with typed param ports (scalar / optional /
+ *     coalesce-default / IN-list array / skip-fragment / map element-field). The module carries its
+ *     own query — it needs NO runtime JSON read. Covered by bc's typed-NATIVE endpoint
+ *     (`rust-typed-native` / `go-typed-native`) for go/rust and `typescript-typed` for ts; every
+ *     language consumes the SAME baked-SQL ports. There is ONE lowering and NO opt-in flag.
+ *  2. **Runtime-stitch sidecar** — the pure-JSON `relations` batch ops (a belongsTo/hasMany prefetch
+ *     is ONE batched IN query the runtime stitches, not baked into the read module) + the
+ *     write-Command `transaction` plan. The read/write PRIMARY SQL is NOT here (baked in the module);
+ *     the JSON `SqlCatalogCompanion` is RETIRED for reads.
  *
- * ## #60 milestone 1 scope (CODEGEN-PATH ONLY)
+ * ## Codegen-path only; behavior-identical to the thin-runtime (mode-2), by construction
  *
- * This lowering exists SOLELY for the codegen emitter call — it builds a NEW, separate
- * `ComponentGraphIR` from the bundle's `readGraph`; it never mutates `SqlBundle`/`ReadGraph` and
- * never touches the shared `readGraph`/`executeReadGraph` the native exec surface (and the
- * frozen conformance corpus) depend on. Those keep consuming the REAL Select-node
- * `readGraph.ir`, completely unaffected by anything in this file.
+ * The lowering builds a NEW, separate `ComponentGraphIR` from the bundle's `readGraph`; it never
+ * mutates `SqlBundle`/`ReadGraph` and never touches the shared `executeReadGraph` (or the frozen
+ * conformance corpus). The baked SQL is rendered through the SAME `composeMakeSQL`/`renderPlaceholders`
+ * assembly the mode-2 runtime uses, so the module's query text is byte-identical to what
+ * {@link executeBundle} renders. The TS leg proves result-equality vs {@link executeBundle}.
  *
- * ## Behavior-identical to the thin-runtime (mode-2), by construction
+ * ## Fail-closed, no boxed fallback
  *
- * The generated module is observationally equivalent to `runBehavior` (same values, same emitted
- * op sequence, same Failure code/message), and the companion IS the bundle, so a codegen runtime
- * that drives it follows the IDENTICAL static-makeSQL render/execute path {@link executeBundle}
- * uses — SQL text (all dialects) and results are identical, not approximately equal. The TS leg
- * PROVES this by executing via the artifact and asserting exact equality vs {@link executeBundle}
- * (see {@link codegenExecuteBundleForTest}).
- *
- * ## No literal-bake / no boxed fallback
- *
- * typed-native fails CLOSED on an uncovered shape (a `map`/`cond` relation kind it does not cover,
- * or an input head that cannot lower to a native port). Such a shape is NOT silently regenerated on
- * the boxed `-typed`/`-typed-raw` emitter — it THROWS, naming the exact gap, so it can be tracked as
- * a bc coverage gap rather than masked.
- *
- * IN-list / array-bound WHERE heads (the `whereIn` `{__jsonArray:{ref:[head]},dialect}` param) are
- * now COVERED via bc#110 (native array/list port for a componentRef input port): the lowering
- * resolves the IN-list column's element scalar and emits a native ARRAY input port
- * (`{type:'array', elemType}` → `Vec<ElemT>`/`[]ElemT`), so `complexWhere`/`inList` reach the
- * zero-boxing native hot path (no serde_json/encoding-json, no boxed `Value`). They no longer
- * fail closed as a bc#86/coverage gap.
+ * A shape the lowering cannot bake natively (a `cond` node, a composite-key `map`) THROWS
+ * {@link TypedNativeCoverageError}, naming the exact gap — never a silent boxed escape.
  */
 
 import { generateModule, loadCompiledIR, type GeneratedModule, type Scope, type Value, type PortSchema } from 'behavior-contracts';
@@ -178,10 +156,9 @@ function companionOf(bundle: SqlBundle): SqlCatalogCompanion {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * Build a component's typed `inputPorts` from the heads a lowering collected — the SINGLE shared tail
- * both lowerings use (the SQL-baking lowering and the legacy companion lowering
- * {@link lowerReadGraphForTypedNative}). Extracted so the two never carry drifting copies of this
- * schema-building logic (the reason: a bug fix / a new port kind must land in ONE place).
+ * Build a component's typed `inputPorts` from the heads the lowering collected. Kept as one helper so
+ * a bug fix / a new port kind lands in ONE place (a scalar, an array, and an optional-default head are
+ * all built here).
  *
  *  - `scalars` — required native-scalar heads (`{required:true, type}`).
  *  - `elems` — IN-list / array heads (`{type:'array', elemType}` → `Vec<ElemT>`; bc#110).
@@ -799,20 +776,20 @@ function paramPortFor(param: unknown, index: number, nodeId: string, reasons: st
 }
 
 /**
- * Lower a read bundle's REAL Select-node `ComponentGraphIR` into a NEW, CODEGEN-ONLY IR whose nodes
- * carry the rendered per-dialect SQL as a STATIC port (`sql`) + one typed port per bound `?`
- * (`p0`…`pN`) — the shape bc's typed-native emitter bakes as native literals / typed input reads
- * (E1, #116). The generated module then CARRIES its own SQL: no runtime JSON companion read.
+ * THE SINGLE codegen lowering (#116): lower a read/write bundle's REAL `ComponentGraphIR` into a NEW,
+ * CODEGEN-ONLY IR whose nodes carry the rendered per-dialect SQL as native ports bc bakes as literals
+ * — a STATIC `sql` string port + one typed port per bound `?`. The generated module then CARRIES its
+ * own SQL: no runtime JSON companion read.
  *
- * Scope (E1 proof): a plain `Select`/`Count` componentRef chain whose params are required scalar
- * heads / bare literals. A `map`/`cond` node, a `skip`-carrying (input-dependent-SQL) statement, an
- * IN-list array param, and an optional-`coalesce` param all fail CLOSED with a precise reason —
- * they are the declared E2+ follow-ons, never silently mis-lowered.
+ * Coverage: `Select`/`Count`/`Insert`/`Update`/`Delete` nodes; required + optional-`coalesce` (#122)
+ * + IN-list array (bc#110) params; `skip`-optional WHERE fragments (fragmented shape, seam-assembled);
+ * single-key `map` relations (element-field ports). A `cond` node and a COMPOSITE-key `map` fail
+ * CLOSED with a precise reason (neither is needed by the bench or conformance).
  *
- * Does NOT mutate `bundle`/`bundle.readGraph`: a fresh IR object is returned, exactly like
- * {@link lowerReadGraphForTypedNative}. The native `executeReadGraph` keeps consuming the real
- * `readGraph.ir`, and the frozen makeSQL conformance corpus is untouched (this changes no compiled
- * statement — it only RE-EXPRESSES already-compiled statements as ports).
+ * Does NOT mutate `bundle`/`bundle.readGraph`: a fresh IR object is returned. The native
+ * `executeReadGraph` keeps consuming the real `readGraph.ir`, and the frozen makeSQL conformance
+ * corpus is untouched (this changes no compiled statement — it only RE-EXPRESSES already-compiled
+ * statements as ports).
  */
 export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnType: ColumnTypeResolver): ComponentGraphIR {
   const ir = readGraph.ir;
