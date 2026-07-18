@@ -19,6 +19,7 @@ mod generated_feed;
 mod generated_findunique;
 mod generated_recent;
 mod generated_renameuser;
+mod generated_tenantfeed;
 mod seam;
 
 use rusqlite::Connection;
@@ -98,6 +99,43 @@ impl generated_feed::HandlerNRPostsWithAuthor for FeedSeam<'_> {
         Some(match val {
             Ok(val) => generated_feed::RawElemNRPostsWithAuthorN1 { is_error: false, err: String::new(), val },
             Err(e) => generated_feed::RawElemNRPostsWithAuthorN1 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+}
+
+struct TenantFeedSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_tenantfeed::HandlerNRUsersWithPosts for TenantFeedSeam<'_> {
+    fn node_n0(
+        &self,
+        ports: &generated_tenantfeed::PortsNRUsersWithPostsN0,
+        _bound: Option<String>,
+    ) -> Option<generated_tenantfeed::RawRowNRUsersWithPostsN0> {
+        let params = [Param::Int(ports.f_p0)];
+        let val = query(self.conn, &ports.f_sql, &params, |r| {
+            Ok(generated_tenantfeed::T0 { tenant_id: r.get(0)?, user_id: r.get(1)?, name: r.get(2)? })
+        });
+        Some(match val {
+            Ok(val) => generated_tenantfeed::RawRowNRUsersWithPostsN0 { is_error: false, err: String::new(), val },
+            Err(e) => generated_tenantfeed::RawRowNRUsersWithPostsN0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
+    }
+    // COMPOSITE-key child: the module drives this per parent USER, binding BOTH parent element fields
+    // (f_p0 = oel.tenant_id, f_p1 = oel.user_id — two native element-field accesses) into a
+    // two-column tuple join. The seam just runs the baked SQL with both params.
+    fn node_n1(
+        &self,
+        ports: &generated_tenantfeed::PortsNRUsersWithPostsN1,
+        _bound: Option<String>,
+    ) -> Option<generated_tenantfeed::RawElemNRUsersWithPostsN1> {
+        let params = [Param::Int(ports.f_p0), Param::Int(ports.f_p1)];
+        let val = query(self.conn, &ports.f_sql, &params, |r| {
+            Ok(generated_tenantfeed::T1 { tenant_id: r.get(0)?, post_id: r.get(1)?, title: r.get(2)? })
+        });
+        Some(match val {
+            Ok(val) => generated_tenantfeed::RawElemNRUsersWithPostsN1 { is_error: false, err: String::new(), val },
+            Err(e) => generated_tenantfeed::RawElemNRUsersWithPostsN1 { is_error: true, err: e.to_string(), ..Default::default() },
         })
     }
 }
@@ -269,6 +307,27 @@ fn main() {
                 .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));
+        }
+        // tenantfeed: <tenant_id> — a COMPOSITE-key relation (users + per-user posts joined on BOTH
+        // tenant_id AND user_id). Output {posts:[[...]], users:[...]}.
+        "tenantfeed" => {
+            let tenant_id: i64 = args.get(3).expect("tenant_id").parse().expect("tenant_id int");
+            let out = generated_tenantfeed::run_native_raw_struct_UsersWithPosts(&TenantFeedSeam { conn: &conn }, generated_tenantfeed::InNRUsersWithPosts { tenant_id })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let posts: Vec<String> = out
+                .posts
+                .iter()
+                .map(|inner| {
+                    let items: Vec<String> = inner.iter().map(|p| format!("{{\"tenant_id\":{},\"post_id\":{},\"title\":{}}}", p.tenant_id, p.post_id, json_str(&p.title))).collect();
+                    format!("[{}]", items.join(","))
+                })
+                .collect();
+            let users: Vec<String> = out
+                .users
+                .iter()
+                .map(|u| format!("{{\"tenant_id\":{},\"user_id\":{},\"name\":{}}}", u.tenant_id, u.user_id, json_str(&u.name)))
+                .collect();
+            println!("{{\"posts\":[{}],\"users\":[{}]}}", posts.join(","), users.join(","));
         }
         // feed: <author_id> — a single-key relation (posts + per-post author). Output {authors, posts}.
         "feed" => {

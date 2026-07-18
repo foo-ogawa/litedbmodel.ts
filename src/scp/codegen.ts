@@ -26,7 +26,7 @@
  *
  * ## Fail-closed, no boxed fallback
  *
- * A shape the lowering cannot bake natively (a `cond` node, a composite-key `map`) THROWS
+ * A shape the lowering cannot bake natively (a `cond` node, a SKIP-guarded `map` child) THROWS
  * {@link TypedNativeCoverageError}, naming the exact gap — never a silent boxed escape.
  */
 
@@ -450,13 +450,15 @@ function arrayHeadNameOf(param: unknown): string | undefined {
 // A thin, op-agnostic native seam (`exec(sql, params)` + a SKIP-args `query_skip` that assembles
 // present fragments) consumes the baked ports and drives the driver — no IR walk, no JSON, no
 // dispatch. This ONE lowering covers every read shape (scalar / optional / coalesce params, IN-list
-// arrays, skip-optional WHERE fragments, single-key map relations) AND writes (Insert/Update/Delete);
-// read and write are one flow. There is NO second lowering and NO opt-in flag.
+// arrays, skip-optional WHERE fragments, single- AND composite-key map relations) AND writes
+// (Insert/Update/Delete); read and write are one flow. There is NO second lowering and NO opt-in flag.
 //
-// TODO(codegen): a COMPOSITE-key map relation (a multi-column element join) is the one map shape not
-// yet lowered here (single-key is covered); it fails closed with a precise reason. Neither the bench
-// (relations ride RelationDecl batch ops) nor the conformance corpus (single-key only) needs it, so
-// it is a theoretical gap, not a live one — add it when a composite-key `.map` read is authored.
+// A COMPOSITE-key `map` (a child binding TWO+ parent element fields, e.g. a `(tenant_id, user_id)`
+// tuple join) needs NO special case: `paramPortFor` passes EACH element-field ref through, and bc
+// bakes N scalar element-field ports (the SAME primitive as single-key, repeated) —
+// `f_p0: oel.tenant_id, f_p1: oel.user_id` over a two-column baked SQL. Verified end-to-end
+// (rust byte-equal to the mode-2 oracle). The only map shape that fails closed is a SKIP-guarded map
+// child (single-key relations do not skip); a plain `cond` node also fails closed.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -783,8 +785,8 @@ function paramPortFor(param: unknown, index: number, nodeId: string, reasons: st
  *
  * Coverage: `Select`/`Count`/`Insert`/`Update`/`Delete` nodes; required + optional-`coalesce` (#122)
  * + IN-list array (bc#110) params; `skip`-optional WHERE fragments (fragmented shape, seam-assembled);
- * single-key `map` relations (element-field ports). A `cond` node and a COMPOSITE-key `map` fail
- * CLOSED with a precise reason (neither is needed by the bench or conformance).
+ * single- AND composite-key `map` relations (one element-field port per parent key column). A `cond`
+ * node and a SKIP-guarded `map` child fail CLOSED with a precise reason.
  *
  * Does NOT mutate `bundle`/`bundle.readGraph`: a fresh IR object is returned. The native
  * `executeReadGraph` keeps consuming the real `readGraph.ir`, and the frozen makeSQL conformance

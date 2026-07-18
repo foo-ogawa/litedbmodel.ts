@@ -155,12 +155,29 @@ class FeedReads extends SemanticBehavior {
   }
 }
 
+/** A COMPOSITE-key relation (E4): tenant_users + each user's posts joined on BOTH (tenant_id, user_id). */
+const TENANT_COLUMNS = {
+  benchmark_tenant_users: { tenant_id: 'INTEGER', user_id: 'INTEGER', name: 'TEXT' },
+  benchmark_tenant_posts: { tenant_id: 'INTEGER', post_id: 'INTEGER', user_id: 'INTEGER', title: 'TEXT' },
+} as const;
+class TenantFeedReads extends SemanticBehavior {
+  static columns = TENANT_COLUMNS;
+  UsersWithPosts($: { tenant_id: unknown }) {
+    const users = L.Select({ table: 'benchmark_tenant_users', select: ['tenant_id', 'user_id', 'name'], where: [whereEq(($ as never)['tenant_id'], $.tenant_id)], order: 'user_id ASC' });
+    const posts = (users as unknown as { map(fn: (u: never) => unknown): unknown }).map(($u: never) =>
+      L.Select({ table: 'benchmark_tenant_posts', select: ['tenant_id', 'post_id', 'title'], where: [whereEq(($u as never)['tenant_id'], ($u as never)['tenant_id']), whereEq(($u as never)['user_id'], ($u as never)['user_id'])], order: 'post_id ASC' }),
+    );
+    return { users, posts };
+  }
+}
+
 const RESOLVE = schemaColumnTypeResolver(ddl('sqlite'));
 const CONTRACT = publishBehaviors(OrmReads);
 const WRITE_CONTRACT = publishBehaviors(OrmWrites);
 const POST_CONTRACT = publishBehaviors(PostReads);
 const POST_RESOLVE = schemaColumnTypeResolver(ddl('sqlite'));
 const FEED_CONTRACT = publishBehaviors(FeedReads);
+const TENANT_CONTRACT = publishBehaviors(TenantFeedReads);
 const EXPECTED_SQL = 'SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT ?';
 
 function findUniqueBundle() {
@@ -266,6 +283,21 @@ describe('E4 (#119) — a single-key map relation bakes; the child binds the par
     // the ONLY component input is author_id; the element var never leaks into InNR
     expect(code).toContain('pub author_id: i64');
     expect(code).not.toContain('$e0');
+    expect(stripRustComments(code)).not.toContain('serde_json');
+  });
+
+  it('COMPOSITE-key: the child binds TWO parent element fields (tenant_id AND user_id) — no code change needed', () => {
+    // The measured answer to "is composite-key a bc gap?": NO. bc bakes N scalar element-field ports
+    // (the SAME primitive as single-key, repeated), so the child SQL is a two-column tuple join and
+    // both parent keys bake as native i64 element accesses. The single lowering already produces this
+    // shape — composite `.map` needed ZERO codegen change.
+    const bundle = compileBundle(TENANT_CONTRACT, 'UsersWithPosts', [], 'sqlite', undefined, RESOLVE);
+    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE).module.code;
+    expect(code).toContain('f_sql: "SELECT tenant_id, post_id, title FROM benchmark_tenant_posts WHERE tenant_id = ? AND user_id = ? ORDER BY post_id ASC".to_string()');
+    expect(code).toContain('f_p0: oel_n1.tenant_id'); // first parent key — native i64
+    expect(code).toContain('f_p1: oel_n1.user_id'); // second parent key — native i64
+    expect(code).toContain('pub f_p0: i64');
+    expect(code).toContain('pub f_p1: i64');
     expect(stripRustComments(code)).not.toContain('serde_json');
   });
 });
@@ -392,6 +424,11 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     const feedArt = generateCodegenArtifact(feedBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_feed.rs'), feedArt.module.code);
 
+    // E4 COMPOSITE-key map: users + per-user posts joined on BOTH (tenant_id, user_id).
+    const tenantBundle = compileBundle(TENANT_CONTRACT, 'UsersWithPosts', [], 'sqlite', undefined, RESOLVE);
+    const tenantArt = generateCodegenArtifact(tenantBundle, 'rust', REGISTERED, RESOLVE);
+    writeFileSync(join(PROOF_DIR, 'generated_tenantfeed.rs'), tenantArt.module.code);
+
     // ONE seeded sqlite DB FILE shared by BOTH legs — the oracle and the rust run read byte-identical
     // data, so an equality pass cannot come from two independently-seeded DBs happening to agree.
     if (existsSync(DB_PATH)) rmSync(DB_PATH);
@@ -416,6 +453,9 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     // E4 map: author 7 (has 2 posts), author 1, author 999 (no posts → empty relation).
     const feedOracles: Record<string, unknown> = {};
     for (const aid of [7, 1, 999]) feedOracles[String(aid)] = executeBundle(feedBundle, { author_id: aid } as never, { db: db as never });
+    // composite map: tenant 1 (4 users × 2 posts each) and tenant 999 (empty).
+    const tenantOracles: Record<string, unknown> = {};
+    for (const tid of [1, 999]) tenantOracles[String(tid)] = executeBundle(tenantBundle, { tenant_id: tid } as never, { db: db as never });
     db.close();
 
     writeFileSync(join(PROOF_DIR, 'oracles.json'), JSON.stringify(oracles, null, 2));
@@ -423,6 +463,9 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     writeFileSync(join(PROOF_DIR, 'oracles_recent.json'), JSON.stringify(recentOracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_bymaybe.json'), JSON.stringify(byMaybeOracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_feed.json'), JSON.stringify(feedOracles, null, 2));
+    writeFileSync(join(PROOF_DIR, 'oracles_tenantfeed.json'), JSON.stringify(tenantOracles, null, 2));
+    expect(((tenantOracles['1'] as { users: unknown[] }).users).length).toBe(4);
+    expect(((tenantOracles['999'] as { users: unknown[] }).users).length).toBe(0);
     // the skip actually drops: absent published returns >= as many rows as present-filtered.
     expect((byMaybeOracles['7|'] as unknown[]).length).toBeGreaterThanOrEqual((byMaybeOracles['7|1'] as unknown[]).length);
     // the relation resolves: author 7 has 2 posts, each with its author list; author 999 has none.

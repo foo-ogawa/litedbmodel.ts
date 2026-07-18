@@ -14,7 +14,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROOF_DIR=/tmp/e1proof
-MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_feed generated_createuser generated_renameuser generated_deleteuser)
+MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_feed generated_tenantfeed generated_createuser generated_renameuser generated_deleteuser)
 WRITE_OPS=(createuser renameuser deleteuser)
 fail=0
 
@@ -68,6 +68,7 @@ node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" byids "$PROOF_DIR/oracles_
 node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" recent "$PROOF_DIR/oracles_recent.json" || fail=1
 node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" bymaybe "$PROOF_DIR/oracles_bymaybe.json" || fail=1
 node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" feed "$PROOF_DIR/oracles_feed.json" || fail=1
+node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" tenantfeed "$PROOF_DIR/oracles_tenantfeed.json" || fail=1
 
 echo "── leg 3b: WRITE execution + resulting DB state vs the mode-2 oracle (fresh copy per run) ──"
 # A write MUTATES its DB, so each op runs on a FRESH copy of the clean seed. The binary prints
