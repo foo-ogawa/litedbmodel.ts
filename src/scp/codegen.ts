@@ -110,26 +110,26 @@ export const CODEGEN_EMITTER: Partial<Record<CodegenLanguage, string>> = {
 };
 
 /**
- * The SQL catalog companion (spec §9): the STATIC makeSQL bundle fields the codegen consumer's
- * thin SQL layer reads to evaluate + render + execute. Pure JSON — round-trips losslessly.
+ * The SQL catalog companion sidecar. The read/write PRIMARY SQL is now BAKED into the generated
+ * module (the single SQL-baking lowering), so the companion NO LONGER carries the read graph — the
+ * read path is companion-free (owner: "retire the JSON SqlCatalogCompanion for reads"). What remains
+ * is the runtime-stitched surface the module does NOT bake: the `relations` batch ops (a RelationDecl
+ * belongsTo/hasMany prefetch is ONE batched IN query resolved by the runtime, not part of the read
+ * module) and the write-Command `transaction` plan (the gate-first tx-DAG, not codegen'd). Pure JSON.
  */
 export interface SqlCatalogCompanion {
   /** Target SQL dialect (`sqlite`/`postgres`/`mysql`) — compiled once, TS-side (spec §10). */
   readonly dialect: DialectName;
-  /** READ bundles: the portable read graph (surrogate IR + per-node makeSQL statements). */
-  readonly readGraph?: ReadGraph;
-  /** WRITE bundles: the single base-write makeSQL statement template. */
-  readonly statement?: { readonly sql: string; readonly params: readonly unknown[]; readonly skip?: unknown };
   /** Input heads normalized to present-as-null (absent-key SKIP) — mirrors the bundle. */
   readonly optionalHeads: readonly string[];
-  /** Pre-compiled STATIC read-relation batch ops (spec §5/§8), keyed by relation name. */
+  /** Pre-compiled STATIC read-relation batch ops (spec §5/§8), keyed by relation name — the ONE
+   * batched IN query per relation the runtime stitches (not baked into the read module). */
   readonly relations: Record<string, RelationOp>;
   /** Derived gate-first write-time-relations transaction plan (spec §6/§8), for a Command bundle. */
   readonly transaction?: TransactionPlan;
   /**
    * WRITE bundles: the codegen typed-de-box `outputType` (the TransactionResult typed shape). Rides
-   * the companion so a codegen consumer that reassembles the bundle from the artifact round-trips it
-   * losslessly (the read de-box carries its outType/outputType inside `readGraph.ir` instead).
+   * the companion so a codegen consumer that reassembles the bundle round-trips it losslessly.
    */
   readonly outputType?: unknown;
 }
@@ -146,35 +146,14 @@ export interface CodegenArtifact {
   readonly bundle: SqlBundle;
 }
 
-/**
- * The portable {@link ComponentGraphIR} view of a §8 READ bundle: `compileBehaviors`' real-node
- * read-graph IR (the de-surrogated `Select`/`Count`/map nodes; #12) — the SAME IR the native exec
- * surface (`executeReadGraph`) walks (via `bundle.readGraph.ir` directly). litedbmodel constructs NO
- * `ComponentGraphIR` literal here; it returns the compiler's own output. {@link generateCodegenArtifact}
- * does NOT use this for a typed-native READ target (that uses the codegen-only lowered form,
- * {@link lowerReadGraphForTypedNative}); this is the portable IR for a boxed READ endpoint / fingerprint.
- *
- * WRITE bundles have NO portable component-graph IR (they carry a single compiled `statement`, not a
- * component graph — and are NOT codegen-module cases: {@link generateCodegenArtifact} rejects them).
- * There is therefore no hand-built `makeSQL` write surrogate anymore (#12) — a write bundle throws.
- */
-export function bundleToPortableIR(bundle: SqlBundle): ComponentGraphIR {
-  if (bundle.readGraph !== undefined) return bundle.readGraph.ir;
-  throw new Error(
-    `litedbmodel codegen: bundle '${bundle.name}' has no readGraph — a WRITE bundle carries a single ` +
-      `compiled makeSQL statement, not a portable component-graph IR, and is not a codegen-module case ` +
-      `(#12: the hand-built makeSQL write surrogate IR is eliminated; writes ride the write/tx exec path).`,
-  );
-}
 
-/** The STATIC makeSQL execution catalog carried alongside the generated module. */
+/** The runtime-stitched sidecar carried alongside the generated module — NO read/write SQL (baked in
+ * the module now), only the relation batch ops + the write-Command tx plan the module does not bake. */
 function companionOf(bundle: SqlBundle): SqlCatalogCompanion {
   const base: SqlCatalogCompanion = {
     dialect: bundle.dialect,
     optionalHeads: bundle.optionalHeads,
     relations: bundle.relations,
-    ...(bundle.readGraph !== undefined ? { readGraph: bundle.readGraph } : {}),
-    ...(bundle.statement !== undefined ? { statement: bundle.statement } : {}),
     ...(bundle.outputType !== undefined ? { outputType: bundle.outputType } : {}),
   };
   return bundle.transaction === undefined ? base : { ...base, transaction: bundle.transaction };
@@ -439,27 +418,6 @@ function headNameOf(param: unknown): string | undefined {
   return undefined;
 }
 
-/** The distinct map-ELEMENT field names a node's statements bind via `{ref:[elementVar, field]}`
- * (first-seen order). These are the map child's element-field ports (`$e0.author_id`): bc's
- * typed-native map lowering types each from the `over` element struct's field. Only single-field
- * accesses (`[elementVar, field]`, length 2) are collected — a deeper element path is not a covered
- * native port here (fail-closed downstream if one appears). */
-function elementFieldRefs(statements: readonly StaticStatement[], elementVar: string): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const stmt of statements) {
-    for (const param of stmt.params) {
-      const path = refPathOf(param);
-      if (path === undefined || path.length !== 2 || path[0] !== elementVar) continue;
-      const field = path[1];
-      if (!seen.has(field)) {
-        seen.add(field);
-        out.push(field);
-      }
-    }
-  }
-  return out;
-}
 
 /** The head a LIMIT param (`coalesce([{refOpt:[head]}, <int-literal>])`) binds — the closed shape
  * `compileSelectNode` emits for an optional `limit` with a static default (`coalesce(opt($.limit), N)`).
@@ -495,125 +453,33 @@ function arrayHeadNameOf(param: unknown): string | undefined {
   return inner !== undefined && inner.length === 1 ? inner[0] : undefined;
 }
 
-/**
- * Lower a read bundle's REAL Select-node `ComponentGraphIR` into a NEW, CODEGEN-ONLY IR eligible
- * for bc's typed-native endpoint (#60 milestone 1): derive each node's referenced heads from its
- * `statementsById` fragments and emit individual native-scalar `{ref:[head]}` ports, typing the
- * component's `inputPorts` from the schema (via {@link deriveHeadTypesFromStatements}). Throws
- * {@link TypedNativeCoverageError} if any referenced head cannot be natively typed (e.g. an IN-list's
- * array head) — NO silent `unknown` port, NO fallback. Does NOT mutate `bundle`/`bundle.readGraph`
- * (a fresh IR object is returned); the native `executeReadGraph` keeps consuming the real `readGraph.ir`.
- *
- * Scope: bc's typed-native predicate itself still governs `map`/`cond`/relationKind/policy
- * coverage (this lowering does not special-case those — `generateModule` fails closed on them with
- * its own detailed diagnostic, which this function does not need to duplicate).
- */
-export function lowerReadGraphForTypedNative(readGraph: ReadGraph, resolveColumnType: ColumnTypeResolver): ComponentGraphIR {
-  const ir = readGraph.ir;
-  const reasons: string[] = [];
-  const components = ir.components.map((c) => {
-    const inputPortTypes = new Map<string, BcScalar>();
-    // IN-list / array-bound heads (bc#110): the head's native ELEMENT scalar (the port lowers to
-    // `Vec<ElemT>`/`[]ElemT`, fed natively — NO json.Marshal/serde_json on the hot path).
-    const inputPortElemTypes = new Map<string, BcScalar>();
-    const body = c.body.map((n) => {
-      if ('cond' in n) return n;
-      const isMapNode = 'map' in n;
-      const stmts = readGraph.statementsById[n.id] ?? [];
-      // A map node binds an ELEMENT var (`as: '$e0'`) — its child statements reference the mapped
-      // parent row via `{ref:['$e0', <field>]}`. That is a map-element field access (bc types it from
-      // the map's `over` element struct), NOT a component input head, so hand the element var to the
-      // deriver to exclude it from head typing/rejection.
-      const elementVar = isMapNode
-        ? ((n as unknown as { map: { as?: string } }).map.as ?? undefined)
-        : undefined;
-      const { byHead, arrayHeads, unresolved } = deriveHeadTypesFromStatements(stmts, resolveColumnType, elementVar);
-      for (const [, reason] of unresolved) reasons.push(`node '${n.id}': ${reason}`);
-      for (const [head, scalar] of byHead) {
-        const prior = inputPortTypes.get(head);
-        if (prior !== undefined && prior !== scalar) {
-          reasons.push(`input head '${head}' resolves to conflicting scalar types ('${prior}' vs '${scalar}') across nodes`);
-          continue;
-        }
-        inputPortTypes.set(head, scalar);
-      }
-      for (const [head, elem] of arrayHeads) {
-        const prior = inputPortElemTypes.get(head);
-        if (prior !== undefined && prior !== elem) {
-          reasons.push(`input head '${head}' resolves to conflicting array element scalar types ('${prior}' vs '${elem}') across nodes`);
-          continue;
-        }
-        inputPortElemTypes.set(head, elem);
-      }
-      // #12 (de-surrogated): the codegen IR is rebuilt from the real node's `statementsById`-derived
-      // head set (`byHead` ∪ `arrayHeads`) — the SAME native-scalar `{ref:[head]}` port shape bc's
-      // typed-native emitter consumes. There is no `__scope` obj to walk anymore; the referenced-head
-      // set IS what `deriveHeadTypesFromStatements` found (an `unresolved` head already pushed a
-      // reason above, fail-closed). A covered array head is emitted as the SAME single-segment
-      // `{ref:[head]}` port (bc#110's array-port lowering keys off the inputPorts array schema).
-      const newPorts: Record<string, unknown> = {};
-      // A map node's child statements reference the mapped parent row via `{ref:['$e0', <field>]}`.
-      // bc's typed-native map lowering types a port `{ref:['$e0', <field>]}` from the OVER element
-      // struct's FIELD (a native scalar) — so emit one native-scalar element-FIELD port per field the
-      // child statements bind (`{ref:['$e0', author_id]}` → port `author_id`). Non-element component
-      // heads (if any) are typed/emitted normally below.
-      if (isMapNode && elementVar !== undefined) {
-        const fields = elementFieldRefs(stmts, elementVar);
-        for (const field of fields) newPorts[field] = { ref: [elementVar, field] };
-      }
-      for (const head of [...byHead.keys(), ...arrayHeads.keys()]) {
-        newPorts[head] = { ref: [head] };
-      }
-      return isMapNode
-        ? { ...n, map: { ...(n as unknown as { map: object }).map, ports: newPorts } }
-        : { ...n, ports: newPorts };
-    });
-    if (reasons.length > 0) throw new TypedNativeCoverageError(c.name, reasons);
-    // Build the typed `inputPorts` via the SHARED tail (see {@link buildInputPorts}) — the same
-    // logic the SQL-baking lowering uses, kept in ONE place. A head present ONLY as a WHERE
-    // COLUMN-NAME MARKER (e.g. `whereGe($.created_at, $.since)` names `created_at`, never binds it)
-    // is in neither map, so it gets no `InNR` field — sound, since the covered plane never reads it.
-    const inputPorts = buildInputPorts(c, inputPortTypes, inputPortElemTypes, new Map());
-    return { ...c, body, inputPorts } as unknown as Component;
-  });
-  return { ...ir, components };
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// E1 (#116, epic #115) — the SQL-PORT lowering: bake the per-op SQL as a NATIVE LITERAL.
+// THE SINGLE LOWERING (#116, epic #115) — bake the per-op SQL as a NATIVE LITERAL.
 //
-// The lowering above ({@link lowerReadGraphForTypedNative}) STRIPS the SQL out of the module and
-// leaves it in the runtime-read JSON `SqlCatalogCompanion`, so the "native" module cannot actually
-// execute anything on its own — a consumer must parse JSON at runtime to recover the query. This
-// lowering removes that: it renders each read node's per-dialect SQL STATICALLY (the SAME assembly
-// `renderStatements` performs, minus the per-input value evaluation) and emits it as a STATIC STRING
-// port (`sql`) plus one typed port per bound `?` (`p0`, `p1`, …).
+// litedbmodel codegen has ONE lowering: it renders each node's per-dialect SQL STATICALLY (the SAME
+// assembly `renderStatements` performs, minus the per-input value evaluation) and emits it as native
+// ports bc bakes as literals — a STATIC STRING `sql` port + one typed port per bound `?`. So the
+// generated module carries its own query and needs NO runtime JSON companion read.
 //
 // bc's typed-native emitter is SQL-AGNOSTIC — it bakes any port its `portIsStatic` predicate covers
-// as a native literal (exactly how graphddb gets `f_table:"UserPermissions"`). EMPIRICALLY VERIFIED
-// against bc 0.8.0's `rust-typed-native`: a static-string `sql` port bakes as
-// `f_sql: "SELECT … WHERE email = ? LIMIT ?".to_string()`, a single-segment input ref bakes as
-// `f_p0: in_.email.clone()`, and a bare number literal bakes as `f_p1: 1i64` — all on the CONCRETE
-// `PortsNR<Comp><node>` struct, zero boxed `Value`, zero bc-runtime import.
+// as a native literal (exactly how graphddb gets `f_table:"UserPermissions"`). Verified against bc
+// 0.8.5's `rust-typed-native`/`go-typed-native`/`typescript-typed`: a static-string `sql` port bakes
+// as `f_sql: "SELECT … WHERE email = ? LIMIT ?".to_string()`, a single-segment input ref bakes as
+// `f_p0: in_.email.clone()`, a bare number literal as `f_p1: 1i64`, an optional-default as
+// `in_.limit.unwrap_or(20i64)` (bc#139), an IN-list array as `Vec<ElemT>` (bc#110), and a map
+// element-field ref as `oel.author_id` — all on CONCRETE structs, zero boxed `Value`, zero
+// bc-runtime import.
 //
-// A thin, op-agnostic hand-written native `exec(sql, params)` seam consumes the baked ports and
-// drives the driver, so the generated module needs NO JSON companion for the read path.
+// A thin, op-agnostic native seam (`exec(sql, params)` + a SKIP-args `query_skip` that assembles
+// present fragments) consumes the baked ports and drives the driver — no IR walk, no JSON, no
+// dispatch. This ONE lowering covers every read shape (scalar / optional / coalesce params, IN-list
+// arrays, skip-optional WHERE fragments, single-key map relations) AND writes (Insert/Update/Delete);
+// read and write are one flow. There is NO second lowering and NO opt-in flag.
 //
-// ── UNIFICATION STATUS (owner standing rule: ONE lowering, no parallel reimplementations) ──
-// This SQL-baking lowering is the intended SOLE lowering. It already covers reads (Select/Count),
-// writes (Insert/Update/Delete), IN-list array binds (bc#110), and the coalesce default (#122).
-// {@link lowerReadGraphForTypedNative} (the legacy companion lowering — ships SQL in the JSON
-// companion instead of baking it) still exists for exactly TWO reasons, both tracked to closure:
-//   1. `map` relations — the baking lowering does not YET emit the map element-field ports (bc DOES
-//      bake them, verified; this is codegen work, not a bc gap). Until then map rides the legacy path.
-//   2. `skip`-guarded fragments — a skip makes the SQL text input-dependent; the owner-approved design
-//      is a generic exec seam taking SKIP args over baked fragments (bc#139 supplies the Option
-//      presence). Blocked on that seam.
-// The two lowerings already SHARE their head-typing (`deriveHeadTypesFromStatements`) and inputPorts
-// building ({@link buildInputPorts}) — no duplicated schema logic. When (1) and (2) land, the baking
-// lowering becomes the default for every read shape, {@link lowerReadGraphForTypedNative} and the
-// `CodegenOptions.nativeSql` selector are DELETED, and the JSON companion is retired for reads. Do
-// NOT add a third lowering in the meantime.
+// TODO(codegen): a COMPOSITE-key map relation (a multi-column element join) is the one map shape not
+// yet lowered here (single-key is covered); it fails closed with a precise reason. Neither the bench
+// (relations ride RelationDecl batch ops) nor the conformance corpus (single-key only) needs it, so
+// it is a theoretical gap, not a live one — add it when a composite-key `.map` read is authored.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -1175,61 +1041,11 @@ export function codegenEmitterFor(language: string, registered: readonly string[
 }
 
 /**
- * Every litedbmodel READ codegen endpoint consumes the SAME native-scalar-port lowering — NOT
- * just the `-typed-native` (go/rust) ones. Rationale (#12 regression fix):
- *
- * Post-#12 the read graph is the REAL de-surrogated `Select`-node IR, whose `where` port array
- * carries a fragment for EVERY authored `whereX($.col, …)` — including one whose LHS `$.col` is a
- * WHERE COLUMN-NAME MARKER, never a bound input value (`whereGe($.created_at, $.since)` accesses
- * `$.created_at` only to NAME the column; only `$.since` is bound). Handing that raw IR to bc's
- * emitter emits a `ref(["created_at"], scope)` read + a `created_at` input-struct field, so the
- * bound module throws `unknown binding: created_at` at execution (the scope has no `created_at`).
- * The go/rust `-typed-native` path never hit this because it is fed
- * {@link lowerReadGraphForTypedNative}, which rebuilds each node's ports from the GENUINE bound
- * heads (`statementsById`), dropping the column-name markers. TS was on the raw IR
- * ({@link bundleToPortableIR}) → it kept the marker → it broke.
- *
- * The lowering is therefore the correct input for the boxed `typescript-typed` endpoint too: it
- * feeds bc EXACTLY the genuine bound heads (equivalent-in-spirit to what go/rust consume), and
- * bc#110's native array port means the array-typed heads (`complexWhere`/`inList`) lower cleanly —
- * the old "lowering would narrow TS's array coverage" concern is stale. Only WRITE bundles (no
- * `readGraph`) never reach this path. */
-function needsHeadLowering(_emitter: string): boolean {
-  return true;
-}
-
-/**
- * Options for {@link generateCodegenArtifact}.
- */
-export interface CodegenOptions {
-  /**
-   * Drive the E1 (#116) SQL-PORT lowering ({@link lowerReadGraphForNativeSql}): bake the read's
-   * rendered per-dialect SQL into the module as a NATIVE LITERAL port (`f_sql`) with typed param
-   * ports, so the generated module carries its own query and needs NO runtime JSON companion read.
-   *
-   * OPT-IN at E1 (proof-of-approach), deliberately NOT the default for any language yet, because the
-   * two lowerings' coverage predicates mean DIFFERENT things and the E1 one is (today) narrower:
-   *
-   *  - pre-E1 "covered" = the module emitted with no boxed ports. It does NOT imply the module can
-   *    execute: the actual SQL was stripped out and left in the `SqlCatalogCompanion` for a runtime
-   *    JSON read, so a `map` relation / a `skip`-guarded fragment / an IN-list array head all
-   *    "cover" while the module still cannot run standalone.
-   *  - E1 "covered" = the module BAKES executable SQL. That fails closed on exactly those three
-   *    shapes today (input-dependent SQL text needs a per-skip-subset bake; a map child's per-element
-   *    SQL needs the element-field port shape; an array bind needs an encode step in the exec seam).
-   *
-   * So switching a language's default to this lowering would NARROW its declared typed-native
-   * coverage until those are lowered — a scope call for the epic owner, not a silent flip here.
-   */
-  readonly nativeSql?: boolean;
-}
-
-/**
  * Generate the mode-3 READ codegen artifact for ONE §8 READ bundle in ONE target language. Lowers
- * the bundle's real Select-node read graph into the native-scalar-port IR
- * ({@link lowerReadGraphForTypedNative}) FIRST — for go/rust's typed-NATIVE endpoint (bc#77/#90,
- * RUNTIME-FREE) AND for TS's boxed `typescript-typed` endpoint alike. Both consume the SAME
- * genuine-bound-head shape: the lowering derives each node's ports from its compiled
+ * the bundle's real Select-node read graph into the SQL-baking IR
+ * ({@link lowerReadGraphForNativeSql}) — for go/rust's typed-NATIVE endpoint AND for TS's
+ * `typescript-typed` endpoint alike (every language consumes the SAME baked-SQL ports). The lowering
+ * derives each node's ports from its compiled
  * `statementsById` fragments, so a WHERE COLUMN-NAME MARKER head (`whereGe($.created_at, $.since)`
  * — `$.created_at` names the column, is never bound) is EXCLUDED from the emitted ports/input
  * struct, exactly as go/rust already handled it (#12 regression: TS previously fed the raw IR and
@@ -1248,7 +1064,6 @@ export function generateCodegenArtifact(
   registeredLanguages: readonly string[],
   resolveColumnType: ColumnTypeResolver,
   runtimeImport?: string,
-  options?: CodegenOptions,
 ): CodegenArtifact {
   if (bundle.readGraph === undefined) {
     throw new Error(
@@ -1261,15 +1076,12 @@ export function generateCodegenArtifact(
   // The portable IR exists ONLY transiently here as the generator's input — it is NOT part of the
   // codegen OUTPUT (no artifact field, no file, no binary; the codegen path never reads IR data).
   //
-  // E1 (#116), OPT-IN: the SQL-PORT lowering bakes the read's rendered per-dialect SQL into the
-  // module as a native literal (`f_sql`) with typed param ports, so the module needs NO runtime JSON
-  // companion read. Not a default for any language yet — see `CodegenOptions.nativeSql` for why
-  // (the two lowerings' coverage predicates differ; flipping a default would narrow coverage).
-  const ir = options?.nativeSql === true
-    ? lowerReadGraphForNativeSql(bundle.readGraph, resolveColumnType)
-    : needsHeadLowering(emitter)
-      ? lowerReadGraphForTypedNative(bundle.readGraph, resolveColumnType)
-      : bundleToPortableIR(bundle);
+  // THE SINGLE LOWERING (#116): the SQL-baking lowering bakes the read/write's rendered per-dialect
+  // SQL into the module as native literals with typed param ports, so the module carries its own
+  // query and needs NO runtime JSON companion read. It covers every read shape (scalar/optional/
+  // coalesce params, IN-list arrays, skip-optional WHERE fragments, single-key map relations) and
+  // writes. There is NO second lowering and NO opt-in flag — this is the only path.
+  const ir = lowerReadGraphForNativeSql(bundle.readGraph, resolveColumnType);
   // bc 0.8.0 (scp-only-authoring, SA3/SA7): `generateModule` fail-closes on un-tokened IR
   // (`NON_COMPILED_IR`). This `ir` is DERIVED from `compileBehaviors`' real read graph (additively
   // lowered/annotated), so it carries no in-process provenance token. Re-adopt it at this generation

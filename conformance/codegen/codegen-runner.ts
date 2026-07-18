@@ -218,11 +218,13 @@ function structuralCheck(v: Json, language: string, resolveColumnType: (table: s
       if (m.test(code)) return { kind: 'fail', detail: `typed-native purity violated: emitted ${language} code matched ${m} (should be zero-boxing)` };
     }
   }
-  // The companion carries the STATIC makeSQL catalog byte-identical to the source bundle (this is
-  // the SQL execution data — NOT IR: statement text / read-graph statements / dialect).
-  if (art.companion.readGraph !== undefined && canon(art.companion.readGraph) !== canon(v.bundle.readGraph)) return { kind: 'fail', detail: 'companion readGraph != bundle' };
-  if (art.companion.statement !== undefined && canon(art.companion.statement) !== canon(v.bundle.statement)) return { kind: 'fail', detail: 'companion statement != bundle' };
+  // The read/write PRIMARY SQL is BAKED into the module now — the companion is companion-free for
+  // reads (retired). It carries only the runtime-stitched sidecar (relation batch ops + dialect),
+  // which must mirror the bundle byte-for-byte.
+  if (canon(art.companion.relations) !== canon(v.bundle.relations)) return { kind: 'fail', detail: 'companion relations != bundle' };
   if (art.companion.dialect !== v.bundle.dialect) return { kind: 'fail', detail: 'companion dialect != bundle' };
+  // the read SQL must live IN the module, not the companion (retired) — the module bakes an `f_sql` literal.
+  if ((art.companion as { readGraph?: unknown }).readGraph !== undefined) return { kind: 'fail', detail: 'companion still carries readGraph (should be baked in the module)' };
   return { kind: 'ok' };
 }
 

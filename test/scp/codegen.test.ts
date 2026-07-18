@@ -45,7 +45,7 @@ import {
   executeBundle,
   executeTransactionBundle,
   generateCodegenArtifact,
-  lowerReadGraphForTypedNative,
+  lowerReadGraphForNativeSql,
   codegenExecuteBundleForTest,
   CODEGEN_EMITTER,
   codegenEmitterFor,
@@ -243,7 +243,10 @@ describe('WS7f codegen — the FROZEN exec.json vector: ts (boxed) AND go/rust (
       expect(art.companion.dialect).toBe(v.bundle.dialect);
       expect([...art.companion.optionalHeads].sort()).toEqual([...v.bundle.optionalHeads].sort());
       expect(canon(art.companion.relations)).toBe(canon(v.bundle.relations));
-      if (v.bundle.readGraph !== undefined) expect(canon(art.companion.readGraph)).toBe(canon(v.bundle.readGraph));
+      // The read SQL is now BAKED into the module — the companion is retired for reads (carries no
+      // readGraph). The module holds the query text; the companion is the runtime-stitch sidecar only.
+      expect((art.companion as { readGraph?: unknown }).readGraph).toBeUndefined();
+      expect(art.module.code).toContain('SELECT');
     });
 
     for (const language of NATIVE_LANGS) {
@@ -339,7 +342,7 @@ describe('WS7f codegen — the EMITTED TS source loads and is de-interpreted', (
       // `generateCodegenArtifact` uses before `generateModule`. The token is invisible to the
       // fingerprint (non-enumerable symbol), so the value equals the artifact's fingerprint.
       expect(art.module.fingerprint).toBe(
-        bc.fingerprintComponentGraph(bc.loadCompiledIR(lowerReadGraphForTypedNative(v.bundle.readGraph!, resolveColumnType))),
+        bc.fingerprintComponentGraph(bc.loadCompiledIR(lowerReadGraphForNativeSql(v.bundle.readGraph!, resolveColumnType))),
       );
       assertDeInterpreted(art.module.code);
     });

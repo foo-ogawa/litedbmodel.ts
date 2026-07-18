@@ -169,7 +169,7 @@ function findUniqueBundle() {
 
 describe('E1 — bc bakes a full-SQL static port + typed param ports (the empirical answer)', () => {
   it('emits f_sql as a native string literal + f_p0/f_p1 as typed ports — no GeneratorFailure', () => {
-    const art = generateCodegenArtifact(findUniqueBundle(), 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
+    const art = generateCodegenArtifact(findUniqueBundle(), 'rust', REGISTERED, RESOLVE);
     const code = art.module.code;
 
     // (a) the full SQL string port is baked as a native literal.
@@ -193,7 +193,7 @@ describe('E1 — bc bakes a full-SQL static port + typed param ports (the empiri
   });
 
   it('the module declares NO runtime dependency — std only, no bc runtime / JSON / boxed Value', () => {
-    const art = generateCodegenArtifact(findUniqueBundle(), 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
+    const art = generateCodegenArtifact(findUniqueBundle(), 'rust', REGISTERED, RESOLVE);
     const code = stripRustComments(art.module.code);
     const uses = [...code.matchAll(/^\s*(?:use|extern crate)\s+([^;]+);/gm)].map((m) => m[1].trim());
     expect(uses).toEqual(['std::cell::RefCell']);
@@ -202,19 +202,18 @@ describe('E1 — bc bakes a full-SQL static port + typed param ports (the empiri
     }
   });
 
-  it('reads NO companion: the module needs no catalog to know its own query', () => {
-    const art = generateCodegenArtifact(findUniqueBundle(), 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
-    // The SQL the companion carries is now IN the module — the companion is redundant for this read.
-    const companionSql = art.companion.readGraph!.statementsById.n0.map((s) => s.sql).join('');
-    expect(companionSql.length).toBeGreaterThan(0); // still emitted (staged for removal, see report)
-    expect(art.module.code).toContain(EXPECTED_SQL); // …but the module no longer needs it
+  it('the companion is RETIRED for reads: the module carries its own query, the companion carries no readGraph', () => {
+    const art = generateCodegenArtifact(findUniqueBundle(), 'rust', REGISTERED, RESOLVE);
+    // The read SQL is IN the module — the companion no longer ships the read graph (retired).
+    expect((art.companion as { readGraph?: unknown }).readGraph).toBeUndefined();
+    expect(art.module.code).toContain(EXPECTED_SQL);
   });
 });
 
 describe('E2 — IN-list: the array-bound head bakes as a native Vec<ElemT> port (bc#110)', () => {
   it('bakes the json_each SQL + a native Vec<i64> array port fed from the input struct', () => {
     const bundle = compileBundle(CONTRACT, 'ByIds', [], 'sqlite', undefined, RESOLVE);
-    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE).module.code;
     expect(code).toContain('f_sql: "SELECT id, email, name FROM benchmark_users WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id ASC".to_string()');
     expect(code).toContain('pub f_p0: Vec<i64>');
     expect(code).toContain('f_p0: in_.ids.clone()');
@@ -230,7 +229,7 @@ describe('E2 — IN-list: the array-bound head bakes as a native Vec<ElemT> port
 describe('#122 — a coalesce(opt(limit), N) LIMIT default bakes NATIVE, preserving the default (bc 0.8.5 #139)', () => {
   it('bakes an OPTIONAL input port + `in_.limit.unwrap_or(20i64)` — the default is not dropped', () => {
     const bundle = compileBundle(CONTRACT, 'Recent', [], 'sqlite', undefined, RESOLVE);
-    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE).module.code;
     expect(code).toContain('f_sql: "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT ?".to_string()');
     // the default is BAKED — absent limit resolves to 20, not dropped and not a silent 0.
     expect(code).toContain('in_.limit.unwrap_or(20i64)');
@@ -243,7 +242,7 @@ describe('#122 — a coalesce(opt(limit), N) LIMIT default bakes NATIVE, preserv
 describe('skip — a SKIP-optional WHERE fragment bakes fragmented; the seam drops it via the Option presence', () => {
   it('bakes head + tail + per-fragment ports; the skip head is an Option<i64> presence signal', () => {
     const bundle = compileBundle(POST_CONTRACT, 'ByAuthorMaybePublished', [], 'sqlite', undefined, POST_RESOLVE);
-    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, POST_RESOLVE, undefined, { nativeSql: true }).module.code;
+    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, POST_RESOLVE).module.code;
     expect(code).toContain('f_sql_head: "SELECT id, title, author_id, published FROM benchmark_posts".to_string()');
     expect(code).toContain('f_sql_tail: " ORDER BY id ASC".to_string()');
     expect(code).toContain('f_w0: "author_id = ?".to_string()');
@@ -258,7 +257,7 @@ describe('skip — a SKIP-optional WHERE fragment bakes fragmented; the seam dro
 describe('E4 (#119) — a single-key map relation bakes; the child binds the parent element field natively', () => {
   it('bakes parent + per-element child SQL; the element-field ref is a native i64 (from the parent outType)', () => {
     const bundle = compileBundle(FEED_CONTRACT, 'PostsWithAuthor', [], 'sqlite', undefined, RESOLVE);
-    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE).module.code;
     // parent (n0) SQL baked
     expect(code).toContain('f_sql: "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = ? ORDER BY id ASC".to_string()');
     // child (n1) SQL baked; its param binds the mapped parent element's author_id — NOT an input head
@@ -271,17 +270,18 @@ describe('E4 (#119) — a single-key map relation bakes; the child binds the par
   });
 });
 
-describe('the lowering fails CLOSED on every shape it cannot bake (no silent mis-lowering)', () => {
-  it('the pre-baking lowering still covers these shapes (nativeSql is opt-in; no coverage narrowed)', () => {
+describe('the SINGLE lowering — the only path, no opt-in flag', () => {
+  it('coalesce (Recent) and skip (ByName) both bake on the single lowering (rust + go + ts)', () => {
     for (const entry of ['Recent', 'ByName']) {
       const bundle = compileBundle(CONTRACT, entry, [], 'sqlite', undefined, RESOLVE);
-      // Same bundle, default (companion) lowering → still generates, exactly as before this change.
-      expect(() => generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE)).not.toThrow();
+      for (const lang of ['rust', 'go', 'typescript'] as const) {
+        expect(() => generateCodegenArtifact(bundle, lang, REGISTERED, RESOLVE)).not.toThrow();
+      }
     }
   });
 
   it('a bundle with neither a graph nor a statement is refused (nothing to generate)', () => {
-    expect(() => generateCodegenArtifact({ dialect: 'sqlite', name: 'Create', optionalHeads: [], relations: {} } as never, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true })).toThrow(
+    expect(() => generateCodegenArtifact({ dialect: 'sqlite', name: 'Create', optionalHeads: [], relations: {} } as never, 'rust', REGISTERED, RESOLVE)).toThrow(
       /carries no component graph/,
     );
   });
@@ -290,7 +290,7 @@ describe('the lowering fails CLOSED on every shape it cannot bake (no silent mis
 describe('E3 — writes bake through the SAME lowering as reads (owner: read/write are one flow)', () => {
   it('Insert bakes RETURNING SQL + value heads typed from values.* ports', () => {
     const b = compileBundle(WRITE_CONTRACT, 'CreateUser', [], 'sqlite', undefined, RESOLVE);
-    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE).module.code;
     expect(code).toContain('f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id, email, name".to_string()');
     expect(code).toContain('f_p0: in_.email.clone()');
     expect(code).toContain('f_p1: in_.name.clone()');
@@ -298,7 +298,7 @@ describe('E3 — writes bake through the SAME lowering as reads (owner: read/wri
 
   it('Update bakes SET+WHERE SQL; the WHERE-bound head is typed from the authored where port (no FROM regex)', () => {
     const b = compileBundle(WRITE_CONTRACT, 'RenameUser', [], 'sqlite', undefined, RESOLVE);
-    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE).module.code;
     expect(code).toContain('f_sql: "UPDATE benchmark_users SET name = ? WHERE id = ? RETURNING id, email, name".to_string()');
     expect(code).toContain('f_p0: in_.name.clone()');
     expect(code).toContain('f_p1: in_.id'); // id typed i64 (native, no clone)
@@ -306,7 +306,7 @@ describe('E3 — writes bake through the SAME lowering as reads (owner: read/wri
 
   it('Delete (no RETURNING) bakes the summary-row outType [{changes, lastInsertRowid}]', () => {
     const b = compileBundle(WRITE_CONTRACT, 'DeleteUser', [], 'sqlite', undefined, RESOLVE);
-    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true }).module.code;
+    const code = generateCodegenArtifact(b, 'rust', REGISTERED, RESOLVE).module.code;
     expect(code).toContain('f_sql: "DELETE FROM benchmark_users WHERE id = ?".to_string()');
     expect(code).toContain('pub changes: i64');
     expect(code).toContain('pub lastInsertRowid: i64');
@@ -368,28 +368,28 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
   it('writes /tmp/e1proof/{generated_*.rs,proof.db,oracles.json}', () => {
     mkdirSync(PROOF_DIR, { recursive: true });
     const bundle = findUniqueBundle();
-    const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
+    const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_findunique.rs'), art.module.code);
 
     const byIdsBundle = compileBundle(CONTRACT, 'ByIds', [], 'sqlite', undefined, RESOLVE);
-    const byIdsArt = generateCodegenArtifact(byIdsBundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
+    const byIdsArt = generateCodegenArtifact(byIdsBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_byids.rs'), byIdsArt.module.code);
 
     // #122: the optional-LIMIT read — its baked `.unwrap_or(20)` must make an ABSENT limit fall back
     // to 20 and a PRESENT limit take effect, both byte-equal to the oracle.
     const recentBundle = compileBundle(CONTRACT, 'Recent', [], 'sqlite', undefined, RESOLVE);
-    const recentArt = generateCodegenArtifact(recentBundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
+    const recentArt = generateCodegenArtifact(recentBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_recent.rs'), recentArt.module.code);
 
     // skip: the `published = ?` fragment drops when published is absent — present vs absent must
     // both match the mode-2 oracle (the seam assembles the present fragments over baked literals).
     const byMaybeBundle = compileBundle(POST_CONTRACT, 'ByAuthorMaybePublished', [], 'sqlite', undefined, POST_RESOLVE);
-    const byMaybeArt = generateCodegenArtifact(byMaybeBundle, 'rust', REGISTERED, POST_RESOLVE, undefined, { nativeSql: true });
+    const byMaybeArt = generateCodegenArtifact(byMaybeBundle, 'rust', REGISTERED, POST_RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_bymaybe.rs'), byMaybeArt.module.code);
 
     // E4 map relation: posts + per-post author. Output {authors, posts}.
     const feedBundle = compileBundle(FEED_CONTRACT, 'PostsWithAuthor', [], 'sqlite', undefined, RESOLVE);
-    const feedArt = generateCodegenArtifact(feedBundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
+    const feedArt = generateCodegenArtifact(feedBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_feed.rs'), feedArt.module.code);
 
     // ONE seeded sqlite DB FILE shared by BOTH legs — the oracle and the rust run read byte-identical
@@ -471,7 +471,7 @@ describe('E3 — emit write modules + a clean seed DB + {result, state} oracles'
     const oracles: Record<string, unknown> = {};
     for (const wc of WRITE_CASES) {
       const bundle = compileBundle(WRITE_CONTRACT, wc.entry, [], 'sqlite', undefined, RESOLVE);
-      const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
+      const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE);
       writeFileSync(join(PROOF_DIR, `generated_${wc.op}.rs`), art.module.code);
       // The mode-2 oracle runs the write on a FRESH connection over a file-seeded DB, exactly as the
       // rust leg does (rust opens the copied seed file fresh). This matters for a non-RETURNING
