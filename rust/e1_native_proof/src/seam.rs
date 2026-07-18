@@ -74,6 +74,53 @@ pub fn query<T>(
     rows.collect()
 }
 
+/// ONE WHERE fragment handed to [`query_skip`]: the bare predicate SQL (baked literal, no connector),
+/// its bound params, and the SKIP ARG — `present`. A required fragment passes `present: true`; a
+/// skip-optional fragment passes `present: <optional head>.is_some()` (the bc#139 Option presence).
+pub struct WhereFrag<'a> {
+    pub sql: &'a str,
+    pub present: bool,
+    pub params: Vec<Param>,
+}
+
+/// The generic SKIP-aware READ exec (owner's model: "SQL・params・SKIP引数の汎用クエリ実行関数だけ").
+/// It ASSEMBLES the query from baked literals: `head` + the PRESENT `frags` joined with ` WHERE `/
+/// ` AND ` + `tail`, binding each present fragment's params in order followed by the tail params. This
+/// is NATIVE string assembly over baked fragments — no IR walk, no JSON, no dispatch; the seam knows
+/// only fragments + presence bits + params. The resulting SQL is byte-identical to the mode-2 runtime
+/// (same fragment order, same connectors), so a skipped fragment drops in place exactly as mode-2
+/// drops it. (sqlite/mysql keep `?`; a pg `?`→`$N` renumber would happen HERE, post-assembly.)
+pub fn query_skip<T>(
+    conn: &Connection,
+    head: &str,
+    frags: &[WhereFrag],
+    tail: &str,
+    tail_params: &[Param],
+    decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> rusqlite::Result<Vec<T>> {
+    let mut sql = String::from(head);
+    let mut params: Vec<&Param> = Vec::new();
+    let mut first = true;
+    for f in frags {
+        if !f.present {
+            continue;
+        }
+        sql.push_str(if first { " WHERE " } else { " AND " });
+        sql.push_str(f.sql);
+        first = false;
+        for p in &f.params {
+            params.push(p);
+        }
+    }
+    sql.push_str(tail);
+    for p in tail_params {
+        params.push(p);
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.into_iter()), |r| decode(r))?;
+    rows.collect()
+}
+
 /// The single summary row a NON-RETURNING write hands back: `{changes, lastInsertRowid}` — exactly
 /// the shape the mode-2 `executeStaticWrite` returns (and the shape the codegen lowering bakes as the
 /// write node's outType when there is no RETURNING clause).

@@ -11,6 +11,7 @@
 //! flow): the module bakes the SQL either way; only the driver's result collection differs
 //! (`query` for a row list — SELECT or RETURNING — vs `execute` for an affected-row summary).
 
+mod generated_bymaybe;
 mod generated_byids;
 mod generated_createuser;
 mod generated_deleteuser;
@@ -20,7 +21,7 @@ mod generated_renameuser;
 mod seam;
 
 use rusqlite::Connection;
-use seam::{json_str, query, Param};
+use seam::{json_str, query, query_skip, Param, WhereFrag};
 
 // ── per-op adapters ──────────────────────────────────────────────────────────────────────────
 //
@@ -60,6 +61,35 @@ impl generated_byids::HandlerNRByIds for ByIdsSeam<'_> {
             Ok(generated_byids::T0 { id: r.get(0)?, email: r.get(1)?, name: r.get(2)? })
         });
         Some(row_or_err_bi(val))
+    }
+}
+
+struct ByMaybeSeam<'a> {
+    conn: &'a Connection,
+}
+impl generated_bymaybe::HandlerNRByAuthorMaybePublished for ByMaybeSeam<'_> {
+    fn node_n0(
+        &self,
+        ports: &generated_bymaybe::PortsNRByAuthorMaybePublishedN0,
+        _bound: Option<String>,
+    ) -> Option<generated_bymaybe::RawRowNRByAuthorMaybePublishedN0> {
+        // SKIP args: the required `author_id` fragment is always present; the `published` fragment is
+        // present iff the bc#139 Option is Some. The generic seam assembles the present fragments.
+        let frags = [
+            WhereFrag { sql: &ports.f_w0, present: true, params: vec![Param::Int(ports.f_w0p0)] },
+            WhereFrag {
+                sql: &ports.f_w1,
+                present: ports.f_w1p0.is_some(),
+                params: ports.f_w1p0.iter().map(|v| Param::Int(*v)).collect(),
+            },
+        ];
+        let val = query_skip(self.conn, &ports.f_sql_head, &frags, &ports.f_sql_tail, &[], |r| {
+            Ok(generated_bymaybe::T0 { id: r.get(0)?, title: r.get(1)?, author_id: r.get(2)?, published: r.get(3)? })
+        });
+        Some(match val {
+            Ok(val) => generated_bymaybe::RawRowNRByAuthorMaybePublishedN0 { is_error: false, err: String::new(), val },
+            Err(e) => generated_bymaybe::RawRowNRByAuthorMaybePublishedN0 { is_error: true, err: e.to_string(), ..Default::default() },
+        })
     }
 }
 
@@ -201,6 +231,19 @@ fn main() {
                 .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));
+        }
+        // bymaybe: <author_id> <published or ''>  ("" published = absent → the skip fragment drops)
+        "bymaybe" => {
+            let author_id: i64 = args.get(3).expect("author_id").parse().expect("author_id int");
+            let raw = args.get(4).expect("published or ''");
+            let published: Option<i64> = if raw.is_empty() { None } else { Some(raw.parse().expect("published")) };
+            let out = generated_bymaybe::run_native_raw_struct_ByAuthorMaybePublished(&ByMaybeSeam { conn: &conn }, generated_bymaybe::InNRByAuthorMaybePublished { author_id, published })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<String> = out
+                .iter()
+                .map(|r| format!("{{\"id\":{},\"title\":{},\"author_id\":{},\"published\":{}}}", r.id, json_str(&r.title), r.author_id, r.published))
+                .collect();
+            println!("[{}]", items.join(","));
         }
         // recent: <limit>  ("" = absent → the baked .unwrap_or(20) default takes effect)
         "recent" => {

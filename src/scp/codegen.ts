@@ -662,6 +662,99 @@ function renderStaticSql(
   return { sql: renderPlaceholders(assembled.sql, dialect), params: assembled.params };
 }
 
+/** Does any of a node's statements carry a `skip` presence expression? A skip fragment DROPS for
+ * some inputs, so the node's SQL is assembled per-input — it takes the fragmented lowering (below)
+ * instead of the single baked `sql` string. */
+function hasSkipStatement(statements: readonly StaticStatement[]): boolean {
+  return statements.some((s) => s.skip !== undefined);
+}
+
+/**
+ * The optional HEAD a SKIP-`cond` guard is driven by: litedbmodel lowers `when(present($.h),
+ * whereX($.col, $.h))` to a fragment whose `skip` is `{not:[{ne:[{refOpt:[h]}, null]}]}` — "drop the
+ * fragment when `h` is absent". Extract `h` from that exact closed shape (else undefined → the guard
+ * isn't the covered presence shape, fail-closed at the caller). `h` is the presence signal: the
+ * fragment is PRESENT iff `h` is present, which the native module reads as `in_.<h>.is_some()`.
+ */
+function skipGuardHead(skip: unknown): string | undefined {
+  if (skip === null || typeof skip !== 'object' || Array.isArray(skip)) return undefined;
+  const notArgs = (skip as Record<string, unknown>).not;
+  if (!Array.isArray(notArgs) || notArgs.length !== 1) return undefined;
+  const ne = notArgs[0];
+  if (ne === null || typeof ne !== 'object') return undefined;
+  const neArgs = (ne as Record<string, unknown>).ne;
+  if (!Array.isArray(neArgs) || neArgs.length !== 2 || neArgs[1] !== null) return undefined;
+  const inner = neArgs[0];
+  if (inner === null || typeof inner !== 'object') return undefined;
+  const path = (inner as Record<string, unknown>).refOpt;
+  if (!Array.isArray(path) || path.length !== 1 || typeof path[0] !== 'string') return undefined;
+  return path[0];
+}
+
+/** ONE assembled WHERE fragment of a skip-carrying read: the bare predicate SQL (`?` placeholders,
+ * NO connector — the seam prepends ` WHERE `/` AND `), its ordered value-specs, and the optional head
+ * whose presence gates it (undefined ⇒ always present). */
+interface RenderedFragment {
+  readonly sql: string;
+  readonly params: readonly unknown[];
+  readonly skipHead?: string;
+}
+
+/** The fragmented form of a skip-carrying read node: a static head + ordered WHERE fragments (some
+ * gated by an optional head's presence) + a static tail. The generic exec seam assembles the present
+ * fragments over these baked literals — NATIVE string assembly, NO IR walk / JSON / dispatch. */
+interface RenderedSkip {
+  readonly head: string;
+  readonly headParams: readonly unknown[];
+  readonly tail: string;
+  readonly tailParams: readonly unknown[];
+  readonly fragments: readonly RenderedFragment[];
+}
+
+/**
+ * Render a skip-carrying read node into its fragmented form (owner's SKIP-args model: "native runtime
+ * = 「SQL・params・SKIP引数の汎用クエリ実行関数」だけ"). Classifies the SAME statements
+ * {@link renderStaticSql} does — `statements[0]` is the head, `whereFragment` statements are the WHERE
+ * fragments (a skip fragment carries `skipHead`), everything else is tail (ORDER BY / LIMIT / …). The
+ * bare predicate text keeps its `?` placeholders (the seam resolves ` WHERE `/` AND ` at assembly, and
+ * the pg `?`→`$N` renumber is a post-assembly dialect concern like the array encode — sqlite/mysql
+ * keep `?`). Fail-closed (a reason) on a skip whose guard is not the covered presence shape.
+ */
+function renderSkipFragments(
+  statements: readonly StaticStatement[],
+  nodeId: string,
+  reasons: string[],
+): RenderedSkip | undefined {
+  const head = statements[0];
+  if (head === undefined || head.whereFragment === true) {
+    reasons.push(`node '${nodeId}': skip-fragment lowering expects a leading SELECT head statement`);
+    return undefined;
+  }
+  const fragments: RenderedFragment[] = [];
+  const tailNodes: MakeSQL[] = [];
+  for (const stmt of statements.slice(1)) {
+    if (stmt.whereFragment === true) {
+      let skipHead: string | undefined;
+      if (stmt.skip !== undefined) {
+        skipHead = skipGuardHead(stmt.skip);
+        if (skipHead === undefined) {
+          reasons.push(
+            `node '${nodeId}': WHERE fragment ${JSON.stringify(stmt.sql)} has a 'skip' guard that is not the covered ` +
+              `presence shape (\`not(ne(refOpt(head), null))\`) — cannot derive the presence head, fail-closed.`,
+          );
+          return undefined;
+        }
+      }
+      fragments.push({ sql: stmt.sql, params: [...stmt.params], ...(skipHead !== undefined ? { skipHead } : {}) });
+      continue;
+    }
+    // A tail statement (ORDER BY / GROUP BY / LIMIT / OFFSET) — assembled verbatim after the WHERE.
+    tailNodes.push({ sql: stmt.sql, params: [...stmt.params] as SqlParam[] });
+  }
+  const tail = composeMakeSQL(tailNodes);
+  return { head: head.sql, headParams: [...head.params], tail: tail.sql, tailParams: tail.params, fragments };
+}
+
 /** The catalog components the E1/E2 SQL-port lowering bakes. Read and write are ONE flow: both make
  * SQL and execute it, and both hand back rows — so they lower identically and are NOT split. */
 const READ_COMPONENTS = new Set(['Select', 'Count']);
@@ -919,26 +1012,70 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
         }
         inputPortTypes.set(head, scalar);
       }
+      // Record a coalesce-default head so it becomes an OPTIONAL input port (#122). The deriver above
+      // also typed it (in `byHead`, as a LIMIT int) — the optional entry wins when building
+      // `inputPorts` so `absent` is a real `None` the baked `.unwrap_or(default)` resolves.
+      const recordCoalesce = (p: unknown): void => {
+        const co = coalesceOptHead(p);
+        if (co === undefined) return;
+        const prior = optionalHeadTypes.get(co.head);
+        if (prior !== undefined && prior !== co.scalar) {
+          reasons.push(`input head '${co.head}' resolves to conflicting optional scalar types ('${prior}' vs '${co.scalar}')`);
+        } else {
+          optionalHeadTypes.set(co.head, co.scalar);
+        }
+      };
+      // A skip-carrying read takes the FRAGMENTED port shape (owner SKIP-args model): a static head +
+      // ordered baked WHERE fragments (a skip fragment gated by an optional head's presence) + a
+      // static tail. The generic exec seam assembles the PRESENT fragments over these baked literals —
+      // native string assembly, NO IR walk / JSON / dispatch. A non-skip read keeps the simple single
+      // `sql` port. Both are this ONE lowering; only the emitted port shape differs by whether the
+      // node has a skip fragment.
+      if (hasSkipStatement(stmts)) {
+        const frag = renderSkipFragments(stmts, n.id, reasons);
+        if (frag === undefined) return n;
+        const newPorts: Record<string, unknown> = { sql_head: frag.head, sql_tail: frag.tail };
+        frag.headParams.forEach((p, i) => {
+          const port = paramPortFor(p, i, n.id, reasons);
+          if (port !== undefined) newPorts[`h${i}`] = port;
+          recordCoalesce(p);
+        });
+        frag.tailParams.forEach((p, i) => {
+          const port = paramPortFor(p, i, n.id, reasons);
+          if (port !== undefined) newPorts[`t${i}`] = port;
+          recordCoalesce(p);
+        });
+        frag.fragments.forEach((f, fi) => {
+          newPorts[`w${fi}`] = f.sql; // the bare predicate, a baked static string bc renders as a literal
+          // A skip fragment's presence head is OPTIONAL (`Option<T>`) — the module reads it as
+          // `in_.<head>.is_some()` (the seam's SKIP arg). litedbmodel's `when(present(h), whereX(col, h))`
+          // makes the presence head the fragment's own bound head, so the frag's optional param IS the
+          // presence signal; assert that invariant rather than guess.
+          if (f.skipHead !== undefined) {
+            const scalar = byHead.get(f.skipHead);
+            if (scalar === undefined) {
+              reasons.push(`node '${n.id}': skip head '${f.skipHead}' is not a typed bound head of its fragment (unsupported skip shape)`);
+            } else {
+              optionalHeadTypes.set(f.skipHead, scalar);
+            }
+          }
+          f.params.forEach((p, pi) => {
+            const port = paramPortFor(p, pi, n.id, reasons);
+            if (port !== undefined) newPorts[`w${fi}p${pi}`] = port;
+            recordCoalesce(p);
+          });
+        });
+        return { ...n, ports: newPorts };
+      }
       const rendered = renderStaticSql(stmts, readGraph.dialect, n.id, reasons);
       if (rendered === undefined) return n;
-      // The E1 port shape: the rendered SQL as a STATIC string port bc bakes as a native literal,
-      // plus one typed port per bound `?` in placeholder order.
+      // The single-`sql` port shape: the rendered SQL as a STATIC string port bc bakes as a native
+      // literal, plus one typed port per bound `?` in placeholder order.
       const newPorts: Record<string, unknown> = { sql: rendered.sql };
       rendered.params.forEach((p, i) => {
         const port = paramPortFor(p, i, n.id, reasons);
         if (port !== undefined) newPorts[`p${i}`] = port;
-        // Record a coalesce-default head so it becomes an OPTIONAL input port (#122). The deriver
-        // above also typed it (in `byHead`, as a LIMIT int) — the optional entry wins when building
-        // `inputPorts` so `absent` is a real `None` the baked `.unwrap_or(default)` resolves.
-        const co = coalesceOptHead(p);
-        if (co !== undefined) {
-          const prior = optionalHeadTypes.get(co.head);
-          if (prior !== undefined && prior !== co.scalar) {
-            reasons.push(`input head '${co.head}' resolves to conflicting optional scalar types ('${prior}' vs '${co.scalar}')`);
-          } else {
-            optionalHeadTypes.set(co.head, co.scalar);
-          }
-        }
+        recordCoalesce(p);
       });
       // A write with NO RETURNING hands back the single summary row `[{changes, lastInsertRowid}]`,
       // NOT the determined empty-row list its compile-time outType carries (that stamp existed only

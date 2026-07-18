@@ -14,7 +14,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROOF_DIR=/tmp/e1proof
-MODULES=(generated_findunique generated_byids generated_recent generated_createuser generated_renameuser generated_deleteuser)
+MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_createuser generated_renameuser generated_deleteuser)
 WRITE_OPS=(createuser renameuser deleteuser)
 fail=0
 
@@ -47,8 +47,9 @@ for m in "${MODULES[@]}"; do
     if grep -qF -- "$marker" "$stripped"; then echo "  FAIL  $m: found '$marker'"; bad=1; fail=1; fi
   done
   [[ $bad -eq 0 ]] && echo "  PASS  $m: no runtime/boxing/JSON primitive"
-  # each module must carry its own SQL as a baked literal
-  if grep -qE 'f_sql: "(SELECT|INSERT|UPDATE|DELETE)[^"]*"\.to_string\(\)' "$stripped"; then
+  # each module must carry its own SQL as a baked literal — either the single `f_sql` port, or the
+  # fragmented skip shape's `f_sql_head` (head + baked WHERE fragments the seam assembles).
+  if grep -qE 'f_sql(_head)?: "(SELECT|INSERT|UPDATE|DELETE)[^"]*"\.to_string\(\)' "$stripped"; then
     echo "  PASS  $m: the SQL is baked as a native literal IN the module"
   else
     echo "  FAIL  $m: the module does not carry its SQL"; fail=1
@@ -65,6 +66,7 @@ BIN="$HERE/target/debug/e1_native_proof"
 node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" findunique "$PROOF_DIR/oracles.json" || fail=1
 node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" byids "$PROOF_DIR/oracles_byids.json" || fail=1
 node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" recent "$PROOF_DIR/oracles_recent.json" || fail=1
+node "$HERE/compare.mjs" "$BIN" "$PROOF_DIR/proof.db" bymaybe "$PROOF_DIR/oracles_bymaybe.json" || fail=1
 
 echo "── leg 3b: WRITE execution + resulting DB state vs the mode-2 oracle (fresh copy per run) ──"
 # A write MUTATES its DB, so each op runs on a FRESH copy of the clean seed. The binary prints

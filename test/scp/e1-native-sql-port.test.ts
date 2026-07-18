@@ -123,9 +123,27 @@ class OrmWrites extends SemanticBehavior {
   }
 }
 
+/** A SKIP op on benchmark_posts — the `published = ?` fragment DROPS when `published` is absent. */
+const POST_COLUMNS = {
+  benchmark_posts: { id: 'INTEGER', title: 'TEXT', content: 'TEXT', published: 'INTEGER', author_id: 'INTEGER', created_at: 'TEXT' },
+} as const;
+class PostReads extends SemanticBehavior {
+  static columns = POST_COLUMNS;
+  ByAuthorMaybePublished($: { author_id: unknown; published: unknown }) {
+    return L.Select({
+      table: 'benchmark_posts',
+      select: ['id', 'title', 'author_id', 'published'],
+      where: [whereEq(($ as never)['author_id'], $.author_id), when(ne(opt($.published), null), () => whereEq(($ as never)['published'], $.published))],
+      order: 'id ASC',
+    });
+  }
+}
+
 const RESOLVE = schemaColumnTypeResolver(ddl('sqlite'));
 const CONTRACT = publishBehaviors(OrmReads);
 const WRITE_CONTRACT = publishBehaviors(OrmWrites);
+const POST_CONTRACT = publishBehaviors(PostReads);
+const POST_RESOLVE = schemaColumnTypeResolver(ddl('sqlite'));
 const EXPECTED_SQL = 'SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT ?';
 
 function findUniqueBundle() {
@@ -205,22 +223,26 @@ describe('#122 — a coalesce(opt(limit), N) LIMIT default bakes NATIVE, preserv
   });
 });
 
-describe('E1/E2 — the lowering fails CLOSED on every shape it cannot bake (no silent mis-lowering)', () => {
-  it('a SKIP-guarded fragment is rejected: its SQL text is input-dependent (no single literal)', () => {
-    // The `name = ?` fragment DROPS when `name` is absent, so the node has no ONE static SQL. The
-    // owner-approved design is a generic exec seam taking SKIP ARGS over baked fragments (bc covers
-    // the pieces: a static string-array port bakes the fragments, a bool input port bakes the skip
-    // arg) — until that lands, this fails closed rather than baking an always-present literal.
-    const bundle = compileBundle(CONTRACT, 'ByName', [], 'sqlite', undefined, RESOLVE);
-    expect(() => generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true })).toThrow(
-      /carries a 'skip' presence expression/,
-    );
+describe('skip — a SKIP-optional WHERE fragment bakes fragmented; the seam drops it via the Option presence', () => {
+  it('bakes head + tail + per-fragment ports; the skip head is an Option<i64> presence signal', () => {
+    const bundle = compileBundle(POST_CONTRACT, 'ByAuthorMaybePublished', [], 'sqlite', undefined, POST_RESOLVE);
+    const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, POST_RESOLVE, undefined, { nativeSql: true }).module.code;
+    expect(code).toContain('f_sql_head: "SELECT id, title, author_id, published FROM benchmark_posts".to_string()');
+    expect(code).toContain('f_sql_tail: " ORDER BY id ASC".to_string()');
+    expect(code).toContain('f_w0: "author_id = ?".to_string()');
+    expect(code).toContain('f_w0p0: in_.author_id'); // required fragment head (i64)
+    expect(code).toContain('f_w1: "published = ?".to_string()');
+    expect(code).toContain('f_w1p0: in_.published'); // skip fragment head (Option<i64> — presence)
+    expect(code).toContain('pub published: Option<i64>');
+    expect(stripRustComments(code)).not.toContain('serde_json');
   });
+});
 
-  it('the pre-E1 lowering still covers those shapes (E1 is opt-in; no coverage was silently narrowed)', () => {
+describe('the lowering fails CLOSED on every shape it cannot bake (no silent mis-lowering)', () => {
+  it('the pre-baking lowering still covers these shapes (nativeSql is opt-in; no coverage narrowed)', () => {
     for (const entry of ['Recent', 'ByName']) {
       const bundle = compileBundle(CONTRACT, entry, [], 'sqlite', undefined, RESOLVE);
-      // Same bundle, default (pre-E1) lowering → still generates, exactly as before this change.
+      // Same bundle, default (companion) lowering → still generates, exactly as before this change.
       expect(() => generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE)).not.toThrow();
     }
   });
@@ -326,6 +348,12 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     const recentArt = generateCodegenArtifact(recentBundle, 'rust', REGISTERED, RESOLVE, undefined, { nativeSql: true });
     writeFileSync(join(PROOF_DIR, 'generated_recent.rs'), recentArt.module.code);
 
+    // skip: the `published = ?` fragment drops when published is absent — present vs absent must
+    // both match the mode-2 oracle (the seam assembles the present fragments over baked literals).
+    const byMaybeBundle = compileBundle(POST_CONTRACT, 'ByAuthorMaybePublished', [], 'sqlite', undefined, POST_RESOLVE);
+    const byMaybeArt = generateCodegenArtifact(byMaybeBundle, 'rust', REGISTERED, POST_RESOLVE, undefined, { nativeSql: true });
+    writeFileSync(join(PROOF_DIR, 'generated_bymaybe.rs'), byMaybeArt.module.code);
+
     // ONE seeded sqlite DB FILE shared by BOTH legs — the oracle and the rust run read byte-identical
     // data, so an equality pass cannot come from two independently-seeded DBs happening to agree.
     if (existsSync(DB_PATH)) rmSync(DB_PATH);
@@ -342,11 +370,19 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     const recentOracles: Record<string, unknown> = {};
     recentOracles[''] = executeBundle(recentBundle, {} as never, { db: db as never });
     recentOracles['3'] = executeBundle(recentBundle, { limit: 3 } as never, { db: db as never });
+    // skip: keyed `<author_id>|<published or ''>`. author_id=7 has posts; published present (1) vs absent.
+    const byMaybeOracles: Record<string, unknown> = {};
+    byMaybeOracles['7|'] = executeBundle(byMaybeBundle, { author_id: 7 } as never, { db: db as never });
+    byMaybeOracles['7|1'] = executeBundle(byMaybeBundle, { author_id: 7, published: 1 } as never, { db: db as never });
+    byMaybeOracles['7|0'] = executeBundle(byMaybeBundle, { author_id: 7, published: 0 } as never, { db: db as never });
     db.close();
 
     writeFileSync(join(PROOF_DIR, 'oracles.json'), JSON.stringify(oracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_byids.json'), JSON.stringify(byIdsOracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_recent.json'), JSON.stringify(recentOracles, null, 2));
+    writeFileSync(join(PROOF_DIR, 'oracles_bymaybe.json'), JSON.stringify(byMaybeOracles, null, 2));
+    // the skip actually drops: absent published returns >= as many rows as present-filtered.
+    expect((byMaybeOracles['7|'] as unknown[]).length).toBeGreaterThanOrEqual((byMaybeOracles['7|1'] as unknown[]).length);
     // the default actually takes effect: absent limit returns 20 rows (the seed has 111).
     expect((recentOracles[''] as unknown[]).length).toBe(20);
     expect((recentOracles['3'] as unknown[]).length).toBe(3);

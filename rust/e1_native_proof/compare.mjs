@@ -14,7 +14,10 @@ const oracles = JSON.parse(readFileSync(oraclePath, 'utf8'));
 let fail = 0;
 for (const [key, expectedVal] of Object.entries(oracles)) {
   const expected = JSON.stringify(expectedVal);
-  const p = spawnSync(bin, [op, db, key], { encoding: 'utf8' });
+  // A key may pack multiple CLI args, `|`-separated (e.g. skip's `<author_id>|<published>`); a
+  // single-arg op has no `|` and passes its key verbatim (incl. the empty string).
+  const cliArgs = key.includes('|') ? key.split('|') : [key];
+  const p = spawnSync(bin, [op, db, ...cliArgs], { encoding: 'utf8' });
   if (p.status !== 0) {
     console.log(`  FAIL  ${op}(${JSON.stringify(key)}) — exited ${p.status}`);
     console.log(`        ${(p.stderr || '').trim().split('\n').slice(0, 3).join(' | ')}`);
