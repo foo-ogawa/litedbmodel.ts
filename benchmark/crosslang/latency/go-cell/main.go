@@ -57,7 +57,7 @@ func main() {
 	// ── findunique (point read) — read-only ──
 	{
 		db := openDB(readDB)
-		h := findUniqueH{db: db}
+		h := findUniqueH{db: newSeamDB(db)}
 		for i := 0; i < warmup+iters; i++ {
 			email := fmt.Sprintf("user%d@example.com", (i%100)+1)
 			t0 := time.Now()
@@ -76,7 +76,7 @@ func main() {
 	// ── relsingle (batched relation) — read-only ──
 	{
 		db := openDB(readDB)
-		h := relSingleH{db: db}
+		h := relSingleH{db: newSeamDB(db)}
 		for i := 0; i < warmup+iters; i++ {
 			t0 := time.Now()
 			out, err := relsingle.RunNativeRawStruct_ByAuthor(h, relsingle.In_ByAuthor{Author_id: 7})
@@ -94,7 +94,7 @@ func main() {
 	// ── createuser (single write, RETURNING) — mutable, UNIQUE email per iteration ──
 	{
 		db := openDB(writeDB)
-		h := createUserH{db: db}
+		h := createUserH{db: newSeamDB(db)}
 		for i := 0; i < warmup+iters; i++ {
 			email := fmt.Sprintf("cu_%d_%d@example.com", i, time.Now().UnixNano())
 			t0 := time.Now()
@@ -113,7 +113,7 @@ func main() {
 	// ── createmany (batch write: ONE json_each INSERT for 10 records) — mutable, UNIQUE rows per iter ──
 	{
 		db := openDB(writeDB)
-		h := createManyH{db: db}
+		h := createManyH{db: newSeamDB(db)}
 		for i := 0; i < warmup+iters; i++ {
 			ts := time.Now().UnixNano()
 			emails := make([]string, 10)

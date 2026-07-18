@@ -4,8 +4,8 @@ import { describe, it, expect } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { generateCodegenArtifact } from '../../../src/scp/index';
-import { registeredLanguages } from 'behavior-contracts';
+import { generateCodegenArtifact } from '../../../dist/scp/index.cjs'; // SAME bundled instance as behaviors.ts / ts-ir.ts
+import { registeredLanguages } from 'behavior-contracts'; // strings only; vitest resolves bc here
 import { ddl, seedStatements } from '../orm-domain';
 import { benchOps, RESOLVE } from './behaviors';
 

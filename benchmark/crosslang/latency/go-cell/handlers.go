@@ -15,7 +15,7 @@ import (
 )
 
 // ── findunique (point read) ──
-type findUniqueH struct{ db *sql.DB }
+type findUniqueH struct{ db *seamDB }
 
 func (h findUniqueH) Node_FindUnique_n0(p findunique.PortsNR_FindUnique_n0, _ *string) (findunique.Row_FindUnique_n0, bool) {
 	val, err := Query(h.db, p.Sql, []any{p.P0, p.P1}, func(r *sql.Rows) (findunique.T0, error) {
@@ -29,7 +29,7 @@ func (h findUniqueH) Node_FindUnique_n0(p findunique.PortsNR_FindUnique_n0, _ *s
 }
 
 // ── createuser (single write, RETURNING) ──
-type createUserH struct{ db *sql.DB }
+type createUserH struct{ db *seamDB }
 
 func (h createUserH) Node_CreateUser_n0(p createuser.PortsNR_CreateUser_n0, _ *string) (createuser.Row_CreateUser_n0, bool) {
 	val, err := Query(h.db, p.Sql, []any{p.P0, p.P1}, func(r *sql.Rows) (createuser.T0, error) {
@@ -43,7 +43,7 @@ func (h createUserH) Node_CreateUser_n0(p createuser.PortsNR_CreateUser_n0, _ *s
 }
 
 // ── createmany (batch write: ONE json_each INSERT for N records) ──
-type createManyH struct{ db *sql.DB }
+type createManyH struct{ db *seamDB }
 
 func (h createManyH) Node_CreateMany_n0(p createmany.PortsNR_CreateMany_n0, _ *string) (createmany.Row_CreateMany_n0, bool) {
 	// Parallel column arrays → pre-encoded cells (strings quoted). The seam zips + runs ONCE.
@@ -66,7 +66,7 @@ func (h createManyH) Node_CreateMany_n0(p createmany.PortsNR_CreateMany_n0, _ *s
 }
 
 // ── relsingle (batched relation: parent posts + ONE batched comments query) ──
-type relSingleH struct{ db *sql.DB }
+type relSingleH struct{ db *seamDB }
 
 func (h relSingleH) Node_ByAuthor_n0(p relsingle.PortsNR_ByAuthor_n0, _ *string) (relsingle.Row_ByAuthor_n0, bool) {
 	val, err := Query(h.db, p.Sql, []any{p.P0}, func(r *sql.Rows) (relsingle.T0, error) {

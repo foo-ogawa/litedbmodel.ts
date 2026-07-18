@@ -64,19 +64,19 @@ out += `# Latency: ts-IR-interpreter vs rust-native vs go-native (sqlite in-proc
 out += `Same 4 ops, same seed sqlite (C engine in every cell: better-sqlite3 / rusqlite-bundled /\n`;
 out += `mattn-go-sqlite3), same iteration count. Whole hot path timed (bind + exec + decode into the\n`;
 out += `typed result). p50/p99 in µs; ops/sec = 1e6 / mean latency (single-thread serial). Verbatim.\n\n`;
-out += `| op | cell | p50 µs | p99 µs | ops/sec | vs ts-IR (p50) |\n`;
-out += `|---|---|--:|--:|--:|--:|\n`;
+const rel = (ratio) => (ratio >= 1 ? `${ratio.toFixed(2)}× faster` : `${(1 / ratio).toFixed(2)}× slower`);
+out += `Two speedup framings are shown so nothing hides: **p50** (median, robust) and **throughput**\n`;
+out += `(mean-based, ops/sec) — they diverge for writes because sqlite fsync gives a heavy tail.\n\n`;
+out += `| op | cell | p50 µs | p99 µs | mean µs | ops/sec | p50 vs ts-IR | throughput vs ts-IR |\n`;
+out += `|---|---|--:|--:|--:|--:|--:|--:|\n`;
 for (const op of OP_ORDER) {
   const opRows = rows.filter((r) => r.op === op);
   const base = opRows.find((r) => r.cell === 'ts_ir');
   for (const r of opRows) {
-    let speedup = '';
-    if (r.cell === 'ts_ir') speedup = '— (baseline)';
-    else if (base) {
-      const ratio = base.p50 / r.p50; // >1 ⇒ native faster than the interpreter
-      speedup = ratio >= 1 ? `${ratio.toFixed(2)}× faster` : `${(1 / ratio).toFixed(2)}× slower`;
-    }
-    out += `| ${op === opRows[0].op && r === opRows[0] ? OP_LABEL[op] : ''} | ${CELL_LABEL[r.cell]} | ${r.p50.toFixed(2)} | ${r.p99.toFixed(2)} | ${r.opsSec.toFixed(0)} | ${speedup} |\n`;
+    const p50s = r.cell === 'ts_ir' ? '— (baseline)' : base ? rel(base.p50 / r.p50) : '';
+    const thr = r.cell === 'ts_ir' ? '— (baseline)' : base ? rel(r.opsSec / base.opsSec) : '';
+    const label = r === opRows[0] ? OP_LABEL[op] : '';
+    out += `| ${label} | ${CELL_LABEL[r.cell]} | ${r.p50.toFixed(2)} | ${r.p99.toFixed(2)} | ${r.mean.toFixed(2)} | ${r.opsSec.toFixed(0)} | ${p50s} | ${thr} |\n`;
   }
 }
 out += `\nRaw per-iteration samples: \`.results/<cell>.csv\`; per-op summary: \`.results/summary.csv\`.\n`;

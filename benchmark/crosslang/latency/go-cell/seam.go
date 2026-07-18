@@ -12,9 +12,38 @@ import (
 	"strings"
 )
 
-// Query — the generic READ exec: run sql with params, decode each row via `decode`.
-func Query[T any](db *sql.DB, query string, params []any, decode func(*sql.Rows) (T, error)) ([]T, error) {
-	rows, err := db.Query(query, params...)
+// seamDB wraps a *sql.DB with a per-SQL prepared-statement CACHE (the go twin of rusqlite's
+// prepare_cached). The baked SQL is STATIC, so each op's statement is prepared ONCE and reused on every
+// subsequent call — vs `db.Query(sql, …)`, which prepares+executes+closes on every call. Keyed by the
+// SQL text; the whole cell runs single-connection (SetMaxOpenConns(1)), so the cache is single-threaded.
+type seamDB struct {
+	db    *sql.DB
+	cache map[string]*sql.Stmt
+}
+
+func newSeamDB(db *sql.DB) *seamDB {
+	return &seamDB{db: db, cache: make(map[string]*sql.Stmt)}
+}
+
+func (s *seamDB) stmt(query string) (*sql.Stmt, error) {
+	if st, ok := s.cache[query]; ok {
+		return st, nil
+	}
+	st, err := s.db.Prepare(query)
+	if err != nil {
+		return nil, err
+	}
+	s.cache[query] = st
+	return st, nil
+}
+
+// Query — the generic READ exec: run sql (via the cached prepared statement) with params, decode rows.
+func Query[T any](s *seamDB, query string, params []any, decode func(*sql.Rows) (T, error)) ([]T, error) {
+	st, err := s.stmt(query)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := st.Query(params...)
 	if err != nil {
 		return nil, err
 	}
@@ -30,9 +59,13 @@ func Query[T any](db *sql.DB, query string, params []any, decode func(*sql.Rows)
 	return out, rows.Err()
 }
 
-// Execute — the generic non-returning WRITE exec: run sql, return (changes, lastInsertId).
-func Execute(db *sql.DB, query string, params []any) (int64, int64, error) {
-	res, err := db.Exec(query, params...)
+// Execute — the generic non-returning WRITE exec: run sql (cached statement), return (changes, lastId).
+func Execute(s *seamDB, query string, params []any) (int64, int64, error) {
+	st, err := s.stmt(query)
+	if err != nil {
+		return 0, 0, err
+	}
+	res, err := st.Exec(params...)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -79,7 +112,7 @@ func jsonStr(s string) string {
 // keys, run the ONE baked child query binding the deduped keys as a flat JSON array (the baked
 // `json_each(?)` IN-list), group children by their target key, and return the per-parent lists ALIGNED
 // to itemKeys. The go twin of the rust seam's query_batched_relation.
-func QueryBatchedRelation[T any](db *sql.DB, query string, itemKeys []int64, decode func(*sql.Rows) (T, error), childKey func(T) int64) ([][]T, error) {
+func QueryBatchedRelation[T any](s *seamDB, query string, itemKeys []int64, decode func(*sql.Rows) (T, error), childKey func(T) int64) ([][]T, error) {
 	seen := make(map[int64]bool, len(itemKeys))
 	distinct := make([]int64, 0, len(itemKeys))
 	for _, k := range itemKeys {
@@ -93,7 +126,7 @@ func QueryBatchedRelation[T any](db *sql.DB, query string, itemKeys []int64, dec
 		parts[i] = strconv.FormatInt(k, 10)
 	}
 	jsonArr := "[" + strings.Join(parts, ",") + "]" // <-- ONE query for all parents
-	children, err := Query(db, query, []any{jsonArr}, decode)
+	children, err := Query(s, query, []any{jsonArr}, decode)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +146,7 @@ func QueryBatchedRelation[T any](db *sql.DB, query string, itemKeys []int64, dec
 // PRE-ENCODED columns into the `[{col:val,…},…]` JSON the baked json_each(?) expands, bind it to EVERY
 // `?`, and run ONCE. `cells[j][i]` is the already-JSON-encoded value of column j, row i (a string column
 // is pre-quoted by the caller; the seam owns only the zip + bind). The go twin of query_batch_write.
-func QueryBatchWrite[T any](db *sql.DB, query string, columns []string, cells [][]string, decode func(*sql.Rows) (T, error)) ([]T, error) {
+func QueryBatchWrite[T any](s *seamDB, query string, columns []string, cells [][]string, decode func(*sql.Rows) (T, error)) ([]T, error) {
 	n := 0
 	if len(cells) > 0 {
 		n = len(cells[0])
@@ -132,5 +165,5 @@ func QueryBatchWrite[T any](db *sql.DB, query string, columns []string, cells []
 	for i := range params {
 		params[i] = jsonRecs
 	}
-	return Query(db, query, params, decode)
+	return Query(s, query, params, decode)
 }

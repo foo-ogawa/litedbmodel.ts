@@ -15,3 +15,10 @@ publish = false
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+# `count-queries` (default ON): the QUERY_COUNT atomic that the PROOF legs (batched-relation / batch-write
+# N+1 assertions) read. The LATENCY bench builds `--no-default-features` so the counter NEVER runs inside
+# the timed hot path — measurement isolation, not a behavior change to the proof.
+[features]
+default = ["count-queries"]
+count-queries = []

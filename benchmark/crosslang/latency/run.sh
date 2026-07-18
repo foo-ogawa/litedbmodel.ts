@@ -21,11 +21,16 @@ GO_BIN="$HERE/go-cell/go_bench_cell"
 mkdir -p "$RESULTS"
 fail=0
 
+echo "── step 0/5: build the litedbmodel bundle (dist/scp/index.cjs) the ts-IR cell + gen consume ──"
+( cd "$ROOT" && npm run build:scp --silent ) || { echo "  FAIL build:scp"; exit 1; }
+
 echo "── step 1/5: gen — emit go-typed-native modules + shared seed DBs + fairness cross-check ──"
 npx vitest run --config "$HERE/vitest.config.ts" "$HERE/gen.test.ts" || { echo "  FAIL gen"; exit 1; }
 
-echo "── step 2/5: build the native cells (rust RELEASE, go optimized) ──"
-( cd "$RUST_PROOF" && cargo build --release --quiet ) || { echo "  FAIL rust build"; exit 1; }
+echo "── step 2/5: build the native cells (rust RELEASE, no query-counter; go optimized) ──"
+# --no-default-features drops the QUERY_COUNT atomic so it never runs in the timed hot path (the proof
+# legs keep it via run-proof.sh's default build). prepare_cached statement reuse is unconditional.
+( cd "$RUST_PROOF" && cargo build --release --no-default-features --quiet ) || { echo "  FAIL rust build"; exit 1; }
 ( cd "$HERE/go-cell" && GOFLAGS=-mod=mod "$GO" build -o "$GO_BIN" . ) || { echo "  FAIL go build"; exit 1; }
 
 echo "── step 2b: runtime-free confirmation (the 'genuinely native' half) ──"
@@ -52,9 +57,10 @@ echo "── step 4/5: run the go-native cell (fresh write seed) ──"
 cp "$ART/write.db" "$ART/go_write.db"
 "$GO_BIN" "$ART/read.db" "$ART/go_write.db" "$WARMUP" "$ITERS" "$RESULTS/go.csv" || { echo "  FAIL go cell"; fail=1; }
 
-echo "── step 5/5: run the ts-IR interpreter cell + collect the table ──"
-BENCH_WARMUP="$WARMUP" BENCH_ITERS="$ITERS" npx vitest run --config "$HERE/vitest.config.ts" "$HERE/ts-ir.test.ts" || { echo "  FAIL ts cell"; fail=1; }
-rm -f "$ART/rust_write.db" "$ART/go_write.db"
+echo "── step 5/5: run the ts-IR interpreter cell (standalone tsx) + collect the table ──"
+cp "$ART/write.db" "$ART/ts_write.db"
+npx tsx "$HERE/ts-ir.ts" "$ART/read.db" "$ART/ts_write.db" "$WARMUP" "$ITERS" "$RESULTS/ts_ir.csv" || { echo "  FAIL ts cell"; fail=1; }
+rm -f "$ART/rust_write.db" "$ART/go_write.db" "$ART/ts_write.db"
 node "$HERE/collect.mjs"
 
 [[ $fail -eq 0 ]] && echo "LATENCY BENCH: OK" || echo "LATENCY BENCH: FAILURES ABOVE"

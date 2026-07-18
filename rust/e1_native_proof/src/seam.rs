@@ -64,18 +64,28 @@ impl rusqlite::ToSql for Param {
 
 /// A process-wide count of DB queries the seam has issued — the definitive proof that a batched
 /// relation runs ONE child query for all parents (not N+1). The relation proof reads it before/after
-/// and asserts the delta is 2 (one parent read + one batched child), not 1+N.
+/// and asserts the delta is 2 (one parent read + one batched child), not 1+N. Feature-gated
+/// (`count-queries`, default ON): the PROOF legs need it, but the LATENCY bench builds
+/// `--no-default-features` so the counting atomic NEVER runs inside the timed hot path.
 pub static QUERY_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// The generic READ exec: run `sql` with `params`, decode each row via `decode`.
+#[inline(always)]
+fn count_query() {
+    #[cfg(feature = "count-queries")]
+    QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The generic READ exec: run `sql` with `params`, decode each row via `decode`. The baked SQL is
+/// STATIC (a native literal), so `prepare_cached` compiles it ONCE and reuses the prepared statement on
+/// every subsequent call (a real native runtime's win over re-parsing per call).
 pub fn query<T>(
     conn: &Connection,
     sql: &str,
     params: &[Param],
     decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> rusqlite::Result<Vec<T>> {
-    QUERY_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let mut stmt = conn.prepare(sql)?;
+    count_query();
+    let mut stmt = conn.prepare_cached(sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| decode(r))?;
     rows.collect()
 }
@@ -122,7 +132,10 @@ pub fn query_skip<T>(
     for p in tail_params {
         params.push(p);
     }
-    let mut stmt = conn.prepare(&sql)?;
+    count_query();
+    // The assembled text is stable for a given present-set (baked fragments), so `prepare_cached` reuses
+    // the compiled statement across calls with the same present-set.
+    let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.into_iter()), |r| decode(r))?;
     rows.collect()
 }
@@ -208,7 +221,10 @@ pub struct WriteSummary {
 /// module bakes the SQL either way; the only difference is that a bare write collects an affected-row
 /// summary while a SELECT / RETURNING write collects a row list (that is a driver-shape detail).
 pub fn execute(conn: &Connection, sql: &str, params: &[Param]) -> rusqlite::Result<WriteSummary> {
-    let changes = conn.execute(sql, rusqlite::params_from_iter(params.iter()))?;
+    count_query();
+    // Static baked SQL → `prepare_cached` compiles once and reuses the statement (vs `conn.execute`,
+    // which re-prepares every call).
+    let changes = conn.prepare_cached(sql)?.execute(rusqlite::params_from_iter(params.iter()))?;
     Ok(WriteSummary { changes: changes as i64, last_insert_rowid: conn.last_insert_rowid() })
 }
 

@@ -3,11 +3,22 @@
 Three cells run the **same 4 ops**, over the **same seed sqlite**, for the **same iteration count**,
 and self-measure the **whole hot path** (build input → bind + exec SQL + decode into the typed result):
 
+All three run as **plain standalone processes** (a rust binary, a go binary, a `tsx` script) that
+self-measure and write a flat CSV; a separate collector aggregates. No stdio-protocol coupling.
+
 | cell | what it is | runtime-free? |
 |---|---|---|
-| **ts-IR** | litedbmodel's shipping boxed **interpreter** (`executeBundle`/`readBundle` → `executeReadGraph`): walks the compiled read-graph IR, boxes values, assembles each node's SQL, executes, materializes rows. The path native codegen replaces. | n/a (interpreter) |
+| **ts-IR** | litedbmodel's shipping boxed **interpreter** (`executeBundle`/`readBundle` → `executeReadGraph`): walks the compiled read-graph IR, boxes values, assembles each node's SQL, executes, materializes rows. The path native codegen replaces. Run standalone via `tsx` against the built `dist/scp` bundle. | n/a (interpreter) |
 | **rust-native** | the `rust-typed-native` generated module + the generic `exec` seam (`rust/e1_native_proof`): baked-SQL native literals, direct bind/exec/decode. | yes — `rustc --emit metadata` with **no** `--extern behavior_contracts`; purity greps 0 |
 | **go-native** | the `go-typed-native` generated module + a generic `exec` seam (`go-cell/`, the go twin of the rust seam), driven by `mattn/go-sqlite3` (cgo, the same C sqlite engine as rust/ts). | yes — `go list -deps` shows **no** behavior-contracts runtime |
+
+**Prepared-statement reuse (applied to all three cells).** The baked SQL is static, so a real native
+runtime prepares each op's statement once and reuses it. This is applied **symmetrically**: rust uses
+`prepare_cached`, go a per-SQL `*sql.Stmt` cache, and the ts-IR cell wraps the driver in a
+prepared-statement cache (litedbmodel's default runtime re-prepares each call — the wrapper isolates the
+shared SQL-parse cost so the comparison measures codegen-vs-interpretation, not re-parsing). The rust
+`QUERY_COUNT` proof-atomic is feature-gated OFF in the bench build (`--no-default-features`) so it never
+runs in the timed hot path. The **generated modules are never hand-edited** — only the seams/harness.
 
 The three cells run **byte-identical SQL** (`gen.test.ts` asserts the go module, the rust module, AND the
 committed proof-crate rust module all bake the same SQL from the same bundle) and produce **equivalent

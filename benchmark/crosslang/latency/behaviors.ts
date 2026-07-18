@@ -18,15 +18,13 @@
 // They are byte-identical to the ops proven native in rust/e1_native_proof (gen.test.ts asserts the
 // baked SQL matches), so the rust cell reuses that crate's generated modules unchanged.
 
-import {
-  SemanticBehavior,
-  components,
-  publishBehaviors,
-  compileBundle,
-  whereEq,
-  schemaColumnTypeResolver,
-  type ColumnTypeResolver,
-} from '../../../src/scp/index';
+// Import the litedbmodel VALUE API from the BUILT, self-contained bundle (`dist/scp/index.cjs`, which
+// inlines the ESM-only behavior-contracts) so the ts-IR cell runs as a plain standalone `tsx` process
+// (bare `from 'behavior-contracts'` only resolves under a bundler/vitest, not raw node/tsx). Types come
+// from source (erased at runtime). Both gen.test.ts (vitest) and ts-ir.ts (tsx) import THIS module, so
+// every cell shares ONE litedbmodel instance (no dual-instance IR-brand mismatch).
+import { SemanticBehavior, components, publishBehaviors, compileBundle, whereEq, schemaColumnTypeResolver } from '../../../dist/scp/index.cjs';
+import type { ColumnTypeResolver } from '../../../src/scp/coltype';
 import type { RelationDecl } from '../../../src/scp/relation';
 import type { SqlBundle } from '../../../src/scp/runtime';
 import { ddl } from '../orm-domain';
