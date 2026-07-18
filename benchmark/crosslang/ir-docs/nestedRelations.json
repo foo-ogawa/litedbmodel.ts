@@ -1,0 +1,121 @@
+{
+  "irVersion": 1,
+  "exprVersion": 2,
+  "components": [
+    {
+      "body": [
+        {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+            "arr": {
+              "obj": {
+                "id": "int",
+                "title": "string",
+                "author_id": "int"
+              }
+            }
+          },
+          "ports": {
+            "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = ? ORDER BY id ASC",
+            "p0": {
+              "ref": [
+                "author_id"
+              ]
+            }
+          }
+        },
+        {
+          "id": "rel_comments",
+          "map": {
+            "as": "$rel",
+            "component": "Select",
+            "over": {
+              "ref": [
+                "n0"
+              ]
+            },
+            "batched": true,
+            "relationKind": "connection",
+            "ports": {
+              "sql": "SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
+              "k0": {
+                "ref": [
+                  "$rel",
+                  "id"
+                ]
+              }
+            }
+          },
+          "outType": {
+            "arr": {
+              "arr": {
+                "obj": {
+                  "id": "int",
+                  "body": "string",
+                  "post_id": "int"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "inputPorts": {
+        "author_id": {
+          "required": true,
+          "type": "int"
+        }
+      },
+      "name": "ByAuthor",
+      "output": {
+        "obj": {
+          "rows": {
+            "ref": [
+              "n0"
+            ]
+          },
+          "comments": {
+            "ref": [
+              "rel_comments"
+            ]
+          }
+        }
+      },
+      "plan": {
+        "concurrency": 16,
+        "groups": [
+          [
+            0
+          ],
+          [
+            1
+          ]
+        ]
+      },
+      "outputType": {
+        "obj": {
+          "rows": {
+            "arr": {
+              "obj": {
+                "id": "int",
+                "title": "string",
+                "author_id": "int"
+              }
+            }
+          },
+          "comments": {
+            "arr": {
+              "arr": {
+                "obj": {
+                  "id": "int",
+                  "body": "string",
+                  "post_id": "int"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1365,23 +1365,20 @@ export function codegenEmitterFor(language: string, registered: readonly string[
  * exactly as it bakes a `SELECT`. A bundle carrying NEITHER a graph nor a statement is still a hard
  * error (nothing to generate).
  */
-export function generateCodegenArtifact(
-  bundle: SqlBundle,
-  language: string,
-  registeredLanguages: readonly string[],
-  resolveColumnType: ColumnTypeResolver,
-  runtimeImport?: string,
-): CodegenArtifact {
-  const emitter = typedEmitterFor(language, registeredLanguages);
-  // A COMPOSITE / nested Command carries a `transaction` plan but NO single-statement `readGraph` (it is
-  // a multi-statement RETURNING chain, not one Select/Insert). Re-express its plan as ONE native
-  // componentRef chain (E5/#120) — the SAME typed-native emitter bakes every statement's SQL + the
-  // RETURNING→next wiring. The generic exec seam wraps the generated runner in the tx envelope.
+/**
+ * Lower a §8 bundle to its final PORTABLE IR DOC — the EXACT unbranded `ComponentGraphIR` that
+ * {@link generateCodegenArtifact} feeds to `loadCompiledIR` + `generateModule` (after
+ * {@link lowerReadGraphForNativeSql} + {@link injectBatchedRelations}, or the tx-chain lowering). It is
+ * language-INDEPENDENT (one doc → every language's module) and JSON-serializable — so a build can write it
+ * out and drive bc's codegen CLI (`bc generate --in <doc.json> --lang <emitter>`) over the SAME lowering,
+ * with NO duplication of the lowering. This doc is a BUILD-TIME codegen input ONLY (never read at runtime;
+ * the runtime is the generated native module with baked SQL) — like graphddb's `operations.json`.
+ */
+export function lowerBundleToPortableIrDoc(bundle: SqlBundle, resolveColumnType: ColumnTypeResolver): ComponentGraphIR {
+  // A COMPOSITE / nested Command carries a `transaction` plan but NO single-statement `readGraph` — a
+  // multi-statement RETURNING chain re-expressed as ONE native componentRef chain (E5/#120).
   if (bundle.readGraph === undefined && bundle.transaction !== undefined) {
-    const txIr = lowerTransactionForNativeChain(bundle.transaction, resolveColumnType, bundle.dialect, bundle.name);
-    const txCompiled = loadCompiledIR(txIr);
-    const txModule = generateModule(txCompiled, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
-    return { language: language as CodegenLanguage, module: txModule, companion: companionOf(bundle), bundle };
+    return lowerTransactionForNativeChain(bundle.transaction, resolveColumnType, bundle.dialect, bundle.name);
   }
   if (bundle.readGraph === undefined) {
     throw new Error(
@@ -1390,25 +1387,27 @@ export function generateCodegenArtifact(
         `with neither was produced by some other path, and there is nothing to lower. No-assume, no-fallback.`,
     );
   }
-  // The portable IR exists ONLY transiently here as the generator's input — it is NOT part of the
-  // codegen OUTPUT (no artifact field, no file, no binary; the codegen path never reads IR data).
-  //
-  // THE SINGLE LOWERING (#116): the SQL-baking lowering bakes the read/write's rendered per-dialect
-  // SQL into the module as native literals with typed param ports, so the module carries its own
-  // query and needs NO runtime JSON companion read. It covers every read shape (scalar/optional/
-  // coalesce params, IN-list arrays, skip-optional WHERE fragments, single-key map relations) and
-  // writes. There is NO second lowering and NO opt-in flag — this is the only path.
+  // THE SINGLE LOWERING (#116): bake the read/write's rendered per-dialect SQL into native-literal ports
+  // (every read shape + writes). Then inject each `bundle.relations` RelationDecl batch as a bc batched-map
+  // node (E4/#119, native ONE-query relation). Additive; no relations ⇒ unchanged.
   const readIr = lowerReadGraphForNativeSql(bundle.readGraph, resolveColumnType);
-  // NATIVE BATCHED relations (E4/#119): inject each `bundle.relations` RelationDecl batch op as a bc
-  // batched-map node so the read module runs its relations NATIVELY (ONE batched child query, not the
-  // runtime companion stitch). Additive — a bundle with no relations is unchanged.
-  const ir = injectBatchedRelations(readIr, bundle.relations, resolveColumnType);
+  return injectBatchedRelations(readIr, bundle.relations, resolveColumnType);
+}
+
+export function generateCodegenArtifact(
+  bundle: SqlBundle,
+  language: string,
+  registeredLanguages: readonly string[],
+  resolveColumnType: ColumnTypeResolver,
+  runtimeImport?: string,
+): CodegenArtifact {
+  const emitter = typedEmitterFor(language, registeredLanguages);
+  const ir = lowerBundleToPortableIrDoc(bundle, resolveColumnType);
   // bc 0.8.0 (scp-only-authoring, SA3/SA7): `generateModule` fail-closes on un-tokened IR
-  // (`NON_COMPILED_IR`). This `ir` is DERIVED from `compileBehaviors`' real read graph (additively
-  // lowered/annotated), so it carries no in-process provenance token. Re-adopt it at this generation
-  // boundary via `loadCompiledIR` — the sanctioned seam that recomputes the canonical fingerprint once
-  // and mints the token (the derived graph IS the compiler's output transformed, never hand-forged raw
-  // IR). This is exactly bc's "codegen fixture / derived IR" boundary case.
+  // (`NON_COMPILED_IR`). This DERIVED `ir` carries no in-process provenance token, so re-adopt it at the
+  // generation boundary via `loadCompiledIR` (recomputes the canonical fingerprint + mints the token — bc's
+  // sanctioned "codegen fixture / derived IR" case). The bc CLI does the SAME `loadCompiledIR` over the
+  // serialized doc, so the CLI path is equivalent by construction.
   const compiled = loadCompiledIR(ir);
   const module = generateModule(compiled, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
   return { language: language as CodegenLanguage, module, companion: companionOf(bundle), bundle };
