@@ -24,9 +24,12 @@ const BUNDLE = (op) => join(PROOF, dialect, `bundle_${op}.json`);
 const INPUT_TMP = join(PROOF, `mode2_input.${dialect}.json`);
 let fail = 0;
 
-/** Ops whose native (bc de-box) output model has no distinct matching interpreter entry — reported,
- * not compared here (sqlite's run-proof.sh still covers them vs the TS interpreter oracle). */
-const OMIT = new Set(['deleteuser', 'relbatch', 'relsingle']);
+/** Ops whose native (bc batched-map de-box) {rows,posts} output has no DISTINCT matching interpreter
+ * entry — reported for a design decision (sqlite's run-proof.sh still covers them vs the TS interpreter
+ * oracle). read_bundle_pooled produces a hydrated shape (≠ {rows,posts}); exec_batched_relation matches
+ * but is the same facade the native companion uses (circular). deleteuser is NO LONGER omitted — the
+ * runtime now returns the {changes,lastInsertRowid} write summary for a no-RETURNING write. */
+const OMIT = new Set(['relbatch', 'relsingle']);
 
 /** Stable deep-equal via sorted-key canonical JSON (object key order-independent). */
 function stable(v) {

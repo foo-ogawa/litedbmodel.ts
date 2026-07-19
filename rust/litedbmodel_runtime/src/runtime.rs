@@ -35,7 +35,7 @@ use crate::value::{decode_scope, Scope};
 pub const ENTITY_ROOT: &str = "__entity";
 
 /// A SELECT (leading verb) or a write with RETURNING yields rows (mirrors TS `hasReturn`).
-fn is_return_stmt(sql: &str) -> bool {
+pub(crate) fn is_return_stmt(sql: &str) -> bool {
     let head: String = sql.chars().take(8).collect::<String>().to_ascii_lowercase();
     if head
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')

@@ -522,11 +522,33 @@ fn render_and_execute_node(
         Err(e) => return ExecOutcome::Error(e),
     };
     let params: Vec<Value> = rendered.params.iter().map(to_driver_param).collect();
-    // ③ execute through the CENTRAL SEAM (§2): middleware chain → connection_for(read) → execute.
-    // This is the ONLY driver contact for a read node — no direct `driver.prepare().all()`.
-    match exec_context::execute(ctx, &rendered.sql, &params, &StatementIntent::read()) {
-        Ok(rows) => ExecOutcome::Ok(Value::Arr(rows)),
-        Err(e) => ExecOutcome::Error(e.message),
+    // ③ execute through the CENTRAL SEAM (§2): middleware chain → connection_for → execute/run.
+    // This is the ONLY driver contact for a node — no direct `driver.prepare()`. A read (SELECT / Count /
+    // WITH-CTE) or a RETURNING write yields ROWS (`execute`); a NO-RETURNING WRITE (an Insert/Update/
+    // Delete node in a write bundle's readGraph — e.g. deleteUser) yields the single
+    // `{changes,lastInsertRowid}` summary row via `run` — byte-identical to the TS `executeStaticWrite`
+    // write summary (static-bundle.ts). The write is detected by its leading verb (a CTE read leads with
+    // WITH, not a write verb — so it takes the rows path even though it isn't a bare SELECT).
+    let head = rendered.sql.trim_start().to_ascii_lowercase();
+    let is_no_return_write =
+        (head.starts_with("insert") || head.starts_with("update") || head.starts_with("delete"))
+            && !crate::runtime::is_return_stmt(&rendered.sql);
+    if !is_no_return_write {
+        match exec_context::execute(ctx, &rendered.sql, &params, &StatementIntent::read()) {
+            Ok(rows) => ExecOutcome::Ok(Value::Arr(rows)),
+            Err(e) => ExecOutcome::Error(e.message),
+        }
+    } else {
+        match exec_context::run(ctx, &rendered.sql, &params, &StatementIntent::write()) {
+            Ok(info) => ExecOutcome::Ok(Value::Arr(vec![Value::Obj(vec![
+                ("changes".to_string(), Value::Int(info.changes)),
+                (
+                    "lastInsertRowid".to_string(),
+                    Value::Int(info.last_insert_rowid),
+                ),
+            ])])),
+            Err(e) => ExecOutcome::Error(e.message),
+        }
     }
 }
 
