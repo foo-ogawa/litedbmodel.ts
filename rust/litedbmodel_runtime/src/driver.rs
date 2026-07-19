@@ -49,6 +49,16 @@ pub trait PreparedStatement {
 pub trait Driver {
     fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_>;
 
+    /// The connection's SQL dialect (`"sqlite"` / `"postgres"` / `"mysql"`) — a CONNECTION property,
+    /// not a per-op flag. The native-codegen exec seam reads it (via the ctx's driver) to resolve the
+    /// dialect placeholder style (`?`→`$N` for postgres, via [`crate::static_bundle::render_placeholders`])
+    /// AT RUNTIME, after the final SQL is assembled — so the generated modules bake dialect-NEUTRAL `?`
+    /// and the ONE runtime exec point does the renumber (no per-op / generation-time split). Defaults to
+    /// `"sqlite"` (the in-proc conformance driver); the live PG/MySQL drivers + wrappers override.
+    fn dialect(&self) -> &'static str {
+        "sqlite"
+    }
+
     /// Begin a transaction, returning an OWNED [`TxConnection`] handle (§3 per-execution connection
     /// ownership — the rust analogue of v1 `PoolTransaction`). BEGIN is issued when the handle is
     /// built. A single-connection driver (the in-proc `rusqlite` seam) forwards every tx statement +
@@ -260,6 +270,10 @@ impl ConfiguredDriver {
 }
 
 impl Driver for ConfiguredDriver {
+    fn dialect(&self) -> &'static str {
+        self.inner.dialect()
+    }
+
     fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
         Box::new(ConfiguredPrepared {
             driver: self,

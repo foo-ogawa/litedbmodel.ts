@@ -42,9 +42,8 @@ import type { DialectName } from './dialect';
 import type { RelationOp } from './relation';
 import type { ReadGraph, StaticStatement } from './makesql/static-bundle';
 import type { TransactionPlan } from './makesql/tx';
-import { IN_SENTINEL } from './makesql/tx';
+import { IN_SENTINEL, mysqlPkHint, pkPort } from './makesql/tx';
 import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql/makesql';
-import { renderPlaceholders } from './makesql/handler';
 import { sqlTypeToBcScalar, type BcScalar, type ColumnTypeResolver } from './coltype';
 
 /**
@@ -504,7 +503,29 @@ function renderStaticSql(
   // `composeMakeSQL` validates the `?`/param count 1:1 and concatenates — the SAME call the runtime
   // makes. A value-spec param is not a nested `MakeSQL`, so it re-emits its `?` and rides through.
   const assembled = composeMakeSQL(nodes);
-  return { sql: renderPlaceholders(assembled.sql, dialect), params: assembled.params };
+  // Bake dialect-NEUTRAL `?` placeholders — the `?`→`$N` renumber is resolved ONCE at RUNTIME
+  // (litedbmodel_runtime's native exec, from the connection's dialect), NOT at generation time. A
+  // generation-time `$N` would desync when a mid-fragment skip drops (the numbers would skip); the
+  // single runtime renumber over the FINAL assembled SQL cannot. `dialect` is retained for the
+  // caller signature (dialect-specific SQL CONSTRUCTS — json_each/ANY, ON CONFLICT — are still baked
+  // per dialect upstream); only the placeholder style is neutralized here.
+  void dialect;
+  return { sql: assembled.sql, params: assembled.params };
+}
+
+/**
+ * Append the MySQL RETURNING pk-hint (` /*scp:pk=cols;ai=col* /`) to a baked mysql WRITE SQL — the
+ * native analogue of mode-2's `runtime.ts:390`/`:500` (`mysqlPkHint(compileWriteNode(...))`). It bakes
+ * the SAME lightweight hint the mode-2 path bakes, from the SAME SSoT ({@link pkPort} reads the pk
+ * descriptor off the write node's authored ports; {@link mysqlPkHint} formats + appends the comment).
+ * The MySQL driver emulation reads it to re-select the written row(s) by the REAL primary key /
+ * AUTO_INCREMENT range (a batch INSERT recovers all N rows, not just `last_insert_id`). PG/SQLite keep
+ * native RETURNING (no hint). This is a generation-time per-dialect SQL decoration (like `?`→`$N`) the
+ * DRIVER consumes — NOT the retired `/*scp-reselect: SELECT…* /` marker and not a new apparatus.
+ */
+function bakeMysqlPkHint(sql: string, dialect: DialectName, nodePorts: Record<string, unknown>): string {
+  if (dialect !== 'mysql') return sql;
+  return mysqlPkHint({ sql, params: [], pk: pkPort(nodePorts) }).sql;
 }
 
 /** Does any of a node's statements carry a `skip` presence expression? A skip fragment DROPS for
@@ -895,7 +916,7 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       if (batch !== undefined) {
         const rendered = renderStaticSql(stmts, readGraph.dialect, n.id, reasons);
         if (rendered === undefined) return n;
-        const newPorts: Record<string, unknown> = { sql: rendered.sql };
+        const newPorts: Record<string, unknown> = { sql: bakeMysqlPkHint(rendered.sql, readGraph.dialect, nodePorts) };
         batch.columns.forEach((col, i) => {
           const ref = batch.refs[i];
           const path = refPathOf(ref);
@@ -1010,9 +1031,9 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       // The single-`sql` port shape: the rendered SQL as a STATIC string port bc bakes as a native
       // literal, plus one typed port per bound `?` in placeholder order. For a map node the params may
       // include element-field refs (`{ref:[$e0, field]}`), which `paramPortFor` passes through (bc
-      // types them from the parent outType). A mysql write's RETURNING is rewritten to a re-select
-      // marker here (no-op for reads / pg / sqlite).
-      const newPorts: Record<string, unknown> = { sql: rendered.sql };
+      // types them from the parent outType). A mysql write's RETURNING gets the driver's pk-hint here
+      // (no-op for reads / pg / sqlite, and for a write without a declared pk).
+      const newPorts: Record<string, unknown> = { sql: bakeMysqlPkHint(rendered.sql, readGraph.dialect, nodePorts) };
       rendered.params.forEach((p, i) => {
         const port = paramPortFor(p, i, n.id, reasons, elementVar);
         if (port !== undefined) newPorts[`p${i}`] = port;
@@ -1283,10 +1304,12 @@ export function lowerTransactionForNativeChain(
       );
       return { id: s.id, component: 'Write', ports: {}, outType: TX_SUMMARY_ROW_TYPE };
     }
-    // A mysql RETURNING statement is rewritten to the re-select marker (SAME derivation as the single-write
-    // lowering, sharing the conflict key via writeMeta.onConflict); no-op for pg/sqlite / non-RETURNING.
+    // Bake dialect-NEUTRAL `?` (the `?`→`$N` renumber is the runtime's single point). A mysql RETURNING
+    // statement additionally gets the driver's pk-hint (from the plan op's `pk` descriptor) — the SAME
+    // `mysqlPkHint` SSoT mode-2's `runtime.ts:390` uses — so the driver emulation re-selects the written
+    // row by the real PK. No-op for pg/sqlite, non-RETURNING, or a statement without a declared pk.
     const ports: Record<string, unknown> = {
-      sql: renderPlaceholders(s.op.sql, dialect),
+      sql: dialect === 'mysql' ? mysqlPkHint({ sql: s.op.sql, params: [], pk: s.op.pk }).sql : s.op.sql,
     };
     const producers = new Set<string>();
     s.op.params.forEach((p, i) => {
@@ -1526,7 +1549,7 @@ function paramKeys(ports: Record<string, unknown>): string[] {
 function paramBindExpr(ports: Record<string, unknown>, key: string, inputPorts: Record<string, PortSchema>): string {
   const ref = refPathOf(ports[key]);
   const isArray = ref !== undefined && ref.length === 1 && (inputPorts[ref[0]] as { type?: unknown } | undefined)?.type === 'array';
-  return isArray ? `litedbmodel_runtime::wp_array(&ports.f_${key}, DIALECT)` : `litedbmodel_runtime::wp(&ports.f_${key})`;
+  return isArray ? `litedbmodel_runtime::wp_array(&ports.f_${key}, self.driver.dialect())` : `litedbmodel_runtime::wp(&ports.f_${key})`;
 }
 
 /** Emit ONE read/write/tx node's `node_*` handler body (a plain rows/summary read/write, a skip read, a
@@ -1577,7 +1600,7 @@ function emitReadWriteNode(
     return [
       sig,
       `        let frags = vec![${frags.join(', ')}];`,
-      `        litedbmodel_runtime::exec_skip(self.driver, DIALECT, &ports.f_sql_head, &[${headParams.join(', ')}], &frags, &ports.f_sql_tail, &[${tailParams.join(', ')}]).map_err(cvt)`,
+      `        litedbmodel_runtime::exec_skip(self.driver, &ports.f_sql_head, &[${headParams.join(', ')}], &frags, &ports.f_sql_tail, &[${tailParams.join(', ')}]).map_err(cvt)`,
       `    }`,
     ].join('\n');
   }
@@ -1591,7 +1614,7 @@ function emitReadWriteNode(
     return [
       sig,
       `        let cells: Vec<Vec<Value>> = vec![${cells.join(', ')}];`,
-      `        litedbmodel_runtime::exec_batch_write(self.driver, DIALECT, &ports.f_sql, &[${cols}], &cells, ${returning}).map_err(cvt)`,
+      `        litedbmodel_runtime::exec_batch_write(self.driver, &ports.f_sql, &[${cols}], &cells, ${returning}).map_err(cvt)`,
       `    }`,
     ].join('\n');
   }
@@ -1626,7 +1649,7 @@ function emitBatchedRelationNode(n: Record<string, unknown>, comp: string, relat
     `    fn ${`node_${id}`}(&self, ports: &PortsNR${comp}${camel}Batch, _bound: Option<String>) -> Result<Vec<Wire>, BehaviorError> {`,
     `        let tuples: Vec<Vec<Value>> = ports.items.iter().map(|it| vec![${tuple}]).collect();`,
     `        let sql = ports.items.first().map(|it| it.f_sql.clone()).unwrap_or_default();`,
-    `        litedbmodel_runtime::exec_batched_relation(self.driver, ${JSON.stringify(relOp.kind)}, DIALECT, &sql, &[${pk}], &[${tk}], &tuples)`,
+    `        litedbmodel_runtime::exec_batched_relation(self.driver, ${JSON.stringify(relOp.kind)}, &sql, &[${pk}], &[${tk}], &tuples)`,
     `            .map(|v| v.into_iter().map(Wire).collect())`,
     `            .map_err(cvt_rel)`,
     `    }`,
@@ -1661,8 +1684,8 @@ export function generateRustCompanion(bundle: SqlBundle, moduleName: string, res
     `// orphan rule forbids the module-local wire trait impls living in the runtime crate).`,
     `use super::${moduleName}::*;`,
     `use litedbmodel_runtime::{Driver, RuntimeError, SqlFailure, Value, Wire};`,
-    ``,
-    `const DIALECT: &str = ${JSON.stringify(bundle.dialect)};`,
+    `// The dialect is a CONNECTION property (\`self.driver.dialect()\`), not baked here — the generated`,
+    `// SQL is dialect-neutral in its placeholders (\`?\`); the runtime renumbers \`?\`→\`\$N\` per connection.`,
     ``,
     `litedbmodel_runtime::wire_impls!();`,
     ``,

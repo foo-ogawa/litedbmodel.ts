@@ -72,6 +72,9 @@ struct CountingDriver {
     inner: Box<dyn Driver>,
 }
 impl Driver for CountingDriver {
+    fn dialect(&self) -> &'static str {
+        self.inner.dialect()
+    }
     fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
         QUERY_COUNT.fetch_add(1, Ordering::Relaxed);
         self.inner.prepare(sql)

@@ -7,8 +7,8 @@
 // orphan rule forbids the module-local wire trait impls living in the runtime crate).
 use super::generated_txnestedupdate::*;
 use litedbmodel_runtime::{Driver, RuntimeError, SqlFailure, Value, Wire};
-
-const DIALECT: &str = "sqlite";
+// The dialect is a CONNECTION property (`self.driver.dialect()`), not baked here — the generated
+// SQL is dialect-neutral in its placeholders (`?`); the runtime renumbers `?`→`$N` per connection.
 
 litedbmodel_runtime::wire_impls!();
 

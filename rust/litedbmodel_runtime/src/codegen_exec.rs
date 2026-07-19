@@ -466,28 +466,35 @@ pub fn exec(
     params: &[Value],
     mode: ExecMode,
 ) -> Result<Wire, SqlFailure> {
+    // THE single dialect placeholder-resolution point (SSoT): the generated modules bake dialect-NEUTRAL
+    // `?`; here — after the final SQL is assembled, using the CONNECTION's dialect (a ctx property, not a
+    // per-op flag) — `?`→`$N` is renumbered for postgres via the existing `render_placeholders` (a no-op
+    // for sqlite/mysql, which keep `?`). Applied ONCE, so a mid-fragment skip drop can never desync the
+    // `$N` sequence (the latent bug of a generation-time renumber). mode-2 does NOT route through here
+    // (it renders its own `$N`), so there is no double-conversion.
+    let sql = render_placeholders(sql, ctx.driver().dialect());
     match mode {
         ExecMode::Rows => Ok(rows_wire(exec_context::execute(
             ctx,
-            sql,
+            &sql,
             params,
             &StatementIntent::read(),
         )?)),
         ExecMode::Summary => Ok(summary_wire(exec_context::run(
             ctx,
-            sql,
+            &sql,
             params,
             &StatementIntent::write(),
         )?)),
         ExecMode::RowSingle => Ok(Wire(
-            exec_context::execute(ctx, sql, params, &StatementIntent::read())?
+            exec_context::execute(ctx, &sql, params, &StatementIntent::read())?
                 .into_iter()
                 .next()
                 .unwrap_or(Value::Null),
         )),
         ExecMode::SummarySingle => Ok(Wire(summary_obj(exec_context::run(
             ctx,
-            sql,
+            &sql,
             params,
             &StatementIntent::write(),
         )?))),
@@ -510,7 +517,6 @@ pub struct SkipFrag {
 /// the mode-2 runtime applies. Byte-identical SQL to the mode-2 assembly for a given present-set.
 pub fn exec_skip(
     driver: &dyn Driver,
-    dialect: &str,
     head: &str,
     head_params: &[Value],
     frags: &[SkipFrag],
@@ -531,7 +537,8 @@ pub fn exec_skip(
     }
     sql.push_str(tail);
     params.extend(tail_params.iter().cloned());
-    let sql = render_placeholders(&sql, dialect);
+    // The assembled SQL keeps `?`; the ONE dialect renumber happens in `exec` (from the connection's
+    // dialect) — so a dropped mid-fragment can never desync the `$N` sequence.
     exec(
         &exec_context::for_driver(driver),
         &sql,
@@ -553,13 +560,14 @@ pub fn exec_skip(
 /// is a BIND concern (the SQL text is already baked per dialect), not a second executor.
 pub fn exec_batch_write(
     driver: &dyn Driver,
-    dialect: &str,
     sql: &str,
     columns: &[&str],
     cells: &[Vec<Value>],
     returning: bool,
 ) -> Result<Wire, SqlFailure> {
-    let params: Vec<Value> = if dialect == "postgres" {
+    // The array-bind shape is the CONNECTION's dialect (not a per-op flag) — same source as the
+    // placeholder renumber. postgres → per-column `Value::Arr` (`$N::T[]`); mysql/sqlite → the json bind.
+    let params: Vec<Value> = if driver.dialect() == "postgres" {
         // v1 UNNEST: one array param per column, in column order (matches `UNNEST($1::T[], $2::T[], …)`).
         cells.iter().map(|c| Value::Arr(c.clone())).collect()
     } else {
@@ -827,7 +835,6 @@ mod tests {
         let d = seeded();
         let present = exec_skip(
             &d,
-            "sqlite",
             "SELECT id FROM t",
             &[],
             &[SkipFrag {
@@ -842,7 +849,6 @@ mod tests {
         assert_eq!(present.rt_len(), 2);
         let dropped = exec_skip(
             &d,
-            "sqlite",
             "SELECT id FROM t",
             &[],
             &[SkipFrag {
@@ -857,6 +863,64 @@ mod tests {
         assert_eq!(dropped.rt_len(), 3); // fragment dropped ⇒ all rows
     }
 
+    /// REGRESSION (#124 placeholder unification): a MID-fragment optional skip that drops must NOT desync
+    /// the remaining placeholders. Here the MIDDLE fragment (`name = ?`) is absent while a fragment BEFORE
+    /// (`id >= ?`) and AFTER (`id <= ?`) it are present — so the after-fragment's param must still bind to
+    /// the SECOND `?`, not the third. The single runtime renumber over the FINAL assembled SQL guarantees
+    /// this (a generation-time `$N` would have frozen the after-fragment at `$3` and desynced on pg); on
+    /// sqlite the `?` bind order is what proves the assembly aligned the params. `bymaybe` (optional at the
+    /// TAIL) can never expose this — the dropped-in-the-middle case can.
+    #[test]
+    fn exec_skip_mid_optional_drop_keeps_placeholders_aligned() {
+        let d = seeded(); // rows id 1='a', 2='b', 3='b'
+        let frags = |mid_present: bool| {
+            vec![
+                SkipFrag {
+                    sql: "id >= ?".into(),
+                    present: true,
+                    params: vec![Value::Int(2)],
+                },
+                SkipFrag {
+                    sql: "name = ?".into(),
+                    present: mid_present,
+                    params: if mid_present {
+                        vec![Value::Str("nope".into())]
+                    } else {
+                        vec![]
+                    },
+                },
+                SkipFrag {
+                    sql: "id <= ?".into(),
+                    present: true,
+                    params: vec![Value::Int(3)],
+                },
+            ]
+        };
+        // Middle DROPPED: `WHERE id >= ? AND id <= ?` bound [2, 3] → rows 2,3. If the after-fragment's `?`
+        // had desynced (bound 3 to a stale third slot), the count would be wrong / the query would error.
+        let dropped = exec_skip(
+            &d,
+            "SELECT id FROM t",
+            &[],
+            &frags(false),
+            " ORDER BY id ASC",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(dropped.rt_len(), 2);
+        // Middle PRESENT: `WHERE id >= ? AND name = ? AND id <= ?` bound [2,'nope',3] → 0 rows (no 'nope').
+        let present = exec_skip(
+            &d,
+            "SELECT id FROM t",
+            &[],
+            &frags(true),
+            " ORDER BY id ASC",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(present.rt_len(), 0);
+    }
+
     /// `exec_batch_write` zips the parallel column arrays into ONE json_each statement (N rows, 1 stmt).
     #[test]
     fn exec_batch_write_zips_one_statement() {
@@ -867,7 +931,6 @@ mod tests {
         ];
         let w = exec_batch_write(
             &d,
-            "sqlite",
             "INSERT INTO t (id, name) SELECT json_extract(value,'$.id'), json_extract(value,'$.name') FROM json_each(?)",
             &["id", "name"],
             &cells,

@@ -7,8 +7,8 @@
 // orphan rule forbids the module-local wire trait impls living in the runtime crate).
 use super::generated_byids::*;
 use litedbmodel_runtime::{Driver, RuntimeError, SqlFailure, Value, Wire};
-
-const DIALECT: &str = "sqlite";
+// The dialect is a CONNECTION property (`self.driver.dialect()`), not baked here — the generated
+// SQL is dialect-neutral in its placeholders (`?`); the runtime renumbers `?`→`$N` per connection.
 
 litedbmodel_runtime::wire_impls!();
 
@@ -21,7 +21,7 @@ pub struct Rt<'a> { driver: &'a dyn Driver }
 impl<'a> HandlerNRByIds for Rt<'a> {
     type Wire = Wire;
     fn node_n0(&self, ports: &PortsNRByIdsN0, _bound: Option<String>) -> Result<Wire, BehaviorError> {
-        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &[litedbmodel_runtime::wp_array(&ports.f_p0, DIALECT)], litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
+        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &[litedbmodel_runtime::wp_array(&ports.f_p0, self.driver.dialect())], litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
     }
 }
 

@@ -198,6 +198,10 @@ impl PostgresDriver {
 }
 
 impl Driver for PostgresDriver {
+    fn dialect(&self) -> &'static str {
+        "postgres"
+    }
+
     fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
         Box::new(PgPrepared {
             driver: self,
@@ -1210,6 +1214,10 @@ impl PreparedStatement for MyPrepared<'_> {
 }
 
 impl Driver for MysqlDriver {
+    fn dialect(&self) -> &'static str {
+        "mysql"
+    }
+
     fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
         Box::new(MyPrepared {
             driver: self,

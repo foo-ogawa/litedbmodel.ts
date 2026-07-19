@@ -21,6 +21,13 @@ const execSrc = rd('rust/litedbmodel_runtime/src/codegen_exec.rs');
 const execCount = (execSrc.match(/\bpub fn exec\(/g) ?? []).length;
 check('invariant 1: rust executor defined exactly once', execCount === 1, `found ${execCount} \`pub fn exec(\``);
 
+// Strip `//` line comments + `/* … */` block comments — the invariants are CODE-level (a DB branch, an
+// emitted marker), not prose; explanatory comments legitimately NAME the forbidden things to say what is
+// NOT done, so they must not trip the mechanical greps.
+function stripComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
 // ── 2/3/4. The executor takes only SQL/params/mode: no operation name, no DB-kind branch inside it. ──
 // Extract the `pub fn exec(` body (brace-matched) and assert it names neither a DB dialect nor an op.
 function fnBody(src, header) {
@@ -35,7 +42,7 @@ function fnBody(src, header) {
   }
   return '';
 }
-const execBody = fnBody(execSrc, 'pub fn exec(');
+const execBody = stripComments(fnBody(execSrc, 'pub fn exec('));
 check('invariant 3: executor does not branch on DB kind', !/postgres|mysql|sqlite|Postgres|Mysql|Sqlite/.test(execBody), 'executor body names a dialect/driver');
 check(
   'invariant 2/4: executor takes only ctx/sql/params/mode (no operation names, no dialect text)',
@@ -66,13 +73,16 @@ const noHandwrittenExec = companionFiles.every((f) => {
 });
 check('invariant 7: companions delegate to runtime executors (no hand-written driver exec)', noHandwrittenExec);
 
-// ── mysql RETURNING-emulation SCAFFOLD is gone (Driver emulates; no codegen marker, no runtime parser). ──
+// ── The heavy mysql RETURNING-emulation SCAFFOLD is gone: no `mysqlWriteReselect`, no emitted
+//    `/*scp-reselect: SELECT…*/` marker (the driver emulates RETURNING). The LIGHTWEIGHT `/*scp:pk=…*/`
+//    hint (mode-2's `runtime.ts:390` SSoT the driver reads) IS ALLOWED — it is not checked here. Comments
+//    are stripped so a doc note that MENTIONS the retired marker (to say it is gone) does not trip this. ──
 const reselHits = [];
 for (const rel of ['src/scp/codegen.ts', 'rust/litedbmodel_runtime/src', 'rust/e1_native_proof/src']) {
   const p = join(ROOT, rel);
   if (!existsSync(p)) continue;
   const files = rel.endsWith('.ts') ? [rel] : readdirSync(p).filter((f) => f.endsWith('.rs')).map((f) => join(rel, f));
-  for (const f of files) if (/mysqlWriteReselect|scp-reselect/.test(rd(f))) reselHits.push(f);
+  for (const f of files) if (/mysqlWriteReselect|scp-reselect/.test(stripComments(rd(f)))) reselHits.push(f);
 }
 check('mysql reselect scaffold removed (mysqlWriteReselect / scp-reselect marker)', reselHits.length === 0, reselHits.join(', '));
 

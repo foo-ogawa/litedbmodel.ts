@@ -118,31 +118,31 @@ class OrmWrites extends SemanticBehavior {
   static columns = USER_COLUMNS;
   /** INSERT … RETURNING — a row-returning write. */
   CreateUser($: { email: unknown; name: unknown }) {
-    return L.Insert({ table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id, email, name' });
+    return L.Insert({ table: 'benchmark_users', pk: 'id', autoInc: 'id', 'values.email': $.email, 'values.name': $.name, returning: 'id, email, name' });
   }
   /** UPDATE … WHERE … RETURNING — SET value + WHERE-bound head, both typed from the authored ports. */
   RenameUser($: { id: unknown; name: unknown }) {
-    return L.Update({ table: 'benchmark_users', 'set.name': $.name, where: [whereEq(($ as never)['id'], $.id)], returning: 'id, email, name' });
+    return L.Update({ table: 'benchmark_users', pk: 'id', autoInc: 'id', 'set.name': $.name, where: [whereEq(($ as never)['id'], $.id)], returning: 'id, email, name' });
   }
   /** DELETE … WHERE — a NON-returning write: the summary row [{changes, lastInsertRowid}]. */
   DeleteUser($: { id: unknown }) {
-    return L.Delete({ table: 'benchmark_users', where: [whereEq(($ as never)['id'], $.id)] });
+    return L.Delete({ table: 'benchmark_users', pk: 'id', autoInc: 'id', where: [whereEq(($ as never)['id'], $.id)] });
   }
   /** E2 (#117) UPSERT — INSERT … ON CONFLICT … DO UPDATE … RETURNING (insert-path AND conflict-path). */
   UpsertUser($: { email: unknown; name: unknown }) {
-    return L.Insert({ table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, onConflict: 'email', onConflictAction: 'update', returning: 'id, email, name' });
+    return L.Insert({ table: 'benchmark_users', pk: 'id', autoInc: 'id', 'values.email': $.email, 'values.name': $.name, onConflict: 'email', onConflictAction: 'update', returning: 'id, email, name' });
   }
   /** E3 (#118) createMany — ONE json_each batch INSERT for N records (parallel column arrays). */
   CreateMany($: { emails: unknown; names: unknown }) {
-    return L.Insert({ table: 'benchmark_users', batch: 'true', 'values.email': $.emails, 'values.name': $.names, returning: 'id, email, name' });
+    return L.Insert({ table: 'benchmark_users', pk: 'id', autoInc: 'id', batch: 'true', 'values.email': $.emails, 'values.name': $.names, returning: 'id, email, name' });
   }
   /** E2 (#117) upsertMany — batch + onConflict: ONE json_each INSERT … ON CONFLICT … DO UPDATE. */
   UpsertMany($: { emails: unknown; names: unknown }) {
-    return L.Insert({ table: 'benchmark_users', batch: 'true', 'values.email': $.emails, 'values.name': $.names, onConflict: 'email', onConflictAction: 'update', returning: 'id, email, name' });
+    return L.Insert({ table: 'benchmark_users', pk: 'id', autoInc: 'id', batch: 'true', 'values.email': $.emails, 'values.name': $.names, onConflict: 'email', onConflictAction: 'update', returning: 'id, email, name' });
   }
   /** E3 (#118) updateMany — ONE json_each batch UPDATE keyed by id, setting name for N rows. */
   UpdateMany($: { ids: unknown; names: unknown }) {
-    return L.Update({ table: 'benchmark_users', batch: 'true', 'key.id': $.ids, 'set.name': $.names, returning: 'id, email, name' });
+    return L.Update({ table: 'benchmark_users', pk: 'id', autoInc: 'id', batch: 'true', 'key.id': $.ids, 'set.name': $.names, returning: 'id, email, name' });
   }
 }
 

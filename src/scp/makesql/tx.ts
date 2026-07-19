@@ -595,7 +595,7 @@ function pgBatchUpdate(table: string, keyCols: string[], updateCols: string[], k
  * defaults to null (the emulation then keeps its legacy `WHERE id`/`LAST_INSERT_ID` path, so the
  * existing auto-increment-`id` corpus is unchanged).
  */
-function pkPort(ports: Record<string, unknown>): { columns: readonly string[]; autoInc: string | null } | undefined {
+export function pkPort(ports: Record<string, unknown>): { columns: readonly string[]; autoInc: string | null } | undefined {
   const pk = stringPort(ports, 'pk');
   if (pk === undefined) return undefined;
   const columns = pk.split(',').map((c) => c.trim()).filter((c) => c.length > 0);

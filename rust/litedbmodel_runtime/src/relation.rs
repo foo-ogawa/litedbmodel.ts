@@ -348,12 +348,14 @@ pub fn stitch_relation(
 pub fn exec_batched_relation(
     driver: &dyn Driver,
     kind: &str,
-    dialect: &str,
     sql: &str,
     parent_keys: &[&str],
     target_keys: &[&str],
     key_tuples: &[Vec<Value>],
 ) -> Result<Vec<Value>, RuntimeError> {
+    // The dialect is the CONNECTION's (a driver property) — `run_relation_op` uses it for the pg array
+    // cast + bind + the `?`→`$N` renumber (its own SSoT render point, shared with mode-2 relations).
+    let dialect = driver.dialect();
     let op = RelationOp {
         name: String::new(),
         kind: kind.to_string(),
