@@ -1,201 +1,289 @@
-// The go SDK BASELINE — raw driver + hand-SQL for benchmark_* (the fair 1.0x denominator). The SAME
-// hand-SQL as the rust SDK (N+1-avoided parent+IN-child relations; single-CASE updateMany, not a per-row
-// loop; BEGIN/COMMIT tx). Uses the seam's Query/Execute (prepared-stmt cache, matching native's driver).
+// The go SDK BASELINE — raw driver + hand-SQL for benchmark_* (the fair 1.0x denominator, the ONLY
+// hand-written execution besides the leaf handlers). Reads the materialized wire rows DIRECTLY by column
+// name (NOT via the generated de-box — that is the native path). Dialect-aware (the go twin of the rust
+// SDK): pg `$N` + native arrays; sqlite/mysql `?`; mysql has no RETURNING so upsert/tx-chain inserts
+// route the SAME re-select marker through the seam. v1-faithful returning (upsert→[{id}], no-returning
+// writes→null, tx→{committed,state}).
 package main
 
 import (
-	"database/sql"
 	"strconv"
 	"strings"
+
+	"github.com/lib/pq"
+	"orm_bench_go/wire"
 )
 
-func sdkUsers(db *seamDB, query string, params []any) string {
-	rows, _ := Query(db, query, params, func(r *sql.Rows) (string, error) {
-		var id int64
-		var e, n string
-		if err := r.Scan(&id, &e, &n); err != nil {
-			return "", err
-		}
-		return userRow(id, e, n), nil
-	})
-	return arrj(rows)
+// ph — the n-th positional placeholder for the dialect (`$n` pg / `?` sqlite+mysql).
+func ph(db *wire.DB, n int) string {
+	if db.Dialect == "postgres" {
+		return "$" + strconv.Itoa(n)
+	}
+	return "?"
 }
-func sdkFindAll(db *seamDB) string {
-	return sdkUsers(db, "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT 100", nil)
+func sdkUserRows(db *wire.DB, sqlText string, params []any) string {
+	rows, _ := wire.QueryRows(db, sqlText, params)
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = wire.UserRow(r.Int("id"), r.Str("email"), r.Str("name"))
+	}
+	return wire.Arrj(out)
 }
-func sdkFindFirst(db *seamDB) string {
-	return sdkUsers(db, "SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1", []any{"User%"})
+func sdkNull(db *wire.DB, sqlText string, params []any) string {
+	_, _ = wire.ExecuteNull(db, sqlText, params)
+	return "null"
 }
-func sdkFindUnique(db *seamDB) string {
-	return sdkUsers(db, "SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1", []any{"user500@example.com"})
+
+func sdkFindAll(db *wire.DB) string {
+	return sdkUserRows(db, "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT 100", nil)
 }
-func sdkFilterPaginateSort(db *seamDB) string {
-	rows, _ := Query(db, "SELECT id, title, content, published, author_id, created_at FROM benchmark_posts WHERE published = ? ORDER BY created_at DESC LIMIT 20 OFFSET 10", []any{1}, func(r *sql.Rows) (string, error) {
-		var id, pub, aid int64
-		var title, created string
-		var content sql.NullString
-		if err := r.Scan(&id, &title, &content, &pub, &aid, &created); err != nil {
-			return "", err
-		}
-		return objj(ki("id", id), ks("title", title), ks("content", content.String), ki("published", pub), ki("author_id", aid), ks("created_at", created)), nil
-	})
-	return arrj(rows)
+func sdkFindFirst(db *wire.DB) string {
+	return sdkUserRows(db, "SELECT id, email, name FROM benchmark_users WHERE name LIKE "+ph(db, 1)+" LIMIT 1", []any{"User%"})
 }
-func sdkCreate(db *seamDB) string {
-	return sdkUsers(db, "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id, email, name", []any{"new@bench.com", "New"})
+func sdkFindUnique(db *wire.DB) string {
+	return sdkUserRows(db, "SELECT id, email, name FROM benchmark_users WHERE email = "+ph(db, 1)+" LIMIT 1", []any{"user500@example.com"})
 }
-func sdkUpdate(db *seamDB) string {
-	return sdkUsers(db, "UPDATE benchmark_users SET name = ? WHERE id = ? RETURNING id, email, name", []any{"Updated 100", 100})
+func sdkFilterPaginateSort(db *wire.DB) string {
+	rows, _ := wire.QueryRows(db, "SELECT id, title, content, published, author_id, created_at FROM benchmark_posts WHERE published = "+ph(db, 1)+" ORDER BY created_at DESC LIMIT 20 OFFSET 10", []any{1})
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = wire.Objj(wire.Ki("id", r.Int("id")), wire.Ks("title", r.Str("title")), wire.Ks("content", r.Str("content")), wire.Ki("published", r.Int("published")), wire.Ki("author_id", r.Int("author_id")), wire.Ks("created_at", r.Str("created_at")))
+	}
+	return wire.Arrj(out)
 }
-func sdkUpsert(db *seamDB) string {
-	return sdkUsers(db, "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id, email, name", []any{"user1@example.com", "Upserted One"})
+func sdkCreate(db *wire.DB) string {
+	return sdkNull(db, "INSERT INTO benchmark_users (email, name) VALUES ("+ph(db, 1)+", "+ph(db, 2)+")", []any{"new@bench.com", "New"})
 }
-func sdkInsertManyVALUES(db *seamDB, emails, names []string, conflict string) string {
-	ph := make([]string, len(emails))
+func sdkUpdate(db *wire.DB) string {
+	return sdkNull(db, "UPDATE benchmark_users SET name = "+ph(db, 1)+" WHERE id = "+ph(db, 2), []any{"Updated 100", 100})
+}
+
+// The upsert baseline RETURNS the pk only (v1 {returning:true}); per-dialect conflict tail (mysql uses
+// ON DUPLICATE KEY + the SAME re-select marker the native path uses → identical seam emulation).
+func sdkUpsertSQL(db *wire.DB) string {
+	if db.Dialect == "mysql" {
+		return "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE email = VALUES(email), name = VALUES(name) /*scp-reselect: SELECT id FROM benchmark_users WHERE email = ? ORDER BY id ::binds:: p0*/"
+	}
+	return "INSERT INTO benchmark_users (email, name) VALUES (" + ph(db, 1) + ", " + ph(db, 2) + ") ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id"
+}
+func sdkIDRows(rows []wire.RowData) string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = wire.Objj(wire.Ki("id", r.Int("id")))
+	}
+	return wire.Arrj(out)
+}
+func sdkUpsert(db *wire.DB) string {
+	rows, _ := wire.QueryRows(db, sdkUpsertSQL(db), []any{"user1@example.com", "Upserted One"})
+	return sdkIDRows(rows)
+}
+
+// The per-dialect upsertMany conflict tail (NO returning).
+func upsertManyTail(db *wire.DB) string {
+	if db.Dialect == "mysql" {
+		return " ON DUPLICATE KEY UPDATE email = VALUES(email), name = VALUES(name)"
+	}
+	return " ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name"
+}
+func sdkInsertManyVALUES(db *wire.DB, emails, names []string, tail string) string {
+	tuples := make([]string, len(emails))
 	params := make([]any, 0, len(emails)*2)
 	for i := range emails {
-		ph[i] = "(?, ?)"
+		tuples[i] = "(" + ph(db, 2*i+1) + ", " + ph(db, 2*i+2) + ")"
 		params = append(params, emails[i], names[i])
 	}
-	sql := "INSERT INTO benchmark_users (email, name) VALUES " + strings.Join(ph, ", ") + conflict + " RETURNING id, email, name"
-	return sdkUsers(db, sql, params)
+	return sdkNull(db, "INSERT INTO benchmark_users (email, name) VALUES "+strings.Join(tuples, ", ")+tail, params)
 }
-func sdkCreateMany(db *seamDB) string { return sdkInsertManyVALUES(db, batchEmails(), batchNames(), "") }
-func sdkUpsertMany(db *seamDB) string {
-	return sdkInsertManyVALUES(db, upsertManyEmails(), batchNames(), " ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name")
+func sdkCreateMany(db *wire.DB) string {
+	return sdkInsertManyVALUES(db, wire.BatchEmails(), wire.BatchNames(), "")
 }
-func sdkUpdateMany(db *seamDB) string {
-	// hand-OPTIMIZED single CASE update (not a per-row loop).
-	names := batchNames()
+func sdkUpsertMany(db *wire.DB) string {
+	return sdkInsertManyVALUES(db, wire.UpsertManyEmails(), wire.BatchNames(), upsertManyTail(db))
+}
+func sdkUpdateMany(db *wire.DB) string {
+	// hand-OPTIMIZED single CASE update (not a per-row loop); NO returning (v1) → null.
+	names := wire.BatchNames()
 	cases := make([]string, 10)
 	params := make([]any, 10)
 	for i := 0; i < 10; i++ {
-		cases[i] = "WHEN " + strconv.Itoa(i+1) + " THEN ?"
+		cases[i] = "WHEN " + strconv.Itoa(i+1) + " THEN " + ph(db, i+1)
 		params[i] = names[i]
 	}
-	sql := "UPDATE benchmark_users SET name = CASE id " + strings.Join(cases, " ") + " END WHERE id IN (1,2,3,4,5,6,7,8,9,10) RETURNING id, email, name"
-	return sdkUsers(db, sql, params)
+	return sdkNull(db, "UPDATE benchmark_users SET name = CASE id "+strings.Join(cases, " ")+" END WHERE id IN (1,2,3,4,5,6,7,8,9,10)", params)
 }
 
 // read+rel: parent query + ONE batched IN child query + client-side group/align (N+1 avoided).
-func sdkRelSingle(db *seamDB, parentSQL string, parentParams []any, parentScan func(*sql.Rows) (int64, string), childSQLFmt string, childScan func(*sql.Rows) (int64, string), rel string) string {
-	parents, _ := Query(db, parentSQL, parentParams, func(r *sql.Rows) ([2]any, error) { k, j := parentScan(r); return [2]any{k, j}, nil })
-	keys := make([]int64, len(parents))
-	for i, p := range parents {
-		keys[i] = p[0].(int64)
+// pg binds ONE `= ANY($1::int[])` native array; sqlite/mysql bind an `IN (?,?,…)` list.
+func sdkChildInClause(db *wire.DB, keys []int64) (string, []any) {
+	if db.Dialect == "postgres" {
+		return "= ANY($1::int[])", []any{pq.Array(keys)}
 	}
-	inlist := make([]string, len(keys))
+	marks := make([]string, len(keys))
 	params := make([]any, len(keys))
 	for i, k := range keys {
-		inlist[i] = "?"
+		marks[i] = "?"
 		params[i] = k
 	}
-	childSQL := strings.Replace(childSQLFmt, "{IN}", strings.Join(inlist, ","), 1)
-	children, _ := Query(db, childSQL, params, func(r *sql.Rows) ([2]any, error) { k, j := childScan(r); return [2]any{k, j}, nil })
+	return "IN (" + strings.Join(marks, ",") + ")", params
+}
+func sdkRelSingle(db *wire.DB, parentSQL string, parentParams []any, parentKey string, parentSer func(wire.RowData) string, childSQLTmpl, childKey string, childSer func(wire.RowData) string, rel string) string {
+	parents, _ := wire.QueryRows(db, parentSQL, parentParams)
+	keys := make([]int64, len(parents))
+	for i, r := range parents {
+		keys[i] = r.Int(parentKey)
+	}
+	inClause, childParams := sdkChildInClause(db, keys)
+	children, _ := wire.QueryRows(db, strings.Replace(childSQLTmpl, "{IN}", inClause, 1), childParams)
 	groups := map[int64][]string{}
 	for _, c := range children {
-		k := c[0].(int64)
-		groups[k] = append(groups[k], c[1].(string))
+		groups[c.Int(childKey)] = append(groups[c.Int(childKey)], childSer(c))
 	}
 	ps := make([]string, len(parents))
 	cs := make([]string, len(parents))
-	for i, p := range parents {
-		ps[i] = p[1].(string)
-		cs[i] = arrj(groups[p[0].(int64)])
+	for i, r := range parents {
+		ps[i] = parentSer(r)
+		cs[i] = wire.Arrj(groups[r.Int(parentKey)])
 	}
-	return relJSON(rel, ps, cs)
+	return wire.RelJSON(rel, ps, cs)
 }
-func sdkNestedFindAll(db *seamDB) string {
-	return sdkRelSingle(db, "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT 100", nil,
-		func(r *sql.Rows) (int64, string) { var id int64; var e, n string; r.Scan(&id, &e, &n); return id, userRow(id, e, n) },
-		"SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN ({IN}) ORDER BY id ASC",
-		func(r *sql.Rows) (int64, string) { var id, a int64; var t string; r.Scan(&id, &t, &a); return a, postRow(id, t, a) }, "posts")
+func userSer(r wire.RowData) string { return wire.UserRow(r.Int("id"), r.Str("email"), r.Str("name")) }
+func postSer(r wire.RowData) string {
+	return wire.PostRow(r.Int("id"), r.Str("title"), r.Int("author_id"))
 }
-func sdkNestedFindFirst(db *seamDB) string {
-	return sdkRelSingle(db, "SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1", []any{"User%"},
-		func(r *sql.Rows) (int64, string) { var id int64; var e, n string; r.Scan(&id, &e, &n); return id, userRow(id, e, n) },
-		"SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN ({IN}) ORDER BY id ASC",
-		func(r *sql.Rows) (int64, string) { var id, a int64; var t string; r.Scan(&id, &t, &a); return a, postRow(id, t, a) }, "posts")
+func commentSer(r wire.RowData) string {
+	return wire.CommentRow(r.Int("id"), r.Str("body"), r.Int("post_id"))
 }
-func sdkNestedFindUnique(db *seamDB) string {
-	return sdkRelSingle(db, "SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1", []any{"user1@example.com"},
-		func(r *sql.Rows) (int64, string) { var id int64; var e, n string; r.Scan(&id, &e, &n); return id, userRow(id, e, n) },
-		"SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN ({IN}) ORDER BY id ASC",
-		func(r *sql.Rows) (int64, string) { var id, a int64; var t string; r.Scan(&id, &t, &a); return a, postRow(id, t, a) }, "posts")
+func sdkNestedFindAll(db *wire.DB) string {
+	return sdkRelSingle(db, "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT 100", nil, "id", userSer,
+		"SELECT id, title, author_id FROM benchmark_posts WHERE author_id {IN} ORDER BY id ASC", "author_id", postSer, "posts")
 }
-func sdkNestedRelations(db *seamDB) string {
-	return sdkRelSingle(db, "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = ? ORDER BY id ASC", []any{7},
-		func(r *sql.Rows) (int64, string) { var id, a int64; var t string; r.Scan(&id, &t, &a); return id, postRow(id, t, a) },
-		"SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN ({IN}) ORDER BY id ASC",
-		func(r *sql.Rows) (int64, string) { var id, p int64; var b string; r.Scan(&id, &b, &p); return p, commentRow(id, b, p) }, "comments")
+func sdkNestedFindFirst(db *wire.DB) string {
+	return sdkRelSingle(db, "SELECT id, email, name FROM benchmark_users WHERE name LIKE "+ph(db, 1)+" LIMIT 1", []any{"User%"}, "id", userSer,
+		"SELECT id, title, author_id FROM benchmark_posts WHERE author_id {IN} ORDER BY id ASC", "author_id", postSer, "posts")
 }
-func sdkCompositeRelations(db *seamDB) string {
-	parents, _ := Query(db, "SELECT tenant_id, user_id, name FROM benchmark_tenant_users WHERE tenant_id = ? ORDER BY user_id ASC", []any{1}, func(r *sql.Rows) ([2]any, error) {
-		var t, u int64
-		var n string
-		r.Scan(&t, &u, &n)
-		return [2]any{u, tuserRow(t, u, n)}, nil
-	})
-	children, _ := Query(db, "SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE tenant_id = ? ORDER BY post_id ASC", []any{1}, func(r *sql.Rows) ([2]any, error) {
-		var t, pid, u int64
-		var ti string
-		r.Scan(&t, &pid, &u, &ti)
-		return [2]any{u, tpostRow(t, pid, u, ti)}, nil
-	})
+func sdkNestedFindUnique(db *wire.DB) string {
+	return sdkRelSingle(db, "SELECT id, email, name FROM benchmark_users WHERE email = "+ph(db, 1)+" LIMIT 1", []any{"user1@example.com"}, "id", userSer,
+		"SELECT id, title, author_id FROM benchmark_posts WHERE author_id {IN} ORDER BY id ASC", "author_id", postSer, "posts")
+}
+func sdkNestedRelations(db *wire.DB) string {
+	return sdkRelSingle(db, "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = "+ph(db, 1)+" ORDER BY id ASC", []any{7}, "id", postSer,
+		"SELECT id, body, post_id FROM benchmark_comments WHERE post_id {IN} ORDER BY id ASC", "post_id", commentSer, "comments")
+}
+func sdkCompositeRelations(db *wire.DB) string {
+	parents, _ := wire.QueryRows(db, "SELECT tenant_id, user_id, name FROM benchmark_tenant_users WHERE tenant_id = "+ph(db, 1)+" ORDER BY user_id ASC", []any{1})
+	children, _ := wire.QueryRows(db, "SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE tenant_id = "+ph(db, 1)+" ORDER BY post_id ASC", []any{1})
 	groups := map[int64][]string{}
 	for _, c := range children {
-		groups[c[0].(int64)] = append(groups[c[0].(int64)], c[1].(string))
+		groups[c.Int("user_id")] = append(groups[c.Int("user_id")], wire.TPostRow(c.Int("tenant_id"), c.Int("post_id"), c.Int("user_id"), c.Str("title")))
 	}
 	ps := make([]string, len(parents))
 	cs := make([]string, len(parents))
-	for i, p := range parents {
-		ps[i] = p[1].(string)
-		cs[i] = arrj(groups[p[0].(int64)])
+	for i, r := range parents {
+		ps[i] = wire.TUserRow(r.Int("tenant_id"), r.Int("user_id"), r.Str("name"))
+		cs[i] = wire.Arrj(groups[r.Int("user_id")])
 	}
-	return relJSON("posts", ps, cs)
+	return wire.RelJSON("posts", ps, cs)
 }
 
-// tx: raw BEGIN … COMMIT/ROLLBACK, then the {committed, state} snapshot.
-func sdkDelete(db *seamDB) string {
-	ok := Transaction(db, func() error {
-		rows, err := Query(db, "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id", []any{"del0@bench.com", "Del"}, func(r *sql.Rows) (int64, error) { var id int64; return id, r.Scan(&id) })
-		if err != nil || len(rows) == 0 {
+// tx — raw BEGIN … COMMIT/ROLLBACK, then the {committed, state} snapshot. The insert-returning-id uses
+// the SAME per-dialect form as native (mysql → LAST_INSERT_ID range marker).
+func sdkInsertUserIDSQL(db *wire.DB) string {
+	if db.Dialect == "mysql" {
+		return "INSERT INTO benchmark_users (email, name) VALUES (?, ?) /*scp-reselect: SELECT id FROM benchmark_users WHERE id >= ? AND id < ? ORDER BY id ::binds:: L,H*/"
+	}
+	return "INSERT INTO benchmark_users (email, name) VALUES (" + ph(db, 1) + ", " + ph(db, 2) + ") RETURNING id"
+}
+func sdkRecoverID(db *wire.DB, sqlText string, params []any) (int64, bool) {
+	rows, err := wire.QueryRows(db, sqlText, params)
+	if err != nil || len(rows) == 0 {
+		return 0, false
+	}
+	return rows[0].Int("id"), true
+}
+func sdkDelete(db *wire.DB) string {
+	ok := wire.Transaction(db, func() error {
+		id, done := sdkRecoverID(db, sdkInsertUserIDSQL(db), []any{"del0@bench.com", "Del"})
+		if !done {
 			return errOf("insert")
 		}
-		_, _, err = Execute(db, "DELETE FROM benchmark_users WHERE id = ?", []any{rows[0]})
+		_, _, err := wire.Execute(db, "DELETE FROM benchmark_users WHERE id = "+ph(db, 1), []any{id})
 		return err
 	})
-	return txJSON(ok, db)
+	return wire.TxJSON(ok, db)
 }
-func sdkNestedCreate(db *seamDB) string {
-	ok := Transaction(db, func() error {
-		rows, err := Query(db, "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id", []any{"nc@bench.com", "NC"}, func(r *sql.Rows) (int64, error) { var id int64; return id, r.Scan(&id) })
-		if err != nil || len(rows) == 0 {
+func sdkNestedCreate(db *wire.DB) string {
+	ok := wire.Transaction(db, func() error {
+		id, done := sdkRecoverID(db, sdkInsertUserIDSQL(db), []any{"nc@bench.com", "NC"})
+		if !done {
 			return errOf("insert")
 		}
-		_, _, err = Execute(db, "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", []any{rows[0], "NC Post"})
+		_, _, err := wire.Execute(db, "INSERT INTO benchmark_posts (author_id, title) VALUES ("+ph(db, 1)+", "+ph(db, 2)+")", []any{id, "NC Post"})
 		return err
 	})
-	return txJSON(ok, db)
+	return wire.TxJSON(ok, db)
 }
-func sdkNestedUpdate(db *seamDB) string {
-	ok := Transaction(db, func() error {
-		if _, _, err := Execute(db, "UPDATE benchmark_users SET name = ? WHERE id = ?", []any{"NU", 7}); err != nil {
+func sdkNestedUpdate(db *wire.DB) string {
+	ok := wire.Transaction(db, func() error {
+		if _, _, err := wire.Execute(db, "UPDATE benchmark_users SET name = "+ph(db, 1)+" WHERE id = "+ph(db, 2), []any{"NU", 7}); err != nil {
 			return err
 		}
-		_, _, err := Execute(db, "UPDATE benchmark_posts SET title = ? WHERE author_id = ?", []any{"NU Post", 7})
+		_, _, err := wire.Execute(db, "UPDATE benchmark_posts SET title = "+ph(db, 1)+" WHERE author_id = "+ph(db, 2), []any{"NU Post", 7})
 		return err
 	})
-	return txJSON(ok, db)
+	return wire.TxJSON(ok, db)
 }
-func sdkNestedUpsert(db *seamDB) string {
-	ok := Transaction(db, func() error {
-		rows, err := Query(db, "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id", []any{"user1@example.com", "NUp"}, func(r *sql.Rows) (int64, error) { var id int64; return id, r.Scan(&id) })
-		if err != nil || len(rows) == 0 {
+func sdkNestedUpsert(db *wire.DB) string {
+	ok := wire.Transaction(db, func() error {
+		id, done := sdkRecoverID(db, sdkUpsertSQL(db), []any{"user1@example.com", "NUp"})
+		if !done {
 			return errOf("upsert")
 		}
-		_, _, err = Execute(db, "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", []any{rows[0], "NUp Post"})
+		_, _, err := wire.Execute(db, "INSERT INTO benchmark_posts (author_id, title) VALUES ("+ph(db, 1)+", "+ph(db, 2)+")", []any{id, "NUp Post"})
 		return err
 	})
-	return txJSON(ok, db)
+	return wire.TxJSON(ok, db)
+}
+
+func sdkCell(op string, db *wire.DB) string {
+	switch op {
+	case "findAll":
+		return sdkFindAll(db)
+	case "filterPaginateSort":
+		return sdkFilterPaginateSort(db)
+	case "findFirst":
+		return sdkFindFirst(db)
+	case "findUnique":
+		return sdkFindUnique(db)
+	case "create":
+		return sdkCreate(db)
+	case "update":
+		return sdkUpdate(db)
+	case "upsert":
+		return sdkUpsert(db)
+	case "createMany":
+		return sdkCreateMany(db)
+	case "upsertMany":
+		return sdkUpsertMany(db)
+	case "updateMany":
+		return sdkUpdateMany(db)
+	case "nestedFindAll":
+		return sdkNestedFindAll(db)
+	case "nestedFindFirst":
+		return sdkNestedFindFirst(db)
+	case "nestedFindUnique":
+		return sdkNestedFindUnique(db)
+	case "nestedRelations":
+		return sdkNestedRelations(db)
+	case "compositeRelations":
+		return sdkCompositeRelations(db)
+	case "delete":
+		return sdkDelete(db)
+	case "nestedCreate":
+		return sdkNestedCreate(db)
+	case "nestedUpdate":
+		return sdkNestedUpdate(db)
+	case "nestedUpsert":
+		return sdkNestedUpsert(db)
+	}
+	panic("sdk: unknown op " + op)
 }

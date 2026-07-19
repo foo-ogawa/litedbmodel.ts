@@ -21,6 +21,7 @@ import { spawnSync } from 'node:child_process';
 import { lowerBundleToPortableIrDoc } from '../../dist/scp/index.cjs';
 import { buildOps, type BenchOp } from './ops';
 import type { OrmDialect } from './orm-domain';
+import { goCompanion, goDispatch } from './go-companions';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ADAPTERS = join(HERE, 'adapters');
@@ -46,7 +47,11 @@ function writeIrDoc(op: BenchOp, dialect: OrmDialect): string {
 /** Generate one op's module for one language by shelling out to `bc generate` over the op's IR doc. */
 function genModule(op: BenchOp, lang: Lang, dialect: OrmDialect): string {
   const docPath = writeIrDoc(op, dialect);
-  const res = spawnSync('node', [BC_CLI, 'generate', '--lang', EMITTER[lang], '--in', docPath], {
+  // go-typed-native: the WireValue/WireRow/WireList seam types are CONSUMER-supplied (bc 0.8.10 contract,
+  // #152/#153). `--go-wire-import` qualifies them to the bench's shared `wire` package (one seam for all
+  // ops); the per-module probe structs + the in-package `Handler_<comp>` (consumer-defined) stay local.
+  const extra = lang === 'go' ? ['--go-wire-import', 'orm_bench_go/wire'] : [];
+  const res = spawnSync('node', [BC_CLI, 'generate', '--lang', EMITTER[lang], '--in', docPath, ...extra], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -67,12 +72,31 @@ function modulePath(op: BenchOp, lang: Lang, dialect: OrmDialect): string {
   return join(base, `gen_${op.id.toLowerCase()}.${EXT[lang]}`);
 }
 
+/** The CONSUMER-supplied go artifacts (bc 0.8.10): per-op `handler.go` (Handler_<comp> + Node_* leaf +
+ * Native) + the per-dialect `dispatch.go` (op → package.Native). ONE source of their path+content, so
+ * generate() writes them and check() byte-diffs them identically (drift gate over the machine-generated
+ * leaves — no hand-edited companions). */
+function goArtifacts(dialect: OrmDialect): { path: string; content: string }[] {
+  const ops = buildOps(dialect);
+  const base = join(ADAPTERS, 'go', 'generated', dialect);
+  const arts = ops.map((op) => ({ path: join(base, op.id.toLowerCase(), 'handler.go'), content: goCompanion(op, dialect) }));
+  arts.push({ path: join(base, 'dispatch.go'), content: goDispatch(ops, dialect) });
+  return arts;
+}
+
 function generate(lang: Lang, dialect: OrmDialect): { count: number } {
   const ops = buildOps(dialect);
   for (const op of ops) {
     const p = modulePath(op, lang, dialect);
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, genModule(op, lang, dialect));
+  }
+  // Go: the consumer-supplied companions (leaf handlers + Native) + the per-dialect dispatch.
+  if (lang === 'go') {
+    for (const a of goArtifacts(dialect)) {
+      mkdirSync(dirname(a.path), { recursive: true });
+      writeFileSync(a.path, a.content);
+    }
   }
   // Rust: emit the per-dialect module tree (mod.rs) so main.rs cfg-selects one `use gen::*` line.
   if (lang === 'rust') {
@@ -97,6 +121,13 @@ function check(lang: Lang, dialect: OrmDialect): { ok: boolean; drifted: string[
       continue;
     }
     if (readFileSync(p, 'utf8') !== fresh) drifted.push(op.id);
+  }
+  // Go: the consumer companions + dispatch are ALSO machine-generated → byte-diff them (no hand-edits).
+  if (lang === 'go') {
+    for (const a of goArtifacts(dialect)) {
+      if (!existsSync(a.path)) drifted.push(`${a.path} (missing)`);
+      else if (readFileSync(a.path, 'utf8') !== a.content) drifted.push(a.path);
+    }
   }
   return { ok: drifted.length === 0, drifted };
 }
