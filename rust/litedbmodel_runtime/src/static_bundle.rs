@@ -144,6 +144,67 @@ pub fn render_placeholders(sql: &str, dialect_name: &str) -> String {
 /// Everything else is a plain bc Expression IR value. The target dialect for an IN-list rides the
 /// marker's own `dialect` field (compiled TS-side), so no ambient dialect is threaded here.
 fn eval_spec(spec: &J, scope: &[(String, Value)]) -> Result<Value, String> {
+    // E3 (#118) batch marker `{__batchRows:{columns, refs, dialect}}` — the ONE json_each/JSON_TABLE
+    // param of a batch INSERT (createMany / upsertMany). Each `refs[j]` evaluates to a PARALLEL ARRAY
+    // of column `columns[j]`; zip into `[{col:val,…},…]` and JSON-encode (the server-side
+    // json_each/JSON_TABLE expands N records). The runtime twin of the codegen seam's zip — SAME batch
+    // JSON contract as TS `evalSpec`.
+    if let Some(m) = spec.get("__batchRows") {
+        let columns: Vec<String> = m
+            .get("columns")
+            .and_then(|c| c.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let refs: &[J] = m.get("refs").and_then(|r| r.as_array()).unwrap_or(&[]);
+        let is_mysql = m.get("dialect").and_then(|d| d.as_str()) == Some("mysql");
+        let arrays: Vec<Vec<Value>> = refs
+            .iter()
+            .map(
+                |r| match evaluate_expression(r, scope).map_err(|e| e.message)? {
+                    Value::Arr(a) => Ok(a),
+                    _ => Err(
+                        "static-bundle: __batchRows column ref did not evaluate to an array"
+                            .to_string(),
+                    ),
+                },
+            )
+            .collect::<Result<_, String>>()?;
+        let n = arrays.first().map(|a| a.len()).unwrap_or(0);
+        let mut rows: Vec<Value> = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut pairs: Vec<(String, Value)> = Vec::with_capacity(columns.len());
+            for (j, col) in columns.iter().enumerate() {
+                let cell = arrays
+                    .get(j)
+                    .and_then(|a| a.get(i))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let cell = match cell {
+                    Value::Bool(b) if is_mysql => Value::Int(if b { 1 } else { 0 }),
+                    other => to_driver_param(&other),
+                };
+                pairs.push((col.clone(), cell));
+            }
+            rows.push(Value::Obj(pairs));
+        }
+        return Ok(Value::Str(compact_value(&Value::Arr(rows))));
+    }
+    // PG (v1) batch UNNEST param `{__batchArray:{column, ref, dialect}}` — the ref evaluates to the
+    // WHOLE array for one column; the statement's `?::<elem>[]` cast binds it as a PG array (one `?`
+    // per column). No JSON encoding — the driver binds the array directly (each cell normalized).
+    if let Some(m) = spec.get("__batchArray") {
+        let inner = m
+            .get("ref")
+            .ok_or("static-bundle: __batchArray missing 'ref'")?;
+        match evaluate_expression(inner, scope).map_err(|e| e.message)? {
+            Value::Arr(a) => return Ok(Value::Arr(a.iter().map(to_driver_param).collect())),
+            _ => return Err("static-bundle: __batchArray ref did not evaluate to an array".into()),
+        }
+    }
     if let Some(inner) = spec.get("__jsonArray") {
         let arr_v = evaluate_expression(inner, scope).map_err(|e| e.message)?;
         let arr = match arr_v {

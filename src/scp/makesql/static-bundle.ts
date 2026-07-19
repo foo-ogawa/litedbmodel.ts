@@ -48,7 +48,7 @@ import type { Component, Component as BcComponent, ComponentGraphIR, ComponentRe
 import { IN_SENTINEL } from './tx';
 import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
 import { renderPlaceholders, type Dialect } from './handler';
-import { compileWriteNode } from './tx';
+import { compileWriteNode, mysqlPkHint } from './tx';
 import { assertFindFilterFolded, type FindFilterSource } from '../find-filter-guard';
 import { deriveReadOutTypes } from './outtype';
 import { materializeCell, type ColumnTypeResolver, type MaterializeClass } from '../coltype';
@@ -1019,7 +1019,12 @@ function compileNodeStatements(node: RefLike, dialect: Dialect, resolveColumnTyp
   const component = 'map' in node ? (node as MapNode).map.component : node.component;
   if (component === 'Select' || component === 'Count') return compileSelectNode(node, dialect);
   const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> }, dialect, resolveColumnType);
-  return [{ sql: op.sql, params: op.params }];
+  // MySQL has no native RETURNING: bake the pk-hint into the readGraph write statement (the SAME
+  // `mysqlPkHint` SSoT compileSaveBundle/compileCreateManyBundle/codegen use) so the interpreter path
+  // (execute_bundle over this readGraph) honors a declared RETURNING via the driver re-select — matching
+  // the native-codegen path. No-op for pg/sqlite (native RETURNING) or a non-RETURNING write.
+  const hinted = dialect === 'mysql' ? mysqlPkHint(op) : op;
+  return [{ sql: hinted.sql, params: hinted.params }];
 }
 
 /**
