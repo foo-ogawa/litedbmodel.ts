@@ -413,6 +413,7 @@ export {
   CODEGEN_LANGUAGES,
   CODEGEN_EMITTER,
   generateCodegenArtifact,
+  generateRustCompanion,
   lowerBundleToPortableIrDoc,
   lowerReadGraphForNativeSql,
   codegenEmitterFor,

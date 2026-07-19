@@ -471,6 +471,17 @@ impl SqliteDriver {
         }
         Ok(SqliteDriver { conn })
     }
+
+    /// Open an on-disk database FILE with foreign keys enforced (the schema is already present — an
+    /// already-seeded file). The in-proc conformance seam over a persisted DB (used by the
+    /// native-codegen proof cell, which reads/mutates a seeded file to compare byte-for-byte with the
+    /// mode-2 oracle over the SAME file).
+    pub fn open(path: &str) -> Result<Self, SqlFailure> {
+        let conn = Connection::open(path).map_err(|e| map_sqlite_error(&e))?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|e| map_sqlite_error(&e))?;
+        Ok(SqliteDriver { conn })
+    }
 }
 
 impl Driver for SqliteDriver {

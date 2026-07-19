@@ -335,6 +335,64 @@ pub fn stitch_relation(
     Ok(parents)
 }
 
+/// Batch-load ONE declared relation for the NATIVE-CODEGEN path (epic #123 / #124) and return the
+/// per-parent child lists ALIGNED to `key_tuples` (one entry per input tuple, in order) — NOT hydrated
+/// onto a parent object. The bc batched-map runner hands the companion the parent key tuples already
+/// extracted (`ports.items[i].f_k0 …`), requires a per-item-aligned result, and de-boxes each entry
+/// itself; so this is the native twin of [`stitch_relation`], reusing the SAME `run_relation_op` /
+/// `distribute_to_parent` (dedupe + one batched query + group + align — NO reimplemented grouping, no
+/// N+1). The op is built NATIVELY from the companion's args (no JSON walk on the codegen hot path); a
+/// synthetic single-column-per-key parent object per tuple feeds `run_relation_op` (which reads ONLY the
+/// parent key columns). `kind` "hasMany" ⇒ each entry is the child LIST (`[]` when none), the shape the
+/// batched-map de-box's `as_list()` expects.
+pub fn exec_batched_relation(
+    driver: &dyn Driver,
+    kind: &str,
+    dialect: &str,
+    sql: &str,
+    parent_keys: &[&str],
+    target_keys: &[&str],
+    key_tuples: &[Vec<Value>],
+) -> Result<Vec<Value>, RuntimeError> {
+    let op = RelationOp {
+        name: String::new(),
+        kind: kind.to_string(),
+        parent_key: parent_keys
+            .first()
+            .map(|s| s.to_string())
+            .unwrap_or_default(),
+        target_key: target_keys
+            .first()
+            .map(|s| s.to_string())
+            .unwrap_or_default(),
+        parent_keys: if parent_keys.len() > 1 {
+            Some(parent_keys.iter().map(|s| s.to_string()).collect())
+        } else {
+            None
+        },
+        target_keys: if target_keys.len() > 1 {
+            Some(target_keys.iter().map(|s| s.to_string()).collect())
+        } else {
+            None
+        },
+        dialect: dialect.to_string(),
+        connection: None,
+        sql: sql.to_string(),
+        target_table: None,
+        hard_limit: None,
+    };
+    let p_cols = op.parent_key_cols();
+    let parents: Vec<Value> = key_tuples
+        .iter()
+        .map(|t| Value::Obj(p_cols.iter().cloned().zip(t.iter().cloned()).collect()))
+        .collect();
+    let batch = run_relation_op(&op, &parents, driver)?;
+    Ok(parents
+        .iter()
+        .map(|p| distribute_to_parent(&op, p, &batch))
+        .collect())
+}
+
 /// Run a READ bundle's primary row list, then batch-load + hydrate the selected relations onto each
 /// parent (port of the TS `readBundle` typed-object surface, declarative-select path). The primary
 /// read rides [`execute_bundle_pooled`] (the #40 executor-layer sibling fan-out); each named relation

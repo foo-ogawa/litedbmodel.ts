@@ -23,8 +23,15 @@ for m in "${MODULES[@]}"; do
     echo "FATAL: $PROOF_DIR/$m.rs missing — run: npx vitest run test/scp/e1-native-sql-port.test.ts" >&2
     exit 2
   fi
-  # Keep the crate's copy of each module in lockstep with the freshly emitted one.
+  # Keep the crate's copy of each module in lockstep with the freshly emitted one — the bc native
+  # module AND its litedbmodel-generated companion (the boundary-injected node_* handlers + wire adapter).
   cp "$PROOF_DIR/$m.rs" "$HERE/src/$m.rs"
+  companion="companion_${m#generated_}"
+  if [[ ! -f "$PROOF_DIR/$companion.rs" ]]; then
+    echo "FATAL: $PROOF_DIR/$companion.rs missing — run: npx vitest run test/scp/e1-native-sql-port.test.ts" >&2
+    exit 2
+  fi
+  cp "$PROOF_DIR/$companion.rs" "$HERE/src/$companion.rs"
 done
 
 work="$(mktemp -d)"

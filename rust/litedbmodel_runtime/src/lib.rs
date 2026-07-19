@@ -19,6 +19,7 @@
 //!   - [`runtime`]       — the thin facade dispatching to the read graph executor + the gate-first
 //!     write transaction.
 
+pub mod codegen_exec;
 pub mod connection_routing;
 pub mod dialect;
 pub mod driver;
@@ -78,8 +79,16 @@ pub use middleware::{
     MethodKind, MethodNext, MiddlewareDescriptor, MiddlewareHandle, RawResult, SqlHook, SqlHookFn,
     SqlNext, StateAny,
 };
+// Native-codegen exec seam (epic #123/#124): the op-agnostic query-exec functions the litedbmodel
+// generated companion's `node_*` handlers call, plus the `Wire` adapter (`wire_impls!` bridges the
+// module-local wire traits to it). `wire_impls!`/`__wire_probe!`/`__wire_num!` are `#[macro_export]`ed
+// at the crate root.
+pub use codegen_exec::{
+    exec, exec_batch_write, exec_skip, run_transaction, wp, wp_array, ExecMode, RtNum, RtProbe,
+    SkipFrag, ToWireArray, ToWireParam, Wire,
+};
 pub use node::{decode_value, encode_value, eval_expr, EvalError, Node};
-pub use relation::{read_bundle_pooled, stitch_relation};
+pub use relation::{exec_batched_relation, read_bundle_pooled, stitch_relation};
 pub use runtime::{
     execute_bundle, execute_bundle_pooled, execute_transaction_bundle,
     execute_transaction_bundle_ctx, order_by_nulls, render_read_primary_bundle, ENTITY_ROOT,

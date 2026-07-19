@@ -53,6 +53,7 @@ import {
   when,
   schemaColumnTypeResolver,
   generateCodegenArtifact,
+  generateRustCompanion,
   TypedNativeCoverageError,
   deriveTransactionPlan,
   compileWriteNode,
@@ -514,42 +515,50 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     const bundle = findUniqueBundle();
     const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_findunique.rs'), art.module.code);
+    writeFileSync(join(PROOF_DIR, 'companion_findunique.rs'), generateRustCompanion(bundle, 'generated_findunique', RESOLVE));
 
     const byIdsBundle = compileBundle(CONTRACT, 'ByIds', [], 'sqlite', undefined, RESOLVE);
     const byIdsArt = generateCodegenArtifact(byIdsBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_byids.rs'), byIdsArt.module.code);
+    writeFileSync(join(PROOF_DIR, 'companion_byids.rs'), generateRustCompanion(byIdsBundle, 'generated_byids', RESOLVE));
 
     // #122: the optional-LIMIT read — its baked `.unwrap_or(20)` must make an ABSENT limit fall back
     // to 20 and a PRESENT limit take effect, both byte-equal to the oracle.
     const recentBundle = compileBundle(CONTRACT, 'Recent', [], 'sqlite', undefined, RESOLVE);
     const recentArt = generateCodegenArtifact(recentBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_recent.rs'), recentArt.module.code);
+    writeFileSync(join(PROOF_DIR, 'companion_recent.rs'), generateRustCompanion(recentBundle, 'generated_recent', RESOLVE));
 
     // skip: the `published = ?` fragment drops when published is absent — present vs absent must
     // both match the mode-2 oracle (the seam assembles the present fragments over baked literals).
     const byMaybeBundle = compileBundle(POST_CONTRACT, 'ByAuthorMaybePublished', [], 'sqlite', undefined, POST_RESOLVE);
     const byMaybeArt = generateCodegenArtifact(byMaybeBundle, 'rust', REGISTERED, POST_RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_bymaybe.rs'), byMaybeArt.module.code);
+    writeFileSync(join(PROOF_DIR, 'companion_bymaybe.rs'), generateRustCompanion(byMaybeBundle, 'generated_bymaybe', POST_RESOLVE));
 
     // E4 map relation: posts + per-post author. Output {authors, posts}.
     const feedBundle = compileBundle(FEED_CONTRACT, 'PostsWithAuthor', [], 'sqlite', undefined, RESOLVE);
     const feedArt = generateCodegenArtifact(feedBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_feed.rs'), feedArt.module.code);
+    writeFileSync(join(PROOF_DIR, 'companion_feed.rs'), generateRustCompanion(feedBundle, 'generated_feed', RESOLVE));
 
     // E4 COMPOSITE-key map: users + per-user posts joined on BOTH (tenant_id, user_id).
     const tenantBundle = compileBundle(TENANT_CONTRACT, 'UsersWithPosts', [], 'sqlite', undefined, RESOLVE);
     const tenantArt = generateCodegenArtifact(tenantBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_tenantfeed.rs'), tenantArt.module.code);
+    writeFileSync(join(PROOF_DIR, 'companion_tenantfeed.rs'), generateRustCompanion(tenantBundle, 'generated_tenantfeed', RESOLVE));
 
     // E4 NATIVE BATCHED relation: users + a hasMany composite RelationDecl (ONE child query).
     const relBundle = compileBundle(TENANT_USERS_CONTRACT, 'ByTenant', [POSTS_COMPOSITE_REL], 'sqlite', undefined, RESOLVE);
     const relArt = generateCodegenArtifact(relBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_relbatch.rs'), relArt.module.code);
+    writeFileSync(join(PROOF_DIR, 'companion_relbatch.rs'), generateRustCompanion(relBundle, 'generated_relbatch', RESOLVE));
 
     // E4 NATIVE BATCHED single-key relation (nestedRelations): posts + comments by post_id.
     const relSingleBundle = compileBundle(POSTS_SINGLE_CONTRACT, 'ByAuthor', [COMMENTS_SINGLE_REL], 'sqlite', undefined, RESOLVE);
     const relSingleArt = generateCodegenArtifact(relSingleBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_relsingle.rs'), relSingleArt.module.code);
+    writeFileSync(join(PROOF_DIR, 'companion_relsingle.rs'), generateRustCompanion(relSingleBundle, 'generated_relsingle', RESOLVE));
 
     // ONE seeded sqlite DB FILE shared by BOTH legs — the oracle and the rust run read byte-identical
     // data, so an equality pass cannot come from two independently-seeded DBs happening to agree.
@@ -691,6 +700,7 @@ describe('E3 — emit write modules + a clean seed DB + {result, state} oracles'
       if (!emittedModules.has(wc.op)) {
         const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE);
         writeFileSync(join(PROOF_DIR, `generated_${wc.op}.rs`), art.module.code);
+        writeFileSync(join(PROOF_DIR, `companion_${wc.op}.rs`), generateRustCompanion(bundle, `generated_${wc.op}`, RESOLVE));
         emittedModules.add(wc.op);
       }
       // The mode-2 oracle runs the write on a FRESH connection over a file-seeded DB, exactly as the
@@ -934,6 +944,7 @@ describe('E5 (#120) — emit tx modules + a users+posts seed + {result, state} e
       if (!emitted.has(tc.op)) {
         const art = generateCodegenArtifact(txBundleOf(module, plan), 'rust', REGISTERED, RESOLVE);
         writeFileSync(join(PROOF_DIR, `generated_${tc.op}.rs`), art.module.code);
+        writeFileSync(join(PROOF_DIR, `companion_${tc.op}.rs`), generateRustCompanion(txBundleOf(module, plan), `generated_${tc.op}`, RESOLVE));
         emitted.add(tc.op);
       }
       // The mode-2 oracle runs the tx on a FRESH file-seeded DB (the rust leg opens the copied seed

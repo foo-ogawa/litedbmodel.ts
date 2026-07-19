@@ -832,114 +832,6 @@ function paramPortFor(param: unknown, index: number, nodeId: string, reasons: st
  * corpus is untouched (this changes no compiled statement — it only RE-EXPRESSES already-compiled
  * statements as ports).
  */
-/**
- * MySQL RETURNING emulation (codegen side) — rewrite a mysql write's baked SQL from
- * `<WRITE> RETURNING <cols>` into `<WRITE> /*scp-reselect: <SELECT…ORDER BY pk> ::binds:: <toks>*​/`,
- * so the generic exec seam strips the marker, runs the write, and re-selects the written row(s) by the
- * REAL primary key (MySQL 8.0 has no native RETURNING). The re-select SQL TEXT is produced HERE (baked
- * from the lowering) — the seam only supplies the generic strip+bind+run mechanic. The bind token list
- * feeds the SELECT's `?`: `L`/`H` = the LAST_INSERT_ID range `[id, id+affectedRows)`; `pN` = the
- * write's own param N; `j` = the batch JSON param. Emitted ONLY for the mysql dialect (pg/sqlite keep
- * native RETURNING, byte-unchanged). Derived from the rendered SQL + the authored ports (`onConflict`,
- * `batch`) — the SAME derivation both the codegen marker and the live-mysql runtime emulation use.
- */
-/** The primary-key descriptor a mysql RETURNING re-select needs — the DECLARED pk (never a hardcoded
- * default). `columns` order the re-select; `autoInc` is the AUTO_INCREMENT column recovered by
- * LAST_INSERT_ID range. Derived from the write op's `pk`/`autoInc` descriptor (op.pk / the `pk` port). */
-interface ReselectPk {
-  readonly columns: readonly string[];
-  readonly autoInc: string | null;
-}
-function mysqlWriteReselect(sql: string, ports: { onConflict?: unknown; batch?: unknown }, dialect: string, pk: ReselectPk | undefined): string {
-  if (dialect !== 'mysql') return sql;
-  const retM = /\s+RETURNING\s+(.+?)\s*$/is.exec(sql);
-  if (retM === null) return sql;
-  const cols = retM[1].trim();
-  const writeSql = sql.slice(0, retM.index);
-  const tableM = /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([A-Za-z0-9_."`]+)/i.exec(writeSql);
-  if (tableM === null) throw new Error(`mysqlWriteReselect: cannot parse target table from '${writeSql.slice(0, 80)}…'`);
-  const table = tableM[1];
-  const isInsert = /^\s*INSERT\b/i.test(writeSql);
-  const isBatch = ports.batch === 'true';
-  const conflict = typeof ports.onConflict === 'string' ? ports.onConflict.split(',')[0]!.trim() : undefined;
-  // The re-select order key = the DECLARED pk columns (fail-closed: a mysql RETURNING write must declare
-  // its pk so the row(s) are recovered/ordered by the REAL key, never an ad-hoc 'id' default).
-  const needPk = (why: string): ReselectPk => {
-    if (pk === undefined || pk.columns.length === 0) {
-      throw new Error(
-        `mysqlWriteReselect: a mysql RETURNING ${why} needs the target table's primary key to re-select the ` +
-          `written row(s), but the write op declares no pk descriptor (add pk/autoInc to the write node — the ` +
-          `model is the SSoT; the codegen has no schema pk to fall back on). SQL: '${writeSql.slice(0, 80)}…'`,
-      );
-    }
-    return pk;
-  };
-  const orderBy = (p: ReselectPk): string => ` ORDER BY ${p.columns.join(', ')}`;
-  const autoIncOf = (p: ReselectPk): string => {
-    if (p.autoInc === null) throw new Error(`mysqlWriteReselect: an AUTO_INCREMENT-range re-select needs the write's autoInc column; the pk descriptor declares none. SQL: '${writeSql.slice(0, 80)}…'`);
-    return p.autoInc;
-  };
-  const jsonIn = (col: string): string =>
-    `${col} IN (SELECT JSON_UNQUOTE(jt.${col}) FROM JSON_TABLE(?, '$[*]' COLUMNS(${col} JSON PATH '$.${col}')) jt)`;
-  let reselect: string;
-  let binds: string[];
-  if (isInsert && conflict !== undefined) {
-    // upsert / upsertMany: recover by the conflict key (mysql does not report the conflicted-row id).
-    const p = needPk('upsert');
-    if (isBatch) {
-      reselect = `SELECT ${cols} FROM ${table} WHERE ${jsonIn(conflict)}${orderBy(p)}`;
-      binds = ['j'];
-    } else {
-      const insColsM = /\bINSERT\s+INTO\s+[A-Za-z0-9_."`]+\s*\(([^)]*)\)/i.exec(writeSql);
-      const insCols = insColsM ? insColsM[1].split(',').map((c) => c.trim()) : [];
-      const idx = insCols.indexOf(conflict);
-      if (idx < 0) throw new Error(`mysqlWriteReselect: conflict column '${conflict}' not in INSERT column list of '${writeSql.slice(0, 80)}…'`);
-      reselect = `SELECT ${cols} FROM ${table} WHERE ${conflict} = ?${orderBy(p)}`;
-      binds = [`p${idx}`];
-    }
-  } else if (isInsert) {
-    // create / createMany: recover by the AUTO_INCREMENT range [LAST_INSERT_ID, +affectedRows).
-    const p = needPk('insert');
-    const ai = autoIncOf(p);
-    reselect = `SELECT ${cols} FROM ${table} WHERE ${ai} >= ? AND ${ai} < ?${orderBy(p)}`;
-    binds = ['L', 'H'];
-  } else if (/^\s*UPDATE\b/i.test(writeSql)) {
-    const p = needPk('update');
-    if (isBatch) {
-      // updateMany: recover by the batch key column (the JSON JOIN key), re-selected from the SAME JSON.
-      const keyM = /\bON\s+[A-Za-z0-9_]+\.([A-Za-z0-9_]+)\s*=\s*JSON_UNQUOTE/i.exec(writeSql);
-      const keyCol = keyM ? keyM[1] : p.columns[0]!;
-      reselect = `SELECT ${cols} FROM ${table} WHERE ${jsonIn(keyCol)}${orderBy(p)}`;
-      binds = ['j'];
-    } else {
-      // update: recover by the write's OWN WHERE predicate (its key is unchanged by the SET).
-      const whereM = /\bWHERE\b(.+)$/is.exec(writeSql);
-      if (whereM === null) throw new Error(`mysqlWriteReselect: UPDATE with RETURNING but no WHERE in '${writeSql.slice(0, 80)}…'`);
-      const whereSql = whereM[1].trim();
-      const before = (writeSql.slice(0, whereM.index).match(/\?/g) ?? []).length;
-      const nWhere = (whereSql.match(/\?/g) ?? []).length;
-      reselect = `SELECT ${cols} FROM ${table} WHERE ${whereSql}${orderBy(p)}`;
-      binds = Array.from({ length: nWhere }, (_, i) => `p${before + i}`);
-    }
-  } else {
-    // DELETE … RETURNING is not a bench single-write shape (delete is a tx); leave for the tx path.
-    return sql;
-  }
-  return `${writeSql} /*scp-reselect: ${reselect} ::binds:: ${binds.join(',')}*/`;
-}
-
-/** Read a write node's DECLARED pk descriptor from its authored `pk`/`autoInc` string ports (the model
- * SSoT), for {@link mysqlWriteReselect}. Absent `pk` port ⇒ undefined (the helper then fails closed if a
- * re-select actually needs it). */
-function reselectPkFromPorts(ports: Record<string, unknown>): ReselectPk | undefined {
-  const pk = typeof ports.pk === 'string' ? ports.pk : undefined;
-  if (pk === undefined) return undefined;
-  const columns = pk.split(',').map((c) => c.trim()).filter((c) => c.length > 0);
-  if (columns.length === 0) return undefined;
-  const autoInc = typeof ports.autoInc === 'string' && ports.autoInc.trim().length > 0 ? ports.autoInc.trim() : null;
-  return { columns, autoInc };
-}
-
 export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnType: ColumnTypeResolver): ComponentGraphIR {
   const ir = readGraph.ir;
   const reasons: string[] = [];
@@ -1003,7 +895,7 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       if (batch !== undefined) {
         const rendered = renderStaticSql(stmts, readGraph.dialect, n.id, reasons);
         if (rendered === undefined) return n;
-        const newPorts: Record<string, unknown> = { sql: mysqlWriteReselect(rendered.sql, nodePorts, readGraph.dialect, reselectPkFromPorts(nodePorts)) };
+        const newPorts: Record<string, unknown> = { sql: rendered.sql };
         batch.columns.forEach((col, i) => {
           const ref = batch.refs[i];
           const path = refPathOf(ref);
@@ -1120,7 +1012,7 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       // include element-field refs (`{ref:[$e0, field]}`), which `paramPortFor` passes through (bc
       // types them from the parent outType). A mysql write's RETURNING is rewritten to a re-select
       // marker here (no-op for reads / pg / sqlite).
-      const newPorts: Record<string, unknown> = { sql: mysqlWriteReselect(rendered.sql, nodePorts, readGraph.dialect, reselectPkFromPorts(nodePorts)) };
+      const newPorts: Record<string, unknown> = { sql: rendered.sql };
       rendered.params.forEach((p, i) => {
         const port = paramPortFor(p, i, n.id, reasons, elementVar);
         if (port !== undefined) newPorts[`p${i}`] = port;
@@ -1394,7 +1286,7 @@ export function lowerTransactionForNativeChain(
     // A mysql RETURNING statement is rewritten to the re-select marker (SAME derivation as the single-write
     // lowering, sharing the conflict key via writeMeta.onConflict); no-op for pg/sqlite / non-RETURNING.
     const ports: Record<string, unknown> = {
-      sql: mysqlWriteReselect(renderPlaceholders(s.op.sql, dialect), meta.onConflict !== undefined ? { onConflict: meta.onConflict } : {}, dialect, s.op.pk),
+      sql: renderPlaceholders(s.op.sql, dialect),
     };
     const producers = new Set<string>();
     s.op.params.forEach((p, i) => {
@@ -1584,4 +1476,257 @@ export function generateCodegenArtifact(
  */
 export function codegenExecuteBundleForTest(artifact: CodegenArtifact, input: Scope, db: SqliteDb): Value {
   return executeBundle(artifact.bundle, input, { db });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// RUST COMPANION EMISSION (epic #123 / #124) — the boundary-injected `node_*` handlers + wire adapter.
+//
+// bc's `rust-typed-native` emitter generates the RUNTIME-FREE native module (ports structs + the INLINE
+// de-box runner + the module-local `HandlerNR<comp>` / `WireValue`/`WireRow`/`WireList` traits). bc does
+// NOT generate the handler impls (C4: handlers/wire adapters are boundary-INJECTED). litedbmodel — the
+// bc-consumer — supplies them, and THIS is where litedbmodel GENERATES that companion (not hand-written):
+// per-component `impl HandlerNR<comp>` whose `node_*` methods delegate UNIFORMLY to litedbmodel_runtime's
+// op-agnostic executors (`exec_rows`/`exec_summary`/`exec_skip`/`exec_batch_write`/`exec_batched_relation`
+// — all Driver-backed, the exec SSoT), plus the one-line `wire_impls!` macro that bridges the module-local
+// wire traits to the runtime's `Wire` classification (the orphan rule forbids the impls living in the
+// runtime crate — the traits are local to the generated module). Derived from the SAME lowered IR
+// {@link generateCodegenArtifact} feeds bc, so ports/param/relation facts are single-sourced.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+/** Camelize a node id to bc's ports-struct segment (`n0`→`N0`, `rel_posts`→`RelPosts`,
+ * `tx_body_0`→`TxBody0`) — mirrors bc's `PortsNR<comp><nodeCamel>` identifier derivation. */
+function nodeCamel(id: string): string {
+  return id
+    .split('_')
+    .map((s) => (s.length === 0 ? '' : s.charAt(0).toUpperCase() + s.slice(1)))
+    .join('');
+}
+
+/** A node's produced value is the non-returning WRITE summary row `{changes, lastInsertRowid}` (plain
+ * `{arr:{obj}}` or tx `{obj}`) ⇒ the handler runs the write via the summary exec, not the rows exec. */
+function isSummaryOut(outType: unknown): boolean {
+  const o = outType as { arr?: { obj?: unknown }; obj?: unknown } | null;
+  const obj = (o?.arr?.obj ?? o?.obj) as Record<string, unknown> | undefined;
+  if (obj === undefined || typeof obj !== 'object') return false;
+  const keys = Object.keys(obj).sort();
+  return keys.length === 2 && keys[0] === 'changes' && keys[1] === 'lastInsertRowid';
+}
+
+/** The ordered param-port keys (`p0`,`p1`,…) present on a node's ports object. */
+function paramKeys(ports: Record<string, unknown>): string[] {
+  return Object.keys(ports)
+    .filter((k) => /^p\d+$/.test(k))
+    .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+}
+
+/** One param port → its runtime bind expression: an IN-list / array-bound head lowers via the
+ * dialect-aware `wp_array`; every scalar (input ref, element-field ref, literal, chained tx ref) via
+ * the type-agnostic `wp`. The array-ness is read off the component input port schema (the SSoT bc used
+ * to bake the field's Rust type) — no re-derivation. */
+function paramBindExpr(ports: Record<string, unknown>, key: string, inputPorts: Record<string, PortSchema>): string {
+  const ref = refPathOf(ports[key]);
+  const isArray = ref !== undefined && ref.length === 1 && (inputPorts[ref[0]] as { type?: unknown } | undefined)?.type === 'array';
+  return isArray ? `litedbmodel_runtime::wp_array(&ports.f_${key}, DIALECT)` : `litedbmodel_runtime::wp(&ports.f_${key})`;
+}
+
+/** Emit ONE read/write/tx node's `node_*` handler body (a plain rows/summary read/write, a skip read, a
+ * batch write, or an inline per-element map — all delegate to the runtime executors). Batched relations
+ * and tx statements are emitted by their own paths. */
+function emitReadWriteNode(
+  n: Record<string, unknown>,
+  comp: string,
+  bundle: SqlBundle,
+  inputPorts: Record<string, PortSchema>,
+): string {
+  const id = n.id as string;
+  const method = `node_${id}`;
+  const camel = nodeCamel(id);
+  const isMap = 'map' in n;
+  const ports = (isMap ? (n.map as { ports: Record<string, unknown> }).ports : (n.ports as Record<string, unknown>)) ?? {};
+  const portsTy = `PortsNR${comp}${camel}`;
+  const sig = `    fn ${method}(&self, ports: &${portsTy}, _bound: Option<String>) -> Result<Wire, BehaviorError> {`;
+  // SKIP read: head + presence-gated WHERE fragments + tail (the runtime assembles present fragments).
+  if ('sql_head' in ports) {
+    const headParams = Object.keys(ports)
+      .filter((k) => /^h\d+$/.test(k))
+      .sort()
+      .map((k) => paramBindExpr(ports, k, inputPorts));
+    const tailParams = Object.keys(ports)
+      .filter((k) => /^t\d+$/.test(k))
+      .sort()
+      .map((k) => paramBindExpr(ports, k, inputPorts));
+    const fragKeys = Object.keys(ports)
+      .filter((k) => /^w\d+$/.test(k))
+      .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+    const frags = fragKeys.map((wk) => {
+      const pk = Object.keys(ports)
+        .filter((k) => new RegExp(`^${wk}p\\d+$`).test(k))
+        .sort();
+      // A fragment is skip-optional iff any of its param heads is an OPTIONAL input port (bc bakes an
+      // `Option<T>` field); it is PRESENT iff that Option is `Some`. A required fragment is always present.
+      const optKey = pk.find((k) => {
+        const r = refPathOf(ports[k]);
+        return r !== undefined && r.length === 1 && (inputPorts[r[0]] as { required?: boolean } | undefined)?.required === false;
+      });
+      if (optKey !== undefined) {
+        return `litedbmodel_runtime::SkipFrag { sql: ports.f_${wk}.clone(), present: ports.f_${optKey}.is_some(), params: ports.f_${optKey}.iter().map(|v| litedbmodel_runtime::wp(v)).collect() }`;
+      }
+      const params = pk.map((k) => paramBindExpr(ports, k, inputPorts)).join(', ');
+      return `litedbmodel_runtime::SkipFrag { sql: ports.f_${wk}.clone(), present: true, params: vec![${params}] }`;
+    });
+    return [
+      sig,
+      `        let frags = vec![${frags.join(', ')}];`,
+      `        litedbmodel_runtime::exec_skip(self.driver, DIALECT, &ports.f_sql_head, &[${headParams.join(', ')}], &frags, &ports.f_sql_tail, &[${tailParams.join(', ')}]).map_err(cvt)`,
+      `    }`,
+    ].join('\n');
+  }
+  // BATCH write: parallel column arrays zipped into ONE json_each statement.
+  if ('v0' in ports) {
+    const marker = batchRowsMarkerOf(bundle.readGraph?.statementsById[id] ?? []);
+    if (marker === undefined) throw new Error(`litedbmodel companion: batch node '${id}' has no batch-rows marker to derive its columns`);
+    const cells = marker.columns.map((_, i) => `ports.f_v${i}.iter().map(|v| litedbmodel_runtime::wp(v)).collect::<Vec<Value>>()`);
+    const cols = marker.columns.map((c) => JSON.stringify(c)).join(', ');
+    const returning = !isSummaryOut(n.outType);
+    return [
+      sig,
+      `        let cells: Vec<Vec<Value>> = vec![${cells.join(', ')}];`,
+      `        litedbmodel_runtime::exec_batch_write(self.driver, &ports.f_sql, &[${cols}], &cells, ${returning}).map_err(cvt)`,
+      `    }`,
+    ].join('\n');
+  }
+  // PLAIN read / RETURNING-write / non-returning-write / inline per-element map.
+  const params = paramKeys(ports).map((k) => paramBindExpr(ports, k, inputPorts)).join(', ');
+  const mode = isSummaryOut(n.outType) ? 'litedbmodel_runtime::ExecMode::Summary' : 'litedbmodel_runtime::ExecMode::Rows';
+  return [
+    sig,
+    `        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &[${params}], ${mode}).map_err(cvt)`,
+    `    }`,
+  ].join('\n');
+}
+
+/** Emit ONE batched-relation node's `node_rel_*` handler (the bc batched-map contract: all parents'
+ * key tuples IN, one per-parent child list OUT, aligned). Delegates to the runtime's
+ * `exec_batched_relation` (which reuses `relation.rs`'s dedupe/group/align — ONE query, no N+1). */
+function emitBatchedRelationNode(n: Record<string, unknown>, comp: string, relations: Record<string, RelationOp>): string {
+  const id = n.id as string;
+  const camel = nodeCamel(id);
+  const relName = id.replace(/^rel_/, '');
+  const relOp = relations[relName];
+  if (relOp === undefined) throw new Error(`litedbmodel companion: batched relation node '${id}' has no RelationOp '${relName}' in bundle.relations`);
+  const parentKeys = relOp.parentKeys ?? (relOp.parentKey !== undefined ? [relOp.parentKey] : []);
+  const targetKeys = relOp.targetKeys ?? (relOp.targetKey !== undefined ? [relOp.targetKey] : []);
+  if (parentKeys.length === 0 || targetKeys.length === 0) {
+    throw new Error(`litedbmodel companion: relation '${relName}' has no parent/target keys to key the batch`);
+  }
+  const tuple = parentKeys.map((_, i) => `litedbmodel_runtime::wp(&it.f_k${i})`).join(', ');
+  const pk = parentKeys.map((k) => JSON.stringify(k)).join(', ');
+  const tk = targetKeys.map((k) => JSON.stringify(k)).join(', ');
+  return [
+    `    fn ${`node_${id}`}(&self, ports: &PortsNR${comp}${camel}Batch, _bound: Option<String>) -> Result<Vec<Wire>, BehaviorError> {`,
+    `        let tuples: Vec<Vec<Value>> = ports.items.iter().map(|it| vec![${tuple}]).collect();`,
+    `        let sql = ports.items.first().map(|it| it.f_sql.clone()).unwrap_or_default();`,
+    `        litedbmodel_runtime::exec_batched_relation(self.driver, ${JSON.stringify(relOp.kind)}, DIALECT, &sql, &[${pk}], &[${tk}], &tuples)`,
+    `            .map(|v| v.into_iter().map(Wire).collect())`,
+    `            .map_err(cvt_rel)`,
+    `    }`,
+  ].join('\n');
+}
+
+/**
+ * Generate the litedbmodel RUST COMPANION source for one bundle's generated module (referenced as
+ * `super::<moduleName>`). Returns a self-contained module file: the `wire_impls!` bridge + the
+ * `impl HandlerNR<comp>` (node_* → runtime executors) + the litedbmodel-consumer entry point
+ * (`handler(driver)` for reads/writes; `run(driver, in_) -> committed:bool` for transactions, which
+ * wraps the chain in the runtime transaction envelope).
+ */
+export function generateRustCompanion(bundle: SqlBundle, moduleName: string, resolveColumnType: ColumnTypeResolver): string {
+  const ir = lowerBundleToPortableIrDoc(bundle, resolveColumnType);
+  const c = ir.components[0] as unknown as {
+    name: string;
+    body: Record<string, unknown>[];
+    inputPorts?: Record<string, PortSchema>;
+  };
+  const comp = c.name;
+  const inputPorts = c.inputPorts ?? {};
+  const isTx = bundle.transaction !== undefined && bundle.readGraph === undefined;
+
+  const head = [
+    `#![allow(dead_code, unused_imports, non_snake_case, clippy::all)]`,
+    `// GENERATED by litedbmodel codegen — the RUST COMPANION for \`${moduleName}\` (epic #123/#124).`,
+    `// bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits`,
+    `// THIS companion — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*`,
+    `// delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire`,
+    `// classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the`,
+    `// orphan rule forbids the module-local wire trait impls living in the runtime crate).`,
+    `use super::${moduleName}::*;`,
+    `use litedbmodel_runtime::{Driver, RuntimeError, SqlFailure, Value, Wire};`,
+    ``,
+    `const DIALECT: &str = ${JSON.stringify(bundle.dialect)};`,
+    ``,
+    `litedbmodel_runtime::wire_impls!();`,
+    ``,
+    `/// Map a runtime SQL failure to the module-local BehaviorError (byte-equal codes: the bc runner`,
+    `/// re-wraps a node failure as OP_FAILED regardless, so only the message/detail cross this seam).`,
+    `fn cvt(e: SqlFailure) -> BehaviorError { BehaviorError::new(e.kind, e.message) }`,
+    `fn cvt_rel(e: RuntimeError) -> BehaviorError { BehaviorError::new("RELATION_ERROR", e.message().to_string()) }`,
+    ``,
+  ];
+
+  if (isTx) {
+    const methods = c.body
+      .filter((n) => !('cond' in n))
+      .map((n) => {
+        const id = n.id as string;
+        const camel = nodeCamel(id);
+        const ports = (n.ports as Record<string, unknown>) ?? {};
+        const params = paramKeys(ports)
+          .map((k) => `litedbmodel_runtime::wp(&ports.f_${k})`)
+          .join(', ');
+        // A tx-chain statement produces a SINGLE row (the RETURNING row / summary obj) — the tx runner
+        // de-boxes each via `as_row`, not `as_list` — so the `*Single` wire-shape mode.
+        const mode = isSummaryOut(n.outType) ? 'litedbmodel_runtime::ExecMode::SummarySingle' : 'litedbmodel_runtime::ExecMode::RowSingle';
+        return [
+          `    fn node_${id}(&self, ports: &PortsNR${comp}${camel}, _bound: Option<String>) -> Result<Wire, BehaviorError> {`,
+          `        litedbmodel_runtime::exec(self.ctx, &ports.f_sql, &[${params}], ${mode}).map_err(cvt)`,
+          `    }`,
+        ].join('\n');
+      });
+    return [
+      ...head,
+      `struct TxRt<'a, 'b, 'c> { ctx: &'a litedbmodel_runtime::ExecutionContext<'b, 'c> }`,
+      `impl<'a, 'b, 'c> HandlerNR${comp} for TxRt<'a, 'b, 'c> {`,
+      `    type Wire = Wire;`,
+      ...methods,
+      `}`,
+      ``,
+      `/// The litedbmodel-consumer entry: run the RETURNING-chained transaction (BEGIN…COMMIT / ROLLBACK`,
+      `/// via the runtime tx envelope; every statement runs on the ONE pinned tx-scoped ctx). Returns`,
+      `/// \`true\` when the chain committed, \`false\` on rollback.`,
+      `pub fn run(driver: &dyn Driver, in_: InNR${comp}) -> Result<bool, BehaviorError> {`,
+      `    litedbmodel_runtime::run_transaction(driver, |ctx| run_native_raw_struct_${comp}(&TxRt { ctx }, in_)).map_err(cvt)`,
+      `}`,
+      ``,
+    ].join('\n');
+  }
+
+  const methods = c.body
+    .filter((n) => !('cond' in n))
+    .map((n) => {
+      const batched = 'map' in n && (n.map as { batched?: unknown }).batched === true;
+      return batched ? emitBatchedRelationNode(n, comp, bundle.relations) : emitReadWriteNode(n, comp, bundle, inputPorts);
+    });
+  return [
+    ...head,
+    `pub struct Rt<'a> { driver: &'a dyn Driver }`,
+    `impl<'a> HandlerNR${comp} for Rt<'a> {`,
+    `    type Wire = Wire;`,
+    ...methods,
+    `}`,
+    ``,
+    `/// The litedbmodel-consumer entry: build the runtime-backed handler for \`${comp}\`. The consumer`,
+    `/// calls \`run_native_raw_struct_${comp}(&handler(driver), in_)\` — supplying NO node_* itself.`,
+    `pub fn handler(driver: &dyn Driver) -> Rt<'_> { Rt { driver } }`,
+    ``,
+  ].join('\n');
 }

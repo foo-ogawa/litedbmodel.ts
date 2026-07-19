@@ -45,6 +45,7 @@ import {
   executeBundle,
   executeTransactionBundle,
   generateCodegenArtifact,
+  generateRustCompanion,
   lowerReadGraphForNativeSql,
   codegenExecuteBundleForTest,
   CODEGEN_EMITTER,
@@ -391,6 +392,22 @@ describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + by
   it('typescript: same covered shape still generates on the boxed endpoint (unaffected by the lowering)', () => {
     const art = generateCodegenArtifact(bundle, 'typescript', REGISTERED, resolveColumnType);
     expect(art.module.code.length).toBeGreaterThan(0);
+  });
+
+  it('rust companion: emits the wire_impls! bridge + a HandlerNR impl delegating to the runtime executor (no rusqlite, no concrete Driver)', () => {
+    const companion = generateRustCompanion(bundle, 'generated_find', resolveColumnType);
+    // the orphan-rule wire bridge + the runtime import + the module glob
+    expect(companion).toContain('use super::generated_find::*;');
+    expect(companion).toContain('litedbmodel_runtime::wire_impls!();');
+    // a per-component HandlerNR impl whose node_* delegates UNIFORMLY to the ONE runtime executor
+    expect(companion).toContain('impl<\'a> HandlerNRFind for Rt<\'a>');
+    expect(companion).toMatch(/litedbmodel_runtime::exec\(&litedbmodel_runtime::for_driver\(self\.driver\)/);
+    // the litedbmodel-consumer entry point (builds the runtime-backed handler; supplies no node_*)
+    expect(companion).toContain('pub fn handler(driver: &dyn Driver) -> Rt<');
+    // it is a Driver-backed delegation — NO rusqlite, NO concrete driver type, NO hand-written exec
+    for (const banned of ['rusqlite', 'SqliteDriver', 'MysqlDriver', 'PostgresDriver', '.prepare(']) {
+      expect(companion).not.toContain(banned);
+    }
   });
 
   it('an IN-list read (array-typed head) IS typed-native-covered for go/rust via bc#110 (native array port; no serde_json/encoding-json, no boxing)', () => {
