@@ -126,7 +126,18 @@ fn render_in_list_single_json_param_sqlite() {
         "SELECT id FROM posts WHERE id IN (SELECT value FROM json_each(?))"
     );
     assert_eq!(r.params.len(), 1);
-    assert!(deep_equals(&r.params[0], &Value::Str("[1,2,3]".into()))); // single JSON param
+    // The render layer emits the RAW scalar-array param; the dialect-appropriate bind (sqlite/mysql
+    // `json_each(?)` JSON string vs pg native array) is the Driver's concern — the array-bind SSoT.
+    let arr = Value::Arr(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    assert!(deep_equals(&r.params[0], &arr));
+    // …and the sqlite/mysql Driver encoder produces the byte-identical `json_each(?)` JSON string.
+    assert_eq!(
+        litedbmodel_runtime::node::array_param_json(
+            &[Value::Int(1), Value::Int(2), Value::Int(3)],
+            false
+        ),
+        "[1,2,3]"
+    );
 }
 
 #[test]

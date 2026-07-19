@@ -369,34 +369,11 @@ impl ToWireArray for Vec<String> {
 }
 
 /// An array ports field → ONE bound param (dialect-aware; see [`ToWireArray`]).
-pub fn wp_array<T: ToWireArray>(v: &T, dialect: &str) -> Value {
-    let elems = v.wire_elems();
-    if dialect == "postgres" {
-        Value::Arr(elems)
-    } else {
-        Value::Str(json_array(&elems))
-    }
-}
-
-/// Compact JSON array of scalar values (byte-equal to the relation batch's `json_array` — TS
-/// `JSON.stringify` for scalar keys).
-fn json_array(elems: &[Value]) -> String {
-    let parts: Vec<String> = elems
-        .iter()
-        .map(|v| match v {
-            Value::Null => "null".to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::Int(i) => i.to_string(),
-            Value::Float(f) => f.to_string(),
-            Value::Str(s) => {
-                let mut out = String::new();
-                crate::node::write_json_string(s, &mut out);
-                out
-            }
-            other => format!("{other:?}"),
-        })
-        .collect();
-    format!("[{}]", parts.join(","))
+pub fn wp_array<T: ToWireArray>(v: &T) -> Value {
+    // Always a `Value::Arr` — the DIALECT decision (Postgres native array vs MySQL/SQLite `json_each(?)`
+    // JSON string) is resolved by the Driver's param-binder (the array-bind SSoT), NOT here. The
+    // generated companion never branches on dialect (invariant #3).
+    Value::Arr(v.wire_elems())
 }
 
 // ── Executors: the op-agnostic query-exec functions the generated node_* handlers call ──────────────

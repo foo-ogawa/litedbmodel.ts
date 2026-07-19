@@ -206,32 +206,13 @@ fn eval_spec(spec: &J, scope: &[(String, Value)]) -> Result<Value, String> {
         }
     }
     if let Some(inner) = spec.get("__jsonArray") {
-        let arr_v = evaluate_expression(inner, scope).map_err(|e| e.message)?;
-        let arr = match arr_v {
-            Value::Arr(a) => a,
-            _ => {
-                return Err("static-bundle: IN-list value-spec did not evaluate to an array".into())
-            }
+        // ONE scalar-array IN-list param. The Driver's param-binder binds it native (Postgres) or as the
+        // `json_each(?)` JSON string (MySQL/SQLite, bool→1/0) — the array-bind SSoT; NO dialect branch
+        // here (invariant #3). The marker's `dialect` field is inert now (the Driver owns the decision).
+        return match evaluate_expression(inner, scope).map_err(|e| e.message)? {
+            Value::Arr(a) => Ok(Value::Arr(a)),
+            _ => Err("static-bundle: IN-list value-spec did not evaluate to an array".into()),
         };
-        let spec_dialect = spec.get("dialect").and_then(|d| d.as_str()).unwrap_or("");
-        if spec_dialect == "postgres" {
-            return Ok(Value::Arr(arr)); // bound as ONE text[] param
-        }
-        // MySQL/SQLite single-JSON IN-list param. A BOOLEAN element is encoded as `1`/`0` for MySQL
-        // (NOT JSON `true`/`false`): MySQL's `JSON_UNQUOTE(v)` yields the STRING `'true'`, which
-        // coerces to `0` against a TINYINT(1) — a silent mismatch. `1`/`0` is what v1's `col IN (?)`
-        // bound. SQLite's `json_each` coerces JSON booleans natively, so it keeps the plain form.
-        let is_mysql = spec_dialect == "mysql";
-        let encoded = Value::Arr(
-            arr.iter()
-                .map(|e| match e {
-                    Value::Bool(b) if is_mysql => Value::Int(if *b { 1 } else { 0 }),
-                    other => other.clone(),
-                })
-                .collect(),
-        );
-        // Native JS-JSON.stringify compaction (JSON-library-free): the single IN-list string param.
-        return Ok(Value::Str(compact_value(&encoded)));
     }
     evaluate_expression(spec, scope).map_err(|e| e.message)
 }
@@ -529,6 +510,11 @@ fn render_and_execute_node(
     // `{changes,lastInsertRowid}` summary row via `run` — byte-identical to the TS `executeStaticWrite`
     // write summary (static-bundle.ts). The write is detected by its leading verb (a CTE read leads with
     // WITH, not a write verb — so it takes the rows path even though it isn't a bare SELECT).
+    //
+    // LATENT GAP (no corpus op today): a DATA-MODIFYING CTE (`WITH … INSERT/UPDATE/DELETE`, no RETURNING)
+    // leads with WITH, so it would be mis-classified as a read here and run via `execute` (rows) instead
+    // of `run` (summary). litedbmodel's generator emits no such statement; if a future one does, the
+    // detection must recognize a trailing write verb — flagged so it's a KNOWN gap, not a silent hole.
     let head = rendered.sql.trim_start().to_ascii_lowercase();
     let is_no_return_write =
         (head.starts_with("insert") || head.starts_with("update") || head.starts_with("delete"))

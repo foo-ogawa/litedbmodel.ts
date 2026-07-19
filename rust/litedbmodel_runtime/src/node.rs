@@ -496,6 +496,27 @@ fn write_compact(v: &Value, out: &mut String) {
     }
 }
 
+/// Encode a SCALAR-array param as the compact JSON string the MySQL/SQLite `json_each(?)` / `JSON_TABLE(?)`
+/// path binds — byte-equal to the retired per-site `json_array` (TS `JSON.stringify` for scalar keys).
+/// The dialect DECISION (a Postgres driver binds a NATIVE array; MySQL/SQLite bind THIS JSON string)
+/// lives in each Driver's param-binder — this is the shared encoder for the two JSON dialects, the SSoT
+/// for the array param-bind that the render sites no longer duplicate. `mysql_bool` encodes booleans as
+/// `1`/`0` (a MySQL `JSON_UNQUOTE` yields the string `'true'`, which coerces to `0` vs a TINYINT(1)); a
+/// SQLite `json_each` coerces JSON booleans natively, so it keeps `true`/`false`.
+pub fn array_param_json(elems: &[Value], mysql_bool: bool) -> String {
+    if !mysql_bool {
+        return compact_value(&Value::Arr(elems.to_vec()));
+    }
+    let mapped: Vec<Value> = elems
+        .iter()
+        .map(|e| match e {
+            Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
+            other => other.clone(),
+        })
+        .collect();
+    compact_value(&Value::Arr(mapped))
+}
+
 /// Write a JSON string literal NATIVELY (JS JSON.stringify form): `"`/`\` + C0 control chars escape,
 /// unicode left raw.
 pub fn write_json_string(s: &str, out: &mut String) {

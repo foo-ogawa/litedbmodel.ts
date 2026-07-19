@@ -42,8 +42,24 @@ function fnBody(src, header) {
   }
   return '';
 }
-const execBody = stripComments(fnBody(execSrc, 'pub fn exec('));
-check('invariant 3: executor does not branch on DB kind', !/postgres|mysql|sqlite|Postgres|Mysql|Sqlite/.test(execBody), 'executor body names a dialect/driver');
+// invariant #3 applies to the WHOLE codegen_exec executor SURFACE — `exec` + every `wp_*`/`exec_*`
+// helper the generated node_* handlers call — not just `exec()`: none may branch on DB kind (lowercase
+// `postgres`/`mysql`/`sqlite` or the type names). The array-bind DIALECT decision lives in the Driver's
+// param-binder (the SSoT). The ONE documented structural exception is `exec_batch_write`: a Postgres
+// batch `UNNEST($1::T[], $2::T[], …)` needs N per-column array params while MySQL/SQLite `json_each(?)`
+// needs ONE zipped-row JSON param — different placeholder ARITY baked into the per-dialect SQL
+// (invariant #5), not a per-param bind encoding. So assert dialect literals appear ONLY inside
+// exec_batch_write's body (before the array-bind SSoT collapse, `wp_array` also branched → this FAILS).
+// The executor SURFACE = the non-test runtime code (the `#[cfg(test)]` module legitimately constructs a
+// concrete SqliteDriver + names dialects in fixtures, so it is not an exec surface). Drop the test module
+// and exec_batch_write's documented-exception body, then assert no dialect literal remains.
+const execSurface = stripComments(execSrc).split(/#\[cfg\(test\)\]/)[0];
+const execOutsideBatch = execSurface.replace(stripComments(fnBody(execSrc, 'pub fn exec_batch_write(')), '');
+check(
+  'invariant 3: no DB-kind branch in codegen_exec exec/wp surfaces (only exec_batch_write, documented)',
+  !/postgres|mysql|sqlite|Postgres|Mysql|Sqlite/.test(execOutsideBatch),
+  'a dialect literal appears in an exec/wp surface outside exec_batch_write',
+);
 check(
   'invariant 2/4: executor takes only ctx/sql/params/mode (no operation names, no dialect text)',
   /pub fn exec\(\s*ctx: &ExecutionContext,\s*sql: &str,\s*params: &\[Value\],\s*mode: ExecMode,?\s*\)/.test(execSrc.replace(/\n/g, ' ')),

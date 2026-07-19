@@ -165,24 +165,24 @@ fn dedupe_keys(parents: &[Value], key_cols: &[String]) -> Vec<Vec<Value>> {
 /// PG → ONE array param PER key column (transposed tuples); MySQL/SQLite → ONE JSON array-of-tuples
 /// string. Returns the positional param list.
 fn bind_keys(op: &RelationOp, tuples: &[Vec<Value>]) -> Vec<Value> {
-    let composite = op.parent_keys.is_some();
+    if op.parent_keys.is_none() {
+        // Single-key: ONE scalar-array param. The Driver's param-binder binds it native (Postgres) or as
+        // the `json_each(?)` JSON string (MySQL/SQLite) — the array-bind SSoT; NO dialect branch here
+        // (invariant #3: DB differences resolve in the Driver, not the executor/render layer).
+        return vec![Value::Arr(tuples.iter().map(|t| t[0].clone()).collect())];
+    }
+    // COMPOSITE key — the param ARITY is baked into the per-dialect SQL and CANNOT collapse to the
+    // Driver: Postgres `UNNEST($1::T[], $2::T[], …)` needs ONE array param PER key column (N params,
+    // transposed tuples); MySQL/SQLite `JSON_TABLE(?)` needs ONE array-of-tuples JSON (1 param). The
+    // placeholder COUNT differs, so the param SET is a SQL-shape concern (invariant #5: dialect SQL
+    // differences resolved at SQL generation), not a per-param bind encoding. Documented non-collapse.
     if op.dialect == "postgres" {
-        let n_cols = if composite {
-            op.parent_key_cols().len()
-        } else {
-            1
-        };
+        let n_cols = op.parent_key_cols().len();
         return (0..n_cols)
             .map(|col| Value::Arr(tuples.iter().map(|t| t[col].clone()).collect()))
             .collect();
     }
-    // MySQL/SQLite: ONE JSON param — a scalar array (single-key) or an array-of-tuples (composite).
-    let json = if composite {
-        json_tuples(tuples)
-    } else {
-        json_array(&tuples.iter().map(|t| t[0].clone()).collect::<Vec<_>>())
-    };
-    vec![Value::Str(json)]
+    vec![Value::Str(json_tuples(tuples))]
 }
 
 /// Compact JSON serialization of one scalar key (mirror of TS `JSON.stringify` element form).

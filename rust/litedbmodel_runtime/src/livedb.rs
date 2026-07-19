@@ -874,9 +874,14 @@ fn bind_my<'q>(
             Value::Int(i) => q.bind(*i),
             Value::Float(f) => q.bind(*f),
             Value::Str(s) => q.bind(s.clone()),
+            // A scalar-array IN-list / relation-key param: MySQL has no native array — bind the
+            // `json_each(?)` / `JSON_TABLE(?)` JSON string (the array-bind SSoT; the Postgres driver
+            // binds a native array). Bool → 1/0 (TINYINT(1) coercion). The render sites pass the raw
+            // `Value::Arr` and never branch on dialect.
+            Value::Arr(elems) => q.bind(crate::node::array_param_json(elems, true)),
             other => {
                 return Err(driver_failure(format!(
-                    "scp mysql driver: a {} reached the param binder (expected a scalar)",
+                    "scp mysql driver: a {} reached the param binder (expected a scalar or array)",
                     other.type_name()
                 )))
             }

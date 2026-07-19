@@ -21,7 +21,7 @@ pub struct Rt<'a> { driver: &'a dyn Driver }
 impl<'a> HandlerNRByIds for Rt<'a> {
     type Wire = Wire;
     fn node_n0(&self, ports: &PortsNRByIdsN0, _bound: Option<String>) -> Result<Wire, BehaviorError> {
-        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &[litedbmodel_runtime::wp_array(&ports.f_p0, self.driver.dialect())], litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
+        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &[litedbmodel_runtime::wp_array(&ports.f_p0)], litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
     }
 }
 

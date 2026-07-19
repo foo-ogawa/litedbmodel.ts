@@ -440,12 +440,17 @@ fn to_sql_value(v: &Value) -> Result<SqlValue, SqlFailure> {
         Value::Int(i) => Ok(SqlValue::Integer(*i)),
         Value::Float(f) => Ok(SqlValue::Real(*f)),
         Value::Str(s) => Ok(SqlValue::Text(s.clone())),
-        Value::Arr(_) | Value::Obj(_) => Err(SqlFailure {
+        // A scalar-array IN-list / relation-key param: SQLite has no native array — bind the
+        // `json_each(?)` JSON string (the array-bind SSoT; the Postgres driver binds a native array).
+        // SQLite's `json_each` coerces JSON booleans natively, so keep `true`/`false`. The render sites
+        // pass the raw `Value::Arr` and never branch on dialect.
+        Value::Arr(elems) => Ok(SqlValue::Text(crate::node::array_param_json(elems, false))),
+        Value::Obj(_) => Err(SqlFailure {
             kind: "driver_error".into(),
             policy: "fail".into(),
             sqlite_code: None,
             message: format!(
-                "scp driver: a {} reached the param binder (expected a scalar)",
+                "scp driver: a {} reached the param binder (expected a scalar or array)",
                 v.type_name()
             ),
         }),

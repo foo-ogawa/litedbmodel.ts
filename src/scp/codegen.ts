@@ -1514,8 +1514,8 @@ export function codegenExecuteBundleForTest(artifact: CodegenArtifact, input: Sc
 // NOT generate the handler impls (C4: handlers/wire adapters are boundary-INJECTED). litedbmodel — the
 // bc-consumer — supplies them, and THIS is where litedbmodel GENERATES that companion (not hand-written):
 // per-component `impl HandlerNR<comp>` whose `node_*` methods delegate UNIFORMLY to litedbmodel_runtime's
-// op-agnostic executors (`exec_rows`/`exec_summary`/`exec_skip`/`exec_batch_write`/`exec_batched_relation`
-// — all Driver-backed, the exec SSoT), plus the one-line `wire_impls!` macro that bridges the module-local
+// op-agnostic executors (the unified `exec(…, ExecMode::Rows|Summary)` + `exec_skip`/`exec_batch_write`/
+// `exec_batched_relation` — all Driver-backed, the exec SSoT), plus the one-line `wire_impls!` macro that bridges the module-local
 // wire traits to the runtime's `Wire` classification (the orphan rule forbids the impls living in the
 // runtime crate — the traits are local to the generated module). Derived from the SAME lowered IR
 // {@link generateCodegenArtifact} feeds bc, so ports/param/relation facts are single-sourced.
@@ -1547,14 +1547,16 @@ function paramKeys(ports: Record<string, unknown>): string[] {
     .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
 }
 
-/** One param port → its runtime bind expression: an IN-list / array-bound head lowers via the
- * dialect-aware `wp_array`; every scalar (input ref, element-field ref, literal, chained tx ref) via
- * the type-agnostic `wp`. The array-ness is read off the component input port schema (the SSoT bc used
- * to bake the field's Rust type) — no re-derivation. */
+/** One param port → its runtime bind expression: an IN-list / array-bound head lowers via `wp_array`
+ * (always a `Value::Arr`; the Postgres-native-array vs MySQL/SQLite-`json_each(?)`-JSON DIALECT decision
+ * is resolved by the Driver's param-binder — the array-bind SSoT — so the companion never branches on
+ * dialect); every scalar (input ref, element-field ref, literal, chained tx ref) via the type-agnostic
+ * `wp`. The array-ness is read off the component input port schema (the SSoT bc used to bake the field's
+ * Rust type) — no re-derivation. */
 function paramBindExpr(ports: Record<string, unknown>, key: string, inputPorts: Record<string, PortSchema>): string {
   const ref = refPathOf(ports[key]);
   const isArray = ref !== undefined && ref.length === 1 && (inputPorts[ref[0]] as { type?: unknown } | undefined)?.type === 'array';
-  return isArray ? `litedbmodel_runtime::wp_array(&ports.f_${key}, self.driver.dialect())` : `litedbmodel_runtime::wp(&ports.f_${key})`;
+  return isArray ? `litedbmodel_runtime::wp_array(&ports.f_${key})` : `litedbmodel_runtime::wp(&ports.f_${key})`;
 }
 
 /** Emit ONE read/write/tx node's `node_*` handler body (a plain rows/summary read/write, a skip read, a
