@@ -610,14 +610,23 @@ const MYSQL_PK_HINT_RE = /\s*\/\*scp:pk=[^*]*\*\//;
 /**
  * Serialize a {@link TxOp.pk} descriptor into a strip-before-execute SQL comment appended to an
  * INSERT…RETURNING op, so the MySQL driver emulation can re-select by the REAL primary key. The
- * comment is STRIPPED (with the RETURNING clause) before the INSERT executes, so the executed SQL
+ * comment is STRIPPED (with the RETURNING clause) before the write executes, so the executed SQL
  * stays byte-clean; it is emitted ONLY into the mysql-dialect bundle (PG/SQLite keep native
- * RETURNING and never see it). Format: ` /*scp:pk=col1,col2;ai=<autoIncCol|>* /`.
+ * RETURNING and never see it). Format: ` /*scp:pk=col1,col2;ai=<autoIncCol|>[;conflict=<cols>]* /`.
+ *
+ * `conflict` (the upsert conflict-target column list) is added when the write is an upsert — the mysql
+ * driver re-selects the upserted row(s) by that key (MySQL does not report the conflicted-row id, so
+ * the AUTO_INCREMENT range is wrong when a row is UPDATED). Its source is `op.writeMeta.onConflict`
+ * (single writes carry it); an ad-hoc TxOp built without writeMeta (the batch createMany/upsertMany
+ * path) passes the columns via `onConflict`.
  */
-export function mysqlPkHint(op: TxOp): TxOp {
+export function mysqlPkHint(op: TxOp, onConflict?: string): TxOp {
   if (op.pk === undefined) return op;
   if (!/\breturning\b/i.test(op.sql)) return op;
-  const hint = ` /*scp:pk=${op.pk.columns.join(',')};ai=${op.pk.autoInc ?? ''}*/`;
+  if (MYSQL_PK_HINT_RE.test(op.sql)) return op; // idempotent: never append a second hint
+  const conflict = onConflict ?? op.writeMeta?.onConflict;
+  const conflictPart = conflict !== undefined && conflict.length > 0 ? `;conflict=${conflict}` : '';
+  const hint = ` /*scp:pk=${op.pk.columns.join(',')};ai=${op.pk.autoInc ?? ''}${conflictPart}*/`;
   return { ...op, sql: op.sql + hint };
 }
 

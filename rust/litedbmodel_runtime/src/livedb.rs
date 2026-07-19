@@ -929,65 +929,232 @@ fn my_rows_to_values(rows: &[MySqlRow]) -> Result<Vec<Value>, SqlFailure> {
     Ok(out)
 }
 
-/// The parsed pieces of an `INSERT … RETURNING` for the MySQL RETURNING emulation.
-struct MysqlReturning {
-    table: String,
-    /// RETURNING columns text with the strip-before-execute PK hint removed.
-    cols: String,
-    /// The INSERT with the RETURNING clause AND the PK hint stripped (byte-clean for execution).
-    insert: String,
-    /// The real PK columns (from the ` /*scp:pk=…*/` hint); empty ⇒ legacy `id` path.
-    pk_cols: Vec<String>,
-    /// The AUTO_INCREMENT column name (from the hint), or empty for a client-supplied PK.
-    auto_inc: String,
-    /// The INSERT column list (for pulling client-PK values by position).
-    insert_cols: Vec<String>,
+/// A bind source for the MySQL RETURNING re-select — the driver-side SSoT that revives the retired
+/// codegen `mysqlWriteReselect` binds vocabulary (MySQL 8 has no native RETURNING). A write that
+/// DECLARES a RETURNING clause is honored by re-selecting the written row(s) by their REAL key on the
+/// SAME connection (so a re-select inside a tx sees the not-yet-committed write). The native-codegen
+/// path AND the mode-2 interpreter path both route a RETURNING write through here, so both return the
+/// identical row set — the difference between the two paths is never the returned rows.
+#[derive(Clone)]
+enum ReselectBind {
+    /// `LAST_INSERT_ID()` — the first AUTO_INCREMENT id the INSERT allocated.
+    LastId,
+    /// `LAST_INSERT_ID() + rows_affected` — the exclusive upper bound of the inserted id range.
+    HighId,
+    /// The batch JSON payload (`params[0]`) re-bound to the re-select's own `JSON_TABLE(?)`.
+    JsonParam,
+    /// The write's own bound param at this index — a WHERE-predicate value, or a conflict-key value
+    /// pulled from the INSERT column list by position.
+    Param(usize),
 }
 
-/// Parse `INSERT [IGNORE] INTO <table> ( … ) … RETURNING <cols> [/*scp:pk=…;ai=…*/]`.
-fn parse_mysql_returning(sql: &str) -> Option<MysqlReturning> {
-    let lower = sql.to_ascii_lowercase();
-    let ret_pos = lower.rfind(" returning ")?;
-    let trimmed = lower.trim_start();
-    if !trimmed.starts_with("insert ") {
+/// The MySQL RETURNING re-select derived from a write's baked SQL + its `/*scp:pk=…;conflict=…*/` hint.
+struct MysqlReselect {
+    /// The write to execute (RETURNING clause + hint stripped — byte-clean for the prepared protocol).
+    write_sql: String,
+    /// `SELECT <returning cols> FROM <table> WHERE <key predicate> [ORDER BY <pk>]` recovering the row(s).
+    select_sql: String,
+    /// How to bind `select_sql`'s `?` from `(params, last_insert_id, rows_affected)`.
+    binds: Vec<ReselectBind>,
+}
+
+/// The target table of a write — the identifier after `INSERT INTO` / `UPDATE` / `DELETE FROM`.
+fn table_of(write_sql: &str) -> Option<String> {
+    let lower = write_sql.to_ascii_lowercase();
+    let after = if let Some(p) = lower.find("insert into ") {
+        p + "insert into ".len()
+    } else if let Some(p) = lower.find("delete from ") {
+        p + "delete from ".len()
+    } else if let Some(p) = lower.find("update ") {
+        p + "update ".len()
+    } else {
         return None;
-    }
-    let into_pos = lower.find(" into ")? + " into ".len();
-    let after_into = &sql[into_pos..];
-    let table: String = after_into
+    };
+    let ident: String = write_sql[after..]
         .chars()
+        .skip_while(|c| c.is_whitespace())
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect();
-    let cols_raw = sql[ret_pos + " returning ".len()..].trim().to_string();
-    let insert_raw = sql[..ret_pos].to_string();
-
-    // Parse + strip the PK hint ` /*scp:pk=col1,col2;ai=<col|>*/`.
-    let (pk_cols, auto_inc) = parse_pk_hint(&cols_raw);
-    let cols = strip_pk_hint(&cols_raw).trim().to_string();
-    let insert = strip_pk_hint(&insert_raw);
-
-    // Parse the INSERT column list `INSERT [IGNORE] INTO <t> (c1, c2, …)`.
-    let insert_cols = parse_insert_cols(&insert);
-
-    Some(MysqlReturning {
-        table,
-        cols,
-        insert,
-        pk_cols,
-        auto_inc,
-        insert_cols,
-    })
+    if ident.is_empty() {
+        None
+    } else {
+        Some(ident)
+    }
 }
 
-/// If `sql` is a NON-INSERT statement carrying a RETURNING clause (UPDATE/DELETE … RETURNING),
-/// return the statement with the RETURNING clause + any PK hint stripped; else None.
-fn strip_non_insert_returning(sql: &str) -> Option<String> {
+/// The JOIN key column of an updateMany (the `ON <alias>.<col> = JSON_UNQUOTE(...)` predicate).
+fn update_batch_key(write_sql: &str) -> Option<String> {
+    let lower = write_sql.to_ascii_lowercase();
+    let on = lower.find(" on ")? + " on ".len();
+    let seg_end = lower[on..]
+        .find(" set ")
+        .map(|i| on + i)
+        .unwrap_or(write_sql.len());
+    let seg = &write_sql[on..seg_end]; // e.g. `u.id = JSON_UNQUOTE(v.id)`
+    let lhs = seg.split('=').next()?.trim(); // `u.id`
+    let col = lhs.rsplit('.').next()?.trim().to_string(); // `id`
+    if col.is_empty() {
+        None
+    } else {
+        Some(col)
+    }
+}
+
+/// The `conflict=<cols>` field of a `/*scp:pk=…;conflict=col1,col2*/` hint (the upsert conflict-target
+/// column list {@link mysqlPkHint} bakes from the write's `onConflict` port). Empty ⇒ not an upsert.
+fn parse_conflict_hint(s: &str) -> Vec<String> {
+    let start = match s.find(";conflict=") {
+        Some(i) => i + ";conflict=".len(),
+        None => return Vec::new(),
+    };
+    let rest = &s[start..];
+    let end = rest.find("*/").unwrap_or(rest.len());
+    rest[..end]
+        .split(',')
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
+/// Build the MySQL RETURNING re-select for a RETURNING write — the driver/runtime SSoT for the reselect
+/// construction (driven by the baked SQL + the `/*scp:pk=…;conflict=…*/` metadata hint, NOT any consumer
+/// reselect-SQL marker comment). Returns `None` for a plain (no-RETURNING) statement or a
+/// `DELETE … RETURNING` (pre-image gone — the caller strips + runs).
+fn build_mysql_reselect(sql: &str) -> Option<MysqlReselect> {
     let lower = sql.to_ascii_lowercase();
     let ret_pos = lower.rfind(" returning ")?;
-    if lower.trim_start().starts_with("insert ") {
-        return None; // handled by parse_mysql_returning
+    let hint_region = &sql[ret_pos..];
+    // RETURNING columns (hint stripped) + the byte-clean write (RETURNING + hint removed).
+    let cols = strip_pk_hint(&sql[ret_pos + " returning ".len()..])
+        .trim()
+        .to_string();
+    let (pk_cols, auto_inc) = parse_pk_hint(hint_region);
+    let conflict_cols = parse_conflict_hint(hint_region);
+    let write_sql = sql[..ret_pos].trim().to_string();
+    let wl = write_sql.to_ascii_lowercase();
+    let table = table_of(&write_sql)?;
+    // Re-select ordered by the DECLARED pk so mysql matches pg/sqlite RETURNING order (§10).
+    let order_by = if pk_cols.is_empty() {
+        String::new()
+    } else {
+        format!(" ORDER BY {}", pk_cols.join(", "))
+    };
+    let is_batch = wl.contains("json_table(");
+
+    // upsert / upsertMany — recover by the conflict key (MySQL does not report the conflicted-row id;
+    // the AUTO_INCREMENT range is wrong when a row is UPDATED, not inserted).
+    if wl.starts_with("insert") && wl.contains("on duplicate key update") {
+        let conflict = conflict_cols.first()?; // fail-closed: an upsert RETURNING needs its conflict key
+        let select_sql = if is_batch {
+            format!(
+                "SELECT {cols} FROM {table} WHERE {c} IN (SELECT JSON_UNQUOTE(jt.{c}) FROM JSON_TABLE(?, '$[*]' COLUMNS({c} JSON PATH '$.{c}')) jt){order_by}",
+                c = conflict
+            )
+        } else {
+            format!("SELECT {cols} FROM {table} WHERE {conflict} = ?{order_by}")
+        };
+        let binds = if is_batch {
+            vec![ReselectBind::JsonParam]
+        } else {
+            let idx = parse_insert_cols(&write_sql)
+                .iter()
+                .position(|c| c == conflict)?;
+            vec![ReselectBind::Param(idx)]
+        };
+        return Some(MysqlReselect {
+            write_sql,
+            select_sql,
+            binds,
+        });
     }
-    Some(strip_pk_hint(&sql[..ret_pos]))
+
+    // create / createMany — recover by the AUTO_INCREMENT range [LAST_INSERT_ID, +affected), or by the
+    // client-supplied PK values pulled from the INSERT params by position (UUID / composite / natural key).
+    if wl.starts_with("insert") {
+        if !auto_inc.is_empty() && pk_cols.len() == 1 && pk_cols[0] == auto_inc {
+            let select_sql = format!(
+                "SELECT {cols} FROM {table} WHERE {ai} >= ? AND {ai} < ?{order_by}",
+                ai = auto_inc
+            );
+            return Some(MysqlReselect {
+                write_sql,
+                select_sql,
+                binds: vec![ReselectBind::LastId, ReselectBind::HighId],
+            });
+        }
+        let insert_cols = parse_insert_cols(&write_sql);
+        let mut conds: Vec<String> = Vec::new();
+        let mut binds: Vec<ReselectBind> = Vec::new();
+        for pk in &pk_cols {
+            let idx = insert_cols.iter().position(|c| c == pk)?;
+            conds.push(format!("{pk} = ?"));
+            binds.push(ReselectBind::Param(idx));
+        }
+        if conds.is_empty() {
+            // Legacy `id` fallback (no pk hint at all): recover by LAST_INSERT_ID.
+            return Some(MysqlReselect {
+                write_sql,
+                select_sql: format!("SELECT {cols} FROM {table} WHERE id = ?{order_by}"),
+                binds: vec![ReselectBind::LastId],
+            });
+        }
+        let select_sql = format!(
+            "SELECT {cols} FROM {table} WHERE {}{order_by}",
+            conds.join(" AND ")
+        );
+        return Some(MysqlReselect {
+            write_sql,
+            select_sql,
+            binds,
+        });
+    }
+
+    // updateMany — recover by the batch key (the JSON JOIN key), re-selected from the SAME JSON payload.
+    if wl.starts_with("update") && is_batch {
+        let key = update_batch_key(&write_sql)?;
+        let select_sql = format!(
+            "SELECT {cols} FROM {table} WHERE {k} IN (SELECT JSON_UNQUOTE(jt.{k}) FROM JSON_TABLE(?, '$[*]' COLUMNS({k} JSON PATH '$.{k}')) jt){order_by}",
+            k = key
+        );
+        return Some(MysqlReselect {
+            write_sql,
+            select_sql,
+            binds: vec![ReselectBind::JsonParam],
+        });
+    }
+
+    // update — recover by the write's OWN WHERE predicate (its key is unchanged by the SET, so the same
+    // predicate matches the same rows after the write, now carrying the new values).
+    if wl.starts_with("update") {
+        let wpos = wl.find(" where ")?;
+        let where_sql = write_sql[wpos + " where ".len()..].trim().to_string();
+        let before = write_sql[..wpos].matches('?').count();
+        let n_where = where_sql.matches('?').count();
+        let binds = (0..n_where)
+            .map(|i| ReselectBind::Param(before + i))
+            .collect();
+        let select_sql = format!("SELECT {cols} FROM {table} WHERE {where_sql}{order_by}");
+        return Some(MysqlReselect {
+            write_sql,
+            select_sql,
+            binds,
+        });
+    }
+
+    // DELETE … RETURNING: the pre-image is gone once the write runs — handled by the caller.
+    None
+}
+
+/// If `sql` is a `DELETE … RETURNING`, return the DELETE with the RETURNING clause + hint stripped
+/// (MySQL has no native RETURNING and, unlike UPDATE/upsert, the pre-image cannot be re-selected after
+/// the delete; no corpus op declares delete+returning — kept byte-faithful to v1 `mysql.ts`).
+fn strip_delete_returning(sql: &str) -> Option<String> {
+    let lower = sql.to_ascii_lowercase();
+    let ret_pos = lower.rfind(" returning ")?;
+    if !lower.trim_start().starts_with("delete") {
+        return None;
+    }
+    Some(strip_pk_hint(&sql[..ret_pos]).trim().to_string())
 }
 
 /// Strip a ` /*scp:pk=…*/` hint comment from a fragment.
@@ -1015,10 +1182,18 @@ fn parse_pk_hint(s: &str) -> (Vec<String>, String) {
         Some(i) => i,
         None => return (Vec::new(), String::new()),
     };
-    let body = &rest[..end]; // `col1,col2;ai=<col|>`
+    let body = &rest[..end]; // `col1,col2;ai=<col|>[;conflict=<cols>]`
     let mut parts = body.splitn(2, ";ai=");
     let cols_part = parts.next().unwrap_or("");
-    let ai = parts.next().unwrap_or("").trim().to_string();
+    // `ai` runs to the next `;` field (e.g. `;conflict=…`), not to the end of the hint.
+    let ai = parts
+        .next()
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let pk_cols: Vec<String> = cols_part
         .split(',')
         .map(|c| c.trim().to_string())
@@ -1053,70 +1228,47 @@ async fn my_all_on_conn(
     sql: &str,
     params: &[Value],
 ) -> Result<Vec<Value>, SqlFailure> {
-    // MySQL RETURNING emulation: strip → INSERT → re-select the inserted rows by the REAL primary
-    // key. The strip-before-execute PK hint (tx.ts mysqlPkHint) carries the PK columns + the
-    // AUTO_INCREMENT column, so the re-select keys off an AUTO_INCREMENT range (int identity) or the
-    // client-supplied PK values (UUID / composite) pulled from the bound INSERT params — NOT a
-    // hardcoded `WHERE id = ?` (which breaks for UUID/composite).
-    if let Some(r) = parse_mysql_returning(sql) {
-        let q = bind_my(sqlx::query(&r.insert), params)?;
-        let exec_res = q
+    // MySQL RETURNING emulation (the ONE reselect path — [`build_mysql_reselect`] is the driver SSoT):
+    // execute the write, then re-select the written row(s) by their REAL key on THIS connection (so a
+    // re-select inside a tx sees the not-yet-committed write). Covers INSERT (auto-inc range / client
+    // PK), upsert (conflict key), and UPDATE (own WHERE / batch JSON key) — honoring a DECLARED
+    // RETURNING. The strip-before-execute `/*scp:pk=…;conflict=…*/` hint (tx.ts mysqlPkHint) supplies the
+    // real key. Both the native-codegen path and the mode-2 interpreter path run RETURNING writes through
+    // here, so both return the SAME rows.
+    if let Some(rs) = build_mysql_reselect(sql) {
+        let exec_res = bind_my(sqlx::query(&rs.write_sql), params)?
             .execute(&mut *conn)
             .await
-            .map_err(|e| driver_failure(format!("mysql exec insert: {e}")))?;
+            .map_err(|e| driver_failure(format!("mysql write [{}]: {e}", rs.write_sql)))?;
         let last_id = exec_res.last_insert_id() as i64;
         let affected = exec_res.rows_affected().max(1) as i64;
-
-        // Build the re-select WHERE + its bound params.
-        let (where_sql, where_params): (String, Vec<Value>) = if r.pk_cols.is_empty() {
-            ("id = ?".to_string(), vec![Value::Int(last_id)])
-        } else if !r.auto_inc.is_empty() && r.pk_cols.len() == 1 && r.pk_cols[0] == r.auto_inc {
-            (
-                format!("{ai} >= ? AND {ai} < ?", ai = r.auto_inc),
-                vec![Value::Int(last_id), Value::Int(last_id + affected)],
-            )
-        } else {
-            // Client-supplied PK: pull each PK column's inserted value from the bound INSERT params
-            // by column position (single-row client-PK insert).
-            let mut conds: Vec<String> = Vec::new();
-            let mut vals: Vec<Value> = Vec::new();
-            let mut ok = true;
-            for pk in &r.pk_cols {
-                match r.insert_cols.iter().position(|c| c == pk) {
-                    Some(idx) if idx < params.len() => {
-                        conds.push(format!("{pk} = ?"));
-                        vals.push(params[idx].clone());
-                    }
-                    _ => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if ok {
-                (conds.join(" AND "), vals)
-            } else {
-                ("id = ?".to_string(), vec![Value::Int(last_id)])
-            }
-        };
-
-        let sel = format!(
-            "SELECT {cols} FROM {table} WHERE {where_sql}",
-            cols = r.cols,
-            table = r.table
-        );
-        let q2 = bind_my(sqlx::query(&sel), &where_params)?;
-        let rows = q2
+        let mut sel_params: Vec<Value> = Vec::with_capacity(rs.binds.len());
+        for b in &rs.binds {
+            let param_at = |i: usize| {
+                params.get(i).cloned().ok_or_else(|| {
+                    driver_failure(format!(
+                        "mysql re-select: bind param {i} out of range for [{}]",
+                        rs.select_sql
+                    ))
+                })
+            };
+            sel_params.push(match b {
+                ReselectBind::LastId => Value::Int(last_id),
+                ReselectBind::HighId => Value::Int(last_id + affected),
+                ReselectBind::JsonParam => param_at(0)?,
+                ReselectBind::Param(i) => param_at(*i)?,
+            });
+        }
+        let rows = bind_my(sqlx::query(&rs.select_sql), &sel_params)?
             .fetch_all(&mut *conn)
             .await
-            .map_err(|e| driver_failure(format!("mysql re-select: {e}")))?;
+            .map_err(|e| driver_failure(format!("mysql re-select [{}]: {e}", rs.select_sql)))?;
         return my_rows_to_values(&rows);
     }
 
-    // A non-INSERT RETURNING (UPDATE/DELETE … RETURNING): MySQL has no native RETURNING and the
-    // pre-image is gone, so v1 (`mysql.ts`) strips RETURNING, runs the write, returns NO rows.
-    // Byte-faithful: execute the stripped write, return an empty row set.
-    if let Some(write_sql) = strip_non_insert_returning(sql) {
+    // DELETE … RETURNING: MySQL has no native RETURNING and the pre-image is gone once the delete runs,
+    // so the stripped write runs and no rows are returned (no corpus op declares delete+returning).
+    if let Some(write_sql) = strip_delete_returning(sql) {
         let q = bind_my(sqlx::query(&write_sql), params)?;
         q.execute(&mut *conn)
             .await

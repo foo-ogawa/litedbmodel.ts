@@ -521,11 +521,14 @@ function renderStaticSql(
  * The MySQL driver emulation reads it to re-select the written row(s) by the REAL primary key /
  * AUTO_INCREMENT range (a batch INSERT recovers all N rows, not just `last_insert_id`). PG/SQLite keep
  * native RETURNING (no hint). This is a generation-time per-dialect SQL decoration (like `?`→`$N`) the
- * DRIVER consumes — NOT the retired `/*scp-reselect: SELECT…* /` marker and not a new apparatus.
+ * DRIVER consumes — a lightweight metadata hint, NOT a retired reselect-SQL marker and not a new apparatus.
  */
 function bakeMysqlPkHint(sql: string, dialect: DialectName, nodePorts: Record<string, unknown>): string {
   if (dialect !== 'mysql') return sql;
-  return mysqlPkHint({ sql, params: [], pk: pkPort(nodePorts) }).sql;
+  // An upsert node carries the conflict-target column list on its `onConflict` port — the driver
+  // re-selects the upserted row by it (the AUTO_INCREMENT range is wrong on a conflict).
+  const onConflict = typeof nodePorts.onConflict === 'string' ? nodePorts.onConflict : undefined;
+  return mysqlPkHint({ sql, params: [], pk: pkPort(nodePorts) }, onConflict).sql;
 }
 
 /** Does any of a node's statements carry a `skip` presence expression? A skip fragment DROPS for
@@ -1309,7 +1312,9 @@ export function lowerTransactionForNativeChain(
     // `mysqlPkHint` SSoT mode-2's `runtime.ts:390` uses — so the driver emulation re-selects the written
     // row by the real PK. No-op for pg/sqlite, non-RETURNING, or a statement without a declared pk.
     const ports: Record<string, unknown> = {
-      sql: dialect === 'mysql' ? mysqlPkHint({ sql: s.op.sql, params: [], pk: s.op.pk }).sql : s.op.sql,
+      // Pass the whole op so `mysqlPkHint` reads its `writeMeta.onConflict` (a tx upsert re-selects by
+      // the conflict key). `mysqlPkHint` touches only `sql`; the deferred `params` ride through unused.
+      sql: dialect === 'mysql' ? mysqlPkHint(s.op).sql : s.op.sql,
     };
     const producers = new Set<string>();
     s.op.params.forEach((p, i) => {

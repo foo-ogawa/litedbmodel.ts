@@ -57,6 +57,7 @@ import {
   TypedNativeCoverageError,
   deriveTransactionPlan,
   compileWriteNode,
+  mysqlPkHint,
   executeTransactionBundle,
 } from '../../src/scp/index';
 import type { TransactionPlan } from '../../src/scp/makesql/tx';
@@ -716,8 +717,9 @@ describe('E3 — emit write modules + a clean seed DB + {result, state} oracles'
       const state = tableState(db);
       db.close();
       rmSync(oraclePath);
-      // Carry the rust op + args so the harness dispatches the shared module with the right input.
-      oracles[wc.key] = { result, state, op: wc.op, args: wc.args };
+      // Carry the rust op + args (native CLI dispatch) AND the typed input Scope (the mode-2 interpreter
+      // oracle's input for `execute_bundle`) so the livedb harness can run BOTH paths on the same DB.
+      oracles[wc.key] = { result, state, op: wc.op, args: wc.args, input: wc.input };
     }
     writeFileSync(join(PROOF_DIR, 'oracles_write.json'), JSON.stringify(oracles, null, 2));
 
@@ -746,9 +748,13 @@ describe('E3 — emit write modules + a clean seed DB + {result, state} oracles'
 // oracle (result + resulting DB state) by the out-of-process rust legs.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-/** Compile a structured write node → its `TxOp` (the shared write compiler, with native `writeMeta`). */
-const txNode = (id: string, component: string, ports: Record<string, unknown>) =>
-  compileWriteNode({ id, component, ports } as never, 'sqlite');
+/** Compile a structured write node → its `TxOp` (the shared write compiler, with native `writeMeta`),
+ * for a given dialect. On mysql the RETURNING pk-hint is baked (the SAME `mysqlPkHint` SSoT the
+ * production `compileSaveBundle` uses) so the driver emulation re-selects the written row by its real key. */
+const txNode = (id: string, component: string, ports: Record<string, unknown>, dialect: 'sqlite' | 'postgres' | 'mysql' = 'sqlite') => {
+  const op = compileWriteNode({ id, component, ports } as never, dialect);
+  return dialect === 'mysql' ? mysqlPkHint(op) : op;
+};
 
 /** Build a tx `SqlBundle` (transaction plan, no single-statement readGraph) — the composite shape. */
 function txBundleOf(name: string, plan: TransactionPlan, dialect: 'sqlite' | 'postgres' | 'mysql' = 'sqlite'): SqlBundle {
@@ -756,42 +762,47 @@ function txBundleOf(name: string, plan: TransactionPlan, dialect: 'sqlite' | 'po
   return { dialect, name, statement: { sql: first.sql, params: first.params }, optionalHeads: [], relations: {}, transaction: plan } as unknown as SqlBundle;
 }
 
-/** The 5 E5 transaction plans (4 ops + a rollback control), each a gate-free RETURNING-chained body. */
-function txPlans(): Record<string, { plan: TransactionPlan; module: string }> {
+/** The 5 E5 transaction plans (4 ops + a rollback control), each a gate-free RETURNING-chained body,
+ * compiled for `dialect` (the SAME per-dialect SQL the production write path emits — the upsert renders
+ * `ON DUPLICATE KEY UPDATE` on mysql vs `ON CONFLICT` on pg/sqlite, and mysql RETURNING statements
+ * carry the pk-hint). Defaults to sqlite for the in-proc E5 unit assertions. */
+function txPlans(dialect: 'sqlite' | 'postgres' | 'mysql' = 'sqlite'): Record<string, { plan: TransactionPlan; module: string }> {
+  const N = (id: string, component: string, ports: Record<string, unknown>) => txNode(id, component, ports, dialect);
   return {
     // delete: INSERT user RETURNING id → DELETE that user by the RETURNING id (chained).
     txdelete: {
       module: 'TxDelete',
       plan: deriveTransactionPlan('create', [
-        { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
-        { op: txNode('d', 'Delete', { table: 'benchmark_users', where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user', 'id'] }] }] } }), label: 'Delete user', name: 'deleted', effects: {} },
-      ], { effects: {} }),
+        { op: N('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
+        { op: N('d', 'Delete', { table: 'benchmark_users', where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user', 'id'] }] }] } }), label: 'Delete user', name: 'deleted', effects: {} },
+      ], { effects: {} }, dialect),
     },
     // nestedCreate: INSERT user RETURNING id → INSERT post whose author_id IS the RETURNING id.
     txnestedcreate: {
       module: 'TxNestedCreate',
       plan: deriveTransactionPlan('create', [
-        { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
-        { op: txNode('p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
-      ], { effects: {} }),
+        { op: N('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
+        { op: N('p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
+      ], { effects: {} }, dialect),
     },
     // nestedUpdate: UPDATE user + UPDATE post (two writes, one atomic tx; keyed by the same input).
     txnestedupdate: {
       module: 'TxNestedUpdate',
       plan: deriveTransactionPlan('update', [
-        { op: txNode('u', 'Update', { table: 'benchmark_users', 'set.name': { ref: ['name'] }, where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user_id'] }] }] }, returning: 'id, name' }), label: 'Update user', name: 'user', effects: {} },
-        { op: txNode('p', 'Update', { table: 'benchmark_posts', 'set.title': { ref: ['title'] }, where: { arr: [{ eq: [{ ref: ['author_id'] }, { ref: ['user_id'] }] }] }, returning: 'id, title' }), label: 'Update post', name: 'post', effects: {} },
-      ], { effects: {} }),
+        { op: N('u', 'Update', { table: 'benchmark_users', 'set.name': { ref: ['name'] }, where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user_id'] }] }] }, returning: 'id, name' }), label: 'Update user', name: 'user', effects: {} },
+        { op: N('p', 'Update', { table: 'benchmark_posts', 'set.title': { ref: ['title'] }, where: { arr: [{ eq: [{ ref: ['author_id'] }, { ref: ['user_id'] }] }] }, returning: 'id, title' }), label: 'Update post', name: 'post', effects: {} },
+      ], { effects: {} }, dialect),
     },
     // nestedUpsert: upsert user ON CONFLICT(email) RETURNING id → INSERT post using the RETURNING id.
     // The RETURNING id is the SAME whether the upsert took the INSERT path (new email) or the UPDATE
-    // path (existing email) — so the chained post.author_id is correct on both.
+    // path (existing email) — so the chained post.author_id is correct on both. The pk descriptor lets
+    // the mysql RETURNING emulation re-select the upserted row by its conflict key (email).
     txnestedupsert: {
       module: 'TxNestedUpsert',
       plan: deriveTransactionPlan('create', [
-        { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, onConflict: 'email', onConflictAction: 'update', returning: 'id' }), label: 'Upsert user', name: 'user', effects: {} },
-        { op: txNode('p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
-      ], { effects: {} }),
+        { op: N('u', 'Insert', { table: 'benchmark_users', pk: 'id', autoInc: 'id', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, onConflict: 'email', onConflictAction: 'update', returning: 'id' }), label: 'Upsert user', name: 'user', effects: {} },
+        { op: N('p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
+      ], { effects: {} }, dialect),
     },
     // ROLLBACK control: INSERT fresh user RETURNING id → INSERT a user whose email COLLIDES with a
     // seeded row (UNIQUE(email)). Statement 2 fails → the whole tx ROLLS BACK → statement 1's insert is
@@ -799,9 +810,9 @@ function txPlans(): Record<string, { plan: TransactionPlan; module: string }> {
     txrollback: {
       module: 'TxRollback',
       plan: deriveTransactionPlan('create', [
-        { op: txNode('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
-        { op: txNode('d', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['dup_email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert dup', name: 'dup', effects: {} },
-      ], { effects: {} }),
+        { op: N('u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
+        { op: N('d', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['dup_email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert dup', name: 'dup', effects: {} },
+      ], { effects: {} }, dialect),
     },
   };
 }
@@ -964,7 +975,7 @@ describe('E5 (#120) — emit tx modules + a users+posts seed + {result, state} e
       const state = txState(db);
       db.close();
       rmSync(oraclePath);
-      oracles[tc.key] = { result: { committed }, state, op: tc.op, args: tc.args };
+      oracles[tc.key] = { result: { committed }, state, op: tc.op, args: tc.args, input: tc.input };
     }
     writeFileSync(join(PROOF_DIR, 'oracles_tx.json'), JSON.stringify(oracles, null, 2));
 
@@ -1015,6 +1026,10 @@ describe('LIVE — emit pg + mysql dialect modules + companions for the docker b
       const emit = (op: string, bundle: SqlBundle, resolve: typeof RESOLVE) => {
         writeFileSync(join(dir, `generated_${op}.rs`), generateCodegenArtifact(bundle, 'rust', REGISTERED, resolve).module.code);
         writeFileSync(join(dir, `companion_${op}.rs`), generateRustCompanion(bundle, `generated_${op}`, resolve));
+        // The SAME per-dialect bundle the mode-2 INTERPRETER oracle (`mode2` subcommand) runs — so the
+        // livedb leg compares native (codegen) vs mode-2 (interpreter) on the SAME live DB, not vs the
+        // sqlite oracle. JSON-serialized (readGraph IR + transaction plan) for `Node::parse` rust-side.
+        writeFileSync(join(dir, `bundle_${op}.json`), JSON.stringify(bundle));
       };
       for (const [op, contract, entry, rels, resolve] of READ_SPECS) {
         // The batched-relation SQL is compiled per the RelationDecl's own dialect (json_each vs
@@ -1025,7 +1040,7 @@ describe('LIVE — emit pg + mysql dialect modules + companions for the docker b
       for (const [op, entry] of WRITE_SPECS) {
         emit(op, compileBundle(WRITE_CONTRACT, entry, [], dialect, undefined, RESOLVE), RESOLVE);
       }
-      const plans = txPlans();
+      const plans = txPlans(dialect);
       for (const op of Object.keys(plans)) {
         emit(op, txBundleOf(plans[op].module, plans[op].plan, dialect), RESOLVE);
       }
