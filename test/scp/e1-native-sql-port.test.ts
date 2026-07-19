@@ -617,6 +617,24 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     writeFileSync(join(PROOF_DIR, 'oracles_tenantfeed.json'), JSON.stringify(tenantOracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_relbatch.json'), JSON.stringify(relOracles, null, 2));
     writeFileSync(join(PROOF_DIR, 'oracles_relsingle.json'), JSON.stringify(relSingleOracles, null, 2));
+
+    // Read cases for the LIVE native-vs-mode-2 harness (SSoT for read inputs): each carries the native
+    // CLI op+args AND the typed mode-2 input scope, so the harness runs BOTH paths on the SAME live DB
+    // and deep-equals (no sqlite oracle). relbatch/relsingle are omitted — their native {rows,posts}
+    // batched-map de-box shape has no distinct interpreter entry (see report / HANDOFF).
+    const readCases = [
+      { key: 'findunique', op: 'findunique', args: ['user500@example.com'], input: { email: 'user500@example.com' } },
+      { key: 'findunique-miss', op: 'findunique', args: ['nobody@example.com'], input: { email: 'nobody@example.com' } },
+      { key: 'byids', op: 'byids', args: ['1,2,3'], input: { ids: [1, 2, 3] } },
+      { key: 'byids-empty', op: 'byids', args: [''], input: { ids: [] } },
+      { key: 'recent-default', op: 'recent', args: [''], input: {} },
+      { key: 'recent-3', op: 'recent', args: ['3'], input: { limit: 3 } },
+      { key: 'bymaybe-absent', op: 'bymaybe', args: ['7', ''], input: { author_id: 7 } },
+      { key: 'bymaybe-present', op: 'bymaybe', args: ['7', '1'], input: { author_id: 7, published: 1 } },
+      { key: 'feed', op: 'feed', args: ['7'], input: { author_id: 7 } },
+      { key: 'tenantfeed', op: 'tenantfeed', args: ['1'], input: { tenant_id: 1 } },
+    ];
+    writeFileSync(join(PROOF_DIR, 'cases_read.json'), JSON.stringify(readCases, null, 2));
     expect(((tenantOracles['1'] as { users: unknown[] }).users).length).toBe(4);
     expect(((tenantOracles['999'] as { users: unknown[] }).users).length).toBe(0);
     // the batched relation stitched: tenant 1 → 4 users, each with their own 2 posts.

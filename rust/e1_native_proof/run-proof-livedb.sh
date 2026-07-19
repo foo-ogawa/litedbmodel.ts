@@ -37,28 +37,9 @@ done
 echo "── build the livedb binary (--features livedb) ──"
 cargo build --quiet --features livedb --manifest-path "$HERE/Cargo.toml" || { echo "  FAIL  livedb build"; exit 1; }
 BIN="$HERE/target/debug/e1_native_proof"
-CMP() { node "$HERE/compare-livedb.mjs" "$DIALECT" "$SPEC" "$BIN" "$@"; }
-
-echo "── seed ${DIALECT} READ state + read/relation byte-equality ──"
-node "$HERE/livedb-seed.mjs" "$DIALECT" read || { echo "  FAIL  seed read"; exit 1; }
-CMP findunique  "$PROOF_DIR/oracles.json"            || fail=1
-CMP byids       "$PROOF_DIR/oracles_byids.json"      || fail=1
-CMP recent      "$PROOF_DIR/oracles_recent.json"     || fail=1
-CMP bymaybe     "$PROOF_DIR/oracles_bymaybe.json"    || fail=1
-CMP feed        "$PROOF_DIR/oracles_feed.json"       || fail=1
-CMP tenantfeed  "$PROOF_DIR/oracles_tenantfeed.json" || fail=1
-CMP relbatch    "$PROOF_DIR/oracles_relbatch.json"   || fail=1
-CMP relsingle   "$PROOF_DIR/oracles_relsingle.json"  || fail=1
-
-echo "── batched relation issues ONE child query (not N+1) ──"
-qc="$("$BIN" relbatch "$SPEC" 1 2>&1 >/dev/null | sed -n 's/^queries=//p')"
-[[ "$qc" == "2" ]] && echo "  PASS  relbatch issued $qc queries (1 parent + 1 BATCHED child)" || { echo "  FAIL  relbatch issued $qc (expected 2)"; fail=1; }
-
-echo "── WRITE execution + resulting DB state (re-seed WRITE state per case) ──"
-CMP _ "$PROOF_DIR/oracles_write.json" write || fail=1
-
-echo "── TRANSACTION execution (re-seed TX state per case) ──"
-CMP _ "$PROOF_DIR/oracles_tx.json" tx || fail=1
+# native(codegen) vs mode-2(interpreter) on the SAME live connection (compare-livedb.mjs does the whole
+# matrix — reads, N+1 guard, writes, tx — re-seeding per mutating case). No sqlite oracle dependency.
+node "$HERE/compare-livedb.mjs" "$DIALECT" "$SPEC" "$BIN" || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then echo "LIVE-DB PROOF ($DIALECT): ALL LEGS PASS"; else echo "LIVE-DB PROOF ($DIALECT): FAILURES ABOVE"; fi
