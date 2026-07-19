@@ -141,6 +141,11 @@ export interface TxOp {
     /** The upsert conflict-target column list (`onConflict` port), when this write is an upsert — lets a
      * downstream mysql RETURNING re-select recover the upserted row by its conflict key. Absent otherwise. */
     readonly onConflict?: string;
+    /** True for a batch op (createMany/updateMany/upsertMany — its `?` binds a `{__batchRows}` marker,
+     * not per-column values). The native tx-chain lowering rejects a batch op (it types per-column); the
+     * flag lets it detect batch even though the op now carries `pk`/`onConflict` for the mysql RETURNING
+     * re-select (which the batch write, like the single write, must honor). */
+    readonly batch?: boolean;
   };
 }
 
@@ -669,7 +674,13 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
         const shape = dialect === 'mysql' ? mysqlInsertJson(shapeOpts) : sqliteInsertJson(shapeOpts);
         // The ONE json param = a deferred marker carrying the columns + their parallel array refs.
         const marker = { __batchRows: { columns: sorted, refs: sorted.map((c) => values[c]), dialect } };
-        return { sql: shape.sql, params: [marker] };
+        // Carry `pk` + `onConflict` (the SAME pkPort/onConflict SSoT the single INSERT path uses) so the
+        // mysql RETURNING re-select recovers ALL N written rows by the real key (auto-inc range, or the
+        // conflict key for upsertMany). `batch:true` keeps the native tx-chain lowering rejecting this op.
+        const pk = pkPort(ports);
+        const onConflictCols = stringPort(ports, 'onConflict');
+        const writeMeta = { table, bindColumns: sorted, returning: returningColumns(ports), batch: true, ...(onConflictCols !== undefined ? { onConflict: onConflictCols } : {}) };
+        return { sql: shape.sql, params: [marker], ...(pk !== undefined ? { pk } : {}), writeMeta };
       }
       // v1 `DBModel._insert` emits `?::<sqlCast>` PER COLUMN on Postgres (skipping timestamp/date);
       // the placeholder list is thus per-column, NOT a uniform `?` join (the latent H1 divergence).
@@ -710,7 +721,11 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
         const refs = [...keyCols.map((c) => key[c]), ...updateCols.map((c) => set[c])];
         const nQ = (shape.sql.match(/\?/g) ?? []).length;
         const marker = { __batchRows: { columns, refs, dialect } };
-        return { sql: shape.sql, params: Array.from({ length: nQ }, () => marker) };
+        // Carry `pk` (the SAME pkPort SSoT) so the mysql RETURNING re-select orders the recovered rows by
+        // the real key (matching pg/sqlite RETURNING order). `batch:true` keeps the tx-chain rejecting it.
+        const pk = pkPort(ports);
+        const writeMeta = { table, bindColumns: columns, returning: returningColumns(ports), batch: true };
+        return { sql: shape.sql, params: Array.from({ length: nQ }, () => marker), ...(pk !== undefined ? { pk } : {}), writeMeta };
       }
       const where = lowerWherePort(ports, 'Update');
       if (where.sql === '') throw new Error(`compileWriteNode: Update requires a 'where' port`);

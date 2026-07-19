@@ -1300,9 +1300,9 @@ export function lowerTransactionForNativeChain(
 
   const body = plan.statements.map((s) => {
     const meta = s.op.writeMeta;
-    if (meta === undefined) {
+    if (meta === undefined || meta.batch === true) {
       reasons.push(
-        `statement '${s.id}' op carries no writeMeta — the native tx chain covers single-statement ` +
+        `statement '${s.id}' op is a batch/marker write — the native tx chain covers single-statement ` +
           `Insert/Update/Delete only (a batch op binds a {__batchRows} marker, not columns).`,
       );
       return { id: s.id, component: 'Write', ports: {}, outType: TX_SUMMARY_ROW_TYPE };
