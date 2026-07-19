@@ -91,6 +91,15 @@ export interface RelationDecl {
   /** The target SQL dialect the batch SELECT is compiled for (default `'sqlite'`). */
   readonly dialect?: Dialect;
   /**
+   * CHAINED relations (nested `with`, e.g. users→posts→comments): the relations declared ON THIS
+   * relation's CHILD rows — a grandchild batch keyed by this relation's own result rows (level ≥ 3).
+   * Each is a normal {@link RelationDecl} whose parent is THIS relation's target table. The batch stays
+   * N+1-free per level (one query per depth): a per-language codegen lowers the chain as a batched map
+   * off the parent relation's node; the runtime resolves the flattened child keys once per level. Absent
+   * for a leaf (2-level) relation — additive, so existing single-level relations are byte-unchanged.
+   */
+  readonly childRelations?: readonly RelationDecl[];
+  /**
    * CROSS-DB relations (V0 R1): the NAME of the connection the batch SELECT must execute against —
    * the TARGET model's DB, which may differ from the parent's (v1 `LazyRelation.ts:236` runs a
    * relation on `TargetClass.getDriverType()`'s driver/connection). Absent ⇒ the parent's own
@@ -141,6 +150,13 @@ export interface RelationOp {
    */
   readonly targetTable?: string;
   readonly select?: readonly string[];
+  /**
+   * CHAINED relations (nested `with`): the COMPILED grandchild relation ops keyed off THIS relation's
+   * child rows (level ≥ 3). Present iff the decl carried {@link RelationDecl.childRelations}. A codegen
+   * lowering injects each as a batched map off this relation's node (N+1-free per level); the mode-2
+   * flat-batch runtime does not recurse into it (single-level). Additive — absent for leaf relations.
+   */
+  readonly childRelations?: readonly RelationOp[];
   /**
    * The child columns' STATIC materialize classes (issue #59): `column → MaterializeClass`, baked
    * at compile from the model's DDL resolver (only non-passthrough entries). The relation batch runs
@@ -205,10 +221,18 @@ export function compileRelationOp(decl: RelationDecl, resolveColumnType?: Column
       if (klass !== 'passthrough') materializers[entry.outputKey] = klass;
     }
   }
+  // CHAINED relations (nested `with`): compile each grandchild relation recursively, inheriting THIS
+  // relation's dialect. The SAME single compiler — a child is just another RelationDecl whose parent is
+  // this relation's target rows; no separate nested-relation path. Absent ⇒ a leaf (byte-unchanged).
+  const childRelations =
+    decl.childRelations !== undefined && decl.childRelations.length > 0
+      ? decl.childRelations.map((c) => compileRelationOp({ ...c, dialect: c.dialect ?? dialect }, resolveColumnType))
+      : undefined;
   const target = {
     targetTable: decl.targetTable,
     select: [...decl.select],
     ...(Object.keys(materializers).length > 0 ? { materializers } : {}),
+    ...(childRelations !== undefined ? { childRelations } : {}),
   };
   // Hard-limit runaway cap (Phase E-2, epic #74; v1 `_selectForRelation`): resolve the effective
   // batch-total cap ONCE at compile (per-relation override → global) and bake it onto the op as a

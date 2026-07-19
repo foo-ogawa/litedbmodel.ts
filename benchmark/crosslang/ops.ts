@@ -76,10 +76,6 @@ class PostReads extends SemanticBehavior {
   FilterPaginateSort($: { published: unknown }) {
     return L.Select({ table: 'benchmark_posts', select: ['id', 'title', 'content', 'published', 'author_id', 'created_at'], where: [whereEq(($ as never)['published'], $.published)], order: 'created_at DESC', limit: 20, offset: 10 });
   }
-  // The nestedRelations leaf parent (posts by author) — its comments relation is edge 2 of the 3-level op.
-  ByAuthor($: { author_id: unknown }) {
-    return L.Select({ table: 'benchmark_posts', select: ['id', 'title', 'author_id'], where: [whereEq(($ as never)['author_id'], $.author_id)], order: 'id ASC' });
-  }
 }
 class TenantReads extends SemanticBehavior {
   static columns = TENANT_COLUMNS;
@@ -140,6 +136,21 @@ const postsComposite = (dialect: OrmDialect): RelationDecl => ({
   name: 'posts', kind: 'hasMany', targetTable: 'benchmark_tenant_posts', select: ['tenant_id', 'post_id', 'user_id', 'title'],
   parentKeys: ['tenant_id', 'user_id'], targetKeys: ['tenant_id', 'user_id'], order: 'post_id ASC', dialect,
 } as unknown as RelationDecl);
+// ── FULL 3-level chains (#119): users→posts→comments and tenants→posts→comments (composite key). Each
+// nested `childRelations` is a batched relation off the LEVEL-2 relation's rows (level-3 keyed by
+// level-2's results), lowered as a batched-map chain (N+1-free per level). ─────────────────────────
+const postsWithComments = (dialect: OrmDialect): RelationDecl => ({
+  ...postsOfUser(dialect),
+  childRelations: [commentsOfPost(dialect)],
+} as unknown as RelationDecl);
+const commentsOfTenantPost = (dialect: OrmDialect): RelationDecl => ({
+  name: 'comments', kind: 'hasMany', targetTable: 'benchmark_tenant_comments', select: ['tenant_id', 'comment_id', 'post_id', 'body'],
+  parentKeys: ['tenant_id', 'post_id'], targetKeys: ['tenant_id', 'post_id'], order: 'comment_id ASC', dialect,
+} as unknown as RelationDecl);
+const postsCompositeWithComments = (dialect: OrmDialect): RelationDecl => ({
+  ...postsComposite(dialect),
+  childRelations: [commentsOfTenantPost(dialect)],
+} as unknown as RelationDecl);
 
 // ── TX ops (RETURNING-chained; E5) — built from the shared compiler + deriveTransactionPlan ──
 const txNode = (dialect: OrmDialect, id: string, component: string, ports: Record<string, unknown>) => compileWriteNode({ id, component, ports } as never, dialect);
@@ -196,8 +207,8 @@ export function buildOps(dialect: OrmDialect = 'sqlite'): BenchOp[] {
   const d = dialect;
   const rv = resolveFor(d);
   const POSTS_OF_USER = postsOfUser(d);
-  const COMMENTS_OF_POST = commentsOfPost(d);
-  const POSTS_COMPOSITE = postsComposite(d);
+  const POSTS_WITH_COMMENTS = postsWithComments(d);
+  const POSTS_COMPOSITE_WITH_COMMENTS = postsCompositeWithComments(d);
   const B = (id: string, kind: BenchOp['kind'], bundle: SqlBundle, input: Record<string, unknown>, withRel?: string): BenchOp =>
     ({ id, kind, bundle, resolve: rv, input, ...(withRel ? { withRel } : {}) });
   return [
@@ -210,12 +221,12 @@ export function buildOps(dialect: OrmDialect = 'sqlite'): BenchOp[] {
     B('nestedFindAll', 'read+rel', compileBundle(USERS, 'FindAll', [POSTS_OF_USER], d, undefined, rv), {}, 'posts'),
     B('nestedFindFirst', 'read+rel', compileBundle(USERS, 'FindFirst', [POSTS_OF_USER], d, undefined, rv), { name: 'User%' }, 'posts'),
     B('nestedFindUnique', 'read+rel', compileBundle(USERS, 'FindUnique', [POSTS_OF_USER], d, undefined, rv), { email: 'user1@example.com' }, 'posts'),
-    // nestedRelations / compositeRelations: benchmark.ts defines these as 3-LEVEL chains
-    // (users→posts→comments / tenant_users→tenant_posts→tenant_comments). compileBundle bakes ONE
-    // relation level, so these are the DEEP 2-level slice (the proven leaf edge) — the full 3-level
-    // native chain is a surface gap (see report). Byte-equal to the oracle for the 2-level shape.
-    B('nestedRelations', 'read+rel', compileBundle(POSTS, 'ByAuthor', [COMMENTS_OF_POST], d, undefined, rv), { author_id: 7 }, 'comments'),
-    B('compositeRelations', 'read+rel', compileBundle(TENANTS, 'ByTenant', [POSTS_COMPOSITE], d, undefined, rv), { tenant_id: 1 }, 'posts'),
+    // nestedRelations / compositeRelations: the FULL 3-level native chains benchmark.ts defines
+    // (users→posts→comments / tenant_users→tenant_posts→tenant_comments, composite key). The level-2
+    // relation carries a `childRelations` level-3 batch keyed by its own result rows; injectBatchedRelations
+    // lowers the chain as batched-map-over-batched-map (one query per level, N+1-free).
+    B('nestedRelations', 'read+rel', compileBundle(USERS, 'FindAll', [POSTS_WITH_COMMENTS], d, undefined, rv), {}, 'posts'),
+    B('compositeRelations', 'read+rel', compileBundle(TENANTS, 'ByTenant', [POSTS_COMPOSITE_WITH_COMMENTS], d, undefined, rv), { tenant_id: 1 }, 'posts'),
     // ── single writes ──
     B('create', 'write', compileBundle(WRITES, 'Create', [], d, undefined, rv), { email: 'new@bench.com', name: 'New' }),
     B('update', 'write', compileBundle(WRITES, 'Update', [], d, undefined, rv), { id: 100, name: 'Updated 100' }),

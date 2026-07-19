@@ -68,8 +68,17 @@ func TUserRow(t, u int64, name string) string {
 func TPostRow(t, pid, u int64, title string) string {
 	return Objj(Ki("tenant_id", t), Ki("post_id", pid), Ki("user_id", u), Ks("title", title))
 }
+func TCommentRow(t, cid, pid int64, body string) string {
+	return Objj(Ki("tenant_id", t), Ki("comment_id", cid), Ki("post_id", pid), Ks("body", body))
+}
 func RelJSON(rel string, parents, childLists []string) string {
 	return "{\"rows\":" + Arrj(parents) + "," + JsonStr(rel) + ":" + Arrj(childLists) + "}"
+}
+
+// Rel3JSON — the 3-level output `{"rows":[…],"posts":[[…]…],"comments":[[…]…]}` (parents + per-parent
+// level-2 lists + per-parent level-3 lists), matching oracle.ts + the rust cell's rel3_json.
+func Rel3JSON(parents, postsLists, commentLists []string) string {
+	return "{\"rows\":" + Arrj(parents) + ",\"posts\":" + Arrj(postsLists) + ",\"comments\":" + Arrj(commentLists) + "}"
 }
 
 // StateJSON — the users+posts affected-tables snapshot a write/tx op emits (matches oracle.ts). Read by

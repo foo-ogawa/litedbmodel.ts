@@ -399,6 +399,45 @@ where
     }
     Ok(item_keys.iter().map(|k| WireResult::list(groups.get(k).cloned().unwrap_or_default())).collect())
 }
+/// The CHAINED-relation exec (E4/#119 level-3): a batched relation off a batched relation. Each
+/// over-element is a per-grandparent list of parent rows, so `item_key_lists[e]` are that element's
+/// child-parent keys (e.g. all post ids of one user's posts). FLATTEN every list into ONE batched child
+/// query (N+1-free per level), group children by target key, then re-align PER over-element by
+/// concatenating the children of each of its keys (in the element's key order). Returns one `WireResult`
+/// per over-element (aligned to items) — the per-element flat child list the generated map de-boxes.
+pub fn query_batched_relation_grouped<Key>(
+    db: &Db,
+    sql: &str,
+    item_key_lists: &[Vec<Key>],
+    encode_json: impl Fn(&[Key]) -> String,
+    key_arrays: impl Fn(&[Key]) -> Vec<Param>,
+    child_key: impl Fn(&WireRowData) -> Key,
+) -> Result<Vec<WireResult>, String>
+where
+    Key: Eq + std::hash::Hash + Clone,
+{
+    let all: Vec<Key> = item_key_lists.iter().flat_map(|ks| ks.iter().cloned()).collect();
+    let distinct = distinct_keys(&all);
+    let json = encode_json(&distinct);
+    let arrays = key_arrays(&distinct);
+    let children = relation_query(db, sql, &arrays, json)?;
+    let mut groups: std::collections::HashMap<Key, Vec<WireRowData>> = std::collections::HashMap::new();
+    for ch in children {
+        groups.entry(child_key(&ch)).or_default().push(ch);
+    }
+    Ok(item_key_lists
+        .iter()
+        .map(|ks| {
+            let mut rows: Vec<WireRowData> = Vec::new();
+            for k in ks {
+                if let Some(cs) = groups.get(k) {
+                    rows.extend(cs.iter().cloned());
+                }
+            }
+            WireResult::list(rows)
+        })
+        .collect())
+}
 
 // ══ SQLite backend (rusqlite) ═════════════════════════════════════════════════════════════════════════
 #[cfg(feature = "sqlite")]

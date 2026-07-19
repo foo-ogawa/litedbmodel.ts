@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { executeBundle, readBundle, executeTransactionBundle } from '../../dist/scp/index.cjs';
+import { executeBundle, readBundle, executeTransactionBundle, runRelationOp, distributeToParent } from '../../dist/scp/index.cjs';
 import { buildOps, type BenchOp } from './ops';
 import { ddl, seedStatements } from './orm-domain';
 
@@ -39,13 +39,16 @@ const FIELDS: Record<string, string[]> = {
   // vs 10, and lastInsertRowid differs per engine — so only `null` is dialect-independent).
   upsert: ['id'],
 };
-// read+rel: parent fields + the child (relation) fields.
+// read+rel (2-level): parent fields + the child (relation) fields.
 const REL_FIELDS: Record<string, { parent: string[]; child: string[] }> = {
   nestedFindAll: { parent: ['id', 'email', 'name'], child: ['id', 'title', 'author_id'] },
   nestedFindFirst: { parent: ['id', 'email', 'name'], child: ['id', 'title', 'author_id'] },
   nestedFindUnique: { parent: ['id', 'email', 'name'], child: ['id', 'title', 'author_id'] },
-  nestedRelations: { parent: ['id', 'title', 'author_id'], child: ['id', 'body', 'post_id'] },
-  compositeRelations: { parent: ['tenant_id', 'user_id', 'name'], child: ['tenant_id', 'post_id', 'user_id', 'title'] },
+};
+// read+rel (FULL 3-level chain #119): parent + level-2 (posts) + level-3 (comments) field orders.
+const REL3_FIELDS: Record<string, { parent: string[]; posts: string[]; comments: string[] }> = {
+  nestedRelations: { parent: ['id', 'email', 'name'], posts: ['id', 'title', 'author_id'], comments: ['id', 'body', 'post_id'] },
+  compositeRelations: { parent: ['tenant_id', 'user_id', 'name'], posts: ['tenant_id', 'post_id', 'user_id', 'title'], comments: ['tenant_id', 'comment_id', 'post_id', 'body'] },
 };
 
 function freshDb() {
@@ -77,6 +80,29 @@ function oracleFor(op: BenchOp, db: InstanceType<typeof Database>): string {
     return `{"committed":${committed},"state":${stateSnapshot(db)}}`;
   }
   if (op.withRel) {
+    const rel3 = REL3_FIELDS[op.id];
+    if (rel3 !== undefined) {
+      // FULL 3-level chain (#119): parent read → level-2 batch (posts) → level-3 batch (comments), keyed
+      // by the flattened level-2 rows. ONE query per level (runRelationOp batches). Serialized to the SAME
+      // `{rows,posts,comments}` shape the native cell emits — comments flattened per parent, in that
+      // parent's post order, each post's comments in the child relation's order.
+      const postsRel = (op.bundle as { relations: Record<string, unknown> }).relations[op.withRel] as {
+        childRelations?: unknown[];
+      };
+      const commentsRel = postsRel.childRelations![0];
+      const parents = executeBundle(op.bundle, op.input as never, { db: db as never }) as Record<string, unknown>[];
+      const { batch: pBatch } = runRelationOp(postsRel as never, parents as never, db as never) as { batch: never };
+      const perParentPosts = parents.map((p) => distributeToParent(postsRel as never, p as never, pBatch) as Record<string, unknown>[]);
+      const allPosts = perParentPosts.flat();
+      const { batch: cBatch } = runRelationOp(commentsRel as never, allPosts as never, db as never) as { batch: never };
+      const perParentComments = perParentPosts.map((posts) =>
+        posts.flatMap((p) => distributeToParent(commentsRel as never, p as never, cBatch) as Record<string, unknown>[]),
+      );
+      const rowsS = canonRows(parents, rel3.parent);
+      const postsS = '[' + perParentPosts.map((ps) => canonRows(ps, rel3.posts)).join(',') + ']';
+      const commentsS = '[' + perParentComments.map((cs) => canonRows(cs, rel3.comments)).join(',') + ']';
+      return `{"rows":${rowsS},"posts":${postsS},"comments":${commentsS}}`;
+    }
     const rel = REL_FIELDS[op.id];
     const rows = readBundle(op.bundle, op.input as never, { db: db as never, with: { [op.withRel]: true } as never }) as Record<string, unknown>[];
     // Normalize to {rows:[parent…], <rel>:[[child…]…]} — the native T2 {rows, <rel>} shape.

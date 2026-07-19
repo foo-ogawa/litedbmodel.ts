@@ -1,11 +1,13 @@
-name: Cross-lang bench drift-check (#63)
+name: Cross-lang codegen gates (#107 / #113)
 
-# The unified cross-language benchmark (benchmark/crosslang, epic #63) measures each language's
-# thin generic runtime executing the SAME 19 ORM ops DB-backed on all 3 real dialects. It consumes
-# a GENERATED artifact (generated/orm-plan.json — the 19 ops' per-dialect statement plans) that must
-# NOT drift from what src/ compiles. This CI hook: rebuilds the SCP dist, drift-checks the artifact,
-# runs the fairness/coverage self-check, and executes the 19 ops on real sqlite+PG+MySQL (the
-# execute-parity gate — #67: string-compare alone let a parser-invalid statement through).
+# The unified cross-language benchmark (benchmark/crosslang) drives ONE codegen path through bc's CLI
+# and commits the emitted native/typed modules. Two compiler-measured gates protect them:
+#   • drift  (#111) — re-lower + re-generate every op via the bc CLI and byte-diff the committed
+#                     adapters/<lang>/generated modules (they must not drift from what src/ compiles).
+#   • purity (#113) — the committed native/typed modules are what their tier claims: rust compiles
+#                     standalone with NO behavior_contracts extern, go's transitive deps carry no
+#                     bc-runtime / encoding/json, ts imports only bc VALUE helpers (baked straight-line).
+#                     py/php are the ir (interpreter) tier — labeled, not native-gated.
 
 on:
   pull_request:
@@ -13,7 +15,7 @@ on:
     paths:
       - 'src/**'
       - 'benchmark/crosslang/**'
-      - 'test/parity/**'
+      - 'conformance/codegen/**'
       - '.github/workflows/crosslang-bench.yml'
   workflow_dispatch:
 
@@ -21,32 +23,35 @@ permissions:
   contents: read
 
 jobs:
-  drift-check:
+  codegen-gates:
     runs-on: ubuntu-latest
+    env:
+      # The bc codegen CLI, resolved from the installed npm dependency (the `bc` bin) rather than a
+      # sibling checkout — so the drift gate re-generates against the SAME bc the repo pins.
+      BC_CLI: ${{ github.workspace }}/node_modules/behavior-contracts/dist/cli.js
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Set up Go (for go-native purity + conformance compile checks)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Set up Rust (for rust-native purity + conformance compile checks)
+        run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: Install
         run: npm ci --ignore-scripts
-      # `npm ci --ignore-scripts` skips better-sqlite3's native `install`, so the addon is absent.
-      # Rebuild it explicitly (prebuild first, node-gyp from-source fallback) — same as conformance.yml.
+      # `npm ci --ignore-scripts` skips better-sqlite3's native install; rebuild it (conformance:codegen
+      # executes the emitted TS module against an in-memory sqlite DB).
       - name: Build the better-sqlite3 native addon (skipped by ignore-scripts)
         run: npm_config_ignore_scripts=false npm rebuild better-sqlite3 --build-from-source=false || (cd node_modules/better-sqlite3 && npx node-gyp rebuild --release)
       - name: Build SCP dist (consume-only source for the bench)
         run: npm run build:scp
-      - name: Bring up the live DBs (PG :5433, MySQL :3307)
-        run: npm run docker:livedb:up && sleep 8
-      - name: Drift-check the generated ORM-plan artifact
-        run: npx tsx benchmark/crosslang/gen-orm-plan.ts --check
-      - name: Fairness + coverage self-check (19 ops, queries/op + rows/op)
-        run: TEST_DB_HOST=localhost TEST_DB_PORT=5433 TEST_MYSQL_PORT=3307 npx tsx benchmark/crosslang/selfcheck.ts
-      - name: Execute-parity — all 19 ops run DB-backed on sqlite + PG + MySQL (#67 gate)
-        run: npm run parity:execute
-      - name: Smoke the TS bench matrix (quick, real DBs)
-        run: CROSSLANG_ONLY=ts BENCH_ITER=30 BENCH_WARMUP=5 BENCH_TP_ITER=30 TEST_DB_HOST=localhost TEST_DB_PORT=5433 TEST_MYSQL_PORT=3307 npx tsx benchmark/crosslang/run.ts
-      - name: Tear down the live DBs
-        if: always()
-        run: npm run docker:livedb:down
+      - name: Drift gate — committed codegen modules match a fresh bc-CLI regeneration (#111)
+        run: npm run bench:codegen:drift
+      - name: Purity gate — native (rust/go) runtime-free + typed (ts) value-helper baked (#113)
+        run: npm run bench:codegen:purity
+      - name: Conformance codegen — emit + compile + byte-identical exec on the frozen vectors
+        run: npm run conformance:codegen

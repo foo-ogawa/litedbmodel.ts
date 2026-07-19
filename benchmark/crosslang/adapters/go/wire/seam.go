@@ -441,6 +441,56 @@ func QueryBatchedRelation[K comparable](
 	return out, nil
 }
 
+// QueryBatchedRelationGrouped — the CHAINED-relation exec (E4/#119 level-3): a batched relation off a
+// batched relation. Each over-element is a per-grandparent list of parent rows, so itemKeyLists[e] are
+// that element's child-parent keys (e.g. all post ids of one user's posts). FLATTEN every list into ONE
+// batched child query (N+1-free per level), group children by target key, then re-align PER over-element
+// by concatenating the children of each of its keys (in the element's key order). One Result per element.
+func QueryBatchedRelationGrouped[K comparable](
+	s *DB,
+	sqlText string,
+	itemKeyLists [][]K,
+	encodeJSON func([]K) string,
+	pgArrays func([]K) []any,
+	childKey func(RowData) K,
+) ([]WireValue, error) {
+	seen := make(map[K]bool)
+	distinct := make([]K, 0)
+	for _, ks := range itemKeyLists {
+		for _, k := range ks {
+			if !seen[k] {
+				seen[k] = true
+				distinct = append(distinct, k)
+			}
+		}
+	}
+	var childRows []RowData
+	var err error
+	if s.Dialect == "postgres" {
+		resolved := renumber(strings.ReplaceAll(sqlText, "@@PG_ARRAY_CAST@@", "int[]"))
+		childRows, err = s.materialize(resolved, pgArrays(distinct))
+	} else {
+		childRows, err = s.materialize(sqlText, []any{encodeJSON(distinct)})
+	}
+	if err != nil {
+		return nil, err
+	}
+	groups := make(map[K][]RowData, len(distinct))
+	for _, c := range childRows {
+		k := childKey(c)
+		groups[k] = append(groups[k], c)
+	}
+	out := make([]WireValue, len(itemKeyLists))
+	for i, ks := range itemKeyLists {
+		rows := make([]RowData, 0)
+		for _, k := range ks {
+			rows = append(rows, groups[k]...)
+		}
+		out[i] = Result{Rows: rows}
+	}
+	return out, nil
+}
+
 // renumber rewrites positional `?` → pg `$1..$N` (the relation child fragments carry `?`; baked
 // batch/main pg SQL already emits `$N`).
 func renumber(sqlText string) string {

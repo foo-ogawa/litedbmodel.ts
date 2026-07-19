@@ -11,7 +11,7 @@ import type { BenchOp } from './ops';
 const COMP: Record<string, string> = {
   findAll: 'FindAll', filterPaginateSort: 'FilterPaginateSort', findFirst: 'FindFirst', findUnique: 'FindUnique',
   create: 'Create', update: 'Update', upsert: 'Upsert', createMany: 'CreateMany', upsertMany: 'UpsertMany', updateMany: 'UpdateMany',
-  nestedFindAll: 'FindAll', nestedFindFirst: 'FindFirst', nestedFindUnique: 'FindUnique', nestedRelations: 'ByAuthor', compositeRelations: 'ByTenant',
+  nestedFindAll: 'FindAll', nestedFindFirst: 'FindFirst', nestedFindUnique: 'FindUnique', nestedRelations: 'FindAll', compositeRelations: 'ByTenant',
   delete: 'Delete', nestedCreate: 'NestedCreate', nestedUpdate: 'NestedUpdate', nestedUpsert: 'NestedUpsert',
 };
 
@@ -94,6 +94,40 @@ function relCompanion(o: {
   );
 }
 
+/** A FULL 3-level chain (#119): parent read + level-2 batched relation (scalar/pair key off the parent)
+ * + level-3 batched relation (its ports carry the WHOLE per-parent level-2 list; extract every key,
+ * flatten into ONE grouped batch). Emits `{rows,posts,comments}` via wire.Rel3JSON. */
+function rel3Companion(o: {
+  comp: string; n0Binds: string[]; input: string;
+  l2KeyT: string; l2KeyExpr: string; l2ChildKey: string; l2Enc: string; l2Pg: string; l2Ser: (v: string) => string;
+  l3KeyT: string; l3ParentKeyExpr: (p: string) => string; l3ChildKey: string; l3Enc: string; l3Pg: string; l3Ser: (v: string) => string;
+  parentSer: (v: string) => string;
+}): string {
+  const c = o.comp;
+  return (
+    `type Handler_${c} struct{ DB *wire.DB }\n\n` +
+    `func (h Handler_${c}) Node_${c}_n0(p PortsNR_${c}_n0, _ *string) (wire.WireValue, error) {\n` +
+    `\treturn wire.Query(h.DB, p.Sql, []any{${o.n0Binds.join(', ')}})\n}\n\n` +
+    // level 2: batched relation off the parent rows (one key per parent element).
+    `func (h Handler_${c}) Node_${c}_rel_posts(bp PortsNR_${c}_rel_posts_batch, _ *string) ([]wire.WireValue, error) {\n` +
+    `\tif len(bp.Items) == 0 {\n\t\treturn nil, nil\n\t}\n` +
+    `\tkeys := make([]${o.l2KeyT}, len(bp.Items))\n\tfor i, it := range bp.Items {\n\t\tkeys[i] = ${o.l2KeyExpr}\n\t}\n` +
+    `\treturn wire.QueryBatchedRelation(h.DB, bp.Items[0].Sql, keys, ${o.l2Enc}, ${o.l2Pg}, func(r wire.RowData) ${o.l2KeyT} { return ${o.l2ChildKey} })\n}\n\n` +
+    // level 3: batched relation off the level-2 rows. Each item's K0 is that parent's WHOLE level-2 list;
+    // extract every key → ONE grouped batch (N+1-free), re-aligned per parent.
+    `func (h Handler_${c}) Node_${c}_rel_comments(bp PortsNR_${c}_rel_comments_batch, _ *string) ([]wire.WireValue, error) {\n` +
+    `\tif len(bp.Items) == 0 {\n\t\treturn nil, nil\n\t}\n` +
+    `\titemKeys := make([][]${o.l3KeyT}, len(bp.Items))\n\tfor i, it := range bp.Items {\n\t\tks := make([]${o.l3KeyT}, len(it.K0))\n\t\tfor j, p := range it.K0 {\n\t\t\tks[j] = ${o.l3ParentKeyExpr('p')}\n\t\t}\n\t\titemKeys[i] = ks\n\t}\n` +
+    `\treturn wire.QueryBatchedRelationGrouped(h.DB, bp.Items[0].Sql, itemKeys, ${o.l3Enc}, ${o.l3Pg}, func(r wire.RowData) ${o.l3KeyT} { return ${o.l3ChildKey} })\n}\n\n` +
+    `func Native(db *wire.DB) string {\n` +
+    `\tout, _ := RunNativeRawStruct_${c}(Handler_${c}{DB: db}, ${o.input})\n` +
+    `\tparents := make([]string, len(out.Rows))\n\tfor i, r := range out.Rows {\n\t\tparents[i] = ${o.parentSer('r')}\n\t}\n` +
+    `\tposts := make([]string, len(out.Posts))\n\tfor i, ps := range out.Posts {\n\t\tpl := make([]string, len(ps))\n\t\tfor j, p := range ps {\n\t\t\tpl[j] = ${o.l2Ser('p')}\n\t\t}\n\t\tposts[i] = wire.Arrj(pl)\n\t}\n` +
+    `\tcomments := make([]string, len(out.Comments))\n\tfor i, cs := range out.Comments {\n\t\tcl := make([]string, len(cs))\n\t\tfor j, c := range cs {\n\t\t\tcl[j] = ${o.l3Ser('c')}\n\t\t}\n\t\tcomments[i] = wire.Arrj(cl)\n\t}\n` +
+    `\treturn wire.Rel3JSON(parents, posts, comments)\n}\n`
+  );
+}
+
 /** A tx: per-body Node (returning-id → Query, no-returning → ExecuteNull) + a {committed,state} Native. */
 function txCompanion(comp: string, input: string, bodies: { node: string; binds: string[]; returning: boolean }[]): string {
   let s = `type Handler_${comp} struct{ DB *wire.DB }\n\n`;
@@ -114,6 +148,7 @@ const postSer = (v: string) => `wire.PostRow(${v}.Id, ${v}.Title, ${v}.Author_id
 const commentSer = (v: string) => `wire.CommentRow(${v}.Id, ${v}.Body, ${v}.Post_id)`;
 const tuserSer = (v: string) => `wire.TUserRow(${v}.Tenant_id, ${v}.User_id, ${v}.Name)`;
 const tpostSer = (v: string) => `wire.TPostRow(${v}.Tenant_id, ${v}.Post_id, ${v}.User_id, ${v}.Title)`;
+const tcommentSer = (v: string) => `wire.TCommentRow(${v}.Tenant_id, ${v}.Comment_id, ${v}.Post_id, ${v}.Body)`;
 const idSer = (v: string) => `wire.Objj(wire.Ki("id", ${v}.Id))`;
 
 /** Emit the `handler.go` companion source for one op + dialect. */
@@ -162,11 +197,17 @@ export function goCompanion(op: BenchOp, dialect: string): string {
       return H + relCompanion({ comp, parentBinds: ['p.P0', 'p.P1'], input: scalarInput(comp, op.input), relNode: 'rel_posts', relField: 'Posts', childField: 'posts',
         keyT: 'int64', keyExpr: 'it.K0', childKey: 'r.Int("author_id")', enc: 'wire.IntKeysJSON', pgEnc: 'wire.IntKeysPg', parentSer: userSer, childSer: postSer });
     case 'nestedRelations':
-      return H + relCompanion({ comp, parentBinds: ['p.P0'], input: scalarInput(comp, op.input), relNode: 'rel_comments', relField: 'Comments', childField: 'comments',
-        keyT: 'int64', keyExpr: 'it.K0', childKey: 'r.Int("post_id")', enc: 'wire.IntKeysJSON', pgEnc: 'wire.IntKeysPg', parentSer: postSer, childSer: commentSer });
+      return H + rel3Companion({
+        comp, n0Binds: ['p.P0'], input: 'In_FindAll{}', parentSer: userSer,
+        l2KeyT: 'int64', l2KeyExpr: 'it.K0', l2ChildKey: 'r.Int("author_id")', l2Enc: 'wire.IntKeysJSON', l2Pg: 'wire.IntKeysPg', l2Ser: postSer,
+        l3KeyT: 'int64', l3ParentKeyExpr: (p) => `${p}.Id`, l3ChildKey: 'r.Int("post_id")', l3Enc: 'wire.IntKeysJSON', l3Pg: 'wire.IntKeysPg', l3Ser: commentSer,
+      });
     case 'compositeRelations':
-      return H + relCompanion({ comp, parentBinds: ['p.P0'], input: scalarInput(comp, op.input), relNode: 'rel_posts', relField: 'Posts', childField: 'posts',
-        keyT: '[2]int64', keyExpr: '[2]int64{it.K0, it.K1}', childKey: '[2]int64{r.Int("tenant_id"), r.Int("user_id")}', enc: 'wire.PairKeysJSON', pgEnc: 'wire.PairKeysPg', parentSer: tuserSer, childSer: tpostSer });
+      return H + rel3Companion({
+        comp, n0Binds: ['p.P0'], input: scalarInput(comp, op.input), parentSer: tuserSer,
+        l2KeyT: '[2]int64', l2KeyExpr: '[2]int64{it.K0, it.K1}', l2ChildKey: '[2]int64{r.Int("tenant_id"), r.Int("user_id")}', l2Enc: 'wire.PairKeysJSON', l2Pg: 'wire.PairKeysPg', l2Ser: tpostSer,
+        l3KeyT: '[2]int64', l3ParentKeyExpr: (p) => `[2]int64{${p}.Tenant_id, ${p}.Post_id}`, l3ChildKey: '[2]int64{r.Int("tenant_id"), r.Int("post_id")}', l3Enc: 'wire.PairKeysJSON', l3Pg: 'wire.PairKeysPg', l3Ser: tcommentSer,
+      });
     case 'delete':
       return H + txCompanion(comp, scalarInput(comp, op.input), [
         { node: 'tx_body_0', binds: ['p.P0', 'p.P1'], returning: true },

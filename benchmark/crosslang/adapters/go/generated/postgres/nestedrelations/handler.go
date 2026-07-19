@@ -3,13 +3,13 @@ package nestedrelations
 
 import "orm_bench_go/wire"
 
-type Handler_ByAuthor struct{ DB *wire.DB }
+type Handler_FindAll struct{ DB *wire.DB }
 
-func (h Handler_ByAuthor) Node_ByAuthor_n0(p PortsNR_ByAuthor_n0, _ *string) (wire.WireValue, error) {
+func (h Handler_FindAll) Node_FindAll_n0(p PortsNR_FindAll_n0, _ *string) (wire.WireValue, error) {
 	return wire.Query(h.DB, p.Sql, []any{p.P0})
 }
 
-func (h Handler_ByAuthor) Node_ByAuthor_rel_comments(bp PortsNR_ByAuthor_rel_comments_batch, _ *string) ([]wire.WireValue, error) {
+func (h Handler_FindAll) Node_FindAll_rel_posts(bp PortsNR_FindAll_rel_posts_batch, _ *string) ([]wire.WireValue, error) {
 	if len(bp.Items) == 0 {
 		return nil, nil
 	}
@@ -17,22 +17,45 @@ func (h Handler_ByAuthor) Node_ByAuthor_rel_comments(bp PortsNR_ByAuthor_rel_com
 	for i, it := range bp.Items {
 		keys[i] = it.K0
 	}
-	return wire.QueryBatchedRelation(h.DB, bp.Items[0].Sql, keys, wire.IntKeysJSON, wire.IntKeysPg, func(r wire.RowData) int64 { return r.Int("post_id") })
+	return wire.QueryBatchedRelation(h.DB, bp.Items[0].Sql, keys, wire.IntKeysJSON, wire.IntKeysPg, func(r wire.RowData) int64 { return r.Int("author_id") })
+}
+
+func (h Handler_FindAll) Node_FindAll_rel_comments(bp PortsNR_FindAll_rel_comments_batch, _ *string) ([]wire.WireValue, error) {
+	if len(bp.Items) == 0 {
+		return nil, nil
+	}
+	itemKeys := make([][]int64, len(bp.Items))
+	for i, it := range bp.Items {
+		ks := make([]int64, len(it.K0))
+		for j, p := range it.K0 {
+			ks[j] = p.Id
+		}
+		itemKeys[i] = ks
+	}
+	return wire.QueryBatchedRelationGrouped(h.DB, bp.Items[0].Sql, itemKeys, wire.IntKeysJSON, wire.IntKeysPg, func(r wire.RowData) int64 { return r.Int("post_id") })
 }
 
 func Native(db *wire.DB) string {
-	out, _ := RunNativeRawStruct_ByAuthor(Handler_ByAuthor{DB: db}, In_ByAuthor{Author_id: 7})
+	out, _ := RunNativeRawStruct_FindAll(Handler_FindAll{DB: db}, In_FindAll{})
 	parents := make([]string, len(out.Rows))
 	for i, r := range out.Rows {
-		parents[i] = wire.PostRow(r.Id, r.Title, r.Author_id)
+		parents[i] = wire.UserRow(r.Id, r.Email, r.Name)
 	}
-	children := make([]string, len(out.Comments))
+	posts := make([]string, len(out.Posts))
+	for i, ps := range out.Posts {
+		pl := make([]string, len(ps))
+		for j, p := range ps {
+			pl[j] = wire.PostRow(p.Id, p.Title, p.Author_id)
+		}
+		posts[i] = wire.Arrj(pl)
+	}
+	comments := make([]string, len(out.Comments))
 	for i, cs := range out.Comments {
 		cl := make([]string, len(cs))
 		for j, c := range cs {
 			cl[j] = wire.CommentRow(c.Id, c.Body, c.Post_id)
 		}
-		children[i] = wire.Arrj(cl)
+		comments[i] = wire.Arrj(cl)
 	}
-	return wire.RelJSON("comments", parents, children)
+	return wire.Rel3JSON(parents, posts, comments)
 }

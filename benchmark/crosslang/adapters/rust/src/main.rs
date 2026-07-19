@@ -12,7 +12,7 @@
 
 #[path = "seam.rs"]
 mod seam;
-use seam::{execute, execute_batch, json_str, query, query_batched_relation, transaction, Db, Param, WireListData, WireResult, WireRowData};
+use seam::{execute, execute_batch, json_str, query, query_batched_relation, query_batched_relation_grouped, transaction, Db, Param, WireListData, WireResult, WireRowData};
 
 // The generated module tree for the built dialect (`use gen::*` brings the 19 op modules into scope).
 #[cfg(feature = "postgres")]
@@ -111,7 +111,13 @@ fn post_row(id: i64, title: &str, author_id: i64) -> String { obj(&[ji("id", id)
 fn comment_row(id: i64, body: &str, post_id: i64) -> String { obj(&[ji("id", id), js("body", body), ji("post_id", post_id)]) }
 fn tuser_row(t: i64, u: i64, name: &str) -> String { obj(&[ji("tenant_id", t), ji("user_id", u), js("name", name)]) }
 fn tpost_row(t: i64, pid: i64, u: i64, title: &str) -> String { obj(&[ji("tenant_id", t), ji("post_id", pid), ji("user_id", u), js("title", title)]) }
+fn tcomment_row(t: i64, cid: i64, pid: i64, body: &str) -> String { obj(&[ji("tenant_id", t), ji("comment_id", cid), ji("post_id", pid), js("body", body)]) }
 fn rel_json(rel: &str, parents: &[String], child_lists: &[String]) -> String { format!("{{\"rows\":{},{}:{}}}", arr(parents), json_str(rel), arr(child_lists)) }
+/// 3-level output `{"rows":[…],"posts":[[…]…],"comments":[[…]…]}` — parents + per-parent level-2 lists
+/// (`posts`) + per-parent level-3 lists (`comments`, flattened across that parent's level-2 rows).
+fn rel3_json(parents: &[String], posts_lists: &[String], comment_lists: &[String]) -> String {
+    format!("{{\"rows\":{},\"posts\":{},\"comments\":{}}}", arr(parents), arr(posts_lists), arr(comment_lists))
+}
 
 // ── fixed inputs (match ops.ts / oracle.ts) ──
 fn batch_emails() -> Vec<String> { (0..10).map(|i| format!("many{}@bench.com", i)).collect() }
@@ -303,19 +309,31 @@ fn native_nestedfindunique(db: &Db) -> String {
     let children: Vec<String> = out.posts.iter().map(|ps| arr(&ps.iter().map(|p| post_row(p.id, &p.title, p.author_id)).collect::<Vec<_>>())).collect();
     rel_json("posts", &parents, &children)
 }
+// ── 3-level chain: users → posts (batched by user id) → comments (batched by ALL post ids, seam-flattened).
+// rel_posts is the level-2 handler (scalar key); rel_comments is level-3 (its ports carry the WHOLE post
+// list per user, so the seam extracts every post id, runs ONE query, and re-aligns per user). ──────────
 fn native_nestedrelations(db: &Db) -> String {
     struct H<'a> { db: &'a Db }
-    impl gen_nestedrelations::HandlerNRByAuthor for H<'_> {
+    impl gen_nestedrelations::HandlerNRFindAll for H<'_> {
         type Wire = WireResult;
-        fn node_n0(&self, p: &gen_nestedrelations::PortsNRByAuthorN0, _b: Option<String>) -> Result<WireResult, gen_nestedrelations::BehaviorError> {
+        fn node_n0(&self, p: &gen_nestedrelations::PortsNRFindAllN0, _b: Option<String>) -> Result<WireResult, gen_nestedrelations::BehaviorError> {
             query(self.db, &p.f_sql, &[Param::Int(p.f_p0)]).map_err(|e| gen_nestedrelations::BehaviorError::new("LEAF_FAILURE", e))
         }
-        rel_handler_single!(gen_nestedrelations, node_rel_comments, PortsNRByAuthorRelCommentsBatch, "post_id");
+        rel_handler_single!(gen_nestedrelations, node_rel_posts, PortsNRFindAllRelPostsBatch, "author_id");
+        fn node_rel_comments(&self, ports: &gen_nestedrelations::PortsNRFindAllRelCommentsBatch, _b: Option<String>) -> Result<Vec<WireResult>, gen_nestedrelations::BehaviorError> {
+            let item_keys: Vec<Vec<i64>> = ports.items.iter().map(|it| it.f_k0.iter().map(|p| p.id).collect()).collect();
+            query_batched_relation_grouped(self.db, &ports.items[0].f_sql, &item_keys,
+                |ks: &[i64]| format!("[{}]", ks.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(",")),
+                |ks: &[i64]| vec![Param::ArrayInt(ks.to_vec())],
+                |row: &WireRowData| row.i64("post_id"))
+                .map_err(|e| gen_nestedrelations::BehaviorError::new("LEAF_FAILURE", e))
+        }
     }
-    let out = gen_nestedrelations::run_native_raw_struct_ByAuthor(&H { db }, gen_nestedrelations::InNRByAuthor { author_id: 7 }).unwrap();
-    let parents: Vec<String> = out.rows.iter().map(|p| post_row(p.id, &p.title, p.author_id)).collect();
-    let children: Vec<String> = out.comments.iter().map(|cs| arr(&cs.iter().map(|c| comment_row(c.id, &c.body, c.post_id)).collect::<Vec<_>>())).collect();
-    rel_json("comments", &parents, &children)
+    let out = gen_nestedrelations::run_native_raw_struct_FindAll(&H { db }, gen_nestedrelations::InNRFindAll).unwrap();
+    let parents: Vec<String> = out.rows.iter().map(|u| user_row(u.id, &u.email, &u.name)).collect();
+    let posts: Vec<String> = out.posts.iter().map(|ps| arr(&ps.iter().map(|p| post_row(p.id, &p.title, p.author_id)).collect::<Vec<_>>())).collect();
+    let comments: Vec<String> = out.comments.iter().map(|cs| arr(&cs.iter().map(|c| comment_row(c.id, &c.body, c.post_id)).collect::<Vec<_>>())).collect();
+    rel3_json(&parents, &posts, &comments)
 }
 fn native_compositerelations(db: &Db) -> String {
     struct H<'a> { db: &'a Db }
@@ -333,11 +351,22 @@ fn native_compositerelations(db: &Db) -> String {
                 |row: &WireRowData| (row.i64("tenant_id"), row.i64("user_id")))
                 .map_err(|e| gen_compositerelations::BehaviorError::new("LEAF_FAILURE", e))
         }
+        // Level 3: comments of each tenant_post, keyed by the composite (tenant_id, post_id). The ports
+        // carry the WHOLE per-user post list; extract every (tenant_id, post_id) tuple → ONE batched query.
+        fn node_rel_comments(&self, ports: &gen_compositerelations::PortsNRByTenantRelCommentsBatch, _b: Option<String>) -> Result<Vec<WireResult>, gen_compositerelations::BehaviorError> {
+            let item_keys: Vec<Vec<(i64, i64)>> = ports.items.iter().map(|it| it.f_k0.iter().map(|p| (p.tenant_id, p.post_id)).collect()).collect();
+            query_batched_relation_grouped(self.db, &ports.items[0].f_sql, &item_keys,
+                |ks: &[(i64, i64)]| format!("[{}]", ks.iter().map(|(t, p)| format!("[{},{}]", t, p)).collect::<Vec<_>>().join(",")),
+                |ks: &[(i64, i64)]| vec![Param::ArrayInt(ks.iter().map(|(t, _)| *t).collect()), Param::ArrayInt(ks.iter().map(|(_, p)| *p).collect())],
+                |row: &WireRowData| (row.i64("tenant_id"), row.i64("post_id")))
+                .map_err(|e| gen_compositerelations::BehaviorError::new("LEAF_FAILURE", e))
+        }
     }
     let out = gen_compositerelations::run_native_raw_struct_ByTenant(&H { db }, gen_compositerelations::InNRByTenant { tenant_id: 1 }).unwrap();
     let parents: Vec<String> = out.rows.iter().map(|u| tuser_row(u.tenant_id, u.user_id, &u.name)).collect();
-    let children: Vec<String> = out.posts.iter().map(|ps| arr(&ps.iter().map(|p| tpost_row(p.tenant_id, p.post_id, p.user_id, &p.title)).collect::<Vec<_>>())).collect();
-    rel_json("posts", &parents, &children)
+    let posts: Vec<String> = out.posts.iter().map(|ps| arr(&ps.iter().map(|p| tpost_row(p.tenant_id, p.post_id, p.user_id, &p.title)).collect::<Vec<_>>())).collect();
+    let comments: Vec<String> = out.comments.iter().map(|cs| arr(&cs.iter().map(|c| tcomment_row(c.tenant_id, c.comment_id, c.post_id, &c.body)).collect::<Vec<_>>())).collect();
+    rel3_json(&parents, &posts, &comments)
 }
 
 // ══ NATIVE tx — the transaction envelope + the chain runner; result = {committed, state}. A RETURNING-id
@@ -515,20 +544,58 @@ fn sdk_nestedfindunique(db: &Db) -> String {
         "SELECT id, title, author_id FROM benchmark_posts WHERE author_id {IN} ORDER BY id ASC", "author_id",
         |r| post_row(r.i64("id"), &r.text("title"), r.i64("author_id")), "posts")
 }
+// SDK 3-level: three batched queries (users; posts by user id; comments by ALL post ids) + client stitch
+// into the SAME `{rows,posts,comments}` shape the native cell emits (comments flattened per user, in that
+// user's post order, each post's comments in id order).
 fn sdk_nestedrelations(db: &Db) -> String {
-    sdk_rel_single(db, &format!("SELECT id, title, author_id FROM benchmark_posts WHERE author_id = {} ORDER BY id ASC", ph(1)), &[Param::Int(7)], "id",
-        |r| post_row(r.i64("id"), &r.text("title"), r.i64("author_id")),
-        "SELECT id, body, post_id FROM benchmark_comments WHERE post_id {IN} ORDER BY id ASC", "post_id",
-        |r| comment_row(r.i64("id"), &r.text("body"), r.i64("post_id")), "comments")
+    let users = query(db, "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT 100", &[]).unwrap().rows;
+    let uids: Vec<i64> = users.iter().map(|r| r.i64("id")).collect();
+    let (psql, pparams) = child_in_clause("SELECT id, title, author_id FROM benchmark_posts WHERE author_id {IN} ORDER BY id ASC", &uids);
+    let posts = query(db, &psql, &pparams).unwrap().rows;
+    let pids: Vec<i64> = posts.iter().map(|r| r.i64("id")).collect();
+    let (csql, cparams) = child_in_clause("SELECT id, body, post_id FROM benchmark_comments WHERE post_id {IN} ORDER BY id ASC", &pids);
+    let comments = query(db, &csql, &cparams).unwrap().rows;
+    let mut posts_by_author: std::collections::HashMap<i64, Vec<&WireRowData>> = std::collections::HashMap::new();
+    for p in &posts { posts_by_author.entry(p.i64("author_id")).or_default().push(p); }
+    let mut comments_by_post: std::collections::HashMap<i64, Vec<&WireRowData>> = std::collections::HashMap::new();
+    for c in &comments { comments_by_post.entry(c.i64("post_id")).or_default().push(c); }
+    let empty: Vec<&WireRowData> = Vec::new();
+    let parents: Vec<String> = users.iter().map(|u| user_row(u.i64("id"), &u.text("email"), &u.text("name"))).collect();
+    let posts_lists: Vec<String> = users.iter().map(|u| {
+        let ps = posts_by_author.get(&u.i64("id")).unwrap_or(&empty);
+        arr(&ps.iter().map(|p| post_row(p.i64("id"), &p.text("title"), p.i64("author_id"))).collect::<Vec<_>>())
+    }).collect();
+    let comment_lists: Vec<String> = users.iter().map(|u| {
+        let ps = posts_by_author.get(&u.i64("id")).unwrap_or(&empty);
+        let mut cs: Vec<String> = Vec::new();
+        for p in ps { for c in comments_by_post.get(&p.i64("id")).unwrap_or(&empty) { cs.push(comment_row(c.i64("id"), &c.text("body"), c.i64("post_id"))); } }
+        arr(&cs)
+    }).collect();
+    rel3_json(&parents, &posts_lists, &comment_lists)
 }
 fn sdk_compositerelations(db: &Db) -> String {
-    let parents = query(db, &format!("SELECT tenant_id, user_id, name FROM benchmark_tenant_users WHERE tenant_id = {} ORDER BY user_id ASC", ph(1)), &[Param::Int(1)]).unwrap().rows;
-    let children = query(db, &format!("SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE tenant_id = {} ORDER BY post_id ASC", ph(1)), &[Param::Int(1)]).unwrap().rows;
-    let mut groups: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
-    for c in &children { groups.entry(c.i64("user_id")).or_default().push(tpost_row(c.i64("tenant_id"), c.i64("post_id"), c.i64("user_id"), &c.text("title"))); }
-    let ps: Vec<String> = parents.iter().map(|r| tuser_row(r.i64("tenant_id"), r.i64("user_id"), &r.text("name"))).collect();
-    let cs: Vec<String> = parents.iter().map(|r| arr(groups.get(&r.i64("user_id")).map(|v| v.as_slice()).unwrap_or(&[]))).collect();
-    rel_json("posts", &ps, &cs)
+    // tenant_id is fixed = 1, so the SDK filters each level by tenant_id and groups client-side by the
+    // sub-key (user_id for posts, post_id for comments) — the same rows the composite tuple-batch selects.
+    let tusers = query(db, &format!("SELECT tenant_id, user_id, name FROM benchmark_tenant_users WHERE tenant_id = {} ORDER BY user_id ASC", ph(1)), &[Param::Int(1)]).unwrap().rows;
+    let tposts = query(db, &format!("SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE tenant_id = {} ORDER BY post_id ASC", ph(1)), &[Param::Int(1)]).unwrap().rows;
+    let tcomments = query(db, &format!("SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments WHERE tenant_id = {} ORDER BY comment_id ASC", ph(1)), &[Param::Int(1)]).unwrap().rows;
+    let mut posts_by_user: std::collections::HashMap<i64, Vec<&WireRowData>> = std::collections::HashMap::new();
+    for p in &tposts { posts_by_user.entry(p.i64("user_id")).or_default().push(p); }
+    let mut comments_by_post: std::collections::HashMap<i64, Vec<&WireRowData>> = std::collections::HashMap::new();
+    for c in &tcomments { comments_by_post.entry(c.i64("post_id")).or_default().push(c); }
+    let empty: Vec<&WireRowData> = Vec::new();
+    let parents: Vec<String> = tusers.iter().map(|u| tuser_row(u.i64("tenant_id"), u.i64("user_id"), &u.text("name"))).collect();
+    let posts_lists: Vec<String> = tusers.iter().map(|u| {
+        let ps = posts_by_user.get(&u.i64("user_id")).unwrap_or(&empty);
+        arr(&ps.iter().map(|p| tpost_row(p.i64("tenant_id"), p.i64("post_id"), p.i64("user_id"), &p.text("title"))).collect::<Vec<_>>())
+    }).collect();
+    let comment_lists: Vec<String> = tusers.iter().map(|u| {
+        let ps = posts_by_user.get(&u.i64("user_id")).unwrap_or(&empty);
+        let mut cs: Vec<String> = Vec::new();
+        for p in ps { for c in comments_by_post.get(&p.i64("post_id")).unwrap_or(&empty) { cs.push(tcomment_row(c.i64("tenant_id"), c.i64("comment_id"), c.i64("post_id"), &c.text("body"))); } }
+        arr(&cs)
+    }).collect();
+    rel3_json(&parents, &posts_lists, &comment_lists)
 }
 
 // SDK tx — raw driver BEGIN … COMMIT/ROLLBACK via the seam envelope, then the {committed, state} snapshot.

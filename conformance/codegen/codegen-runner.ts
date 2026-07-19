@@ -152,7 +152,8 @@ const IR_LITERAL_MARKERS = [
   /"irVersion"|'irVersion'/, // embedded ComponentGraphIR JSON literal (any language)
   /\bexport const IR\b|\bexport var IR\b|\bpub static IR\b|\bvar IR\b\s*=|'IR'\s*=>/, // named IR export
   /IR_FINGERPRINT|IRFingerprint/, // baked IR fingerprint (banned from codegen output)
-  /\brun_behavior\b|\bRunBehavior\b|\brunBehavior\b/, // interpreter call (would be a sham de-interpretation)
+  /\brun_behavior\(|\bRunBehavior\(|\brunBehavior\(/, // interpreter CALL (would be a sham de-interpretation);
+  // an immediate `(` distinguishes a call from prose ("byte-equal to run_behavior", "…run_behavior (fixes …)")
 ];
 /**
  * Strip COMMENTS (line + block) while PRESERVING string/char/template literals, so an anti-sham
@@ -213,7 +214,10 @@ function structuralCheck(v: Json, language: string, resolveColumnType: (table: s
   // typed-native purity (go/rust ONLY when covered): zero boxing markers — the whole point of #60
   // milestone 1 is that a COVERED read carries no boxed Value/RawValue/run_plan on its hot path.
   if (NATIVE_LANGS.includes(language)) {
-    const NATIVE_PURITY_MARKERS = [/\bobj_native\b/, /\bser_T\d/, /\brun_plan\b/, /\bRawValue\b/];
+    // Real boxing crosses the boxed `Value`/`RawValue` ENUM (`Value::`/`RawValue::`); the bc#146
+    // structured-error `ErrorDetail.RawValue`/`raw_value` struct FIELD (a diagnostic string, not a
+    // hot-path value box) is NOT boxing — match the enum crossing, not the bare word.
+    const NATIVE_PURITY_MARKERS = [/\bobj_native\b/, /\bser_T\d/, /\brun_plan\b/, /\bRawValue::/, /\bValue::/];
     for (const m of NATIVE_PURITY_MARKERS) {
       if (m.test(code)) return { kind: 'fail', detail: `typed-native purity violated: emitted ${language} code matched ${m} (should be zero-boxing)` };
     }

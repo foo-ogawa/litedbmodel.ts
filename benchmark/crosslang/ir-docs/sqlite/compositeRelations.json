@@ -63,6 +63,38 @@
               }
             }
           }
+        },
+        {
+          "id": "rel_comments",
+          "map": {
+            "as": "$rel2",
+            "component": "Select",
+            "over": {
+              "ref": [
+                "rel_posts"
+              ]
+            },
+            "batched": true,
+            "relationKind": "connection",
+            "ports": {
+              "sql": "SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments WHERE EXISTS (SELECT 1 FROM json_each(?) je WHERE json_extract(je.value, '$[0]') = benchmark_tenant_comments.tenant_id AND json_extract(je.value, '$[1]') = benchmark_tenant_comments.post_id) ORDER BY comment_id ASC",
+              "k0": {
+                "ref": [
+                  "$rel2"
+                ]
+              }
+            }
+          },
+          "outType": {
+            "arr": {
+              "obj": {
+                "tenant_id": "int",
+                "comment_id": "int",
+                "post_id": "int",
+                "body": "string"
+              }
+            }
+          }
         }
       ],
       "inputPorts": {
@@ -83,6 +115,11 @@
             "ref": [
               "rel_posts"
             ]
+          },
+          "comments": {
+            "ref": [
+              "rel_comments"
+            ]
           }
         }
       },
@@ -94,6 +131,9 @@
           ],
           [
             1
+          ],
+          [
+            2
           ]
         ]
       },
@@ -116,6 +156,18 @@
                   "post_id": "int",
                   "user_id": "int",
                   "title": "string"
+                }
+              }
+            }
+          },
+          "comments": {
+            "arr": {
+              "arr": {
+                "obj": {
+                  "tenant_id": "int",
+                  "comment_id": "int",
+                  "post_id": "int",
+                  "body": "string"
                 }
               }
             }

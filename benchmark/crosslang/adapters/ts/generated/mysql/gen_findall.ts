@@ -16,8 +16,8 @@
 // EXPECTED_SPEC_VERSIONS + COMPONENT_NAMES. The IR fingerprint is a BUILD-TIME return on
 // GenerateResult.fingerprint (NOT baked into the module, 0.5.0); the fail-closed skew gate
 // lives on the consumer/build side (compare it against the fingerprint of the live IR).
-import { SPEC_VERSIONS, BehaviorFailure, PlanFailure, codegenPrimitives as cgp, conformResultToOutType } from "../../../../../../../behavior-contracts/ts/dist/index.js";
-import type { AsyncHandler, AsyncHandlers, Handler, Handlers, Scope, Value } from "../../../../../../../behavior-contracts/ts/dist/index.js";
+import { SPEC_VERSIONS, BehaviorFailure, PlanFailure, codegenPrimitives as cgp, conformResultToOutType } from "behavior-contracts";
+import type { AsyncHandler, AsyncHandlers, Handler, Handlers, Scope, Value } from "behavior-contracts";
 
 /** Spec versions baked at generation time (fail-closed constant comparison at load). */
 export const EXPECTED_SPEC_VERSIONS = { behavior: 5, expression: 2, plan: 1 } as const;

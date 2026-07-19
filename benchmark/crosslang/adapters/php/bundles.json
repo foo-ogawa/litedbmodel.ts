@@ -1,0 +1,5952 @@
+{
+ "sqlite": {
+  "findAll": {
+   "kind": "read",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "FindAll",
+    "readGraph": {
+     "dialect": "sqlite",
+     "name": "FindAll",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 100,
+           "order": "id ASC",
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users"
+          }
+         }
+        ],
+        "inputPorts": {},
+        "name": "FindAll",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": " ORDER BY id ASC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         100
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "filterPaginateSort": {
+   "kind": "read",
+   "input": {
+    "published": 1
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "FilterPaginateSort",
+    "readGraph": {
+     "dialect": "sqlite",
+     "name": "FilterPaginateSort",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "title": "string",
+             "content": "string",
+             "published": "int",
+             "author_id": "int",
+             "created_at": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 20,
+           "offset": 10,
+           "order": "created_at DESC",
+           "select": {
+            "arr": [
+             "id",
+             "title",
+             "content",
+             "published",
+             "author_id",
+             "created_at"
+            ]
+           },
+           "table": "benchmark_posts",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "published"
+                ]
+               },
+               {
+                "ref": [
+                 "published"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "published": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FilterPaginateSort",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "title": "string",
+           "content": "string",
+           "published": "int",
+           "author_id": "int",
+           "created_at": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, title, content, published, author_id, created_at FROM benchmark_posts",
+        "params": []
+       },
+       {
+        "sql": "published = ?",
+        "params": [
+         {
+          "ref": [
+           "published"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " ORDER BY created_at DESC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         20
+        ]
+       },
+       {
+        "sql": " OFFSET ?",
+        "params": [
+         10
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32",
+       "published": "int32",
+       "author_id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "findFirst": {
+   "kind": "read",
+   "input": {
+    "name": "User%"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "FindFirst",
+    "readGraph": {
+     "dialect": "sqlite",
+     "name": "FindFirst",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "@like",
+                 "name",
+                 "LIKE"
+                ]
+               },
+               {
+                "ref": [
+                 "name"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "@like": {
+          "required": true,
+          "type": "unknown"
+         },
+         "name": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindFirst",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "name LIKE ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "findUnique": {
+   "kind": "read",
+   "input": {
+    "email": "user500@example.com"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "FindUnique",
+    "readGraph": {
+     "dialect": "sqlite",
+     "name": "FindUnique",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "email"
+                ]
+               },
+               {
+                "ref": [
+                 "email"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "email": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindUnique",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "email = ?",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "nestedFindAll": {
+   "kind": "read+rel",
+   "input": {},
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "FindAll",
+    "readGraph": {
+     "dialect": "sqlite",
+     "name": "FindAll",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 100,
+           "order": "id ASC",
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users"
+          }
+         }
+        ],
+        "inputPorts": {},
+        "name": "FindAll",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": " ORDER BY id ASC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         100
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "sqlite",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      }
+     }
+    }
+   }
+  },
+  "nestedFindFirst": {
+   "kind": "read+rel",
+   "input": {
+    "name": "User%"
+   },
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "FindFirst",
+    "readGraph": {
+     "dialect": "sqlite",
+     "name": "FindFirst",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "@like",
+                 "name",
+                 "LIKE"
+                ]
+               },
+               {
+                "ref": [
+                 "name"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "@like": {
+          "required": true,
+          "type": "unknown"
+         },
+         "name": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindFirst",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "name LIKE ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "sqlite",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      }
+     }
+    }
+   }
+  },
+  "nestedFindUnique": {
+   "kind": "read+rel",
+   "input": {
+    "email": "user1@example.com"
+   },
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "FindUnique",
+    "readGraph": {
+     "dialect": "sqlite",
+     "name": "FindUnique",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "email"
+                ]
+               },
+               {
+                "ref": [
+                 "email"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "email": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindUnique",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "email = ?",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "sqlite",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      }
+     }
+    }
+   }
+  },
+  "nestedRelations": {
+   "kind": "read+rel",
+   "input": {},
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "FindAll",
+    "readGraph": {
+     "dialect": "sqlite",
+     "name": "FindAll",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 100,
+           "order": "id ASC",
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users"
+          }
+         }
+        ],
+        "inputPorts": {},
+        "name": "FindAll",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": " ORDER BY id ASC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         100
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "sqlite",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      },
+      "childRelations": [
+       {
+        "name": "comments",
+        "kind": "hasMany",
+        "parentKey": "id",
+        "targetKey": "post_id",
+        "dialect": "sqlite",
+        "sql": "SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
+        "targetTable": "benchmark_comments",
+        "select": [
+         "id",
+         "body",
+         "post_id"
+        ],
+        "materializers": {
+         "id": "int32",
+         "post_id": "int32"
+        }
+       }
+      ]
+     }
+    }
+   }
+  },
+  "compositeRelations": {
+   "kind": "read+rel",
+   "input": {
+    "tenant_id": 1
+   },
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "ByTenant",
+    "readGraph": {
+     "dialect": "sqlite",
+     "name": "ByTenant",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "tenant_id": "int",
+             "user_id": "int",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "order": "user_id ASC",
+           "select": {
+            "arr": [
+             "tenant_id",
+             "user_id",
+             "name"
+            ]
+           },
+           "table": "benchmark_tenant_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "tenant_id"
+                ]
+               },
+               {
+                "ref": [
+                 "tenant_id"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "tenant_id": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "ByTenant",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "tenant_id": "int",
+           "user_id": "int",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT tenant_id, user_id, name FROM benchmark_tenant_users",
+        "params": []
+       },
+       {
+        "sql": "tenant_id = ?",
+        "params": [
+         {
+          "ref": [
+           "tenant_id"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " ORDER BY user_id ASC",
+        "params": []
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "tenant_id": "int32",
+       "user_id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKeys": [
+       "tenant_id",
+       "user_id"
+      ],
+      "targetKeys": [
+       "tenant_id",
+       "user_id"
+      ],
+      "dialect": "sqlite",
+      "sql": "SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE EXISTS (SELECT 1 FROM json_each(?) je WHERE json_extract(je.value, '$[0]') = benchmark_tenant_posts.tenant_id AND json_extract(je.value, '$[1]') = benchmark_tenant_posts.user_id) ORDER BY post_id ASC",
+      "targetTable": "benchmark_tenant_posts",
+      "select": [
+       "tenant_id",
+       "post_id",
+       "user_id",
+       "title"
+      ],
+      "materializers": {
+       "tenant_id": "int32",
+       "post_id": "int32",
+       "user_id": "int32"
+      },
+      "childRelations": [
+       {
+        "name": "comments",
+        "kind": "hasMany",
+        "parentKeys": [
+         "tenant_id",
+         "post_id"
+        ],
+        "targetKeys": [
+         "tenant_id",
+         "post_id"
+        ],
+        "dialect": "sqlite",
+        "sql": "SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments WHERE EXISTS (SELECT 1 FROM json_each(?) je WHERE json_extract(je.value, '$[0]') = benchmark_tenant_comments.tenant_id AND json_extract(je.value, '$[1]') = benchmark_tenant_comments.post_id) ORDER BY comment_id ASC",
+        "targetTable": "benchmark_tenant_comments",
+        "select": [
+         "tenant_id",
+         "comment_id",
+         "post_id",
+         "body"
+        ],
+        "materializers": {
+         "tenant_id": "int32",
+         "comment_id": "int32",
+         "post_id": "int32"
+        }
+       }
+      ]
+     }
+    }
+   }
+  },
+  "create": {
+   "kind": "write",
+   "input": {
+    "email": "new@bench.com",
+    "name": "New"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "create",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?)",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?)",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ]
+       },
+       "label": "create",
+       "binds": "entity"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "update": {
+   "kind": "write",
+   "input": {
+    "id": 100,
+    "name": "Updated 100"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "update",
+    "statement": {
+     "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+     "params": [
+      {
+       "ref": [
+        "name"
+       ]
+      },
+      {
+       "ref": [
+        "id"
+       ]
+      }
+     ]
+    },
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         },
+         {
+          "ref": [
+           "id"
+          ]
+         }
+        ]
+       },
+       "label": "update",
+       "binds": "entity"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "delete": {
+   "kind": "tx",
+   "input": {
+    "email": "del0@bench.com",
+    "name": "Del"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "Delete",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "pk": {
+         "columns": [
+          "id"
+         ],
+         "autoInc": "id"
+        },
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "email",
+          "name"
+         ],
+         "returning": [
+          "id"
+         ]
+        }
+       },
+       "label": "Insert user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "DELETE FROM benchmark_users WHERE id = ?",
+        "params": [
+         {
+          "ref": [
+           "user",
+           "id"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "id"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Delete user",
+       "binds": "deleted"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "upsert": {
+   "kind": "write",
+   "input": {
+    "email": "user1@example.com",
+    "name": "Upserted One"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "upsert",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "transaction": {
+     "phase": "create",
+     "entityFrom": "tx_body_0",
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ]
+       },
+       "label": "upsert",
+       "binds": "entity"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "createMany": {
+   "kind": "batch",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "CreateMany",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?)",
+     "params": [
+      "[{\"email\":\"many0@bench.com\",\"name\":\"Many 0\"},{\"email\":\"many1@bench.com\",\"name\":\"Many 1\"},{\"email\":\"many2@bench.com\",\"name\":\"Many 2\"},{\"email\":\"many3@bench.com\",\"name\":\"Many 3\"},{\"email\":\"many4@bench.com\",\"name\":\"Many 4\"},{\"email\":\"many5@bench.com\",\"name\":\"Many 5\"},{\"email\":\"many6@bench.com\",\"name\":\"Many 6\"},{\"email\":\"many7@bench.com\",\"name\":\"Many 7\"},{\"email\":\"many8@bench.com\",\"name\":\"Many 8\"},{\"email\":\"many9@bench.com\",\"name\":\"Many 9\"}]"
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?)",
+        "params": [
+         "[{\"email\":\"many0@bench.com\",\"name\":\"Many 0\"},{\"email\":\"many1@bench.com\",\"name\":\"Many 1\"},{\"email\":\"many2@bench.com\",\"name\":\"Many 2\"},{\"email\":\"many3@bench.com\",\"name\":\"Many 3\"},{\"email\":\"many4@bench.com\",\"name\":\"Many 4\"},{\"email\":\"many5@bench.com\",\"name\":\"Many 5\"},{\"email\":\"many6@bench.com\",\"name\":\"Many 6\"},{\"email\":\"many7@bench.com\",\"name\":\"Many 7\"},{\"email\":\"many8@bench.com\",\"name\":\"Many 8\"},{\"email\":\"many9@bench.com\",\"name\":\"Many 9\"}]"
+        ]
+       },
+       "label": "createMany group 0"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "upsertMany": {
+   "kind": "batch",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "UpsertMany",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?) WHERE true ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name",
+     "params": [
+      "[{\"email\":\"user1@example.com\",\"name\":\"Many 0\"},{\"email\":\"user2@example.com\",\"name\":\"Many 1\"},{\"email\":\"many0@bench.com\",\"name\":\"Many 2\"},{\"email\":\"many1@bench.com\",\"name\":\"Many 3\"},{\"email\":\"many2@bench.com\",\"name\":\"Many 4\"},{\"email\":\"many3@bench.com\",\"name\":\"Many 5\"},{\"email\":\"many4@bench.com\",\"name\":\"Many 6\"},{\"email\":\"many5@bench.com\",\"name\":\"Many 7\"},{\"email\":\"many6@bench.com\",\"name\":\"Many 8\"},{\"email\":\"many7@bench.com\",\"name\":\"Many 9\"}]"
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?) WHERE true ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name",
+        "params": [
+         "[{\"email\":\"user1@example.com\",\"name\":\"Many 0\"},{\"email\":\"user2@example.com\",\"name\":\"Many 1\"},{\"email\":\"many0@bench.com\",\"name\":\"Many 2\"},{\"email\":\"many1@bench.com\",\"name\":\"Many 3\"},{\"email\":\"many2@bench.com\",\"name\":\"Many 4\"},{\"email\":\"many3@bench.com\",\"name\":\"Many 5\"},{\"email\":\"many4@bench.com\",\"name\":\"Many 6\"},{\"email\":\"many5@bench.com\",\"name\":\"Many 7\"},{\"email\":\"many6@bench.com\",\"name\":\"Many 8\"},{\"email\":\"many7@bench.com\",\"name\":\"Many 9\"}]"
+        ]
+       },
+       "label": "createMany group 0"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "updateMany": {
+   "kind": "batch",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "UpdateMany",
+    "statement": {
+     "sql": "UPDATE benchmark_users SET name = (SELECT json_extract(je.value, '$.name') FROM json_each(?) je WHERE json_extract(je.value, '$.id') = benchmark_users.id LIMIT 1) WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))",
+     "params": [
+      "[{\"id\":1,\"name\":\"Many 0\"},{\"id\":2,\"name\":\"Many 1\"},{\"id\":3,\"name\":\"Many 2\"},{\"id\":4,\"name\":\"Many 3\"},{\"id\":5,\"name\":\"Many 4\"},{\"id\":6,\"name\":\"Many 5\"},{\"id\":7,\"name\":\"Many 6\"},{\"id\":8,\"name\":\"Many 7\"},{\"id\":9,\"name\":\"Many 8\"},{\"id\":10,\"name\":\"Many 9\"}]",
+      "[{\"id\":1,\"name\":\"Many 0\"},{\"id\":2,\"name\":\"Many 1\"},{\"id\":3,\"name\":\"Many 2\"},{\"id\":4,\"name\":\"Many 3\"},{\"id\":5,\"name\":\"Many 4\"},{\"id\":6,\"name\":\"Many 5\"},{\"id\":7,\"name\":\"Many 6\"},{\"id\":8,\"name\":\"Many 7\"},{\"id\":9,\"name\":\"Many 8\"},{\"id\":10,\"name\":\"Many 9\"}]"
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "update",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_users SET name = (SELECT json_extract(je.value, '$.name') FROM json_each(?) je WHERE json_extract(je.value, '$.id') = benchmark_users.id LIMIT 1) WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))",
+        "params": [
+         "[{\"id\":1,\"name\":\"Many 0\"},{\"id\":2,\"name\":\"Many 1\"},{\"id\":3,\"name\":\"Many 2\"},{\"id\":4,\"name\":\"Many 3\"},{\"id\":5,\"name\":\"Many 4\"},{\"id\":6,\"name\":\"Many 5\"},{\"id\":7,\"name\":\"Many 6\"},{\"id\":8,\"name\":\"Many 7\"},{\"id\":9,\"name\":\"Many 8\"},{\"id\":10,\"name\":\"Many 9\"}]",
+         "[{\"id\":1,\"name\":\"Many 0\"},{\"id\":2,\"name\":\"Many 1\"},{\"id\":3,\"name\":\"Many 2\"},{\"id\":4,\"name\":\"Many 3\"},{\"id\":5,\"name\":\"Many 4\"},{\"id\":6,\"name\":\"Many 5\"},{\"id\":7,\"name\":\"Many 6\"},{\"id\":8,\"name\":\"Many 7\"},{\"id\":9,\"name\":\"Many 8\"},{\"id\":10,\"name\":\"Many 9\"}]"
+        ]
+       },
+       "label": "updateMany"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "nestedCreate": {
+   "kind": "tx",
+   "input": {
+    "email": "nc@bench.com",
+    "name": "NC",
+    "title": "NC Post"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "NestedCreate",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "pk": {
+         "columns": [
+          "id"
+         ],
+         "autoInc": "id"
+        },
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "email",
+          "name"
+         ],
+         "returning": [
+          "id"
+         ]
+        }
+       },
+       "label": "Insert user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)",
+        "params": [
+         {
+          "ref": [
+           "user",
+           "id"
+          ]
+         },
+         {
+          "ref": [
+           "title"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_posts",
+         "bindColumns": [
+          "author_id",
+          "title"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Insert post",
+       "binds": "post"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "nestedUpdate": {
+   "kind": "tx",
+   "input": {
+    "user_id": 7,
+    "name": "NU",
+    "title": "NU Post"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "NestedUpdate",
+    "statement": {
+     "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+     "params": [
+      {
+       "ref": [
+        "name"
+       ]
+      },
+      {
+       "ref": [
+        "user_id"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "update",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         },
+         {
+          "ref": [
+           "user_id"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "name",
+          "id"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Update user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_posts SET title = ? WHERE author_id = ?",
+        "params": [
+         {
+          "ref": [
+           "title"
+          ]
+         },
+         {
+          "ref": [
+           "user_id"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_posts",
+         "bindColumns": [
+          "title",
+          "author_id"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Update post",
+       "binds": "post"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "nestedUpsert": {
+   "kind": "tx",
+   "input": {
+    "email": "user1@example.com",
+    "name": "NUp",
+    "title": "NUp Post"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "sqlite",
+    "name": "NestedUpsert",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "pk": {
+         "columns": [
+          "id"
+         ],
+         "autoInc": "id"
+        },
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "email",
+          "name"
+         ],
+         "returning": [
+          "id"
+         ],
+         "onConflict": "email"
+        }
+       },
+       "label": "Upsert user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)",
+        "params": [
+         {
+          "ref": [
+           "user",
+           "id"
+          ]
+         },
+         {
+          "ref": [
+           "title"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_posts",
+         "bindColumns": [
+          "author_id",
+          "title"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Insert post",
+       "binds": "post"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  }
+ },
+ "mysql": {
+  "findAll": {
+   "kind": "read",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "FindAll",
+    "readGraph": {
+     "dialect": "mysql",
+     "name": "FindAll",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 100,
+           "order": "id ASC",
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users"
+          }
+         }
+        ],
+        "inputPorts": {},
+        "name": "FindAll",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": " ORDER BY id ASC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         100
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "filterPaginateSort": {
+   "kind": "read",
+   "input": {
+    "published": 1
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "FilterPaginateSort",
+    "readGraph": {
+     "dialect": "mysql",
+     "name": "FilterPaginateSort",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "title": "string",
+             "content": "string",
+             "published": "int",
+             "author_id": "int",
+             "created_at": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 20,
+           "offset": 10,
+           "order": "created_at DESC",
+           "select": {
+            "arr": [
+             "id",
+             "title",
+             "content",
+             "published",
+             "author_id",
+             "created_at"
+            ]
+           },
+           "table": "benchmark_posts",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "published"
+                ]
+               },
+               {
+                "ref": [
+                 "published"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "published": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FilterPaginateSort",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "title": "string",
+           "content": "string",
+           "published": "int",
+           "author_id": "int",
+           "created_at": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, title, content, published, author_id, created_at FROM benchmark_posts",
+        "params": []
+       },
+       {
+        "sql": "published = ?",
+        "params": [
+         {
+          "ref": [
+           "published"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " ORDER BY created_at DESC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         20
+        ]
+       },
+       {
+        "sql": " OFFSET ?",
+        "params": [
+         10
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32",
+       "published": "int32",
+       "author_id": "int32",
+       "created_at": "date"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "findFirst": {
+   "kind": "read",
+   "input": {
+    "name": "User%"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "FindFirst",
+    "readGraph": {
+     "dialect": "mysql",
+     "name": "FindFirst",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "@like",
+                 "name",
+                 "LIKE"
+                ]
+               },
+               {
+                "ref": [
+                 "name"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "@like": {
+          "required": true,
+          "type": "unknown"
+         },
+         "name": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindFirst",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "name LIKE ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "findUnique": {
+   "kind": "read",
+   "input": {
+    "email": "user500@example.com"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "FindUnique",
+    "readGraph": {
+     "dialect": "mysql",
+     "name": "FindUnique",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "email"
+                ]
+               },
+               {
+                "ref": [
+                 "email"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "email": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindUnique",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "email = ?",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "nestedFindAll": {
+   "kind": "read+rel",
+   "input": {},
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "mysql",
+    "name": "FindAll",
+    "readGraph": {
+     "dialect": "mysql",
+     "name": "FindAll",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 100,
+           "order": "id ASC",
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users"
+          }
+         }
+        ],
+        "inputPorts": {},
+        "name": "FindAll",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": " ORDER BY id ASC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         100
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "mysql",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      }
+     }
+    }
+   }
+  },
+  "nestedFindFirst": {
+   "kind": "read+rel",
+   "input": {
+    "name": "User%"
+   },
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "mysql",
+    "name": "FindFirst",
+    "readGraph": {
+     "dialect": "mysql",
+     "name": "FindFirst",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "@like",
+                 "name",
+                 "LIKE"
+                ]
+               },
+               {
+                "ref": [
+                 "name"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "@like": {
+          "required": true,
+          "type": "unknown"
+         },
+         "name": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindFirst",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "name LIKE ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "mysql",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      }
+     }
+    }
+   }
+  },
+  "nestedFindUnique": {
+   "kind": "read+rel",
+   "input": {
+    "email": "user1@example.com"
+   },
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "mysql",
+    "name": "FindUnique",
+    "readGraph": {
+     "dialect": "mysql",
+     "name": "FindUnique",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "email"
+                ]
+               },
+               {
+                "ref": [
+                 "email"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "email": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindUnique",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "email = ?",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "mysql",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      }
+     }
+    }
+   }
+  },
+  "nestedRelations": {
+   "kind": "read+rel",
+   "input": {},
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "mysql",
+    "name": "FindAll",
+    "readGraph": {
+     "dialect": "mysql",
+     "name": "FindAll",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 100,
+           "order": "id ASC",
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users"
+          }
+         }
+        ],
+        "inputPorts": {},
+        "name": "FindAll",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": " ORDER BY id ASC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         100
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "mysql",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      },
+      "childRelations": [
+       {
+        "name": "comments",
+        "kind": "hasMany",
+        "parentKey": "id",
+        "targetKey": "post_id",
+        "dialect": "mysql",
+        "sql": "SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
+        "targetTable": "benchmark_comments",
+        "select": [
+         "id",
+         "body",
+         "post_id"
+        ],
+        "materializers": {
+         "id": "int32",
+         "post_id": "int32"
+        }
+       }
+      ]
+     }
+    }
+   }
+  },
+  "compositeRelations": {
+   "kind": "read+rel",
+   "input": {
+    "tenant_id": 1
+   },
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "mysql",
+    "name": "ByTenant",
+    "readGraph": {
+     "dialect": "mysql",
+     "name": "ByTenant",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "tenant_id": "int",
+             "user_id": "int",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "order": "user_id ASC",
+           "select": {
+            "arr": [
+             "tenant_id",
+             "user_id",
+             "name"
+            ]
+           },
+           "table": "benchmark_tenant_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "tenant_id"
+                ]
+               },
+               {
+                "ref": [
+                 "tenant_id"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "tenant_id": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "ByTenant",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "tenant_id": "int",
+           "user_id": "int",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT tenant_id, user_id, name FROM benchmark_tenant_users",
+        "params": []
+       },
+       {
+        "sql": "tenant_id = ?",
+        "params": [
+         {
+          "ref": [
+           "tenant_id"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " ORDER BY user_id ASC",
+        "params": []
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "tenant_id": "int32",
+       "user_id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKeys": [
+       "tenant_id",
+       "user_id"
+      ],
+      "targetKeys": [
+       "tenant_id",
+       "user_id"
+      ],
+      "dialect": "mysql",
+      "sql": "SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE (benchmark_tenant_posts.tenant_id, benchmark_tenant_posts.user_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY post_id ASC",
+      "targetTable": "benchmark_tenant_posts",
+      "select": [
+       "tenant_id",
+       "post_id",
+       "user_id",
+       "title"
+      ],
+      "materializers": {
+       "tenant_id": "int32",
+       "post_id": "int32",
+       "user_id": "int32"
+      },
+      "childRelations": [
+       {
+        "name": "comments",
+        "kind": "hasMany",
+        "parentKeys": [
+         "tenant_id",
+         "post_id"
+        ],
+        "targetKeys": [
+         "tenant_id",
+         "post_id"
+        ],
+        "dialect": "mysql",
+        "sql": "SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments WHERE (benchmark_tenant_comments.tenant_id, benchmark_tenant_comments.post_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY comment_id ASC",
+        "targetTable": "benchmark_tenant_comments",
+        "select": [
+         "tenant_id",
+         "comment_id",
+         "post_id",
+         "body"
+        ],
+        "materializers": {
+         "tenant_id": "int32",
+         "comment_id": "int32",
+         "post_id": "int32"
+        }
+       }
+      ]
+     }
+    }
+   }
+  },
+  "create": {
+   "kind": "write",
+   "input": {
+    "email": "new@bench.com",
+    "name": "New"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "create",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?)",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?)",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ]
+       },
+       "label": "create",
+       "binds": "entity"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "update": {
+   "kind": "write",
+   "input": {
+    "id": 100,
+    "name": "Updated 100"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "update",
+    "statement": {
+     "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+     "params": [
+      {
+       "ref": [
+        "name"
+       ]
+      },
+      {
+       "ref": [
+        "id"
+       ]
+      }
+     ]
+    },
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         },
+         {
+          "ref": [
+           "id"
+          ]
+         }
+        ]
+       },
+       "label": "update",
+       "binds": "entity"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "delete": {
+   "kind": "tx",
+   "input": {
+    "email": "del0@bench.com",
+    "name": "Del"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "Delete",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "pk": {
+         "columns": [
+          "id"
+         ],
+         "autoInc": "id"
+        },
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "email",
+          "name"
+         ],
+         "returning": [
+          "id"
+         ]
+        }
+       },
+       "label": "Insert user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "DELETE FROM benchmark_users WHERE id = ?",
+        "params": [
+         {
+          "ref": [
+           "user",
+           "id"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "id"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Delete user",
+       "binds": "deleted"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "upsert": {
+   "kind": "write",
+   "input": {
+    "email": "user1@example.com",
+    "name": "Upserted One"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "upsert",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE email = VALUES(email), name = VALUES(name) RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "transaction": {
+     "phase": "create",
+     "entityFrom": "tx_body_0",
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE email = VALUES(email), name = VALUES(name) RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ]
+       },
+       "label": "upsert",
+       "binds": "entity"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "createMany": {
+   "kind": "batch",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "CreateMany",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) SELECT JSON_UNQUOTE(jt.email), JSON_UNQUOTE(jt.name) FROM JSON_TABLE(?, '$[*]' COLUMNS(email JSON PATH '$.email', name JSON PATH '$.name')) jt",
+     "params": [
+      "[{\"email\":\"many0@bench.com\",\"name\":\"Many 0\"},{\"email\":\"many1@bench.com\",\"name\":\"Many 1\"},{\"email\":\"many2@bench.com\",\"name\":\"Many 2\"},{\"email\":\"many3@bench.com\",\"name\":\"Many 3\"},{\"email\":\"many4@bench.com\",\"name\":\"Many 4\"},{\"email\":\"many5@bench.com\",\"name\":\"Many 5\"},{\"email\":\"many6@bench.com\",\"name\":\"Many 6\"},{\"email\":\"many7@bench.com\",\"name\":\"Many 7\"},{\"email\":\"many8@bench.com\",\"name\":\"Many 8\"},{\"email\":\"many9@bench.com\",\"name\":\"Many 9\"}]"
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) SELECT JSON_UNQUOTE(jt.email), JSON_UNQUOTE(jt.name) FROM JSON_TABLE(?, '$[*]' COLUMNS(email JSON PATH '$.email', name JSON PATH '$.name')) jt",
+        "params": [
+         "[{\"email\":\"many0@bench.com\",\"name\":\"Many 0\"},{\"email\":\"many1@bench.com\",\"name\":\"Many 1\"},{\"email\":\"many2@bench.com\",\"name\":\"Many 2\"},{\"email\":\"many3@bench.com\",\"name\":\"Many 3\"},{\"email\":\"many4@bench.com\",\"name\":\"Many 4\"},{\"email\":\"many5@bench.com\",\"name\":\"Many 5\"},{\"email\":\"many6@bench.com\",\"name\":\"Many 6\"},{\"email\":\"many7@bench.com\",\"name\":\"Many 7\"},{\"email\":\"many8@bench.com\",\"name\":\"Many 8\"},{\"email\":\"many9@bench.com\",\"name\":\"Many 9\"}]"
+        ]
+       },
+       "label": "createMany group 0"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "upsertMany": {
+   "kind": "batch",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "UpsertMany",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) SELECT JSON_UNQUOTE(jt.email), JSON_UNQUOTE(jt.name) FROM JSON_TABLE(?, '$[*]' COLUMNS(email JSON PATH '$.email', name JSON PATH '$.name')) jt ON DUPLICATE KEY UPDATE email = VALUES(email), name = VALUES(name)",
+     "params": [
+      "[{\"email\":\"user1@example.com\",\"name\":\"Many 0\"},{\"email\":\"user2@example.com\",\"name\":\"Many 1\"},{\"email\":\"many0@bench.com\",\"name\":\"Many 2\"},{\"email\":\"many1@bench.com\",\"name\":\"Many 3\"},{\"email\":\"many2@bench.com\",\"name\":\"Many 4\"},{\"email\":\"many3@bench.com\",\"name\":\"Many 5\"},{\"email\":\"many4@bench.com\",\"name\":\"Many 6\"},{\"email\":\"many5@bench.com\",\"name\":\"Many 7\"},{\"email\":\"many6@bench.com\",\"name\":\"Many 8\"},{\"email\":\"many7@bench.com\",\"name\":\"Many 9\"}]"
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) SELECT JSON_UNQUOTE(jt.email), JSON_UNQUOTE(jt.name) FROM JSON_TABLE(?, '$[*]' COLUMNS(email JSON PATH '$.email', name JSON PATH '$.name')) jt ON DUPLICATE KEY UPDATE email = VALUES(email), name = VALUES(name)",
+        "params": [
+         "[{\"email\":\"user1@example.com\",\"name\":\"Many 0\"},{\"email\":\"user2@example.com\",\"name\":\"Many 1\"},{\"email\":\"many0@bench.com\",\"name\":\"Many 2\"},{\"email\":\"many1@bench.com\",\"name\":\"Many 3\"},{\"email\":\"many2@bench.com\",\"name\":\"Many 4\"},{\"email\":\"many3@bench.com\",\"name\":\"Many 5\"},{\"email\":\"many4@bench.com\",\"name\":\"Many 6\"},{\"email\":\"many5@bench.com\",\"name\":\"Many 7\"},{\"email\":\"many6@bench.com\",\"name\":\"Many 8\"},{\"email\":\"many7@bench.com\",\"name\":\"Many 9\"}]"
+        ]
+       },
+       "label": "createMany group 0"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "updateMany": {
+   "kind": "batch",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "UpdateMany",
+    "statement": {
+     "sql": "UPDATE benchmark_users AS u JOIN JSON_TABLE(?, '$[*]' COLUMNS(id BIGINT PATH '$.id', name JSON PATH '$.name')) AS v ON u.id = v.id SET u.name = JSON_UNQUOTE(v.name)",
+     "params": [
+      "[{\"id\":1,\"name\":\"Many 0\"},{\"id\":2,\"name\":\"Many 1\"},{\"id\":3,\"name\":\"Many 2\"},{\"id\":4,\"name\":\"Many 3\"},{\"id\":5,\"name\":\"Many 4\"},{\"id\":6,\"name\":\"Many 5\"},{\"id\":7,\"name\":\"Many 6\"},{\"id\":8,\"name\":\"Many 7\"},{\"id\":9,\"name\":\"Many 8\"},{\"id\":10,\"name\":\"Many 9\"}]"
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "update",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_users AS u JOIN JSON_TABLE(?, '$[*]' COLUMNS(id BIGINT PATH '$.id', name JSON PATH '$.name')) AS v ON u.id = v.id SET u.name = JSON_UNQUOTE(v.name)",
+        "params": [
+         "[{\"id\":1,\"name\":\"Many 0\"},{\"id\":2,\"name\":\"Many 1\"},{\"id\":3,\"name\":\"Many 2\"},{\"id\":4,\"name\":\"Many 3\"},{\"id\":5,\"name\":\"Many 4\"},{\"id\":6,\"name\":\"Many 5\"},{\"id\":7,\"name\":\"Many 6\"},{\"id\":8,\"name\":\"Many 7\"},{\"id\":9,\"name\":\"Many 8\"},{\"id\":10,\"name\":\"Many 9\"}]"
+        ]
+       },
+       "label": "updateMany"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "nestedCreate": {
+   "kind": "tx",
+   "input": {
+    "email": "nc@bench.com",
+    "name": "NC",
+    "title": "NC Post"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "NestedCreate",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "pk": {
+         "columns": [
+          "id"
+         ],
+         "autoInc": "id"
+        },
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "email",
+          "name"
+         ],
+         "returning": [
+          "id"
+         ]
+        }
+       },
+       "label": "Insert user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)",
+        "params": [
+         {
+          "ref": [
+           "user",
+           "id"
+          ]
+         },
+         {
+          "ref": [
+           "title"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_posts",
+         "bindColumns": [
+          "author_id",
+          "title"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Insert post",
+       "binds": "post"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "nestedUpdate": {
+   "kind": "tx",
+   "input": {
+    "user_id": 7,
+    "name": "NU",
+    "title": "NU Post"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "NestedUpdate",
+    "statement": {
+     "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+     "params": [
+      {
+       "ref": [
+        "name"
+       ]
+      },
+      {
+       "ref": [
+        "user_id"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "update",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         },
+         {
+          "ref": [
+           "user_id"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "name",
+          "id"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Update user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_posts SET title = ? WHERE author_id = ?",
+        "params": [
+         {
+          "ref": [
+           "title"
+          ]
+         },
+         {
+          "ref": [
+           "user_id"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_posts",
+         "bindColumns": [
+          "title",
+          "author_id"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Update post",
+       "binds": "post"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "nestedUpsert": {
+   "kind": "tx",
+   "input": {
+    "email": "user1@example.com",
+    "name": "NUp",
+    "title": "NUp Post"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "mysql",
+    "name": "NestedUpsert",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE email = VALUES(email), name = VALUES(name) RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE email = VALUES(email), name = VALUES(name) RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "pk": {
+         "columns": [
+          "id"
+         ],
+         "autoInc": "id"
+        },
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "email",
+          "name"
+         ],
+         "returning": [
+          "id"
+         ],
+         "onConflict": "email"
+        }
+       },
+       "label": "Upsert user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)",
+        "params": [
+         {
+          "ref": [
+           "user",
+           "id"
+          ]
+         },
+         {
+          "ref": [
+           "title"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_posts",
+         "bindColumns": [
+          "author_id",
+          "title"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Insert post",
+       "binds": "post"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  }
+ },
+ "postgres": {
+  "findAll": {
+   "kind": "read",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "FindAll",
+    "readGraph": {
+     "dialect": "postgres",
+     "name": "FindAll",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 100,
+           "order": "id ASC",
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users"
+          }
+         }
+        ],
+        "inputPorts": {},
+        "name": "FindAll",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": " ORDER BY id ASC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         100
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "filterPaginateSort": {
+   "kind": "read",
+   "input": {
+    "published": true
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "FilterPaginateSort",
+    "readGraph": {
+     "dialect": "postgres",
+     "name": "FilterPaginateSort",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "title": "string",
+             "content": "string",
+             "published": "bool",
+             "author_id": "int",
+             "created_at": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 20,
+           "offset": 10,
+           "order": "created_at DESC",
+           "select": {
+            "arr": [
+             "id",
+             "title",
+             "content",
+             "published",
+             "author_id",
+             "created_at"
+            ]
+           },
+           "table": "benchmark_posts",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "published"
+                ]
+               },
+               {
+                "ref": [
+                 "published"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "published": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FilterPaginateSort",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "title": "string",
+           "content": "string",
+           "published": "bool",
+           "author_id": "int",
+           "created_at": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, title, content, published, author_id, created_at FROM benchmark_posts",
+        "params": []
+       },
+       {
+        "sql": "published = ?",
+        "params": [
+         {
+          "ref": [
+           "published"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " ORDER BY created_at DESC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         20
+        ]
+       },
+       {
+        "sql": " OFFSET ?",
+        "params": [
+         10
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32",
+       "published": "bool",
+       "author_id": "int32",
+       "created_at": "date"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "findFirst": {
+   "kind": "read",
+   "input": {
+    "name": "User%"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "FindFirst",
+    "readGraph": {
+     "dialect": "postgres",
+     "name": "FindFirst",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "@like",
+                 "name",
+                 "LIKE"
+                ]
+               },
+               {
+                "ref": [
+                 "name"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "@like": {
+          "required": true,
+          "type": "unknown"
+         },
+         "name": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindFirst",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "name LIKE ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "findUnique": {
+   "kind": "read",
+   "input": {
+    "email": "user500@example.com"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "FindUnique",
+    "readGraph": {
+     "dialect": "postgres",
+     "name": "FindUnique",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "email"
+                ]
+               },
+               {
+                "ref": [
+                 "email"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "email": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindUnique",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "email = ?",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "nestedFindAll": {
+   "kind": "read+rel",
+   "input": {},
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "postgres",
+    "name": "FindAll",
+    "readGraph": {
+     "dialect": "postgres",
+     "name": "FindAll",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 100,
+           "order": "id ASC",
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users"
+          }
+         }
+        ],
+        "inputPorts": {},
+        "name": "FindAll",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": " ORDER BY id ASC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         100
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "postgres",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE benchmark_posts.author_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      }
+     }
+    }
+   }
+  },
+  "nestedFindFirst": {
+   "kind": "read+rel",
+   "input": {
+    "name": "User%"
+   },
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "postgres",
+    "name": "FindFirst",
+    "readGraph": {
+     "dialect": "postgres",
+     "name": "FindFirst",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "@like",
+                 "name",
+                 "LIKE"
+                ]
+               },
+               {
+                "ref": [
+                 "name"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "@like": {
+          "required": true,
+          "type": "unknown"
+         },
+         "name": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindFirst",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "name LIKE ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "postgres",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE benchmark_posts.author_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      }
+     }
+    }
+   }
+  },
+  "nestedFindUnique": {
+   "kind": "read+rel",
+   "input": {
+    "email": "user1@example.com"
+   },
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "postgres",
+    "name": "FindUnique",
+    "readGraph": {
+     "dialect": "postgres",
+     "name": "FindUnique",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 1,
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "email"
+                ]
+               },
+               {
+                "ref": [
+                 "email"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "email": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "FindUnique",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": "email = ?",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         1
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "postgres",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE benchmark_posts.author_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      }
+     }
+    }
+   }
+  },
+  "nestedRelations": {
+   "kind": "read+rel",
+   "input": {},
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "postgres",
+    "name": "FindAll",
+    "readGraph": {
+     "dialect": "postgres",
+     "name": "FindAll",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "id": "int",
+             "email": "string",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "limit": 100,
+           "order": "id ASC",
+           "select": {
+            "arr": [
+             "id",
+             "email",
+             "name"
+            ]
+           },
+           "table": "benchmark_users"
+          }
+         }
+        ],
+        "inputPorts": {},
+        "name": "FindAll",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "id": "int",
+           "email": "string",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT id, email, name FROM benchmark_users",
+        "params": []
+       },
+       {
+        "sql": " ORDER BY id ASC",
+        "params": []
+       },
+       {
+        "sql": " LIMIT ?",
+        "params": [
+         100
+        ]
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKey": "id",
+      "targetKey": "author_id",
+      "dialect": "postgres",
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE benchmark_posts.author_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+      "targetTable": "benchmark_posts",
+      "select": [
+       "id",
+       "title",
+       "author_id"
+      ],
+      "materializers": {
+       "id": "int32",
+       "author_id": "int32"
+      },
+      "childRelations": [
+       {
+        "name": "comments",
+        "kind": "hasMany",
+        "parentKey": "id",
+        "targetKey": "post_id",
+        "dialect": "postgres",
+        "sql": "SELECT id, body, post_id FROM benchmark_comments WHERE benchmark_comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+        "targetTable": "benchmark_comments",
+        "select": [
+         "id",
+         "body",
+         "post_id"
+        ],
+        "materializers": {
+         "id": "int32",
+         "post_id": "int32"
+        }
+       }
+      ]
+     }
+    }
+   }
+  },
+  "compositeRelations": {
+   "kind": "read+rel",
+   "input": {
+    "tenant_id": 1
+   },
+   "withRel": "posts",
+   "bundle": {
+    "dialect": "postgres",
+    "name": "ByTenant",
+    "readGraph": {
+     "dialect": "postgres",
+     "name": "ByTenant",
+     "ir": {
+      "irVersion": 1,
+      "exprVersion": 2,
+      "components": [
+       {
+        "body": [
+         {
+          "component": "Select",
+          "id": "n0",
+          "outType": {
+           "arr": {
+            "obj": {
+             "tenant_id": "int",
+             "user_id": "int",
+             "name": "string"
+            }
+           }
+          },
+          "ports": {
+           "order": "user_id ASC",
+           "select": {
+            "arr": [
+             "tenant_id",
+             "user_id",
+             "name"
+            ]
+           },
+           "table": "benchmark_tenant_users",
+           "where": {
+            "arr": [
+             {
+              "eq": [
+               {
+                "ref": [
+                 "tenant_id"
+                ]
+               },
+               {
+                "ref": [
+                 "tenant_id"
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "inputPorts": {
+         "tenant_id": {
+          "required": true,
+          "type": "unknown"
+         }
+        },
+        "name": "ByTenant",
+        "output": {
+         "ref": [
+          "n0"
+         ]
+        },
+        "plan": {
+         "concurrency": 16,
+         "groups": [
+          [
+           0
+          ]
+         ]
+        },
+        "outputType": {
+         "arr": {
+          "obj": {
+           "tenant_id": "int",
+           "user_id": "int",
+           "name": "string"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "statementsById": {
+      "n0": [
+       {
+        "sql": "SELECT tenant_id, user_id, name FROM benchmark_tenant_users",
+        "params": []
+       },
+       {
+        "sql": "tenant_id = ?",
+        "params": [
+         {
+          "ref": [
+           "tenant_id"
+          ]
+         }
+        ],
+        "whereFragment": true
+       },
+       {
+        "sql": " ORDER BY user_id ASC",
+        "params": []
+       }
+      ]
+     },
+     "optionalHeads": [],
+     "materializersByNode": {
+      "n0": {
+       "tenant_id": "int32",
+       "user_id": "int32"
+      }
+     }
+    },
+    "optionalHeads": [],
+    "relations": {
+     "posts": {
+      "name": "posts",
+      "kind": "hasMany",
+      "parentKeys": [
+       "tenant_id",
+       "user_id"
+      ],
+      "targetKeys": [
+       "tenant_id",
+       "user_id"
+      ],
+      "dialect": "postgres",
+      "sql": "SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_benchmark_tenant_posts(_unnest_benchmark_tenant_posts_tenant_id, _unnest_benchmark_tenant_posts_user_id) ON benchmark_tenant_posts.tenant_id = _unnest_benchmark_tenant_posts._unnest_benchmark_tenant_posts_tenant_id AND benchmark_tenant_posts.user_id = _unnest_benchmark_tenant_posts._unnest_benchmark_tenant_posts_user_id ORDER BY post_id ASC",
+      "targetTable": "benchmark_tenant_posts",
+      "select": [
+       "tenant_id",
+       "post_id",
+       "user_id",
+       "title"
+      ],
+      "materializers": {
+       "tenant_id": "int32",
+       "post_id": "int32",
+       "user_id": "int32"
+      },
+      "childRelations": [
+       {
+        "name": "comments",
+        "kind": "hasMany",
+        "parentKeys": [
+         "tenant_id",
+         "post_id"
+        ],
+        "targetKeys": [
+         "tenant_id",
+         "post_id"
+        ],
+        "dialect": "postgres",
+        "sql": "SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_benchmark_tenant_comments(_unnest_benchmark_tenant_comments_tenant_id, _unnest_benchmark_tenant_comments_post_id) ON benchmark_tenant_comments.tenant_id = _unnest_benchmark_tenant_comments._unnest_benchmark_tenant_comments_tenant_id AND benchmark_tenant_comments.post_id = _unnest_benchmark_tenant_comments._unnest_benchmark_tenant_comments_post_id ORDER BY comment_id ASC",
+        "targetTable": "benchmark_tenant_comments",
+        "select": [
+         "tenant_id",
+         "comment_id",
+         "post_id",
+         "body"
+        ],
+        "materializers": {
+         "tenant_id": "int32",
+         "comment_id": "int32",
+         "post_id": "int32"
+        }
+       }
+      ]
+     }
+    }
+   }
+  },
+  "create": {
+   "kind": "write",
+   "input": {
+    "email": "new@bench.com",
+    "name": "New"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "create",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?)",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?)",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ]
+       },
+       "label": "create",
+       "binds": "entity"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "update": {
+   "kind": "write",
+   "input": {
+    "id": 100,
+    "name": "Updated 100"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "update",
+    "statement": {
+     "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+     "params": [
+      {
+       "ref": [
+        "name"
+       ]
+      },
+      {
+       "ref": [
+        "id"
+       ]
+      }
+     ]
+    },
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         },
+         {
+          "ref": [
+           "id"
+          ]
+         }
+        ]
+       },
+       "label": "update",
+       "binds": "entity"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "delete": {
+   "kind": "tx",
+   "input": {
+    "email": "del0@bench.com",
+    "name": "Del"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "Delete",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "pk": {
+         "columns": [
+          "id"
+         ],
+         "autoInc": "id"
+        },
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "email",
+          "name"
+         ],
+         "returning": [
+          "id"
+         ]
+        }
+       },
+       "label": "Insert user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "DELETE FROM benchmark_users WHERE id = ?",
+        "params": [
+         {
+          "ref": [
+           "user",
+           "id"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "id"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Delete user",
+       "binds": "deleted"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "upsert": {
+   "kind": "write",
+   "input": {
+    "email": "user1@example.com",
+    "name": "Upserted One"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "upsert",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "transaction": {
+     "phase": "create",
+     "entityFrom": "tx_body_0",
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ]
+       },
+       "label": "upsert",
+       "binds": "entity"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    },
+    "optionalHeads": [],
+    "relations": {}
+   }
+  },
+  "createMany": {
+   "kind": "batch",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "CreateMany",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) SELECT v.email, v.name FROM UNNEST(?::text[], ?::text[]) AS v(email, name)",
+     "params": [
+      [
+       "many0@bench.com",
+       "many1@bench.com",
+       "many2@bench.com",
+       "many3@bench.com",
+       "many4@bench.com",
+       "many5@bench.com",
+       "many6@bench.com",
+       "many7@bench.com",
+       "many8@bench.com",
+       "many9@bench.com"
+      ],
+      [
+       "Many 0",
+       "Many 1",
+       "Many 2",
+       "Many 3",
+       "Many 4",
+       "Many 5",
+       "Many 6",
+       "Many 7",
+       "Many 8",
+       "Many 9"
+      ]
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) SELECT v.email, v.name FROM UNNEST(?::text[], ?::text[]) AS v(email, name)",
+        "params": [
+         {
+          "arr": [
+           "many0@bench.com",
+           "many1@bench.com",
+           "many2@bench.com",
+           "many3@bench.com",
+           "many4@bench.com",
+           "many5@bench.com",
+           "many6@bench.com",
+           "many7@bench.com",
+           "many8@bench.com",
+           "many9@bench.com"
+          ]
+         },
+         {
+          "arr": [
+           "Many 0",
+           "Many 1",
+           "Many 2",
+           "Many 3",
+           "Many 4",
+           "Many 5",
+           "Many 6",
+           "Many 7",
+           "Many 8",
+           "Many 9"
+          ]
+         }
+        ]
+       },
+       "label": "createMany group 0"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "upsertMany": {
+   "kind": "batch",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "UpsertMany",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) SELECT v.email, v.name FROM UNNEST(?::text[], ?::text[]) AS v(email, name) ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email, name = EXCLUDED.name",
+     "params": [
+      [
+       "user1@example.com",
+       "user2@example.com",
+       "many0@bench.com",
+       "many1@bench.com",
+       "many2@bench.com",
+       "many3@bench.com",
+       "many4@bench.com",
+       "many5@bench.com",
+       "many6@bench.com",
+       "many7@bench.com"
+      ],
+      [
+       "Many 0",
+       "Many 1",
+       "Many 2",
+       "Many 3",
+       "Many 4",
+       "Many 5",
+       "Many 6",
+       "Many 7",
+       "Many 8",
+       "Many 9"
+      ]
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) SELECT v.email, v.name FROM UNNEST(?::text[], ?::text[]) AS v(email, name) ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email, name = EXCLUDED.name",
+        "params": [
+         {
+          "arr": [
+           "user1@example.com",
+           "user2@example.com",
+           "many0@bench.com",
+           "many1@bench.com",
+           "many2@bench.com",
+           "many3@bench.com",
+           "many4@bench.com",
+           "many5@bench.com",
+           "many6@bench.com",
+           "many7@bench.com"
+          ]
+         },
+         {
+          "arr": [
+           "Many 0",
+           "Many 1",
+           "Many 2",
+           "Many 3",
+           "Many 4",
+           "Many 5",
+           "Many 6",
+           "Many 7",
+           "Many 8",
+           "Many 9"
+          ]
+         }
+        ]
+       },
+       "label": "createMany group 0"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "updateMany": {
+   "kind": "batch",
+   "input": {},
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "UpdateMany",
+    "statement": {
+     "sql": "UPDATE benchmark_users AS t SET name = v.name FROM UNNEST(?::int[], ?::text[]) AS v(id, name) WHERE t.id = v.id",
+     "params": [
+      [
+       1,
+       2,
+       3,
+       4,
+       5,
+       6,
+       7,
+       8,
+       9,
+       10
+      ],
+      [
+       "Many 0",
+       "Many 1",
+       "Many 2",
+       "Many 3",
+       "Many 4",
+       "Many 5",
+       "Many 6",
+       "Many 7",
+       "Many 8",
+       "Many 9"
+      ]
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "update",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_users AS t SET name = v.name FROM UNNEST(?::int[], ?::text[]) AS v(id, name) WHERE t.id = v.id",
+        "params": [
+         {
+          "arr": [
+           1,
+           2,
+           3,
+           4,
+           5,
+           6,
+           7,
+           8,
+           9,
+           10
+          ]
+         },
+         {
+          "arr": [
+           "Many 0",
+           "Many 1",
+           "Many 2",
+           "Many 3",
+           "Many 4",
+           "Many 5",
+           "Many 6",
+           "Many 7",
+           "Many 8",
+           "Many 9"
+          ]
+         }
+        ]
+       },
+       "label": "updateMany"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "nestedCreate": {
+   "kind": "tx",
+   "input": {
+    "email": "nc@bench.com",
+    "name": "NC",
+    "title": "NC Post"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "NestedCreate",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "pk": {
+         "columns": [
+          "id"
+         ],
+         "autoInc": "id"
+        },
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "email",
+          "name"
+         ],
+         "returning": [
+          "id"
+         ]
+        }
+       },
+       "label": "Insert user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)",
+        "params": [
+         {
+          "ref": [
+           "user",
+           "id"
+          ]
+         },
+         {
+          "ref": [
+           "title"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_posts",
+         "bindColumns": [
+          "author_id",
+          "title"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Insert post",
+       "binds": "post"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "nestedUpdate": {
+   "kind": "tx",
+   "input": {
+    "user_id": 7,
+    "name": "NU",
+    "title": "NU Post"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "NestedUpdate",
+    "statement": {
+     "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+     "params": [
+      {
+       "ref": [
+        "name"
+       ]
+      },
+      {
+       "ref": [
+        "user_id"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "update",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_users SET name = ? WHERE id = ?",
+        "params": [
+         {
+          "ref": [
+           "name"
+          ]
+         },
+         {
+          "ref": [
+           "user_id"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "name",
+          "id"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Update user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "UPDATE benchmark_posts SET title = ? WHERE author_id = ?",
+        "params": [
+         {
+          "ref": [
+           "title"
+          ]
+         },
+         {
+          "ref": [
+           "user_id"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_posts",
+         "bindColumns": [
+          "title",
+          "author_id"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Update post",
+       "binds": "post"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  },
+  "nestedUpsert": {
+   "kind": "tx",
+   "input": {
+    "email": "user1@example.com",
+    "name": "NUp",
+    "title": "NUp Post"
+   },
+   "withRel": null,
+   "bundle": {
+    "dialect": "postgres",
+    "name": "NestedUpsert",
+    "statement": {
+     "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id",
+     "params": [
+      {
+       "ref": [
+        "email"
+       ]
+      },
+      {
+       "ref": [
+        "name"
+       ]
+      }
+     ]
+    },
+    "optionalHeads": [],
+    "relations": {},
+    "transaction": {
+     "phase": "create",
+     "entityFrom": null,
+     "statements": [
+      {
+       "id": "tx_body_0",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id",
+        "params": [
+         {
+          "ref": [
+           "email"
+          ]
+         },
+         {
+          "ref": [
+           "name"
+          ]
+         }
+        ],
+        "pk": {
+         "columns": [
+          "id"
+         ],
+         "autoInc": "id"
+        },
+        "writeMeta": {
+         "table": "benchmark_users",
+         "bindColumns": [
+          "email",
+          "name"
+         ],
+         "returning": [
+          "id"
+         ],
+         "onConflict": "email"
+        }
+       },
+       "label": "Upsert user",
+       "binds": "user"
+      },
+      {
+       "id": "tx_body_1",
+       "role": "body",
+       "op": {
+        "sql": "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)",
+        "params": [
+         {
+          "ref": [
+           "user",
+           "id"
+          ]
+         },
+         {
+          "ref": [
+           "title"
+          ]
+         }
+        ],
+        "writeMeta": {
+         "table": "benchmark_posts",
+         "bindColumns": [
+          "author_id",
+          "title"
+         ],
+         "returning": []
+        }
+       },
+       "label": "Insert post",
+       "binds": "post"
+      }
+     ],
+     "onIdempotentHit": "rollback"
+    }
+   }
+  }
+ }
+}

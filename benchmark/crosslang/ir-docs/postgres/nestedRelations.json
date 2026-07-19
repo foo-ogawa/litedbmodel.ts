@@ -11,22 +11,18 @@
             "arr": {
               "obj": {
                 "id": "int",
-                "title": "string",
-                "author_id": "int"
+                "email": "string",
+                "name": "string"
               }
             }
           },
           "ports": {
-            "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = $1 ORDER BY id ASC",
-            "p0": {
-              "ref": [
-                "author_id"
-              ]
-            }
+            "sql": "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT $1",
+            "p0": 100
           }
         },
         {
-          "id": "rel_comments",
+          "id": "rel_posts",
           "map": {
             "as": "$rel",
             "component": "Select",
@@ -38,11 +34,42 @@
             "batched": true,
             "relationKind": "connection",
             "ports": {
-              "sql": "SELECT id, body, post_id FROM benchmark_comments WHERE benchmark_comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+              "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE benchmark_posts.author_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
               "k0": {
                 "ref": [
                   "$rel",
                   "id"
+                ]
+              }
+            }
+          },
+          "outType": {
+            "arr": {
+              "obj": {
+                "id": "int",
+                "title": "string",
+                "author_id": "int"
+              }
+            }
+          }
+        },
+        {
+          "id": "rel_comments",
+          "map": {
+            "as": "$rel2",
+            "component": "Select",
+            "over": {
+              "ref": [
+                "rel_posts"
+              ]
+            },
+            "batched": true,
+            "relationKind": "connection",
+            "ports": {
+              "sql": "SELECT id, body, post_id FROM benchmark_comments WHERE benchmark_comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
+              "k0": {
+                "ref": [
+                  "$rel2"
                 ]
               }
             }
@@ -58,18 +85,18 @@
           }
         }
       ],
-      "inputPorts": {
-        "author_id": {
-          "required": true,
-          "type": "int"
-        }
-      },
-      "name": "ByAuthor",
+      "inputPorts": {},
+      "name": "FindAll",
       "output": {
         "obj": {
           "rows": {
             "ref": [
               "n0"
+            ]
+          },
+          "posts": {
+            "ref": [
+              "rel_posts"
             ]
           },
           "comments": {
@@ -87,6 +114,9 @@
           ],
           [
             1
+          ],
+          [
+            2
           ]
         ]
       },
@@ -96,8 +126,19 @@
             "arr": {
               "obj": {
                 "id": "int",
-                "title": "string",
-                "author_id": "int"
+                "email": "string",
+                "name": "string"
+              }
+            }
+          },
+          "posts": {
+            "arr": {
+              "arr": {
+                "obj": {
+                  "id": "int",
+                  "title": "string",
+                  "author_id": "int"
+                }
               }
             }
           },

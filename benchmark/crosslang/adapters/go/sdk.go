@@ -165,24 +165,80 @@ func sdkNestedFindUnique(db *wire.DB) string {
 	return sdkRelSingle(db, "SELECT id, email, name FROM benchmark_users WHERE email = "+ph(db, 1)+" LIMIT 1", []any{"user1@example.com"}, "id", userSer,
 		"SELECT id, title, author_id FROM benchmark_posts WHERE author_id {IN} ORDER BY id ASC", "author_id", postSer, "posts")
 }
+// 3-level SDK: three batched queries (users; posts by user id; comments by ALL post ids) + client stitch
+// into `{rows,posts,comments}` (comments flattened per user, in that user's post order).
 func sdkNestedRelations(db *wire.DB) string {
-	return sdkRelSingle(db, "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = "+ph(db, 1)+" ORDER BY id ASC", []any{7}, "id", postSer,
-		"SELECT id, body, post_id FROM benchmark_comments WHERE post_id {IN} ORDER BY id ASC", "post_id", commentSer, "comments")
+	users, _ := wire.QueryRows(db, "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT 100", nil)
+	uids := make([]int64, len(users))
+	for i, r := range users {
+		uids[i] = r.Int("id")
+	}
+	pIn, pParams := sdkChildInClause(db, uids)
+	posts, _ := wire.QueryRows(db, strings.Replace("SELECT id, title, author_id FROM benchmark_posts WHERE author_id {IN} ORDER BY id ASC", "{IN}", pIn, 1), pParams)
+	pids := make([]int64, len(posts))
+	for i, r := range posts {
+		pids[i] = r.Int("id")
+	}
+	cIn, cParams := sdkChildInClause(db, pids)
+	comments, _ := wire.QueryRows(db, strings.Replace("SELECT id, body, post_id FROM benchmark_comments WHERE post_id {IN} ORDER BY id ASC", "{IN}", cIn, 1), cParams)
+	postsByAuthor := map[int64][]wire.RowData{}
+	for _, p := range posts {
+		postsByAuthor[p.Int("author_id")] = append(postsByAuthor[p.Int("author_id")], p)
+	}
+	commentsByPost := map[int64][]wire.RowData{}
+	for _, c := range comments {
+		commentsByPost[c.Int("post_id")] = append(commentsByPost[c.Int("post_id")], c)
+	}
+	parents := make([]string, len(users))
+	postsLists := make([]string, len(users))
+	commentLists := make([]string, len(users))
+	for i, u := range users {
+		parents[i] = userSer(u)
+		ps := postsByAuthor[u.Int("id")]
+		pl := make([]string, len(ps))
+		cl := []string{}
+		for j, p := range ps {
+			pl[j] = postSer(p)
+			for _, c := range commentsByPost[p.Int("id")] {
+				cl = append(cl, commentSer(c))
+			}
+		}
+		postsLists[i] = wire.Arrj(pl)
+		commentLists[i] = wire.Arrj(cl)
+	}
+	return wire.Rel3JSON(parents, postsLists, commentLists)
 }
 func sdkCompositeRelations(db *wire.DB) string {
-	parents, _ := wire.QueryRows(db, "SELECT tenant_id, user_id, name FROM benchmark_tenant_users WHERE tenant_id = "+ph(db, 1)+" ORDER BY user_id ASC", []any{1})
-	children, _ := wire.QueryRows(db, "SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE tenant_id = "+ph(db, 1)+" ORDER BY post_id ASC", []any{1})
-	groups := map[int64][]string{}
-	for _, c := range children {
-		groups[c.Int("user_id")] = append(groups[c.Int("user_id")], wire.TPostRow(c.Int("tenant_id"), c.Int("post_id"), c.Int("user_id"), c.Str("title")))
+	// tenant_id fixed = 1: filter each level by tenant, group client-side by the sub-key.
+	tusers, _ := wire.QueryRows(db, "SELECT tenant_id, user_id, name FROM benchmark_tenant_users WHERE tenant_id = "+ph(db, 1)+" ORDER BY user_id ASC", []any{1})
+	tposts, _ := wire.QueryRows(db, "SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE tenant_id = "+ph(db, 1)+" ORDER BY post_id ASC", []any{1})
+	tcomments, _ := wire.QueryRows(db, "SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments WHERE tenant_id = "+ph(db, 1)+" ORDER BY comment_id ASC", []any{1})
+	postsByUser := map[int64][]wire.RowData{}
+	for _, p := range tposts {
+		postsByUser[p.Int("user_id")] = append(postsByUser[p.Int("user_id")], p)
 	}
-	ps := make([]string, len(parents))
-	cs := make([]string, len(parents))
-	for i, r := range parents {
-		ps[i] = wire.TUserRow(r.Int("tenant_id"), r.Int("user_id"), r.Str("name"))
-		cs[i] = wire.Arrj(groups[r.Int("user_id")])
+	commentsByPost := map[int64][]wire.RowData{}
+	for _, c := range tcomments {
+		commentsByPost[c.Int("post_id")] = append(commentsByPost[c.Int("post_id")], c)
 	}
-	return wire.RelJSON("posts", ps, cs)
+	parents := make([]string, len(tusers))
+	postsLists := make([]string, len(tusers))
+	commentLists := make([]string, len(tusers))
+	for i, u := range tusers {
+		parents[i] = wire.TUserRow(u.Int("tenant_id"), u.Int("user_id"), u.Str("name"))
+		ps := postsByUser[u.Int("user_id")]
+		pl := make([]string, len(ps))
+		cl := []string{}
+		for j, p := range ps {
+			pl[j] = wire.TPostRow(p.Int("tenant_id"), p.Int("post_id"), p.Int("user_id"), p.Str("title"))
+			for _, c := range commentsByPost[p.Int("post_id")] {
+				cl = append(cl, wire.TCommentRow(c.Int("tenant_id"), c.Int("comment_id"), c.Int("post_id"), c.Str("body")))
+			}
+		}
+		postsLists[i] = wire.Arrj(pl)
+		commentLists[i] = wire.Arrj(cl)
+	}
+	return wire.Rel3JSON(parents, postsLists, commentLists)
 }
 
 // tx — raw BEGIN … COMMIT/ROLLBACK, then the {committed, state} snapshot. The insert-returning-id uses

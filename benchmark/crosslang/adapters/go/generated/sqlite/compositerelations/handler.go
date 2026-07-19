@@ -20,19 +20,42 @@ func (h Handler_ByTenant) Node_ByTenant_rel_posts(bp PortsNR_ByTenant_rel_posts_
 	return wire.QueryBatchedRelation(h.DB, bp.Items[0].Sql, keys, wire.PairKeysJSON, wire.PairKeysPg, func(r wire.RowData) [2]int64 { return [2]int64{r.Int("tenant_id"), r.Int("user_id")} })
 }
 
+func (h Handler_ByTenant) Node_ByTenant_rel_comments(bp PortsNR_ByTenant_rel_comments_batch, _ *string) ([]wire.WireValue, error) {
+	if len(bp.Items) == 0 {
+		return nil, nil
+	}
+	itemKeys := make([][][2]int64, len(bp.Items))
+	for i, it := range bp.Items {
+		ks := make([][2]int64, len(it.K0))
+		for j, p := range it.K0 {
+			ks[j] = [2]int64{p.Tenant_id, p.Post_id}
+		}
+		itemKeys[i] = ks
+	}
+	return wire.QueryBatchedRelationGrouped(h.DB, bp.Items[0].Sql, itemKeys, wire.PairKeysJSON, wire.PairKeysPg, func(r wire.RowData) [2]int64 { return [2]int64{r.Int("tenant_id"), r.Int("post_id")} })
+}
+
 func Native(db *wire.DB) string {
 	out, _ := RunNativeRawStruct_ByTenant(Handler_ByTenant{DB: db}, In_ByTenant{Tenant_id: 1})
 	parents := make([]string, len(out.Rows))
 	for i, r := range out.Rows {
 		parents[i] = wire.TUserRow(r.Tenant_id, r.User_id, r.Name)
 	}
-	children := make([]string, len(out.Posts))
-	for i, cs := range out.Posts {
+	posts := make([]string, len(out.Posts))
+	for i, ps := range out.Posts {
+		pl := make([]string, len(ps))
+		for j, p := range ps {
+			pl[j] = wire.TPostRow(p.Tenant_id, p.Post_id, p.User_id, p.Title)
+		}
+		posts[i] = wire.Arrj(pl)
+	}
+	comments := make([]string, len(out.Comments))
+	for i, cs := range out.Comments {
 		cl := make([]string, len(cs))
 		for j, c := range cs {
-			cl[j] = wire.TPostRow(c.Tenant_id, c.Post_id, c.User_id, c.Title)
+			cl[j] = wire.TCommentRow(c.Tenant_id, c.Comment_id, c.Post_id, c.Body)
 		}
-		children[i] = wire.Arrj(cl)
+		comments[i] = wire.Arrj(cl)
 	}
-	return wire.RelJSON("posts", parents, children)
+	return wire.Rel3JSON(parents, posts, comments)
 }

@@ -14,7 +14,7 @@
 //   npx tsx benchmark/crosslang/codegen-build.ts generate [--lang rust|go|ts]
 //   npx tsx benchmark/crosslang/codegen-build.ts check    [--lang rust|go|ts]
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join, dirname, resolve, relative } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 // The bundled instance (inlines the ESM-only behavior-contracts) so this runs standalone under tsx.
@@ -51,12 +51,11 @@ function genModule(op: BenchOp, lang: Lang, dialect: OrmDialect): string {
   // #152/#153). `--go-wire-import` qualifies them to the bench's shared `wire` package (one seam for all
   // ops); the per-module probe structs + the in-package `Handler_<comp>` (consumer-defined) stay local.
   // typescript-typed imports the bc RUNTIME (codegenPrimitives / conformResultToOutType / Failure types +
-  // Handlers). node_modules bc is 0.8.5 (litedbmodel's pinned dep) but the generated module needs the
-  // LOCAL 0.8.10 (spec skew) → point the runtime import at the local bc dist (the SAME build $BC_CLI drives)
-  // via a stable relative path from generated/<dialect>/ (deterministic → drift-clean).
-  const tsRuntime = relative(join(ADAPTERS, 'ts', 'generated', dialect), join(dirname(BC_CLI), 'index.js'));
+  // Handlers). node_modules bc is now 0.8.10 (resolved under litedbmodel's `^0.8.5` dep), so the generated
+  // module imports the bc PACKAGE SPECIFIER — the same instance every other module + the tsx cell resolve.
+  // No fragile relative sibling-dist path in committed code (it would break outside this checkout layout).
   const extra =
-    lang === 'go' ? ['--go-wire-import', 'orm_bench_go/wire'] : lang === 'ts' ? ['--runtime-import', tsRuntime] : [];
+    lang === 'go' ? ['--go-wire-import', 'orm_bench_go/wire'] : lang === 'ts' ? ['--runtime-import', 'behavior-contracts'] : [];
   const res = spawnSync('node', [BC_CLI, 'generate', '--lang', EMITTER[lang], '--in', docPath, ...extra], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,

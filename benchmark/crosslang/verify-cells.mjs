@@ -4,7 +4,7 @@
 // postgres drops + recreates + reseeds. Non-zero exit from a cell is a failure.
 //   node  benchmark/crosslang/verify-cells.mjs <lang>              # sqlite (default)
 //   npx tsx benchmark/crosslang/verify-cells.mjs <lang> postgres   # live docker pg (tsx: imports the .ts seed)
-import { readFileSync, copyFileSync, rmSync } from 'node:fs';
+import { readFileSync, copyFileSync, rmSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,13 +13,32 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ART = join(HERE, '.artifacts');
 const lang = process.argv[2] ?? 'rust';
 const dialect = process.argv[3] ?? 'sqlite';
-// Per-lang command to run one op × cell (rust/go = compiled binary; ts = tsx script).
+// Per-lang command to run one op × cell (rust/go = compiled binary; ts = tsx; py = python3; php = php).
 const CMD = {
   rust: (a) => [join(HERE, 'adapters/rust/target/release/orm_bench_rust'), ...a],
   go: (a) => [join(HERE, 'adapters/go/orm_bench_go'), ...a],
   ts: (a) => ['npx', 'tsx', join(HERE, 'adapters/ts/main.ts'), ...a],
+  py: (a) => ['python3', join(HERE, 'adapters/py/main.py'), ...a],
+  php: (a) => ['php', join(HERE, 'adapters/php/main.php'), ...a],
 }[lang];
 if (!CMD) { console.error(`unknown lang '${lang}'`); process.exit(2); }
+
+// The two cells per lang. rust/go/ts ship native codegen; py/php native codegen is a known bc gap
+// (graphddb #342), so they run sdk (hand-SQL baseline) + ir (the shipped interpreter) — honestly labelled.
+const CELLS = lang === 'py' || lang === 'php' ? ['sdk', 'ir'] : ['native', 'sdk'];
+
+// py/php consume the LOCAL litedbmodel + bc source (both unpublished in this worktree — mirror the
+// bench's local bc CLI use). These are exported to the cell process; the cell falls back to the
+// installed packages when unset (the docker/CI path where they are pip/composer-installed).
+const REPO = join(HERE, '..', '..');
+const cellEnv = { ...process.env };
+if (lang === 'py') {
+  cellEnv.LITEDBMODEL_PY = join(REPO, 'python');
+  const bcPy = join(REPO, '..', 'behavior-contracts', 'python', 'src');
+  if (existsSync(bcPy)) cellEnv.BC_PY = bcPy;
+} else if (lang === 'php') {
+  cellEnv.LITEDBMODEL_PHP = join(REPO, 'php');
+}
 
 const oracle = JSON.parse(readFileSync(join(ART, 'oracle.json'), 'utf8'));
 const READ_OPS = new Set([
@@ -35,7 +54,7 @@ const ALL19 = [
 
 function runCell(op, cell, target) {
   const [c0, ...cargs] = CMD(['run', op, target, cell]);
-  const p = spawnSync(c0, cargs, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const p = spawnSync(c0, cargs, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: cellEnv });
   if (p.status !== 0) return { err: `EXIT ${p.status}: ${(p.stderr || '').trim().split('\n').slice(-1)[0].slice(0, 80)}` };
   return { out: (p.stdout || '').trim() };
 }
@@ -48,21 +67,21 @@ function compare(op, cell, res, expected, report) {
 }
 
 let fail = 0;
-console.log(`[${lang} × ${dialect}] op            native   sdk    (vs dialect-independent oracle)`);
+console.log(`[${lang} × ${dialect}] op            ${CELLS[0].padEnd(9)}${CELLS[1]}    (vs dialect-independent oracle)`);
 
 if (dialect === 'sqlite') {
   for (const op of ALL19) {
     const expected = oracle[op]?.result;
     if (expected === undefined) { console.log(`${op.padEnd(22)}NO ORACLE`); fail = 1; continue; }
     const report = {};
-    for (const cell of ['native', 'sdk']) {
+    for (const cell of CELLS) {
       const work = join(ART, `bench.${op}.${cell}.db`);
       copyFileSync(join(ART, 'bench.db'), work); // fresh seed copy per invocation
       const ok = compare(op, cell, runCell(op, cell, work), expected, report);
       rmSync(work, { force: true });
       if (!ok) fail = 1;
     }
-    console.log(`${op.padEnd(22)}${String(report.native).padEnd(9)}${report.sdk}`);
+    console.log(`${op.padEnd(22)}${String(report[CELLS[0]]).padEnd(9)}${report[CELLS[1]]}`);
   }
 } else if (dialect === 'postgres') {
   const pg = (await import('pg')).default;
@@ -83,11 +102,11 @@ if (dialect === 'sqlite') {
     const expected = oracle[op]?.result;
     if (expected === undefined) { console.log(`${op.padEnd(22)}NO ORACLE`); fail = 1; continue; }
     const report = {};
-    for (const cell of ['native', 'sdk']) {
+    for (const cell of CELLS) {
       if (!READ_OPS.has(op)) await reset(); // fresh state per mutating cell run
       if (!compare(op, cell, runCell(op, cell, CONN_STR), expected, report)) fail = 1;
     }
-    console.log(`${op.padEnd(22)}${String(report.native).padEnd(9)}${report.sdk}`);
+    console.log(`${op.padEnd(22)}${String(report[CELLS[0]]).padEnd(9)}${report[CELLS[1]]}`);
   }
   await client.end();
 } else if (dialect === 'mysql') {
@@ -107,11 +126,11 @@ if (dialect === 'sqlite') {
     const expected = oracle[op]?.result;
     if (expected === undefined) { console.log(`${op.padEnd(22)}NO ORACLE`); fail = 1; continue; }
     const report = {};
-    for (const cell of ['native', 'sdk']) {
+    for (const cell of CELLS) {
       if (!READ_OPS.has(op)) await reset(); // fresh state per mutating cell run
       if (!compare(op, cell, runCell(op, cell, CONN_STR), expected, report)) fail = 1;
     }
-    console.log(`${op.padEnd(22)}${String(report.native).padEnd(9)}${report.sdk}`);
+    console.log(`${op.padEnd(22)}${String(report[CELLS[0]]).padEnd(9)}${report[CELLS[1]]}`);
   }
   await conn.end();
 } else {
@@ -119,5 +138,5 @@ if (dialect === 'sqlite') {
   process.exit(2);
 }
 
-console.log(fail ? '\nBYTE-EQUAL: FAILURES ABOVE' : `\nBYTE-EQUAL: native == sdk == oracle for all 19 ops (${lang} × ${dialect})`);
+console.log(fail ? '\nBYTE-EQUAL: FAILURES ABOVE' : `\nBYTE-EQUAL: ${CELLS[0]} == ${CELLS[1]} == oracle for all 19 ops (${lang} × ${dialect})`);
 process.exit(fail);

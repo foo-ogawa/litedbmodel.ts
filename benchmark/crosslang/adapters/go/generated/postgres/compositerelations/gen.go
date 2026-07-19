@@ -124,8 +124,16 @@ type T1 struct {
 }
 
 type T2 struct {
-	Rows  []T0   // "rows"
-	Posts [][]T1 // "posts"
+	Tenant_id  int64  // "tenant_id"
+	Comment_id int64  // "comment_id"
+	Post_id    int64  // "post_id"
+	Body       string // "body"
+}
+
+type T3 struct {
+	Rows     []T0   // "rows"
+	Posts    [][]T1 // "posts"
+	Comments [][]T2 // "comments"
 }
 
 // Per-component CONCRETE input structs (fields = inputPorts; the consumer builds them natively —
@@ -216,6 +224,21 @@ type PortsNR_ByTenant_rel_posts_batch struct {
 	Items []PortsNR_ByTenant_rel_posts
 }
 
+// PortsNR_ByTenant_rel_comments — NATIVE ports for node 'rel_comments' (Select). Typed fields per the
+// static port type; built by direct field assignment (no map alloc, no per-port boxing). The consumer
+// reads the typed fields DIRECTLY (no PortReader / boxed-Value accessor) — the covered read is native.
+type PortsNR_ByTenant_rel_comments struct {
+	Sql string // "sql"
+	K0 []T1 // "k0"
+}
+
+// PortsNR_ByTenant_rel_comments_batch — NATIVE batched ports for map 'rel_comments': Items is a native slice of the concrete
+// per-element ports structs (PortsNR_ByTenant_rel_comments). The consumer reads Items[i].<Field> DIRECTLY — no boxed
+// []Value, no PortReader accessor, no key-value object (bc#90 / runtime-free).
+type PortsNR_ByTenant_rel_comments_batch struct {
+	Items []PortsNR_ByTenant_rel_comments
+}
+
 // Combined read runners (STRUCT-returning — the fully de-plumbed path).
 // RunNativeRawStruct_ByTenant — the STRUCT-RETURNING combined read (bc#77/#87): the fully
 // de-plumbed path. Ports are a native struct (direct field assignment); the handler
@@ -229,7 +252,7 @@ type PortsNR_ByTenant_rel_posts_batch struct {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_ByTenant(handlers Handler_ByTenant, in In_ByTenant) (T2, error) {
+func RunNativeRawStruct_ByTenant(handlers Handler_ByTenant, in In_ByTenant) (T3, error) {
 	_ = in
 	var t_n0 []T0
 	produced_n0 := false
@@ -239,11 +262,15 @@ func RunNativeRawStruct_ByTenant(handlers Handler_ByTenant, in In_ByTenant) (T2,
 	produced_rel_posts := false
 	_ = t_rel_posts
 	_ = produced_rel_posts
+	var t_rel_comments [][]T2
+	produced_rel_comments := false
+	_ = t_rel_comments
+	_ = produced_rel_comments
 	// ── op 'n0' (Select) ──
 	ports_n0 := PortsNR_ByTenant_n0{Sql: "SELECT tenant_id, user_id, name FROM benchmark_tenant_users WHERE tenant_id = $1 ORDER BY user_id ASC", P0: in.Tenant_id}
 	wire_n0, wire_n0Err := handlers.Node_ByTenant_n0(ports_n0, nil)
 	if wire_n0Err != nil {
-		return T2{}, opFailed("n0", "fail", wire_n0Err)
+		return T3{}, opFailed("n0", "fail", wire_n0Err)
 	}
 	p0 := wire_n0.AsList()
 	if p0.Kind == probeGot {
@@ -257,57 +284,57 @@ func RunNativeRawStruct_ByTenant(handlers Handler_ByTenant, in In_ByTenant) (T2,
 				if p2.Kind == probeGot {
 					n2, nErr2 := strconv.ParseInt(p2.Got, 10, 64)
 					if nErr2 != nil {
-						return T2{}, deOverflow("T0", "tenant_id", "int", p2.ActualWireType, p2.Got)
+						return T3{}, deOverflow("T0", "tenant_id", "int", p2.ActualWireType, p2.Got)
 					}
 					rec1.Tenant_id = n2
 				} else if p2.Kind == probeWrong {
-					return T2{}, deTypeMismatch("T0", "tenant_id", "int", p2.ActualWireType, p2.Raw)
+					return T3{}, deTypeMismatch("T0", "tenant_id", "int", p2.ActualWireType, p2.Raw)
 				} else if p2.Kind == probeNull {
-					return T2{}, deTypeMismatch("T0", "tenant_id", "int", p2.ActualWireType, p2.Raw)
+					return T3{}, deTypeMismatch("T0", "tenant_id", "int", p2.ActualWireType, p2.Raw)
 				} else {
-					return T2{}, deMissingField("T0", "tenant_id", "int")
+					return T3{}, deMissingField("T0", "tenant_id", "int")
 				}
 				p3 := p1.Got.ProbeNumber("user_id")
 				if p3.Kind == probeGot {
 					n3, nErr3 := strconv.ParseInt(p3.Got, 10, 64)
 					if nErr3 != nil {
-						return T2{}, deOverflow("T0", "user_id", "int", p3.ActualWireType, p3.Got)
+						return T3{}, deOverflow("T0", "user_id", "int", p3.ActualWireType, p3.Got)
 					}
 					rec1.User_id = n3
 				} else if p3.Kind == probeWrong {
-					return T2{}, deTypeMismatch("T0", "user_id", "int", p3.ActualWireType, p3.Raw)
+					return T3{}, deTypeMismatch("T0", "user_id", "int", p3.ActualWireType, p3.Raw)
 				} else if p3.Kind == probeNull {
-					return T2{}, deTypeMismatch("T0", "user_id", "int", p3.ActualWireType, p3.Raw)
+					return T3{}, deTypeMismatch("T0", "user_id", "int", p3.ActualWireType, p3.Raw)
 				} else {
-					return T2{}, deMissingField("T0", "user_id", "int")
+					return T3{}, deMissingField("T0", "user_id", "int")
 				}
 				p4 := p1.Got.ProbeString("name")
 				if p4.Kind == probeGot {
 					rec1.Name = p4.Got
 				} else if p4.Kind == probeWrong {
-					return T2{}, deTypeMismatch("T0", "name", "string", p4.ActualWireType, p4.Raw)
+					return T3{}, deTypeMismatch("T0", "name", "string", p4.ActualWireType, p4.Raw)
 				} else if p4.Kind == probeNull {
-					return T2{}, deTypeMismatch("T0", "name", "string", p4.ActualWireType, p4.Raw)
+					return T3{}, deTypeMismatch("T0", "name", "string", p4.ActualWireType, p4.Raw)
 				} else {
-					return T2{}, deMissingField("T0", "name", "string")
+					return T3{}, deMissingField("T0", "name", "string")
 				}
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
-				return T2{}, deTypeMismatch("n0", "n0", "obj{tenant_id:int,user_id:int,name:string}", p1.ActualWireType, p1.Raw)
+				return T3{}, deTypeMismatch("n0", "n0", "obj{tenant_id:int,user_id:int,name:string}", p1.ActualWireType, p1.Raw)
 			} else if p1.Kind == probeNull {
-				return T2{}, deTypeMismatch("n0", "n0", "obj{tenant_id:int,user_id:int,name:string}", p1.ActualWireType, p1.Raw)
+				return T3{}, deTypeMismatch("n0", "n0", "obj{tenant_id:int,user_id:int,name:string}", p1.ActualWireType, p1.Raw)
 			} else {
-				return T2{}, deMissingField("n0", "n0", "obj{tenant_id:int,user_id:int,name:string}")
+				return T3{}, deMissingField("n0", "n0", "obj{tenant_id:int,user_id:int,name:string}")
 			}
 			list0 = append(list0, el0)
 		}
 		t_n0 = list0
 	} else if p0.Kind == probeWrong {
-		return T2{}, deTypeMismatch("n0", "n0", "arr(obj{tenant_id:int,user_id:int,name:string})", p0.ActualWireType, p0.Raw)
+		return T3{}, deTypeMismatch("n0", "n0", "arr(obj{tenant_id:int,user_id:int,name:string})", p0.ActualWireType, p0.Raw)
 	} else if p0.Kind == probeNull {
-		return T2{}, deTypeMismatch("n0", "n0", "arr(obj{tenant_id:int,user_id:int,name:string})", p0.ActualWireType, p0.Raw)
+		return T3{}, deTypeMismatch("n0", "n0", "arr(obj{tenant_id:int,user_id:int,name:string})", p0.ActualWireType, p0.Raw)
 	} else {
-		return T2{}, deMissingField("n0", "n0", "arr(obj{tenant_id:int,user_id:int,name:string})")
+		return T3{}, deMissingField("n0", "n0", "arr(obj{tenant_id:int,user_id:int,name:string})")
 	}
 	produced_n0 = true
 	// ── map 'rel_posts' (Select, batched, into:null, relationKind:connection) ──
@@ -322,10 +349,10 @@ func RunNativeRawStruct_ByTenant(handlers Handler_ByTenant, in In_ByTenant) (T2,
 		bp_rel_posts := PortsNR_ByTenant_rel_posts_batch{Items: items_rel_posts}
 		mo_rel_posts, mo_rel_postsErr := handlers.Node_ByTenant_rel_posts(bp_rel_posts, nil)
 		if mo_rel_postsErr != nil {
-			return T2{}, opFailed("rel_posts", "fail", mo_rel_postsErr)
+			return T3{}, opFailed("rel_posts", "fail", mo_rel_postsErr)
 		}
 		if len(mo_rel_posts) != len(items_rel_posts) {
-			return T2{}, &BehaviorError{Code: "MAP_BATCH_RESULT_MISMATCH", Message: fmt.Sprintf("map 'rel_posts': batched handler must return a list aligned to items (want %d)", len(items_rel_posts))}
+			return T3{}, &BehaviorError{Code: "MAP_BATCH_RESULT_MISMATCH", Message: fmt.Sprintf("map 'rel_posts': batched handler must return a list aligned to items (want %d)", len(items_rel_posts))}
 		}
 		for mk_rel_posts := 0; mk_rel_posts < len(mo_rel_posts); mk_rel_posts++ {
 			var el_rel_posts []T1
@@ -341,77 +368,178 @@ func RunNativeRawStruct_ByTenant(handlers Handler_ByTenant, in In_ByTenant) (T2,
 						if p2.Kind == probeGot {
 							n2, nErr2 := strconv.ParseInt(p2.Got, 10, 64)
 							if nErr2 != nil {
-								return T2{}, deOverflow("T1", "tenant_id", "int", p2.ActualWireType, p2.Got)
+								return T3{}, deOverflow("T1", "tenant_id", "int", p2.ActualWireType, p2.Got)
 							}
 							rec1.Tenant_id = n2
 						} else if p2.Kind == probeWrong {
-							return T2{}, deTypeMismatch("T1", "tenant_id", "int", p2.ActualWireType, p2.Raw)
+							return T3{}, deTypeMismatch("T1", "tenant_id", "int", p2.ActualWireType, p2.Raw)
 						} else if p2.Kind == probeNull {
-							return T2{}, deTypeMismatch("T1", "tenant_id", "int", p2.ActualWireType, p2.Raw)
+							return T3{}, deTypeMismatch("T1", "tenant_id", "int", p2.ActualWireType, p2.Raw)
 						} else {
-							return T2{}, deMissingField("T1", "tenant_id", "int")
+							return T3{}, deMissingField("T1", "tenant_id", "int")
 						}
 						p3 := p1.Got.ProbeNumber("post_id")
 						if p3.Kind == probeGot {
 							n3, nErr3 := strconv.ParseInt(p3.Got, 10, 64)
 							if nErr3 != nil {
-								return T2{}, deOverflow("T1", "post_id", "int", p3.ActualWireType, p3.Got)
+								return T3{}, deOverflow("T1", "post_id", "int", p3.ActualWireType, p3.Got)
 							}
 							rec1.Post_id = n3
 						} else if p3.Kind == probeWrong {
-							return T2{}, deTypeMismatch("T1", "post_id", "int", p3.ActualWireType, p3.Raw)
+							return T3{}, deTypeMismatch("T1", "post_id", "int", p3.ActualWireType, p3.Raw)
 						} else if p3.Kind == probeNull {
-							return T2{}, deTypeMismatch("T1", "post_id", "int", p3.ActualWireType, p3.Raw)
+							return T3{}, deTypeMismatch("T1", "post_id", "int", p3.ActualWireType, p3.Raw)
 						} else {
-							return T2{}, deMissingField("T1", "post_id", "int")
+							return T3{}, deMissingField("T1", "post_id", "int")
 						}
 						p4 := p1.Got.ProbeNumber("user_id")
 						if p4.Kind == probeGot {
 							n4, nErr4 := strconv.ParseInt(p4.Got, 10, 64)
 							if nErr4 != nil {
-								return T2{}, deOverflow("T1", "user_id", "int", p4.ActualWireType, p4.Got)
+								return T3{}, deOverflow("T1", "user_id", "int", p4.ActualWireType, p4.Got)
 							}
 							rec1.User_id = n4
 						} else if p4.Kind == probeWrong {
-							return T2{}, deTypeMismatch("T1", "user_id", "int", p4.ActualWireType, p4.Raw)
+							return T3{}, deTypeMismatch("T1", "user_id", "int", p4.ActualWireType, p4.Raw)
 						} else if p4.Kind == probeNull {
-							return T2{}, deTypeMismatch("T1", "user_id", "int", p4.ActualWireType, p4.Raw)
+							return T3{}, deTypeMismatch("T1", "user_id", "int", p4.ActualWireType, p4.Raw)
 						} else {
-							return T2{}, deMissingField("T1", "user_id", "int")
+							return T3{}, deMissingField("T1", "user_id", "int")
 						}
 						p5 := p1.Got.ProbeString("title")
 						if p5.Kind == probeGot {
 							rec1.Title = p5.Got
 						} else if p5.Kind == probeWrong {
-							return T2{}, deTypeMismatch("T1", "title", "string", p5.ActualWireType, p5.Raw)
+							return T3{}, deTypeMismatch("T1", "title", "string", p5.ActualWireType, p5.Raw)
 						} else if p5.Kind == probeNull {
-							return T2{}, deTypeMismatch("T1", "title", "string", p5.ActualWireType, p5.Raw)
+							return T3{}, deTypeMismatch("T1", "title", "string", p5.ActualWireType, p5.Raw)
 						} else {
-							return T2{}, deMissingField("T1", "title", "string")
+							return T3{}, deMissingField("T1", "title", "string")
 						}
 						el0 = rec1
 					} else if p1.Kind == probeWrong {
-						return T2{}, deTypeMismatch("rel_posts", "rel_posts", "obj{tenant_id:int,post_id:int,user_id:int,title:string}", p1.ActualWireType, p1.Raw)
+						return T3{}, deTypeMismatch("rel_posts", "rel_posts", "obj{tenant_id:int,post_id:int,user_id:int,title:string}", p1.ActualWireType, p1.Raw)
 					} else if p1.Kind == probeNull {
-						return T2{}, deTypeMismatch("rel_posts", "rel_posts", "obj{tenant_id:int,post_id:int,user_id:int,title:string}", p1.ActualWireType, p1.Raw)
+						return T3{}, deTypeMismatch("rel_posts", "rel_posts", "obj{tenant_id:int,post_id:int,user_id:int,title:string}", p1.ActualWireType, p1.Raw)
 					} else {
-						return T2{}, deMissingField("rel_posts", "rel_posts", "obj{tenant_id:int,post_id:int,user_id:int,title:string}")
+						return T3{}, deMissingField("rel_posts", "rel_posts", "obj{tenant_id:int,post_id:int,user_id:int,title:string}")
 					}
 					list0 = append(list0, el0)
 				}
 				el_rel_posts = list0
 			} else if p0.Kind == probeWrong {
-				return T2{}, deTypeMismatch("rel_posts", "rel_posts", "arr(obj{tenant_id:int,post_id:int,user_id:int,title:string})", p0.ActualWireType, p0.Raw)
+				return T3{}, deTypeMismatch("rel_posts", "rel_posts", "arr(obj{tenant_id:int,post_id:int,user_id:int,title:string})", p0.ActualWireType, p0.Raw)
 			} else if p0.Kind == probeNull {
-				return T2{}, deTypeMismatch("rel_posts", "rel_posts", "arr(obj{tenant_id:int,post_id:int,user_id:int,title:string})", p0.ActualWireType, p0.Raw)
+				return T3{}, deTypeMismatch("rel_posts", "rel_posts", "arr(obj{tenant_id:int,post_id:int,user_id:int,title:string})", p0.ActualWireType, p0.Raw)
 			} else {
-				return T2{}, deMissingField("rel_posts", "rel_posts", "arr(obj{tenant_id:int,post_id:int,user_id:int,title:string})")
+				return T3{}, deMissingField("rel_posts", "rel_posts", "arr(obj{tenant_id:int,post_id:int,user_id:int,title:string})")
 			}
 			t_rel_posts = append(t_rel_posts, el_rel_posts)
 		}
 	}
 	produced_rel_posts = true
-	return T2{Rows: t_n0, Posts: t_rel_posts}, nil
+	// ── map 'rel_comments' (Select, batched, into:null, relationKind:connection) ──
+	over_rel_comments := t_rel_posts
+	t_rel_comments = make([][]T2, 0, len(over_rel_comments))
+	items_rel_comments := make([]PortsNR_ByTenant_rel_comments, 0, len(over_rel_comments))
+	for _, oel_rel_comments := range over_rel_comments {
+		ep_rel_comments := PortsNR_ByTenant_rel_comments{Sql: "SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_benchmark_tenant_comments(_unnest_benchmark_tenant_comments_tenant_id, _unnest_benchmark_tenant_comments_post_id) ON benchmark_tenant_comments.tenant_id = _unnest_benchmark_tenant_comments._unnest_benchmark_tenant_comments_tenant_id AND benchmark_tenant_comments.post_id = _unnest_benchmark_tenant_comments._unnest_benchmark_tenant_comments_post_id ORDER BY comment_id ASC", K0: oel_rel_comments}
+		items_rel_comments = append(items_rel_comments, ep_rel_comments)
+	}
+	if len(items_rel_comments) > 0 {
+		bp_rel_comments := PortsNR_ByTenant_rel_comments_batch{Items: items_rel_comments}
+		mo_rel_comments, mo_rel_commentsErr := handlers.Node_ByTenant_rel_comments(bp_rel_comments, nil)
+		if mo_rel_commentsErr != nil {
+			return T3{}, opFailed("rel_comments", "fail", mo_rel_commentsErr)
+		}
+		if len(mo_rel_comments) != len(items_rel_comments) {
+			return T3{}, &BehaviorError{Code: "MAP_BATCH_RESULT_MISMATCH", Message: fmt.Sprintf("map 'rel_comments': batched handler must return a list aligned to items (want %d)", len(items_rel_comments))}
+		}
+		for mk_rel_comments := 0; mk_rel_comments < len(mo_rel_comments); mk_rel_comments++ {
+			var el_rel_comments []T2
+			p0 := mo_rel_comments[mk_rel_comments].AsList()
+			if p0.Kind == probeGot {
+				list0 := make([]T2, 0, p0.Got.Len())
+				for i0 := 0; i0 < p0.Got.Len(); i0++ {
+					var el0 T2
+					p1 := p0.Got.ElemRow(i0)
+					if p1.Kind == probeGot {
+						var rec1 T2
+						p2 := p1.Got.ProbeNumber("tenant_id")
+						if p2.Kind == probeGot {
+							n2, nErr2 := strconv.ParseInt(p2.Got, 10, 64)
+							if nErr2 != nil {
+								return T3{}, deOverflow("T2", "tenant_id", "int", p2.ActualWireType, p2.Got)
+							}
+							rec1.Tenant_id = n2
+						} else if p2.Kind == probeWrong {
+							return T3{}, deTypeMismatch("T2", "tenant_id", "int", p2.ActualWireType, p2.Raw)
+						} else if p2.Kind == probeNull {
+							return T3{}, deTypeMismatch("T2", "tenant_id", "int", p2.ActualWireType, p2.Raw)
+						} else {
+							return T3{}, deMissingField("T2", "tenant_id", "int")
+						}
+						p3 := p1.Got.ProbeNumber("comment_id")
+						if p3.Kind == probeGot {
+							n3, nErr3 := strconv.ParseInt(p3.Got, 10, 64)
+							if nErr3 != nil {
+								return T3{}, deOverflow("T2", "comment_id", "int", p3.ActualWireType, p3.Got)
+							}
+							rec1.Comment_id = n3
+						} else if p3.Kind == probeWrong {
+							return T3{}, deTypeMismatch("T2", "comment_id", "int", p3.ActualWireType, p3.Raw)
+						} else if p3.Kind == probeNull {
+							return T3{}, deTypeMismatch("T2", "comment_id", "int", p3.ActualWireType, p3.Raw)
+						} else {
+							return T3{}, deMissingField("T2", "comment_id", "int")
+						}
+						p4 := p1.Got.ProbeNumber("post_id")
+						if p4.Kind == probeGot {
+							n4, nErr4 := strconv.ParseInt(p4.Got, 10, 64)
+							if nErr4 != nil {
+								return T3{}, deOverflow("T2", "post_id", "int", p4.ActualWireType, p4.Got)
+							}
+							rec1.Post_id = n4
+						} else if p4.Kind == probeWrong {
+							return T3{}, deTypeMismatch("T2", "post_id", "int", p4.ActualWireType, p4.Raw)
+						} else if p4.Kind == probeNull {
+							return T3{}, deTypeMismatch("T2", "post_id", "int", p4.ActualWireType, p4.Raw)
+						} else {
+							return T3{}, deMissingField("T2", "post_id", "int")
+						}
+						p5 := p1.Got.ProbeString("body")
+						if p5.Kind == probeGot {
+							rec1.Body = p5.Got
+						} else if p5.Kind == probeWrong {
+							return T3{}, deTypeMismatch("T2", "body", "string", p5.ActualWireType, p5.Raw)
+						} else if p5.Kind == probeNull {
+							return T3{}, deTypeMismatch("T2", "body", "string", p5.ActualWireType, p5.Raw)
+						} else {
+							return T3{}, deMissingField("T2", "body", "string")
+						}
+						el0 = rec1
+					} else if p1.Kind == probeWrong {
+						return T3{}, deTypeMismatch("rel_comments", "rel_comments", "obj{tenant_id:int,comment_id:int,post_id:int,body:string}", p1.ActualWireType, p1.Raw)
+					} else if p1.Kind == probeNull {
+						return T3{}, deTypeMismatch("rel_comments", "rel_comments", "obj{tenant_id:int,comment_id:int,post_id:int,body:string}", p1.ActualWireType, p1.Raw)
+					} else {
+						return T3{}, deMissingField("rel_comments", "rel_comments", "obj{tenant_id:int,comment_id:int,post_id:int,body:string}")
+					}
+					list0 = append(list0, el0)
+				}
+				el_rel_comments = list0
+			} else if p0.Kind == probeWrong {
+				return T3{}, deTypeMismatch("rel_comments", "rel_comments", "arr(obj{tenant_id:int,comment_id:int,post_id:int,body:string})", p0.ActualWireType, p0.Raw)
+			} else if p0.Kind == probeNull {
+				return T3{}, deTypeMismatch("rel_comments", "rel_comments", "arr(obj{tenant_id:int,comment_id:int,post_id:int,body:string})", p0.ActualWireType, p0.Raw)
+			} else {
+				return T3{}, deMissingField("rel_comments", "rel_comments", "arr(obj{tenant_id:int,comment_id:int,post_id:int,body:string})")
+			}
+			t_rel_comments = append(t_rel_comments, el_rel_comments)
+		}
+	}
+	produced_rel_comments = true
+	return T3{Rows: t_n0, Posts: t_rel_posts, Comments: t_rel_comments}, nil
 }
 
 // ComponentNamesNativeRaw — covered reads exposed on the combined struct-native path (declaration

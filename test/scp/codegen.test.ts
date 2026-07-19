@@ -74,7 +74,10 @@ const IR_EMBED_MARKERS: RegExp[] = [
   /"irVersion"|'irVersion'/,
   /\bexport const IR\b|\bexport var IR\b|\bpub static IR\b|\bvar IR\b\s*=|'IR'\s*=>/,
 ];
-const INTERPRETER_CALL_MARKER = /\brun_behavior\b|\bRunBehavior\b|\brunBehavior\b/;
+// A genuine interpreter delegation is a CALL — `run_behavior(`/`RunBehavior(`/`runBehavior(` with an
+// immediate open paren. Explanatory prose ("byte-equal to run_behavior", "converge with run_behavior
+// (fixes …)") names the interpreter without invoking it and must NOT false-positive.
+const INTERPRETER_CALL_MARKER = /\brun_behavior\(|\bRunBehavior\(|\brunBehavior\(/;
 
 /** Strip line/block comments while preserving string/template literals (mirrors
  * `conformance/codegen/codegen-runner.ts`'s `stripComments`), so a marker matches genuine
@@ -121,8 +124,11 @@ function stripComments(src: string): string {
 }
 
 /** typed-native purity markers (#60 m1 owner order): a COVERED go/rust read carries ZERO of
- * these — the whole point of the migration off `-typed-raw`/`-typed` is zero-boxing. */
-const NATIVE_BOXING_MARKERS: RegExp[] = [/\bobj_native\b/, /\bser_T\d/, /\brun_plan\b/, /\bRawValue\b/];
+ * these — the whole point of the migration off `-typed-raw`/`-typed` is zero-boxing. Real boxing
+ * crosses the boxed `Value`/`RawValue` ENUM (`Value::`/`RawValue::`); the bc#146 structured-error
+ * plane's `RawValue`/`raw_value` struct FIELD of `ErrorDetail` (a diagnostic string, not a hot-path
+ * value box) is NOT boxing and must not false-positive — so match the enum crossing, not the word. */
+const NATIVE_BOXING_MARKERS: RegExp[] = [/\bobj_native\b/, /\bser_T\d/, /\brun_plan\b/, /\bRawValue::/, /\bValue::/];
 
 /** Assert a generated module embeds no IR literal/export and calls no interpreter (comment-stripped). */
 function assertDeInterpreted(code: string): void {

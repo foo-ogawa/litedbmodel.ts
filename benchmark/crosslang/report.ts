@@ -2,12 +2,16 @@
 // Cross-language report renderer — MatrixResult → CROSS-LANG.md.
 // ════════════════════════════════════════════════════════════════════════════
 //
-// The driver-included, END-TO-END report: the 19 ORM ops executed by each language's thin
-// generic runtime on all 3 real DBs (SQLite in-proc, MySQL, PostgreSQL) — every number is a
-// real DB round-trip. The SQL is compiled once, ahead of time (language-neutral). Each results
-// cell pairs two p50 latencies (µs): the raw-SQL driver baseline (SDK) and litedbmodel's shipped
-// runtime executing that same SQL, so the language ranking and litedbmodel's over-driver cost read
-// from one table. A fairness table (queries/op · rows/op) shows every language does identical work.
+// The driver-included, END-TO-END report: the 19 ORM ops executed by each language on all 3 real
+// DBs (SQLite in-proc, MySQL, PostgreSQL) — every number is a real DB round-trip. Each op is
+// declared ONCE via SCP; bc emits a per-language execution surface. There is NO shared generic
+// runtime executing a common SQL blob — the SQL is BAKED into each language's own module. Each
+// results cell pairs two p50 latencies (µs): the hand-written raw-driver **SDK** baseline and the
+// litedbmodel execution surface, whose TIER is language-specific:
+//   • native (rust / go) — the bc typed-native codegen module (runtime-free; SQL baked in);
+//   • typed  (ts)        — the bc typed codegen module (baked straight-line; value-helper only);
+//   • ir     (python / php) — the bc IR interpreter over the portable IR doc.
+// A fairness table (queries/op · rows/op) shows every language does identical logical DB work.
 
 import { type MatrixResult, type CellResult, type DialectResult } from './metrics.js';
 import { CROSSLANG_CASE_LABELS, CROSSLANG_CASE_IDS } from './contract.js';
@@ -17,6 +21,18 @@ const us = (ms: number): string => `${(ms * 1000).toFixed(1)}µs`;
 const LANG_LABEL: Record<string, string> = { ts: 'TypeScript', python: 'Python', php: 'PHP', rust: 'Rust', go: 'Go' };
 const DIALECT_LABEL: Record<string, string> = { sqlite: 'SQLite', postgres: 'PostgreSQL', mysql: 'MySQL' };
 const LANG_ORDER = ['ts', 'python', 'php', 'rust', 'go'];
+
+// The execution TIER of a cell — the HONEST subject of each measurement. The raw-driver baseline is
+// the hand-written `sdk`; the litedbmodel exec surface's tier is per-language: rust/go run the
+// bc typed-NATIVE codegen module, ts the bc TYPED codegen module, python/php the bc IR interpreter.
+type Tier = 'native' | 'typed' | 'ir' | 'sdk';
+function tierOf(language: string, impl: string): Tier {
+  if (impl === 'baseline') return 'sdk';
+  if (language === 'rust' || language === 'go') return 'native';
+  if (language === 'ts') return 'typed';
+  return 'ir'; // python / php — the interpreter tier
+}
+const TIER_LABEL: Record<Tier, string> = { native: 'native', typed: 'typed', ir: 'ir', sdk: 'SDK' };
 
 function runtimeCell(m: MatrixResult, language: string): CellResult | undefined {
   return m.cells.find((c) => c.language === language && c.impl === 'runtime');
@@ -39,13 +55,17 @@ function methodology(m: MatrixResult): string {
   return [
     '## Methodology',
     '',
-    'The **driver-included, end-to-end** cross-language benchmark. Each language’s **thin generic runtime**',
-    'executes the SAME **19 ORM-comparison ops** against all three real dialects (SQLite in-proc, MySQL :3307,',
-    'PostgreSQL :5433) — every number below is a real DB round-trip through the shipped runtime + real driver.',
+    'The **driver-included, end-to-end** cross-language benchmark. Each op is declared ONCE via SCP; bc emits a',
+    'per-language **execution surface** that runs the **19 ORM-comparison ops** against all three real dialects',
+    '(SQLite in-proc, MySQL :3307, PostgreSQL :5433) — every number below is a real DB round-trip through that',
+    'surface + the real driver.',
     '',
-    '- **Same op, same SQL, every language.** All languages run byte-identical SQL for a given op (the shared',
-    '  `orm-plan.json` artifact) — the same statements the ORM-vs-ORM bench measures for litedbmodel',
-    '  (`benchmark/benchmark.ts`), so the numbers are comparable across languages and with that bench.',
+    '- **One declaration, per-language surfaces — no shared generic runtime.** The SQL is BAKED into each',
+    '  language’s own module: **native** (rust/go — bc typed-native codegen, runtime-free), **typed** (ts — bc',
+    '  typed codegen), or **ir** (python/php — the bc IR interpreter). The measured subject is that surface, not',
+    '  a common runtime replaying an external SQL blob.',
+    '- **SDK baseline.** Each language’s hand-written raw-driver path runs the SAME logical op — the honest',
+    '  floor the exec surface is measured against (ratio in parens).',
     '- **No subset.** All 19 ops run in every language on every DB, or an explicit per-cell SKIP note (never a',
     '  silent drop). A cell whose adapter did not build/run renders an honest failure row.',
     '',
@@ -99,10 +119,11 @@ function driverTable(m: MatrixResult): string {
 function whichLanguageFastest(m: MatrixResult, dialect: string): string {
   const langs = liveLangs(m);
   if (langs.length === 0) return `#### ${DIALECT_LABEL[dialect] ?? dialect}\n\n_No language cell ran._\n`;
-  const head = `| Op | ${langs.map((l) => `${LANG_LABEL[l] ?? l} SDK | ${LANG_LABEL[l] ?? l} runtime`).join(' | ')} |`;
+  const head = `| Op | ${langs.map((l) => `${LANG_LABEL[l] ?? l} SDK | ${LANG_LABEL[l] ?? l} ${TIER_LABEL[tierOf(l, 'runtime')]}`).join(' | ')} |`;
   const sep = `|---|${langs.map(() => '---|---').join('|')}|`;
   const rows = CROSSLANG_CASE_IDS.map((caseId) => {
-    // Per language: SDK (raw-driver baseline) p50, then litedbmodel runtime p50 with its ratio to SDK.
+    // Per language: SDK (raw-driver baseline) p50, then the litedbmodel exec surface p50 (native/typed/ir)
+    // with its ratio to SDK.
     const cells = langs.flatMap((l) => {
       const rt = dcell(runtimeCell(m, l), dialect)?.cases[caseId];
       const bl = dcell(baselineCell(m, l), dialect)?.cases[caseId];
@@ -125,7 +146,7 @@ function whichLanguageFastest(m: MatrixResult, dialect: string): string {
     }
   }
   const noteLines = notes.size ? ['', ...[...notes].map((n) => `> _skip — ${n}_`)] : [];
-  return [`#### ${DIALECT_LABEL[dialect] ?? dialect} — p50 (µs), SDK vs runtime`, '', head, sep, ...rows, ...noteLines, ''].join('\n');
+  return [`#### ${DIALECT_LABEL[dialect] ?? dialect} — p50 (µs), SDK vs exec surface (native / typed / ir)`, '', head, sep, ...rows, ...noteLines, ''].join('\n');
 }
 
 // ── Fairness — queries/op · rows/op ───────────────────────────────────────────
@@ -170,10 +191,11 @@ export function renderReport(m: MatrixResult): string {
 
   parts.push('## Results — absolute p50 latency per op × language × DB (µs)');
   parts.push('');
-  parts.push('> Every number is an absolute p50 latency in µs. The SQL is compiled once, ahead of time (language-');
-  parts.push('> neutral). Two columns per language: **SDK** = that SQL run through the bare driver; **runtime** =');
-  parts.push('> the same SQL run through litedbmodel’s shipped runtime (absolute p50, ratio to that language’s SDK');
-  parts.push('> in parens). `skip` = not run (footnoted).');
+  parts.push('> Every number is an absolute p50 latency in µs. Two columns per language: **SDK** = the op run');
+  parts.push('> through the hand-written raw driver; the second column = litedbmodel’s **exec surface** for that');
+  parts.push('> language — **native** (rust/go, SQL baked into the runtime-free codegen module), **typed** (ts, baked');
+  parts.push('> codegen), or **ir** (python/php, the IR interpreter) — absolute p50, ratio to that language’s SDK in');
+  parts.push('> parens. `skip` = not run (footnoted).');
   parts.push('');
   for (const dialect of m.dialects) parts.push(whichLanguageFastest(m, dialect));
 

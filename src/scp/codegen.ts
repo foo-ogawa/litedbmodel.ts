@@ -1129,7 +1129,23 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       // A map node's ports live on `n.map`; the runner drives its child per parent element (bc emits
       // the batch/per-element structs). A plain read/write carries `n.ports`.
       if (isMap) {
-        return { ...n, map: { ...mapObj, ports: newPorts } } as typeof n;
+        // A bc map node's `outType` is the PER-ELEMENT (per-iteration child) type — the typed-native
+        // emitter synthesizes the produced parent-aligned array `{arr: element}` itself (the SAME
+        // contract {@link injectBatchedRelations} follows). bc's `.map()` recording stamps the FULL
+        // produced array (`arr(childOutType)`) on the node instead; left as-is the emitter re-wraps it
+        // and the built value nests one `arr` deeper than the component `outputType` field declares
+        // (bc#151 OUTPUT_TYPE_INCONSISTENT). Strip the outer `arr` so the node carries the element
+        // type the emitter wraps back to the declared produced array.
+        const recorded = (n as { outType?: unknown }).outType;
+        const elemOutType =
+          recorded !== null && typeof recorded === 'object' && 'arr' in recorded
+            ? (recorded as { arr: unknown }).arr
+            : undefined;
+        if (elemOutType === undefined) {
+          reasons.push(`node '${n.id}': a map node's recorded outType is not the expected produced-array {arr:…} shape (got ${JSON.stringify(recorded)})`);
+          return n;
+        }
+        return { ...n, outType: elemOutType, map: { ...mapObj, ports: newPorts } } as typeof n;
       }
       // A write with NO RETURNING hands back the single summary row `[{changes, lastInsertRowid}]`,
       // NOT the determined empty-row list its compile-time outType carries (that stamp existed only
@@ -1203,9 +1219,14 @@ function relationChildRowType(relOp: RelationOp, resolveColumnType: ColumnTypeRe
  * because the injected node is ALREADY in lowered port shape (baked `sql` + native key ports) — it
  * does not go through the authored-port lowering.
  *
- * Single-relation, hasMany/belongsTo, over the PRIMARY read node. The parent keys become element-field
- * ports `{ref:[$rel, <parentKey>]}` (bc bakes each as a native scalar read off the parent element);
- * the batched `f_sql` is baked verbatim. Multiple relations inject multiple sibling batched-map nodes.
+ * hasMany/belongsTo. A DEPTH-0 relation hangs off the PRIMARY read node: its parent keys become
+ * element-field ports `{ref:[$rel, <parentKey>]}` (bc bakes each as a native scalar read off the parent
+ * ROW element). A CHAINED relation (nested `with`, level ≥ 3 — {@link RelationOp.childRelations}) hangs
+ * off its PARENT relation's node, whose produced type is `arr<arr<parentRow>>`; bc's `over` strips one
+ * arr level, so the element is the per-grandparent parent-ROW LIST `arr<parentRow>`. That whole list is
+ * passed as ONE key port `{ref:[$relN]}` (bc types it `Vec<parentRow>`), and the exec seam flattens
+ * every list's child keys into ONE batched query (N+1-free per level), aligning the per-element result.
+ * The batched `f_sql` is baked verbatim. Multiple relations / children inject multiple batched-map nodes.
  */
 function injectBatchedRelations(
   ir: ComponentGraphIR,
@@ -1221,62 +1242,66 @@ function injectBatchedRelations(
     // inline map) draws its relations purely from `bundle.relations` → inject the batched form.
     if (c.body.some((n) => 'map' in n)) return c;
     // The PRIMARY read node the relations hang off — the first plain componentRef (non-map/cond).
-    const primary = c.body.find((n) => !('map' in n) && !('cond' in n)) as { id: string } | undefined;
+    const primary = c.body.find((n) => !('map' in n) && !('cond' in n)) as { id: string; outType?: unknown } | undefined;
     if (primary === undefined) return c;
-    const relNodes = relNames.map((name) => {
-      const relOp = relations[name];
+    const bodyNodes: unknown[] = []; // injected batched-map nodes, in dependency (parent-before-child) order
+    const seenIds = new Set<string>();
+    const outputObj: Record<string, unknown> = { rows: { ref: [primary.id] } };
+    const outputTypeObj: Record<string, unknown> = { rows: primary.outType };
+    // Inject ONE relation (and recurse into its chained children). `overId` = the node this relation
+    // maps over; `depth` = its level (0 = over the primary ROW list; ≥1 = over a parent-relation node
+    // whose element is itself a parent-ROW LIST). Emits the batched-map node + extends the output Φ.
+    const inject = (relOp: RelationOp, overId: string, depth: number): void => {
       const parentKeys = relOp.parentKeys ?? (relOp.parentKey !== undefined ? [relOp.parentKey] : []);
       if (parentKeys.length === 0) {
-        throw new Error(`litedbmodel codegen: relation '${name}' has no parentKey(s) to key the batch — cannot lower natively.`);
+        throw new Error(`litedbmodel codegen: relation '${relOp.name}' has no parentKey(s) to key the batch — cannot lower natively.`);
       }
-      const childRow = relationChildRowType(relOp, resolveColumnType);
+      const nodeId = `rel_${relOp.name}`;
+      if (seenIds.has(nodeId)) {
+        throw new Error(`litedbmodel codegen: duplicate relation node id '${nodeId}' in the chain — relation names must be unique across levels.`);
+      }
+      seenIds.add(nodeId);
       // A bc map node's `outType` is the PER-ELEMENT (per-parent) type — the emitter synthesizes the
-      // produced parent-aligned array `[]element` (Vec<outType>). So the node's declared outType is ONE
-      // arr level LESS than the produced array:
-      //   hasMany       → element `arr<child>` (one parent's child LIST) → produced `arr<arr<child>>`
-      //   belongsTo/One → element `child`       (one child)              → produced `arr<child>`
-      // The output field type below re-wraps it (`{arr: elemOutType}`) to the produced array.
+      // produced parent-aligned array `[]element` (Vec<outType>). hasMany → element `arr<child>` (one
+      // parent's child LIST) → produced `arr<arr<child>>`; belongsTo/One → element `child`. The output
+      // field re-wraps it (`{arr: elemOutType}`) to the produced array.
+      const childRow = relationChildRowType(relOp, resolveColumnType);
       const elemOutType = relOp.kind === 'hasMany' ? { arr: childRow } : childRow;
-      // The lowered element ports: the baked batched SQL + one native scalar port per parent key.
+      const elemVar = depth === 0 ? RELATION_ELEM_VAR : `${RELATION_ELEM_VAR}${depth + 1}`;
       const ports: Record<string, unknown> = { sql: relOp.sql };
-      parentKeys.forEach((k, i) => {
-        ports[`k${i}`] = { ref: [RELATION_ELEM_VAR, k] };
-      });
-      return {
-        id: `rel_${name}`,
-        map: {
-          as: RELATION_ELEM_VAR,
-          component: 'Select',
-          over: { ref: [primary.id] },
-          batched: true,
-          relationKind: 'connection',
-          ports,
-        },
+      if (depth === 0) {
+        // The over-element is a parent ROW: one native scalar key port per parent-key column.
+        parentKeys.forEach((k, i) => {
+          ports[`k${i}`] = { ref: [elemVar, k] };
+        });
+      } else {
+        // The over-element is a parent-ROW LIST (the grandparent's child list): pass the WHOLE list as
+        // ONE port (bc types it `Vec<parentRow>`); the exec seam extracts this relation's parentKey(s)
+        // from each row, flattens across every element into ONE batched query, and re-aligns per element.
+        ports.k0 = { ref: [elemVar] };
+      }
+      bodyNodes.push({
+        id: nodeId,
+        map: { as: elemVar, component: 'Select', over: { ref: [overId] }, batched: true, relationKind: 'connection', ports },
         outType: elemOutType,
-      };
-    });
-    // Extend the output Φ: `{ rows: <primary>, <relName>: <relNode>… }`.
-    const outputObj: Record<string, unknown> = { rows: { ref: [primary.id] } };
-    const outputTypeObj: Record<string, unknown> = { rows: (primary as unknown as { outType: unknown }).outType };
-    relNames.forEach((name, i) => {
-      outputObj[name] = { ref: [relNodes[i].id] };
-      // The output field is the PRODUCED parent-aligned array = Vec<elemOutType> (one arr MORE than the
-      // map node's element `outType`), matching what the emitter builds from the node.
-      outputTypeObj[name] = { arr: relNodes[i].outType };
-    });
+      });
+      outputObj[relOp.name] = { ref: [nodeId] };
+      outputTypeObj[relOp.name] = { arr: elemOutType };
+      for (const child of relOp.childRelations ?? []) inject(child, nodeId, depth + 1);
+    };
+    for (const name of relNames) inject(relations[name], primary.id, 0);
     // Extend the exec `plan.groups` (body-index stages): each injected relation is its OWN sequential
-    // stage after the primary (a map node cannot be a member of a PARALLEL stage — bc requires
-    // parallel-stage members to be plain componentRef point reads). The indices are the appended
-    // nodes' positions (original body length onward).
+    // stage (a map node cannot be a PARALLEL-stage member — bc requires parallel-stage members to be
+    // plain point reads), appended in dependency order (a chained child after its parent relation).
     const origLen = c.body.length;
     const prevPlan = (c as unknown as { plan?: { concurrency?: number; groups?: number[][] } }).plan;
     const plan = {
       concurrency: prevPlan?.concurrency ?? 16,
-      groups: [...(prevPlan?.groups ?? [c.body.map((_, i) => i)]), ...relNodes.map((_, i) => [origLen + i])],
+      groups: [...(prevPlan?.groups ?? [c.body.map((_, i) => i)]), ...bodyNodes.map((_, i) => [origLen + i])],
     };
     return {
       ...c,
-      body: [...c.body, ...relNodes],
+      body: [...c.body, ...bodyNodes],
       plan,
       output: { obj: outputObj },
       outputType: { obj: outputTypeObj },

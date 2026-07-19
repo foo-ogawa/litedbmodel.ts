@@ -213,10 +213,15 @@ describe('WS2 emitted IR is runBehavior-executable (seam to WS3)', () => {
     const contract = publishBehaviors(ReadBehaviors);
     // Stub SQL handlers (WS3 supplies the real driver-backed ones): Select returns a fixed
     // row list so the map relation and output assembly are exercised end-to-end.
+    // bc's runBehavior wire plane represents an `int`-typed scalar as a JS `bigint`
+    // (a JS `number` is the `float` wire form). The real native de-box plane produces
+    // the language-native int form; this stub feeds the runBehavior/wire plane, so the
+    // INTEGER columns (id, author_id) are fed as bigint — matching the conform boundary.
     const handlers: Handlers = {
       Select: (ports) => {
-        if (ports.table === 'posts') return { ok: [{ id: 1, author_id: 7, title: 'Hello' }] };
-        return { ok: [{ id: 7, name: 'Ada' }] };
+        if (ports.table === 'posts')
+          return { ok: [{ id: 1n, author_id: 7n, title: 'Hello', created_at: '2026-01-02' }] };
+        return { ok: [{ id: 7n, name: 'Ada' }] };
       },
     };
     // `status` is supplied (null = present) so the where-port expressions bind; the
@@ -226,7 +231,7 @@ describe('WS2 emitted IR is runBehavior-executable (seam to WS3)', () => {
       posts: unknown[];
       authors: unknown[];
     };
-    expect(out.posts).toEqual([{ id: 1, author_id: 7, title: 'Hello' }]);
-    expect(out.authors).toEqual([[{ id: 7, name: 'Ada' }]]);
+    expect(out.posts).toEqual([{ id: 1n, author_id: 7n, title: 'Hello', created_at: '2026-01-02' }]);
+    expect(out.authors).toEqual([[{ id: 7n, name: 'Ada' }]]);
   });
 });

@@ -16,14 +16,14 @@
 // EXPECTED_SPEC_VERSIONS + COMPONENT_NAMES. The IR fingerprint is a BUILD-TIME return on
 // GenerateResult.fingerprint (NOT baked into the module, 0.5.0); the fail-closed skew gate
 // lives on the consumer/build side (compare it against the fingerprint of the live IR).
-import { SPEC_VERSIONS, BehaviorFailure, PlanFailure, ExprFailure, codegenPrimitives as cgp, conformResultToOutType } from "../../../../../../../behavior-contracts/ts/dist/index.js";
-import type { AsyncHandler, AsyncHandlers, Handler, Handlers, Scope, Value } from "../../../../../../../behavior-contracts/ts/dist/index.js";
+import { SPEC_VERSIONS, BehaviorFailure, PlanFailure, ExprFailure, codegenPrimitives as cgp, conformResultToOutType } from "behavior-contracts";
+import type { AsyncHandler, AsyncHandlers, Handler, Handlers, Scope, Value } from "behavior-contracts";
 
 /** Spec versions baked at generation time (fail-closed constant comparison at load). */
 export const EXPECTED_SPEC_VERSIONS = { behavior: 5, expression: 2, plan: 1 } as const;
 
 /** Component names exposed by bind(), in IR declaration order. */
-export const COMPONENT_NAMES: readonly string[] = ["ByAuthor"];
+export const COMPONENT_NAMES: readonly string[] = ["FindAll"];
 
 // ── load-time fail-closed checks (#208 prepared-artifact discipline, checked ONCE).
 // IR-independent checks only (spec-version envelope pin) — no embedded IR to self-check. ──
@@ -47,13 +47,6 @@ function slTypeName(v: Value): string {
 }
 void slTypeName;
 
-// slBind — scope 束縛 head の直読み（UNKNOWN_BINDING は evaluate と同一）。
-function slBind(scope: Scope, head: string): Value {
-  if (!Object.prototype.hasOwnProperty.call(scope, head))
-    throw new ExprFailure("UNKNOWN_BINDING", `unknown binding: ${head}`);
-  return scope[head];
-}
-
 // slField — 静的 path の field walk（NULL_REF / MISSING_PROP / TYPE_MISMATCH / refOpt null 伝播）。
 function slField(op: "ref" | "refOpt", cur: Value, path: readonly string[]): Value {
   for (const seg of path) {
@@ -71,20 +64,45 @@ function slField(op: "ref" | "refOpt", cur: Value, path: readonly string[]): Val
 }
 
 // ── straight-line component functions (no runBehavior tree-walk) ───────────────────
-function run_ByAuthor(h$Select: Handler | undefined, input: Scope): Value {
+function run_FindAll(h$Select: Handler | undefined, input: Scope): Value {
   const scope: Scope = input;
   // ── op 'n0' (Select) ──
   if (!h$Select) throw new BehaviorFailure("UNKNOWN_COMPONENT", "component 'Select' has no handler (fail-closed)");
   const ports_n0: Record<string, Value> = {
-    "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = ? ORDER BY id ASC",
-    "p0": slBind(input, "author_id"),
+    "sql": "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT ?",
+    "p0": cgp.numberLit(100),
   };
   const o_n0 = h$Select(ports_n0, { nodeId: "n0", component: "Select" });
   if ("error" in o_n0) throw new PlanFailure("OP_FAILED", `operation 'n0' failed under 'fail' policy: ${o_n0.error}`);
-  const r_n0: Value = conformResultToOutType("n0", o_n0.ok, {"arr":{"obj":{"id":"int","title":"string","author_id":"int"}}}, false);
+  const r_n0: Value = conformResultToOutType("n0", o_n0.ok, {"arr":{"obj":{"id":"int","email":"string","name":"string"}}}, false);
   scope["n0"] = r_n0;
+  // ── op 'rel_posts' (map Select) ──
+  const over_rel_posts = r_n0;
+  if (!Array.isArray(over_rel_posts)) throw new BehaviorFailure("MAP_OVER_NOT_ARRAY", "map 'rel_posts': 'over' did not evaluate to an array");
+  const kept_rel_posts: number[] = [];
+  const items_rel_posts: Value[] = [];
+  for (let mi_rel_posts = 0; mi_rel_posts < (over_rel_posts as Value[]).length; mi_rel_posts++) {
+    const el_rel_posts = (over_rel_posts as Value[])[mi_rel_posts];
+    const ports_rel_posts: Record<string, Value> = {
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
+      "k0": slField("ref", el_rel_posts, ["id"]),
+    };
+    items_rel_posts.push(ports_rel_posts);
+    kept_rel_posts.push(mi_rel_posts);
+  }
+  let collected_rel_posts: Value[] = [];
+  if (items_rel_posts.length > 0) {
+    if (!h$Select) throw new BehaviorFailure("UNKNOWN_COMPONENT", "component 'Select' has no handler (fail-closed)");
+    const mo_rel_posts = h$Select({ items: items_rel_posts }, { nodeId: "rel_posts", component: "Select" });
+    if ("error" in mo_rel_posts) throw new PlanFailure("OP_FAILED", `operation 'rel_posts' failed under 'fail' policy: ${mo_rel_posts.error}`);
+    if (!Array.isArray(mo_rel_posts.ok) || mo_rel_posts.ok.length !== items_rel_posts.length)
+      throw new BehaviorFailure("MAP_BATCH_RESULT_MISMATCH", `map 'rel_posts': batched handler must return a list aligned to items (want ${items_rel_posts.length}, got ${Array.isArray(mo_rel_posts.ok) ? mo_rel_posts.ok.length : typeof mo_rel_posts.ok})`);
+    collected_rel_posts = mo_rel_posts.ok as Value[];
+  }
+  const r_rel_posts: Value = conformResultToOutType("rel_posts", collected_rel_posts, {"arr":{"obj":{"id":"int","title":"string","author_id":"int"}}}, true);
+  scope["rel_posts"] = r_rel_posts;
   // ── op 'rel_comments' (map Select) ──
-  const over_rel_comments = r_n0;
+  const over_rel_comments = r_rel_posts;
   if (!Array.isArray(over_rel_comments)) throw new BehaviorFailure("MAP_OVER_NOT_ARRAY", "map 'rel_comments': 'over' did not evaluate to an array");
   const kept_rel_comments: number[] = [];
   const items_rel_comments: Value[] = [];
@@ -92,7 +110,7 @@ function run_ByAuthor(h$Select: Handler | undefined, input: Scope): Value {
     const el_rel_comments = (over_rel_comments as Value[])[mi_rel_comments];
     const ports_rel_comments: Record<string, Value> = {
       "sql": "SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
-      "k0": slField("ref", el_rel_comments, ["id"]),
+      "k0": el_rel_comments,
     };
     items_rel_comments.push(ports_rel_comments);
     kept_rel_comments.push(mi_rel_comments);
@@ -108,23 +126,48 @@ function run_ByAuthor(h$Select: Handler | undefined, input: Scope): Value {
   }
   const r_rel_comments: Value = conformResultToOutType("rel_comments", collected_rel_comments, {"arr":{"obj":{"id":"int","body":"string","post_id":"int"}}}, true);
   scope["rel_comments"] = r_rel_comments;
-  return cgp.obj([["rows", () => cgp.ref(["n0"], scope)], ["comments", () => cgp.ref(["rel_comments"], scope)]]);
+  return cgp.obj([["rows", () => cgp.ref(["n0"], scope)], ["posts", () => cgp.ref(["rel_posts"], scope)], ["comments", () => cgp.ref(["rel_comments"], scope)]]);
 }
 
-async function run_ByAuthor_async(h$Select: AsyncHandler | undefined, input: Scope): Promise<Value> {
+async function run_FindAll_async(h$Select: AsyncHandler | undefined, input: Scope): Promise<Value> {
   const scope: Scope = input;
   // ── op 'n0' (Select) ──
   if (!h$Select) throw new BehaviorFailure("UNKNOWN_COMPONENT", "component 'Select' has no handler (fail-closed)");
   const ports_n0: Record<string, Value> = {
-    "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = ? ORDER BY id ASC",
-    "p0": slBind(input, "author_id"),
+    "sql": "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT ?",
+    "p0": cgp.numberLit(100),
   };
   const o_n0 = await h$Select(ports_n0, { nodeId: "n0", component: "Select" });
   if ("error" in o_n0) throw new PlanFailure("OP_FAILED", `operation 'n0' failed under 'fail' policy: ${o_n0.error}`);
-  const r_n0: Value = conformResultToOutType("n0", o_n0.ok, {"arr":{"obj":{"id":"int","title":"string","author_id":"int"}}}, false);
+  const r_n0: Value = conformResultToOutType("n0", o_n0.ok, {"arr":{"obj":{"id":"int","email":"string","name":"string"}}}, false);
   scope["n0"] = r_n0;
+  // ── op 'rel_posts' (map Select) ──
+  const over_rel_posts = r_n0;
+  if (!Array.isArray(over_rel_posts)) throw new BehaviorFailure("MAP_OVER_NOT_ARRAY", "map 'rel_posts': 'over' did not evaluate to an array");
+  const kept_rel_posts: number[] = [];
+  const items_rel_posts: Value[] = [];
+  for (let mi_rel_posts = 0; mi_rel_posts < (over_rel_posts as Value[]).length; mi_rel_posts++) {
+    const el_rel_posts = (over_rel_posts as Value[])[mi_rel_posts];
+    const ports_rel_posts: Record<string, Value> = {
+      "sql": "SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
+      "k0": slField("ref", el_rel_posts, ["id"]),
+    };
+    items_rel_posts.push(ports_rel_posts);
+    kept_rel_posts.push(mi_rel_posts);
+  }
+  let collected_rel_posts: Value[] = [];
+  if (items_rel_posts.length > 0) {
+    if (!h$Select) throw new BehaviorFailure("UNKNOWN_COMPONENT", "component 'Select' has no handler (fail-closed)");
+    const mo_rel_posts = await h$Select({ items: items_rel_posts }, { nodeId: "rel_posts", component: "Select" });
+    if ("error" in mo_rel_posts) throw new PlanFailure("OP_FAILED", `operation 'rel_posts' failed under 'fail' policy: ${mo_rel_posts.error}`);
+    if (!Array.isArray(mo_rel_posts.ok) || mo_rel_posts.ok.length !== items_rel_posts.length)
+      throw new BehaviorFailure("MAP_BATCH_RESULT_MISMATCH", `map 'rel_posts': batched handler must return a list aligned to items (want ${items_rel_posts.length}, got ${Array.isArray(mo_rel_posts.ok) ? mo_rel_posts.ok.length : typeof mo_rel_posts.ok})`);
+    collected_rel_posts = mo_rel_posts.ok as Value[];
+  }
+  const r_rel_posts: Value = conformResultToOutType("rel_posts", collected_rel_posts, {"arr":{"obj":{"id":"int","title":"string","author_id":"int"}}}, true);
+  scope["rel_posts"] = r_rel_posts;
   // ── op 'rel_comments' (map Select) ──
-  const over_rel_comments = r_n0;
+  const over_rel_comments = r_rel_posts;
   if (!Array.isArray(over_rel_comments)) throw new BehaviorFailure("MAP_OVER_NOT_ARRAY", "map 'rel_comments': 'over' did not evaluate to an array");
   const kept_rel_comments: number[] = [];
   const items_rel_comments: Value[] = [];
@@ -132,7 +175,7 @@ async function run_ByAuthor_async(h$Select: AsyncHandler | undefined, input: Sco
     const el_rel_comments = (over_rel_comments as Value[])[mi_rel_comments];
     const ports_rel_comments: Record<string, Value> = {
       "sql": "SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
-      "k0": slField("ref", el_rel_comments, ["id"]),
+      "k0": el_rel_comments,
     };
     items_rel_comments.push(ports_rel_comments);
     kept_rel_comments.push(mi_rel_comments);
@@ -148,18 +191,18 @@ async function run_ByAuthor_async(h$Select: AsyncHandler | undefined, input: Sco
   }
   const r_rel_comments: Value = conformResultToOutType("rel_comments", collected_rel_comments, {"arr":{"obj":{"id":"int","body":"string","post_id":"int"}}}, true);
   scope["rel_comments"] = r_rel_comments;
-  return cgp.obj([["rows", () => cgp.ref(["n0"], scope)], ["comments", () => cgp.ref(["rel_comments"], scope)]]);
+  return cgp.obj([["rows", () => cgp.ref(["n0"], scope)], ["posts", () => cgp.ref(["rel_posts"], scope)], ["comments", () => cgp.ref(["rel_comments"], scope)]]);
 }
 
-function bind_ByAuthor(handlers: Handlers): (input?: Scope) => Value {
+function bind_FindAll(handlers: Handlers): (input?: Scope) => Value {
   // handler 解決は bind 時に 1 回（catalog 名 → 実装）。呼び出しは解決済み参照の直呼び。
   const h$Select = handlers["Select"];
-  return (input: Scope = {}) => run_ByAuthor(h$Select, { ...input });
+  return (input: Scope = {}) => run_FindAll(h$Select, { ...input });
 }
 
-function bindAsync_ByAuthor(handlers: AsyncHandlers): (input?: Scope) => Promise<Value> {
+function bindAsync_FindAll(handlers: AsyncHandlers): (input?: Scope) => Promise<Value> {
   const h$Select = handlers["Select"];
-  return (input: Scope = {}) => run_ByAuthor_async(h$Select, { ...input });
+  return (input: Scope = {}) => run_FindAll_async(h$Select, { ...input });
 }
 
 /**
@@ -171,7 +214,7 @@ function bindAsync_ByAuthor(handlers: AsyncHandlers): (input?: Scope) => Promise
  */
 export function bind(handlers: Handlers): Record<string, (input?: Scope) => Value> {
   return {
-    "ByAuthor": bind_ByAuthor(handlers),
+    "FindAll": bind_FindAll(handlers),
   };
 }
 
@@ -182,7 +225,7 @@ export function bind(handlers: Handlers): Record<string, (input?: Scope) => Valu
  */
 export function bindAsync(handlers: AsyncHandlers): Record<string, (input?: Scope) => Promise<Value>> {
   return {
-    "ByAuthor": bindAsync_ByAuthor(handlers),
+    "FindAll": bindAsync_FindAll(handlers),
   };
 }
 
@@ -208,23 +251,30 @@ void typedOracle;
 
 export interface T0 {
   "id": number;
+  "email": string;
+  "name": string;
+}
+
+export interface T1 {
+  "id": number;
   "title": string;
   "author_id": number;
 }
 
-export interface T1 {
+export interface T2 {
   "id": number;
   "body": string;
   "post_id": number;
 }
 
-export interface T2 {
+export interface T3 {
   "rows": T0[];
-  "comments": T1[][];
+  "posts": T1[][];
+  "comments": T2[][];
 }
 
-export function typedView_ByAuthor(scope: Record<string, Value>): T2 {
+export function typedView_FindAll(scope: Record<string, Value>): T3 {
   const t_n0: T0[] = scope["n0"] as unknown as T0[];
-  const __out: T2 = { "rows": t_n0, "comments": (scope["rel_comments"] as unknown as T1[][]) };
+  const __out: T3 = { "rows": t_n0, "posts": (scope["rel_posts"] as unknown as T1[][]), "comments": (scope["rel_comments"] as unknown as T2[][]) };
   return __out;
 }

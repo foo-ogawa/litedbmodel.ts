@@ -219,8 +219,39 @@ const REL: Record<string, RelCfg> = {
   nestedFindAll: { rel: 'posts', comp: 'FindAll', parentF: ['id', 'email', 'name'], childF: ['id', 'title', 'author_id'], input: {}, file: 'gen_nestedfindall', composite: false, childKey: (c) => String(c.author_id), itemKey: (it) => String(it.k0), parentSql: 'SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT 100', parentParams: [], childSqlFmt: 'SELECT id, title, author_id FROM benchmark_posts WHERE author_id {IN} ORDER BY id ASC', parentKey: (r) => String(r.id), parentSer: ['id', 'email', 'name'], childSer: ['id', 'title', 'author_id'] },
   nestedFindFirst: { rel: 'posts', comp: 'FindFirst', parentF: ['id', 'email', 'name'], childF: ['id', 'title', 'author_id'], input: { name: 'User%' }, file: 'gen_nestedfindfirst', composite: false, childKey: (c) => String(c.author_id), itemKey: (it) => String(it.k0), parentSql: 'SELECT id, email, name FROM benchmark_users WHERE name LIKE {PH1} LIMIT 1', parentParams: ['User%'], childSqlFmt: 'SELECT id, title, author_id FROM benchmark_posts WHERE author_id {IN} ORDER BY id ASC', parentKey: (r) => String(r.id), parentSer: ['id', 'email', 'name'], childSer: ['id', 'title', 'author_id'] },
   nestedFindUnique: { rel: 'posts', comp: 'FindUnique', parentF: ['id', 'email', 'name'], childF: ['id', 'title', 'author_id'], input: { email: 'user1@example.com' }, file: 'gen_nestedfindunique', composite: false, childKey: (c) => String(c.author_id), itemKey: (it) => String(it.k0), parentSql: 'SELECT id, email, name FROM benchmark_users WHERE email = {PH1} LIMIT 1', parentParams: ['user1@example.com'], childSqlFmt: 'SELECT id, title, author_id FROM benchmark_posts WHERE author_id {IN} ORDER BY id ASC', parentKey: (r) => String(r.id), parentSer: ['id', 'email', 'name'], childSer: ['id', 'title', 'author_id'] },
-  nestedRelations: { rel: 'comments', comp: 'ByAuthor', parentF: ['id', 'title', 'author_id'], childF: ['id', 'body', 'post_id'], input: { author_id: 7 }, file: 'gen_nestedrelations', composite: false, childKey: (c) => String(c.post_id), itemKey: (it) => String(it.k0), parentSql: 'SELECT id, title, author_id FROM benchmark_posts WHERE author_id = {PH1} ORDER BY id ASC', parentParams: [7], childSqlFmt: 'SELECT id, body, post_id FROM benchmark_comments WHERE post_id {IN} ORDER BY id ASC', parentKey: (r) => String(r.id), parentSer: ['id', 'title', 'author_id'], childSer: ['id', 'body', 'post_id'] },
-  compositeRelations: { rel: 'posts', comp: 'ByTenant', parentF: ['tenant_id', 'user_id', 'name'], childF: ['tenant_id', 'post_id', 'user_id', 'title'], input: { tenant_id: 1 }, file: 'gen_compositerelations', composite: true, childKey: (c) => `${c.tenant_id},${c.user_id}`, itemKey: (it) => `${it.k0},${it.k1}`, parentSql: 'SELECT tenant_id, user_id, name FROM benchmark_tenant_users WHERE tenant_id = {PH1} ORDER BY user_id ASC', parentParams: [1], childSqlFmt: 'SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE tenant_id = {PH1} ORDER BY post_id ASC', parentKey: (r) => `${r.tenant_id},${r.user_id}`, parentSer: ['tenant_id', 'user_id', 'name'], childSer: ['tenant_id', 'post_id', 'user_id', 'title'] },
+};
+
+// ── read+rel (FULL 3-level chain #119): parent → level-2 (posts) → level-3 (comments). The level-3
+// batched-map ports carry the WHOLE per-parent post list (`k0`), so its handler flattens every post key
+// into ONE grouped query and re-aligns per parent (flattened per parent, in that parent's post order). ──
+interface Rel3Cfg {
+  file: string; comp: string; input: Record<string, unknown>;
+  parentSer: string[]; postSer: string[]; commentSer: string[];
+  l2Composite: boolean; l2ChildKey: (c: Row) => string;
+  l3Composite: boolean; l3PostKey: (p: Row) => number | [number, number]; l3ChildKey: (c: Row) => string;
+  parentSql: string; parentParams: unknown[]; parentKey: (r: Row) => string;
+  postSqlFmt: string; postToParentKey: (p: Row) => string; postGroupKey: (p: Row) => string;
+  commentSqlFmt: string; commentToPostKey: (c: Row) => string;
+}
+const REL3: Record<string, Rel3Cfg> = {
+  nestedRelations: {
+    file: 'gen_nestedrelations', comp: 'FindAll', input: {},
+    parentSer: ['id', 'email', 'name'], postSer: ['id', 'title', 'author_id'], commentSer: ['id', 'body', 'post_id'],
+    l2Composite: false, l2ChildKey: (c) => String(c.author_id),
+    l3Composite: false, l3PostKey: (p) => Number(p.id), l3ChildKey: (c) => String(c.post_id),
+    parentSql: 'SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT 100', parentParams: [], parentKey: (r) => String(r.id),
+    postSqlFmt: 'SELECT id, title, author_id FROM benchmark_posts WHERE author_id {IN} ORDER BY id ASC', postToParentKey: (p) => String(p.author_id), postGroupKey: (p) => String(p.id),
+    commentSqlFmt: 'SELECT id, body, post_id FROM benchmark_comments WHERE post_id {IN} ORDER BY id ASC', commentToPostKey: (c) => String(c.post_id),
+  },
+  compositeRelations: {
+    file: 'gen_compositerelations', comp: 'ByTenant', input: { tenant_id: 1 },
+    parentSer: ['tenant_id', 'user_id', 'name'], postSer: ['tenant_id', 'post_id', 'user_id', 'title'], commentSer: ['tenant_id', 'comment_id', 'post_id', 'body'],
+    l2Composite: true, l2ChildKey: (c) => `${c.tenant_id},${c.user_id}`,
+    l3Composite: true, l3PostKey: (p) => [Number(p.tenant_id), Number(p.post_id)], l3ChildKey: (c) => `${c.tenant_id},${c.post_id}`,
+    parentSql: 'SELECT tenant_id, user_id, name FROM benchmark_tenant_users WHERE tenant_id = {PH1} ORDER BY user_id ASC', parentParams: [1], parentKey: (r) => `${r.tenant_id},${r.user_id}`,
+    postSqlFmt: 'SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE tenant_id = {PH1} ORDER BY post_id ASC', postToParentKey: (p) => `${p.tenant_id},${p.user_id}`, postGroupKey: (p) => `${p.tenant_id},${p.post_id}`,
+    commentSqlFmt: 'SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments WHERE tenant_id = {PH1} ORDER BY comment_id ASC', commentToPostKey: (c) => `${c.tenant_id},${c.post_id}`,
+  },
 };
 /** The child-query params for the batched relation: sqlite/mysql ONE keys-JSON; pg native array(s). */
 function relChildQuery(db: Db, sql: string, distinct: Array<number | [number, number]>, composite: boolean): { sql: string; params: unknown[] } {
@@ -259,6 +290,49 @@ function canonRel(res: { rows: Row[]; [k: string]: unknown }, cfg: RelCfg): stri
   const parents = canonRows(res.rows, cfg.parentSer);
   const childLists = '[' + (res[cfg.rel] as Row[][]).map((cl) => canonRows(cl, cfg.childSer)).join(',') + ']';
   return `{"rows":${parents},"${cfg.rel}":${childLists}}`;
+}
+
+// ── 3-level native handler (#119): the SAME Select handler serves n0 (parent), rel_posts (level-2 batched,
+// scalar/pair key), and rel_comments (level-3 batched, whose `k0` is the parent's WHOLE post list). A
+// level-3 call is recognized by `k0` being an array (the post rows); it flattens every post key into ONE
+// grouped query and re-aligns per parent (that parent's comments, in post order). ──────────────────────
+function rel3Handlers(db: Db, cfg: Rel3Cfg): Record<string, Handler> {
+  const select: Handler = async (ports) => {
+    if (!('items' in ports)) return { ok: await db.query(ports.sql as string, scalarParams(ports)) };
+    const items = ports.items as Record<string, unknown>[];
+    if (items.length === 0) return { ok: [] };
+    if (!Array.isArray(items[0].k0)) {
+      // level-2 (posts): one key per parent element.
+      const itemKeys = items.map((it) => (cfg.l2Composite ? `${it.k0},${it.k1}` : String(it.k0)));
+      const seen = new Set<string>();
+      const distinct: Array<number | [number, number]> = [];
+      items.forEach((it, i) => {
+        if (!seen.has(itemKeys[i])) { seen.add(itemKeys[i]); distinct.push(cfg.l2Composite ? [Number(it.k0), Number(it.k1)] : Number(it.k0)); }
+      });
+      const q = relChildQuery(db, items[0].sql as string, distinct, cfg.l2Composite);
+      const children = await db.query(q.sql, q.params);
+      const groups = new Map<string, Row[]>();
+      for (const c of children) { const k = cfg.l2ChildKey(c); (groups.get(k) ?? groups.set(k, []).get(k)!).push(c); }
+      return { ok: itemKeys.map((k) => groups.get(k) ?? []) };
+    }
+    // level-3 (comments): each item's k0 is that parent's post LIST — flatten every post key into ONE query.
+    const postLists = items.map((it) => it.k0 as Row[]);
+    const seen = new Set<string>();
+    const distinct: Array<number | [number, number]> = [];
+    for (const posts of postLists) for (const p of posts) { const pk = cfg.l3PostKey(p); const ks = String(pk); if (!seen.has(ks)) { seen.add(ks); distinct.push(pk); } }
+    const q = relChildQuery(db, items[0].sql as string, distinct, cfg.l3Composite);
+    const children = await db.query(q.sql, q.params);
+    const groups = new Map<string, Row[]>();
+    for (const c of children) { const k = cfg.l3ChildKey(c); (groups.get(k) ?? groups.set(k, []).get(k)!).push(c); }
+    return { ok: postLists.map((posts) => { const out: Row[] = []; for (const p of posts) for (const c of groups.get(String(cfg.l3PostKey(p))) ?? []) out.push(c); return out; }) };
+  };
+  return { Select: select };
+}
+function canonRel3(res: { rows: Row[]; posts: Row[][]; comments: Row[][] }, cfg: Rel3Cfg): string {
+  const parents = canonRows(res.rows, cfg.parentSer);
+  const posts = '[' + res.posts.map((ps) => canonRows(ps, cfg.postSer)).join(',') + ']';
+  const comments = '[' + res.comments.map((cs) => canonRows(cs, cfg.commentSer)).join(',') + ']';
+  return `{"rows":${parents},"posts":${posts},"comments":${comments}}`;
 }
 
 // ── tx (transaction envelope + chain; {committed, state}) ──
@@ -312,6 +386,12 @@ async function bindAsyncOf(db: Db, file: string): Promise<(h: unknown) => Record
 }
 
 async function nativeResult(db: Db, op: string): Promise<string> {
+  if (op in REL3) {
+    const cfg = REL3[op];
+    const bindAsync = await bindAsyncOf(db, cfg.file);
+    const callable = bindAsync(rel3Handlers(db, cfg));
+    return canonRel3((await callable[cfg.comp](cfg.input)) as never, cfg);
+  }
   if (op in REL) {
     const cfg = REL[op];
     const bindAsync = await bindAsyncOf(db, cfg.file);
@@ -359,7 +439,8 @@ async function sdkStr(db: Db, op: string): Promise<string> {
     case 'createMany': return sdkInsertMany(db, batchEmails(), batchNames(), '');
     case 'upsertMany': return sdkInsertMany(db, upsertManyEmails(), batchNames(), upsertManyTail(db));
     case 'updateMany': return sdkUpdateMany(db);
-    case 'nestedFindAll': case 'nestedFindFirst': case 'nestedFindUnique': case 'nestedRelations': case 'compositeRelations': return sdkRel(db, op);
+    case 'nestedFindAll': case 'nestedFindFirst': case 'nestedFindUnique': return sdkRel(db, op);
+    case 'nestedRelations': case 'compositeRelations': return sdkRel3(db, op);
     case 'delete': case 'nestedCreate': case 'nestedUpdate': case 'nestedUpsert': return sdkTx(db, op);
   }
   throw new Error(`sdk: unknown op '${op}'`);
@@ -400,6 +481,32 @@ async function sdkRel(db: Db, op: string): Promise<string> {
     childLists = '[' + parents.map((p) => canonRows(groups.get(cfg.parentKey(p)) ?? [], cfg.childSer)).join(',') + ']';
   }
   return `{"rows":${canonRows(parents, cfg.parentSer)},"${cfg.rel}":${childLists}}`;
+}
+// SDK 3-level: three batched queries + client stitch into `{rows,posts,comments}` (comments flattened per
+// parent, in that parent's post order). Composite levels filter by the fixed tenant_id and group by sub-key.
+async function sdkRel3(db: Db, op: string): Promise<string> {
+  const cfg = REL3[op];
+  const parents = await db.query(cfg.parentSql.replace('{PH1}', ph(db, 1)), cfg.parentParams);
+  let posts: Row[];
+  if (cfg.l2Composite) posts = await db.query(cfg.postSqlFmt.replace('{PH1}', ph(db, 1)), [1]);
+  else { const { clause, params } = sdkChildIn(db, parents.map((r) => Number(cfg.parentKey(r)))); posts = await db.query(cfg.postSqlFmt.replace('{IN}', clause), params); }
+  let comments: Row[];
+  if (cfg.l3Composite) comments = await db.query(cfg.commentSqlFmt.replace('{PH1}', ph(db, 1)), [1]);
+  else { const { clause, params } = sdkChildIn(db, posts.map((p) => Number(cfg.l3PostKey(p)))); comments = await db.query(cfg.commentSqlFmt.replace('{IN}', clause), params); }
+  const postsByParent = new Map<string, Row[]>();
+  for (const p of posts) { const k = cfg.postToParentKey(p); (postsByParent.get(k) ?? postsByParent.set(k, []).get(k)!).push(p); }
+  const commentsByPost = new Map<string, Row[]>();
+  for (const c of comments) { const k = cfg.commentToPostKey(c); (commentsByPost.get(k) ?? commentsByPost.set(k, []).get(k)!).push(c); }
+  const postsLists: string[] = [];
+  const commentLists: string[] = [];
+  for (const par of parents) {
+    const ps = postsByParent.get(cfg.parentKey(par)) ?? [];
+    postsLists.push(canonRows(ps, cfg.postSer));
+    const cl: Row[] = [];
+    for (const p of ps) for (const c of commentsByPost.get(cfg.postGroupKey(p)) ?? []) cl.push(c);
+    commentLists.push(canonRows(cl, cfg.commentSer));
+  }
+  return `{"rows":${canonRows(parents, cfg.parentSer)},"posts":[${postsLists.join(',')}],"comments":[${commentLists.join(',')}]}`;
 }
 async function sdkTx(db: Db, op: string): Promise<string> {
   const committed = await db.transaction(async () => {

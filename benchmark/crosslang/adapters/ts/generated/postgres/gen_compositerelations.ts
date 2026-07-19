@@ -16,8 +16,8 @@
 // EXPECTED_SPEC_VERSIONS + COMPONENT_NAMES. The IR fingerprint is a BUILD-TIME return on
 // GenerateResult.fingerprint (NOT baked into the module, 0.5.0); the fail-closed skew gate
 // lives on the consumer/build side (compare it against the fingerprint of the live IR).
-import { SPEC_VERSIONS, BehaviorFailure, PlanFailure, ExprFailure, codegenPrimitives as cgp, conformResultToOutType } from "../../../../../../../behavior-contracts/ts/dist/index.js";
-import type { AsyncHandler, AsyncHandlers, Handler, Handlers, Scope, Value } from "../../../../../../../behavior-contracts/ts/dist/index.js";
+import { SPEC_VERSIONS, BehaviorFailure, PlanFailure, ExprFailure, codegenPrimitives as cgp, conformResultToOutType } from "behavior-contracts";
+import type { AsyncHandler, AsyncHandlers, Handler, Handlers, Scope, Value } from "behavior-contracts";
 
 /** Spec versions baked at generation time (fail-closed constant comparison at load). */
 export const EXPECTED_SPEC_VERSIONS = { behavior: 5, expression: 2, plan: 1 } as const;
@@ -109,7 +109,32 @@ function run_ByTenant(h$Select: Handler | undefined, input: Scope): Value {
   }
   const r_rel_posts: Value = conformResultToOutType("rel_posts", collected_rel_posts, {"arr":{"obj":{"tenant_id":"int","post_id":"int","user_id":"int","title":"string"}}}, true);
   scope["rel_posts"] = r_rel_posts;
-  return cgp.obj([["rows", () => cgp.ref(["n0"], scope)], ["posts", () => cgp.ref(["rel_posts"], scope)]]);
+  // ── op 'rel_comments' (map Select) ──
+  const over_rel_comments = r_rel_posts;
+  if (!Array.isArray(over_rel_comments)) throw new BehaviorFailure("MAP_OVER_NOT_ARRAY", "map 'rel_comments': 'over' did not evaluate to an array");
+  const kept_rel_comments: number[] = [];
+  const items_rel_comments: Value[] = [];
+  for (let mi_rel_comments = 0; mi_rel_comments < (over_rel_comments as Value[]).length; mi_rel_comments++) {
+    const el_rel_comments = (over_rel_comments as Value[])[mi_rel_comments];
+    const ports_rel_comments: Record<string, Value> = {
+      "sql": "SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_benchmark_tenant_comments(_unnest_benchmark_tenant_comments_tenant_id, _unnest_benchmark_tenant_comments_post_id) ON benchmark_tenant_comments.tenant_id = _unnest_benchmark_tenant_comments._unnest_benchmark_tenant_comments_tenant_id AND benchmark_tenant_comments.post_id = _unnest_benchmark_tenant_comments._unnest_benchmark_tenant_comments_post_id ORDER BY comment_id ASC",
+      "k0": el_rel_comments,
+    };
+    items_rel_comments.push(ports_rel_comments);
+    kept_rel_comments.push(mi_rel_comments);
+  }
+  let collected_rel_comments: Value[] = [];
+  if (items_rel_comments.length > 0) {
+    if (!h$Select) throw new BehaviorFailure("UNKNOWN_COMPONENT", "component 'Select' has no handler (fail-closed)");
+    const mo_rel_comments = h$Select({ items: items_rel_comments }, { nodeId: "rel_comments", component: "Select" });
+    if ("error" in mo_rel_comments) throw new PlanFailure("OP_FAILED", `operation 'rel_comments' failed under 'fail' policy: ${mo_rel_comments.error}`);
+    if (!Array.isArray(mo_rel_comments.ok) || mo_rel_comments.ok.length !== items_rel_comments.length)
+      throw new BehaviorFailure("MAP_BATCH_RESULT_MISMATCH", `map 'rel_comments': batched handler must return a list aligned to items (want ${items_rel_comments.length}, got ${Array.isArray(mo_rel_comments.ok) ? mo_rel_comments.ok.length : typeof mo_rel_comments.ok})`);
+    collected_rel_comments = mo_rel_comments.ok as Value[];
+  }
+  const r_rel_comments: Value = conformResultToOutType("rel_comments", collected_rel_comments, {"arr":{"obj":{"tenant_id":"int","comment_id":"int","post_id":"int","body":"string"}}}, true);
+  scope["rel_comments"] = r_rel_comments;
+  return cgp.obj([["rows", () => cgp.ref(["n0"], scope)], ["posts", () => cgp.ref(["rel_posts"], scope)], ["comments", () => cgp.ref(["rel_comments"], scope)]]);
 }
 
 async function run_ByTenant_async(h$Select: AsyncHandler | undefined, input: Scope): Promise<Value> {
@@ -150,7 +175,32 @@ async function run_ByTenant_async(h$Select: AsyncHandler | undefined, input: Sco
   }
   const r_rel_posts: Value = conformResultToOutType("rel_posts", collected_rel_posts, {"arr":{"obj":{"tenant_id":"int","post_id":"int","user_id":"int","title":"string"}}}, true);
   scope["rel_posts"] = r_rel_posts;
-  return cgp.obj([["rows", () => cgp.ref(["n0"], scope)], ["posts", () => cgp.ref(["rel_posts"], scope)]]);
+  // ── op 'rel_comments' (map Select) ──
+  const over_rel_comments = r_rel_posts;
+  if (!Array.isArray(over_rel_comments)) throw new BehaviorFailure("MAP_OVER_NOT_ARRAY", "map 'rel_comments': 'over' did not evaluate to an array");
+  const kept_rel_comments: number[] = [];
+  const items_rel_comments: Value[] = [];
+  for (let mi_rel_comments = 0; mi_rel_comments < (over_rel_comments as Value[]).length; mi_rel_comments++) {
+    const el_rel_comments = (over_rel_comments as Value[])[mi_rel_comments];
+    const ports_rel_comments: Record<string, Value> = {
+      "sql": "SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_benchmark_tenant_comments(_unnest_benchmark_tenant_comments_tenant_id, _unnest_benchmark_tenant_comments_post_id) ON benchmark_tenant_comments.tenant_id = _unnest_benchmark_tenant_comments._unnest_benchmark_tenant_comments_tenant_id AND benchmark_tenant_comments.post_id = _unnest_benchmark_tenant_comments._unnest_benchmark_tenant_comments_post_id ORDER BY comment_id ASC",
+      "k0": el_rel_comments,
+    };
+    items_rel_comments.push(ports_rel_comments);
+    kept_rel_comments.push(mi_rel_comments);
+  }
+  let collected_rel_comments: Value[] = [];
+  if (items_rel_comments.length > 0) {
+    if (!h$Select) throw new BehaviorFailure("UNKNOWN_COMPONENT", "component 'Select' has no handler (fail-closed)");
+    const mo_rel_comments = await h$Select({ items: items_rel_comments }, { nodeId: "rel_comments", component: "Select" });
+    if ("error" in mo_rel_comments) throw new PlanFailure("OP_FAILED", `operation 'rel_comments' failed under 'fail' policy: ${mo_rel_comments.error}`);
+    if (!Array.isArray(mo_rel_comments.ok) || mo_rel_comments.ok.length !== items_rel_comments.length)
+      throw new BehaviorFailure("MAP_BATCH_RESULT_MISMATCH", `map 'rel_comments': batched handler must return a list aligned to items (want ${items_rel_comments.length}, got ${Array.isArray(mo_rel_comments.ok) ? mo_rel_comments.ok.length : typeof mo_rel_comments.ok})`);
+    collected_rel_comments = mo_rel_comments.ok as Value[];
+  }
+  const r_rel_comments: Value = conformResultToOutType("rel_comments", collected_rel_comments, {"arr":{"obj":{"tenant_id":"int","comment_id":"int","post_id":"int","body":"string"}}}, true);
+  scope["rel_comments"] = r_rel_comments;
+  return cgp.obj([["rows", () => cgp.ref(["n0"], scope)], ["posts", () => cgp.ref(["rel_posts"], scope)], ["comments", () => cgp.ref(["rel_comments"], scope)]]);
 }
 
 function bind_ByTenant(handlers: Handlers): (input?: Scope) => Value {
@@ -222,12 +272,20 @@ export interface T1 {
 }
 
 export interface T2 {
-  "rows": T0[];
-  "posts": T1[][];
+  "tenant_id": number;
+  "comment_id": number;
+  "post_id": number;
+  "body": string;
 }
 
-export function typedView_ByTenant(scope: Record<string, Value>): T2 {
+export interface T3 {
+  "rows": T0[];
+  "posts": T1[][];
+  "comments": T2[][];
+}
+
+export function typedView_ByTenant(scope: Record<string, Value>): T3 {
   const t_n0: T0[] = scope["n0"] as unknown as T0[];
-  const __out: T2 = { "rows": t_n0, "posts": (scope["rel_posts"] as unknown as T1[][]) };
+  const __out: T3 = { "rows": t_n0, "posts": (scope["rel_posts"] as unknown as T1[][]), "comments": (scope["rel_comments"] as unknown as T2[][]) };
   return __out;
 }
