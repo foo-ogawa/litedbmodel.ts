@@ -635,6 +635,20 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
       { key: 'tenantfeed', op: 'tenantfeed', args: ['1'], input: { tenant_id: 1 } },
     ];
     writeFileSync(join(PROOF_DIR, 'cases_read.json'), JSON.stringify(readCases, null, 2));
+
+    // Batched-relation read cases: native emits {rows,posts}; the mode-2 leg runs the hydrated
+    // read_bundle_pooled path; the harness normalizes BOTH to {parents, per-parent children} and
+    // deep-equals (the stitch is the shared op-independent SSoT; the DISTINCT check is parent+child
+    // de-box). `rel` is the relation field name the hydrated envelope carries per parent.
+    const relCases = [
+      { key: 'relbatch', op: 'relbatch', args: ['1'], input: { tenant_id: 1 }, rel: 'posts' },
+      { key: 'relbatch-2', op: 'relbatch', args: ['2'], input: { tenant_id: 2 }, rel: 'posts' },
+      { key: 'relbatch-empty', op: 'relbatch', args: ['999'], input: { tenant_id: 999 }, rel: 'posts' },
+      { key: 'relsingle', op: 'relsingle', args: ['7'], input: { author_id: 7 }, rel: 'comments' },
+      { key: 'relsingle-1', op: 'relsingle', args: ['1'], input: { author_id: 1 }, rel: 'comments' },
+      { key: 'relsingle-empty', op: 'relsingle', args: ['999'], input: { author_id: 999 }, rel: 'comments' },
+    ];
+    writeFileSync(join(PROOF_DIR, 'cases_rel.json'), JSON.stringify(relCases, null, 2));
     expect(((tenantOracles['1'] as { users: unknown[] }).users).length).toBe(4);
     expect(((tenantOracles['999'] as { users: unknown[] }).users).length).toBe(0);
     // the batched relation stitched: tenant 1 → 4 users, each with their own 2 posts.

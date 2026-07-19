@@ -9,10 +9,10 @@
 //
 //   node compare-livedb.mjs <postgres|mysql> <spec> <bin>
 //
-// Cases: read inputs from cases_read.json; write/tx op+args+input from oracles_{write,tx}.json (the
-// test is the SSoT for both — this harness carries no hand-written op inputs). deleteuser (no-RETURNING
-// write summary) and relbatch/relsingle (batched-map {rows,posts}) are OMITTED: their native output
-// model has no distinct matching interpreter entry (see report). sqlite covers all 20 via run-proof.sh.
+// Cases: read inputs from cases_read.json; batched-relation reads from cases_rel.json; write/tx
+// op+args+input from oracles_{write,tx}.json (the test is the SSoT for all — this harness carries no
+// hand-written op inputs). ALL 20 ops are compared native-vs-mode-2. Batched relations (relbatch/
+// relsingle) normalize the two envelopes to a common canon before deep-equal (see compareRel).
 import { readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -23,13 +23,6 @@ const PROOF = '/tmp/e1proof';
 const BUNDLE = (op) => join(PROOF, dialect, `bundle_${op}.json`);
 const INPUT_TMP = join(PROOF, `mode2_input.${dialect}.json`);
 let fail = 0;
-
-/** Ops whose native (bc batched-map de-box) {rows,posts} output has no DISTINCT matching interpreter
- * entry — reported for a design decision (sqlite's run-proof.sh still covers them vs the TS interpreter
- * oracle). read_bundle_pooled produces a hydrated shape (≠ {rows,posts}); exec_batched_relation matches
- * but is the same facade the native companion uses (circular). deleteuser is NO LONGER omitted — the
- * runtime now returns the {changes,lastInsertRowid} write summary for a no-RETURNING write. */
-const OMIT = new Set(['relbatch', 'relsingle']);
 
 /** Stable deep-equal via sorted-key canonical JSON (object key order-independent). */
 function stable(v) {
@@ -46,7 +39,6 @@ function runJson(args) {
 
 /** Run native (op+args) and mode-2 (kind+bundle+input) on the same live DB and deep-equal. */
 async function compareCase({ key, op, args, input, kind, seedState }) {
-  if (OMIT.has(op)) return;
   writeFileSync(INPUT_TMP, JSON.stringify(input));
   let nat, m2;
   if (kind === 'read') {
@@ -68,11 +60,40 @@ async function compareCase({ key, op, args, input, kind, seedState }) {
   }
 }
 
+/** Batched-relation compare: native emits `{rows, posts}` (bc batched-map de-box); mode-2 runs the
+ * hydrated `read_bundle_pooled` path (`[{...parent, <rel>:[children]}]`). The stitch (dedup/group/align)
+ * is the SHARED op-independent runtime SSoT (like the Driver) — the DISTINCT comparison is the parent +
+ * child DE-BOX (codegen vs interpreter). Normalize BOTH envelopes to the common canon {rows: parents
+ * (no rel field), children: per-parent child lists} and deep-equal — a shape normalization, not a 2nd
+ * execution engine. */
+async function compareRel({ key, op, args, input, rel }) {
+  writeFileSync(INPUT_TMP, JSON.stringify(input));
+  const nat = runJson([op, spec, ...args]);
+  const m2 = runJson(['mode2', spec, 'readrel', BUNDLE(op), INPUT_TMP]);
+  const label = `${op}(${key})`;
+  if (nat.err) { console.log(`  FAIL  ${label} — native ${nat.err}`); fail = 1; return; }
+  if (m2.err) { console.log(`  FAIL  ${label} — mode-2 ${m2.err}`); fail = 1; return; }
+  const natCanon = { rows: nat.val.rows, children: nat.val[rel] };
+  const m2Canon = {
+    rows: m2.val.map((p) => { const c = { ...p }; delete c[rel]; return c; }),
+    children: m2.val.map((p) => p[rel] ?? []),
+  };
+  if (stable(natCanon) === stable(m2Canon)) console.log(`  PASS  ${label} — native == mode-2 (normalized {rows,children})`);
+  else {
+    console.log(`  FAIL  ${label}\n        native: ${stable(natCanon)}\n        mode-2: ${stable(m2Canon)}`);
+    fail = 1;
+  }
+}
+
 // READ leg (pre-seeded read state, no mutation).
 await seedE1(dialect, 'read');
 console.log('── READ: native(codegen) vs mode-2(interpreter), same live DB ──');
 for (const c of JSON.parse(readFileSync(join(PROOF, 'cases_read.json'), 'utf8'))) {
   await compareCase({ ...c, kind: 'read' });
+}
+console.log('── READ (batched relation, normalized {rows,children}) ──');
+for (const c of JSON.parse(readFileSync(join(PROOF, 'cases_rel.json'), 'utf8'))) {
+  await compareRel(c);
 }
 
 // N+1 guard: the batched relation issues 1 parent + 1 child query (native cell, consumer-side count).

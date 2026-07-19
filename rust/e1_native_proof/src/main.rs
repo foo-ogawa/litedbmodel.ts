@@ -11,52 +11,52 @@
 // The bc-generated native modules (runtime-free) + the litedbmodel-generated companions (the
 // boundary-injected node_* handlers + wire adapter). Paired 1:1; a companion refers to its module as
 // `super::generated_<op>`.
-mod generated_bymaybe;
-mod companion_bymaybe;
-mod generated_byids;
 mod companion_byids;
-mod generated_createmany;
+mod companion_bymaybe;
 mod companion_createmany;
-mod generated_createuser;
 mod companion_createuser;
-mod generated_deleteuser;
 mod companion_deleteuser;
-mod generated_feed;
 mod companion_feed;
-mod generated_findunique;
 mod companion_findunique;
-mod generated_recent;
 mod companion_recent;
-mod generated_relbatch;
 mod companion_relbatch;
-mod generated_relsingle;
 mod companion_relsingle;
-mod generated_renameuser;
 mod companion_renameuser;
-mod generated_tenantfeed;
 mod companion_tenantfeed;
-mod generated_txdelete;
 mod companion_txdelete;
-mod generated_txnestedcreate;
 mod companion_txnestedcreate;
-mod generated_txnestedupdate;
 mod companion_txnestedupdate;
-mod generated_txnestedupsert;
 mod companion_txnestedupsert;
-mod generated_txrollback;
 mod companion_txrollback;
-mod generated_updatemany;
 mod companion_updatemany;
-mod generated_upsert;
 mod companion_upsert;
-mod generated_upsertmany;
 mod companion_upsertmany;
+mod generated_byids;
+mod generated_bymaybe;
+mod generated_createmany;
+mod generated_createuser;
+mod generated_deleteuser;
+mod generated_feed;
+mod generated_findunique;
+mod generated_recent;
+mod generated_relbatch;
+mod generated_relsingle;
+mod generated_renameuser;
+mod generated_tenantfeed;
+mod generated_txdelete;
+mod generated_txnestedcreate;
+mod generated_txnestedupdate;
+mod generated_txnestedupsert;
+mod generated_txrollback;
+mod generated_updatemany;
+mod generated_upsert;
+mod generated_upsertmany;
 
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
 use litedbmodel_runtime::{
-    encode_value, execute_bundle, execute_transaction_bundle, Driver, Node, SqlFailure, SqliteDriver,
-    Value,
+    encode_value, execute_bundle, execute_transaction_bundle, read_bundle_pooled, Driver, Node,
+    SqlFailure, SqliteDriver, Value,
 };
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
@@ -130,7 +130,14 @@ fn json_str(s: &str) -> String {
 fn user_rows_json(items: &[(i64, String, String)]) -> String {
     let s: Vec<String> = items
         .iter()
-        .map(|(id, email, name)| format!("{{\"id\":{},\"email\":{},\"name\":{}}}", id, json_str(email), json_str(name)))
+        .map(|(id, email, name)| {
+            format!(
+                "{{\"id\":{},\"email\":{},\"name\":{}}}",
+                id,
+                json_str(email),
+                json_str(name)
+            )
+        })
         .collect();
     format!("[{}]", s.join(","))
 }
@@ -161,7 +168,10 @@ fn state_rows(driver: &dyn Driver, sql: &str) -> Vec<Value> {
 }
 
 fn table_state(driver: &dyn Driver) -> String {
-    let rows = state_rows(driver, "SELECT id, email, name FROM benchmark_users ORDER BY id");
+    let rows = state_rows(
+        driver,
+        "SELECT id, email, name FROM benchmark_users ORDER BY id",
+    );
     let items: Vec<(i64, String, String)> = rows
         .iter()
         .map(|r| (cell_i64(r, "id"), cell_str(r, "email"), cell_str(r, "name")))
@@ -170,17 +180,41 @@ fn table_state(driver: &dyn Driver) -> String {
 }
 
 fn tx_state(driver: &dyn Driver) -> String {
-    let users = state_rows(driver, "SELECT id, email, name FROM benchmark_users ORDER BY id");
-    let posts = state_rows(driver, "SELECT id, title, author_id FROM benchmark_posts ORDER BY id");
+    let users = state_rows(
+        driver,
+        "SELECT id, email, name FROM benchmark_users ORDER BY id",
+    );
+    let posts = state_rows(
+        driver,
+        "SELECT id, title, author_id FROM benchmark_posts ORDER BY id",
+    );
     let u: Vec<String> = users
         .iter()
-        .map(|r| format!("{{\"id\":{},\"email\":{},\"name\":{}}}", cell_i64(r, "id"), json_str(&cell_str(r, "email")), json_str(&cell_str(r, "name"))))
+        .map(|r| {
+            format!(
+                "{{\"id\":{},\"email\":{},\"name\":{}}}",
+                cell_i64(r, "id"),
+                json_str(&cell_str(r, "email")),
+                json_str(&cell_str(r, "name"))
+            )
+        })
         .collect();
     let p: Vec<String> = posts
         .iter()
-        .map(|r| format!("{{\"id\":{},\"title\":{},\"author_id\":{}}}", cell_i64(r, "id"), json_str(&cell_str(r, "title")), cell_i64(r, "author_id")))
+        .map(|r| {
+            format!(
+                "{{\"id\":{},\"title\":{},\"author_id\":{}}}",
+                cell_i64(r, "id"),
+                json_str(&cell_str(r, "title")),
+                cell_i64(r, "author_id")
+            )
+        })
         .collect();
-    format!("{{\"users\":[{}],\"posts\":[{}]}}", u.join(","), p.join(","))
+    format!(
+        "{{\"users\":[{}],\"posts\":[{}]}}",
+        u.join(","),
+        p.join(",")
+    )
 }
 
 fn print_queries() {
@@ -189,9 +223,15 @@ fn print_queries() {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let op = args.get(1).expect("usage: e1_native_proof <op> <db> <args...>");
-    let db_path = args.get(2).expect("usage: e1_native_proof <op> <db> <args...>");
-    let driver = CountingDriver { inner: open_driver(db_path) };
+    let op = args
+        .get(1)
+        .expect("usage: e1_native_proof <op> <db> <args...>");
+    let db_path = args
+        .get(2)
+        .expect("usage: e1_native_proof <op> <db> <args...>");
+    let driver = CountingDriver {
+        inner: open_driver(db_path),
+    };
     let d: &dyn Driver = &driver;
 
     match op.as_str() {
@@ -203,109 +243,265 @@ fn main() {
         // self-comparison. Usage: `mode2 <spec> <read|write|tx> <bundle.json> <input.json>`.
         "mode2" => {
             let kind = args.get(3).expect("mode2 <kind>");
-            let bundle = Node::parse(&std::fs::read_to_string(args.get(4).expect("mode2 <bundle.json>")).expect("read bundle"))
-                .expect("parse bundle json");
-            let input = Node::parse(&std::fs::read_to_string(args.get(5).expect("mode2 <input.json>")).expect("read input"))
-                .expect("parse input json");
+            let bundle = Node::parse(
+                &std::fs::read_to_string(args.get(4).expect("mode2 <bundle.json>"))
+                    .expect("read bundle"),
+            )
+            .expect("parse bundle json");
+            let input = Node::parse(
+                &std::fs::read_to_string(args.get(5).expect("mode2 <input.json>"))
+                    .expect("read input"),
+            )
+            .expect("parse input json");
             match kind.as_str() {
                 "read" => {
-                    let v = execute_bundle(&bundle, &input, d).unwrap_or_else(|e| panic!("mode2 read: {}", e.message()));
+                    let v = execute_bundle(&bundle, &input, d)
+                        .unwrap_or_else(|e| panic!("mode2 read: {}", e.message()));
                     println!("{}", encode_value(&v).to_json_string());
                 }
+                "readrel" => {
+                    // The mode-2 INTERPRETER relation read: the SAME hydrated `read_bundle_pooled` path
+                    // the livedb_runner uses at 132/132 (primary via `execute_bundle_pooled` + the
+                    // op-independent stitch SSoT `run_relation_op`/`distribute_to_parent`). The stitch is
+                    // SHARED with the native companion by design (like the Driver) — NOT re-implemented
+                    // here; the DISTINCT comparison is the parent+child de-box (interpreter vs codegen).
+                    // Emits the hydrated `[{...parent, <rel>:[children]}]` envelope; the harness normalizes
+                    // it and the native `{rows,posts}` to the common {parents, per-parent children} canon.
+                    let with_names: Vec<String> = bundle
+                        .get("relations")
+                        .and_then(|r| r.as_object())
+                        .map(|pairs| pairs.iter().map(|(k, _)| k.clone()).collect())
+                        .unwrap_or_default();
+                    let empty: std::collections::HashMap<String, &(dyn Driver + Sync)> =
+                        std::collections::HashMap::new();
+                    #[cfg(feature = "livedb")]
+                    {
+                        let v = if let Some(conn) = db_path.strip_prefix("pg:") {
+                            let drv = PostgresDriver::connect(conn).expect("connect postgres");
+                            read_bundle_pooled(&bundle, &input, &drv, &with_names, &empty)
+                        } else if let Some(url) = db_path.strip_prefix("mysql:") {
+                            let drv = MysqlDriver::connect(url).expect("connect mysql");
+                            read_bundle_pooled(&bundle, &input, &drv, &with_names, &empty)
+                        } else {
+                            panic!("mode2 readrel requires a pg:/mysql: spec");
+                        }
+                        .unwrap_or_else(|e| panic!("mode2 readrel: {}", e.message()));
+                        println!("{}", encode_value(&v).to_json_string());
+                    }
+                    #[cfg(not(feature = "livedb"))]
+                    {
+                        let _ = (&with_names, &empty);
+                        panic!("mode2 readrel requires --features livedb");
+                    }
+                }
                 "write" => {
-                    let v = execute_bundle(&bundle, &input, d).unwrap_or_else(|e| panic!("mode2 write: {}", e.message()));
-                    println!("{{\"result\":{},\"state\":{}}}", encode_value(&v).to_json_string(), table_state(d));
+                    let v = execute_bundle(&bundle, &input, d)
+                        .unwrap_or_else(|e| panic!("mode2 write: {}", e.message()));
+                    println!(
+                        "{{\"result\":{},\"state\":{}}}",
+                        encode_value(&v).to_json_string(),
+                        table_state(d)
+                    );
                 }
                 "tx" => {
                     // Ok ⇒ committed; Err (a statement failed under its policy — e.g. the rollback control's
                     // UNIQUE clash) ⇒ rolled back. SAME commit/rollback semantics as the native envelope.
                     let committed = execute_transaction_bundle(&bundle, &input, d).is_ok();
-                    println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", committed, tx_state(d));
+                    println!(
+                        "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
+                        committed,
+                        tx_state(d)
+                    );
                 }
                 other => panic!("unknown mode2 kind '{other}'"),
             }
         }
         "findunique" => {
             let email = args.get(3).expect("findunique needs <email>").clone();
-            let out = generated_findunique::run_native_raw_struct_FindUnique(&companion_findunique::handler(d), generated_findunique::InNRFindUnique { email })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            let out = generated_findunique::run_native_raw_struct_FindUnique(
+                &companion_findunique::handler(d),
+                generated_findunique::InNRFindUnique { email },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> =
+                out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));
         }
         "byids" => {
             let raw = args.get(3).expect("byids needs <ids>");
-            let ids: Vec<i64> = if raw.is_empty() { vec![] } else { raw.split(',').map(|s| s.parse().expect("id")).collect() };
-            let out = generated_byids::run_native_raw_struct_ByIds(&companion_byids::handler(d), generated_byids::InNRByIds { ids })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            let ids: Vec<i64> = if raw.is_empty() {
+                vec![]
+            } else {
+                raw.split(',').map(|s| s.parse().expect("id")).collect()
+            };
+            let out = generated_byids::run_native_raw_struct_ByIds(
+                &companion_byids::handler(d),
+                generated_byids::InNRByIds { ids },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> =
+                out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));
         }
         "recent" => {
             let raw = args.get(3).expect("recent needs <limit or ''>");
-            let limit: Option<i64> = if raw.is_empty() { None } else { Some(raw.parse().expect("limit")) };
-            let out = generated_recent::run_native_raw_struct_Recent(&companion_recent::handler(d), generated_recent::InNRRecent { limit })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            let limit: Option<i64> = if raw.is_empty() {
+                None
+            } else {
+                Some(raw.parse().expect("limit"))
+            };
+            let out = generated_recent::run_native_raw_struct_Recent(
+                &companion_recent::handler(d),
+                generated_recent::InNRRecent { limit },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> =
+                out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));
         }
         "bymaybe" => {
-            let author_id: i64 = args.get(3).expect("author_id").parse().expect("author_id int");
+            let author_id: i64 = args
+                .get(3)
+                .expect("author_id")
+                .parse()
+                .expect("author_id int");
             let raw = args.get(4).expect("published or ''");
-            let published: Option<i64> = if raw.is_empty() { None } else { Some(raw.parse().expect("published")) };
-            let out = generated_bymaybe::run_native_raw_struct_ByAuthorMaybePublished(&companion_bymaybe::handler(d), generated_bymaybe::InNRByAuthorMaybePublished { author_id, published })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let published: Option<i64> = if raw.is_empty() {
+                None
+            } else {
+                Some(raw.parse().expect("published"))
+            };
+            let out = generated_bymaybe::run_native_raw_struct_ByAuthorMaybePublished(
+                &companion_bymaybe::handler(d),
+                generated_bymaybe::InNRByAuthorMaybePublished {
+                    author_id,
+                    published,
+                },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<String> = out
                 .iter()
-                .map(|r| format!("{{\"id\":{},\"title\":{},\"author_id\":{},\"published\":{}}}", r.id, json_str(&r.title), r.author_id, r.published))
+                .map(|r| {
+                    format!(
+                        "{{\"id\":{},\"title\":{},\"author_id\":{},\"published\":{}}}",
+                        r.id,
+                        json_str(&r.title),
+                        r.author_id,
+                        r.published
+                    )
+                })
                 .collect();
             println!("[{}]", items.join(","));
         }
         "feed" => {
-            let author_id: i64 = args.get(3).expect("author_id").parse().expect("author_id int");
-            let out = generated_feed::run_native_raw_struct_PostsWithAuthor(&companion_feed::handler(d), generated_feed::InNRPostsWithAuthor { author_id })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let author_id: i64 = args
+                .get(3)
+                .expect("author_id")
+                .parse()
+                .expect("author_id int");
+            let out = generated_feed::run_native_raw_struct_PostsWithAuthor(
+                &companion_feed::handler(d),
+                generated_feed::InNRPostsWithAuthor { author_id },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let authors: Vec<String> = out
                 .authors
                 .iter()
                 .map(|inner| {
-                    let items: Vec<String> = inner.iter().map(|a| format!("{{\"id\":{},\"name\":{}}}", a.id, json_str(&a.name))).collect();
+                    let items: Vec<String> = inner
+                        .iter()
+                        .map(|a| format!("{{\"id\":{},\"name\":{}}}", a.id, json_str(&a.name)))
+                        .collect();
                     format!("[{}]", items.join(","))
                 })
                 .collect();
             let posts: Vec<String> = out
                 .posts
                 .iter()
-                .map(|p| format!("{{\"id\":{},\"title\":{},\"author_id\":{}}}", p.id, json_str(&p.title), p.author_id))
+                .map(|p| {
+                    format!(
+                        "{{\"id\":{},\"title\":{},\"author_id\":{}}}",
+                        p.id,
+                        json_str(&p.title),
+                        p.author_id
+                    )
+                })
                 .collect();
-            println!("{{\"authors\":[{}],\"posts\":[{}]}}", authors.join(","), posts.join(","));
+            println!(
+                "{{\"authors\":[{}],\"posts\":[{}]}}",
+                authors.join(","),
+                posts.join(",")
+            );
         }
         "tenantfeed" => {
-            let tenant_id: i64 = args.get(3).expect("tenant_id").parse().expect("tenant_id int");
-            let out = generated_tenantfeed::run_native_raw_struct_UsersWithPosts(&companion_tenantfeed::handler(d), generated_tenantfeed::InNRUsersWithPosts { tenant_id })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let tenant_id: i64 = args
+                .get(3)
+                .expect("tenant_id")
+                .parse()
+                .expect("tenant_id int");
+            let out = generated_tenantfeed::run_native_raw_struct_UsersWithPosts(
+                &companion_tenantfeed::handler(d),
+                generated_tenantfeed::InNRUsersWithPosts { tenant_id },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let posts: Vec<String> = out
                 .posts
                 .iter()
                 .map(|inner| {
-                    let items: Vec<String> = inner.iter().map(|p| format!("{{\"tenant_id\":{},\"post_id\":{},\"title\":{}}}", p.tenant_id, p.post_id, json_str(&p.title))).collect();
+                    let items: Vec<String> = inner
+                        .iter()
+                        .map(|p| {
+                            format!(
+                                "{{\"tenant_id\":{},\"post_id\":{},\"title\":{}}}",
+                                p.tenant_id,
+                                p.post_id,
+                                json_str(&p.title)
+                            )
+                        })
+                        .collect();
                     format!("[{}]", items.join(","))
                 })
                 .collect();
             let users: Vec<String> = out
                 .users
                 .iter()
-                .map(|u| format!("{{\"tenant_id\":{},\"user_id\":{},\"name\":{}}}", u.tenant_id, u.user_id, json_str(&u.name)))
+                .map(|u| {
+                    format!(
+                        "{{\"tenant_id\":{},\"user_id\":{},\"name\":{}}}",
+                        u.tenant_id,
+                        u.user_id,
+                        json_str(&u.name)
+                    )
+                })
                 .collect();
-            println!("{{\"posts\":[{}],\"users\":[{}]}}", posts.join(","), users.join(","));
+            println!(
+                "{{\"posts\":[{}],\"users\":[{}]}}",
+                posts.join(","),
+                users.join(",")
+            );
         }
         "relbatch" => {
-            let tenant_id: i64 = args.get(3).expect("tenant_id").parse().expect("tenant_id int");
-            let out = generated_relbatch::run_native_raw_struct_ByTenant(&companion_relbatch::handler(d), generated_relbatch::InNRByTenant { tenant_id })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let tenant_id: i64 = args
+                .get(3)
+                .expect("tenant_id")
+                .parse()
+                .expect("tenant_id int");
+            let out = generated_relbatch::run_native_raw_struct_ByTenant(
+                &companion_relbatch::handler(d),
+                generated_relbatch::InNRByTenant { tenant_id },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let rows: Vec<String> = out
                 .rows
                 .iter()
-                .map(|u| format!("{{\"tenant_id\":{},\"user_id\":{},\"name\":{}}}", u.tenant_id, u.user_id, json_str(&u.name)))
+                .map(|u| {
+                    format!(
+                        "{{\"tenant_id\":{},\"user_id\":{},\"name\":{}}}",
+                        u.tenant_id,
+                        u.user_id,
+                        json_str(&u.name)
+                    )
+                })
                 .collect();
             let posts: Vec<String> = out
                 .posts
@@ -313,120 +509,303 @@ fn main() {
                 .map(|inner| {
                     let items: Vec<String> = inner
                         .iter()
-                        .map(|p| format!("{{\"tenant_id\":{},\"post_id\":{},\"user_id\":{},\"title\":{}}}", p.tenant_id, p.post_id, p.user_id, json_str(&p.title)))
+                        .map(|p| {
+                            format!(
+                                "{{\"tenant_id\":{},\"post_id\":{},\"user_id\":{},\"title\":{}}}",
+                                p.tenant_id,
+                                p.post_id,
+                                p.user_id,
+                                json_str(&p.title)
+                            )
+                        })
                         .collect();
                     format!("[{}]", items.join(","))
                 })
                 .collect();
-            println!("{{\"rows\":[{}],\"posts\":[{}]}}", rows.join(","), posts.join(","));
+            println!(
+                "{{\"rows\":[{}],\"posts\":[{}]}}",
+                rows.join(","),
+                posts.join(",")
+            );
             print_queries();
         }
         "relsingle" => {
-            let author_id: i64 = args.get(3).expect("author_id").parse().expect("author_id int");
-            let out = generated_relsingle::run_native_raw_struct_ByAuthor(&companion_relsingle::handler(d), generated_relsingle::InNRByAuthor { author_id })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let rows: Vec<String> = out.rows.iter().map(|p| format!("{{\"id\":{},\"title\":{},\"author_id\":{}}}", p.id, json_str(&p.title), p.author_id)).collect();
+            let author_id: i64 = args
+                .get(3)
+                .expect("author_id")
+                .parse()
+                .expect("author_id int");
+            let out = generated_relsingle::run_native_raw_struct_ByAuthor(
+                &companion_relsingle::handler(d),
+                generated_relsingle::InNRByAuthor { author_id },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let rows: Vec<String> = out
+                .rows
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{{\"id\":{},\"title\":{},\"author_id\":{}}}",
+                        p.id,
+                        json_str(&p.title),
+                        p.author_id
+                    )
+                })
+                .collect();
             let comments: Vec<String> = out
                 .comments
                 .iter()
                 .map(|inner| {
-                    let items: Vec<String> = inner.iter().map(|c| format!("{{\"id\":{},\"body\":{},\"post_id\":{}}}", c.id, json_str(&c.body), c.post_id)).collect();
+                    let items: Vec<String> = inner
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "{{\"id\":{},\"body\":{},\"post_id\":{}}}",
+                                c.id,
+                                json_str(&c.body),
+                                c.post_id
+                            )
+                        })
+                        .collect();
                     format!("[{}]", items.join(","))
                 })
                 .collect();
-            println!("{{\"rows\":[{}],\"comments\":[{}]}}", rows.join(","), comments.join(","));
+            println!(
+                "{{\"rows\":[{}],\"comments\":[{}]}}",
+                rows.join(","),
+                comments.join(",")
+            );
             print_queries();
         }
         "createuser" => {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
-            let out = generated_createuser::run_native_raw_struct_CreateUser(&companion_createuser::handler(d), generated_createuser::InNRCreateUser { email, name })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
-            println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(d));
+            let out = generated_createuser::run_native_raw_struct_CreateUser(
+                &companion_createuser::handler(d),
+                generated_createuser::InNRCreateUser { email, name },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> =
+                out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            println!(
+                "{{\"result\":{},\"state\":{}}}",
+                user_rows_json(&items),
+                table_state(d)
+            );
         }
         "createmany" => {
-            let emails: Vec<String> = args.get(3).expect("emails").split(',').map(|s| s.to_string()).collect();
-            let names: Vec<String> = args.get(4).expect("names").split(',').map(|s| s.to_string()).collect();
-            let out = generated_createmany::run_native_raw_struct_CreateMany(&companion_createmany::handler(d), generated_createmany::InNRCreateMany { emails, names })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
-            println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(d));
+            let emails: Vec<String> = args
+                .get(3)
+                .expect("emails")
+                .split(',')
+                .map(|s| s.to_string())
+                .collect();
+            let names: Vec<String> = args
+                .get(4)
+                .expect("names")
+                .split(',')
+                .map(|s| s.to_string())
+                .collect();
+            let out = generated_createmany::run_native_raw_struct_CreateMany(
+                &companion_createmany::handler(d),
+                generated_createmany::InNRCreateMany { emails, names },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> =
+                out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            println!(
+                "{{\"result\":{},\"state\":{}}}",
+                user_rows_json(&items),
+                table_state(d)
+            );
             print_queries();
         }
         "upsertmany" => {
-            let emails: Vec<String> = args.get(3).expect("emails").split(',').map(|s| s.to_string()).collect();
-            let names: Vec<String> = args.get(4).expect("names").split(',').map(|s| s.to_string()).collect();
-            let out = generated_upsertmany::run_native_raw_struct_UpsertMany(&companion_upsertmany::handler(d), generated_upsertmany::InNRUpsertMany { emails, names })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
-            println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(d));
+            let emails: Vec<String> = args
+                .get(3)
+                .expect("emails")
+                .split(',')
+                .map(|s| s.to_string())
+                .collect();
+            let names: Vec<String> = args
+                .get(4)
+                .expect("names")
+                .split(',')
+                .map(|s| s.to_string())
+                .collect();
+            let out = generated_upsertmany::run_native_raw_struct_UpsertMany(
+                &companion_upsertmany::handler(d),
+                generated_upsertmany::InNRUpsertMany { emails, names },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> =
+                out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            println!(
+                "{{\"result\":{},\"state\":{}}}",
+                user_rows_json(&items),
+                table_state(d)
+            );
             print_queries();
         }
         "updatemany" => {
-            let ids: Vec<i64> = args.get(3).expect("ids").split(',').map(|s| s.parse().expect("id")).collect();
-            let names: Vec<String> = args.get(4).expect("names").split(',').map(|s| s.to_string()).collect();
-            let out = generated_updatemany::run_native_raw_struct_UpdateMany(&companion_updatemany::handler(d), generated_updatemany::InNRUpdateMany { ids, names })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
-            println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(d));
+            let ids: Vec<i64> = args
+                .get(3)
+                .expect("ids")
+                .split(',')
+                .map(|s| s.parse().expect("id"))
+                .collect();
+            let names: Vec<String> = args
+                .get(4)
+                .expect("names")
+                .split(',')
+                .map(|s| s.to_string())
+                .collect();
+            let out = generated_updatemany::run_native_raw_struct_UpdateMany(
+                &companion_updatemany::handler(d),
+                generated_updatemany::InNRUpdateMany { ids, names },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> =
+                out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            println!(
+                "{{\"result\":{},\"state\":{}}}",
+                user_rows_json(&items),
+                table_state(d)
+            );
         }
         "upsert" => {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
-            let out = generated_upsert::run_native_raw_struct_UpsertUser(&companion_upsert::handler(d), generated_upsert::InNRUpsertUser { email, name })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
-            println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(d));
+            let out = generated_upsert::run_native_raw_struct_UpsertUser(
+                &companion_upsert::handler(d),
+                generated_upsert::InNRUpsertUser { email, name },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> =
+                out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            println!(
+                "{{\"result\":{},\"state\":{}}}",
+                user_rows_json(&items),
+                table_state(d)
+            );
         }
         "renameuser" => {
             let id: i64 = args.get(3).expect("id").parse().expect("id int");
             let name = args.get(4).expect("name").clone();
-            let out = generated_renameuser::run_native_raw_struct_RenameUser(&companion_renameuser::handler(d), generated_renameuser::InNRRenameUser { id, name })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let items: Vec<(i64, String, String)> = out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
-            println!("{{\"result\":{},\"state\":{}}}", user_rows_json(&items), table_state(d));
+            let out = generated_renameuser::run_native_raw_struct_RenameUser(
+                &companion_renameuser::handler(d),
+                generated_renameuser::InNRRenameUser { id, name },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let items: Vec<(i64, String, String)> =
+                out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
+            println!(
+                "{{\"result\":{},\"state\":{}}}",
+                user_rows_json(&items),
+                table_state(d)
+            );
         }
         "deleteuser" => {
             let id: i64 = args.get(3).expect("id").parse().expect("id int");
-            let out = generated_deleteuser::run_native_raw_struct_DeleteUser(&companion_deleteuser::handler(d), generated_deleteuser::InNRDeleteUser { id })
-                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let s: Vec<String> = out.iter().map(|r| format!("{{\"changes\":{},\"lastInsertRowid\":{}}}", r.changes, r.lastInsertRowid)).collect();
-            println!("{{\"result\":[{}],\"state\":{}}}", s.join(","), table_state(d));
+            let out = generated_deleteuser::run_native_raw_struct_DeleteUser(
+                &companion_deleteuser::handler(d),
+                generated_deleteuser::InNRDeleteUser { id },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let s: Vec<String> = out
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{{\"changes\":{},\"lastInsertRowid\":{}}}",
+                        r.changes, r.lastInsertRowid
+                    )
+                })
+                .collect();
+            println!(
+                "{{\"result\":[{}],\"state\":{}}}",
+                s.join(","),
+                table_state(d)
+            );
         }
         "txdelete" => {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
-            let committed = companion_txdelete::run(d, generated_txdelete::InNRTxDelete { email, name }).unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", committed, tx_state(d));
+            let committed =
+                companion_txdelete::run(d, generated_txdelete::InNRTxDelete { email, name })
+                    .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            println!(
+                "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
+                committed,
+                tx_state(d)
+            );
         }
         "txnestedcreate" => {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
             let title = args.get(5).expect("title").clone();
-            let committed = companion_txnestedcreate::run(d, generated_txnestedcreate::InNRTxNestedCreate { email, name, title }).unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", committed, tx_state(d));
+            let committed = companion_txnestedcreate::run(
+                d,
+                generated_txnestedcreate::InNRTxNestedCreate { email, name, title },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            println!(
+                "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
+                committed,
+                tx_state(d)
+            );
         }
         "txnestedupdate" => {
             let user_id: i64 = args.get(3).expect("user_id").parse().expect("user_id int");
             let name = args.get(4).expect("name").clone();
             let title = args.get(5).expect("title").clone();
-            let committed = companion_txnestedupdate::run(d, generated_txnestedupdate::InNRTxNestedUpdate { name, user_id, title }).unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", committed, tx_state(d));
+            let committed = companion_txnestedupdate::run(
+                d,
+                generated_txnestedupdate::InNRTxNestedUpdate {
+                    name,
+                    user_id,
+                    title,
+                },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            println!(
+                "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
+                committed,
+                tx_state(d)
+            );
         }
         "txnestedupsert" => {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
             let title = args.get(5).expect("title").clone();
-            let committed = companion_txnestedupsert::run(d, generated_txnestedupsert::InNRTxNestedUpsert { email, name, title }).unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", committed, tx_state(d));
+            let committed = companion_txnestedupsert::run(
+                d,
+                generated_txnestedupsert::InNRTxNestedUpsert { email, name, title },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            println!(
+                "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
+                committed,
+                tx_state(d)
+            );
         }
         "txrollback" => {
             let email = args.get(3).expect("email").clone();
             let dup_email = args.get(4).expect("dup_email").clone();
             let name = args.get(5).expect("name").clone();
-            let committed = companion_txrollback::run(d, generated_txrollback::InNRTxRollback { email, name, dup_email }).unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", committed, tx_state(d));
+            let committed = companion_txrollback::run(
+                d,
+                generated_txrollback::InNRTxRollback {
+                    email,
+                    name,
+                    dup_email,
+                },
+            )
+            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            println!(
+                "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
+                committed,
+                tx_state(d)
+            );
         }
         other => panic!("unknown op '{other}'"),
     }
