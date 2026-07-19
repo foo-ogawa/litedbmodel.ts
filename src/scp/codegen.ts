@@ -1591,7 +1591,7 @@ function emitReadWriteNode(
     return [
       sig,
       `        let cells: Vec<Vec<Value>> = vec![${cells.join(', ')}];`,
-      `        litedbmodel_runtime::exec_batch_write(self.driver, &ports.f_sql, &[${cols}], &cells, ${returning}).map_err(cvt)`,
+      `        litedbmodel_runtime::exec_batch_write(self.driver, DIALECT, &ports.f_sql, &[${cols}], &cells, ${returning}).map_err(cvt)`,
       `    }`,
     ].join('\n');
   }

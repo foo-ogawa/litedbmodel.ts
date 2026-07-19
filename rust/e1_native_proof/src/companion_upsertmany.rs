@@ -22,7 +22,7 @@ impl<'a> HandlerNRUpsertMany for Rt<'a> {
     type Wire = Wire;
     fn node_n0(&self, ports: &PortsNRUpsertManyN0, _bound: Option<String>) -> Result<Wire, BehaviorError> {
         let cells: Vec<Vec<Value>> = vec![ports.f_v0.iter().map(|v| litedbmodel_runtime::wp(v)).collect::<Vec<Value>>(), ports.f_v1.iter().map(|v| litedbmodel_runtime::wp(v)).collect::<Vec<Value>>()];
-        litedbmodel_runtime::exec_batch_write(self.driver, &ports.f_sql, &["email", "name"], &cells, true).map_err(cvt)
+        litedbmodel_runtime::exec_batch_write(self.driver, DIALECT, &ports.f_sql, &["email", "name"], &cells, true).map_err(cvt)
     }
 }
 

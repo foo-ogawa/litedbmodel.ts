@@ -541,37 +541,47 @@ pub fn exec_skip(
 }
 
 /// The generic BATCH-WRITE exec (createMany / updateMany / upsertMany — ONE statement for N records).
-/// Given the baked `sql` + the records as PARALLEL columns (`columns[j]` names `cells[j]`, the already
-/// bc-`Value` cells for column j), ZIP them into the `[{col:val,…},…]` JSON the baked `json_each(?)` /
-/// `JSON_TABLE(?)` expands and bind it to EVERY `?` (createMany: one; updateMany: one per SET + WHERE).
-/// A RETURNING batch hands back rows; a non-returning batch hands back the summary. The type-aware JSON
-/// cell encoding (numeric key bare, string quoted) is intrinsic to each cell's `Value` variant.
+/// Given the baked per-dialect `sql` + the records as PARALLEL columns (`columns[j]` names `cells[j]`,
+/// the already bc-`Value` cells for column j), bind them per dialect and run ONE statement:
+///   - postgres (v1 UNNEST): ONE ARRAY param per column (`Value::Arr` → `$N::T[]`), the SAME per-column
+///     array binding [`crate::relation`]'s `bind_keys` does for a pg relation batch.
+///   - mysql/sqlite (v2 json_each/JSON_TABLE): ZIP the columns into the `[{col:val,…},…]` JSON the baked
+///     `json_each(?)` expands and bind it to EVERY `?`. Type-aware cell encoding (numeric bare, string
+///     quoted) is intrinsic to each cell's `Value` variant.
+///
+/// A RETURNING batch hands back rows; a non-returning batch hands back the summary. This dialect split
+/// is a BIND concern (the SQL text is already baked per dialect), not a second executor.
 pub fn exec_batch_write(
     driver: &dyn Driver,
+    dialect: &str,
     sql: &str,
     columns: &[&str],
     cells: &[Vec<Value>],
     returning: bool,
 ) -> Result<Wire, SqlFailure> {
-    let n = cells.first().map(|c| c.len()).unwrap_or(0);
-    let mut objs: Vec<String> = Vec::with_capacity(n);
-    for i in 0..n {
-        // Zip each column NAME with its column CELLS and pull row i — the transpose of the parallel
-        // column arrays into one record object `{col:val,…}`.
-        let fields: Vec<String> = columns
-            .iter()
-            .zip(cells.iter())
-            .map(|(col, cell)| {
-                let mut key = String::new();
-                crate::node::write_json_string(col, &mut key);
-                format!("{}:{}", key, json_cell(&cell[i]))
-            })
-            .collect();
-        objs.push(format!("{{{}}}", fields.join(",")));
-    }
-    let json = format!("[{}]", objs.join(","));
-    let n_params = sql.matches('?').count();
-    let params: Vec<Value> = (0..n_params).map(|_| Value::Str(json.clone())).collect();
+    let params: Vec<Value> = if dialect == "postgres" {
+        // v1 UNNEST: one array param per column, in column order (matches `UNNEST($1::T[], $2::T[], …)`).
+        cells.iter().map(|c| Value::Arr(c.clone())).collect()
+    } else {
+        // v2 json_each/JSON_TABLE: the zipped records JSON, bound to every `?` (one; or one per SET+WHERE).
+        let n = cells.first().map(|c| c.len()).unwrap_or(0);
+        let mut objs: Vec<String> = Vec::with_capacity(n);
+        for i in 0..n {
+            let fields: Vec<String> = columns
+                .iter()
+                .zip(cells.iter())
+                .map(|(col, cell)| {
+                    let mut key = String::new();
+                    crate::node::write_json_string(col, &mut key);
+                    format!("{}:{}", key, json_cell(&cell[i]))
+                })
+                .collect();
+            objs.push(format!("{{{}}}", fields.join(",")));
+        }
+        let json = format!("[{}]", objs.join(","));
+        let n_params = sql.matches('?').count();
+        (0..n_params).map(|_| Value::Str(json.clone())).collect()
+    };
     let mode = if returning {
         ExecMode::Rows
     } else {
@@ -857,6 +867,7 @@ mod tests {
         ];
         let w = exec_batch_write(
             &d,
+            "sqlite",
             "INSERT INTO t (id, name) SELECT json_extract(value,'$.id'), json_extract(value,'$.name') FROM json_each(?)",
             &["id", "name"],
             &cells,

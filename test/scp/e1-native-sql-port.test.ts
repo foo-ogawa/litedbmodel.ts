@@ -751,9 +751,9 @@ const txNode = (id: string, component: string, ports: Record<string, unknown>) =
   compileWriteNode({ id, component, ports } as never, 'sqlite');
 
 /** Build a tx `SqlBundle` (transaction plan, no single-statement readGraph) — the composite shape. */
-function txBundleOf(name: string, plan: TransactionPlan): SqlBundle {
+function txBundleOf(name: string, plan: TransactionPlan, dialect: 'sqlite' | 'postgres' | 'mysql' = 'sqlite'): SqlBundle {
   const first = plan.statements[0].op;
-  return { dialect: 'sqlite', name, statement: { sql: first.sql, params: first.params }, optionalHeads: [], relations: {}, transaction: plan } as unknown as SqlBundle;
+  return { dialect, name, statement: { sql: first.sql, params: first.params }, optionalHeads: [], relations: {}, transaction: plan } as unknown as SqlBundle;
 }
 
 /** The 5 E5 transaction plans (4 ops + a rollback control), each a gate-free RETURNING-chained body. */
@@ -985,4 +985,50 @@ describe('E5 (#120) — emit tx modules + a users+posts seed + {result, state} e
     expect(oracles.txrollback.result).toEqual({ committed: false });
     expect((oracles.txrollback.state as { users: unknown[] }).users.length).toBe(3);
   });
+});
+
+// ── LIVE-DB dialect emission (epic #123/#124 commit 2/3) — emit pg + mysql-dialect modules + companions
+//    so the rust cell can run the SAME 20 ops against docker Postgres (:5433) / MySQL (:3307) through
+//    litedbmodel_runtime's PostgresDriver/MysqlDriver and compare byte-for-byte to the SAME
+//    dialect-independent mode-2 oracle. Reuses the SAME bundle constructors (contracts / WRITE_CONTRACT /
+//    txPlans) with the dialect param — one source, per-dialect baked SQL ($N / json_each-vs-ANY / RETURNING).
+describe('LIVE — emit pg + mysql dialect modules + companions for the docker byte-equal legs', () => {
+  const READ_SPECS: Array<[string, ReturnType<typeof publishBehaviors>, string, RelationDecl[], typeof RESOLVE]> = [
+    ['findunique', CONTRACT, 'FindUnique', [], RESOLVE],
+    ['byids', CONTRACT, 'ByIds', [], RESOLVE],
+    ['recent', CONTRACT, 'Recent', [], RESOLVE],
+    ['bymaybe', POST_CONTRACT, 'ByAuthorMaybePublished', [], POST_RESOLVE],
+    ['feed', FEED_CONTRACT, 'PostsWithAuthor', [], RESOLVE],
+    ['tenantfeed', TENANT_CONTRACT, 'UsersWithPosts', [], RESOLVE],
+    ['relbatch', TENANT_USERS_CONTRACT, 'ByTenant', [POSTS_COMPOSITE_REL], RESOLVE],
+    ['relsingle', POSTS_SINGLE_CONTRACT, 'ByAuthor', [COMMENTS_SINGLE_REL], RESOLVE],
+  ];
+  const WRITE_SPECS: Array<[string, string]> = [
+    ['createuser', 'CreateUser'], ['renameuser', 'RenameUser'], ['deleteuser', 'DeleteUser'],
+    ['upsert', 'UpsertUser'], ['createmany', 'CreateMany'], ['upsertmany', 'UpsertMany'], ['updatemany', 'UpdateMany'],
+  ];
+
+  for (const dialect of ['postgres', 'mysql'] as const) {
+    it(`writes /tmp/e1proof/${dialect}/{generated_*.rs, companion_*.rs} for all 20 ops`, () => {
+      const dir = join(PROOF_DIR, dialect);
+      mkdirSync(dir, { recursive: true });
+      const emit = (op: string, bundle: SqlBundle, resolve: typeof RESOLVE) => {
+        writeFileSync(join(dir, `generated_${op}.rs`), generateCodegenArtifact(bundle, 'rust', REGISTERED, resolve).module.code);
+        writeFileSync(join(dir, `companion_${op}.rs`), generateRustCompanion(bundle, `generated_${op}`, resolve));
+      };
+      for (const [op, contract, entry, rels, resolve] of READ_SPECS) {
+        // The batched-relation SQL is compiled per the RelationDecl's own dialect (json_each vs
+        // `= ANY`/UNNEST) — override the fixture's 'sqlite' to THIS dialect so pg/mysql get their form.
+        const dialectRels = rels.map((r) => ({ ...r, dialect })) as RelationDecl[];
+        emit(op, compileBundle(contract, entry, dialectRels, dialect, undefined, resolve), resolve);
+      }
+      for (const [op, entry] of WRITE_SPECS) {
+        emit(op, compileBundle(WRITE_CONTRACT, entry, [], dialect, undefined, RESOLVE), RESOLVE);
+      }
+      const plans = txPlans();
+      for (const op of Object.keys(plans)) {
+        emit(op, txBundleOf(plans[op].module, plans[op].plan, dialect), RESOLVE);
+      }
+    });
+  }
 });

@@ -55,6 +55,8 @@ mod companion_upsertmany;
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
 use litedbmodel_runtime::{Driver, SqlFailure, SqliteDriver, Value};
+#[cfg(feature = "livedb")]
+use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ── query counter (consumer-side observability) ────────────────────────────────────────────────
@@ -67,7 +69,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static QUERY_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 struct CountingDriver {
-    inner: SqliteDriver,
+    inner: Box<dyn Driver>,
 }
 impl Driver for CountingDriver {
     fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
@@ -80,6 +82,24 @@ impl Driver for CountingDriver {
     fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
         self.inner.acquire_tx()
     }
+}
+
+// Open the concrete runtime Driver the consumer runs against — the ONE place the reference cell picks
+// a DB. `pg:<libpq-conn>` / `mysql:<url>` (the `livedb` feature) route to the live PostgresDriver /
+// MysqlDriver; anything else is a sqlite file path. The SAME generated module + companion + runtime
+// path runs on whichever Driver this returns — the dialect difference is the baked SQL + the Driver,
+// never the executor.
+fn open_driver(spec: &str) -> Box<dyn Driver> {
+    #[cfg(feature = "livedb")]
+    {
+        if let Some(conn) = spec.strip_prefix("pg:") {
+            return Box::new(PostgresDriver::connect(conn).expect("connect postgres"));
+        }
+        if let Some(url) = spec.strip_prefix("mysql:") {
+            return Box::new(MysqlDriver::connect(url).expect("connect mysql"));
+        }
+    }
+    Box::new(SqliteDriver::open(spec).expect("open sqlite db"))
 }
 
 // ── canonical JSON out (byte-equal to the mode-2 oracle shapes) ─────────────────────────────────
@@ -165,7 +185,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let op = args.get(1).expect("usage: e1_native_proof <op> <db> <args...>");
     let db_path = args.get(2).expect("usage: e1_native_proof <op> <db> <args...>");
-    let driver = CountingDriver { inner: SqliteDriver::open(db_path).expect("open db") };
+    let driver = CountingDriver { inner: open_driver(db_path) };
     let d: &dyn Driver = &driver;
 
     match op.as_str() {
