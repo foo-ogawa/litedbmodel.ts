@@ -90,6 +90,30 @@ if (dialect === 'sqlite') {
     console.log(`${op.padEnd(22)}${String(report.native).padEnd(9)}${report.sdk}`);
   }
   await client.end();
+} else if (dialect === 'mysql') {
+  const mysql = (await import('mysql2/promise')).default;
+  const { ddl, seedStatements } = await import('./orm-domain.ts');
+  const CONN = { host: 'localhost', port: 3307, user: 'testuser', password: 'testpass', database: 'testdb' };
+  const CONN_STR = `mysql://${CONN.user}:${CONN.password}@${CONN.host}:${CONN.port}/${CONN.database}`;
+  const TABLES = ['benchmark_tenant_comments', 'benchmark_tenant_posts', 'benchmark_tenant_users', 'benchmark_comments', 'benchmark_posts', 'benchmark_users'];
+  const conn = await mysql.createConnection(CONN);
+  const reset = async () => {
+    for (const t of TABLES) await conn.query(`DROP TABLE IF EXISTS ${t}`);
+    for (const s of ddl('mysql')) await conn.query(s);
+    for (const s of seedStatements('mysql')) await conn.query(s.sql, s.params);
+  };
+  await reset(); // seed for the read ops (non-mutating; they share this state)
+  for (const op of ALL19) {
+    const expected = oracle[op]?.result;
+    if (expected === undefined) { console.log(`${op.padEnd(22)}NO ORACLE`); fail = 1; continue; }
+    const report = {};
+    for (const cell of ['native', 'sdk']) {
+      if (!READ_OPS.has(op)) await reset(); // fresh state per mutating cell run
+      if (!compare(op, cell, runCell(op, cell, CONN_STR), expected, report)) fail = 1;
+    }
+    console.log(`${op.padEnd(22)}${String(report.native).padEnd(9)}${report.sdk}`);
+  }
+  await conn.end();
 } else {
   console.error(`unknown dialect '${dialect}'`);
   process.exit(2);

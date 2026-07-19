@@ -21,6 +21,7 @@ path = "src/main.rs"
 default = ["sqlite", "count-queries"]
 sqlite = ["dep:rusqlite"]
 postgres = ["dep:postgres", "dep:chrono", "dep:bytes"]
+mysql = ["dep:mysql"]
 # The batched-relation PROOF legs count seam queries; the LATENCY bench builds --no-default-features so
 # the counting atomic never runs in the timed hot path.
 count-queries = []
@@ -30,3 +31,4 @@ rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 postgres = { version = "0.19", features = ["with-chrono-0_4"], optional = true }
 chrono = { version = "0.4", default-features = false, optional = true }
 bytes = { version = "1", optional = true }
+mysql = { version = "25", default-features = false, features = ["minimal"], optional = true }

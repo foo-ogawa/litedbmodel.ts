@@ -33,12 +33,11 @@ const FIELDS: Record<string, string[]> = {
   filterPaginateSort: ['id', 'title', 'content', 'published', 'author_id', 'created_at'],
   findFirst: ['id', 'email', 'name'],
   findUnique: ['id', 'email', 'name'],
-  create: ['id', 'email', 'name'],
-  update: ['id', 'email', 'name'],
-  upsert: ['id', 'email', 'name'],
-  createMany: ['id', 'email', 'name'],
-  upsertMany: ['id', 'email', 'name'],
-  updateMany: ['id', 'email', 'name'],
+  // v1-faithful returning: `upsert` returns the PK only; create/update/createMany/upsertMany/updateMany
+  // are NO-RETURNING (v1 returns null) — canonicalized to `null` below (a no-returning write's mode-2
+  // summary {changes,lastInsertRowid} is dialect-dependent: mysql ON DUPLICATE KEY reports affected=12
+  // vs 10, and lastInsertRowid differs per engine — so only `null` is dialect-independent).
+  upsert: ['id'],
 };
 // read+rel: parent fields + the child (relation) fields.
 const REL_FIELDS: Record<string, { parent: string[]; child: string[] }> = {
@@ -86,6 +85,12 @@ function oracleFor(op: BenchOp, db: InstanceType<typeof Database>): string {
     return `{"rows":${parents},"${op.withRel}":${children}}`;
   }
   const out = executeBundle(op.bundle, op.input as never, { db: db as never }) as Record<string, unknown>[];
+  // A NO-RETURNING write (v1 default) hands back the mode-2 summary row [{changes,lastInsertRowid}];
+  // v1's actual return is null. Canonicalize to `null` — the ONLY dialect-independent representation
+  // (the summary's fields diverge across engines). A returning write (upsert) canonicalizes its PK rows.
+  if (out.length > 0 && out[0] !== null && typeof out[0] === 'object' && 'changes' in (out[0] as object) && 'lastInsertRowid' in (out[0] as object)) {
+    return 'null';
+  }
   return canonRows(out, FIELDS[op.id]);
 }
 

@@ -10,14 +10,12 @@
           "outType": {
             "arr": {
               "obj": {
-                "id": "int",
-                "email": "string",
-                "name": "string"
+                "id": "int"
               }
             }
           },
           "ports": {
-            "sql": "INSERT INTO benchmark_users (email, name) VALUES ($1, $2) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id, email, name",
+            "sql": "INSERT INTO benchmark_users (email, name) VALUES ($1, $2) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id",
             "p0": {
               "ref": [
                 "email"
@@ -58,9 +56,7 @@
       "outputType": {
         "arr": {
           "obj": {
-            "id": "int",
-            "email": "string",
-            "name": "string"
+            "id": "int"
           }
         }
       }

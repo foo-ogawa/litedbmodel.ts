@@ -10,14 +10,13 @@
           "outType": {
             "arr": {
               "obj": {
-                "id": "int",
-                "email": "string",
-                "name": "string"
+                "changes": "int",
+                "lastInsertRowid": "int"
               }
             }
           },
           "ports": {
-            "sql": "UPDATE benchmark_users SET name = (SELECT json_extract(je.value, '$.name') FROM json_each(?) je WHERE json_extract(je.value, '$.id') = benchmark_users.id LIMIT 1) WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?)) RETURNING id, email, name",
+            "sql": "UPDATE benchmark_users SET name = (SELECT json_extract(je.value, '$.name') FROM json_each(?) je WHERE json_extract(je.value, '$.id') = benchmark_users.id LIMIT 1) WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))",
             "v0": {
               "ref": [
                 "ids"
@@ -60,9 +59,8 @@
       "outputType": {
         "arr": {
           "obj": {
-            "id": "int",
-            "email": "string",
-            "name": "string"
+            "changes": "int",
+            "lastInsertRowid": "int"
           }
         }
       }

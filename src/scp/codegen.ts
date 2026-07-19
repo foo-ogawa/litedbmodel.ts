@@ -832,6 +832,114 @@ function paramPortFor(param: unknown, index: number, nodeId: string, reasons: st
  * corpus is untouched (this changes no compiled statement — it only RE-EXPRESSES already-compiled
  * statements as ports).
  */
+/**
+ * MySQL RETURNING emulation (codegen side) — rewrite a mysql write's baked SQL from
+ * `<WRITE> RETURNING <cols>` into `<WRITE> /*scp-reselect: <SELECT…ORDER BY pk> ::binds:: <toks>*​/`,
+ * so the generic exec seam strips the marker, runs the write, and re-selects the written row(s) by the
+ * REAL primary key (MySQL 8.0 has no native RETURNING). The re-select SQL TEXT is produced HERE (baked
+ * from the lowering) — the seam only supplies the generic strip+bind+run mechanic. The bind token list
+ * feeds the SELECT's `?`: `L`/`H` = the LAST_INSERT_ID range `[id, id+affectedRows)`; `pN` = the
+ * write's own param N; `j` = the batch JSON param. Emitted ONLY for the mysql dialect (pg/sqlite keep
+ * native RETURNING, byte-unchanged). Derived from the rendered SQL + the authored ports (`onConflict`,
+ * `batch`) — the SAME derivation both the codegen marker and the live-mysql runtime emulation use.
+ */
+/** The primary-key descriptor a mysql RETURNING re-select needs — the DECLARED pk (never a hardcoded
+ * default). `columns` order the re-select; `autoInc` is the AUTO_INCREMENT column recovered by
+ * LAST_INSERT_ID range. Derived from the write op's `pk`/`autoInc` descriptor (op.pk / the `pk` port). */
+interface ReselectPk {
+  readonly columns: readonly string[];
+  readonly autoInc: string | null;
+}
+function mysqlWriteReselect(sql: string, ports: { onConflict?: unknown; batch?: unknown }, dialect: string, pk: ReselectPk | undefined): string {
+  if (dialect !== 'mysql') return sql;
+  const retM = /\s+RETURNING\s+(.+?)\s*$/is.exec(sql);
+  if (retM === null) return sql;
+  const cols = retM[1].trim();
+  const writeSql = sql.slice(0, retM.index);
+  const tableM = /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([A-Za-z0-9_."`]+)/i.exec(writeSql);
+  if (tableM === null) throw new Error(`mysqlWriteReselect: cannot parse target table from '${writeSql.slice(0, 80)}…'`);
+  const table = tableM[1];
+  const isInsert = /^\s*INSERT\b/i.test(writeSql);
+  const isBatch = ports.batch === 'true';
+  const conflict = typeof ports.onConflict === 'string' ? ports.onConflict.split(',')[0]!.trim() : undefined;
+  // The re-select order key = the DECLARED pk columns (fail-closed: a mysql RETURNING write must declare
+  // its pk so the row(s) are recovered/ordered by the REAL key, never an ad-hoc 'id' default).
+  const needPk = (why: string): ReselectPk => {
+    if (pk === undefined || pk.columns.length === 0) {
+      throw new Error(
+        `mysqlWriteReselect: a mysql RETURNING ${why} needs the target table's primary key to re-select the ` +
+          `written row(s), but the write op declares no pk descriptor (add pk/autoInc to the write node — the ` +
+          `model is the SSoT; the codegen has no schema pk to fall back on). SQL: '${writeSql.slice(0, 80)}…'`,
+      );
+    }
+    return pk;
+  };
+  const orderBy = (p: ReselectPk): string => ` ORDER BY ${p.columns.join(', ')}`;
+  const autoIncOf = (p: ReselectPk): string => {
+    if (p.autoInc === null) throw new Error(`mysqlWriteReselect: an AUTO_INCREMENT-range re-select needs the write's autoInc column; the pk descriptor declares none. SQL: '${writeSql.slice(0, 80)}…'`);
+    return p.autoInc;
+  };
+  const jsonIn = (col: string): string =>
+    `${col} IN (SELECT JSON_UNQUOTE(jt.${col}) FROM JSON_TABLE(?, '$[*]' COLUMNS(${col} JSON PATH '$.${col}')) jt)`;
+  let reselect: string;
+  let binds: string[];
+  if (isInsert && conflict !== undefined) {
+    // upsert / upsertMany: recover by the conflict key (mysql does not report the conflicted-row id).
+    const p = needPk('upsert');
+    if (isBatch) {
+      reselect = `SELECT ${cols} FROM ${table} WHERE ${jsonIn(conflict)}${orderBy(p)}`;
+      binds = ['j'];
+    } else {
+      const insColsM = /\bINSERT\s+INTO\s+[A-Za-z0-9_."`]+\s*\(([^)]*)\)/i.exec(writeSql);
+      const insCols = insColsM ? insColsM[1].split(',').map((c) => c.trim()) : [];
+      const idx = insCols.indexOf(conflict);
+      if (idx < 0) throw new Error(`mysqlWriteReselect: conflict column '${conflict}' not in INSERT column list of '${writeSql.slice(0, 80)}…'`);
+      reselect = `SELECT ${cols} FROM ${table} WHERE ${conflict} = ?${orderBy(p)}`;
+      binds = [`p${idx}`];
+    }
+  } else if (isInsert) {
+    // create / createMany: recover by the AUTO_INCREMENT range [LAST_INSERT_ID, +affectedRows).
+    const p = needPk('insert');
+    const ai = autoIncOf(p);
+    reselect = `SELECT ${cols} FROM ${table} WHERE ${ai} >= ? AND ${ai} < ?${orderBy(p)}`;
+    binds = ['L', 'H'];
+  } else if (/^\s*UPDATE\b/i.test(writeSql)) {
+    const p = needPk('update');
+    if (isBatch) {
+      // updateMany: recover by the batch key column (the JSON JOIN key), re-selected from the SAME JSON.
+      const keyM = /\bON\s+[A-Za-z0-9_]+\.([A-Za-z0-9_]+)\s*=\s*JSON_UNQUOTE/i.exec(writeSql);
+      const keyCol = keyM ? keyM[1] : p.columns[0]!;
+      reselect = `SELECT ${cols} FROM ${table} WHERE ${jsonIn(keyCol)}${orderBy(p)}`;
+      binds = ['j'];
+    } else {
+      // update: recover by the write's OWN WHERE predicate (its key is unchanged by the SET).
+      const whereM = /\bWHERE\b(.+)$/is.exec(writeSql);
+      if (whereM === null) throw new Error(`mysqlWriteReselect: UPDATE with RETURNING but no WHERE in '${writeSql.slice(0, 80)}…'`);
+      const whereSql = whereM[1].trim();
+      const before = (writeSql.slice(0, whereM.index).match(/\?/g) ?? []).length;
+      const nWhere = (whereSql.match(/\?/g) ?? []).length;
+      reselect = `SELECT ${cols} FROM ${table} WHERE ${whereSql}${orderBy(p)}`;
+      binds = Array.from({ length: nWhere }, (_, i) => `p${before + i}`);
+    }
+  } else {
+    // DELETE … RETURNING is not a bench single-write shape (delete is a tx); leave for the tx path.
+    return sql;
+  }
+  return `${writeSql} /*scp-reselect: ${reselect} ::binds:: ${binds.join(',')}*/`;
+}
+
+/** Read a write node's DECLARED pk descriptor from its authored `pk`/`autoInc` string ports (the model
+ * SSoT), for {@link mysqlWriteReselect}. Absent `pk` port ⇒ undefined (the helper then fails closed if a
+ * re-select actually needs it). */
+function reselectPkFromPorts(ports: Record<string, unknown>): ReselectPk | undefined {
+  const pk = typeof ports.pk === 'string' ? ports.pk : undefined;
+  if (pk === undefined) return undefined;
+  const columns = pk.split(',').map((c) => c.trim()).filter((c) => c.length > 0);
+  if (columns.length === 0) return undefined;
+  const autoInc = typeof ports.autoInc === 'string' && ports.autoInc.trim().length > 0 ? ports.autoInc.trim() : null;
+  return { columns, autoInc };
+}
+
 export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnType: ColumnTypeResolver): ComponentGraphIR {
   const ir = readGraph.ir;
   const reasons: string[] = [];
@@ -895,7 +1003,7 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       if (batch !== undefined) {
         const rendered = renderStaticSql(stmts, readGraph.dialect, n.id, reasons);
         if (rendered === undefined) return n;
-        const newPorts: Record<string, unknown> = { sql: rendered.sql };
+        const newPorts: Record<string, unknown> = { sql: mysqlWriteReselect(rendered.sql, nodePorts, readGraph.dialect, reselectPkFromPorts(nodePorts)) };
         batch.columns.forEach((col, i) => {
           const ref = batch.refs[i];
           const path = refPathOf(ref);
@@ -1010,8 +1118,9 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       // The single-`sql` port shape: the rendered SQL as a STATIC string port bc bakes as a native
       // literal, plus one typed port per bound `?` in placeholder order. For a map node the params may
       // include element-field refs (`{ref:[$e0, field]}`), which `paramPortFor` passes through (bc
-      // types them from the parent outType).
-      const newPorts: Record<string, unknown> = { sql: rendered.sql };
+      // types them from the parent outType). A mysql write's RETURNING is rewritten to a re-select
+      // marker here (no-op for reads / pg / sqlite).
+      const newPorts: Record<string, unknown> = { sql: mysqlWriteReselect(rendered.sql, nodePorts, readGraph.dialect, reselectPkFromPorts(nodePorts)) };
       rendered.params.forEach((p, i) => {
         const port = paramPortFor(p, i, n.id, reasons, elementVar);
         if (port !== undefined) newPorts[`p${i}`] = port;
@@ -1121,9 +1230,13 @@ function injectBatchedRelations(
         throw new Error(`litedbmodel codegen: relation '${name}' has no parentKey(s) to key the batch — cannot lower natively.`);
       }
       const childRow = relationChildRowType(relOp, resolveColumnType);
-      // hasMany → a LIST per parent (`arr<arr<child>>`); belongsTo/hasOne → one child per parent
-      // (`arr<child>`). The seam returns the aligned per-parent result either way.
-      const outType = relOp.kind === 'hasMany' ? { arr: { arr: childRow } } : { arr: childRow };
+      // A bc map node's `outType` is the PER-ELEMENT (per-parent) type — the emitter synthesizes the
+      // produced parent-aligned array `[]element` (Vec<outType>). So the node's declared outType is ONE
+      // arr level LESS than the produced array:
+      //   hasMany       → element `arr<child>` (one parent's child LIST) → produced `arr<arr<child>>`
+      //   belongsTo/One → element `child`       (one child)              → produced `arr<child>`
+      // The output field type below re-wraps it (`{arr: elemOutType}`) to the produced array.
+      const elemOutType = relOp.kind === 'hasMany' ? { arr: childRow } : childRow;
       // The lowered element ports: the baked batched SQL + one native scalar port per parent key.
       const ports: Record<string, unknown> = { sql: relOp.sql };
       parentKeys.forEach((k, i) => {
@@ -1139,7 +1252,7 @@ function injectBatchedRelations(
           relationKind: 'connection',
           ports,
         },
-        outType,
+        outType: elemOutType,
       };
     });
     // Extend the output Φ: `{ rows: <primary>, <relName>: <relNode>… }`.
@@ -1147,7 +1260,9 @@ function injectBatchedRelations(
     const outputTypeObj: Record<string, unknown> = { rows: (primary as unknown as { outType: unknown }).outType };
     relNames.forEach((name, i) => {
       outputObj[name] = { ref: [relNodes[i].id] };
-      outputTypeObj[name] = relNodes[i].outType;
+      // The output field is the PRODUCED parent-aligned array = Vec<elemOutType> (one arr MORE than the
+      // map node's element `outType`), matching what the emitter builds from the node.
+      outputTypeObj[name] = { arr: relNodes[i].outType };
     });
     // Extend the exec `plan.groups` (body-index stages): each injected relation is its OWN sequential
     // stage after the primary (a map node cannot be a member of a PARALLEL stage — bc requires
@@ -1251,7 +1366,11 @@ export function lowerTransactionForNativeChain(
       );
       return { id: s.id, component: 'Write', ports: {}, outType: TX_SUMMARY_ROW_TYPE };
     }
-    const ports: Record<string, unknown> = { sql: renderPlaceholders(s.op.sql, dialect) };
+    // A mysql RETURNING statement is rewritten to the re-select marker (SAME derivation as the single-write
+    // lowering, sharing the conflict key via writeMeta.onConflict); no-op for pg/sqlite / non-RETURNING.
+    const ports: Record<string, unknown> = {
+      sql: mysqlWriteReselect(renderPlaceholders(s.op.sql, dialect), meta.onConflict !== undefined ? { onConflict: meta.onConflict } : {}, dialect, s.op.pk),
+    };
     const producers = new Set<string>();
     s.op.params.forEach((p, i) => {
       const ref = refPathOf(p);

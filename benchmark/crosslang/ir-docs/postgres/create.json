@@ -10,14 +10,13 @@
           "outType": {
             "arr": {
               "obj": {
-                "id": "int",
-                "email": "string",
-                "name": "string"
+                "changes": "int",
+                "lastInsertRowid": "int"
               }
             }
           },
           "ports": {
-            "sql": "INSERT INTO benchmark_users (email, name) VALUES ($1, $2) RETURNING id, email, name",
+            "sql": "INSERT INTO benchmark_users (email, name) VALUES ($1, $2)",
             "p0": {
               "ref": [
                 "email"
@@ -58,9 +57,8 @@
       "outputType": {
         "arr": {
           "obj": {
-            "id": "int",
-            "email": "string",
-            "name": "string"
+            "changes": "int",
+            "lastInsertRowid": "int"
           }
         }
       }

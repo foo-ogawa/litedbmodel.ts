@@ -23,7 +23,7 @@
           "id": "tx_body_0",
           "component": "Insert",
           "ports": {
-            "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE email = VALUES(email), name = VALUES(name) RETURNING id",
+            "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE email = VALUES(email), name = VALUES(name) /*scp-reselect: SELECT id FROM benchmark_users WHERE email = ? ORDER BY id ::binds:: p0*/",
             "p0": {
               "ref": [
                 "email"
@@ -45,7 +45,7 @@
           "id": "tx_body_1",
           "component": "Insert",
           "ports": {
-            "sql": "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?) RETURNING id, author_id, title",
+            "sql": "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)",
             "p0": {
               "ref": [
                 "tx_body_0",
@@ -60,9 +60,8 @@
           },
           "outType": {
             "obj": {
-              "id": "int",
-              "author_id": "int",
-              "title": "string"
+              "changes": "int",
+              "lastInsertRowid": "int"
             }
           },
           "parent": "tx_body_0"
@@ -91,9 +90,8 @@
           },
           "post": {
             "obj": {
-              "id": "int",
-              "author_id": "int",
-              "title": "string"
+              "changes": "int",
+              "lastInsertRowid": "int"
             }
           }
         }

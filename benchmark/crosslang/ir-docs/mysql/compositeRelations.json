@@ -55,13 +55,11 @@
           },
           "outType": {
             "arr": {
-              "arr": {
-                "obj": {
-                  "tenant_id": "int",
-                  "post_id": "int",
-                  "user_id": "int",
-                  "title": "string"
-                }
+              "obj": {
+                "tenant_id": "int",
+                "post_id": "int",
+                "user_id": "int",
+                "title": "string"
               }
             }
           }

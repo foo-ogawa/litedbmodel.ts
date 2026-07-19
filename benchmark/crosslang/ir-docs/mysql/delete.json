@@ -19,7 +19,7 @@
           "id": "tx_body_0",
           "component": "Insert",
           "ports": {
-            "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id",
+            "sql": "INSERT INTO benchmark_users (email, name) VALUES (?, ?) /*scp-reselect: SELECT id FROM benchmark_users WHERE id >= ? AND id < ? ORDER BY id ::binds:: L,H*/",
             "p0": {
               "ref": [
                 "email"

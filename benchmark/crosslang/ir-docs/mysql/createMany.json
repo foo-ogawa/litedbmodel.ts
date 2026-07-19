@@ -10,14 +10,13 @@
           "outType": {
             "arr": {
               "obj": {
-                "id": "int",
-                "email": "string",
-                "name": "string"
+                "changes": "int",
+                "lastInsertRowid": "int"
               }
             }
           },
           "ports": {
-            "sql": "INSERT INTO benchmark_users (email, name) SELECT JSON_UNQUOTE(jt.email), JSON_UNQUOTE(jt.name) FROM JSON_TABLE(?, '$[*]' COLUMNS(email JSON PATH '$.email', name JSON PATH '$.name')) jt RETURNING id, email, name",
+            "sql": "INSERT INTO benchmark_users (email, name) SELECT JSON_UNQUOTE(jt.email), JSON_UNQUOTE(jt.name) FROM JSON_TABLE(?, '$[*]' COLUMNS(email JSON PATH '$.email', name JSON PATH '$.name')) jt",
             "v0": {
               "ref": [
                 "emails"
@@ -60,9 +59,8 @@
       "outputType": {
         "arr": {
           "obj": {
-            "id": "int",
-            "email": "string",
-            "name": "string"
+            "changes": "int",
+            "lastInsertRowid": "int"
           }
         }
       }

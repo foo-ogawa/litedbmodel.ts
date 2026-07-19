@@ -138,6 +138,9 @@ export interface TxOp {
     readonly table: string;
     readonly bindColumns: readonly (string | null)[];
     readonly returning: readonly string[];
+    /** The upsert conflict-target column list (`onConflict` port), when this write is an upsert — lets a
+     * downstream mysql RETURNING re-select recover the upserted row by its conflict key. Absent otherwise. */
+    readonly onConflict?: string;
   };
 }
 
@@ -665,7 +668,11 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
       const sql = `INSERT INTO ${table} (${sorted.join(', ')}) VALUES (${placeholders})${onConflictTail(dialect, ports, sorted)}${returningTail(ports)}`;
       const pk = pkPort(ports);
       // The `?`s bind the value columns in sorted order (the ON CONFLICT / RETURNING tails add no `?`).
-      const writeMeta = { table, bindColumns: sorted, returning: returningColumns(ports) };
+      // `onConflict` (the conflict-target column list) rides on writeMeta ADDITIVELY (no SQL change) so a
+      // downstream mysql RETURNING re-select can recover an upserted row by its conflict key (mysql does
+      // not report the conflicted-row id) — used by the tx-chain codegen lowering.
+      const onConflictCols = stringPort(ports, 'onConflict');
+      const writeMeta = { table, bindColumns: sorted, returning: returningColumns(ports), ...(onConflictCols !== undefined ? { onConflict: onConflictCols } : {}) };
       return { sql, params: sorted.map((c) => values[c]), ...(pk !== undefined ? { pk } : {}), writeMeta };
     }
     case 'Update': {

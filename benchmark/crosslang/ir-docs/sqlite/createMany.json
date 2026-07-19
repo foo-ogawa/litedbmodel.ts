@@ -10,14 +10,13 @@
           "outType": {
             "arr": {
               "obj": {
-                "id": "int",
-                "email": "string",
-                "name": "string"
+                "changes": "int",
+                "lastInsertRowid": "int"
               }
             }
           },
           "ports": {
-            "sql": "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?) RETURNING id, email, name",
+            "sql": "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?)",
             "v0": {
               "ref": [
                 "emails"
@@ -60,9 +59,8 @@
       "outputType": {
         "arr": {
           "obj": {
-            "id": "int",
-            "email": "string",
-            "name": "string"
+            "changes": "int",
+            "lastInsertRowid": "int"
           }
         }
       }

@@ -10,14 +10,13 @@
           "outType": {
             "arr": {
               "obj": {
-                "id": "int",
-                "email": "string",
-                "name": "string"
+                "changes": "int",
+                "lastInsertRowid": "int"
               }
             }
           },
           "ports": {
-            "sql": "UPDATE benchmark_users AS t SET name = v.name FROM UNNEST($1::int[], $2::text[]) AS v(id, name) WHERE t.id = v.id RETURNING t.id, t.email, t.name",
+            "sql": "UPDATE benchmark_users AS t SET name = v.name FROM UNNEST($1::int[], $2::text[]) AS v(id, name) WHERE t.id = v.id",
             "v0": {
               "ref": [
                 "ids"
@@ -60,9 +59,8 @@
       "outputType": {
         "arr": {
           "obj": {
-            "id": "int",
-            "email": "string",
-            "name": "string"
+            "changes": "int",
+            "lastInsertRowid": "int"
           }
         }
       }

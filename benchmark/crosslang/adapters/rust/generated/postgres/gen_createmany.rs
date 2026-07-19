@@ -4,9 +4,9 @@
 // relationKind:single children), emitted ONLY as a STRUCT-returning runner GENERIC over a per-component
 // CONCRETE handler trait (HandlerNR<comp>): native ports struct IN (direct construction — every port is a
 // CONCRETE Rust value: String / bool / Vec<&str> projection / i64 limit — NO boxed Value, NO by-name
-// accessor); the handler takes a typed produced-aware 'bound' Option and returns the node's CONCRETE row
-// struct (typed fields = the projected outType), and the runner reads row.<field> DIRECTLY into the node's
-// outType struct. The covered plane carries NO bc-runtime reference at all — failures use the LOCAL
+// accessor); the handler takes a typed produced-aware 'bound' Option and returns the node's result WIRE
+// (Self::Wire: WireValue), and the runner de-boxes it INLINE (fully-unrolled probe/match — no decode helper,
+// no output recursion) into the node's outType struct. The covered plane carries NO bc-runtime reference at all — failures use the LOCAL
 // BehaviorError (same codes, byte-equal to run_behavior). INLINE sequential (no plan driver) so a relation
 // child reads the parent's REAL struct result via direct field access and the child-present decision is
 // made from the real parent value — relationSingle / connection converge with run_behavior (fixes
@@ -18,24 +18,70 @@ use std::cell::RefCell;
 
 // Local concrete failure type (runtime-free) — a covered runner returns Result<T, BehaviorError> over
 // THIS local type instead of a bc-runtime failure, so the fully-covered module imports ZERO bc runtime.
+// ErrorKind — what went wrong (the closed set of scp-error.md). A concrete enum: the covered plane
+// carries no strings-as-tags and no dynamic kind lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    TypeMismatch,
+    MissingField,
+    Overflow,
+}
+
+impl ErrorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ErrorKind::TypeMismatch => "typeMismatch",
+            ErrorKind::MissingField => "missingField",
+            ErrorKind::Overflow => "overflow",
+        }
+    }
+}
+
+// ErrorDetail — the structured, recoverable payload a failure carries (scp-error.md "The Error
+// Value"). The LEAF produces it at the wire boundary (it is the only party holding both the declared
+// type and the raw wire datum); the runner transports it verbatim. Concrete fields — no boxed Value,
+// no serialized blob in a string: `expected_type` is Portable Type Notation, a rendering of a
+// STATICALLY DECLARED type, so nothing walks a type at runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ErrorDetail {
+    pub kind: Option<ErrorKind>,
+    pub model: Option<String>,
+    pub field: Option<String>,
+    pub expected_type: Option<String>,
+    pub actual_wire_type: Option<String>,
+    pub raw_value: Option<String>,
+    pub context: std::collections::BTreeMap<String, String>,
+}
+
 // BehaviorError — the LOCAL concrete failure type for the covered read plane (runtime-free): a
 // covered runner returns `Result<T, BehaviorError>` over THIS local type instead of a bc-runtime
 // failure, so the fully-covered module imports ZERO bc runtime. Codes match run_behavior verbatim
-// (byte-equal). The observe companion (test glue, a super:: submodule) bridges this local error to the
-// bc-runtime BehaviorError at the observe boundary — the covered module itself stays runtime-free.
+// (byte-equal). `detail` carries the leaf's structured Error Value across the seam so a caller can
+// log / skip / repair / migrate rather than parse a message. The observe companion (test glue, a
+// super:: submodule) bridges this local error to the bc-runtime failure at the observe boundary —
+// the covered module itself stays runtime-free.
 #[derive(Debug, Clone)]
 pub struct BehaviorError {
     pub code: String,
     pub message: String,
+    pub detail: Option<Box<ErrorDetail>>,
 }
 
 impl BehaviorError {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        BehaviorError { code: code.into(), message: message.into() }
+        BehaviorError { code: code.into(), message: message.into(), detail: None }
+    }
+    /// The same failure carrying the leaf's structured Error Value.
+    pub fn with_detail(code: impl Into<String>, message: impl Into<String>, detail: ErrorDetail) -> Self {
+        BehaviorError { code: code.into(), message: message.into(), detail: Some(Box::new(detail)) }
     }
     /// The stable failure code (byte-equal to run_behavior) WITHOUT a bc-runtime type.
     pub fn code(&self) -> &str {
         &self.code
+    }
+    /// The structured payload, if this failure is about a datum.
+    pub fn detail(&self) -> Option<&ErrorDetail> {
+        self.detail.as_deref()
     }
 }
 
@@ -46,17 +92,91 @@ impl std::fmt::Display for BehaviorError {
 }
 impl std::error::Error for BehaviorError {}
 
+// op_failed — wrap a leaf failure as the node's Failure under its Error Policy Kind, carrying the
+// leaf's structured detail through unchanged (the runner transports the Error Value; it does not
+// synthesize or re-interpret it).
+#[allow(dead_code)]
+fn op_failed(node: &str, policy: &str, e: BehaviorError) -> BehaviorError {
+    BehaviorError {
+        code: "OP_FAILED".to_string(),
+        message: format!("operation '{node}' failed under '{policy}' policy: {}", e.message),
+        detail: e.detail,
+    }
+}
+
+// de_type_mismatch / de_missing_field / de_overflow — the de-box mismatch failures the generated decode
+// produces (scp-error.md "The Error Value"). Codes are byte-equal to the runtime outType check
+// (TYPE_MISMATCH / MISSING_PROP) so the covered read stays equivalent to run_behavior; detail.kind
+// distinguishes typeMismatch / missingField / overflow.
+#[allow(dead_code)]
+fn de_type_mismatch(model: &str, field: &str, expected: &str, actual_wire: String, raw: String) -> BehaviorError {
+    BehaviorError::with_detail(
+        "TYPE_MISMATCH",
+        format!("node '{model}': {field}: expected {expected}, got {actual_wire}"),
+        ErrorDetail {
+            kind: Some(ErrorKind::TypeMismatch),
+            model: Some(model.to_string()),
+            field: Some(field.to_string()),
+            expected_type: Some(expected.to_string()),
+            actual_wire_type: Some(actual_wire),
+            raw_value: Some(raw),
+            context: std::collections::BTreeMap::new(),
+        },
+    )
+}
+
+#[allow(dead_code)]
+fn de_missing_field(model: &str, field: &str, expected: &str) -> BehaviorError {
+    BehaviorError::with_detail(
+        "MISSING_PROP",
+        format!("node '{model}': {field}: required field is absent"),
+        ErrorDetail {
+            kind: Some(ErrorKind::MissingField),
+            model: Some(model.to_string()),
+            field: Some(field.to_string()),
+            expected_type: Some(expected.to_string()),
+            actual_wire_type: None,
+            raw_value: None,
+            context: std::collections::BTreeMap::new(),
+        },
+    )
+}
+
+#[allow(dead_code)]
+fn de_overflow(model: &str, field: &str, expected: &str, actual_wire: String, raw: String) -> BehaviorError {
+    let message = format!("node '{model}': {field}: {raw} is outside the range of {expected}");
+    BehaviorError::with_detail(
+        "TYPE_MISMATCH",
+        message,
+        ErrorDetail {
+            kind: Some(ErrorKind::Overflow),
+            model: Some(model.to_string()),
+            field: Some(field.to_string()),
+            expected_type: Some(expected.to_string()),
+            actual_wire_type: Some(actual_wire),
+            raw_value: Some(raw),
+            context: std::collections::BTreeMap::new(),
+        },
+    )
+}
+
 #[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct T0 {
-    pub id: i64, // "id"
-    pub email: String, // "email"
-    pub name: String, // "name"
+    pub changes: i64, // "changes"
+    pub lastInsertRowid: i64, // "lastInsertRowid"
 }
 
 #[allow(dead_code)]
 fn unknown_component(component: &str) -> BehaviorError {
     BehaviorError::new("UNKNOWN_COMPONENT", format!("component '{component}' has no handler (fail-closed)"))
+}
+
+// leaf_failure — a failure the LEAF reports (test glue): the runner assigns the node's failure code
+// from its Error Policy Kind, so what a leaf carries is its message and its structured Error Value.
+#[allow(dead_code)]
+fn leaf_failure(message: impl Into<String>) -> BehaviorError {
+    BehaviorError::new("LEAF_FAILURE", message)
 }
 
 // Native ports structs (one per componentRef node; typed per the static port type — CONCRETE).
@@ -70,15 +190,6 @@ pub struct PortsNRCreateManyN0 {
     pub f_v1: Vec<String>, // "v1"
 }
 
-// CONCRETE per-node row structs (typed fields = the node's outType; + error signal).
-// RawRowNRCreateManyN0 — CONCRETE handler-result row (typed fields = the node's outType; + error signal).
-#[derive(Default)]
-pub struct RawRowNRCreateManyN0 {
-    pub is_error: bool,
-    pub err: String,
-    pub val: Vec<T0>,
-}
-
 // CONCRETE per-component input structs (fields = inputPorts).
 // InNRCreateMany — the CONCRETE input for 'CreateMany' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
@@ -88,23 +199,89 @@ pub struct InNRCreateMany {
     pub names: Vec<String>, // "names"
 }
 
-// CONCRETE per-component handler traits (one node_* method per node — native ports IN, row OUT).
+// CONCRETE per-component handler traits (one node_* method per node — native ports IN, WIRE value OUT).
 // HandlerNRCreateMany — the CONCRETE per-component handler seam: one typed method
-// per covered node (native ports struct IN, concrete row struct OUT). No generic boxed-ports
-// / boxed-value / dynamic accessor crosses the covered boundary — the consumer implements each
-// node_* with a decode of its own wire payload into the concrete row (see INTEGRATION.md §6).
+// per covered node (native ports struct IN, WIRE value OUT). No generic boxed-ports / boxed-value
+// / dynamic accessor crosses the covered boundary — the consumer implements each node_* by
+// returning its own wire payload as a WireValue; the generated inline de-box turns that into the
+// node's concrete native result (see INTEGRATION.md §6).
 pub trait HandlerNRCreateMany {
-    fn node_n0(&self, ports: &PortsNRCreateManyN0, bound: Option<String>) -> Option<RawRowNRCreateManyN0>;
+    type Wire: WireValue + Send;
+    fn node_n0(&self, ports: &PortsNRCreateManyN0, bound: Option<String>) -> Result<Self::Wire, BehaviorError>;
+}
+
+// strict de-box wire seam — the consumer implements WireValue (+ WireRow/WireList reached via
+// as_row/as_list) over its wire payload (variant classification); the generated INLINE de-box owns
+// strictness (required/optional, present/absent, error assembly, fail-closed). Concrete enums +
+// monomorphized traits — no boxed value, no trait object, no heap allocation crosses the seam.
+// Probe<T> / NumProbe — the outcome of classifying one wire attribute against a declared type. Got carries
+// the matched value (a NumProbe's raw numeric text, which the de-box parses + range-checks so overflow is
+// BC's to detect); actual_wire_type is the producer's own wire tag (a free string, e.g. a DynamoDB
+// "S"/"N"/"BOOL"); raw_value is the offending value stringified. Concrete enums — no boxed Value.
+pub enum Probe<T> {
+    Got(T),
+    Wrong { actual_wire_type: String, raw_value: String },
+    Null { actual_wire_type: String, raw_value: String },
+    Absent,
+}
+
+pub enum NumProbe {
+    Got { raw: String, actual_wire_type: String },
+    Wrong { actual_wire_type: String, raw_value: String },
+    Null { actual_wire_type: String, raw_value: String },
+    Absent,
+}
+
+// WireValue — a node result's own wire datum (the uniform handler return): the producer's value at a
+// result-consumption point. The generated de-box classifies it against the STATICALLY declared node type
+// via these inherent methods (as_row / as_list yield the WireRow / WireList the nested decode then probes).
+// A top value is always present, so there is no Absent — a producer-null is Null. Monomorphized (Row
+// associated type threads WireRow) — no dyn, no Box, no boxed value crosses the seam.
+pub trait WireValue: Sized {
+    type Row: WireRow;
+    fn as_string(&self) -> Probe<String>;
+    fn as_number(&self) -> NumProbe;
+    fn as_bool(&self) -> Probe<bool>;
+    fn as_row(&self) -> Probe<Self::Row>;
+    fn as_list(&self) -> Probe<<Self::Row as WireRow>::List>;
+}
+
+// WireRow / WireList — the consumer's wire item / wire array, probed per declared field / element by the
+// generated de-box. The consumer implements them over its wire payload (a DynamoDB AttributeValue map)
+// and classifies each attribute's variant; the de-box owns strictness. Monomorphized (Row/List mutual
+// associated types) — no dyn, no Box, no boxed Value crosses the seam.
+pub trait WireRow: Sized {
+    type List: WireList<Row = Self>;
+    // the attribute keys present (the entries of a wire map / DynamoDB "M") — iterated to decode a map(V).
+    fn keys(&self) -> Vec<String>;
+    fn probe_string(&self, field: &str) -> Probe<String>;
+    fn probe_number(&self, field: &str) -> NumProbe;
+    fn probe_bool(&self, field: &str) -> Probe<bool>;
+    fn probe_row(&self, field: &str) -> Probe<Self>;
+    fn probe_list(&self, field: &str) -> Probe<Self::List>;
+}
+
+pub trait WireList: Sized {
+    type Row: WireRow<List = Self>;
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn elem_string(&self, i: usize) -> Probe<String>;
+    fn elem_number(&self, i: usize) -> NumProbe;
+    fn elem_bool(&self, i: usize) -> Probe<bool>;
+    fn elem_row(&self, i: usize) -> Probe<Self::Row>;
+    fn elem_list(&self, i: usize) -> Probe<Self>;
 }
 
 // Combined read runners (STRUCT-returning — the fully de-plumbed CONCRETE path).
 // run_native_raw_struct_CreateMany — the STRUCT-RETURNING combined read (bc#77/#87/#94): the fully
 // de-plumbed CONCRETE path. Generic over the per-component CONCRETE HandlerNRCreateMany trait,
-// whose node_* methods take the node's native ports struct and return the concrete per-node row
-// struct (typed fields = the outType). The runner builds each ports struct by direct native
-// construction (a simple string port lowers to a native Rust expr), dispatches the concrete
-// node_* method, and reads row.<field> DIRECTLY into the node's outType struct cell — no boxed
-// handler result, no generic enum crossing, no dispatch on a dynamic value on the covered plane. Node
+// whose node_* methods take the node's native ports struct and return the node's result WIRE
+// (Self::Wire: WireValue). The runner builds each ports struct by direct native construction (a
+// simple string port lowers to a native Rust expr), dispatches the concrete node_* method, and
+// de-boxes the result wire INLINE (match wire.as_*() { … } fully unrolled — no decode helper) into
+// the node's outType struct cell — no boxed handler result, no generic enum crossing, no dispatch on a dynamic value on the covered plane. Node
 // results are typed struct cells; a relation child reads the parent's REAL struct result via
 // direct field access (child-present decision from the real parent value — relationSingle /
 // connection converge). A real-concurrency stage (bc#87) is static parallel orchestration —
@@ -120,15 +297,47 @@ pub fn run_native_raw_struct_CreateMany<H: HandlerNRCreateMany>(
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (Insert) ──
-    let ports_n0 = PortsNRCreateManyN0 { f_sql: "INSERT INTO benchmark_users (email, name) SELECT v.email, v.name FROM UNNEST($1::text[], $2::text[]) AS v(email, name) RETURNING id, email, name".to_string(), f_v0: in_.emails.clone(), f_v1: in_.names.clone() };
-    let row_n0 = match handlers.node_n0(&ports_n0, None) {
-        Some(r) => r,
-        None => return Err(unknown_component("Insert")),
+    let ports_n0 = PortsNRCreateManyN0 { f_sql: "INSERT INTO benchmark_users (email, name) SELECT v.email, v.name FROM UNNEST($1::text[], $2::text[]) AS v(email, name)".to_string(), f_v0: in_.emails.clone(), f_v1: in_.names.clone() };
+    let wire_n0 = match handlers.node_n0(&ports_n0, None) {
+        Ok(r) => r,
+        Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
     };
-    if row_n0.is_error {
-        return Err(BehaviorError::new("OP_FAILED", format!("operation '{}' failed under 'fail' policy: {}", "n0", row_n0.err)));
-    }
-    *cell_n0.borrow_mut() = row_n0.val;
+    *cell_n0.borrow_mut() = match wire_n0.as_list() {
+        Probe::Got(l0) => {
+            let mut acc0 = Vec::with_capacity(l0.len());
+            for i0 in 0..l0.len() {
+                acc0.push(match l0.elem_row(i0) {
+                    Probe::Got(sub1) => T0 {
+                        changes: match sub1.probe_number("changes") {
+                            NumProbe::Got { raw, actual_wire_type } => match raw.parse::<i64>() {
+                                Ok(n) => n,
+                                Err(_) => return Err(de_overflow("T0", "changes", "int", actual_wire_type, raw)),
+                            },
+                            NumProbe::Wrong { actual_wire_type, raw_value }
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "changes", "int", actual_wire_type, raw_value)),
+                            NumProbe::Absent => return Err(de_missing_field("T0", "changes", "int")),
+                        },
+                        lastInsertRowid: match sub1.probe_number("lastInsertRowid") {
+                            NumProbe::Got { raw, actual_wire_type } => match raw.parse::<i64>() {
+                                Ok(n) => n,
+                                Err(_) => return Err(de_overflow("T0", "lastInsertRowid", "int", actual_wire_type, raw)),
+                            },
+                            NumProbe::Wrong { actual_wire_type, raw_value }
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "lastInsertRowid", "int", actual_wire_type, raw_value)),
+                            NumProbe::Absent => return Err(de_missing_field("T0", "lastInsertRowid", "int")),
+                        },
+                    },
+                    Probe::Wrong { actual_wire_type, raw_value }
+                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{changes:int,lastInsertRowid:int}", actual_wire_type, raw_value)),
+                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{changes:int,lastInsertRowid:int}")),
+                });
+            }
+            acc0
+        },
+        Probe::Wrong { actual_wire_type, raw_value }
+        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{changes:int,lastInsertRowid:int})", actual_wire_type, raw_value)),
+        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{changes:int,lastInsertRowid:int})")),
+    };
     produced_n0.set(true);
     let __out = cell_n0.borrow().clone();
     Ok(__out)

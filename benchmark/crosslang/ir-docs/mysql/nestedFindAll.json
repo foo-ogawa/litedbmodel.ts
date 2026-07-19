@@ -45,12 +45,10 @@
           },
           "outType": {
             "arr": {
-              "arr": {
-                "obj": {
-                  "id": "int",
-                  "title": "string",
-                  "author_id": "int"
-                }
+              "obj": {
+                "id": "int",
+                "title": "string",
+                "author_id": "int"
               }
             }
           }

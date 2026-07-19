@@ -10,14 +10,13 @@
           "outType": {
             "arr": {
               "obj": {
-                "id": "int",
-                "email": "string",
-                "name": "string"
+                "changes": "int",
+                "lastInsertRowid": "int"
               }
             }
           },
           "ports": {
-            "sql": "UPDATE benchmark_users AS u JOIN JSON_TABLE(?, '$[*]' COLUMNS(id JSON PATH '$.id', name JSON PATH '$.name')) AS v ON u.id = JSON_UNQUOTE(v.id) SET u.name = JSON_UNQUOTE(v.name) RETURNING id, email, name",
+            "sql": "UPDATE benchmark_users AS u JOIN JSON_TABLE(?, '$[*]' COLUMNS(id JSON PATH '$.id', name JSON PATH '$.name')) AS v ON u.id = JSON_UNQUOTE(v.id) SET u.name = JSON_UNQUOTE(v.name)",
             "v0": {
               "ref": [
                 "ids"
@@ -60,9 +59,8 @@
       "outputType": {
         "arr": {
           "obj": {
-            "id": "int",
-            "email": "string",
-            "name": "string"
+            "changes": "int",
+            "lastInsertRowid": "int"
           }
         }
       }

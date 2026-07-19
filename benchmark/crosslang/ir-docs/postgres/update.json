@@ -10,14 +10,13 @@
           "outType": {
             "arr": {
               "obj": {
-                "id": "int",
-                "email": "string",
-                "name": "string"
+                "changes": "int",
+                "lastInsertRowid": "int"
               }
             }
           },
           "ports": {
-            "sql": "UPDATE benchmark_users SET name = $1 WHERE id = $2 RETURNING id, email, name",
+            "sql": "UPDATE benchmark_users SET name = $1 WHERE id = $2",
             "p0": {
               "ref": [
                 "name"
@@ -58,9 +57,8 @@
       "outputType": {
         "arr": {
           "obj": {
-            "id": "int",
-            "email": "string",
-            "name": "string"
+            "changes": "int",
+            "lastInsertRowid": "int"
           }
         }
       }

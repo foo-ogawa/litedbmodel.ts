@@ -23,7 +23,7 @@
           "id": "tx_body_0",
           "component": "Update",
           "ports": {
-            "sql": "UPDATE benchmark_users SET name = $1 WHERE id = $2 RETURNING id, name",
+            "sql": "UPDATE benchmark_users SET name = $1 WHERE id = $2",
             "p0": {
               "ref": [
                 "name"
@@ -37,8 +37,8 @@
           },
           "outType": {
             "obj": {
-              "id": "int",
-              "name": "string"
+              "changes": "int",
+              "lastInsertRowid": "int"
             }
           }
         },
@@ -46,7 +46,7 @@
           "id": "tx_body_1",
           "component": "Update",
           "ports": {
-            "sql": "UPDATE benchmark_posts SET title = $1 WHERE author_id = $2 RETURNING id, title",
+            "sql": "UPDATE benchmark_posts SET title = $1 WHERE author_id = $2",
             "p0": {
               "ref": [
                 "title"
@@ -60,8 +60,8 @@
           },
           "outType": {
             "obj": {
-              "id": "int",
-              "title": "string"
+              "changes": "int",
+              "lastInsertRowid": "int"
             }
           }
         }
@@ -84,14 +84,14 @@
         "obj": {
           "user": {
             "obj": {
-              "id": "int",
-              "name": "string"
+              "changes": "int",
+              "lastInsertRowid": "int"
             }
           },
           "post": {
             "obj": {
-              "id": "int",
-              "title": "string"
+              "changes": "int",
+              "lastInsertRowid": "int"
             }
           }
         }

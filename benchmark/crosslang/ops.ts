@@ -91,26 +91,34 @@ class TenantReads extends SemanticBehavior {
 // ── WRITE behaviors (single + batch) ──────────────────────────────────────────
 class UserWrites extends SemanticBehavior {
   static columns = USER_COLUMNS;
+  // v1 returning semantics (test/parity/v1-sql-golden.test.ts + DBModel): a write returns NULL by
+  // default, and `{returning:true}` returns the PRIMARY KEY only (`PkeyResult` = `id`), never all
+  // columns. v1's bench ops: single create/update = NO returning; single upsert = returning (id);
+  // batch createMany/upsertMany/updateMany = NO returning. (A no-returning write's result is null —
+  // dialect-independent, unlike an engine-assigned id or affected-count: mysql ON DUPLICATE KEY
+  // reports affected_rows = inserts + 2·updates, so upsertMany's count is 12 on mysql vs 10 elsewhere.)
   Create($: { email: unknown; name: unknown }) {
-    return L.Insert({ table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id, email, name' });
+    return L.Insert({ table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name });
   }
   Update($: { id: unknown; name: unknown }) {
-    return L.Update({ table: 'benchmark_users', 'set.name': $.name, where: [whereEq(($ as never)['id'], $.id)], returning: 'id, email, name' });
+    return L.Update({ table: 'benchmark_users', 'set.name': $.name, where: [whereEq(($ as never)['id'], $.id)] });
   }
   Delete($: { id: unknown }) {
     return L.Delete({ table: 'benchmark_users', where: [whereEq(($ as never)['id'], $.id)] });
   }
   Upsert($: { email: unknown; name: unknown }) {
-    return L.Insert({ table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, onConflict: 'email', onConflictAction: 'update', returning: 'id, email, name' });
+    // `pk`/`autoInc` declare the table's primary key (the model is the SSoT) so the mysql RETURNING
+    // re-select recovers the row by the REAL pk — never an engine-hardcoded 'id' default.
+    return L.Insert({ table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, onConflict: 'email', onConflictAction: 'update', returning: 'id', pk: 'id', autoInc: 'id' });
   }
   CreateMany($: { emails: unknown; names: unknown }) {
-    return L.Insert({ table: 'benchmark_users', batch: 'true', 'values.email': $.emails, 'values.name': $.names, returning: 'id, email, name' });
+    return L.Insert({ table: 'benchmark_users', batch: 'true', 'values.email': $.emails, 'values.name': $.names });
   }
   UpsertMany($: { emails: unknown; names: unknown }) {
-    return L.Insert({ table: 'benchmark_users', batch: 'true', 'values.email': $.emails, 'values.name': $.names, onConflict: 'email', onConflictAction: 'update', returning: 'id, email, name' });
+    return L.Insert({ table: 'benchmark_users', batch: 'true', 'values.email': $.emails, 'values.name': $.names, onConflict: 'email', onConflictAction: 'update' });
   }
   UpdateMany($: { ids: unknown; names: unknown }) {
-    return L.Update({ table: 'benchmark_users', batch: 'true', 'key.id': $.ids, 'set.name': $.names, returning: 'id, email, name' });
+    return L.Update({ table: 'benchmark_users', batch: 'true', 'key.id': $.ids, 'set.name': $.names });
   }
 }
 
@@ -137,27 +145,27 @@ const postsComposite = (dialect: OrmDialect): RelationDecl => ({
 const txNode = (dialect: OrmDialect, id: string, component: string, ports: Record<string, unknown>) => compileWriteNode({ id, component, ports } as never, dialect);
 function nestedCreatePlan(dialect: OrmDialect): TransactionPlan {
   return deriveTransactionPlan('create', [
-    { op: txNode(dialect, 'u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
-    { op: txNode(dialect, 'p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
+    { op: txNode(dialect, 'u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id', pk: 'id', autoInc: 'id' }), label: 'Insert user', name: 'user', effects: {} },
+    { op: txNode(dialect, 'p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] } }), label: 'Insert post', name: 'post', effects: {} },
   ], { effects: {} }) as unknown as TransactionPlan;
 }
 function nestedUpdatePlan(dialect: OrmDialect): TransactionPlan {
   return deriveTransactionPlan('update', [
-    { op: txNode(dialect, 'u', 'Update', { table: 'benchmark_users', 'set.name': { ref: ['name'] }, where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user_id'] }] }] }, returning: 'id, name' }), label: 'Update user', name: 'user', effects: {} },
-    { op: txNode(dialect, 'p', 'Update', { table: 'benchmark_posts', 'set.title': { ref: ['title'] }, where: { arr: [{ eq: [{ ref: ['author_id'] }, { ref: ['user_id'] }] }] }, returning: 'id, title' }), label: 'Update post', name: 'post', effects: {} },
+    { op: txNode(dialect, 'u', 'Update', { table: 'benchmark_users', 'set.name': { ref: ['name'] }, where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user_id'] }] }] } }), label: 'Update user', name: 'user', effects: {} },
+    { op: txNode(dialect, 'p', 'Update', { table: 'benchmark_posts', 'set.title': { ref: ['title'] }, where: { arr: [{ eq: [{ ref: ['author_id'] }, { ref: ['user_id'] }] }] } }), label: 'Update post', name: 'post', effects: {} },
   ], { effects: {} }) as unknown as TransactionPlan;
 }
 function nestedUpsertPlan(dialect: OrmDialect): TransactionPlan {
   return deriveTransactionPlan('create', [
-    { op: txNode(dialect, 'u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, onConflict: 'email', onConflictAction: 'update', returning: 'id' }), label: 'Upsert user', name: 'user', effects: {} },
-    { op: txNode(dialect, 'p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] }, returning: 'id, author_id, title' }), label: 'Insert post', name: 'post', effects: {} },
+    { op: txNode(dialect, 'u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, onConflict: 'email', onConflictAction: 'update', returning: 'id', pk: 'id', autoInc: 'id' }), label: 'Upsert user', name: 'user', effects: {} },
+    { op: txNode(dialect, 'p', 'Insert', { table: 'benchmark_posts', 'values.author_id': { ref: ['user', 'id'] }, 'values.title': { ref: ['title'] } }), label: 'Insert post', name: 'post', effects: {} },
   ], { effects: {} }) as unknown as TransactionPlan;
 }
 // delete: benchmark.ts's op is create-then-delete (a 2-statement tx — insert a fresh user, delete it by
 // the RETURNING id), NOT a single DELETE. Matches the E5 txdelete shape.
 function deletePlan(dialect: OrmDialect): TransactionPlan {
   return deriveTransactionPlan('create', [
-    { op: txNode(dialect, 'u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id' }), label: 'Insert user', name: 'user', effects: {} },
+    { op: txNode(dialect, 'u', 'Insert', { table: 'benchmark_users', 'values.email': { ref: ['email'] }, 'values.name': { ref: ['name'] }, returning: 'id', pk: 'id', autoInc: 'id' }), label: 'Insert user', name: 'user', effects: {} },
     { op: txNode(dialect, 'd', 'Delete', { table: 'benchmark_users', where: { arr: [{ eq: [{ ref: ['id'] }, { ref: ['user', 'id'] }] }] } }), label: 'Delete user', name: 'deleted', effects: {} },
   ], { effects: {} }) as unknown as TransactionPlan;
 }
