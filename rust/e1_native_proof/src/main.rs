@@ -54,7 +54,10 @@ mod companion_upsertmany;
 
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
-use litedbmodel_runtime::{Driver, SqlFailure, SqliteDriver, Value};
+use litedbmodel_runtime::{
+    encode_value, execute_bundle, execute_transaction_bundle, Driver, Node, SqlFailure, SqliteDriver,
+    Value,
+};
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -192,6 +195,36 @@ fn main() {
     let d: &dyn Driver = &driver;
 
     match op.as_str() {
+        // The mode-2 INTERPRETER oracle (epic #123/#124 commit 3): run the SAME op via the runtime's
+        // mode-2 entry (`execute_bundle` for read/write, `execute_transaction_bundle` for tx) on the
+        // SAME live connection, and print the SAME canonical shape the native leg prints. The livedb
+        // harness runs native (codegen path) AND this (interpreter path) against the same DB and asserts
+        // byte-equal — a REAL conformance check (two DISTINCT code paths, one real DB), NOT a circular
+        // self-comparison. Usage: `mode2 <spec> <read|write|tx> <bundle.json> <input.json>`.
+        "mode2" => {
+            let kind = args.get(3).expect("mode2 <kind>");
+            let bundle = Node::parse(&std::fs::read_to_string(args.get(4).expect("mode2 <bundle.json>")).expect("read bundle"))
+                .expect("parse bundle json");
+            let input = Node::parse(&std::fs::read_to_string(args.get(5).expect("mode2 <input.json>")).expect("read input"))
+                .expect("parse input json");
+            match kind.as_str() {
+                "read" => {
+                    let v = execute_bundle(&bundle, &input, d).unwrap_or_else(|e| panic!("mode2 read: {}", e.message()));
+                    println!("{}", encode_value(&v).to_json_string());
+                }
+                "write" => {
+                    let v = execute_bundle(&bundle, &input, d).unwrap_or_else(|e| panic!("mode2 write: {}", e.message()));
+                    println!("{{\"result\":{},\"state\":{}}}", encode_value(&v).to_json_string(), table_state(d));
+                }
+                "tx" => {
+                    // Ok ⇒ committed; Err (a statement failed under its policy — e.g. the rollback control's
+                    // UNIQUE clash) ⇒ rolled back. SAME commit/rollback semantics as the native envelope.
+                    let committed = execute_transaction_bundle(&bundle, &input, d).is_ok();
+                    println!("{{\"result\":{{\"committed\":{}}},\"state\":{}}}", committed, tx_state(d));
+                }
+                other => panic!("unknown mode2 kind '{other}'"),
+            }
+        }
         "findunique" => {
             let email = args.get(3).expect("findunique needs <email>").clone();
             let out = generated_findunique::run_native_raw_struct_FindUnique(&companion_findunique::handler(d), generated_findunique::InNRFindUnique { email })
