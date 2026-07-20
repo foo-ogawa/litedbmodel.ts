@@ -181,7 +181,7 @@
                     "type": "unknown"
                   },
                   "limit": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   },
                   "since": {
@@ -189,7 +189,7 @@
                     "type": "unknown"
                   },
                   "status": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   }
                 },
@@ -339,13 +339,13 @@
             ]
           },
           "optionalHeads": [
-            "status",
-            "limit"
+            "limit",
+            "status"
           ]
         },
         "optionalHeads": [
-          "status",
-          "limit"
+          "limit",
+          "status"
         ],
         "relations": {
           "author": {
@@ -354,6 +354,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
             "targetTable": "users",
             "select": [
@@ -367,6 +368,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
             "targetTable": "tags",
             "select": [
@@ -547,7 +549,7 @@
                     "type": "unknown"
                   },
                   "limit": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   },
                   "since": {
@@ -555,7 +557,7 @@
                     "type": "unknown"
                   },
                   "status": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   }
                 },
@@ -705,13 +707,13 @@
             ]
           },
           "optionalHeads": [
-            "status",
-            "limit"
+            "limit",
+            "status"
           ]
         },
         "optionalHeads": [
-          "status",
-          "limit"
+          "limit",
+          "status"
         ],
         "relations": {
           "author": {
@@ -720,6 +722,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
             "targetTable": "users",
             "select": [
@@ -733,6 +736,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
             "targetTable": "tags",
             "select": [
@@ -975,7 +979,7 @@
                     "type": "unknown"
                   },
                   "limit": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   },
                   "since": {
@@ -983,7 +987,7 @@
                     "type": "unknown"
                   },
                   "status": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   }
                 },
@@ -1133,13 +1137,13 @@
             ]
           },
           "optionalHeads": [
-            "status",
-            "limit"
+            "limit",
+            "status"
           ]
         },
         "optionalHeads": [
-          "status",
-          "limit"
+          "limit",
+          "status"
         ],
         "relations": {
           "author": {
@@ -1148,6 +1152,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
             "targetTable": "users",
             "select": [
@@ -1161,6 +1166,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
             "targetTable": "tags",
             "select": [
@@ -1341,7 +1347,7 @@
                     "type": "unknown"
                   },
                   "limit": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   },
                   "since": {
@@ -1349,7 +1355,7 @@
                     "type": "unknown"
                   },
                   "status": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   }
                 },
@@ -1499,13 +1505,13 @@
             ]
           },
           "optionalHeads": [
-            "status",
-            "limit"
+            "limit",
+            "status"
           ]
         },
         "optionalHeads": [
-          "status",
-          "limit"
+          "limit",
+          "status"
         ],
         "relations": {
           "author": {
@@ -1514,6 +1520,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
             "targetTable": "users",
             "select": [
@@ -1527,6 +1534,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
             "targetTable": "tags",
             "select": [
@@ -1782,7 +1790,7 @@
                     "type": "unknown"
                   },
                   "limit": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   },
                   "since": {
@@ -1790,7 +1798,7 @@
                     "type": "unknown"
                   },
                   "status": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   }
                 },
@@ -1940,13 +1948,13 @@
             ]
           },
           "optionalHeads": [
-            "status",
-            "limit"
+            "limit",
+            "status"
           ]
         },
         "optionalHeads": [
-          "status",
-          "limit"
+          "limit",
+          "status"
         ],
         "relations": {
           "author": {
@@ -1955,6 +1963,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
             "targetTable": "users",
             "select": [
@@ -1968,6 +1977,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
             "targetTable": "tags",
             "select": [
@@ -2148,7 +2158,7 @@
                     "type": "unknown"
                   },
                   "limit": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   },
                   "since": {
@@ -2156,7 +2166,7 @@
                     "type": "unknown"
                   },
                   "status": {
-                    "required": true,
+                    "required": false,
                     "type": "unknown"
                   }
                 },
@@ -2306,13 +2316,13 @@
             ]
           },
           "optionalHeads": [
-            "status",
-            "limit"
+            "limit",
+            "status"
           ]
         },
         "optionalHeads": [
-          "status",
-          "limit"
+          "limit",
+          "status"
         ],
         "relations": {
           "author": {
@@ -2321,6 +2331,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
             "targetTable": "users",
             "select": [
@@ -2334,6 +2345,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
             "targetTable": "tags",
             "select": [
@@ -12162,6 +12174,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
             "targetTable": "users",
             "select": [
@@ -12175,6 +12188,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
             "targetTable": "comments",
             "select": [
@@ -12189,6 +12203,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
             "targetTable": "tags",
             "select": [
@@ -12322,6 +12337,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
             "targetTable": "users",
             "select": [
@@ -12335,6 +12351,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
             "targetTable": "comments",
             "select": [
@@ -12349,6 +12366,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
             "targetTable": "tags",
             "select": [
@@ -12572,6 +12590,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
             "targetTable": "users",
             "select": [
@@ -12585,6 +12604,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
             "targetTable": "comments",
             "select": [
@@ -12599,6 +12619,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
             "targetTable": "tags",
             "select": [
@@ -12732,6 +12753,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
             "targetTable": "users",
             "select": [
@@ -12745,6 +12767,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
             "targetTable": "comments",
             "select": [
@@ -12759,6 +12782,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
             "targetTable": "tags",
             "select": [
@@ -13004,6 +13028,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
             "targetTable": "users",
             "select": [
@@ -13017,6 +13042,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
             "targetTable": "comments",
             "select": [
@@ -13031,6 +13057,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
             "targetTable": "tags",
             "select": [
@@ -13164,6 +13191,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
             "targetTable": "users",
             "select": [
@@ -13177,6 +13205,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
             "targetTable": "comments",
             "select": [
@@ -13191,6 +13220,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
             "targetTable": "tags",
             "select": [
@@ -13441,6 +13471,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
             "targetTable": "users",
             "select": [
@@ -13454,6 +13485,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
             "targetTable": "comments",
             "select": [
@@ -13468,6 +13500,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
             "targetTable": "tags",
             "select": [
@@ -13601,6 +13634,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
             "targetTable": "users",
             "select": [
@@ -13614,6 +13648,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
             "targetTable": "comments",
             "select": [
@@ -13628,6 +13663,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
             "targetTable": "tags",
             "select": [
@@ -13932,6 +13968,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
             "targetTable": "users",
             "select": [
@@ -13945,6 +13982,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT id, post_id, body FROM comments WHERE comments.post_id = ANY(?::@@PG_ARRAY_CAST@@) ORDER BY id ASC",
             "targetTable": "comments",
             "select": [
@@ -13959,6 +13997,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tags.* FROM unnest(?::@@PG_ARRAY_CAST@@) AS _keys(key) CROSS JOIN LATERAL (SELECT * FROM tags WHERE tags.post_id = _keys.key ORDER BY id ASC LIMIT 2) tags",
             "targetTable": "tags",
             "select": [
@@ -14092,6 +14131,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
             "targetTable": "users",
             "select": [
@@ -14105,6 +14145,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT id, post_id, body FROM comments WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt) ORDER BY id ASC",
             "targetTable": "comments",
             "select": [
@@ -14119,6 +14160,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)) SELECT * FROM ranked WHERE _rn <= 2",
             "targetTable": "tags",
             "select": [
@@ -14307,6 +14349,7 @@
               "uid"
             ],
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid",
             "targetTable": "users2",
             "select": [
@@ -14327,6 +14370,7 @@
               "doc_id"
             ],
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC",
             "targetTable": "revs",
             "select": [
@@ -14466,6 +14510,7 @@
               "uid"
             ],
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)",
             "targetTable": "users2",
             "select": [
@@ -14486,6 +14531,7 @@
               "doc_id"
             ],
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC",
             "targetTable": "revs",
             "select": [
@@ -14752,6 +14798,7 @@
               "uid"
             ],
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid",
             "targetTable": "users2",
             "select": [
@@ -14772,6 +14819,7 @@
               "doc_id"
             ],
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC",
             "targetTable": "revs",
             "select": [
@@ -14911,6 +14959,7 @@
               "uid"
             ],
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)",
             "targetTable": "users2",
             "select": [
@@ -14931,6 +14980,7 @@
               "doc_id"
             ],
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC",
             "targetTable": "revs",
             "select": [
@@ -15151,6 +15201,7 @@
               "uid"
             ],
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tenant_id, uid, name FROM users2 JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_users2(_unnest_users2_tenant_id, _unnest_users2_uid) ON users2.tenant_id = _unnest_users2._unnest_users2_tenant_id AND users2.uid = _unnest_users2._unnest_users2_uid",
             "targetTable": "users2",
             "select": [
@@ -15171,6 +15222,7 @@
               "doc_id"
             ],
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT tenant_id, doc_id, rev FROM revs JOIN unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _unnest_revs(_unnest_revs_tenant_id, _unnest_revs_doc_id) ON revs.tenant_id = _unnest_revs._unnest_revs_tenant_id AND revs.doc_id = _unnest_revs._unnest_revs_doc_id ORDER BY rev ASC",
             "targetTable": "revs",
             "select": [
@@ -15310,6 +15362,7 @@
               "uid"
             ],
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT tenant_id, uid, name FROM users2 WHERE (users2.tenant_id, users2.uid) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)",
             "targetTable": "users2",
             "select": [
@@ -15330,6 +15383,7 @@
               "doc_id"
             ],
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "SELECT tenant_id, doc_id, rev FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt) ORDER BY rev ASC",
             "targetTable": "revs",
             "select": [
@@ -15511,6 +15565,7 @@
               "doc_id"
             ],
             "dialect": "postgres",
+            "keyShape": "per_column",
             "sql": "SELECT revs.* FROM unnest(?::@@PG_ARRAY_CAST@@, ?::@@PG_ARRAY_CAST@@) AS _keys(key0, key1) CROSS JOIN LATERAL (SELECT * FROM revs WHERE revs.tenant_id = _keys.key0 AND revs.doc_id = _keys.key1 ORDER BY rev DESC LIMIT 1) revs",
             "targetTable": "revs",
             "select": [
@@ -15650,6 +15705,7 @@
               "doc_id"
             ],
             "dialect": "mysql",
+            "keyShape": "single_json",
             "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY tenant_id, doc_id ORDER BY rev DESC) AS _rn FROM revs WHERE (revs.tenant_id, revs.doc_id) IN (SELECT JSON_UNQUOTE(c0), JSON_UNQUOTE(c1) FROM JSON_TABLE(?, '$[*]' COLUMNS(c0 JSON PATH '$[0]', c1 JSON PATH '$[1]')) jt)) SELECT * FROM ranked WHERE _rn <= 1",
             "targetTable": "revs",
             "select": [
@@ -15882,6 +15938,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "mysql",
+            "keyShape": "single_json",
             "connection": "authors_db",
             "sql": "SELECT id, name FROM users WHERE id IN (SELECT JSON_UNQUOTE(v) FROM JSON_TABLE(?, '$[*]' COLUMNS(v JSON PATH '$')) jt)",
             "targetTable": "users",
@@ -16015,6 +16072,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "postgres",
+            "keyShape": "per_column",
             "connection": "authors_db",
             "sql": "SELECT id, name FROM users WHERE users.id = ANY(?::@@PG_ARRAY_CAST@@)",
             "targetTable": "users",
@@ -16194,7 +16252,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -16338,7 +16408,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -16559,7 +16641,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -16703,7 +16797,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -16908,7 +17014,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -17052,7 +17170,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -17260,7 +17390,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -17404,7 +17546,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -17560,7 +17714,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -17650,7 +17816,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert"
             },
@@ -17821,7 +17999,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert post",
               "binds": "post"
@@ -17859,7 +18049,19 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "comments",
+                  "bindColumns": [
+                    "body",
+                    "post_id"
+                  ],
+                  "returning": [
+                    "id",
+                    "post_id",
+                    "body"
+                  ]
+                }
               },
               "label": "Insert comment",
               "binds": "comment"
@@ -17924,7 +18126,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert post",
               "binds": "post"
@@ -17962,7 +18176,19 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "comments",
+                  "bindColumns": [
+                    "body",
+                    "post_id"
+                  ],
+                  "returning": [
+                    "id",
+                    "post_id",
+                    "body"
+                  ]
+                }
               },
               "label": "Insert comment",
               "binds": "comment"
@@ -18089,7 +18315,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert post",
               "binds": "post"
@@ -18127,7 +18365,19 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "comments",
+                  "bindColumns": [
+                    "body",
+                    "post_id"
+                  ],
+                  "returning": [
+                    "id",
+                    "post_id",
+                    "body"
+                  ]
+                }
               },
               "label": "Insert comment",
               "binds": "comment"
@@ -18192,7 +18442,19 @@
                       "title"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "author_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Insert post",
               "binds": "post"
@@ -18230,7 +18492,19 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "comments",
+                  "bindColumns": [
+                    "body",
+                    "post_id"
+                  ],
+                  "returning": [
+                    "id",
+                    "post_id",
+                    "body"
+                  ]
+                }
               },
               "label": "Insert comment",
               "binds": "comment"
@@ -18852,7 +19126,15 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "title",
+                    "id"
+                  ],
+                  "returning": []
+                }
               },
               "label": "Update"
             }
@@ -18900,7 +19182,15 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "title",
+                    "id"
+                  ],
+                  "returning": []
+                }
               },
               "label": "Update"
             }
@@ -18986,7 +19276,14 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "id"
+                  ],
+                  "returning": []
+                }
               },
               "label": "Delete"
             }
@@ -19024,7 +19321,14 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "id"
+                  ],
+                  "returning": []
+                }
               },
               "label": "Delete"
             }
@@ -19105,7 +19409,18 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "id"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Delete"
             }
@@ -19143,7 +19458,18 @@
                       "id"
                     ]
                   }
-                ]
+                ],
+                "writeMeta": {
+                  "table": "posts",
+                  "bindColumns": [
+                    "id"
+                  ],
+                  "returning": [
+                    "id",
+                    "author_id",
+                    "title"
+                  ]
+                }
               },
               "label": "Delete"
             }
@@ -19252,6 +19578,17 @@
                     "doc_id"
                   ],
                   "autoInc": null
+                },
+                "writeMeta": {
+                  "table": "docs",
+                  "bindColumns": [
+                    "doc_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "doc_id",
+                    "title"
+                  ]
                 }
               },
               "label": "Insert"
@@ -19306,6 +19643,17 @@
                     "doc_id"
                   ],
                   "autoInc": null
+                },
+                "writeMeta": {
+                  "table": "docs",
+                  "bindColumns": [
+                    "doc_id",
+                    "title"
+                  ],
+                  "returning": [
+                    "doc_id",
+                    "title"
+                  ]
                 }
               },
               "label": "Insert"
@@ -19407,6 +19755,19 @@
                     "line_no"
                   ],
                   "autoInc": null
+                },
+                "writeMeta": {
+                  "table": "order_lines",
+                  "bindColumns": [
+                    "line_no",
+                    "order_id",
+                    "sku"
+                  ],
+                  "returning": [
+                    "order_id",
+                    "line_no",
+                    "sku"
+                  ]
                 }
               },
               "label": "Insert"
@@ -19472,6 +19833,19 @@
                     "line_no"
                   ],
                   "autoInc": null
+                },
+                "writeMeta": {
+                  "table": "order_lines",
+                  "bindColumns": [
+                    "line_no",
+                    "order_id",
+                    "sku"
+                  ],
+                  "returning": [
+                    "order_id",
+                    "line_no",
+                    "sku"
+                  ]
                 }
               },
               "label": "Insert"
