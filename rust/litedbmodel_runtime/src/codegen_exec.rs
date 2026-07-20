@@ -24,6 +24,9 @@
 
 use behavior_contracts::Value;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use crate::connection_routing::RoutingConfig;
 use crate::driver::{Driver, RunInfo};
 use crate::errors::SqlFailure;
@@ -38,8 +41,67 @@ use crate::tx_options::{Dialect as TxDialect, TransactionOptions};
 /// a non-returning write is the synthesized `Value::Arr([{changes,lastInsertRowid}])`. The generated
 /// de-box classifies it via the [`wire_impls!`]-expanded trait impls, which delegate to the `rt_*`
 /// methods below.
+///
+/// ## Zero-copy over the driver rows (#138)
+///
+/// The backing driver value is held behind an [`Arc`] so `as_list` / `elem_row` / `as_row` are refcount
+/// bumps — they no longer DEEP-CLONE the whole row array (once) and each row (again), the pure native-side
+/// duplication the pre-#138 `Wire(pub Value)` did on top of the driver's own row alloc. `Arc` (not `Rc`)
+/// because the generated handler trait requires `Wire: Send` (bc#87 static-parallel relation dispatch).
+///
+/// A LIST wire focuses on the whole `Value::Arr` in `backing`; `elem_row(i)` returns a ROW wire that
+/// SHARES the list's `backing` and selects element `i` via `elem` (no per-row Obj clone). A ROW wire
+/// carries the shared column→index [`ColMap`] (`cols`) built ONCE per result set, so `probe_*(field)` is
+/// an O(1) map lookup + positional access instead of the pre-#138 per-field linear scan (1 row was
+/// O(cols²)). Descending into a nested field/element (`probe_row` / `probe_list` / an arr-of-arr element)
+/// re-roots into a fresh `Arc` — a COLD path (relations are stitched Value-side, not de-boxed inline).
 #[derive(Clone, Debug)]
-pub struct Wire(pub Value);
+pub struct Wire {
+    /// The shared driver value this wire reads from (never deep-cloned on navigation).
+    backing: Arc<Value>,
+    /// `Some(i)` ⇒ the focused value is element `i` of the `Value::Arr` in `backing` (a list element,
+    /// sharing the list's `Arc`); `None` ⇒ the focused value IS `*backing`.
+    elem: Option<usize>,
+    /// The column→index map for the focused ROW — `Some` when reached from a list (built once, threaded
+    /// to every element ⇒ O(1) `probe_*`); `None` for a standalone row (linear-scan fallback).
+    cols: Option<Arc<ColMap>>,
+}
+
+/// A row's column name → position in its ordered pair list. Built ONCE per result set and shared by every
+/// row (via [`Arc`]) so `probe_*(field)` is O(1). Maps to the FIRST matching index (byte-equal to the
+/// pre-#138 `pairs.iter().find`).
+type ColMap = HashMap<String, usize>;
+
+/// The unreachable-focus fallback (an out-of-range `elem`, which the navigation guards never produce).
+static NULL_VALUE: Value = Value::Null;
+
+/// Build the column→index map for a row Obj (first occurrence wins — matches linear-scan `find`). `None`
+/// for a non-Obj (a list of scalars/rows-that-are-null has no columns to index).
+fn build_col_map(v: &Value) -> Option<Arc<ColMap>> {
+    if let Value::Obj(pairs) = v {
+        let mut m = ColMap::with_capacity(pairs.len());
+        for (i, (k, _)) in pairs.iter().enumerate() {
+            m.entry(k.clone()).or_insert(i);
+        }
+        Some(Arc::new(m))
+    } else {
+        None
+    }
+}
+
+/// Resolve a field to its position in a row's pairs: O(1) via the shared [`ColMap`] on a hit (verified
+/// positionally so it stays byte-equal to a linear scan even under a shape drift), falling back to the
+/// exact pre-#138 linear scan on a miss / no map (the genuinely-absent field is the de-box's error path).
+fn field_index(cols: Option<&ColMap>, pairs: &[(String, Value)], field: &str) -> Option<usize> {
+    if let Some(map) = cols {
+        if let Some(&i) = map.get(field) {
+            if pairs.get(i).map(|(k, _)| k.as_str()) == Some(field) {
+                return Some(i);
+            }
+        }
+    }
+    pairs.iter().position(|(k, _)| k == field)
+}
 
 /// The neutral outcome of classifying one wire datum/attribute against a declared NON-numeric type —
 /// the runtime-owned twin of a generated module's local `Probe<T>` (the [`wire_impls!`] macro maps one
@@ -92,14 +154,6 @@ fn raw_of(v: &Value) -> String {
         Value::Float(f) => f.to_string(),
         Value::Str(s) => s.clone(),
         other => other.type_name().to_string(),
-    }
-}
-
-/// Look up an object field by key (bc objects are ordered pair lists — linear scan).
-fn obj_get<'a>(o: &'a Value, key: &str) -> Option<&'a Value> {
-    match o {
-        Value::Obj(pairs) => pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v),
-        _ => None,
     }
 }
 
@@ -156,77 +210,137 @@ fn probe_number_value(v: &Value) -> RtNum {
 }
 
 impl Wire {
-    /// The wrapped value (a row/row-list/attribute).
+    /// Wrap a driver value as a node-result wire (the whole array for a read, a single obj for a
+    /// tx-chain statement). The de-box navigates it via the `rt_*` methods below without re-materializing
+    /// the driver's rows.
+    fn node(v: Value) -> Wire {
+        Wire {
+            backing: Arc::new(v),
+            elem: None,
+            cols: None,
+        }
+    }
+
+    /// The focused value: `*backing`, or element `elem` of the `Value::Arr` in `backing`. The `elem`
+    /// index is only ever set by [`Wire::rt_elem_row`] with `i < len`, so the `None`/out-of-range arm is
+    /// unreachable for a validly-navigated wire (it yields the shared [`NULL_VALUE`]).
+    fn focused(&self) -> &Value {
+        match self.elem {
+            None => &self.backing,
+            Some(i) => match &*self.backing {
+                Value::Arr(items) => items.get(i).unwrap_or(&NULL_VALUE),
+                _ => &NULL_VALUE,
+            },
+        }
+    }
+
+    /// Re-root a nested field/element value into its own `Arc` (the COLD descent path — relations are
+    /// stitched Value-side, so `probe_row`/`probe_list`/arr-of-arr are not on the hot read path). The
+    /// row column map is precomputed so a subsequent `probe_*` on it stays O(1).
+    fn reroot(v: &Value) -> Wire {
+        let cols = build_col_map(v);
+        Wire {
+            backing: Arc::new(v.clone()),
+            elem: None,
+            cols,
+        }
+    }
+
+    /// The wrapped value at this wire's focus (a row/row-list/attribute).
     pub fn value(&self) -> &Value {
-        &self.0
+        self.focused()
     }
 
     // ── WireValue (node result) classification ──
     pub fn rt_as_string(&self) -> RtProbe<String> {
-        probe_string_value(&self.0)
+        probe_string_value(self.focused())
     }
     pub fn rt_as_number(&self) -> RtNum {
-        probe_number_value(&self.0)
+        probe_number_value(self.focused())
     }
     pub fn rt_as_bool(&self) -> RtProbe<bool> {
-        probe_bool_value(&self.0)
+        probe_bool_value(self.focused())
     }
     pub fn rt_as_row(&self) -> RtProbe<Wire> {
-        match &self.0 {
-            Value::Obj(_) => RtProbe::Got(Wire(self.0.clone())),
+        let v = self.focused();
+        match v {
+            // A row at THIS focus: share `backing`/`elem` (no Obj clone), attach the column map so a
+            // later `probe_*` is O(1).
+            Value::Obj(_) => RtProbe::Got(Wire {
+                backing: self.backing.clone(),
+                elem: self.elem,
+                cols: build_col_map(v),
+            }),
             Value::Null => RtProbe::Null {
-                actual_wire_type: wire_tag(&self.0),
-                raw_value: raw_of(&self.0),
+                actual_wire_type: wire_tag(v),
+                raw_value: raw_of(v),
             },
             _ => RtProbe::Wrong {
-                actual_wire_type: wire_tag(&self.0),
-                raw_value: raw_of(&self.0),
+                actual_wire_type: wire_tag(v),
+                raw_value: raw_of(v),
             },
         }
     }
     pub fn rt_as_list(&self) -> RtProbe<Wire> {
-        match &self.0 {
-            Value::Arr(_) => RtProbe::Got(Wire(self.0.clone())),
+        let v = self.focused();
+        match v {
+            // The list stays at THIS focus (share `backing`/`elem`); precompute the ELEMENT column map
+            // ONCE here (from element 0) and thread it to every `elem_row` ⇒ O(1) `probe_*` per row.
+            Value::Arr(items) => RtProbe::Got(Wire {
+                backing: self.backing.clone(),
+                elem: self.elem,
+                cols: items.first().and_then(build_col_map),
+            }),
             Value::Null => RtProbe::Null {
-                actual_wire_type: wire_tag(&self.0),
-                raw_value: raw_of(&self.0),
+                actual_wire_type: wire_tag(v),
+                raw_value: raw_of(v),
             },
             _ => RtProbe::Wrong {
-                actual_wire_type: wire_tag(&self.0),
-                raw_value: raw_of(&self.0),
+                actual_wire_type: wire_tag(v),
+                raw_value: raw_of(v),
             },
         }
     }
 
     // ── WireRow (an object) attribute probes ──
     pub fn rt_keys(&self) -> Vec<String> {
-        match &self.0 {
+        match self.focused() {
             Value::Obj(pairs) => pairs.iter().map(|(k, _)| k.clone()).collect(),
             _ => Vec::new(),
         }
     }
+    /// The value of a row field via the O(1) column map (falls back to a linear scan on a map miss).
+    fn row_field(&self, field: &str) -> Option<&Value> {
+        match self.focused() {
+            Value::Obj(pairs) => {
+                let idx = field_index(self.cols.as_deref(), pairs, field)?;
+                Some(&pairs[idx].1)
+            }
+            _ => None,
+        }
+    }
     pub fn rt_probe_string(&self, field: &str) -> RtProbe<String> {
-        match obj_get(&self.0, field) {
+        match self.row_field(field) {
             None => RtProbe::Absent,
             Some(v) => probe_string_value(v),
         }
     }
     pub fn rt_probe_number(&self, field: &str) -> RtNum {
-        match obj_get(&self.0, field) {
+        match self.row_field(field) {
             None => RtNum::Absent,
             Some(v) => probe_number_value(v),
         }
     }
     pub fn rt_probe_bool(&self, field: &str) -> RtProbe<bool> {
-        match obj_get(&self.0, field) {
+        match self.row_field(field) {
             None => RtProbe::Absent,
             Some(v) => probe_bool_value(v),
         }
     }
     pub fn rt_probe_row(&self, field: &str) -> RtProbe<Wire> {
-        match obj_get(&self.0, field) {
+        match self.row_field(field) {
             None => RtProbe::Absent,
-            Some(v @ Value::Obj(_)) => RtProbe::Got(Wire(v.clone())),
+            Some(v @ Value::Obj(_)) => RtProbe::Got(Wire::reroot(v)),
             Some(v @ Value::Null) => RtProbe::Null {
                 actual_wire_type: wire_tag(v),
                 raw_value: raw_of(v),
@@ -238,9 +352,9 @@ impl Wire {
         }
     }
     pub fn rt_probe_list(&self, field: &str) -> RtProbe<Wire> {
-        match obj_get(&self.0, field) {
+        match self.row_field(field) {
             None => RtProbe::Absent,
-            Some(v @ Value::Arr(_)) => RtProbe::Got(Wire(v.clone())),
+            Some(v @ Value::Arr(_)) => RtProbe::Got(Wire::reroot(v)),
             Some(v @ Value::Null) => RtProbe::Null {
                 actual_wire_type: wire_tag(v),
                 raw_value: raw_of(v),
@@ -254,13 +368,13 @@ impl Wire {
 
     // ── WireList (an array) element probes ──
     pub fn rt_len(&self) -> usize {
-        match &self.0 {
+        match self.focused() {
             Value::Arr(items) => items.len(),
             _ => 0,
         }
     }
     fn elem(&self, i: usize) -> Option<&Value> {
-        match &self.0 {
+        match self.focused() {
             Value::Arr(items) => items.get(i),
             _ => None,
         }
@@ -286,7 +400,7 @@ impl Wire {
     pub fn rt_elem_row(&self, i: usize) -> RtProbe<Wire> {
         match self.elem(i) {
             None => RtProbe::Absent,
-            Some(v @ Value::Obj(_)) => RtProbe::Got(Wire(v.clone())),
+            Some(Value::Obj(_)) => RtProbe::Got(self.elem_row_wire(i)),
             Some(v @ Value::Null) => RtProbe::Null {
                 actual_wire_type: wire_tag(v),
                 raw_value: raw_of(v),
@@ -297,10 +411,30 @@ impl Wire {
             },
         }
     }
+    /// Build the ROW wire for list element `i`. HOT PATH (`self.elem` is `None` ⇒ the list Arr IS
+    /// `*backing`): SHARE `backing` and select element `i`, reusing the list's shared column map (`cols`)
+    /// so no per-row Obj clone and no per-row map rebuild. Defensive arr-of-arr case (`self.elem` set):
+    /// re-root the element (cold — generated reads never nest lists this way).
+    fn elem_row_wire(&self, i: usize) -> Wire {
+        if self.elem.is_none() {
+            Wire {
+                backing: self.backing.clone(),
+                elem: Some(i),
+                cols: self
+                    .cols
+                    .clone()
+                    .or_else(|| self.elem(i).and_then(build_col_map)),
+            }
+        } else {
+            self.elem(i)
+                .map(Wire::reroot)
+                .unwrap_or_else(|| Wire::node(Value::Null))
+        }
+    }
     pub fn rt_elem_list(&self, i: usize) -> RtProbe<Wire> {
         match self.elem(i) {
             None => RtProbe::Absent,
-            Some(v @ Value::Arr(_)) => RtProbe::Got(Wire(v.clone())),
+            Some(v @ Value::Arr(_)) => RtProbe::Got(Wire::reroot(v)),
             Some(v @ Value::Null) => RtProbe::Null {
                 actual_wire_type: wire_tag(v),
                 raw_value: raw_of(v),
@@ -383,7 +517,7 @@ pub fn wp_array<T: ToWireArray>(v: &T) -> Value {
 
 /// Wrap a driver row list as a node-result [`Wire`].
 fn rows_wire(rows: Vec<Value>) -> Wire {
-    Wire(Value::Arr(rows))
+    Wire::node(Value::Arr(rows))
 }
 
 /// The affected-row summary AS ONE row object `{changes, lastInsertRowid}` — the value a non-returning
@@ -403,7 +537,7 @@ fn summary_obj(info: RunInfo) -> Value {
 /// byte-equal to the mode-2 `executeStaticWrite` shape (and the shape the codegen lowering bakes for a
 /// no-RETURNING write's outType, a row LIST).
 fn summary_wire(info: RunInfo) -> Wire {
-    Wire(Value::Arr(vec![summary_obj(info)]))
+    Wire::node(Value::Arr(vec![summary_obj(info)]))
 }
 
 /// The execution MODE — the DRIVER-SHAPE the op's result is collected in. This is the ONLY thing that
@@ -496,13 +630,13 @@ pub fn exec(
             params,
             &StatementIntent::write(),
         )?)),
-        ExecMode::RowSingle => Ok(Wire(
+        ExecMode::RowSingle => Ok(Wire::node(
             exec_context::execute(ctx, &sql, params, &StatementIntent::read())?
                 .into_iter()
                 .next()
                 .unwrap_or(Value::Null),
         )),
-        ExecMode::SummarySingle => Ok(Wire(summary_obj(exec_context::run(
+        ExecMode::SummarySingle => Ok(Wire::node(summary_obj(exec_context::run(
             ctx,
             &sql,
             params,
