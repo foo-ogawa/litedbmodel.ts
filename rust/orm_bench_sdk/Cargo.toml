@@ -1,0 +1,36 @@
+# SDK-baseline ORM-bench cell (#129) — a raw database-driver implementation of the same 19 ORM ops,
+# hand-written against the plain drivers (rusqlite for sqlite; the `postgres` + `mysql` crates behind the
+# `livedb` feature) WITHOUT going through litedbmodel at all. It is the deliberate comparison cell for the
+# collector's `sdk` vs `native` latency delta, so it depends on NEITHER litedbmodel_runtime NOR
+# behavior-contracts. Same CLI / CSV schema / op list / seed as rust/orm_bench — the ONLY difference is the
+# exec path (raw driver, hand SQL) and the cell label `sdk`.
+#
+# A STANDALONE crate (its own `[workspace]`) so it never perturbs the conformance bar's build/lock.
+[workspace]
+
+[package]
+name = "orm_bench_sdk"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "orm_bench_sdk"
+path = "src/main.rs"
+
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde_json = "1"
+
+# `livedb` (opt-in): the same 19 ops against docker Postgres / MySQL via the plain `postgres` + `mysql`
+# crates. The default (SQLite) build needs neither.
+postgres = { version = "0.19", optional = true }
+mysql = { version = "25", optional = true }
+
+[features]
+default = []
+livedb = ["dep:postgres", "dep:mysql"]
+
+[profile.release]
+opt-level = 3
+lto = true
