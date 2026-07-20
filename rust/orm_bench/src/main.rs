@@ -23,7 +23,9 @@ mod gen;
 
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
-use litedbmodel_runtime::{encode_value, execute_bundle, stitch_relation, Driver, Node, SqlFailure, SqliteDriver, Value};
+use litedbmodel_runtime::{
+    encode_value, execute_bundle, stitch_relation, Driver, Node, SqlFailure, SqliteDriver, Value,
+};
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -87,7 +89,9 @@ fn reseed(d: &dyn Driver, dialect: &str) {
     let stmts = Node::parse(&raw).expect("parse setup.json");
     for s in stmts.as_array().expect("setup.json is an array") {
         let sql = s.as_str().expect("setup stmt is a string");
-        d.prepare(sql).run(&[]).unwrap_or_else(|e| panic!("setup `{sql}`: {}", e.message));
+        d.prepare(sql)
+            .run(&[])
+            .unwrap_or_else(|e| panic!("setup `{sql}`: {}", e.message));
     }
 }
 
@@ -101,8 +105,13 @@ fn obj_get<'a>(row: &'a Value, key: &str) -> Option<&'a Value> {
     }
 }
 fn stitch_with_children(op_json: &Node, parents: Vec<Value>, d: &dyn Driver) -> Vec<Value> {
-    let name = op_json.get("name").and_then(|n| n.as_str()).expect("relation op name").to_string();
-    let stitched = stitch_relation(op_json, parents, d).unwrap_or_else(|e| panic!("stitch '{name}': {}", e.message()));
+    let name = op_json
+        .get("name")
+        .and_then(|n| n.as_str())
+        .expect("relation op name")
+        .to_string();
+    let stitched = stitch_relation(op_json, parents, d)
+        .unwrap_or_else(|e| panic!("stitch '{name}': {}", e.message()));
     if let Some(children) = op_json.get("childRelations").and_then(|c| c.as_array()) {
         let mut level: Vec<Value> = Vec::new();
         for p in &stitched {
@@ -156,13 +165,25 @@ fn batch_names() -> Vec<String> {
     (0..10).map(|k| format!("Many {k}")).collect()
 }
 
-fn run_op(op: &str, it: u64, d: &dyn Driver, spec: &str) {
+// ── SETUP/TIMED SEPARATION (#138): `prepare_op` builds — ONCE per op, OUTSIDE the timed loop — the
+//    closure the timed region calls. All per-op SETUP that is NOT the op itself (relation metadata
+//    `Node::parse`, which is STATIC, and any input list construction that does not vary the op's DB work)
+//    is hoisted HERE so the timed region measures ONLY the op's real execution — never a JSON re-parse or
+//    other harness scaffolding (which would be pure measurement pollution, asymmetric with the SDK cell).
+//    The returned closure runs ONE logical op for iteration `it`; mutating ops vary their UNIQUE column
+//    by `it`. Fixed inputs mirror ops.ts (the SCP SSoT).
+fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64) + 'a> {
     use gen::*;
+    let txd = tx_dialect(spec);
     match op {
-        "findAll" => {
-            let _ = generated_findAll::run_native_raw_struct_FindAll(&companion_findAll::handler(d), generated_findAll::InNRFindAll).unwrap();
-        }
-        "filterPaginateSort" => {
+        "findAll" => Box::new(move |_it| {
+            let _ = generated_findAll::run_native_raw_struct_FindAll(
+                &companion_findAll::handler(d),
+                generated_findAll::InNRFindAll,
+            )
+            .unwrap();
+        }),
+        "filterPaginateSort" => Box::new(move |_it| {
             // `published` is a BOOLEAN column on postgres (native port type `bool`) but INTEGER on
             // sqlite/mysql (`i64`) — the ONE dialect-typed input in the 19 ops. The per-dialect gen is
             // swapped in per build, so select the matching literal at compile time via the `pg` feature.
@@ -170,80 +191,258 @@ fn run_op(op: &str, it: u64, d: &dyn Driver, spec: &str) {
             let published = true;
             #[cfg(not(feature = "pg"))]
             let published = 1;
-            let _ = generated_filterPaginateSort::run_native_raw_struct_FilterPaginateSort(&companion_filterPaginateSort::handler(d), generated_filterPaginateSort::InNRFilterPaginateSort { published }).unwrap();
-        }
-        "findFirst" => {
-            let _ = generated_findFirst::run_native_raw_struct_FindFirst(&companion_findFirst::handler(d), generated_findFirst::InNRFindFirst { name: "User%".into() }).unwrap();
-        }
-        "findUnique" => {
-            let _ = generated_findUnique::run_native_raw_struct_FindUnique(&companion_findUnique::handler(d), generated_findUnique::InNRFindUnique { email: "user500@example.com".into() }).unwrap();
-        }
+            let _ = generated_filterPaginateSort::run_native_raw_struct_FilterPaginateSort(
+                &companion_filterPaginateSort::handler(d),
+                generated_filterPaginateSort::InNRFilterPaginateSort { published },
+            )
+            .unwrap();
+        }),
+        "findFirst" => Box::new(move |_it| {
+            let _ = generated_findFirst::run_native_raw_struct_FindFirst(
+                &companion_findFirst::handler(d),
+                generated_findFirst::InNRFindFirst {
+                    name: "User%".into(),
+                },
+            )
+            .unwrap();
+        }),
+        "findUnique" => Box::new(move |_it| {
+            let _ = generated_findUnique::run_native_raw_struct_FindUnique(
+                &companion_findUnique::handler(d),
+                generated_findUnique::InNRFindUnique {
+                    email: "user500@example.com".into(),
+                },
+            )
+            .unwrap();
+        }),
         "nestedFindAll" => {
-            let rows = generated_nestedFindAll::run_native_raw_struct_FindAll(&companion_nestedFindAll::handler(d), generated_nestedFindAll::InNRFindAll).unwrap();
-            let parents = user_parents(&rows.into_iter().map(|r| (r.id, r.email, r.name)).collect::<Vec<_>>());
-            stitch_with_children(&rel_op(companion_nestedFindAll::relation_ops_json(), "posts"), parents, d);
+            let posts = rel_op(companion_nestedFindAll::relation_ops_json(), "posts"); // parsed ONCE (setup)
+            Box::new(move |_it| {
+                let rows = generated_nestedFindAll::run_native_raw_struct_FindAll(
+                    &companion_nestedFindAll::handler(d),
+                    generated_nestedFindAll::InNRFindAll,
+                )
+                .unwrap();
+                let parents = user_parents(
+                    &rows
+                        .into_iter()
+                        .map(|r| (r.id, r.email, r.name))
+                        .collect::<Vec<_>>(),
+                );
+                stitch_with_children(&posts, parents, d);
+            })
         }
         "nestedFindFirst" => {
-            let rows = generated_nestedFindFirst::run_native_raw_struct_FindFirst(&companion_nestedFindFirst::handler(d), generated_nestedFindFirst::InNRFindFirst { name: "User%".into() }).unwrap();
-            let parents = user_parents(&rows.into_iter().map(|r| (r.id, r.email, r.name)).collect::<Vec<_>>());
-            stitch_with_children(&rel_op(companion_nestedFindFirst::relation_ops_json(), "posts"), parents, d);
+            let posts = rel_op(companion_nestedFindFirst::relation_ops_json(), "posts");
+            Box::new(move |_it| {
+                let rows = generated_nestedFindFirst::run_native_raw_struct_FindFirst(
+                    &companion_nestedFindFirst::handler(d),
+                    generated_nestedFindFirst::InNRFindFirst {
+                        name: "User%".into(),
+                    },
+                )
+                .unwrap();
+                let parents = user_parents(
+                    &rows
+                        .into_iter()
+                        .map(|r| (r.id, r.email, r.name))
+                        .collect::<Vec<_>>(),
+                );
+                stitch_with_children(&posts, parents, d);
+            })
         }
         "nestedFindUnique" => {
-            let rows = generated_nestedFindUnique::run_native_raw_struct_FindUnique(&companion_nestedFindUnique::handler(d), generated_nestedFindUnique::InNRFindUnique { email: "user1@example.com".into() }).unwrap();
-            let parents = user_parents(&rows.into_iter().map(|r| (r.id, r.email, r.name)).collect::<Vec<_>>());
-            stitch_with_children(&rel_op(companion_nestedFindUnique::relation_ops_json(), "posts"), parents, d);
+            let posts = rel_op(companion_nestedFindUnique::relation_ops_json(), "posts");
+            Box::new(move |_it| {
+                let rows = generated_nestedFindUnique::run_native_raw_struct_FindUnique(
+                    &companion_nestedFindUnique::handler(d),
+                    generated_nestedFindUnique::InNRFindUnique {
+                        email: "user1@example.com".into(),
+                    },
+                )
+                .unwrap();
+                let parents = user_parents(
+                    &rows
+                        .into_iter()
+                        .map(|r| (r.id, r.email, r.name))
+                        .collect::<Vec<_>>(),
+                );
+                stitch_with_children(&posts, parents, d);
+            })
         }
         "nestedRelations" => {
-            let rows = generated_nestedRelations::run_native_raw_struct_FindAll(&companion_nestedRelations::handler(d), generated_nestedRelations::InNRFindAll).unwrap();
-            let parents = user_parents(&rows.into_iter().map(|r| (r.id, r.email, r.name)).collect::<Vec<_>>());
-            stitch_with_children(&rel_op(companion_nestedRelations::relation_ops_json(), "posts"), parents, d);
+            let posts = rel_op(companion_nestedRelations::relation_ops_json(), "posts");
+            Box::new(move |_it| {
+                let rows = generated_nestedRelations::run_native_raw_struct_FindAll(
+                    &companion_nestedRelations::handler(d),
+                    generated_nestedRelations::InNRFindAll,
+                )
+                .unwrap();
+                let parents = user_parents(
+                    &rows
+                        .into_iter()
+                        .map(|r| (r.id, r.email, r.name))
+                        .collect::<Vec<_>>(),
+                );
+                stitch_with_children(&posts, parents, d);
+            })
         }
         "compositeRelations" => {
-            let rows = generated_compositeRelations::run_native_raw_struct_ByTenant(&companion_compositeRelations::handler(d), generated_compositeRelations::InNRByTenant { tenant_id: 1 }).unwrap();
-            let parents = tenant_parents(&rows.into_iter().map(|r| (r.tenant_id, r.user_id, r.name)).collect::<Vec<_>>());
-            stitch_with_children(&rel_op(companion_compositeRelations::relation_ops_json(), "posts"), parents, d);
+            let posts = rel_op(companion_compositeRelations::relation_ops_json(), "posts");
+            Box::new(move |_it| {
+                let rows = generated_compositeRelations::run_native_raw_struct_ByTenant(
+                    &companion_compositeRelations::handler(d),
+                    generated_compositeRelations::InNRByTenant { tenant_id: 1 },
+                )
+                .unwrap();
+                let parents = tenant_parents(
+                    &rows
+                        .into_iter()
+                        .map(|r| (r.tenant_id, r.user_id, r.name))
+                        .collect::<Vec<_>>(),
+                );
+                stitch_with_children(&posts, parents, d);
+            })
         }
-        "create" => {
-            let _ = generated_create::run_native_raw_struct_Create(&companion_create::handler(d), generated_create::InNRCreate { email: format!("new{it}@bench.com"), name: "New".into() }).unwrap();
-        }
-        "update" => {
-            let _ = generated_update::run_native_raw_struct_Update(&companion_update::handler(d), generated_update::InNRUpdate { id: 100, name: "Updated 100".into() }).unwrap();
-        }
-        "upsert" => {
-            let _ = generated_upsert::run_native_raw_struct_Upsert(&companion_upsert::handler(d), generated_upsert::InNRUpsert { email: "user1@example.com".into(), name: "Upserted One".into() }).unwrap();
-        }
-        "createMany" => {
-            let _ = generated_createMany::run_native_raw_struct_CreateMany(&companion_createMany::handler(d), generated_createMany::InNRCreateMany { emails: batch_emails(it), names: batch_names() }).unwrap();
-        }
-        "upsertMany" => {
-            let mut emails: Vec<String> = vec!["user1@example.com".into(), "user2@example.com".into()];
+        "create" => Box::new(move |it| {
+            let _ = generated_create::run_native_raw_struct_Create(
+                &companion_create::handler(d),
+                generated_create::InNRCreate {
+                    email: format!("new{it}@bench.com"),
+                    name: "New".into(),
+                },
+            )
+            .unwrap();
+        }),
+        "update" => Box::new(move |_it| {
+            let _ = generated_update::run_native_raw_struct_Update(
+                &companion_update::handler(d),
+                generated_update::InNRUpdate {
+                    id: 100,
+                    name: "Updated 100".into(),
+                },
+            )
+            .unwrap();
+        }),
+        "upsert" => Box::new(move |_it| {
+            let _ = generated_upsert::run_native_raw_struct_Upsert(
+                &companion_upsert::handler(d),
+                generated_upsert::InNRUpsert {
+                    email: "user1@example.com".into(),
+                    name: "Upserted One".into(),
+                },
+            )
+            .unwrap();
+        }),
+        "createMany" => Box::new(move |it| {
+            let _ = generated_createMany::run_native_raw_struct_CreateMany(
+                &companion_createMany::handler(d),
+                generated_createMany::InNRCreateMany {
+                    emails: batch_emails(it),
+                    names: batch_names(),
+                },
+            )
+            .unwrap();
+        }),
+        "upsertMany" => Box::new(move |_it| {
+            let mut emails: Vec<String> =
+                vec!["user1@example.com".into(), "user2@example.com".into()];
             emails.extend((0..8).map(|k| format!("many{k}@bench.com")));
-            let _ = generated_upsertMany::run_native_raw_struct_UpsertMany(&companion_upsertMany::handler(d), generated_upsertMany::InNRUpsertMany { emails, names: batch_names() }).unwrap();
-        }
-        "updateMany" => {
-            let _ = generated_updateMany::run_native_raw_struct_UpdateMany(&companion_updateMany::handler(d), generated_updateMany::InNRUpdateMany { ids: (1..=10).collect(), names: batch_names() }).unwrap();
-        }
+            let _ = generated_upsertMany::run_native_raw_struct_UpsertMany(
+                &companion_upsertMany::handler(d),
+                generated_upsertMany::InNRUpsertMany {
+                    emails,
+                    names: batch_names(),
+                },
+            )
+            .unwrap();
+        }),
+        "updateMany" => Box::new(move |_it| {
+            let _ = generated_updateMany::run_native_raw_struct_UpdateMany(
+                &companion_updateMany::handler(d),
+                generated_updateMany::InNRUpdateMany {
+                    ids: (1..=10).collect(),
+                    names: batch_names(),
+                },
+            )
+            .unwrap();
+        }),
         // ── tx ops: the native RETURNING chain runs through the companion `run_on` (BEGIN…COMMIT). ──
-        "delete" => {
-            let _ = companion_delete::run_on(litedbmodel_runtime::ConnSource::Driver(d), None, tx_dialect(spec), &litedbmodel_runtime::TransactionOptions::default(), || generated_delete::InNRDelete { email: format!("del{it}@bench.com"), name: "Del".into() });
-        }
-        "nestedCreate" => {
-            let _ = companion_nestedCreate::run_on(litedbmodel_runtime::ConnSource::Driver(d), None, tx_dialect(spec), &litedbmodel_runtime::TransactionOptions::default(), || generated_nestedCreate::InNRNestedCreate { email: format!("nc{it}@bench.com"), name: "NC".into(), title: "NC Post".into() });
-        }
-        "nestedUpdate" => {
-            let _ = companion_nestedUpdate::run_on(litedbmodel_runtime::ConnSource::Driver(d), None, tx_dialect(spec), &litedbmodel_runtime::TransactionOptions::default(), || generated_nestedUpdate::InNRNestedUpdate { user_id: 7, name: "NU".into(), title: "NU Post".into() });
-        }
-        "nestedUpsert" => {
-            let _ = companion_nestedUpsert::run_on(litedbmodel_runtime::ConnSource::Driver(d), None, tx_dialect(spec), &litedbmodel_runtime::TransactionOptions::default(), || generated_nestedUpsert::InNRNestedUpsert { email: "user1@example.com".into(), name: "NUp".into(), title: "NUp Post".into() });
-        }
+        "delete" => Box::new(move |it| {
+            let _ = companion_delete::run_on(
+                litedbmodel_runtime::ConnSource::Driver(d),
+                None,
+                txd,
+                &litedbmodel_runtime::TransactionOptions::default(),
+                || generated_delete::InNRDelete {
+                    email: format!("del{it}@bench.com"),
+                    name: "Del".into(),
+                },
+            );
+        }),
+        "nestedCreate" => Box::new(move |it| {
+            let _ = companion_nestedCreate::run_on(
+                litedbmodel_runtime::ConnSource::Driver(d),
+                None,
+                txd,
+                &litedbmodel_runtime::TransactionOptions::default(),
+                || generated_nestedCreate::InNRNestedCreate {
+                    email: format!("nc{it}@bench.com"),
+                    name: "NC".into(),
+                    title: "NC Post".into(),
+                },
+            );
+        }),
+        "nestedUpdate" => Box::new(move |_it| {
+            let _ = companion_nestedUpdate::run_on(
+                litedbmodel_runtime::ConnSource::Driver(d),
+                None,
+                txd,
+                &litedbmodel_runtime::TransactionOptions::default(),
+                || generated_nestedUpdate::InNRNestedUpdate {
+                    user_id: 7,
+                    name: "NU".into(),
+                    title: "NU Post".into(),
+                },
+            );
+        }),
+        "nestedUpsert" => Box::new(move |_it| {
+            let _ = companion_nestedUpsert::run_on(
+                litedbmodel_runtime::ConnSource::Driver(d),
+                None,
+                txd,
+                &litedbmodel_runtime::TransactionOptions::default(),
+                || generated_nestedUpsert::InNRNestedUpsert {
+                    email: "user1@example.com".into(),
+                    name: "NUp".into(),
+                    title: "NUp Post".into(),
+                },
+            );
+        }),
         other => panic!("unknown op '{other}'"),
     }
 }
 
 const OPS: &[&str] = &[
-    "findAll", "filterPaginateSort", "findFirst", "findUnique", "nestedFindAll", "nestedFindFirst",
-    "nestedFindUnique", "create", "nestedCreate", "update", "nestedUpdate", "upsert", "nestedUpsert",
-    "delete", "createMany", "upsertMany", "updateMany", "nestedRelations", "compositeRelations",
+    "findAll",
+    "filterPaginateSort",
+    "findFirst",
+    "findUnique",
+    "nestedFindAll",
+    "nestedFindFirst",
+    "nestedFindUnique",
+    "create",
+    "nestedCreate",
+    "update",
+    "nestedUpdate",
+    "upsert",
+    "nestedUpsert",
+    "delete",
+    "createMany",
+    "upsertMany",
+    "updateMany",
+    "nestedRelations",
+    "compositeRelations",
 ];
 
 fn main() {
@@ -260,8 +459,14 @@ fn main() {
         run_verify(dialect, spec);
         return;
     }
-    let dialect = args.get(1).expect("usage: orm_bench <dialect> <spec> [reps] [warmup]").clone();
-    let spec = args.get(2).expect("usage: orm_bench <dialect> <spec> [reps] [warmup]").clone();
+    let dialect = args
+        .get(1)
+        .expect("usage: orm_bench <dialect> <spec> [reps] [warmup]")
+        .clone();
+    let spec = args
+        .get(2)
+        .expect("usage: orm_bench <dialect> <spec> [reps] [warmup]")
+        .clone();
     let reps: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(300);
     let warmup: u64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(30);
 
@@ -270,13 +475,16 @@ fn main() {
     for op in OPS {
         // Re-seed the canonical fixture before each op so reads see the seed state and writes start clean.
         reseed(driver.as_ref(), &dialect);
+        // SETUP (outside the timed loop): build the op closure ONCE — relation metadata is parsed here,
+        // never per iteration. The timed region below is then EXACTLY the op call, nothing else.
+        let mut run = prepare_op(op, driver.as_ref(), &spec);
         for it in 0..warmup {
-            run_op(op, it, driver.as_ref(), &spec);
+            run(it);
         }
         for it in 0..reps {
             let g = it + warmup;
             let t = Instant::now();
-            run_op(op, g, driver.as_ref(), &spec);
+            run(g);
             let us = t.elapsed().as_micros();
             println!("native,{dialect},{op},{it},{us}");
         }
@@ -325,43 +533,78 @@ fn run_verify(dialect: &str, spec: &str) {
 
     // MODE-2 (interpreter): execute_bundle over the SAME bundle + input on the SAME connection.
     let base = format!("/tmp/ormbench/{dialect}");
-    let bundle = Node::parse(&std::fs::read_to_string(format!("{base}/bundle_filterPaginateSort.json")).expect("read bundle")).expect("parse bundle");
-    let input = Node::parse(&std::fs::read_to_string(format!("{base}/input_filterPaginateSort.json")).expect("read input")).expect("parse input");
-    let m2 = execute_bundle(&bundle, &input, d).unwrap_or_else(|e| panic!("mode-2 filterPaginateSort: {}", e.message()));
+    let bundle = Node::parse(
+        &std::fs::read_to_string(format!("{base}/bundle_filterPaginateSort.json"))
+            .expect("read bundle"),
+    )
+    .expect("parse bundle");
+    let input = Node::parse(
+        &std::fs::read_to_string(format!("{base}/input_filterPaginateSort.json"))
+            .expect("read input"),
+    )
+    .expect("parse input");
+    let m2 = execute_bundle(&bundle, &input, d)
+        .unwrap_or_else(|e| panic!("mode-2 filterPaginateSort: {}", e.message()));
     let mode2_json = encode_value(&m2).to_json_string();
 
     let ok = native_json == mode2_json;
-    println!("filterPaginateSort {dialect}: native≡mode-2 byte-equal = {ok} ({} rows)", rows.len());
+    println!(
+        "filterPaginateSort {dialect}: native≡mode-2 byte-equal = {ok} ({} rows)",
+        rows.len()
+    );
     if ok {
         // Show the created_at (TIMESTAMP→canonical string) + published (BOOLEAN/TINYINT) of row 0 as evidence.
         let sample: String = native_json.chars().take(200).collect();
         println!("  sample: {sample}");
     } else {
-        println!("  NATIVE: {}", native_json.chars().take(300).collect::<String>());
-        println!("  MODE-2: {}", mode2_json.chars().take(300).collect::<String>());
+        println!(
+            "  NATIVE: {}",
+            native_json.chars().take(300).collect::<String>()
+        );
+        println!(
+            "  MODE-2: {}",
+            mode2_json.chars().take(300).collect::<String>()
+        );
     }
 }
 
 // ── #129 safety proof: N+1-avoidance (query counts) via the CountingDriver. hardLimit + reader/writer
 //    routing are proven by the dedicated companion entries (capped find, handler_routed) — see report. ─
 fn run_safety(dialect: &str, spec: &str) {
-    let counting = CountingDriver { inner: open_driver(spec) };
+    let counting = CountingDriver {
+        inner: open_driver(spec),
+    };
     let d: &dyn Driver = &counting;
     reseed(d, dialect);
     let count = |op: &str| {
         QUERY_COUNT.store(0, Ordering::SeqCst);
-        run_op(op, 0, d, spec);
+        prepare_op(op, d, spec)(0);
         QUERY_COUNT.load(Ordering::SeqCst)
     };
     // A single-level batched relation = 1 parent + 1 batched child = 2 (not 1+N).
-    println!("nestedFindAll queries={} (expect 2: 1 parent + 1 batched child)", count("nestedFindAll"));
-    println!("nestedFindUnique queries={} (expect 2)", count("nestedFindUnique"));
+    println!(
+        "nestedFindAll queries={} (expect 2: 1 parent + 1 batched child)",
+        count("nestedFindAll")
+    );
+    println!(
+        "nestedFindUnique queries={} (expect 2)",
+        count("nestedFindUnique")
+    );
     // A 3-level chain = 1 per level = 3 (not N+1 per level).
-    println!("nestedRelations queries={} (expect 3: users + posts + comments)", count("nestedRelations"));
-    println!("compositeRelations queries={} (expect 3)", count("compositeRelations"));
+    println!(
+        "nestedRelations queries={} (expect 3: users + posts + comments)",
+        count("nestedRelations")
+    );
+    println!(
+        "compositeRelations queries={} (expect 3)",
+        count("compositeRelations")
+    );
     // A batch write = 1 statement for N records (not N).
     reseed(d, dialect);
-    println!("createMany queries={} (expect 1: one batched INSERT for 10 records)", count("createMany"));
+    println!(
+        "createMany queries={} (expect 1: one batched INSERT for 10 records)",
+        count("createMany")
+    );
     reseed(d, dialect);
     println!("updateMany queries={} (expect 1)", count("updateMany"));
 
@@ -370,10 +613,18 @@ fn run_safety(dialect: &str, spec: &str) {
     //    companions carry. Proves the guard FIRES end-to-end (not just an emission assert). ──
     reseed(d, dialect);
     match gen::companion_cappedFindAll::run(d, gen::generated_cappedFindAll::InNRCappedFind {}) {
-        Ok(rows) => println!("hardLimit NOT tripped — got {} rows (BUG: guard did not fire)", rows.len()),
+        Ok(rows) => println!(
+            "hardLimit NOT tripped — got {} rows (BUG: guard did not fire)",
+            rows.len()
+        ),
         Err(litedbmodel_runtime::RuntimeError::Limit(l)) => {
-            println!("hardLimit fired: context={} limit={} fetched={} (expect find/2/3)", l.context, l.limit, l.count)
+            println!(
+                "hardLimit fired: context={} limit={} fetched={} (expect find/2/3)",
+                l.context, l.limit, l.count
+            )
         }
-        Err(litedbmodel_runtime::RuntimeError::Sql(e)) => println!("hardLimit: unexpected SQL error: {}", e.message),
+        Err(litedbmodel_runtime::RuntimeError::Sql(e)) => {
+            println!("hardLimit: unexpected SQL error: {}", e.message)
+        }
     }
 }
