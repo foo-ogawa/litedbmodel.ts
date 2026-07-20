@@ -119,7 +119,10 @@ impl Db for SqliteDb {
     }
     fn query(&mut self, sql: &str, params: &[P]) -> Vec<Vec<Cell>> {
         QUERY_COUNT.fetch_add(1, Ordering::Relaxed);
-        let mut stmt = self.conn.prepare(sql).expect("prepare");
+        // prepare_cached reuses the compiled statement across iterations (rusqlite's built-in per-conn
+        // statement cache) — the fair "competent raw-driver user" baseline, matching native's prepared
+        // cache. re-preparing per call was the strawman asymmetry.
+        let mut stmt = self.conn.prepare_cached(sql).expect("prepare");
         let ncols = stmt.column_count();
         let rows = stmt
             .query_map(rusqlite::params_from_iter(params.iter().map(sqlite_value)), |row| {
@@ -144,14 +147,18 @@ impl Db for SqliteDb {
             self.conn.execute_batch(sql).unwrap_or_else(|e| panic!("exec `{sql}`: {e}"));
         } else {
             self.conn
-                .execute(sql, rusqlite::params_from_iter(params.iter().map(sqlite_value)))
+                .prepare_cached(sql)
+                .expect("prepare")
+                .execute(rusqlite::params_from_iter(params.iter().map(sqlite_value)))
                 .unwrap_or_else(|e| panic!("exec `{sql}`: {e}"));
         }
     }
     fn insert_returning_id(&mut self, sql: &str, params: &[P]) -> i64 {
         QUERY_COUNT.fetch_add(1, Ordering::Relaxed);
         self.conn
-            .execute(sql, rusqlite::params_from_iter(params.iter().map(sqlite_value)))
+            .prepare_cached(sql)
+            .expect("prepare")
+            .execute(rusqlite::params_from_iter(params.iter().map(sqlite_value)))
             .unwrap_or_else(|e| panic!("insert `{sql}`: {e}"));
         self.conn.last_insert_rowid()
     }
@@ -161,6 +168,20 @@ impl Db for SqliteDb {
 #[cfg(feature = "livedb")]
 struct PgDb {
     client: postgres::Client,
+    // Per-SQL prepared-statement cache (postgres::Statement is a cheap Arc-backed handle) — reused across
+    // iterations so the SDK, like native's prepare_cached, parses each SQL once. Keyed by SQL text.
+    stmts: std::collections::HashMap<String, postgres::Statement>,
+}
+#[cfg(feature = "livedb")]
+impl PgDb {
+    fn prep(&mut self, sql: &str) -> postgres::Statement {
+        if let Some(s) = self.stmts.get(sql) {
+            return s.clone();
+        }
+        let s = self.client.prepare(sql).unwrap_or_else(|e| panic!("prepare `{sql}`: {e}"));
+        self.stmts.insert(sql.to_string(), s.clone());
+        s
+    }
 }
 #[cfg(feature = "livedb")]
 fn pg_params(params: &[P]) -> Vec<Box<dyn postgres::types::ToSql + Sync>> {
@@ -203,8 +224,9 @@ impl Db for PgDb {
         let boxed = pg_params(params);
         let refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
             boxed.iter().map(|b| b.as_ref()).collect();
+        let stmt = self.prep(sql);
         self.client
-            .query(sql, &refs)
+            .query(&stmt, &refs)
             .unwrap_or_else(|e| panic!("query `{sql}`: {e}"))
             .iter()
             .map(pg_decode)
@@ -219,7 +241,8 @@ impl Db for PgDb {
             let boxed = pg_params(params);
             let refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
                 boxed.iter().map(|b| b.as_ref()).collect();
-            self.client.execute(sql, &refs).unwrap_or_else(|e| panic!("exec `{sql}`: {e}"));
+            let stmt = self.prep(sql);
+            self.client.execute(&stmt, &refs).unwrap_or_else(|e| panic!("exec `{sql}`: {e}"));
         }
     }
     fn insert_returning_id(&mut self, sql: &str, params: &[P]) -> i64 {
@@ -228,7 +251,8 @@ impl Db for PgDb {
         let boxed = pg_params(params);
         let refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
             boxed.iter().map(|b| b.as_ref()).collect();
-        let rows = self.client.query(&sql, &refs).unwrap_or_else(|e| panic!("insert `{sql}`: {e}"));
+        let stmt = self.prep(&sql);
+        let rows = self.client.query(&stmt, &refs).unwrap_or_else(|e| panic!("insert `{sql}`: {e}"));
         rows[0].get::<_, i32>(0) as i64
     }
 }
@@ -301,6 +325,7 @@ fn open_db(spec: &str) -> Box<dyn Db> {
         if let Some(conn) = spec.strip_prefix("pg:") {
             return Box::new(PgDb {
                 client: postgres::Client::connect(conn, postgres::NoTls).expect("connect postgres"),
+                stmts: std::collections::HashMap::new(),
             });
         }
         if let Some(url) = spec.strip_prefix("mysql:") {
