@@ -14,7 +14,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROOF_DIR=/tmp/e1proof
-MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_feed generated_tenantfeed generated_relbatch generated_relsingle generated_createuser generated_renameuser generated_deleteuser generated_upsert generated_createmany generated_upsertmany generated_updatemany generated_txdelete generated_txnestedcreate generated_txnestedupdate generated_txnestedupsert generated_txrollback)
+MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_capped generated_feed generated_tenantfeed generated_relbatch generated_relsingle generated_createuser generated_renameuser generated_deleteuser generated_upsert generated_createmany generated_upsertmany generated_updatemany generated_txdelete generated_txnestedcreate generated_txnestedupdate generated_txnestedupsert generated_txrollback)
 WRITE_OPS=(createuser renameuser deleteuser)
 fail=0
 
@@ -112,6 +112,18 @@ echo "── leg 3e: TRANSACTION execution — RETURNING chain + BEGIN/COMMIT/RO
 # state. The state proves the chain (post.author_id IS the user's RETURNING id) and the rollback control
 # proves atomicity (statement 2 fails → statement 1's effect undone → committed:false, state unchanged).
 node "$HERE/compare_write.mjs" "$BIN" "$PROOF_DIR/tx_seed.db" "$PROOF_DIR/oracles_tx.json" || fail=1
+
+echo "── leg 3f: FIND HARD-LIMIT — the auto-wired guarded native find trips LimitExceededError (#135/#136) ──"
+# The capped find (findHardLimit=2 ⇒ baked LIMIT 3) over the seed (> 2 users) must trip the SHARED
+# check_find_hard_limit: `run` returns RuntimeError::Limit (context=find, limit=2, N+1 fetch count=3),
+# byte-equal to what mode-2's assert_find_guard raises. Proves the guarded companion `run` COMPILES
+# (crate build) AND enforces the cap end-to-end (not just an emission string-assert).
+capout="$("$BIN" capped "$PROOF_DIR/proof.db")"
+if [[ "$capout" == "LIMIT:find:2:3" ]]; then
+  echo "  PASS  capped find: guarded run() tripped $capout (cap 2 < N+1 fetch 3)"
+else
+  echo "  FAIL  capped find: expected 'LIMIT:find:2:3', got '$capout'"; fail=1
+fi
 
 echo
 if [[ $fail -eq 0 ]]; then echo "E1 PROOF: ALL LEGS PASS"; else echo "E1 PROOF: FAILURES ABOVE"; fi

@@ -34,9 +34,15 @@ pub fn run(driver: &dyn Driver, in_: InNRTxNestedUpdate) -> Result<bool, Behavio
     litedbmodel_runtime::run_transaction(driver, |ctx| run_native_raw_struct_TxNestedUpdate(&TxRt { ctx }, in_)).map_err(cvt)
 }
 
-/// The OPTIONS-aware / ROUTED tx entry (#135): open the tx from a ConnSource (single driver, or the
-/// WRITER pool of a named connection) and apply the TransactionOptions (isolation prelude,
-/// rollback_only). Drives the SAME per-execution-ownership tx seam. Returns `true` iff it committed.
-pub fn run_on(src: litedbmodel_runtime::ConnSource, connection: Option<&str>, dialect: litedbmodel_runtime::TxDialect, options: &litedbmodel_runtime::TransactionOptions, in_: InNRTxNestedUpdate) -> Result<bool, BehaviorError> {
-    litedbmodel_runtime::run_transaction_on(src, connection, dialect, options, |ctx| run_native_raw_struct_TxNestedUpdate(&TxRt { ctx }, in_)).map_err(cvt)
+/// The OPTIONS-aware / ROUTED / RETRYING tx entry (#135 routing+isolation + #136 retry): open the
+/// tx from a ConnSource (single driver, or the WRITER pool of a named connection) and apply the
+/// TransactionOptions (isolation prelude, rollback_only, and the SHARED #81 retry loop). `make_in`
+/// REBUILDS the input per attempt so a retryable failure (deadlock / serialization / connection) can
+/// re-run the whole tx on a FRESH connection — bc-independent (NO Clone on InNRTxNestedUpdate). The bc
+/// runner's BehaviorError maps to a SqlFailure whose message the SHARED is_retryable_tx_error SSoT
+/// classifies. Returns `true` iff it committed; a non-retryable / retry-exhausted error re-raises.
+pub fn run_on(src: litedbmodel_runtime::ConnSource, connection: Option<&str>, dialect: litedbmodel_runtime::TxDialect, options: &litedbmodel_runtime::TransactionOptions, make_in: impl Fn() -> InNRTxNestedUpdate) -> Result<bool, litedbmodel_runtime::SqlFailure> {
+    litedbmodel_runtime::run_transaction_on(src, connection, dialect, options, move |ctx| {
+        run_native_raw_struct_TxNestedUpdate(&TxRt { ctx }, make_in()).map_err(|e| litedbmodel_runtime::SqlFailure { kind: e.code, policy: "fail".to_string(), sqlite_code: None, message: e.message })
+    })
 }

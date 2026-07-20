@@ -29,7 +29,7 @@ use crate::driver::{Driver, RunInfo};
 use crate::errors::SqlFailure;
 use crate::exec_context::{self, ExecutionContext, StatementIntent, TxDecision};
 use crate::static_bundle::render_placeholders;
-use crate::tx_options::{isolation_prelude, Dialect as TxDialect, TransactionOptions};
+use crate::tx_options::{Dialect as TxDialect, TransactionOptions};
 
 // ── Wire: a node result's own wire datum (a driver row list, or a synthesized write summary) ──────
 
@@ -635,43 +635,39 @@ pub fn run_transaction<R, E>(
     })
 }
 
-/// The OPTIONS-aware native transaction envelope (#135): open the tx from a [`ConnSource`] (a single
-/// driver, or the WRITER pool of a named `connection` in a [`RoutingConfig`]) and apply the
-/// [`TransactionOptions`] — the isolation prelude ([`isolation_prelude`]: PG SET post-BEGIN / MySQL SET
-/// pre-BEGIN / SQLite loud-error on a level) and `rollback_only` (dry-run: run the chain then ROLLBACK,
-/// nothing commits). It drives the SAME [`exec_context::with_transaction_decided_isolated_on`] the mode-2
-/// write-tx path uses (per-execution connection ownership on the writer) — no new tx engine. Returns
-/// `true` iff the tx COMMITTED (a chain error or `rollback_only` ⇒ `false`).
+/// The OPTIONS-aware, RETRYING native transaction envelope (#135 routing/isolation + #136 retry): open
+/// the tx from a [`ConnSource`] (a single driver, or the WRITER pool of a named `connection` in a
+/// [`RoutingConfig`]) and drive the SAME retry loop [`exec_context::transaction_decided_on`] the mode-2
+/// write-tx path uses. That loop applies, in ONE place (no native re-implementation): the isolation
+/// prelude ([`isolation_prelude`]), `rollback_only` (dry-run), the nested-tx JOIN, AND the #81 RETRY
+/// loop — a retryable error (deadlock / serialization / connection) re-runs the WHOLE body on a FRESH
+/// connection, classified by the SHARED [`crate::tx_options::is_retryable_tx_error`] SSoT (no parallel
+/// native predicate). Returns `true` iff the tx COMMITTED (`rollback_only` ⇒ `false`; a non-retryable
+/// or retry-exhausted error re-raises as [`SqlFailure`], which the consumer maps to committed:false).
 ///
-/// RETRY is NOT applied here: the #81 retry loop ([`exec_context::transaction_decided_on`]) re-runs the
-/// body on a fresh connection, which requires re-supplying the moved `in_` per attempt (a `Fn` body over
-/// a `Clone` input). The bc-generated `InNR<comp>` structs derive `Default` only, so the native tx body
-/// (`run_native_raw_struct_<comp>(handler, in_)`, which consumes `in_`) is `FnOnce` = single-attempt.
-/// Enabling retry needs the bc input struct to be `Clone` (a bc-emitter concern, off-limits here).
-pub fn run_transaction_on<R, E>(
+/// RETRY on the native path (#136) is litedbmodel-side and bc-INDEPENDENT: the body is `impl Fn`
+/// (re-runnable per attempt); the companion re-supplies the input each attempt via an input-BUILDER
+/// closure (`make_in: impl Fn() -> InNR<comp>`, called inside the body), so NO bc `Clone` derive on the
+/// generated `InNR<comp>` is needed. The body returns its failure as a [`SqlFailure`] so the retry loop
+/// can classify it (the companion recovers it from the bc runner's error message, whose OP_FAILED text
+/// embeds the original driver message the SSoT matches on).
+pub fn run_transaction_on<R>(
     src: ConnSource,
     connection: Option<&str>,
     dialect: TxDialect,
     options: &TransactionOptions,
-    body: impl FnOnce(&ExecutionContext) -> Result<R, E>,
+    body: impl Fn(&ExecutionContext) -> Result<R, SqlFailure>,
 ) -> Result<bool, SqlFailure> {
     let ctx = src.ctx()?;
-    let (before_begin, after_begin) = isolation_prelude(dialect, options.isolation)?;
-    let rollback_only = options.rollback_only;
-    exec_context::with_transaction_decided_isolated_on(
-        &ctx,
-        connection,
-        &before_begin,
-        &after_begin,
-        |tx_ctx| {
-            Ok(match body(tx_ctx) {
-                // A successful chain COMMITs — unless rollback_only (dry-run): run then roll back.
-                Ok(_) if !rollback_only => TxDecision::Commit(true),
-                // rollback_only success OR a chain error ⇒ ROLLBACK, committed:false.
-                Ok(_) | Err(_) => TxDecision::Rollback(false),
-            })
-        },
-    )
+    let committed =
+        exec_context::transaction_decided_on(&ctx, connection, dialect, options, |tx_ctx| {
+            // A body failure propagates as a SqlFailure ⇒ the retry loop classifies + retries/re-raises;
+            // success COMMITs (the loop rewrites this to ROLLBACK under rollback_only, returning `true`).
+            body(tx_ctx)?;
+            Ok(TxDecision::Commit(true))
+        })?;
+    // rollback_only (dry-run) committed nothing even though the body succeeded ⇒ report false.
+    Ok(committed && !options.rollback_only)
 }
 
 /// The [`wire_impls!`] macro — expands the module-local `WireValue`/`WireRow`/`WireList` trait impls for
@@ -1104,21 +1100,49 @@ mod tests {
 
     /// A Send+Sync recording driver: every prepared SQL (through the seam) is pushed to a shared log —
     /// so a routing test can assert WHICH pool (reader/writer) a native op landed on, and a tx test can
-    /// assert the BEGIN / SET ISOLATION / COMMIT / ROLLBACK ordering.
+    /// assert the BEGIN / SET ISOLATION / COMMIT / ROLLBACK ordering. It can also INJECT a retryable
+    /// failure the first `fail_remaining` times a statement equal to `fail_sql` runs (#136 retry test):
+    /// the error message carries a phrase the SHARED `is_retryable_tx_error` SSoT classifies as retryable.
     struct RecDriver {
         log: Arc<Mutex<Vec<String>>>,
+        fail_sql: Option<String>,
+        fail_remaining: Arc<Mutex<u32>>,
     }
     struct RecStmt {
         log: Arc<Mutex<Vec<String>>>,
         sql: String,
+        fail_sql: Option<String>,
+        fail_remaining: Arc<Mutex<u32>>,
+    }
+    impl RecStmt {
+        /// If this SQL is the injected fault target and a fault is still owed, consume one and return the
+        /// retryable failure; else `Ok`.
+        fn maybe_fail(&self) -> Result<(), SqlFailure> {
+            if self.fail_sql.as_deref() == Some(self.sql.as_str()) {
+                let mut left = self.fail_remaining.lock().unwrap();
+                if *left > 0 {
+                    *left -= 1;
+                    return Err(SqlFailure {
+                        kind: "retryable".into(),
+                        policy: "retry".into(),
+                        sqlite_code: None,
+                        // A phrase `is_retryable_tx_error` matches (SSoT, tx_options.rs) — no native predicate.
+                        message: "deadlock detected".into(),
+                    });
+                }
+            }
+            Ok(())
+        }
     }
     impl PreparedStatement for RecStmt {
         fn all(&mut self, _p: &[Value]) -> Result<Vec<Value>, SqlFailure> {
             self.log.lock().unwrap().push(self.sql.clone());
+            self.maybe_fail()?;
             Ok(vec![Value::Obj(vec![("id".into(), Value::Int(1))])])
         }
         fn run(&mut self, _p: &[Value]) -> Result<RunInfo, SqlFailure> {
             self.log.lock().unwrap().push(self.sql.clone());
+            self.maybe_fail()?;
             Ok(RunInfo {
                 changes: 1,
                 last_insert_rowid: 0,
@@ -1130,6 +1154,8 @@ mod tests {
             Box::new(RecStmt {
                 log: self.log.clone(),
                 sql: sql.to_string(),
+                fail_sql: self.fail_sql.clone(),
+                fail_remaining: self.fail_remaining.clone(),
             })
         }
         fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
@@ -1141,7 +1167,29 @@ mod tests {
     }
     fn rec() -> (Arc<dyn Driver + Send + Sync>, Arc<Mutex<Vec<String>>>) {
         let log = Arc::new(Mutex::new(Vec::new()));
-        (Arc::new(RecDriver { log: log.clone() }), log)
+        (
+            Arc::new(RecDriver {
+                log: log.clone(),
+                fail_sql: None,
+                fail_remaining: Arc::new(Mutex::new(0)),
+            }),
+            log,
+        )
+    }
+    /// A recording driver that fails the FIRST `times` runs of `fail_sql` with a retryable error.
+    fn rec_failing(
+        fail_sql: &str,
+        times: u32,
+    ) -> (Arc<dyn Driver + Send + Sync>, Arc<Mutex<Vec<String>>>) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        (
+            Arc::new(RecDriver {
+                log: log.clone(),
+                fail_sql: Some(fail_sql.to_string()),
+                fail_remaining: Arc::new(Mutex::new(times)),
+            }),
+            log,
+        )
     }
     fn split_routing(
         reader: Arc<dyn Driver + Send + Sync>,
@@ -1220,10 +1268,7 @@ mod tests {
             None,
             TxD::Postgres,
             &opts,
-            |ctx| {
-                exec(ctx, "UPDATE u SET n = 1", &[], ExecMode::SummarySingle).map_err(|_| ())?;
-                Ok::<(), ()>(())
-            },
+            |ctx| exec(ctx, "UPDATE u SET n = 1", &[], ExecMode::SummarySingle).map(|_| ()),
         )
         .unwrap();
         assert!(committed);
@@ -1260,8 +1305,7 @@ mod tests {
                     &[],
                     ExecMode::SummarySingle,
                 )
-                .map_err(|_| ())?;
-                Ok::<(), ()>(())
+                .map(|_| ())
             },
         )
         .unwrap();
@@ -1275,12 +1319,13 @@ mod tests {
         assert!(!l.contains(&"COMMIT".to_string()));
     }
 
-    /// A native tx whose body ERRORS rolls back and reports committed:false (atomicity) — the same
-    /// contract as the plain [`run_transaction`] envelope, now under options.
+    /// A native tx whose body errors with a NON-retryable failure rolls back and re-raises as a
+    /// SqlFailure (atomicity) — mirroring mode-2 `execute_transaction_bundle` (the consumer maps the Err
+    /// to committed:false). retry_on_error default ON does NOT retry a non-retryable error (one attempt).
     #[test]
     fn native_tx_body_error_rolls_back() {
         let (d, log) = rec();
-        let committed = run_transaction_on(
+        let result = run_transaction_on(
             ConnSource::Driver(d.as_ref()),
             None,
             TxD::Sqlite,
@@ -1292,12 +1337,106 @@ mod tests {
                     &[],
                     ExecMode::SummarySingle,
                 )
-                .map_err(|_| ())?;
-                Err::<(), ()>(())
+                .map(|_| ())?;
+                Err::<(), SqlFailure>(SqlFailure {
+                    kind: "constraint_violation".into(),
+                    policy: "fail".into(),
+                    sqlite_code: None,
+                    message: "UNIQUE constraint failed".into(),
+                })
+            },
+        );
+        assert!(result.is_err(), "a non-retryable body error re-raises");
+        let l = log.lock().unwrap().clone();
+        assert!(l.contains(&"ROLLBACK".to_string()));
+        // Exactly ONE attempt (non-retryable ⇒ no retry): a single BEGIN.
+        assert_eq!(l.iter().filter(|s| *s == "BEGIN").count(), 1);
+    }
+
+    /// #136 NATIVE TX RETRY: a retryable failure (deadlock) on the first attempt re-runs the WHOLE tx on
+    /// a FRESH connection and commits on the second — driven by the SHARED retry loop
+    /// [`exec_context::transaction_decided_on`] + the SHARED [`crate::tx_options::is_retryable_tx_error`]
+    /// SSoT (no native retry predicate). The input-builder closure re-supplies the body each attempt
+    /// (bc-independent — no `Clone` on any generated struct).
+    #[test]
+    fn native_tx_retries_on_retryable_error_then_commits() {
+        // Fail the INSERT once (retryable) → attempt 1 rolls back, attempt 2 succeeds + commits.
+        let (d, log) = rec_failing("INSERT INTO u VALUES (1)", 1);
+        let opts = TransactionOptions {
+            retry_on_error: true,
+            retry_limit: 3,
+            retry_duration_ms: 0, // no backoff sleep in the test
+            ..Default::default()
+        };
+        // A per-attempt input builder (the companion's `make_in`): rebuilt each attempt, no Clone needed.
+        let make_row = || 1i64;
+        let committed = run_transaction_on(
+            ConnSource::Driver(d.as_ref()),
+            None,
+            TxD::Sqlite,
+            &opts,
+            |ctx| {
+                let _row = make_row();
+                exec(
+                    ctx,
+                    "INSERT INTO u VALUES (1)",
+                    &[],
+                    ExecMode::SummarySingle,
+                )
+                .map(|_| ())
             },
         )
         .unwrap();
-        assert!(!committed);
-        assert!(log.lock().unwrap().contains(&"ROLLBACK".to_string()));
+        assert!(committed, "the retried attempt commits");
+        let l = log.lock().unwrap().clone();
+        // TWO attempts: BEGIN … (INSERT fails) ROLLBACK … BEGIN (INSERT ok) COMMIT.
+        assert_eq!(
+            l.iter().filter(|s| *s == "BEGIN").count(),
+            2,
+            "retry ran a SECOND attempt on a fresh connection"
+        );
+        assert!(l.contains(&"ROLLBACK".to_string()), "attempt 1 rolled back");
+        assert_eq!(
+            l.last().map(String::as_str),
+            Some("COMMIT"),
+            "attempt 2 committed"
+        );
+    }
+
+    /// #136: a retryable error that NEVER clears within `retry_limit` exhausts retries and re-raises.
+    #[test]
+    fn native_tx_retry_exhausts_then_reraises() {
+        // Fail more times than retry_limit ⇒ every attempt fails ⇒ re-raise.
+        let (d, log) = rec_failing("INSERT INTO u VALUES (1)", 9);
+        let opts = TransactionOptions {
+            retry_on_error: true,
+            retry_limit: 2,
+            retry_duration_ms: 0,
+            ..Default::default()
+        };
+        let result = run_transaction_on(
+            ConnSource::Driver(d.as_ref()),
+            None,
+            TxD::Sqlite,
+            &opts,
+            |ctx| {
+                exec(
+                    ctx,
+                    "INSERT INTO u VALUES (1)",
+                    &[],
+                    ExecMode::SummarySingle,
+                )
+                .map(|_| ())
+            },
+        );
+        assert!(
+            result.is_err(),
+            "retry exhausted ⇒ the retryable error re-raises"
+        );
+        assert_eq!(
+            log.lock().unwrap().iter().filter(|s| *s == "BEGIN").count(),
+            2,
+            "exactly retry_limit (2) attempts"
+        );
     }
 }

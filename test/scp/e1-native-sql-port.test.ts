@@ -59,6 +59,8 @@ import {
   compileWriteNode,
   mysqlPkHint,
   executeTransactionBundle,
+  setLimitConfig,
+  resetLimitConfig,
 } from '../../src/scp/index';
 import type { TransactionPlan } from '../../src/scp/makesql/tx';
 import type { SqlBundle } from '../../src/scp/runtime';
@@ -111,6 +113,16 @@ class OrmReads extends SemanticBehavior {
       where: [whereEq(($ as never)['id'], $.id), when(ne(opt($.name), null), () => whereEq(($ as never)['name'], $.name))],
       order: 'id ASC',
     });
+  }
+}
+
+/** A bare row list with NO author limit — the find-hardLimit target (#135/#136). With
+ * `setLimitConfig({findHardLimit})` the compile bakes `LIMIT hardLimit + 1` + a `findGuard`, and the
+ * generated rust companion emits the GUARDED `run` entry (calls the shared `check_find_hard_limit`). */
+class CappedReads extends SemanticBehavior {
+  static columns = USER_COLUMNS;
+  CappedFind(_$: Record<string, never>) {
+    return L.Select({ table: 'benchmark_users', select: ['id', 'email', 'name'], order: 'id ASC' });
   }
 }
 
@@ -197,6 +209,7 @@ class TenantFeedReads extends SemanticBehavior {
 
 const RESOLVE = schemaColumnTypeResolver(ddl('sqlite'));
 const CONTRACT = publishBehaviors(OrmReads);
+const CAPPED_CONTRACT = publishBehaviors(CappedReads);
 const WRITE_CONTRACT = publishBehaviors(OrmWrites);
 const POST_CONTRACT = publishBehaviors(PostReads);
 const POST_RESOLVE = schemaColumnTypeResolver(ddl('sqlite'));
@@ -568,6 +581,20 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     const relSingleArt = generateCodegenArtifact(relSingleBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_relsingle.rs'), relSingleArt.module.code);
     writeFileSync(join(PROOF_DIR, 'companion_relsingle.rs'), generateRustCompanion(relSingleBundle, 'generated_relsingle', RESOLVE));
+
+    // #135/#136 find-hardLimit fixture: compile a CAPPED bare find (findHardLimit=2 ⇒ baked LIMIT 3 +
+    // findGuard) so the generated rust companion emits the GUARDED `run` entry — COMPILED by the e1 crate
+    // build (leg 3) and EXECUTED by run-proof leg 3f (the seed has > 2 users ⇒ the cap trips). The config
+    // is set + RESET tightly around this ONE compile so NO other bundle gains a findGuard (byte-equality).
+    setLimitConfig({ findHardLimit: 2 });
+    const cappedBundle = compileBundle(CAPPED_CONTRACT, 'CappedFind', [], 'sqlite', undefined, RESOLVE);
+    resetLimitConfig();
+    expect(cappedBundle.readGraph!.findGuard).toEqual({ hardLimit: 2, nodeId: cappedBundle.readGraph!.findGuard!.nodeId, model: 'CappedFind' });
+    const cappedArt = generateCodegenArtifact(cappedBundle, 'rust', REGISTERED, RESOLVE);
+    writeFileSync(join(PROOF_DIR, 'generated_capped.rs'), cappedArt.module.code);
+    const cappedCompanion = generateRustCompanion(cappedBundle, 'generated_capped', RESOLVE);
+    expect(cappedCompanion).toContain('litedbmodel_runtime::check_find_hard_limit(2i64, rows.len() as i64, Some("CappedFind"))?;');
+    writeFileSync(join(PROOF_DIR, 'companion_capped.rs'), cappedCompanion);
 
     // ONE seeded sqlite DB FILE shared by BOTH legs — the oracle and the rust run read byte-identical
     // data, so an equality pass cannot come from two independently-seeded DBs happening to agree.

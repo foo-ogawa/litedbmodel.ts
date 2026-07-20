@@ -13,6 +13,7 @@
 // `super::generated_<op>`.
 mod companion_byids;
 mod companion_bymaybe;
+mod companion_capped;
 mod companion_createmany;
 mod companion_createuser;
 mod companion_deleteuser;
@@ -33,6 +34,7 @@ mod companion_upsert;
 mod companion_upsertmany;
 mod generated_byids;
 mod generated_bymaybe;
+mod generated_capped;
 mod generated_createmany;
 mod generated_createuser;
 mod generated_deleteuser;
@@ -55,9 +57,14 @@ mod generated_upsertmany;
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
 use litedbmodel_runtime::{
-    encode_value, execute_bundle, execute_transaction_bundle, read_bundle_pooled, stitch_relation,
-    Driver, Node, SqlFailure, SqliteDriver, Value,
+    encode_value, execute_bundle, execute_transaction_bundle, stitch_relation, Driver, Node,
+    SqlFailure, SqliteDriver, Value,
 };
+// `read_bundle_pooled` is the mode-2 relation read — used ONLY on the livedb `readrel` path (pg/mysql,
+// gated below), so its import mirrors that `#[cfg(feature = "livedb")]` (no unused-import in the default
+// SQLite build).
+#[cfg(feature = "livedb")]
+use litedbmodel_runtime::read_bundle_pooled;
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -221,6 +228,19 @@ fn print_queries() {
     eprintln!("queries={}", QUERY_COUNT.load(Ordering::SeqCst));
 }
 
+/// The tx dialect for the isolation prelude, derived from the connection spec (#136). Inert while the
+/// e1 tx cells pass the default `TransactionOptions` (isolation `None` ⇒ empty prelude), but kept
+/// correct per connection so a future isolation option renders the right SET.
+fn tx_dialect(db_path: &str) -> litedbmodel_runtime::TxDialect {
+    if db_path.starts_with("pg:") {
+        litedbmodel_runtime::TxDialect::Postgres
+    } else if db_path.starts_with("mysql:") {
+        litedbmodel_runtime::TxDialect::Mysql
+    } else {
+        litedbmodel_runtime::TxDialect::Sqlite
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let op = args
@@ -358,6 +378,18 @@ fn main() {
             let items: Vec<(i64, String, String)> =
                 out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));
+        }
+        "capped" => {
+            // #135/#136: the GUARDED find entry enforces the baked hardLimit (2). The seed has > 2 users,
+            // so the cap trips ⇒ `run` returns RuntimeError::Limit (context=find), byte-equal to mode-2.
+            // This EXERCISES the auto-wired guarded companion `run` (compiled by this crate build).
+            match companion_capped::run(d, generated_capped::InNRCappedFind {}) {
+                Ok(rows) => println!("OK:{}", rows.len()),
+                Err(litedbmodel_runtime::RuntimeError::Limit(l)) => {
+                    println!("LIMIT:{}:{}:{}", l.context, l.limit, l.count)
+                }
+                Err(litedbmodel_runtime::RuntimeError::Sql(e)) => panic!("capped: {}", e.message),
+            }
         }
         "bymaybe" => {
             let author_id: i64 = args
@@ -768,9 +800,20 @@ fn main() {
         "txdelete" => {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
-            let committed =
-                companion_txdelete::run(d, generated_txdelete::InNRTxDelete { email, name })
-                    .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            // #136: the RETRYING/options tx entry — the input builder rebuilds the input per attempt so a
+            // retryable failure re-runs the whole tx (bc-independent). A non-retryable error ⇒ Err ⇒
+            // committed:false (mirrors mode-2 `execute_transaction_bundle(...).is_ok()`).
+            let committed = companion_txdelete::run_on(
+                litedbmodel_runtime::ConnSource::Driver(d),
+                None,
+                tx_dialect(db_path),
+                &litedbmodel_runtime::TransactionOptions::default(),
+                || generated_txdelete::InNRTxDelete {
+                    email: email.clone(),
+                    name: name.clone(),
+                },
+            )
+            .unwrap_or(false);
             println!(
                 "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
                 committed,
@@ -781,11 +824,18 @@ fn main() {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
             let title = args.get(5).expect("title").clone();
-            let committed = companion_txnestedcreate::run(
-                d,
-                generated_txnestedcreate::InNRTxNestedCreate { email, name, title },
+            let committed = companion_txnestedcreate::run_on(
+                litedbmodel_runtime::ConnSource::Driver(d),
+                None,
+                tx_dialect(db_path),
+                &litedbmodel_runtime::TransactionOptions::default(),
+                || generated_txnestedcreate::InNRTxNestedCreate {
+                    email: email.clone(),
+                    name: name.clone(),
+                    title: title.clone(),
+                },
             )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            .unwrap_or(false);
             println!(
                 "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
                 committed,
@@ -796,15 +846,18 @@ fn main() {
             let user_id: i64 = args.get(3).expect("user_id").parse().expect("user_id int");
             let name = args.get(4).expect("name").clone();
             let title = args.get(5).expect("title").clone();
-            let committed = companion_txnestedupdate::run(
-                d,
-                generated_txnestedupdate::InNRTxNestedUpdate {
-                    name,
+            let committed = companion_txnestedupdate::run_on(
+                litedbmodel_runtime::ConnSource::Driver(d),
+                None,
+                tx_dialect(db_path),
+                &litedbmodel_runtime::TransactionOptions::default(),
+                || generated_txnestedupdate::InNRTxNestedUpdate {
+                    name: name.clone(),
                     user_id,
-                    title,
+                    title: title.clone(),
                 },
             )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            .unwrap_or(false);
             println!(
                 "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
                 committed,
@@ -815,11 +868,18 @@ fn main() {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
             let title = args.get(5).expect("title").clone();
-            let committed = companion_txnestedupsert::run(
-                d,
-                generated_txnestedupsert::InNRTxNestedUpsert { email, name, title },
+            let committed = companion_txnestedupsert::run_on(
+                litedbmodel_runtime::ConnSource::Driver(d),
+                None,
+                tx_dialect(db_path),
+                &litedbmodel_runtime::TransactionOptions::default(),
+                || generated_txnestedupsert::InNRTxNestedUpsert {
+                    email: email.clone(),
+                    name: name.clone(),
+                    title: title.clone(),
+                },
             )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            .unwrap_or(false);
             println!(
                 "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
                 committed,
@@ -830,15 +890,18 @@ fn main() {
             let email = args.get(3).expect("email").clone();
             let dup_email = args.get(4).expect("dup_email").clone();
             let name = args.get(5).expect("name").clone();
-            let committed = companion_txrollback::run(
-                d,
-                generated_txrollback::InNRTxRollback {
-                    email,
-                    name,
-                    dup_email,
+            let committed = companion_txrollback::run_on(
+                litedbmodel_runtime::ConnSource::Driver(d),
+                None,
+                tx_dialect(db_path),
+                &litedbmodel_runtime::TransactionOptions::default(),
+                || generated_txrollback::InNRTxRollback {
+                    email: email.clone(),
+                    name: name.clone(),
+                    dup_email: dup_email.clone(),
                 },
             )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            .unwrap_or(false);
             println!(
                 "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
                 committed,
