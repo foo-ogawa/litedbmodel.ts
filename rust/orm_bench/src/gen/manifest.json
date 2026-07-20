@@ -1,0 +1,121 @@
+[
+  {
+    "id": "findAll",
+    "kind": "read",
+    "entry": "run_native_raw_struct_FindAll",
+    "component": "FindAll"
+  },
+  {
+    "id": "filterPaginateSort",
+    "kind": "read",
+    "entry": "run_native_raw_struct_FilterPaginateSort",
+    "component": "FilterPaginateSort"
+  },
+  {
+    "id": "findFirst",
+    "kind": "read",
+    "entry": "run_native_raw_struct_FindFirst",
+    "component": "FindFirst"
+  },
+  {
+    "id": "findUnique",
+    "kind": "read",
+    "entry": "run_native_raw_struct_FindUnique",
+    "component": "FindUnique"
+  },
+  {
+    "id": "nestedFindAll",
+    "kind": "read+rel",
+    "entry": "run_native_raw_struct_FindAll",
+    "component": "FindAll",
+    "withRel": "posts"
+  },
+  {
+    "id": "nestedFindFirst",
+    "kind": "read+rel",
+    "entry": "run_native_raw_struct_FindFirst",
+    "component": "FindFirst",
+    "withRel": "posts"
+  },
+  {
+    "id": "nestedFindUnique",
+    "kind": "read+rel",
+    "entry": "run_native_raw_struct_FindUnique",
+    "component": "FindUnique",
+    "withRel": "posts"
+  },
+  {
+    "id": "nestedRelations",
+    "kind": "read+rel",
+    "entry": "run_native_raw_struct_FindAll",
+    "component": "FindAll",
+    "withRel": "posts"
+  },
+  {
+    "id": "compositeRelations",
+    "kind": "read+rel",
+    "entry": "run_native_raw_struct_ByTenant",
+    "component": "ByTenant",
+    "withRel": "posts"
+  },
+  {
+    "id": "create",
+    "kind": "write",
+    "entry": "run_native_raw_struct_Create",
+    "component": "Create"
+  },
+  {
+    "id": "update",
+    "kind": "write",
+    "entry": "run_native_raw_struct_Update",
+    "component": "Update"
+  },
+  {
+    "id": "delete",
+    "kind": "tx",
+    "entry": "run_native_raw_struct_Delete",
+    "component": "Delete"
+  },
+  {
+    "id": "upsert",
+    "kind": "write",
+    "entry": "run_native_raw_struct_Upsert",
+    "component": "Upsert"
+  },
+  {
+    "id": "createMany",
+    "kind": "batch",
+    "entry": "run_native_raw_struct_CreateMany",
+    "component": "CreateMany"
+  },
+  {
+    "id": "upsertMany",
+    "kind": "batch",
+    "entry": "run_native_raw_struct_UpsertMany",
+    "component": "UpsertMany"
+  },
+  {
+    "id": "updateMany",
+    "kind": "batch",
+    "entry": "run_native_raw_struct_UpdateMany",
+    "component": "UpdateMany"
+  },
+  {
+    "id": "nestedCreate",
+    "kind": "tx",
+    "entry": "run_native_raw_struct_NestedCreate",
+    "component": "NestedCreate"
+  },
+  {
+    "id": "nestedUpdate",
+    "kind": "tx",
+    "entry": "run_native_raw_struct_NestedUpdate",
+    "component": "NestedUpdate"
+  },
+  {
+    "id": "nestedUpsert",
+    "kind": "tx",
+    "entry": "run_native_raw_struct_NestedUpsert",
+    "component": "NestedUpsert"
+  }
+]
