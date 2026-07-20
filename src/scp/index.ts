@@ -414,6 +414,7 @@ export {
   CODEGEN_EMITTER,
   generateCodegenArtifact,
   generateRustCompanion,
+  generateRelationChildArtifacts,
   lowerBundleToPortableIrDoc,
   lowerReadGraphForNativeSql,
   codegenEmitterFor,

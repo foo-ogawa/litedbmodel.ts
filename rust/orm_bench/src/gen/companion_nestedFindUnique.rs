@@ -41,3 +41,22 @@ pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> { 
 /// the primary rows — a relation is a RUNTIME concern, not baked into the native module. Pick by name.
 pub fn relation_ops_json() -> &'static str { "{\"posts\":{\"name\":\"posts\",\"kind\":\"hasMany\",\"parentKey\":\"id\",\"targetKey\":\"author_id\",\"dialect\":\"sqlite\",\"keyShape\":\"single_json\",\"sql\":\"SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC\",\"targetTable\":\"benchmark_posts\",\"select\":[\"id\",\"title\",\"author_id\"],\"materializers\":{\"id\":\"int32\",\"author_id\":\"int32\"}}}" }
 
+
+/// TYPED hydrator for the 'posts' relation (#140): batch-load the child rows and de-box them to
+/// TYPED structs via the SHARED `hydrate_relation_typed` (loader = the ONE SQL/dedupe/group/distribute
+/// authority; children are typed, NOT `Value::Obj`). `op` is the parsed relation op (parsed ONCE in
+/// setup), `key_of` the caller's parent-key accessor. Deeper `childRelations` levels are batched too.
+pub fn hydrate_posts<P, K: litedbmodel_runtime::IntoKeyTuple>(
+    op: &litedbmodel_runtime::Node,
+    parents: Vec<P>,
+    key_of: impl Fn(&P) -> K,
+    driver: &dyn litedbmodel_runtime::Driver,
+) -> Result<Vec<(P, Vec<super::generated_nestedFindUnique_rel_posts::T0>)>, litedbmodel_runtime::RuntimeError> {
+    let level = litedbmodel_runtime::hydrate_relation_typed(
+        op, parents, key_of,
+        super::companion_nestedFindUnique_rel_posts::decode,
+        |c| vec![litedbmodel_runtime::wp(&c.author_id)],
+        driver,
+    )?;
+    Ok(level)
+}

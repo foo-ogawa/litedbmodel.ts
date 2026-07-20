@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use behavior_contracts::Value;
 
-use crate::codegen_exec::ArrayParamShape;
+use crate::codegen_exec::{ArrayParamShape, Wire};
 use crate::driver::Driver;
 use crate::errors::{LimitExceededError, RuntimeError, SqlFailure, LIMIT_CONTEXT_RELATION};
 use crate::exec_context::{self, StatementIntent};
@@ -245,22 +245,24 @@ fn json_tuples(tuples: &[Vec<Value>]) -> String {
     format!("[{}]", parts.join(","))
 }
 
-/// The child rows grouped for a batch: stringified target-key identity → child rows.
-type RelationBatch = HashMap<String, Vec<Value>>;
+/// The child rows grouped for a batch: stringified target-key identity → child rows (generic over the
+/// child ROW representation `C` — the Value path supplies `Value` children, the #140 native path supplies
+/// bc-de-boxed TYPED children — ONE group/distribute core over both, no per-path re-implementation).
+type RelationBatch<C> = HashMap<String, Vec<C>>;
 
-/// Run ONE relation batch op for a set of parent rows (port of TS `runRelationOp`). Dedup the parent-
-/// key tuples, resolve the deferred PG array cast(s) from the REAL keys (one per key column for
-/// composite) BEFORE the `?`→`$N` render; on a NON-empty key set execute binding the keys (single
-/// array / per-column arrays / JSON tuples) and group the child rows by target-key identity. An
-/// EMPTY key set issues NO query, matching TS.
-fn run_relation_op(
+/// The batched child driver rows for a relation op (the EXEC authority — the ONE place that dedupes the
+/// parent-key tuples, resolves the deferred PG array cast(s) from the REAL keys before the `?`→`$N`
+/// render, binds the keys per dialect+arity, runs the batch, and enforces the hard-limit). An EMPTY key
+/// set issues NO query (returns no rows), matching TS. SHARED by BOTH consumers: the Value grouping
+/// ([`run_relation_op`], mode-2 / conformance) and the typed de-box ([`hydrate_relation_typed`], native) —
+/// dedupe/cast/render/bind/exec/hard-limit are single-sourced HERE (never duplicated per path).
+fn fetch_child_rows(
     op: &RelationOp,
     per_parent_tuples: &[Vec<Value>],
     driver: &dyn Driver,
-) -> Result<RelationBatch, RuntimeError> {
+) -> Result<Vec<Value>, RuntimeError> {
     let p_cols = op.parent_key_cols();
     let keys = dedupe_tuples(per_parent_tuples);
-    let mut batch: RelationBatch = HashMap::new();
     let mut sql = op.sql.clone();
     if op.dialect == "postgres" {
         for col in 0..p_cols.len() {
@@ -270,9 +272,8 @@ fn run_relation_op(
     }
     let sql = render_placeholders(&sql, &op.dialect);
     if keys.is_empty() {
-        return Ok(batch);
+        return Ok(Vec::new());
     }
-    let t_cols = op.target_key_cols();
     let bound = bind_keys(op, &keys);
     // The relation batch read funnels through the CENTRAL SEAM (§2) on a backward-compat ctx over the
     // relation's driver (no tx — relation batches are read-only; empty middleware) — one pooled
@@ -280,7 +281,7 @@ fn run_relation_op(
     let ctx = exec_context::for_driver(driver);
     let rows = exec_context::execute(&ctx, &sql, &bound, &StatementIntent::read())?;
     // Hard-limit runaway guard (Phase E-2, epic #74; v1 `_selectForRelation`): POST-fetch, BEFORE
-    // grouping — if the batch TOTAL exceeds the baked cap, throw with the EXACT count (the batch is
+    // grouping/de-box — if the batch TOTAL exceeds the baked cap, throw with the EXACT count (the batch is
     // fetched in full, no N+1). Absent `hard_limit` ⇒ disabled / intrinsic-limit relation ⇒ no
     // check. ⚠ Field mapping mirrors the TS reference: `model` = the relation's TARGET TABLE,
     // `relation` = the relation NAME. A LimitExceededError propagates as its OWN error (not a
@@ -297,33 +298,60 @@ fn run_relation_op(
             Some(op.name.clone()),
         )?;
     }
-    for row in rows {
-        let tuple: Vec<Value> = t_cols
-            .iter()
-            .map(|c| obj_get(&row, c).cloned().unwrap_or(Value::Null))
-            .collect();
-        let k = key_identity(&tuple);
-        batch.entry(k).or_default().push(row);
-    }
-    Ok(batch)
+    Ok(rows)
 }
 
-/// Distribute a resolved batch onto ONE parent's key TUPLE per cardinality (port of TS
-/// `distributeToParent`): hasMany → the child list (`[]` when none); belongsTo/hasOne → the single child
-/// (or null). Keyed by the parent's key-tuple identity; a null in the tuple ⇒ no match. Tuple-based so the
-/// Value path (tuple via `obj_get`) and the typed path (tuple via `key_of`) share this ONE distributor.
-fn distribute_by_tuple(op: &RelationOp, tuple: &[Value], batch: &RelationBatch) -> Value {
-    let rows = if tuple.iter().any(|v| matches!(v, Value::Null)) {
-        None
-    } else {
-        batch.get(&key_identity(tuple))
-    };
-    if op.kind == "hasMany" {
-        return Value::Arr(rows.cloned().unwrap_or_default());
+/// Group child ROWS by their target-key identity (port of TS `runRelationOp`'s grouping half) — GENERIC
+/// over the child row representation `C`: the Value path passes `Value` rows with an `obj_get`-based key
+/// reader, the native path passes bc-de-boxed TYPED structs with a field-access key reader. ONE grouping
+/// (insertion order preserved within a key), no Value/typed duplication.
+fn group_children<C>(
+    rows: Vec<C>,
+    target_key_of: impl Fn(&C) -> Vec<Value>,
+) -> RelationBatch<C> {
+    let mut batch: RelationBatch<C> = HashMap::new();
+    for row in rows {
+        let tuple = target_key_of(&row);
+        batch.entry(key_identity(&tuple)).or_default().push(row);
     }
-    match rows {
-        Some(r) if !r.is_empty() => r[0].clone(),
-        _ => Value::Null,
+    batch
+}
+
+/// The child ROWS matched to ONE parent key TUPLE (the group/distribute lookup half) — GENERIC over `C`.
+/// A null anywhere in the tuple ⇒ no match (empty). Keyed by the tuple's stringified identity. Shared by
+/// the Value distributor ([`distribute_by_tuple`]) and the typed loader ([`hydrate_relation_typed`]).
+fn matched_children<C: Clone>(tuple: &[Value], batch: &RelationBatch<C>) -> Vec<C> {
+    if tuple.iter().any(|v| matches!(v, Value::Null)) {
+        return Vec::new();
+    }
+    batch.get(&key_identity(tuple)).cloned().unwrap_or_default()
+}
+
+/// Group a batch of VALUE child rows by target key (the Value-path adapter over the generic
+/// [`group_children`]: the key reader is `obj_get` over the ordered pair list). Byte-identical grouping to
+/// the pre-#140 `run_relation_op`.
+fn group_value_children(op: &RelationOp, rows: Vec<Value>) -> RelationBatch<Value> {
+    let t_cols = op.target_key_cols();
+    group_children(rows, |row| {
+        t_cols
+            .iter()
+            .map(|c| obj_get(row, c).cloned().unwrap_or(Value::Null))
+            .collect()
+    })
+}
+
+/// Distribute a resolved VALUE batch onto ONE parent's key TUPLE per cardinality (port of TS
+/// `distributeToParent`): hasMany → the child list (`[]` when none); belongsTo/hasOne → the single child
+/// (or null). Reuses the GENERIC [`matched_children`] lookup so the Value path (tuple via `obj_get`) and
+/// the typed path (tuple via `key_of`) share ONE distribution core.
+fn distribute_by_tuple(op: &RelationOp, tuple: &[Value], batch: &RelationBatch<Value>) -> Value {
+    let rows = matched_children(tuple, batch);
+    if op.kind == "hasMany" {
+        return Value::Arr(rows);
+    }
+    match rows.into_iter().next() {
+        Some(r) => r,
+        None => Value::Null,
     }
 }
 
@@ -378,7 +406,7 @@ pub fn stitch_relation(
 ) -> Result<Vec<Value>, RuntimeError> {
     let op = op_from_json(op_json);
     let tuples = parent_key_tuples(&parents, &op.parent_key_cols());
-    let batch = run_relation_op(&op, &tuples, driver)?;
+    let batch = group_value_children(&op, fetch_child_rows(&op, &tuples, driver)?);
     for (row, tuple) in parents.iter_mut().zip(tuples.iter()) {
         let child = distribute_by_tuple(&op, tuple, &batch);
         if let Value::Obj(pairs) = row {
@@ -438,38 +466,37 @@ impl<A: crate::codegen_exec::ToWireParam, B: crate::codegen_exec::ToWireParam> I
     }
 }
 
-/// The TYPED relation loader (#138): hydrate a relation TREE onto a TYPED native-read parent list WITHOUT
-/// re-boxing the typed rows into `Value::Obj`. The parent key is read via the caller's NATURAL accessor
-/// (`|r| r.id`, `|r| (r.tenant_id, r.user_id)`), lowered to the loader's key tuple by [`IntoKeyTuple`] —
-/// a typed field access + scalar-key bind, NOT an object reconstruction. The batched child query,
-/// grouping and distribution reuse the SAME `run_relation_op` / `distribute_by_tuple` core the Value path
-/// uses (ONE loader — no per-op / per-path copy). Child rows are the driver's native Value rows
-/// (relations are a Value-path runtime concern, #131 — there is no bc-generated typed CHILD de-box; see
-/// the report), and deeper `childRelations` recurse over them via [`recurse_child_relations`]. Returns
-/// each TYPED parent paired with its hydrated relation value — byte-equal to the Value path for the same keys.
-pub fn hydrate_relation<P, K: IntoKeyTuple>(
+/// The TYPED relation loader (#138 parent-typing → #140 child-typing): hydrate ONE relation LEVEL onto a
+/// TYPED native-read parent list, returning each parent paired with its TYPED child structs — NO
+/// `Value::Obj` retained past the de-box on the native path. The parent key is read via the caller's
+/// NATURAL accessor (`|r| r.id`, `|r| (r.tenant_id, r.user_id)`), lowered to the loader's key tuple by
+/// [`IntoKeyTuple`]. The batched child driver rows come from the SHARED [`fetch_child_rows`] (the ONE
+/// dedupe/cast/render/bind/exec/hard-limit authority the Value path also uses), then a bc-generated CHILD
+/// `decode` de-boxes the driver rows into TYPED structs `Vec<C>` (the SAME bc de-box a primary read uses,
+/// via the module's wire seam), and the SHARED [`group_children`] / [`matched_children`] group + distribute
+/// by key — ONE core, no Value/typed duplication. `child_key_of` reads the TYPED child's target-key tuple
+/// by field access (no `obj_get`). Multi-level (`childRelations`) is driven by the litedbmodel-GENERATED
+/// companion (each level is a concrete `C` — Rust cannot recurse generically over the heterogeneous child
+/// types), which re-invokes THIS per-level loader over the just-hydrated typed children. Byte-equal to the
+/// Value path for the same keys.
+pub fn hydrate_relation_typed<P, K: IntoKeyTuple, C: Clone>(
     op_json: &J,
     parents: Vec<P>,
     key_of: impl Fn(&P) -> K,
+    decode: impl Fn(Wire) -> Result<Vec<C>, RuntimeError>,
+    child_key_of: impl Fn(&C) -> Vec<Value>,
     driver: &dyn Driver,
-) -> Result<Vec<(P, Value)>, RuntimeError> {
+) -> Result<Vec<(P, Vec<C>)>, RuntimeError> {
     let op = op_from_json(op_json);
     let tuples: Vec<Vec<Value>> = parents.iter().map(|p| key_of(p).into_key_tuple()).collect();
-    let batch = run_relation_op(&op, &tuples, driver)?;
-    let mut level: Vec<Value> = Vec::new();
-    let hydrated: Vec<(P, Value)> = parents
+    let rows = fetch_child_rows(&op, &tuples, driver)?;
+    let children = decode(Wire::from_rows(rows))?;
+    let batch = group_children(children, child_key_of);
+    Ok(parents
         .into_iter()
         .zip(tuples.iter())
-        .map(|(p, tuple)| {
-            let child = distribute_by_tuple(&op, tuple, &batch);
-            if let Value::Arr(arr) = &child {
-                level.extend(arr.iter().cloned());
-            }
-            (p, child)
-        })
-        .collect();
-    recurse_child_relations(op_json, level, driver)?;
-    Ok(hydrated)
+        .map(|(p, tuple)| (p, matched_children(tuple, &batch)))
+        .collect())
 }
 
 /// Run a READ bundle's primary row list, then batch-load + hydrate the selected relations onto each
@@ -542,7 +569,7 @@ pub fn read_bundle_pooled(
         let op = op_from_json(op_json);
         let rel_driver = driver_for_op(&op, driver, connections)?;
         let tuples = parent_key_tuples(&rows, &op.parent_key_cols());
-        let batch = run_relation_op(&op, &tuples, rel_driver)?;
+        let batch = group_value_children(&op, fetch_child_rows(&op, &tuples, rel_driver)?);
         for (row, tuple) in rows.iter_mut().zip(tuples.iter()) {
             let child = distribute_by_tuple(&op, tuple, &batch);
             if let Value::Obj(pairs) = row {

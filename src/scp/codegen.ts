@@ -35,9 +35,10 @@ import { generateModule, loadCompiledIR, type GeneratedModule, type Scope, type 
 // structural doc. It is re-adopted into the branded compile-seam handle via `loadCompiledIR` right
 // before `generateModule` (which fail-closes on un-tokened IR, SA3/SA7). The node/component types
 // here are the unbranded structural shapes (see `./authoring`).
-import type { Component, ComponentGraphIR } from './authoring';
+import type { Component, ComponentGraphIR, ModelColumns } from './authoring';
+import { compileEager } from './authoring';
 import type { SqlBundle, SqliteDb } from './runtime';
-import { executeBundle } from './runtime';
+import { compileBundle, executeBundle } from './runtime';
 import type { DialectName } from './dialect';
 import type { RelationOp } from './relation';
 import type { ReadGraph, StaticStatement } from './makesql/static-bundle';
@@ -1587,6 +1588,216 @@ function emitGuardedFindEntry(bundle: SqlBundle, comp: string, ir: ReturnType<ty
   ];
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// TYPED-CHILD RELATIONS (#140) — the batched CHILD read de-boxed to a TYPED struct via bc.
+//
+// #131 keeps a relation OUT of the primary module (it is v1 lazy-batch, a runtime concern). #140 makes
+// the batched CHILD ROWS TYPED: the relation loader is STILL the ONE SQL authority (`fetch_child_rows`
+// dedupes/casts/renders/binds/execs — shared with mode-2, op.sql byte-unchanged), and the driver rows it
+// fetches are de-boxed to TYPED child structs by a bc-generated CHILD MODULE — the SAME bc typed-native
+// de-box a primary read uses — so the loader's group/distribute run over typed structs, NOT `Value::Obj`.
+//
+// The child read is DECLARED-VIA-BC (`compileEager` over a bare `Select({table: targetTable, select})`
+// with the relation's `static columns` — NO hand-written IR) and generated through the SAME
+// `generateCodegenArtifact` a primary read uses. The child module's baked SQL is inert (the loader runs
+// op.sql, the SSoT); only its typed struct + bc de-box are consumed. The litedbmodel CHILD COMPANION
+// bridges the loader-fetched `Wire` into that de-box (a stash handler → `run_native_raw_struct_<Comp>`).
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+/** The deterministic file/mod + component names for ONE relation node at `path` (e.g. `['posts']` →
+ * `generated_<op>_rel_posts`; `['posts','comments']` → `generated_<op>_rel_posts_comments`). The primary
+ * companion's hydrator and the child-artifact generator both derive names HERE, so they never drift. */
+function relChildNames(primaryModuleName: string, path: readonly string[]): { module: string; companion: string; component: string } {
+  const opId = primaryModuleName.replace(/^generated_/, '');
+  const joined = path.join('_');
+  return {
+    module: `${primaryModuleName}_rel_${joined}`,
+    companion: `companion_${opId}_rel_${joined}`,
+    component: `Rel${path.map(nodeCamel).join('')}`,
+  };
+}
+
+/** The relation's `static columns` for its target table — each PROJECTED column typed from the SAME
+ * `resolveColumnType` the primary read uses (so the child struct's types match the driver rows exactly).
+ * A relation's `select` is always plain columns (`compileRelationOp` rejects `*`/computed). */
+function relChildColumns(op: RelationOp, resolveColumnType: ColumnTypeResolver): ModelColumns {
+  const table = op.targetTable;
+  const select = op.select;
+  if (table === undefined || select === undefined) {
+    throw new Error(`litedbmodel codegen (#140): relation '${op.name}' carries no targetTable/select — cannot type its child de-box struct`);
+  }
+  return { [table]: Object.fromEntries(select.map((c) => [c, resolveColumnType(table, c)])) };
+}
+
+/** Compile the batched CHILD read as a bc read bundle (declare-via-BC: a bare `Select` over the target
+ * table + projection, with the relation's `static columns`). Only the typed struct + de-box are used —
+ * the baked SQL is inert (the loader runs op.sql). */
+function compileRelationChildBundle(op: RelationOp, component: string, resolveColumnType: ColumnTypeResolver): SqlBundle {
+  const columns = relChildColumns(op, resolveColumnType);
+  const table = op.targetTable!;
+  const select = [...op.select!];
+  const contract = compileEager(component, (_$, L) => (L as unknown as { Select(p: unknown): unknown }).Select({ table, select }), { columns });
+  return compileBundle(contract, component, [], op.dialect as DialectName, undefined, resolveColumnType);
+}
+
+/** A relation op's ordered TARGET / PARENT key columns (single-key → 1 elem; composite → the tuple). */
+function targetKeyCols(op: RelationOp): string[] {
+  return op.targetKeys !== undefined ? [...op.targetKeys] : [op.targetKey!];
+}
+function parentKeyCols(op: RelationOp): string[] {
+  return op.parentKeys !== undefined ? [...op.parentKeys] : [op.parentKey!];
+}
+
+/** The `child_key_of` closure body — the TYPED child's target-key tuple by FIELD ACCESS (no `obj_get`):
+ * `|c| vec![litedbmodel_runtime::wp(&c.<tk0>), …]`. */
+function childKeyOfClosure(cols: readonly string[]): string {
+  const parts = cols.map((c) => `litedbmodel_runtime::wp(&c.${c})`).join(', ');
+  return `|c| vec![${parts}]`;
+}
+
+/** The parent `key_of` closure for a NESTED level (the just-hydrated typed child becomes the parent):
+ * single → `|c| c.<k>`; composite → `|c| (c.<k0>, c.<k1>)`. */
+function nestedKeyOfClosure(cols: readonly string[]): string {
+  if (cols.length === 1) return `|c| c.${cols[0]}`;
+  return `|c| (${cols.map((c) => `c.${c}`).join(', ')})`;
+}
+
+/** The litedbmodel CHILD COMPANION for one relation child module: a stash handler that hands the
+ * loader-fetched batched `Wire` to the bc de-box runner, plus `decode(wire) -> Vec<T0>`. The child SQL is
+ * executed by the relation loader (the ONE SQL SSoT), so this companion NEVER issues a query — it only
+ * de-boxes the fetched rows into TYPED structs (NO `Value::Obj` retained). */
+function emitRelationChildCompanion(childModule: string, comp: string): string {
+  return [
+    `#![allow(dead_code, unused_imports, non_snake_case, clippy::all)]`,
+    `// GENERATED by litedbmodel codegen — the CHILD relation de-box companion for \`${childModule}\` (#140).`,
+    `// The relation loader runs the batched child SQL (the ONE SQL SSoT, \`fetch_child_rows\`) and hands the`,
+    `// driver rows to THIS bc de-box as a \`Wire\`; the child rows de-box to TYPED structs with ZERO`,
+    `// \`Value::Obj\` retained past the de-box (the SAME bc typed-native de-box a primary read uses).`,
+    `use super::${childModule}::*;`,
+    `use litedbmodel_runtime::{SqlFailure, Wire};`,
+    ``,
+    `litedbmodel_runtime::wire_impls!();`,
+    ``,
+    `fn cvt(e: SqlFailure) -> BehaviorError { BehaviorError::new(e.kind, e.message) }`,
+    ``,
+    `/// Stash handler: returns the loader-fetched batched child \`Wire\` into the bc de-box runner (the`,
+    `/// child SQL is executed by the relation loader — this handler issues NO query, only supplies the wire).`,
+    `struct DeBox { wire: std::cell::RefCell<Option<Wire>> }`,
+    `impl HandlerNR${comp} for DeBox {`,
+    `    type Wire = Wire;`,
+    `    fn node_n0(&self, _ports: &PortsNR${comp}N0, _bound: Option<String>) -> Result<Wire, BehaviorError> {`,
+    `        Ok(self.wire.borrow_mut().take().expect("relation child de-box: wire consumed exactly once"))`,
+    `    }`,
+    `}`,
+    ``,
+    `/// De-box the loader-fetched batched child rows into TYPED child structs via the bc de-box.`,
+    `pub fn decode(wire: Wire) -> Result<Vec<T0>, litedbmodel_runtime::RuntimeError> {`,
+    `    run_native_raw_struct_${comp}(&DeBox { wire: std::cell::RefCell::new(Some(wire)) }, InNR${comp})`,
+    `        .map_err(|e| litedbmodel_runtime::RuntimeError::Sql(SqlFailure { kind: e.code, policy: "fail".to_string(), sqlite_code: None, message: e.message }))`,
+    `}`,
+    ``,
+  ].join('\n');
+}
+
+/** One generated child artifact pair: the bc typed-native module + the litedbmodel de-box companion. */
+export interface RelationChildArtifact {
+  readonly module: string; // file/mod base name (generated_<op>_rel_<path>)
+  readonly moduleCode: string;
+  readonly companion: string; // companion_<op>_rel_<path>
+  readonly companionCode: string;
+}
+
+/** Generate the CHILD de-box artifacts (bc module + litedbmodel companion) for EVERY relation node in a
+ * bundle — recursively into `childRelations` (each nested level is its OWN typed child module). Returns a
+ * flat list the build site writes out + declares in the crate's mod tree. */
+export function generateRelationChildArtifacts(
+  bundle: SqlBundle,
+  primaryModuleName: string,
+  resolveColumnType: ColumnTypeResolver,
+  registeredLanguages: readonly string[],
+): RelationChildArtifact[] {
+  const out: RelationChildArtifact[] = [];
+  const walk = (op: RelationOp, path: string[]): void => {
+    const names = relChildNames(primaryModuleName, path);
+    const childBundle = compileRelationChildBundle(op, names.component, resolveColumnType);
+    const moduleCode = generateCodegenArtifact(childBundle, 'rust', registeredLanguages, resolveColumnType).module.code;
+    out.push({ module: names.module, moduleCode, companion: names.companion, companionCode: emitRelationChildCompanion(names.module, names.component) });
+    for (const child of op.childRelations ?? []) walk(child, [...path, child.name]);
+  };
+  for (const op of Object.values(bundle.relations)) walk(op, [op.name]);
+  return out;
+}
+
+/** Emit ONE top-level relation's TYPED hydrator into the primary companion: it drives the SHARED
+ * per-level `hydrate_relation_typed` (the child rows de-box to typed structs; the loader's group/distribute
+ * run over them), then UNROLLS each `childRelations` level (Rust cannot recurse generically over the
+ * heterogeneous child types) — each level a batched read (N+1-free). Returns `Vec<(P, Vec<child>)>`. The
+ * parent `key_of` is supplied by the caller (keeps the hydrator generic over the primary read struct). */
+function emitRelationHydrator(op: RelationOp, primaryModuleName: string): string {
+  // Recursively emit one batched level + its nested `childRelations` levels. `opExpr` is the Rust
+  // expression for THIS level's parsed relation op node; `parentsExpr` produces the typed parent Vec;
+  // `keyOf` reads the parent key; `levelVar` binds this level's `Vec<(parent, Vec<childStruct>)>` result.
+  const emitLevel = (
+    op: RelationOp,
+    path: string[],
+    opExpr: string,
+    parentsExpr: string,
+    keyOf: string,
+    levelVar: string,
+    indent: string,
+  ): string[] => {
+    const names = relChildNames(primaryModuleName, path);
+    const lines = [
+      `${indent}let ${levelVar} = litedbmodel_runtime::hydrate_relation_typed(`,
+      `${indent}    ${opExpr}, ${parentsExpr}, ${keyOf},`,
+      `${indent}    super::${names.companion}::decode,`,
+      `${indent}    ${childKeyOfClosure(targetKeyCols(op))},`,
+      `${indent}    driver,`,
+      `${indent})?;`,
+    ];
+    (op.childRelations ?? []).forEach((child, i) => {
+      const childPath = [...path, child.name];
+      const childOpVar = `${levelVar}_op${i}`;
+      const childLevelVar = `${levelVar}_${i}`;
+      // The just-hydrated typed children of THIS level become the parents of the next batched level
+      // (batched once per level — never N+1). Each nested level is fully typed: its own bc child module +
+      // de-box + typed key accessors read off the parent child struct.
+      lines.push(
+        `${indent}let ${childOpVar} = ${opExpr}.get("childRelations").and_then(|a| a.as_array()).and_then(|a| a.get(${i}))`,
+        `${indent}    .ok_or_else(|| litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure { kind: "driver_error".to_string(), policy: "fail".to_string(), sqlite_code: None, message: "hydrate ${op.name}: childRelations[${i}] '${child.name}' missing from the parsed relation op".to_string() }))?;`,
+        ...emitLevel(
+          child,
+          childPath,
+          childOpVar,
+          `${levelVar}.iter().flat_map(|(_, cs)| cs.iter().cloned()).collect::<Vec<_>>()`,
+          nestedKeyOfClosure(parentKeyCols(child)),
+          childLevelVar,
+          indent,
+        ),
+        `${indent}let _ = &${childLevelVar};`,
+      );
+    });
+    return lines;
+  };
+  const names = relChildNames(primaryModuleName, [op.name]);
+  return [
+    ``,
+    `/// TYPED hydrator for the '${op.name}' relation (#140): batch-load the child rows and de-box them to`,
+    `/// TYPED structs via the SHARED \`hydrate_relation_typed\` (loader = the ONE SQL/dedupe/group/distribute`,
+    `/// authority; children are typed, NOT \`Value::Obj\`). \`op\` is the parsed relation op (parsed ONCE in`,
+    `/// setup), \`key_of\` the caller's parent-key accessor. Deeper \`childRelations\` levels are batched too.`,
+    `pub fn hydrate_${op.name}<P, K: litedbmodel_runtime::IntoKeyTuple>(`,
+    `    op: &litedbmodel_runtime::Node,`,
+    `    parents: Vec<P>,`,
+    `    key_of: impl Fn(&P) -> K,`,
+    `    driver: &dyn litedbmodel_runtime::Driver,`,
+    `) -> Result<Vec<(P, Vec<super::${names.module}::T0>)>, litedbmodel_runtime::RuntimeError> {`,
+    ...emitLevel(op, [op.name], 'op', 'parents', 'key_of', 'level', '    '),
+    `    Ok(level)`,
+    `}`,
+  ].join('\n');
+}
+
 export function generateRustCompanion(bundle: SqlBundle, moduleName: string, resolveColumnType: ColumnTypeResolver): string {
   const ir = lowerBundleToPortableIrDoc(bundle, resolveColumnType);
   const c = ir.components[0] as unknown as {
@@ -1674,6 +1885,11 @@ export function generateRustCompanion(bundle: SqlBundle, moduleName: string, res
   // handler nodes (#131) — they ride `bundle.relations` for the runtime loader, emitted below.
   const methods = c.body.filter((n) => !('cond' in n)).map((n) => emitReadWriteNode(n, comp, bundle, inputPorts));
   const relationsAccessor = Object.keys(bundle.relations).length > 0 ? [``, emitRelationOpsAccessor(bundle.relations)] : [];
+  // #140 typed-child hydrators: one per top-level relation. Each drives the SHARED `hydrate_relation_typed`
+  // (the child rows de-box to TYPED structs via the bc child module — NO `Value::Obj` grouped/retained) and
+  // batches every `childRelations` level. The child bc modules + de-box companions are emitted separately
+  // (`generateRelationChildArtifacts`) and referenced here by the SAME `relChildNames` derivation.
+  const relationHydrators = Object.values(bundle.relations).map((op) => emitRelationHydrator(op, moduleName));
   // #135 find-hardLimit auto-wiring: when the ReadGraph carries a `findGuard` (the compile baked
   // `LIMIT hardLimit + 1` + the cap/model meta), emit a GUARDED `run` entry that runs the bc runner
   // then enforces the cap via the SHARED `check_find_hard_limit` — cap/model from the meta, the
@@ -1702,6 +1918,7 @@ export function generateRustCompanion(bundle: SqlBundle, moduleName: string, res
     `pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> { Rt { src: litedbmodel_runtime::ConnSource::Routing(routing) } }`,
     ...guardedFindEntry,
     ...relationsAccessor,
+    ...relationHydrators,
     ``,
   ].join('\n');
 }

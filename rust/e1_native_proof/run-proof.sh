@@ -14,7 +14,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROOF_DIR=/tmp/e1proof
-MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_capped generated_feed generated_tenantfeed generated_relbatch generated_relsingle generated_createuser generated_renameuser generated_deleteuser generated_upsert generated_createmany generated_upsertmany generated_updatemany generated_txdelete generated_txnestedcreate generated_txnestedupdate generated_txnestedupsert generated_txrollback)
+MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_capped generated_feed generated_tenantfeed generated_relbatch generated_relbatch_rel_posts generated_relsingle generated_relsingle_rel_comments generated_createuser generated_renameuser generated_deleteuser generated_upsert generated_createmany generated_upsertmany generated_updatemany generated_txdelete generated_txnestedcreate generated_txnestedupdate generated_txnestedupsert generated_txrollback)
 WRITE_OPS=(createuser renameuser deleteuser)
 fail=0
 

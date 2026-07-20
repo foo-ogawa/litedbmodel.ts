@@ -28,35 +28,59 @@
     "kind": "read+rel",
     "entry": "run_native_raw_struct_FindAll",
     "component": "FindAll",
-    "withRel": "posts"
+    "withRel": "posts",
+    "relChildren": [
+      "generated_nestedFindAll_rel_posts",
+      "companion_nestedFindAll_rel_posts"
+    ]
   },
   {
     "id": "nestedFindFirst",
     "kind": "read+rel",
     "entry": "run_native_raw_struct_FindFirst",
     "component": "FindFirst",
-    "withRel": "posts"
+    "withRel": "posts",
+    "relChildren": [
+      "generated_nestedFindFirst_rel_posts",
+      "companion_nestedFindFirst_rel_posts"
+    ]
   },
   {
     "id": "nestedFindUnique",
     "kind": "read+rel",
     "entry": "run_native_raw_struct_FindUnique",
     "component": "FindUnique",
-    "withRel": "posts"
+    "withRel": "posts",
+    "relChildren": [
+      "generated_nestedFindUnique_rel_posts",
+      "companion_nestedFindUnique_rel_posts"
+    ]
   },
   {
     "id": "nestedRelations",
     "kind": "read+rel",
     "entry": "run_native_raw_struct_FindAll",
     "component": "FindAll",
-    "withRel": "posts"
+    "withRel": "posts",
+    "relChildren": [
+      "generated_nestedRelations_rel_posts",
+      "companion_nestedRelations_rel_posts",
+      "generated_nestedRelations_rel_posts_comments",
+      "companion_nestedRelations_rel_posts_comments"
+    ]
   },
   {
     "id": "compositeRelations",
     "kind": "read+rel",
     "entry": "run_native_raw_struct_ByTenant",
     "component": "ByTenant",
-    "withRel": "posts"
+    "withRel": "posts",
+    "relChildren": [
+      "generated_compositeRelations_rel_posts",
+      "companion_compositeRelations_rel_posts",
+      "generated_compositeRelations_rel_posts_comments",
+      "companion_compositeRelations_rel_posts_comments"
+    ]
   },
   {
     "id": "create",

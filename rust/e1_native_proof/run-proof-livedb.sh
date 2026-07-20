@@ -19,7 +19,7 @@ case "$DIALECT" in
   *) echo "unknown dialect '$DIALECT'"; exit 2 ;;
 esac
 fail=0
-MODULES=(findunique byids recent bymaybe feed tenantfeed relbatch relsingle createuser renameuser deleteuser upsert createmany upsertmany updatemany txdelete txnestedcreate txnestedupdate txnestedupsert txrollback)
+MODULES=(findunique byids recent bymaybe feed tenantfeed relbatch relbatch_rel_posts relsingle relsingle_rel_comments createuser renameuser deleteuser upsert createmany upsertmany updatemany txdelete txnestedcreate txnestedupdate txnestedupsert txrollback)
 
 echo "── regenerate ${DIALECT} modules + companions + oracles (TS leg) ──"
 ( cd "$HERE/../.." && source ~/.nvm/nvm.sh >/dev/null 2>&1 && nvm use 22 >/dev/null 2>&1 && npx vitest run test/scp/e1-native-sql-port.test.ts >/dev/null 2>&1 ) || { echo "FATAL: regen failed"; exit 1; }

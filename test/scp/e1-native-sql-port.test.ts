@@ -54,6 +54,7 @@ import {
   schemaColumnTypeResolver,
   generateCodegenArtifact,
   generateRustCompanion,
+  generateRelationChildArtifacts,
   TypedNativeCoverageError,
   deriveTransactionPlan,
   compileWriteNode,
@@ -575,12 +576,22 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     const relArt = generateCodegenArtifact(relBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_relbatch.rs'), relArt.module.code);
     writeFileSync(join(PROOF_DIR, 'companion_relbatch.rs'), generateRustCompanion(relBundle, 'generated_relbatch', RESOLVE));
+    // #140 typed-child: the batched child (composite `posts`) as a bc de-box module + companion.
+    for (const a of generateRelationChildArtifacts(relBundle, 'generated_relbatch', RESOLVE, REGISTERED)) {
+      writeFileSync(join(PROOF_DIR, `${a.module}.rs`), a.moduleCode);
+      writeFileSync(join(PROOF_DIR, `${a.companion}.rs`), a.companionCode);
+    }
 
     // E4 NATIVE BATCHED single-key relation (nestedRelations): posts + comments by post_id.
     const relSingleBundle = compileBundle(POSTS_SINGLE_CONTRACT, 'ByAuthor', [COMMENTS_SINGLE_REL], 'sqlite', undefined, RESOLVE);
     const relSingleArt = generateCodegenArtifact(relSingleBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_relsingle.rs'), relSingleArt.module.code);
     writeFileSync(join(PROOF_DIR, 'companion_relsingle.rs'), generateRustCompanion(relSingleBundle, 'generated_relsingle', RESOLVE));
+    // #140 typed-child: the batched child (single-key `comments`) as a bc de-box module + companion.
+    for (const a of generateRelationChildArtifacts(relSingleBundle, 'generated_relsingle', RESOLVE, REGISTERED)) {
+      writeFileSync(join(PROOF_DIR, `${a.module}.rs`), a.moduleCode);
+      writeFileSync(join(PROOF_DIR, `${a.companion}.rs`), a.companionCode);
+    }
 
     // #135/#136 find-hardLimit fixture: compile a CAPPED bare find (findHardLimit=2 ⇒ baked LIMIT 3 +
     // findGuard) so the generated rust companion emits the GUARDED `run` entry — COMPILED by the e1 crate
@@ -1094,6 +1105,12 @@ describe('LIVE — emit pg + mysql dialect modules + companions for the docker b
       const emit = (op: string, bundle: SqlBundle, resolve: typeof RESOLVE) => {
         writeFileSync(join(dir, `generated_${op}.rs`), generateCodegenArtifact(bundle, 'rust', REGISTERED, resolve).module.code);
         writeFileSync(join(dir, `companion_${op}.rs`), generateRustCompanion(bundle, `generated_${op}`, resolve));
+        // #140 typed-child: the batched child de-box module + companion (dialect-independent struct/de-box,
+        // regenerated per dir so the swap copies a complete set). The loader runs op.sql (the dialect SQL).
+        for (const a of generateRelationChildArtifacts(bundle, `generated_${op}`, resolve, REGISTERED)) {
+          writeFileSync(join(dir, `${a.module}.rs`), a.moduleCode);
+          writeFileSync(join(dir, `${a.companion}.rs`), a.companionCode);
+        }
         // The SAME per-dialect bundle the mode-2 INTERPRETER oracle (`mode2` subcommand) runs — so the
         // livedb leg compares native (codegen) vs mode-2 (interpreter) on the SAME live DB, not vs the
         // sqlite oracle. JSON-serialized (readGraph IR + transaction plan) for `Node::parse` rust-side.

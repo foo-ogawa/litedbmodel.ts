@@ -171,7 +171,7 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
                     generated_nestedFindAll::InNRFindAll,
                 )
                 .unwrap();
-                let _ = litedbmodel_runtime::hydrate_relation(&posts, users, |r| r.id, d).unwrap();
+                let _ = companion_nestedFindAll::hydrate_posts(&posts, users, |r| r.id, d).unwrap();
             })
         }
         "nestedFindFirst" => {
@@ -188,7 +188,7 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
                     },
                 )
                 .unwrap();
-                let _ = litedbmodel_runtime::hydrate_relation(&posts, users, |r| r.id, d).unwrap();
+                let _ = companion_nestedFindFirst::hydrate_posts(&posts, users, |r| r.id, d).unwrap();
             })
         }
         "nestedFindUnique" => {
@@ -205,7 +205,8 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
                     },
                 )
                 .unwrap();
-                let _ = litedbmodel_runtime::hydrate_relation(&posts, users, |r| r.id, d).unwrap();
+                let _ =
+                    companion_nestedFindUnique::hydrate_posts(&posts, users, |r| r.id, d).unwrap();
             })
         }
         "nestedRelations" => {
@@ -220,7 +221,7 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
                     generated_nestedRelations::InNRFindAll,
                 )
                 .unwrap();
-                let _ = litedbmodel_runtime::hydrate_relation(&posts, users, |r| r.id, d).unwrap();
+                let _ = companion_nestedRelations::hydrate_posts(&posts, users, |r| r.id, d).unwrap();
             })
         }
         "compositeRelations" => {
@@ -235,7 +236,7 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
                     generated_compositeRelations::InNRByTenant { tenant_id: 1 },
                 )
                 .unwrap();
-                let _ = litedbmodel_runtime::hydrate_relation(
+                let _ = companion_compositeRelations::hydrate_posts(
                     &posts,
                     rows,
                     |r| (r.tenant_id, r.user_id),

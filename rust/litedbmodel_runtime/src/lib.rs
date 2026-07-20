@@ -90,7 +90,7 @@ pub use codegen_exec::{
 };
 pub use node::{decode_value, encode_value, eval_expr, EvalError, Node};
 pub use relation::{
-    hydrate_relation, read_bundle_pooled, relation_op, stitch_relation, stitch_relation_tree,
+    hydrate_relation_typed, read_bundle_pooled, relation_op, stitch_relation, stitch_relation_tree,
     IntoKeyTuple,
 };
 pub use runtime::{

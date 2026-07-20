@@ -21,7 +21,9 @@ mod companion_feed;
 mod companion_findunique;
 mod companion_recent;
 mod companion_relbatch;
+mod companion_relbatch_rel_posts;
 mod companion_relsingle;
+mod companion_relsingle_rel_comments;
 mod companion_renameuser;
 mod companion_tenantfeed;
 mod companion_txdelete;
@@ -42,7 +44,9 @@ mod generated_feed;
 mod generated_findunique;
 mod generated_recent;
 mod generated_relbatch;
+mod generated_relbatch_rel_posts;
 mod generated_relsingle;
+mod generated_relsingle_rel_comments;
 mod generated_renameuser;
 mod generated_tenantfeed;
 mod generated_txdelete;
@@ -57,8 +61,8 @@ mod generated_upsertmany;
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
 use litedbmodel_runtime::{
-    encode_value, execute_bundle, execute_transaction_bundle, stitch_relation, Driver, Node,
-    SqlFailure, SqliteDriver, Value,
+    encode_value, execute_bundle, execute_transaction_bundle, relation_op, Driver, Node, SqlFailure,
+    SqliteDriver, Value,
 };
 // `read_bundle_pooled` is the mode-2 relation read — used ONLY on the livedb `readrel` path (pg/mysql,
 // gated below), so its import mirrors that `#[cfg(feature = "livedb")]` (no unused-import in the default
@@ -512,11 +516,12 @@ fn main() {
                 users.join(",")
             );
         }
-        // relbatch/relsingle (#131): the native module carries the PRIMARY read ONLY. The relation is v1
-        // lazy-batch loading — a RUNTIME concern: after the native de-boxed parent read, the runtime loader
-        // `stitch_relation` resolves the DECLARED relation op (companion `relation_ops_json`, litedbmodel
-        // metadata) over the single query primitive (dedupe → ONE batched child query → group → distribute).
-        // 1 parent + 1 batched child = 2 queries (no N+1). The relation is NOT an executor primitive.
+        // relbatch/relsingle (#131 → #140): the native module carries the PRIMARY read ONLY. The relation is
+        // v1 lazy-batch loading — a RUNTIME concern: after the native de-boxed parent read, the companion's
+        // TYPED hydrator (`hydrate_<rel>`) drives the SHARED `hydrate_relation_typed` — the loader dedupes,
+        // runs ONE batched child query (op.sql, the SQL SSoT), and the child rows DE-BOX to TYPED structs via
+        // the bc child module (NO `Value::Obj` grouped/retained). 1 parent + 1 batched child = 2 queries (no
+        // N+1). The relation is NOT an executor primitive; the child de-box is bc's (same as a primary read).
         "relbatch" => {
             let tenant_id: i64 = args
                 .get(3)
@@ -528,9 +533,14 @@ fn main() {
                 generated_relbatch::InNRByTenant { tenant_id },
             )
             .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let rows: Vec<String> = out
+            let op = relation_op(companion_relbatch::relation_ops_json(), "posts")
+                .unwrap_or_else(|e| panic!("relation op: {}", e.message()));
+            let hydrated =
+                companion_relbatch::hydrate_posts(&op, out, |u| (u.tenant_id, u.user_id), d)
+                    .unwrap_or_else(|e| panic!("hydrate posts: {}", e.message()));
+            let rows: Vec<String> = hydrated
                 .iter()
-                .map(|u| {
+                .map(|(u, _)| {
                     format!(
                         "{{\"tenant_id\":{},\"user_id\":{},\"name\":{}}}",
                         u.tenant_id,
@@ -539,36 +549,18 @@ fn main() {
                     )
                 })
                 .collect();
-            let parents: Vec<Value> = out
+            let posts: Vec<String> = hydrated
                 .iter()
-                .map(|u| {
-                    Value::Obj(vec![
-                        ("tenant_id".to_string(), Value::Int(u.tenant_id)),
-                        ("user_id".to_string(), Value::Int(u.user_id)),
-                        ("name".to_string(), Value::Str(u.name.clone())),
-                    ])
-                })
-                .collect();
-            let ops = Node::parse(companion_relbatch::relation_ops_json()).expect("parse relation ops");
-            let op = ops.get("posts").expect("relation op 'posts'");
-            let stitched = stitch_relation(op, parents, d)
-                .unwrap_or_else(|e| panic!("stitch relation: {}", e.message()));
-            let posts: Vec<String> = stitched
-                .iter()
-                .map(|p| {
-                    let children = match obj_get(p, "posts") {
-                        Some(Value::Arr(c)) => c.as_slice(),
-                        _ => &[],
-                    };
+                .map(|(_, children)| {
                     let items: Vec<String> = children
                         .iter()
                         .map(|c| {
                             format!(
                                 "{{\"tenant_id\":{},\"post_id\":{},\"user_id\":{},\"title\":{}}}",
-                                cell_i64(c, "tenant_id"),
-                                cell_i64(c, "post_id"),
-                                cell_i64(c, "user_id"),
-                                json_str(&cell_str(c, "title"))
+                                c.tenant_id,
+                                c.post_id,
+                                c.user_id,
+                                json_str(&c.title)
                             )
                         })
                         .collect();
@@ -593,9 +585,13 @@ fn main() {
                 generated_relsingle::InNRByAuthor { author_id },
             )
             .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let rows: Vec<String> = out
+            let op = relation_op(companion_relsingle::relation_ops_json(), "comments")
+                .unwrap_or_else(|e| panic!("relation op: {}", e.message()));
+            let hydrated = companion_relsingle::hydrate_comments(&op, out, |p| p.id, d)
+                .unwrap_or_else(|e| panic!("hydrate comments: {}", e.message()));
+            let rows: Vec<String> = hydrated
                 .iter()
-                .map(|p| {
+                .map(|(p, _)| {
                     format!(
                         "{{\"id\":{},\"title\":{},\"author_id\":{}}}",
                         p.id,
@@ -604,36 +600,17 @@ fn main() {
                     )
                 })
                 .collect();
-            let parents: Vec<Value> = out
+            let comments: Vec<String> = hydrated
                 .iter()
-                .map(|p| {
-                    Value::Obj(vec![
-                        ("id".to_string(), Value::Int(p.id)),
-                        ("title".to_string(), Value::Str(p.title.clone())),
-                        ("author_id".to_string(), Value::Int(p.author_id)),
-                    ])
-                })
-                .collect();
-            let ops =
-                Node::parse(companion_relsingle::relation_ops_json()).expect("parse relation ops");
-            let op = ops.get("comments").expect("relation op 'comments'");
-            let stitched = stitch_relation(op, parents, d)
-                .unwrap_or_else(|e| panic!("stitch relation: {}", e.message()));
-            let comments: Vec<String> = stitched
-                .iter()
-                .map(|p| {
-                    let children = match obj_get(p, "comments") {
-                        Some(Value::Arr(c)) => c.as_slice(),
-                        _ => &[],
-                    };
+                .map(|(_, children)| {
                     let items: Vec<String> = children
                         .iter()
                         .map(|c| {
                             format!(
                                 "{{\"id\":{},\"body\":{},\"post_id\":{}}}",
-                                cell_i64(c, "id"),
-                                json_str(&cell_str(c, "body")),
-                                cell_i64(c, "post_id")
+                                c.id,
+                                json_str(&c.body),
+                                c.post_id
                             )
                         })
                         .collect();

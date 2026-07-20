@@ -251,6 +251,15 @@ impl Wire {
         self.focused()
     }
 
+    /// Wrap an ALREADY-FETCHED driver row LIST as a node-result wire (#140 typed-child relations): the
+    /// relation loader executes the batched child SQL (the ONE SQL SSoT, `run_relation_op`) and hands the
+    /// driver rows to a bc-generated CHILD de-box through THIS wire — the SAME `Wire` a primary read hands
+    /// its bc de-box, so the child rows de-box to typed structs via the module's `as_list`/`elem_row` with
+    /// ZERO per-child `Value::Obj` retained past the de-box (byte-identical navigation to `exec(Rows)`).
+    pub fn from_rows(rows: Vec<Value>) -> Wire {
+        rows_wire(rows)
+    }
+
     // ── WireValue (node result) classification ──
     pub fn rt_as_string(&self) -> RtProbe<String> {
         probe_string_value(self.focused())
