@@ -33,3 +33,10 @@ impl<'a, 'b, 'c> HandlerNRTxNestedUpdate for TxRt<'a, 'b, 'c> {
 pub fn run(driver: &dyn Driver, in_: InNRTxNestedUpdate) -> Result<bool, BehaviorError> {
     litedbmodel_runtime::run_transaction(driver, |ctx| run_native_raw_struct_TxNestedUpdate(&TxRt { ctx }, in_)).map_err(cvt)
 }
+
+/// The OPTIONS-aware / ROUTED tx entry (#135): open the tx from a ConnSource (single driver, or the
+/// WRITER pool of a named connection) and apply the TransactionOptions (isolation prelude,
+/// rollback_only). Drives the SAME per-execution-ownership tx seam. Returns `true` iff it committed.
+pub fn run_on(src: litedbmodel_runtime::ConnSource, connection: Option<&str>, dialect: litedbmodel_runtime::TxDialect, options: &litedbmodel_runtime::TransactionOptions, in_: InNRTxNestedUpdate) -> Result<bool, BehaviorError> {
+    litedbmodel_runtime::run_transaction_on(src, connection, dialect, options, |ctx| run_native_raw_struct_TxNestedUpdate(&TxRt { ctx }, in_)).map_err(cvt)
+}

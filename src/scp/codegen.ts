@@ -1485,7 +1485,8 @@ function emitReadWriteNode(
       // Assemble the present skip fragments (WHERE/AND connectors + params) via the marshaling helper,
       // then run through the SINGLE `exec` — no skip-specific executor (the executor surface is just exec).
       `        let (sql, params) = litedbmodel_runtime::build_skip_params(&ports.f_sql_head, &[${headParams.join(', ')}], &frags, &ports.f_sql_tail, &[${tailParams.join(', ')}]);`,
-      `        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &sql, &params, litedbmodel_runtime::ExecMode::Rows).map_err(cvt)`,
+      `        let ctx = self.src.ctx().map_err(cvt)?;`,
+      `        litedbmodel_runtime::exec(&ctx, &sql, &params, litedbmodel_runtime::ExecMode::Rows).map_err(cvt)`,
       `    }`,
     ].join('\n');
   }
@@ -1506,7 +1507,8 @@ function emitReadWriteNode(
       sig,
       `        let cells: Vec<Vec<Value>> = vec![${cells.join(', ')}];`,
       `        let params = litedbmodel_runtime::build_batch_params(&[${cols}], &cells, litedbmodel_runtime::ArrayParamShape::${shape}, ports.f_sql.matches('?').count());`,
-      `        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &params, litedbmodel_runtime::ExecMode::${mode}).map_err(cvt)`,
+      `        let ctx = self.src.ctx().map_err(cvt)?;`,
+      `        litedbmodel_runtime::exec(&ctx, &ports.f_sql, &params, litedbmodel_runtime::ExecMode::${mode}).map_err(cvt)`,
       `    }`,
     ].join('\n');
   }
@@ -1515,7 +1517,8 @@ function emitReadWriteNode(
   const mode = isSummaryOut(n.outType) ? 'litedbmodel_runtime::ExecMode::Summary' : 'litedbmodel_runtime::ExecMode::Rows';
   return [
     sig,
-    `        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &[${params}], ${mode}).map_err(cvt)`,
+    `        let ctx = self.src.ctx().map_err(cvt)?;`,
+    `        litedbmodel_runtime::exec(&ctx, &ports.f_sql, &[${params}], ${mode}).map_err(cvt)`,
     `    }`,
   ].join('\n');
 }
@@ -1607,6 +1610,13 @@ export function generateRustCompanion(bundle: SqlBundle, moduleName: string, res
       `    litedbmodel_runtime::run_transaction(driver, |ctx| run_native_raw_struct_${comp}(&TxRt { ctx }, in_)).map_err(cvt)`,
       `}`,
       ``,
+      `/// The OPTIONS-aware / ROUTED tx entry (#135): open the tx from a ConnSource (single driver, or the`,
+      `/// WRITER pool of a named connection) and apply the TransactionOptions (isolation prelude,`,
+      `/// rollback_only). Drives the SAME per-execution-ownership tx seam. Returns \`true\` iff it committed.`,
+      `pub fn run_on(src: litedbmodel_runtime::ConnSource, connection: Option<&str>, dialect: litedbmodel_runtime::TxDialect, options: &litedbmodel_runtime::TransactionOptions, in_: InNR${comp}) -> Result<bool, BehaviorError> {`,
+      `    litedbmodel_runtime::run_transaction_on(src, connection, dialect, options, |ctx| run_native_raw_struct_${comp}(&TxRt { ctx }, in_)).map_err(cvt)`,
+      `}`,
+      ``,
     ].join('\n');
   }
 
@@ -1617,15 +1627,23 @@ export function generateRustCompanion(bundle: SqlBundle, moduleName: string, res
   const relationsAccessor = Object.keys(bundle.relations).length > 0 ? [``, emitRelationOpsAccessor(bundle.relations)] : [];
   return [
     ...head,
-    `pub struct Rt<'a> { driver: &'a dyn Driver }`,
+    `// The handler holds a ConnSource (#135): a single Driver (routing=None, byte-identical single-pool)`,
+    `// OR a RoutingConfig (read→reader / write→writer, named-DB). node_* resolves the ctx per statement`,
+    `// via \`self.src.ctx()\` — reader/writer routing is applied ONCE in the central seam, never per op.`,
+    `pub struct Rt<'a> { src: litedbmodel_runtime::ConnSource<'a> }`,
     `impl<'a> HandlerNR${comp} for Rt<'a> {`,
     `    type Wire = Wire;`,
     ...methods,
     `}`,
     ``,
-    `/// The litedbmodel-consumer entry: build the runtime-backed handler for \`${comp}\`. The consumer`,
-    `/// calls \`run_native_raw_struct_${comp}(&handler(driver), in_)\` — supplying NO node_* itself.`,
-    `pub fn handler(driver: &dyn Driver) -> Rt<'_> { Rt { driver } }`,
+    `/// The litedbmodel-consumer entry: build the runtime-backed handler for \`${comp}\` over a SINGLE`,
+    `/// driver (byte-identical single-pool path). The consumer calls`,
+    `/// \`run_native_raw_struct_${comp}(&handler(driver), in_)\` — supplying NO node_* itself.`,
+    `pub fn handler(driver: &dyn Driver) -> Rt<'_> { Rt { src: litedbmodel_runtime::ConnSource::Driver(driver) } }`,
+    ``,
+    `/// The ROUTED consumer entry (#135): the handler routes each read to the reader pool and each write`,
+    `/// to the writer pool (named-DB via the registry) through the SAME central \`connection_for\` seam.`,
+    `pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> { Rt { src: litedbmodel_runtime::ConnSource::Routing(routing) } }`,
     ...relationsAccessor,
     ``,
   ].join('\n');

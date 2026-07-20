@@ -399,11 +399,16 @@ describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + by
     // the orphan-rule wire bridge + the runtime import + the module glob
     expect(companion).toContain('use super::generated_find::*;');
     expect(companion).toContain('litedbmodel_runtime::wire_impls!();');
-    // a per-component HandlerNR impl whose node_* delegates UNIFORMLY to the ONE runtime executor
+    // a per-component HandlerNR impl whose node_* resolves the ctx from the ConnSource (#135 — the
+    // reader/writer routing seam) then delegates UNIFORMLY to the ONE runtime executor.
     expect(companion).toContain('impl<\'a> HandlerNRFind for Rt<\'a>');
-    expect(companion).toMatch(/litedbmodel_runtime::exec\(&litedbmodel_runtime::for_driver\(self\.driver\)/);
-    // the litedbmodel-consumer entry point (builds the runtime-backed handler; supplies no node_*)
+    expect(companion).toContain('src: litedbmodel_runtime::ConnSource<\'a>');
+    expect(companion).toMatch(/let ctx = self\.src\.ctx\(\)\.map_err\(cvt\)\?;/);
+    expect(companion).toMatch(/litedbmodel_runtime::exec\(&ctx,/);
+    // the litedbmodel-consumer entry points: a SINGLE-driver handler (byte-identical single-pool) and
+    // the ROUTED handler (read→reader / write→writer) — both supply no node_*.
     expect(companion).toContain('pub fn handler(driver: &dyn Driver) -> Rt<');
+    expect(companion).toContain('pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<');
     // it is a Driver-backed delegation — NO rusqlite, NO concrete driver type, NO hand-written exec
     for (const banned of ['rusqlite', 'SqliteDriver', 'MysqlDriver', 'PostgresDriver', '.prepare(']) {
       expect(companion).not.toContain(banned);

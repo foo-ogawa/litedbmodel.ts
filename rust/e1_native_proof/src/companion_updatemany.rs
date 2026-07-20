@@ -16,16 +16,25 @@ litedbmodel_runtime::wire_impls!();
 /// re-wraps a node failure as OP_FAILED regardless, so only the message/detail cross this seam).
 fn cvt(e: SqlFailure) -> BehaviorError { BehaviorError::new(e.kind, e.message) }
 
-pub struct Rt<'a> { driver: &'a dyn Driver }
+// The handler holds a ConnSource (#135): a single Driver (routing=None, byte-identical single-pool)
+// OR a RoutingConfig (read→reader / write→writer, named-DB). node_* resolves the ctx per statement
+// via `self.src.ctx()` — reader/writer routing is applied ONCE in the central seam, never per op.
+pub struct Rt<'a> { src: litedbmodel_runtime::ConnSource<'a> }
 impl<'a> HandlerNRUpdateMany for Rt<'a> {
     type Wire = Wire;
     fn node_n0(&self, ports: &PortsNRUpdateManyN0, _bound: Option<String>) -> Result<Wire, BehaviorError> {
         let cells: Vec<Vec<Value>> = vec![ports.f_v0.iter().map(|v| litedbmodel_runtime::wp(v)).collect::<Vec<Value>>(), ports.f_v1.iter().map(|v| litedbmodel_runtime::wp(v)).collect::<Vec<Value>>()];
         let params = litedbmodel_runtime::build_batch_params(&["id", "name"], &cells, litedbmodel_runtime::ArrayParamShape::SingleJson, ports.f_sql.matches('?').count());
-        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &params, litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
+        let ctx = self.src.ctx().map_err(cvt)?;
+        litedbmodel_runtime::exec(&ctx, &ports.f_sql, &params, litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
     }
 }
 
-/// The litedbmodel-consumer entry: build the runtime-backed handler for `UpdateMany`. The consumer
-/// calls `run_native_raw_struct_UpdateMany(&handler(driver), in_)` — supplying NO node_* itself.
-pub fn handler(driver: &dyn Driver) -> Rt<'_> { Rt { driver } }
+/// The litedbmodel-consumer entry: build the runtime-backed handler for `UpdateMany` over a SINGLE
+/// driver (byte-identical single-pool path). The consumer calls
+/// `run_native_raw_struct_UpdateMany(&handler(driver), in_)` — supplying NO node_* itself.
+pub fn handler(driver: &dyn Driver) -> Rt<'_> { Rt { src: litedbmodel_runtime::ConnSource::Driver(driver) } }
+
+/// The ROUTED consumer entry (#135): the handler routes each read to the reader pool and each write
+/// to the writer pool (named-DB via the registry) through the SAME central `connection_for` seam.
+pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> { Rt { src: litedbmodel_runtime::ConnSource::Routing(routing) } }

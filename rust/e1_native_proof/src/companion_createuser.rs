@@ -16,14 +16,23 @@ litedbmodel_runtime::wire_impls!();
 /// re-wraps a node failure as OP_FAILED regardless, so only the message/detail cross this seam).
 fn cvt(e: SqlFailure) -> BehaviorError { BehaviorError::new(e.kind, e.message) }
 
-pub struct Rt<'a> { driver: &'a dyn Driver }
+// The handler holds a ConnSource (#135): a single Driver (routing=None, byte-identical single-pool)
+// OR a RoutingConfig (read→reader / write→writer, named-DB). node_* resolves the ctx per statement
+// via `self.src.ctx()` — reader/writer routing is applied ONCE in the central seam, never per op.
+pub struct Rt<'a> { src: litedbmodel_runtime::ConnSource<'a> }
 impl<'a> HandlerNRCreateUser for Rt<'a> {
     type Wire = Wire;
     fn node_n0(&self, ports: &PortsNRCreateUserN0, _bound: Option<String>) -> Result<Wire, BehaviorError> {
-        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &[litedbmodel_runtime::wp(&ports.f_p0), litedbmodel_runtime::wp(&ports.f_p1)], litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
+        let ctx = self.src.ctx().map_err(cvt)?;
+        litedbmodel_runtime::exec(&ctx, &ports.f_sql, &[litedbmodel_runtime::wp(&ports.f_p0), litedbmodel_runtime::wp(&ports.f_p1)], litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
     }
 }
 
-/// The litedbmodel-consumer entry: build the runtime-backed handler for `CreateUser`. The consumer
-/// calls `run_native_raw_struct_CreateUser(&handler(driver), in_)` — supplying NO node_* itself.
-pub fn handler(driver: &dyn Driver) -> Rt<'_> { Rt { driver } }
+/// The litedbmodel-consumer entry: build the runtime-backed handler for `CreateUser` over a SINGLE
+/// driver (byte-identical single-pool path). The consumer calls
+/// `run_native_raw_struct_CreateUser(&handler(driver), in_)` — supplying NO node_* itself.
+pub fn handler(driver: &dyn Driver) -> Rt<'_> { Rt { src: litedbmodel_runtime::ConnSource::Driver(driver) } }
+
+/// The ROUTED consumer entry (#135): the handler routes each read to the reader pool and each write
+/// to the writer pool (named-DB via the registry) through the SAME central `connection_for` seam.
+pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> { Rt { src: litedbmodel_runtime::ConnSource::Routing(routing) } }

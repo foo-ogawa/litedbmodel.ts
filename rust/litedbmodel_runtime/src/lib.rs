@@ -84,8 +84,9 @@ pub use middleware::{
 // module-local wire traits to it). `wire_impls!`/`__wire_probe!`/`__wire_num!` are `#[macro_export]`ed
 // at the crate root.
 pub use codegen_exec::{
-    build_batch_params, build_skip_params, exec, run_transaction, wp, wp_array, ArrayParamShape,
-    ExecMode, RtNum, RtProbe, SkipFrag, ToWireArray, ToWireParam, Wire,
+    build_batch_params, build_skip_params, exec, run_transaction, run_transaction_on, wp, wp_array,
+    ArrayParamShape, ConnSource, ExecMode, RtNum, RtProbe, SkipFrag, ToWireArray, ToWireParam,
+    Wire,
 };
 pub use node::{decode_value, encode_value, eval_expr, EvalError, Node};
 pub use relation::{read_bundle_pooled, stitch_relation};

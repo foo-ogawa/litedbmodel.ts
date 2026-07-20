@@ -24,10 +24,12 @@
 
 use behavior_contracts::Value;
 
+use crate::connection_routing::RoutingConfig;
 use crate::driver::{Driver, RunInfo};
 use crate::errors::SqlFailure;
 use crate::exec_context::{self, ExecutionContext, StatementIntent, TxDecision};
 use crate::static_bundle::render_placeholders;
+use crate::tx_options::{isolation_prelude, Dialect as TxDialect, TransactionOptions};
 
 // ── Wire: a node result's own wire datum (a driver row list, or a synthesized write summary) ──────
 
@@ -429,6 +431,36 @@ pub enum ExecMode {
     SummarySingle,
 }
 
+/// The connection SOURCE a generated read/write companion resolves its [`ExecutionContext`] from
+/// (#135) — so a native op is routed by the SAME `connection_for` seam the mode-2 runtime uses:
+///   - [`ConnSource::Driver`] — a single [`Driver`] (routing = None): every intent lands on that one
+///     driver (byte-identical to the pre-#135 `for_driver` companion path).
+///   - [`ConnSource::Routing`] — a [`RoutingConfig`] (registry + writer-sticky): a READ routes to the
+///     reader pool, a WRITE / tx to the writer pool, named-DB by `intent.db` (design §3 steps 2-4).
+///
+/// The companion's `node_*` builds the ctx via [`ConnSource::ctx`] and hands it to [`exec`] — so
+/// reader/writer routing is applied ONCE, in the central seam, never re-implemented per op. `Copy`
+/// because it holds only references (the caller owns the driver / routing).
+#[derive(Clone, Copy)]
+pub enum ConnSource<'a> {
+    /// A single driver — routing = None (byte-identical single-pool path).
+    Driver(&'a dyn Driver),
+    /// A routing config — reader/writer + named-DB resolution via [`exec_context::for_routing`].
+    Routing(&'a RoutingConfig),
+}
+
+impl<'a> ConnSource<'a> {
+    /// Build the [`ExecutionContext`] for ONE `node_*` statement: [`exec_context::for_driver`] for a
+    /// single driver, [`exec_context::for_routing`] for a routing config (loud on an unregistered
+    /// named connection — the same throw the mode-2 seam raises).
+    pub fn ctx(&self) -> Result<ExecutionContext<'a, 'a>, SqlFailure> {
+        match *self {
+            ConnSource::Driver(d) => Ok(exec_context::for_driver(d)),
+            ConnSource::Routing(r) => exec_context::for_routing(r),
+        }
+    }
+}
+
 /// THE native-codegen executor (epic #124 invariant): run the baked `sql` with ordered `params` through
 /// the central seam on the given [`ExecutionContext`] and hand back the result as a [`Wire`]. It takes
 /// ONLY `ctx` / `sql` / `params` / [`ExecMode`] — never an operation name, never a DB kind. The DB
@@ -601,6 +633,45 @@ pub fn run_transaction<R, E>(
             Err(_) => TxDecision::Rollback(false),
         })
     })
+}
+
+/// The OPTIONS-aware native transaction envelope (#135): open the tx from a [`ConnSource`] (a single
+/// driver, or the WRITER pool of a named `connection` in a [`RoutingConfig`]) and apply the
+/// [`TransactionOptions`] — the isolation prelude ([`isolation_prelude`]: PG SET post-BEGIN / MySQL SET
+/// pre-BEGIN / SQLite loud-error on a level) and `rollback_only` (dry-run: run the chain then ROLLBACK,
+/// nothing commits). It drives the SAME [`exec_context::with_transaction_decided_isolated_on`] the mode-2
+/// write-tx path uses (per-execution connection ownership on the writer) — no new tx engine. Returns
+/// `true` iff the tx COMMITTED (a chain error or `rollback_only` ⇒ `false`).
+///
+/// RETRY is NOT applied here: the #81 retry loop ([`exec_context::transaction_decided_on`]) re-runs the
+/// body on a fresh connection, which requires re-supplying the moved `in_` per attempt (a `Fn` body over
+/// a `Clone` input). The bc-generated `InNR<comp>` structs derive `Default` only, so the native tx body
+/// (`run_native_raw_struct_<comp>(handler, in_)`, which consumes `in_`) is `FnOnce` = single-attempt.
+/// Enabling retry needs the bc input struct to be `Clone` (a bc-emitter concern, off-limits here).
+pub fn run_transaction_on<R, E>(
+    src: ConnSource,
+    connection: Option<&str>,
+    dialect: TxDialect,
+    options: &TransactionOptions,
+    body: impl FnOnce(&ExecutionContext) -> Result<R, E>,
+) -> Result<bool, SqlFailure> {
+    let ctx = src.ctx()?;
+    let (before_begin, after_begin) = isolation_prelude(dialect, options.isolation)?;
+    let rollback_only = options.rollback_only;
+    exec_context::with_transaction_decided_isolated_on(
+        &ctx,
+        connection,
+        &before_begin,
+        &after_begin,
+        |tx_ctx| {
+            Ok(match body(tx_ctx) {
+                // A successful chain COMMITs — unless rollback_only (dry-run): run then roll back.
+                Ok(_) if !rollback_only => TxDecision::Commit(true),
+                // rollback_only success OR a chain error ⇒ ROLLBACK, committed:false.
+                Ok(_) | Err(_) => TxDecision::Rollback(false),
+            })
+        },
+    )
 }
 
 /// The [`wire_impls!`] macro — expands the module-local `WireValue`/`WireRow`/`WireList` trait impls for
@@ -1019,5 +1090,214 @@ mod tests {
             .rt_len(),
             0
         );
+    }
+
+    // ── #135: reader/writer routing + options-aware tx on the NATIVE seam ──────────────────────────
+
+    use crate::connection_routing::{
+        ConnectionRegistry, ReaderWriterPools, RoutingConfig, WriterStickyClock,
+    };
+    use crate::driver::{forwarding_tx, forwarding_tx_no_begin, PreparedStatement};
+    use crate::exec_context::TxConnection;
+    use crate::tx_options::{Dialect as TxD, IsolationLevel, TransactionOptions};
+    use std::sync::{Arc, Mutex};
+
+    /// A Send+Sync recording driver: every prepared SQL (through the seam) is pushed to a shared log —
+    /// so a routing test can assert WHICH pool (reader/writer) a native op landed on, and a tx test can
+    /// assert the BEGIN / SET ISOLATION / COMMIT / ROLLBACK ordering.
+    struct RecDriver {
+        log: Arc<Mutex<Vec<String>>>,
+    }
+    struct RecStmt {
+        log: Arc<Mutex<Vec<String>>>,
+        sql: String,
+    }
+    impl PreparedStatement for RecStmt {
+        fn all(&mut self, _p: &[Value]) -> Result<Vec<Value>, SqlFailure> {
+            self.log.lock().unwrap().push(self.sql.clone());
+            Ok(vec![Value::Obj(vec![("id".into(), Value::Int(1))])])
+        }
+        fn run(&mut self, _p: &[Value]) -> Result<RunInfo, SqlFailure> {
+            self.log.lock().unwrap().push(self.sql.clone());
+            Ok(RunInfo {
+                changes: 1,
+                last_insert_rowid: 0,
+            })
+        }
+    }
+    impl Driver for RecDriver {
+        fn prepare(&self, sql: &str) -> Box<dyn PreparedStatement + '_> {
+            Box::new(RecStmt {
+                log: self.log.clone(),
+                sql: sql.to_string(),
+            })
+        }
+        fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+            forwarding_tx(self)
+        }
+        fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
+            forwarding_tx_no_begin(self)
+        }
+    }
+    fn rec() -> (Arc<dyn Driver + Send + Sync>, Arc<Mutex<Vec<String>>>) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        (Arc::new(RecDriver { log: log.clone() }), log)
+    }
+    fn split_routing(
+        reader: Arc<dyn Driver + Send + Sync>,
+        writer: Arc<dyn Driver + Send + Sync>,
+    ) -> RoutingConfig {
+        RoutingConfig {
+            registry: ConnectionRegistry::from_default(ReaderWriterPools::split(reader, writer))
+                .build()
+                .unwrap(),
+            sticky: WriterStickyClock::disabled(),
+        }
+    }
+
+    /// A native READ routes to the READER pool and a native WRITE to the WRITER pool — the SAME
+    /// `connection_for` intent split the mode-2 seam uses, now reached from the native exec via
+    /// [`ConnSource::Routing`]. Read hits reader only; write hits writer only.
+    #[test]
+    fn native_read_write_route_to_reader_writer() {
+        let (reader, log_r) = rec();
+        let (writer, log_w) = rec();
+        let routing = split_routing(reader, writer);
+        let ctx = ConnSource::Routing(&routing).ctx().unwrap();
+
+        // READ → reader pool.
+        exec(&ctx, "SELECT id FROM u", &[], ExecMode::Rows).unwrap();
+        assert_eq!(*log_r.lock().unwrap(), vec!["SELECT id FROM u".to_string()]);
+        assert!(
+            log_w.lock().unwrap().is_empty(),
+            "a read must NOT hit the writer"
+        );
+
+        // WRITE → writer pool.
+        exec(
+            &ctx,
+            "INSERT INTO u (id) VALUES (9)",
+            &[],
+            ExecMode::Summary,
+        )
+        .unwrap();
+        assert_eq!(
+            *log_w.lock().unwrap(),
+            vec!["INSERT INTO u (id) VALUES (9)".to_string()]
+        );
+        assert_eq!(
+            log_r.lock().unwrap().len(),
+            1,
+            "the writer INSERT must NOT hit the reader"
+        );
+    }
+
+    /// [`ConnSource::Driver`] (single pool) routes every intent to that one driver — byte-identical to
+    /// the pre-#135 `for_driver` companion path (read AND write land on the SAME log).
+    #[test]
+    fn native_single_source_is_backward_compatible() {
+        let (solo, log) = rec();
+        let ctx = ConnSource::Driver(solo.as_ref()).ctx().unwrap();
+        exec(&ctx, "SELECT 1", &[], ExecMode::Rows).unwrap();
+        exec(&ctx, "INSERT INTO u VALUES (1)", &[], ExecMode::Summary).unwrap();
+        assert_eq!(log.lock().unwrap().len(), 2);
+    }
+
+    /// A native tx routed by [`run_transaction_on`] runs its whole BEGIN…COMMIT on the WRITER pool
+    /// (a tx is a write) and applies the isolation prelude — PG issues `SET TRANSACTION ISOLATION
+    /// LEVEL …` as the first in-tx statement. The reader pool is never touched.
+    #[test]
+    fn native_tx_routes_to_writer_and_sets_isolation() {
+        let (reader, log_r) = rec();
+        let (writer, log_w) = rec();
+        let routing = split_routing(reader, writer);
+        let opts = TransactionOptions {
+            isolation: Some(IsolationLevel::Serializable),
+            ..Default::default()
+        };
+        let committed = run_transaction_on(
+            ConnSource::Routing(&routing),
+            None,
+            TxD::Postgres,
+            &opts,
+            |ctx| {
+                exec(ctx, "UPDATE u SET n = 1", &[], ExecMode::SummarySingle).map_err(|_| ())?;
+                Ok::<(), ()>(())
+            },
+        )
+        .unwrap();
+        assert!(committed);
+        let w = log_w.lock().unwrap().clone();
+        assert!(
+            log_r.lock().unwrap().is_empty(),
+            "a tx must NOT hit the reader"
+        );
+        // BEGIN → SET ISOLATION (PG post-BEGIN) → body UPDATE → COMMIT, all on the writer.
+        assert_eq!(w[0], "BEGIN");
+        assert_eq!(w[1], "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");
+        assert_eq!(w[2], "UPDATE u SET n = 1");
+        assert_eq!(w[3], "COMMIT");
+    }
+
+    /// `rollback_only` (dry-run): the body runs but the tx ends in ROLLBACK, and `run_transaction_on`
+    /// reports committed:false — nothing persists even though the chain succeeded.
+    #[test]
+    fn native_tx_rollback_only_dry_run() {
+        let (d, log) = rec();
+        let opts = TransactionOptions {
+            rollback_only: true,
+            ..Default::default()
+        };
+        let committed = run_transaction_on(
+            ConnSource::Driver(d.as_ref()),
+            None,
+            TxD::Sqlite,
+            &opts,
+            |ctx| {
+                exec(
+                    ctx,
+                    "INSERT INTO u VALUES (1)",
+                    &[],
+                    ExecMode::SummarySingle,
+                )
+                .map_err(|_| ())?;
+                Ok::<(), ()>(())
+            },
+        )
+        .unwrap();
+        assert!(!committed, "rollback_only ⇒ committed:false");
+        let l = log.lock().unwrap().clone();
+        assert!(l.contains(&"INSERT INTO u VALUES (1)".to_string()));
+        assert!(
+            l.contains(&"ROLLBACK".to_string()),
+            "must ROLLBACK, not COMMIT"
+        );
+        assert!(!l.contains(&"COMMIT".to_string()));
+    }
+
+    /// A native tx whose body ERRORS rolls back and reports committed:false (atomicity) — the same
+    /// contract as the plain [`run_transaction`] envelope, now under options.
+    #[test]
+    fn native_tx_body_error_rolls_back() {
+        let (d, log) = rec();
+        let committed = run_transaction_on(
+            ConnSource::Driver(d.as_ref()),
+            None,
+            TxD::Sqlite,
+            &TransactionOptions::default(),
+            |ctx| {
+                exec(
+                    ctx,
+                    "INSERT INTO u VALUES (1)",
+                    &[],
+                    ExecMode::SummarySingle,
+                )
+                .map_err(|_| ())?;
+                Err::<(), ()>(())
+            },
+        )
+        .unwrap();
+        assert!(!committed);
+        assert!(log.lock().unwrap().contains(&"ROLLBACK".to_string()));
     }
 }
