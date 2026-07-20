@@ -114,7 +114,7 @@ for (const file of generatedFiles) {
     violations.push(`${f} crosses the native/interpreter boundary`);
   }
   if (src.toLowerCase().includes(legacySidecarWord)) violations.push(`${f} contains retired sidecar vocabulary`);
-  if (/let _ = &produced_/.test(code)) violations.push(`${f} contains a dummy produced-flag reference`);
+  if (/let _ = &[A-Za-z_][A-Za-z0-9_]*/.test(code)) violations.push(`${f} contains a dummy generated-variable reference`);
   if (/#!\[allow\([^\]]*dead_code/.test(src)) violations.push(`${f} hides private dead code with a crate-level allow`);
   for (const name of new Set(code.match(/\bproduced_[A-Za-z0-9_]+\b/g) ?? [])) {
     if (new RegExp(`let ${name} =`).test(code) && !code.includes(`${name}.get()`)) {
@@ -153,7 +153,7 @@ for (const file of EXTRA_SOURCES) {
   if (/\bNode::|execute_bundle|read_bundle|litedbmodel_interpreter/.test(src)) {
     violations.push(`${file}: generated/native source crosses interpreter boundary`);
   }
-  if (/let _ = &produced_/.test(code)) violations.push(`${file}: dummy produced-flag reference`);
+  if (/let _ = &[A-Za-z_][A-Za-z0-9_]*/.test(code)) violations.push(`${file}: dummy generated-variable reference`);
   if (/#!\[allow\([^\]]*dead_code/.test(src)) violations.push(`${file}: crate-level dead-code allow`);
   for (const name of new Set(code.match(/\bproduced_[A-Za-z0-9_]+\b/g) ?? [])) {
     if (new RegExp(`let ${name} =`).test(code) && !code.includes(`${name}.get()`)) {

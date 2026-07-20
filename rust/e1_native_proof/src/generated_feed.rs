@@ -404,7 +404,6 @@ pub fn run_native_raw_struct_PostsWithAuthor<H: HandlerNRPostsWithAuthor>(
                 | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n1", "n1", "arr(obj{id:int,name:string})", actual_wire_type, raw_value)),
                 Probe::Absent => return Err(de_missing_field("n1", "n1", "arr(obj{id:int,name:string})")),
             };
-            let _ = &oel_n1;
             built_n1.push(dec_n1);
         }
         *cell_n1.borrow_mut() = built_n1;

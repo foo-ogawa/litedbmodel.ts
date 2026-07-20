@@ -30,8 +30,12 @@ describe('bench structure guard fail-closed behavior', () => {
     rejects('fn bad() { let _ = litedbmodel_interpreter::Node::Null; }\n', 'crosses interpreter boundary');
   });
 
+  it('rejects a dummy reference for any generated variable', () => {
+    rejects('fn bad() { let oel_n1 = 1; let _ = &oel_n1; }\n', 'dummy generated-variable reference');
+  });
+
   it('rejects an unused generated produced flag', () => {
-    rejects('fn bad() { let produced_n0 = std::cell::Cell::new(false); let _ = &produced_n0; produced_n0.set(true); }\n', 'dummy produced-flag reference');
+    rejects('fn bad() { let produced_n0 = std::cell::Cell::new(false); produced_n0.set(true); }\n', 'unused produced flag');
   });
 
   it('rejects retired sidecar metadata', () => {

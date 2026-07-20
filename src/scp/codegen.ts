@@ -100,9 +100,16 @@ function pruneRustNativeDeadCode(source: string): string {
     .replace(/^#!\[allow\(dead_code,\s*/m, '#![allow(')
     .replace(/^#\[allow\(dead_code\)\]\n/gm, '');
 
-  const producedNames = new Set(code.match(/\bproduced_[A-Za-z0-9_]+\b/g) ?? []);
-  for (const name of producedNames) {
-    code = code.replace(new RegExp(`^[ \\t]*let _ = &${name};\\n`, 'gm'), '');
+  // bc may emit a borrow-only statement to silence an unused-variable warning. It is never part of
+  // the behavior and can conceal dead generated dataflow, so remove it for every Rust identifier.
+  code = code.replace(/^[ \t]*let _ = &[A-Za-z_][A-Za-z0-9_]*;\n/gm, '');
+
+  // A generated boolean state cell is live only when a downstream node reads it. Once dummy borrows
+  // are gone, remove write-only state cells as a unit (declaration plus every generated update).
+  const stateCellNames = new Set(
+    Array.from(code.matchAll(/\blet ([A-Za-z_][A-Za-z0-9_]*) = std::cell::Cell::new\(false\);/g), (match) => match[1]!),
+  );
+  for (const name of stateCellNames) {
     if (!code.includes(`${name}.get()`)) {
       code = code
         .replace(new RegExp(`^[ \\t]*let ${name} = std::cell::Cell::new\\(false\\);\\n`, 'gm'), '')
