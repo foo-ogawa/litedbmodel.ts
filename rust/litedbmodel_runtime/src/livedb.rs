@@ -628,6 +628,19 @@ fn pg_cell_to_value(row: &tokio_postgres::Row, idx: usize) -> Result<Value, SqlF
         PgType::UUID => row
             .try_get::<_, Option<PgUuidText>>(idx)
             .map(|o| o.map(|u| Value::Str(u.0))),
+        // TIMESTAMP/DATE columns: tokio-postgres has no `String` FromSql for a temporal type, so read
+        // the native chrono value and canonicalize to the SAME `YYYY-MM-DD HH:MM:SS` text the seed +
+        // the SQLite/MySQL read use (the bind path above parses this exact form). date→canonical string
+        // is the v2 read contract (a TIMESTAMP column round-trips as its text, never a driver-native type).
+        PgType::TIMESTAMP => row
+            .try_get::<_, Option<chrono::NaiveDateTime>>(idx)
+            .map(|o| o.map(|d| Value::Str(d.format("%Y-%m-%d %H:%M:%S").to_string()))),
+        PgType::TIMESTAMPTZ => row
+            .try_get::<_, Option<chrono::DateTime<chrono::Utc>>>(idx)
+            .map(|o| o.map(|d| Value::Str(d.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string()))),
+        PgType::DATE => row
+            .try_get::<_, Option<chrono::NaiveDate>>(idx)
+            .map(|o| o.map(|d| Value::Str(d.format("%Y-%m-%d").to_string()))),
         _ => row
             .try_get::<_, Option<String>>(idx)
             .map(|o| o.map(Value::Str)),
@@ -914,8 +927,25 @@ fn my_cell_to_value(row: &MySqlRow, idx: usize) -> Result<Value, SqlFailure> {
         || type_name.contains("DECIMAL")
     {
         row.try_get::<f64, _>(idx).map(Value::Float)
+    } else if type_name.contains("BOOL") {
+        // MySQL `TINYINT(1)` surfaces to sqlx as `BOOLEAN`; the v2 read types a boolean column as an
+        // INTEGER 0/1 (the resolver maps it to int, matching the sqlite path), so decode bool → Int.
+        row.try_get::<bool, _>(idx).map(|b| Value::Int(if b { 1 } else { 0 }))
+    } else if type_name.contains("TIMESTAMP") {
+        // sqlx maps MySQL TIMESTAMP (tz-aware) to `DateTime<Utc>` (NOT NaiveDateTime). Canonicalize to
+        // the SAME `YYYY-MM-DD HH:MM:SS` text the seed + the SQLite/PG read use (date→canonical string is
+        // the v2 read contract; conformance uses TEXT so this arm is inert there).
+        row.try_get::<chrono::DateTime<chrono::Utc>, _>(idx)
+            .map(|d| Value::Str(d.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string()))
+    } else if type_name.contains("DATETIME") {
+        // MySQL DATETIME (no tz) maps to `NaiveDateTime`.
+        row.try_get::<chrono::NaiveDateTime, _>(idx)
+            .map(|d| Value::Str(d.format("%Y-%m-%d %H:%M:%S").to_string()))
+    } else if type_name == "DATE" {
+        row.try_get::<chrono::NaiveDate, _>(idx)
+            .map(|d| Value::Str(d.format("%Y-%m-%d").to_string()))
     } else {
-        // Fall back to string for text/date/blob; try i64 first for count(*) style BIGINT aliases.
+        // Fall back to string for text/blob; try i64 first for count(*) style BIGINT aliases.
         row.try_get::<String, _>(idx).map(Value::Str)
     }
     .map_err(|e| driver_failure(format!("mysql decode col {}: {e}", col.name())))?;
