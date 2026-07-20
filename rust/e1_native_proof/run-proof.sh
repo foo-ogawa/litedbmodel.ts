@@ -14,7 +14,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROOF_DIR=/tmp/e1proof
-MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_capped generated_feed generated_tenantfeed generated_relbatch generated_relbatch_rel_posts generated_relsingle generated_relsingle_rel_comments generated_createuser generated_renameuser generated_deleteuser generated_upsert generated_createmany generated_upsertmany generated_updatemany generated_txdelete generated_txnestedcreate generated_txnestedupdate generated_txnestedupsert generated_txrollback)
+MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_capped generated_feed generated_tenantfeed generated_relbatch generated_relsingle generated_createuser generated_renameuser generated_deleteuser generated_upsert generated_createmany generated_upsertmany generated_updatemany generated_txdelete generated_txnestedcreate generated_txnestedupdate generated_txnestedupsert generated_txrollback)
 WRITE_OPS=(createuser renameuser deleteuser)
 fail=0
 
@@ -23,15 +23,8 @@ for m in "${MODULES[@]}"; do
     echo "FATAL: $PROOF_DIR/$m.rs missing — run: npx vitest run test/scp/e1-native-sql-port.test.ts" >&2
     exit 2
   fi
-  # Keep the crate's copy of each module in lockstep with the freshly emitted one — the bc native
-  # module AND its litedbmodel-generated companion (the boundary-injected node_* handlers + wire adapter).
+  # Keep the crate's sole generated module in lockstep (bc core + co-located static runtime adapter).
   cp "$PROOF_DIR/$m.rs" "$HERE/src/$m.rs"
-  companion="companion_${m#generated_}"
-  if [[ ! -f "$PROOF_DIR/$companion.rs" ]]; then
-    echo "FATAL: $PROOF_DIR/$companion.rs missing — run: npx vitest run test/scp/e1-native-sql-port.test.ts" >&2
-    exit 2
-  fi
-  cp "$PROOF_DIR/$companion.rs" "$HERE/src/$companion.rs"
 done
 
 work="$(mktemp -d)"

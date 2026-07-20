@@ -90,8 +90,8 @@ pub use codegen_exec::{
 };
 pub use node::{decode_value, encode_value, eval_expr, EvalError, Node};
 pub use relation::{
-    hydrate_relation_typed, read_bundle_pooled, relation_op, stitch_relation, stitch_relation_tree,
-    IntoKeyTuple,
+    build_relation_params, check_relation_hard_limit, hydrate_children, read_bundle_pooled,
+    stitch_relation, stitch_relation_tree, IntoKeyTuple,
 };
 pub use runtime::{
     execute_bundle, execute_bundle_pooled, execute_transaction_bundle,

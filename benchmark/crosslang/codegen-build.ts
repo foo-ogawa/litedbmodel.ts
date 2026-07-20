@@ -5,8 +5,8 @@
 // SSoT = ops.ts `buildOps(dialect)` (the 19 ORM ops declared once on the SCP surface). For each
 // dialect × op this drives litedbmodel's REAL codegen:
 //   • bc emits the runtime-free native module (baked SQL literal + typed ports + de-box runner);
-//   • litedbmodel emits the companion (boundary-injected node_* handlers + wire adapter + — for a
-//     read+rel op — the v1 lazy-batch `relation_ops_json` the runtime loader stitches over the rows).
+//   • litedbmodel emits the companion (boundary-injected node_* handlers + wire adapter + native,
+//     statically-expanded relation hydrators with baked SQL/key descriptors).
 // There is NO hand-written exec seam and NO plan artifact walked at runtime: the module carries its
 // own SQL as a native literal and the only runtime is litedbmodel_runtime's op-agnostic `exec` seam.
 //
@@ -26,8 +26,7 @@ import { fileURLToPath } from 'node:url';
 // against comes from bc's own `registeredLanguages()` — loaded once in `main` (bc is ESM-only).
 import {
   generateCodegenArtifact,
-  generateRustCompanion,
-  generateRelationChildArtifacts,
+  generateRustExecutable,
   SemanticBehavior,
   components,
   publishBehaviors,
@@ -58,7 +57,6 @@ interface ManifestOp {
   readonly entry: string; // '' for tx ops (they call the companion run_on, not a native raw entry)
   readonly component: string; // the InNR<Component> struct suffix
   readonly withRel?: string;
-  readonly relChildren?: readonly string[]; // #140 typed-child de-box artifact base names (generated_/companion_)
 }
 
 function componentOf(entry: string): string {
@@ -72,18 +70,7 @@ function emitDialect(dialect: OrmDialect): ManifestOp[] {
   for (const op of buildOps(dialect)) {
     const art = generateCodegenArtifact(op.bundle as never, 'rust', REGISTERED, op.resolve);
     const moduleCode = art.module.code;
-    const companion = generateRustCompanion(op.bundle as never, `generated_${op.id}`, op.resolve);
-    writeFileSync(join(dir, `generated_${op.id}.rs`), moduleCode);
-    writeFileSync(join(dir, `companion_${op.id}.rs`), companion);
-    // #140 typed-child: emit the batched child de-box module(s) + companion(s) for every relation
-    // (recursively into childRelations). The primary companion's `hydrate_<rel>` references these by the
-    // SAME `relChildNames` derivation. Collected so main() copies + mod-declares them (drift-free).
-    const relChildren: string[] = [];
-    for (const a of generateRelationChildArtifacts(op.bundle as never, `generated_${op.id}`, op.resolve, REGISTERED)) {
-      writeFileSync(join(dir, `${a.module}.rs`), a.moduleCode);
-      writeFileSync(join(dir, `${a.companion}.rs`), a.companionCode);
-      relChildren.push(a.module, a.companion);
-    }
+    writeFileSync(join(dir, `generated_${op.id}.rs`), generateRustExecutable(op.bundle as never, `generated_${op.id}`, op.resolve, REGISTERED));
     // The mode-2 oracle fixture for the date/bool decoder proof (#124 native-vs-mode-2 framework):
     // filterPaginateSort projects created_at (TIMESTAMP) + published (BOOLEAN/TINYINT), so its
     // bundle+input drive `execute_bundle` (the interpreter) to compare BYTE-EQUAL vs the native path.
@@ -99,7 +86,7 @@ function emitDialect(dialect: OrmDialect): ManifestOp[] {
     } catch {
       if (op.kind !== 'tx') throw new Error(`missing native entry for non-tx op '${op.id}'`);
     }
-    manifest.push({ id: op.id, kind: op.kind, entry, component: entry ? componentOf(entry) : op.id, ...(op.withRel ? { withRel: op.withRel } : {}), ...(relChildren.length > 0 ? { relChildren } : {}) });
+    manifest.push({ id: op.id, kind: op.kind, entry, component: entry ? componentOf(entry) : op.id, ...(op.withRel ? { withRel: op.withRel } : {}) });
   }
   return manifest;
 }
@@ -148,8 +135,7 @@ function emitCappedFixture(): void {
   setLimitConfig({ findHardLimit: 2 });
   const bundle = compileBundle(contract, 'CappedFind', [], 'sqlite', undefined, resolve);
   resetLimitConfig();
-  writeFileSync(join(CRATE_GEN, 'generated_cappedFindAll.rs'), generateCodegenArtifact(bundle as never, 'rust', REGISTERED, resolve).module.code);
-  writeFileSync(join(CRATE_GEN, 'companion_cappedFindAll.rs'), generateRustCompanion(bundle as never, 'generated_cappedFindAll', resolve));
+  writeFileSync(join(CRATE_GEN, 'generated_cappedFindAll.rs'), generateRustExecutable(bundle as never, 'generated_cappedFindAll', resolve, REGISTERED));
 }
 
 async function main() {
@@ -169,7 +155,7 @@ async function main() {
   // #140 typed-child de-box module + companion for the op's relations).
   for (const op of manifest) {
     const src = join(TMP, 'sqlite');
-    for (const f of [`generated_${op.id}.rs`, `companion_${op.id}.rs`, ...(op.relChildren ?? []).map((c) => `${c}.rs`)]) {
+    for (const f of [`generated_${op.id}.rs`]) {
       const from = join(src, f);
       const to = join(CRATE_GEN, f);
       writeFileSync(to, readFileSync(from));
@@ -180,12 +166,10 @@ async function main() {
   // allow(non_snake_case)) + each op's #140 typed-child de-box modules/companions + the cappedFindAll
   // safety fixture. Emitted so the crate never hand-maintains the module list (drift-free).
   const modLines = [
-    ...manifest.flatMap((op) => [`pub mod generated_${op.id};`, `pub mod companion_${op.id};`, ...(op.relChildren ?? []).map((c) => `pub mod ${c};`)]),
+    ...manifest.map((op) => `pub mod generated_${op.id};`),
     `pub mod generated_cappedFindAll;`,
-    `pub mod companion_cappedFindAll;`,
   ];
   writeFileSync(join(CRATE_GEN, 'mod.rs'), `#![allow(non_snake_case, dead_code, unused_imports, clippy::all)]\n// GENERATED by codegen-build.ts — the native ORM-bench module tree (do not edit).\n${modLines.join('\n')}\n`);
-  writeFileSync(join(CRATE_GEN, 'manifest.json'), JSON.stringify(manifest, null, 2));
   console.log(`codegen-build: emitted ${manifest.length} ops × ${ORM_DIALECTS.length} dialects → ${TMP}/<dialect>, committed sqlite → ${CRATE_GEN}`);
   if (arg === 'check') console.log('(check mode: files regenerated; run `git diff --stat rust/orm_bench/src/gen` for drift)');
 }

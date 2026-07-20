@@ -1,9 +1,9 @@
 //! NATIVE-codegen ORM-bench cell (#129, epic #123) — self-measure the 19 ORM ops through the
-//! litedbmodel-GENERATED native modules + companions + `litedbmodel_runtime` Driver, and print a flat
+//! litedbmodel-GENERATED native modules + `litedbmodel_runtime` Driver, and print a flat
 //! CSV (`cell,dialect,op,iter,us`) the TS collector aggregates. This binary is a litedbmodel-CONSUMER:
-//! for each op it builds the typed input, obtains the runtime-backed handler from the GENERATED companion
-//! (`companion_<op>::handler`), and calls the GENERATED native entry
-//! (`generated_<op>::run_native_raw_struct_<Comp>`). It supplies NO `node_*` of its own and holds NO
+//! for each op it builds the typed input and calls the sole GENERATED public entry
+//! (`generated_<op>::run`). The runtime adapter is co-located in that generated file. The consumer
+//! supplies NO `node_*` of its own and holds NO
 //! hand-written exec seam — every DB access rides litedbmodel_runtime's op-agnostic Driver `exec`.
 //!
 //! Relations (nestedFind*/nestedRelations/compositeRelations) follow #131: the native module carries the
@@ -116,11 +116,7 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
     let txd = tx_dialect(spec);
     match op {
         "findAll" => Box::new(move |_it| {
-            let _ = generated_findAll::run_native_raw_struct_FindAll(
-                &companion_findAll::handler(d),
-                generated_findAll::InNRFindAll,
-            )
-            .unwrap();
+            let _ = generated_findAll::run(d, generated_findAll::InNRFindAll).unwrap();
         }),
         "filterPaginateSort" => Box::new(move |_it| {
             // `published` is a BOOLEAN column on postgres (native port type `bool`) but INTEGER on
@@ -130,15 +126,15 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             let published = true;
             #[cfg(not(feature = "pg"))]
             let published = 1;
-            let _ = generated_filterPaginateSort::run_native_raw_struct_FilterPaginateSort(
-                &companion_filterPaginateSort::handler(d),
+            let _ = generated_filterPaginateSort::run(
+                d,
                 generated_filterPaginateSort::InNRFilterPaginateSort { published },
             )
             .unwrap();
         }),
         "findFirst" => Box::new(move |_it| {
-            let _ = generated_findFirst::run_native_raw_struct_FindFirst(
-                &companion_findFirst::handler(d),
+            let _ = generated_findFirst::run(
+                d,
                 generated_findFirst::InNRFindFirst {
                     name: "User%".into(),
                 },
@@ -146,8 +142,8 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             .unwrap();
         }),
         "findUnique" => Box::new(move |_it| {
-            let _ = generated_findUnique::run_native_raw_struct_FindUnique(
-                &companion_findUnique::handler(d),
+            let _ = generated_findUnique::run(
+                d,
                 generated_findUnique::InNRFindUnique {
                     email: "user500@example.com".into(),
                 },
@@ -155,99 +151,49 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             .unwrap();
         }),
         // Relation ops: the timed cell is TWO lines — (1) the generated TYPED native read, (2) the
-        // litedbmodel TYPED lazy-load (`hydrate_relation`) with a natural key accessor (`|r| r.id`). ALL
-        // orchestration (batched child read, group, multi-level stitch) is INSIDE litedbmodel; the bench
-        // reconstructs NO `Value::Obj` and parses NO metadata per iteration (the relation op is parsed
-        // ONCE here in setup). SDK cell keeps its hand orchestration (the comparison baseline).
-        "nestedFindAll" => {
-            let posts = litedbmodel_runtime::relation_op(
-                companion_nestedFindAll::relation_ops_json(),
-                "posts",
+        // generated TYPED hydrator with a natural key accessor (`|r| r.id`). SQL/key metadata and nested
+        // calls are compiled into it. Each timed relation cell is exactly: primary read + hydrate.
+        "nestedFindAll" => Box::new(move |_it| {
+            let users =
+                generated_nestedFindAll::run(d, generated_nestedFindAll::InNRFindAll).unwrap();
+            let _ = generated_nestedFindAll::hydrate_posts(users, d).unwrap();
+        }),
+        "nestedFindFirst" => Box::new(move |_it| {
+            let users = generated_nestedFindFirst::run(
+                d,
+                generated_nestedFindFirst::InNRFindFirst {
+                    name: "User%".into(),
+                },
             )
             .unwrap();
-            Box::new(move |_it| {
-                let users = generated_nestedFindAll::run_native_raw_struct_FindAll(
-                    &companion_nestedFindAll::handler(d),
-                    generated_nestedFindAll::InNRFindAll,
-                )
-                .unwrap();
-                let _ = companion_nestedFindAll::hydrate_posts(&posts, users, |r| r.id, d).unwrap();
-            })
-        }
-        "nestedFindFirst" => {
-            let posts = litedbmodel_runtime::relation_op(
-                companion_nestedFindFirst::relation_ops_json(),
-                "posts",
+            let _ = generated_nestedFindFirst::hydrate_posts(users, d).unwrap();
+        }),
+        "nestedFindUnique" => Box::new(move |_it| {
+            let users = generated_nestedFindUnique::run(
+                d,
+                generated_nestedFindUnique::InNRFindUnique {
+                    email: "user1@example.com".into(),
+                },
             )
             .unwrap();
-            Box::new(move |_it| {
-                let users = generated_nestedFindFirst::run_native_raw_struct_FindFirst(
-                    &companion_nestedFindFirst::handler(d),
-                    generated_nestedFindFirst::InNRFindFirst {
-                        name: "User%".into(),
-                    },
-                )
-                .unwrap();
-                let _ = companion_nestedFindFirst::hydrate_posts(&posts, users, |r| r.id, d).unwrap();
-            })
-        }
-        "nestedFindUnique" => {
-            let posts = litedbmodel_runtime::relation_op(
-                companion_nestedFindUnique::relation_ops_json(),
-                "posts",
+            let _ = generated_nestedFindUnique::hydrate_posts(users, d).unwrap();
+        }),
+        "nestedRelations" => Box::new(move |_it| {
+            let users =
+                generated_nestedRelations::run(d, generated_nestedRelations::InNRFindAll).unwrap();
+            let _ = generated_nestedRelations::hydrate_posts(users, d).unwrap();
+        }),
+        "compositeRelations" => Box::new(move |_it| {
+            let rows = generated_compositeRelations::run(
+                d,
+                generated_compositeRelations::InNRByTenant { tenant_id: 1 },
             )
             .unwrap();
-            Box::new(move |_it| {
-                let users = generated_nestedFindUnique::run_native_raw_struct_FindUnique(
-                    &companion_nestedFindUnique::handler(d),
-                    generated_nestedFindUnique::InNRFindUnique {
-                        email: "user1@example.com".into(),
-                    },
-                )
-                .unwrap();
-                let _ =
-                    companion_nestedFindUnique::hydrate_posts(&posts, users, |r| r.id, d).unwrap();
-            })
-        }
-        "nestedRelations" => {
-            let posts = litedbmodel_runtime::relation_op(
-                companion_nestedRelations::relation_ops_json(),
-                "posts",
-            )
-            .unwrap();
-            Box::new(move |_it| {
-                let users = generated_nestedRelations::run_native_raw_struct_FindAll(
-                    &companion_nestedRelations::handler(d),
-                    generated_nestedRelations::InNRFindAll,
-                )
-                .unwrap();
-                let _ = companion_nestedRelations::hydrate_posts(&posts, users, |r| r.id, d).unwrap();
-            })
-        }
-        "compositeRelations" => {
-            let posts = litedbmodel_runtime::relation_op(
-                companion_compositeRelations::relation_ops_json(),
-                "posts",
-            )
-            .unwrap();
-            Box::new(move |_it| {
-                let rows = generated_compositeRelations::run_native_raw_struct_ByTenant(
-                    &companion_compositeRelations::handler(d),
-                    generated_compositeRelations::InNRByTenant { tenant_id: 1 },
-                )
-                .unwrap();
-                let _ = companion_compositeRelations::hydrate_posts(
-                    &posts,
-                    rows,
-                    |r| (r.tenant_id, r.user_id),
-                    d,
-                )
-                .unwrap();
-            })
-        }
+            let _ = generated_compositeRelations::hydrate_posts(rows, d).unwrap();
+        }),
         "create" => Box::new(move |it| {
-            let _ = generated_create::run_native_raw_struct_Create(
-                &companion_create::handler(d),
+            let _ = generated_create::run(
+                d,
                 generated_create::InNRCreate {
                     email: format!("new{it}@bench.com"),
                     name: "New".into(),
@@ -256,8 +202,8 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             .unwrap();
         }),
         "update" => Box::new(move |_it| {
-            let _ = generated_update::run_native_raw_struct_Update(
-                &companion_update::handler(d),
+            let _ = generated_update::run(
+                d,
                 generated_update::InNRUpdate {
                     id: 100,
                     name: "Updated 100".into(),
@@ -266,8 +212,8 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             .unwrap();
         }),
         "upsert" => Box::new(move |_it| {
-            let _ = generated_upsert::run_native_raw_struct_Upsert(
-                &companion_upsert::handler(d),
+            let _ = generated_upsert::run(
+                d,
                 generated_upsert::InNRUpsert {
                     email: "user1@example.com".into(),
                     name: "Upserted One".into(),
@@ -276,8 +222,8 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             .unwrap();
         }),
         "createMany" => Box::new(move |it| {
-            let _ = generated_createMany::run_native_raw_struct_CreateMany(
-                &companion_createMany::handler(d),
+            let _ = generated_createMany::run(
+                d,
                 generated_createMany::InNRCreateMany {
                     emails: batch_emails(it),
                     names: batch_names(),
@@ -289,8 +235,8 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             let mut emails: Vec<String> =
                 vec!["user1@example.com".into(), "user2@example.com".into()];
             emails.extend((0..8).map(|k| format!("many{k}@bench.com")));
-            let _ = generated_upsertMany::run_native_raw_struct_UpsertMany(
-                &companion_upsertMany::handler(d),
+            let _ = generated_upsertMany::run(
+                d,
                 generated_upsertMany::InNRUpsertMany {
                     emails,
                     names: batch_names(),
@@ -299,8 +245,8 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             .unwrap();
         }),
         "updateMany" => Box::new(move |_it| {
-            let _ = generated_updateMany::run_native_raw_struct_UpdateMany(
-                &companion_updateMany::handler(d),
+            let _ = generated_updateMany::run(
+                d,
                 generated_updateMany::InNRUpdateMany {
                     ids: (1..=10).collect(),
                     names: batch_names(),
@@ -310,7 +256,7 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
         }),
         // ── tx ops: the native RETURNING chain runs through the companion `run_on` (BEGIN…COMMIT). ──
         "delete" => Box::new(move |it| {
-            let _ = companion_delete::run_on(
+            let _ = generated_delete::run_on(
                 litedbmodel_runtime::ConnSource::Driver(d),
                 None,
                 txd,
@@ -322,7 +268,7 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             );
         }),
         "nestedCreate" => Box::new(move |it| {
-            let _ = companion_nestedCreate::run_on(
+            let _ = generated_nestedCreate::run_on(
                 litedbmodel_runtime::ConnSource::Driver(d),
                 None,
                 txd,
@@ -335,7 +281,7 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             );
         }),
         "nestedUpdate" => Box::new(move |_it| {
-            let _ = companion_nestedUpdate::run_on(
+            let _ = generated_nestedUpdate::run_on(
                 litedbmodel_runtime::ConnSource::Driver(d),
                 None,
                 txd,
@@ -348,7 +294,7 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             );
         }),
         "nestedUpsert" => Box::new(move |_it| {
-            let _ = companion_nestedUpsert::run_on(
+            let _ = generated_nestedUpsert::run_on(
                 litedbmodel_runtime::ConnSource::Driver(d),
                 None,
                 txd,
@@ -416,8 +362,7 @@ fn main() {
     for op in OPS {
         // Re-seed the canonical fixture before each op so reads see the seed state and writes start clean.
         reseed(driver.as_ref(), &dialect);
-        // SETUP (outside the timed loop): build the op closure ONCE — relation metadata is parsed here,
-        // never per iteration. The timed region below is then EXACTLY the op call, nothing else.
+        // Build the op closure once. The timed region below is exactly the op call.
         let mut run = prepare_op(op, driver.as_ref(), &spec);
         for it in 0..warmup {
             run(it);
@@ -448,8 +393,8 @@ fn run_verify(dialect: &str, spec: &str) {
     let published = true;
     #[cfg(not(feature = "pg"))]
     let published = 1;
-    let rows = gen::generated_filterPaginateSort::run_native_raw_struct_FilterPaginateSort(
-        &gen::companion_filterPaginateSort::handler(d),
+    let rows = gen::generated_filterPaginateSort::run(
+        d,
         gen::generated_filterPaginateSort::InNRFilterPaginateSort { published },
     )
     .expect("native filterPaginateSort");
@@ -540,6 +485,21 @@ fn run_safety(dialect: &str, spec: &str) {
         "compositeRelations queries={} (expect 3)",
         count("compositeRelations")
     );
+    reseed(d, dialect);
+    let users = gen::generated_nestedRelations::run(d, gen::generated_nestedRelations::InNRFindAll)
+        .expect("nested relation parents");
+    let tree = gen::generated_nestedRelations::hydrate_posts(users, d)
+        .expect("nested relation typed tree");
+    let comment_count: usize = tree
+        .iter()
+        .flat_map(|(_, posts)| posts.iter())
+        .map(|(_, comments)| comments.len())
+        .sum();
+    assert!(
+        comment_count > 0,
+        "nested relation comments must survive in the returned typed tree"
+    );
+    println!("nestedRelations returned comments={comment_count} (typed tree, not discarded)");
     // A batch write = 1 statement for N records (not N).
     reseed(d, dialect);
     println!(
@@ -553,7 +513,7 @@ fn run_safety(dialect: &str, spec: &str) {
     //    seed (>2 users) trips the shared check_find_hard_limit — the same guard core the ORM read
     //    companions carry. Proves the guard FIRES end-to-end (not just an emission assert). ──
     reseed(d, dialect);
-    match gen::companion_cappedFindAll::run(d, gen::generated_cappedFindAll::InNRCappedFind {}) {
+    match gen::generated_cappedFindAll::run(d, gen::generated_cappedFindAll::InNRCappedFind {}) {
         Ok(rows) => println!(
             "hardLimit NOT tripped — got {} rows (BUG: guard did not fire)",
             rows.len()

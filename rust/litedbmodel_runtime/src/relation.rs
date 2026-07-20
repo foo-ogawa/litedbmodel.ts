@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use behavior_contracts::Value;
 
-use crate::codegen_exec::{ArrayParamShape, Wire};
+use crate::codegen_exec::ArrayParamShape;
 use crate::driver::Driver;
 use crate::errors::{LimitExceededError, RuntimeError, SqlFailure, LIMIT_CONTEXT_RELATION};
 use crate::exec_context::{self, StatementIntent};
@@ -51,6 +51,32 @@ struct RelationOp {
     /// Hard-limit runaway cap (Phase E-2, epic #74) — the effective per-batch row cap RESOLVED at
     /// compile and baked as a plain number. Absent ⇒ no check (disabled / intrinsic-limit window).
     hard_limit: Option<i64>,
+}
+
+/// The minimal borrowed values consumed by the shared batch primitive. Both the interpreter adapter
+/// and generated native descriptor feed this shape; neither path converts to or interprets the other.
+struct RelationBatchSpec<'a> {
+    name: &'a str,
+    dialect: &'a str,
+    key_shape: ArrayParamShape,
+    parent_key_arity: usize,
+    sql: &'a str,
+    target_table: Option<&'a str>,
+    hard_limit: Option<i64>,
+}
+
+impl RelationOp {
+    fn batch_spec(&self) -> RelationBatchSpec<'_> {
+        RelationBatchSpec {
+            name: &self.name,
+            dialect: &self.dialect,
+            key_shape: self.key_shape,
+            parent_key_arity: self.parent_key_cols().len(),
+            sql: &self.sql,
+            target_table: self.target_table.as_deref(),
+            hard_limit: self.hard_limit,
+        }
+    }
 }
 
 fn op_from_json(o: &J) -> RelationOp {
@@ -189,8 +215,8 @@ fn dedupe_tuples(tuples: &[Vec<Value>]) -> Vec<Vec<Value>> {
 /// PG → ONE scalar array (`Value::Arr`); MySQL/SQLite → ONE JSON scalar-array string. Composite:
 /// PG → ONE array param PER key column (transposed tuples); MySQL/SQLite → ONE JSON array-of-tuples
 /// string. Returns the positional param list.
-fn bind_keys(op: &RelationOp, tuples: &[Vec<Value>]) -> Vec<Value> {
-    if op.parent_keys.is_none() {
+fn bind_keys(spec: &RelationBatchSpec<'_>, tuples: &[Vec<Value>]) -> Vec<Value> {
+    if spec.parent_key_arity == 1 {
         // Single-key: ONE scalar-array param. The Driver's param-binder binds it native (Postgres) or as
         // the `json_each(?)` JSON string (MySQL/SQLite) — the array-bind SSoT; NO dialect branch here
         // (invariant #3: DB differences resolve in the Driver, not the executor/render layer).
@@ -200,9 +226,9 @@ fn bind_keys(op: &RelationOp, tuples: &[Vec<Value>]) -> Vec<Value> {
     // generation-stage `key_shape` DESCRIPTOR (invariant #5), NOT by a dialect branch here (invariant #3:
     // the executor is dialect-blind): PerColumn → ONE array param PER key column (N params, transposed
     // tuples, `UNNEST($1::T[], $2::T[], …)`); SingleJson → ONE array-of-tuples JSON (1 param, `JSON_TABLE(?)`).
-    match op.key_shape {
+    match spec.key_shape {
         ArrayParamShape::PerColumn => {
-            let n_cols = op.parent_key_cols().len();
+            let n_cols = spec.parent_key_arity;
             (0..n_cols)
                 .map(|col| Value::Arr(tuples.iter().map(|t| t[col].clone()).collect()))
                 .collect()
@@ -245,6 +271,34 @@ fn json_tuples(tuples: &[Vec<Value>]) -> String {
     format!("[{}]", parts.join(","))
 }
 
+/// Marshal generated relation key columns into the baked batch SQL's params. This is a value-only,
+/// op-independent primitive: SQL and key shape are supplied by generated native code.
+pub fn build_relation_params(
+    sql: &str,
+    columns: &[Vec<Value>],
+    shape: ArrayParamShape,
+) -> (String, Vec<Value>) {
+    let rows = (0..columns.first().map_or(0, Vec::len))
+        .map(|row| columns.iter().map(|column| column[row].clone()).collect())
+        .collect::<Vec<Vec<Value>>>();
+    let rows = dedupe_tuples(&rows);
+    let columns = (0..columns.len())
+        .map(|column| rows.iter().map(|row| row[column].clone()).collect())
+        .collect::<Vec<Vec<Value>>>();
+    let mut rendered = sql.to_string();
+    for column in &columns {
+        rendered = resolve_pg_array_cast(&rendered, column);
+    }
+    let params = if columns.len() == 1 {
+        vec![Value::Arr(columns[0].clone())]
+    } else if shape == ArrayParamShape::PerColumn {
+        columns.iter().cloned().map(Value::Arr).collect()
+    } else {
+        vec![Value::Str(json_tuples(&rows))]
+    };
+    (rendered, params)
+}
+
 /// The child rows grouped for a batch: stringified target-key identity → child rows (generic over the
 /// child ROW representation `C` — the Value path supplies `Value` children, the #140 native path supplies
 /// bc-de-boxed TYPED children — ONE group/distribute core over both, no per-path re-implementation).
@@ -257,24 +311,23 @@ type RelationBatch<C> = HashMap<String, Vec<C>>;
 /// ([`run_relation_op`], mode-2 / conformance) and the typed de-box ([`hydrate_relation_typed`], native) —
 /// dedupe/cast/render/bind/exec/hard-limit are single-sourced HERE (never duplicated per path).
 fn fetch_child_rows(
-    op: &RelationOp,
+    spec: &RelationBatchSpec<'_>,
     per_parent_tuples: &[Vec<Value>],
     driver: &dyn Driver,
 ) -> Result<Vec<Value>, RuntimeError> {
-    let p_cols = op.parent_key_cols();
     let keys = dedupe_tuples(per_parent_tuples);
-    let mut sql = op.sql.clone();
-    if op.dialect == "postgres" {
-        for col in 0..p_cols.len() {
+    let mut sql = spec.sql.to_string();
+    if spec.dialect == "postgres" {
+        for col in 0..spec.parent_key_arity {
             let col_vals: Vec<Value> = keys.iter().map(|t| t[col].clone()).collect();
             sql = resolve_pg_array_cast(&sql, &col_vals);
         }
     }
-    let sql = render_placeholders(&sql, &op.dialect);
+    let sql = render_placeholders(&sql, spec.dialect);
     if keys.is_empty() {
         return Ok(Vec::new());
     }
-    let bound = bind_keys(op, &keys);
+    let bound = bind_keys(spec, &keys);
     // The relation batch read funnels through the CENTRAL SEAM (§2) on a backward-compat ctx over the
     // relation's driver (no tx — relation batches are read-only; empty middleware) — one pooled
     // connection per batch, byte-identical to the pre-seam `driver.prepare().all()`.
@@ -286,7 +339,7 @@ fn fetch_child_rows(
     // check. ⚠ Field mapping mirrors the TS reference: `model` = the relation's TARGET TABLE,
     // `relation` = the relation NAME. A LimitExceededError propagates as its OWN error (not a
     // SqlFailure). Throws BEFORE grouping/hydration so an over-cap read never assembles an unbounded set.
-    if let Some(cap) = op.hard_limit {
+    if let Some(cap) = spec.hard_limit {
         // The SHARED runaway check (SSoT) — the SAME `LimitExceededError::check` the find-context guard
         // (mode-2 + native codegen read) calls, here with the relation context (EXACT count, the batch
         // is fetched in full). One `count > cap ⇒ throw` primitive, no per-context re-implementation.
@@ -294,8 +347,8 @@ fn fetch_child_rows(
             cap,
             rows.len() as i64,
             LIMIT_CONTEXT_RELATION,
-            op.target_table.clone(),
-            Some(op.name.clone()),
+            spec.target_table.map(str::to_string),
+            Some(spec.name.to_string()),
         )?;
     }
     Ok(rows)
@@ -324,6 +377,45 @@ fn matched_children<C: Clone>(tuple: &[Value], batch: &RelationBatch<C>) -> Vec<
     batch.get(&key_identity(tuple)).cloned().unwrap_or_default()
 }
 
+/// Group and distribute already-native typed child rows over typed parents. Query execution and
+/// de-boxing happen in the generated BC module; this shared primitive owns only key matching.
+pub fn hydrate_children<P, K: IntoKeyTuple, C: Clone>(
+    parents: Vec<P>,
+    key_of: impl Fn(&P) -> K,
+    children: Vec<C>,
+    child_key_of: impl Fn(&C) -> Vec<Value>,
+) -> Vec<(P, Vec<C>)> {
+    let tuples = parents
+        .iter()
+        .map(|parent| key_of(parent).into_key_tuple())
+        .collect::<Vec<_>>();
+    let batch = group_children(children, child_key_of);
+    parents
+        .into_iter()
+        .zip(tuples.iter())
+        .map(|(parent, tuple)| (parent, matched_children(tuple, &batch)))
+        .collect()
+}
+
+/// Enforce a generated relation's baked batch-total cap after the typed native child query.
+pub fn check_relation_hard_limit(
+    hard_limit: Option<i64>,
+    count: usize,
+    target_table: Option<&str>,
+    relation: &str,
+) -> Result<(), RuntimeError> {
+    if let Some(limit) = hard_limit {
+        LimitExceededError::check(
+            limit,
+            count as i64,
+            LIMIT_CONTEXT_RELATION,
+            target_table.map(str::to_string),
+            Some(relation.to_string()),
+        )?;
+    }
+    Ok(())
+}
+
 /// Group a batch of VALUE child rows by target key (the Value-path adapter over the generic
 /// [`group_children`]: the key reader is `obj_get` over the ordered pair list). Byte-identical grouping to
 /// the pre-#140 `run_relation_op`.
@@ -350,28 +442,6 @@ fn distribute_by_tuple(op: &RelationOp, tuple: &[Value], batch: &RelationBatch<V
         Some(r) => r,
         None => Value::Null,
     }
-}
-
-/// Parse a relation-ops JSON blob ONCE and pick the top-level relation `name` — the meta-load entry a
-/// consumer calls in SETUP (once), so no per-iteration JSON parse ever reaches the hot path (the loader
-/// takes the parsed [`J`] node). Loud on a missing relation (a wiring bug, never a silent empty op).
-pub fn relation_op(relations_json: &str, name: &str) -> Result<J, RuntimeError> {
-    let ops = J::parse(relations_json).map_err(|e| {
-        RuntimeError::Sql(SqlFailure {
-            kind: "driver_error".into(),
-            policy: "fail".into(),
-            sqlite_code: None,
-            message: format!("relation_op: invalid relation-ops JSON: {e}"),
-        })
-    })?;
-    ops.get(name).cloned().ok_or_else(|| {
-        RuntimeError::Sql(SqlFailure {
-            kind: "driver_error".into(),
-            policy: "fail".into(),
-            sqlite_code: None,
-            message: format!("relation_op: relation '{name}' is not declared on this model"),
-        })
-    })
 }
 
 /// Recurse the declared `childRelations` over the just-hydrated child ROWS (Value — the driver's native
@@ -403,7 +473,7 @@ pub fn stitch_relation(
 ) -> Result<Vec<Value>, RuntimeError> {
     let op = op_from_json(op_json);
     let tuples = parent_key_tuples(&parents, &op.parent_key_cols());
-    let batch = group_value_children(&op, fetch_child_rows(&op, &tuples, driver)?);
+    let batch = group_value_children(&op, fetch_child_rows(&op.batch_spec(), &tuples, driver)?);
     for (row, tuple) in parents.iter_mut().zip(tuples.iter()) {
         let child = distribute_by_tuple(&op, tuple, &batch);
         if let Value::Obj(pairs) = row {
@@ -461,39 +531,6 @@ impl<A: crate::codegen_exec::ToWireParam, B: crate::codegen_exec::ToWireParam> I
             crate::codegen_exec::wp(&self.1),
         ]
     }
-}
-
-/// The TYPED relation loader (#138 parent-typing → #140 child-typing): hydrate ONE relation LEVEL onto a
-/// TYPED native-read parent list, returning each parent paired with its TYPED child structs — NO
-/// `Value::Obj` retained past the de-box on the native path. The parent key is read via the caller's
-/// NATURAL accessor (`|r| r.id`, `|r| (r.tenant_id, r.user_id)`), lowered to the loader's key tuple by
-/// [`IntoKeyTuple`]. The batched child driver rows come from the SHARED [`fetch_child_rows`] (the ONE
-/// dedupe/cast/render/bind/exec/hard-limit authority the Value path also uses), then a bc-generated CHILD
-/// `decode` de-boxes the driver rows into TYPED structs `Vec<C>` (the SAME bc de-box a primary read uses,
-/// via the module's wire seam), and the SHARED [`group_children`] / [`matched_children`] group + distribute
-/// by key — ONE core, no Value/typed duplication. `child_key_of` reads the TYPED child's target-key tuple
-/// by field access (no `obj_get`). Multi-level (`childRelations`) is driven by the litedbmodel-GENERATED
-/// companion (each level is a concrete `C` — Rust cannot recurse generically over the heterogeneous child
-/// types), which re-invokes THIS per-level loader over the just-hydrated typed children. Byte-equal to the
-/// Value path for the same keys.
-pub fn hydrate_relation_typed<P, K: IntoKeyTuple, C: Clone>(
-    op_json: &J,
-    parents: Vec<P>,
-    key_of: impl Fn(&P) -> K,
-    decode: impl Fn(Wire) -> Result<Vec<C>, RuntimeError>,
-    child_key_of: impl Fn(&C) -> Vec<Value>,
-    driver: &dyn Driver,
-) -> Result<Vec<(P, Vec<C>)>, RuntimeError> {
-    let op = op_from_json(op_json);
-    let tuples: Vec<Vec<Value>> = parents.iter().map(|p| key_of(p).into_key_tuple()).collect();
-    let rows = fetch_child_rows(&op, &tuples, driver)?;
-    let children = decode(Wire::from_rows(rows))?;
-    let batch = group_children(children, child_key_of);
-    Ok(parents
-        .into_iter()
-        .zip(tuples.iter())
-        .map(|(p, tuple)| (p, matched_children(tuple, &batch)))
-        .collect())
 }
 
 /// Run a READ bundle's primary row list, then batch-load + hydrate the selected relations onto each
@@ -566,7 +603,10 @@ pub fn read_bundle_pooled(
         let op = op_from_json(op_json);
         let rel_driver = driver_for_op(&op, driver, connections)?;
         let tuples = parent_key_tuples(&rows, &op.parent_key_cols());
-        let batch = group_value_children(&op, fetch_child_rows(&op, &tuples, rel_driver)?);
+        let batch = group_value_children(
+            &op,
+            fetch_child_rows(&op.batch_spec(), &tuples, rel_driver)?,
+        );
         for (row, tuple) in rows.iter_mut().zip(tuples.iter()) {
             let child = distribute_by_tuple(&op, tuple, &batch);
             if let Value::Obj(pairs) = row {

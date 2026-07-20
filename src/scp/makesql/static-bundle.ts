@@ -599,11 +599,20 @@ function limitOffsetTail(kind: 'limit' | 'offset', dialect: Dialect, table: stri
  */
 export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatement[] {
   const { component, ports } = nodeRef(node);
-  if (component !== 'Select' && component !== 'Count') {
-    throw new Error(`static-bundle: compileSelectNode only compiles Select/Count nodes (got '${component}')`);
+  if (component !== 'Select' && component !== 'Count' && component !== 'RelationBatch') {
+    throw new Error(`static-bundle: compileSelectNode only compiles Select/Count/RelationBatch nodes (got '${component}')`);
   }
   const table = stringPort(ports, 'table');
   if (table === undefined) throw new Error(`static-bundle: ${component} node requires a literal 'table' port`);
+  if (component === 'RelationBatch') {
+    const sql = stringPort(ports, 'sql');
+    if (sql === undefined) throw new Error("static-bundle: RelationBatch requires compiled 'sql'");
+    const keys = Object.keys(ports)
+      .filter((p) => /^key\.\d+$/.test(p))
+      .sort((a, b) => Number(a.slice(4)) - Number(b.slice(4)))
+      .map((p) => ports[p] as ValueSpec);
+    return [{ sql, params: keys }];
+  }
   // A `Count` node projects `COUNT(*) as count` (v1 `DBModel._count`: `SELECT COUNT(*) as count
   // FROM t`), a `Select` its own column list (default `*`). Both heads go through the ORIGINAL
   // `compileSelect`, so the text is v1-sourced (count head byte-identical to `_count`).
@@ -672,7 +681,7 @@ export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatem
  */
 function compilePrimaryNode(node: ComponentRefNode, dialect: Dialect): StaticStatement[] {
   const component = 'map' in node ? (node as MapNode).map.component : node.component;
-  if (component === 'Select' || component === 'Count') return compileSelectNode(node, dialect);
+  if (component === 'Select' || component === 'Count' || component === 'RelationBatch') return compileSelectNode(node, dialect);
   if (component === 'Insert' || component === 'Update' || component === 'Delete') {
     const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> }, dialect);
     return [{ sql: op.sql, params: op.params }];
@@ -1017,7 +1026,7 @@ export function executeStaticWrite(bundle: StaticBundle, input: Scope, db: DbOrC
 /** Compile ONE authored SQL node (Select or CRUD write) into its static statements. */
 function compileNodeStatements(node: RefLike, dialect: Dialect, resolveColumnType?: ColumnTypeResolver): StaticStatement[] {
   const component = 'map' in node ? (node as MapNode).map.component : node.component;
-  if (component === 'Select' || component === 'Count') return compileSelectNode(node, dialect);
+  if (component === 'Select' || component === 'Count' || component === 'RelationBatch') return compileSelectNode(node, dialect);
   const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> }, dialect, resolveColumnType);
   // MySQL has no native RETURNING: bake the pk-hint into the readGraph write statement (the SAME
   // `mysqlPkHint` SSoT compileSaveBundle/compileCreateManyBundle/codegen use) so the interpreter path

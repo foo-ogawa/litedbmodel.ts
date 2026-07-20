@@ -69,11 +69,23 @@ pub struct BehaviorError {
 
 impl BehaviorError {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        BehaviorError { code: code.into(), message: message.into(), detail: None }
+        BehaviorError {
+            code: code.into(),
+            message: message.into(),
+            detail: None,
+        }
     }
     /// The same failure carrying the leaf's structured Error Value.
-    pub fn with_detail(code: impl Into<String>, message: impl Into<String>, detail: ErrorDetail) -> Self {
-        BehaviorError { code: code.into(), message: message.into(), detail: Some(Box::new(detail)) }
+    pub fn with_detail(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        detail: ErrorDetail,
+    ) -> Self {
+        BehaviorError {
+            code: code.into(),
+            message: message.into(),
+            detail: Some(Box::new(detail)),
+        }
     }
     /// The stable failure code (byte-equal to run_behavior) WITHOUT a bc-runtime type.
     pub fn code(&self) -> &str {
@@ -99,7 +111,10 @@ impl std::error::Error for BehaviorError {}
 fn op_failed(node: &str, policy: &str, e: BehaviorError) -> BehaviorError {
     BehaviorError {
         code: "OP_FAILED".to_string(),
-        message: format!("operation '{node}' failed under '{policy}' policy: {}", e.message),
+        message: format!(
+            "operation '{node}' failed under '{policy}' policy: {}",
+            e.message
+        ),
         detail: e.detail,
     }
 }
@@ -109,7 +124,13 @@ fn op_failed(node: &str, policy: &str, e: BehaviorError) -> BehaviorError {
 // (TYPE_MISMATCH / MISSING_PROP) so the covered read stays equivalent to run_behavior; detail.kind
 // distinguishes typeMismatch / missingField / overflow.
 #[allow(dead_code)]
-fn de_type_mismatch(model: &str, field: &str, expected: &str, actual_wire: String, raw: String) -> BehaviorError {
+fn de_type_mismatch(
+    model: &str,
+    field: &str,
+    expected: &str,
+    actual_wire: String,
+    raw: String,
+) -> BehaviorError {
     BehaviorError::with_detail(
         "TYPE_MISMATCH",
         format!("node '{model}': {field}: expected {expected}, got {actual_wire}"),
@@ -143,7 +164,13 @@ fn de_missing_field(model: &str, field: &str, expected: &str) -> BehaviorError {
 }
 
 #[allow(dead_code)]
-fn de_overflow(model: &str, field: &str, expected: &str, actual_wire: String, raw: String) -> BehaviorError {
+fn de_overflow(
+    model: &str,
+    field: &str,
+    expected: &str,
+    actual_wire: String,
+    raw: String,
+) -> BehaviorError {
     let message = format!("node '{model}': {field}: {raw} is outside the range of {expected}");
     BehaviorError::with_detail(
         "TYPE_MISMATCH",
@@ -163,14 +190,14 @@ fn de_overflow(model: &str, field: &str, expected: &str, actual_wire: String, ra
 #[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct T0 {
-    pub id: i64, // "id"
+    pub id: i64,      // "id"
     pub name: String, // "name"
 }
 
 #[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct T1 {
-    pub id: i64, // "id"
+    pub id: i64,       // "id"
     pub title: String, // "title"
 }
 
@@ -183,7 +210,10 @@ pub struct T2 {
 
 #[allow(dead_code)]
 fn unknown_component(component: &str) -> BehaviorError {
-    BehaviorError::new("UNKNOWN_COMPONENT", format!("component '{component}' has no handler (fail-closed)"))
+    BehaviorError::new(
+        "UNKNOWN_COMPONENT",
+        format!("component '{component}' has no handler (fail-closed)"),
+    )
 }
 
 // leaf_failure — a failure the LEAF reports (test glue): the runner assigns the node's failure code
@@ -200,8 +230,8 @@ fn leaf_failure(message: impl Into<String>) -> BehaviorError {
 #[derive(Clone)]
 pub struct PortsNRTxNestedUpdateTxBody0 {
     pub f_sql: String, // "sql"
-    pub f_p0: String, // "p0"
-    pub f_p1: i64, // "p1"
+    pub f_p0: String,  // "p0"
+    pub f_p1: i64,     // "p1"
 }
 
 // PortsNRTxNestedUpdateTxBody1 — CONCRETE native ports for node 'tx_body_1' (Update). Typed fields per the
@@ -210,8 +240,8 @@ pub struct PortsNRTxNestedUpdateTxBody0 {
 #[derive(Clone)]
 pub struct PortsNRTxNestedUpdateTxBody1 {
     pub f_sql: String, // "sql"
-    pub f_p0: String, // "p0"
-    pub f_p1: i64, // "p1"
+    pub f_p0: String,  // "p0"
+    pub f_p1: i64,     // "p1"
 }
 
 // CONCRETE per-component input structs (fields = inputPorts).
@@ -219,8 +249,8 @@ pub struct PortsNRTxNestedUpdateTxBody1 {
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
 #[derive(Default)]
 pub struct InNRTxNestedUpdate {
-    pub name: String, // "name"
-    pub user_id: i64, // "user_id"
+    pub name: String,  // "name"
+    pub user_id: i64,  // "user_id"
     pub title: String, // "title"
 }
 
@@ -232,8 +262,16 @@ pub struct InNRTxNestedUpdate {
 // node's concrete native result (see INTEGRATION.md §6).
 pub trait HandlerNRTxNestedUpdate {
     type Wire: WireValue + Send;
-    fn node_tx_body_0(&self, ports: &PortsNRTxNestedUpdateTxBody0, bound: Option<String>) -> Result<Self::Wire, BehaviorError>;
-    fn node_tx_body_1(&self, ports: &PortsNRTxNestedUpdateTxBody1, bound: Option<String>) -> Result<Self::Wire, BehaviorError>;
+    fn node_tx_body_0(
+        &self,
+        ports: &PortsNRTxNestedUpdateTxBody0,
+        bound: Option<String>,
+    ) -> Result<Self::Wire, BehaviorError>;
+    fn node_tx_body_1(
+        &self,
+        ports: &PortsNRTxNestedUpdateTxBody1,
+        bound: Option<String>,
+    ) -> Result<Self::Wire, BehaviorError>;
 }
 
 // strict de-box wire seam — the consumer implements WireValue (+ WireRow/WireList reached via
@@ -246,15 +284,30 @@ pub trait HandlerNRTxNestedUpdate {
 // "S"/"N"/"BOOL"); raw_value is the offending value stringified. Concrete enums — no boxed Value.
 pub enum Probe<T> {
     Got(T),
-    Wrong { actual_wire_type: String, raw_value: String },
-    Null { actual_wire_type: String, raw_value: String },
+    Wrong {
+        actual_wire_type: String,
+        raw_value: String,
+    },
+    Null {
+        actual_wire_type: String,
+        raw_value: String,
+    },
     Absent,
 }
 
 pub enum NumProbe {
-    Got { raw: String, actual_wire_type: String },
-    Wrong { actual_wire_type: String, raw_value: String },
-    Null { actual_wire_type: String, raw_value: String },
+    Got {
+        raw: String,
+        actual_wire_type: String,
+    },
+    Wrong {
+        actual_wire_type: String,
+        raw_value: String,
+    },
+    Null {
+        actual_wire_type: String,
+        raw_value: String,
+    },
     Absent,
 }
 
@@ -326,64 +379,196 @@ pub fn run_native_raw_struct_TxNestedUpdate<H: HandlerNRTxNestedUpdate>(
     let produced_tx_body_1 = std::cell::Cell::new(false);
     let _ = &produced_tx_body_1;
     // ── op 'tx_body_0' (Update) ──
-    let ports_tx_body_0 = PortsNRTxNestedUpdateTxBody0 { f_sql: "UPDATE benchmark_users SET name = ? WHERE id = ? RETURNING id, name".to_string(), f_p0: in_.name.clone(), f_p1: in_.user_id };
+    let ports_tx_body_0 = PortsNRTxNestedUpdateTxBody0 {
+        f_sql: "UPDATE benchmark_users SET name = ? WHERE id = ? RETURNING id, name".to_string(),
+        f_p0: in_.name.clone(),
+        f_p1: in_.user_id,
+    };
     let wire_tx_body_0 = match handlers.node_tx_body_0(&ports_tx_body_0, None) {
         Ok(r) => r,
-        Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "tx_body_0", e.message), detail: e.detail }),
+        Err(e) => {
+            return Err(BehaviorError {
+                code: "OP_FAILED".to_string(),
+                message: format!(
+                    "operation '{}' failed under 'fail' policy: {}",
+                    "tx_body_0", e.message
+                ),
+                detail: e.detail,
+            })
+        }
     };
     *cell_tx_body_0.borrow_mut() = match wire_tx_body_0.as_row() {
         Probe::Got(sub0) => T0 {
             id: match sub0.probe_number("id") {
-                NumProbe::Got { raw, actual_wire_type } => match raw.parse::<i64>() {
+                NumProbe::Got {
+                    raw,
+                    actual_wire_type,
+                } => match raw.parse::<i64>() {
                     Ok(n) => n,
                     Err(_) => return Err(de_overflow("T0", "id", "int", actual_wire_type, raw)),
                 },
-                NumProbe::Wrong { actual_wire_type, raw_value }
-                | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "id", "int", actual_wire_type, raw_value)),
+                NumProbe::Wrong {
+                    actual_wire_type,
+                    raw_value,
+                }
+                | NumProbe::Null {
+                    actual_wire_type,
+                    raw_value,
+                } => {
+                    return Err(de_type_mismatch(
+                        "T0",
+                        "id",
+                        "int",
+                        actual_wire_type,
+                        raw_value,
+                    ))
+                }
                 NumProbe::Absent => return Err(de_missing_field("T0", "id", "int")),
             },
             name: match sub0.probe_string("name") {
                 Probe::Got(v) => v,
-                Probe::Wrong { actual_wire_type, raw_value }
-                | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "name", "string", actual_wire_type, raw_value)),
+                Probe::Wrong {
+                    actual_wire_type,
+                    raw_value,
+                }
+                | Probe::Null {
+                    actual_wire_type,
+                    raw_value,
+                } => {
+                    return Err(de_type_mismatch(
+                        "T0",
+                        "name",
+                        "string",
+                        actual_wire_type,
+                        raw_value,
+                    ))
+                }
                 Probe::Absent => return Err(de_missing_field("T0", "name", "string")),
             },
         },
-        Probe::Wrong { actual_wire_type, raw_value }
-        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("tx_body_0", "tx_body_0", "obj{id:int,name:string}", actual_wire_type, raw_value)),
-        Probe::Absent => return Err(de_missing_field("tx_body_0", "tx_body_0", "obj{id:int,name:string}")),
+        Probe::Wrong {
+            actual_wire_type,
+            raw_value,
+        }
+        | Probe::Null {
+            actual_wire_type,
+            raw_value,
+        } => {
+            return Err(de_type_mismatch(
+                "tx_body_0",
+                "tx_body_0",
+                "obj{id:int,name:string}",
+                actual_wire_type,
+                raw_value,
+            ))
+        }
+        Probe::Absent => {
+            return Err(de_missing_field(
+                "tx_body_0",
+                "tx_body_0",
+                "obj{id:int,name:string}",
+            ))
+        }
     };
     produced_tx_body_0.set(true);
     // ── op 'tx_body_1' (Update) ──
-    let ports_tx_body_1 = PortsNRTxNestedUpdateTxBody1 { f_sql: "UPDATE benchmark_posts SET title = ? WHERE author_id = ? RETURNING id, title".to_string(), f_p0: in_.title.clone(), f_p1: in_.user_id };
+    let ports_tx_body_1 = PortsNRTxNestedUpdateTxBody1 {
+        f_sql: "UPDATE benchmark_posts SET title = ? WHERE author_id = ? RETURNING id, title"
+            .to_string(),
+        f_p0: in_.title.clone(),
+        f_p1: in_.user_id,
+    };
     let wire_tx_body_1 = match handlers.node_tx_body_1(&ports_tx_body_1, None) {
         Ok(r) => r,
-        Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "tx_body_1", e.message), detail: e.detail }),
+        Err(e) => {
+            return Err(BehaviorError {
+                code: "OP_FAILED".to_string(),
+                message: format!(
+                    "operation '{}' failed under 'fail' policy: {}",
+                    "tx_body_1", e.message
+                ),
+                detail: e.detail,
+            })
+        }
     };
     *cell_tx_body_1.borrow_mut() = match wire_tx_body_1.as_row() {
         Probe::Got(sub0) => T1 {
             id: match sub0.probe_number("id") {
-                NumProbe::Got { raw, actual_wire_type } => match raw.parse::<i64>() {
+                NumProbe::Got {
+                    raw,
+                    actual_wire_type,
+                } => match raw.parse::<i64>() {
                     Ok(n) => n,
                     Err(_) => return Err(de_overflow("T1", "id", "int", actual_wire_type, raw)),
                 },
-                NumProbe::Wrong { actual_wire_type, raw_value }
-                | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T1", "id", "int", actual_wire_type, raw_value)),
+                NumProbe::Wrong {
+                    actual_wire_type,
+                    raw_value,
+                }
+                | NumProbe::Null {
+                    actual_wire_type,
+                    raw_value,
+                } => {
+                    return Err(de_type_mismatch(
+                        "T1",
+                        "id",
+                        "int",
+                        actual_wire_type,
+                        raw_value,
+                    ))
+                }
                 NumProbe::Absent => return Err(de_missing_field("T1", "id", "int")),
             },
             title: match sub0.probe_string("title") {
                 Probe::Got(v) => v,
-                Probe::Wrong { actual_wire_type, raw_value }
-                | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T1", "title", "string", actual_wire_type, raw_value)),
+                Probe::Wrong {
+                    actual_wire_type,
+                    raw_value,
+                }
+                | Probe::Null {
+                    actual_wire_type,
+                    raw_value,
+                } => {
+                    return Err(de_type_mismatch(
+                        "T1",
+                        "title",
+                        "string",
+                        actual_wire_type,
+                        raw_value,
+                    ))
+                }
                 Probe::Absent => return Err(de_missing_field("T1", "title", "string")),
             },
         },
-        Probe::Wrong { actual_wire_type, raw_value }
-        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("tx_body_1", "tx_body_1", "obj{id:int,title:string}", actual_wire_type, raw_value)),
-        Probe::Absent => return Err(de_missing_field("tx_body_1", "tx_body_1", "obj{id:int,title:string}")),
+        Probe::Wrong {
+            actual_wire_type,
+            raw_value,
+        }
+        | Probe::Null {
+            actual_wire_type,
+            raw_value,
+        } => {
+            return Err(de_type_mismatch(
+                "tx_body_1",
+                "tx_body_1",
+                "obj{id:int,title:string}",
+                actual_wire_type,
+                raw_value,
+            ))
+        }
+        Probe::Absent => {
+            return Err(de_missing_field(
+                "tx_body_1",
+                "tx_body_1",
+                "obj{id:int,title:string}",
+            ))
+        }
     };
     produced_tx_body_1.set(true);
-    let __out = T2 { user: cell_tx_body_0.borrow().clone(), post: cell_tx_body_1.borrow().clone() };
+    let __out = T2 {
+        user: cell_tx_body_0.borrow().clone(),
+        post: cell_tx_body_1.borrow().clone(),
+    };
     Ok(__out)
 }
 
@@ -392,3 +577,96 @@ pub fn run_native_raw_struct_TxNestedUpdate<H: HandlerNRTxNestedUpdate>(
 // (the consumer builds the CONCRETE InNR_<comp> input + implements the CONCRETE HandlerNR<comp> trait).
 // See INTEGRATION.md §6.
 pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["TxNestedUpdate"];
+
+// GENERATED by litedbmodel codegen — the RUST COMPANION for `generated_txnestedupdate` (epic #123/#124).
+// bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
+// THIS companion — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
+// delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire
+// classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the
+// orphan rule forbids the module-local wire trait impls living in the runtime crate).
+use litedbmodel_runtime::{Driver, SqlFailure, Value, Wire};
+// The dialect is a CONNECTION property (`self.driver.dialect()`), not baked here — the generated
+// SQL is dialect-neutral in its placeholders (`?`); the runtime renumbers `?`→`$N` per connection.
+
+litedbmodel_runtime::wire_impls!();
+
+/// Map a runtime SQL failure to the module-local BehaviorError (byte-equal codes: the bc runner
+/// re-wraps a node failure as OP_FAILED regardless, so only the message/detail cross this seam).
+fn cvt(e: SqlFailure) -> BehaviorError {
+    BehaviorError::new(e.kind, e.message)
+}
+
+struct TxRt<'a, 'b, 'c> {
+    ctx: &'a litedbmodel_runtime::ExecutionContext<'b, 'c>,
+}
+impl<'a, 'b, 'c> HandlerNRTxNestedUpdate for TxRt<'a, 'b, 'c> {
+    type Wire = Wire;
+    fn node_tx_body_0(
+        &self,
+        ports: &PortsNRTxNestedUpdateTxBody0,
+        _bound: Option<String>,
+    ) -> Result<Wire, BehaviorError> {
+        litedbmodel_runtime::exec(
+            self.ctx,
+            &ports.f_sql,
+            &[
+                litedbmodel_runtime::wp(&ports.f_p0),
+                litedbmodel_runtime::wp(&ports.f_p1),
+            ],
+            litedbmodel_runtime::ExecMode::RowSingle,
+        )
+        .map_err(cvt)
+    }
+    fn node_tx_body_1(
+        &self,
+        ports: &PortsNRTxNestedUpdateTxBody1,
+        _bound: Option<String>,
+    ) -> Result<Wire, BehaviorError> {
+        litedbmodel_runtime::exec(
+            self.ctx,
+            &ports.f_sql,
+            &[
+                litedbmodel_runtime::wp(&ports.f_p0),
+                litedbmodel_runtime::wp(&ports.f_p1),
+            ],
+            litedbmodel_runtime::ExecMode::RowSingle,
+        )
+        .map_err(cvt)
+    }
+}
+
+/// The litedbmodel-consumer entry: run the RETURNING-chained transaction (BEGIN…COMMIT / ROLLBACK
+/// via the runtime tx envelope; every statement runs on the ONE pinned tx-scoped ctx). Returns
+/// `true` when the chain committed, `false` on rollback.
+pub fn run(driver: &dyn Driver, in_: InNRTxNestedUpdate) -> Result<bool, BehaviorError> {
+    litedbmodel_runtime::run_transaction(driver, |ctx| {
+        run_native_raw_struct_TxNestedUpdate(&TxRt { ctx }, in_)
+    })
+    .map_err(cvt)
+}
+
+/// The OPTIONS-aware / ROUTED / RETRYING tx entry (#135 routing+isolation + #136 retry): open the
+/// tx from a ConnSource (single driver, or the WRITER pool of a named connection) and apply the
+/// TransactionOptions (isolation prelude, rollback_only, and the SHARED #81 retry loop). `make_in`
+/// REBUILDS the input per attempt so a retryable failure (deadlock / serialization / connection) can
+/// re-run the whole tx on a FRESH connection — bc-independent (NO Clone on InNRTxNestedUpdate). The bc
+/// runner's BehaviorError maps to a SqlFailure whose message the SHARED is_retryable_tx_error SSoT
+/// classifies. Returns `true` iff it committed; a non-retryable / retry-exhausted error re-raises.
+pub fn run_on(
+    src: litedbmodel_runtime::ConnSource,
+    connection: Option<&str>,
+    dialect: litedbmodel_runtime::TxDialect,
+    options: &litedbmodel_runtime::TransactionOptions,
+    make_in: impl Fn() -> InNRTxNestedUpdate,
+) -> Result<bool, litedbmodel_runtime::SqlFailure> {
+    litedbmodel_runtime::run_transaction_on(src, connection, dialect, options, move |ctx| {
+        run_native_raw_struct_TxNestedUpdate(&TxRt { ctx }, make_in()).map_err(|e| {
+            litedbmodel_runtime::SqlFailure {
+                kind: e.code,
+                policy: "fail".to_string(),
+                sqlite_code: None,
+                message: e.message,
+            }
+        })
+    })
+}

@@ -145,7 +145,7 @@ function withColumnResolver<T>(resolve: ColumnTypeResolver | undefined, fn: () =
  * `returning` port WHEN `static columns` is present, else annotated with the determined empty-row list
  * `{arr:{obj:{}}}` (writes stay EXEMPT from a `static columns` requirement, as before #12).
  */
-const READ_TYPED_LEAF = 'Select';
+const READ_TYPED_LEAVES = new Set(['Select', 'RelationBatch']);
 const WRITE_TYPED_LEAVES = new Set(['Insert', 'Update', 'Delete']);
 
 /**
@@ -154,7 +154,7 @@ const WRITE_TYPED_LEAVES = new Set(['Insert', 'Update', 'Delete']);
  * `Fragment`, and `Tx` pass through unchanged (no per-projection output).
  */
 function wrapLeaf(name: CatalogName, raw: (ports: Record<string, unknown>) => Recorded): (ports: Record<string, unknown>) => Recorded {
-  const isRead = name === READ_TYPED_LEAF;
+  const isRead = READ_TYPED_LEAVES.has(name);
   const isWrite = WRITE_TYPED_LEAVES.has(name);
   if (!isRead && !isWrite) return raw;
   return (ports: Record<string, unknown>): Recorded => {
@@ -162,7 +162,7 @@ function wrapLeaf(name: CatalogName, raw: (ports: Record<string, unknown>) => Re
     // Reads REQUIRE the column-type SoT (typed de-box); writes do not (RETURNING de-box is post-compile).
     if (isRead && currentResolver === undefined) {
       throw new Error(
-        `scp authoring: a Select node needs its output row type at compile time (bc 0.8.0 all-nodes-typed ` +
+        `scp authoring: a ${name} node needs its output row type at compile time (bc 0.8.0 all-nodes-typed ` +
           `gate), but the model declares NO \`columns\` — a typed read REQUIRES an inline \`static columns\` ` +
           `SoT (or \`options.columns\`). No-assume, no-fallback.`,
       );
@@ -399,7 +399,7 @@ function selectProjectionsOf(component: Component): SelectProjection[] {
       throw new Error(`selectProjectionsOf: component '${component.name}' node '${n.id}' is a fanout node, not supported by litedbmodel (bc FanoutNode)`);
     }
     const ref = 'map' in n ? n.map : n;
-    if (ref.component !== 'Select') continue; // Count → scalar; no projection
+    if (ref.component !== 'Select' && ref.component !== 'RelationBatch') continue; // Count → scalar; no projection
     const ports = ref.ports as Record<string, unknown>;
     const table = literalStringPort(ports, 'table');
     const columns = literalStringArrayPort(ports, 'select');

@@ -227,7 +227,7 @@ function nodeTypes(node: RefLike, resolveColumnType: ColumnTypeResolver): NodeTy
   const { component, ports } = nodeRef(node);
   const at = `node '${node.id}'`;
   if (component === 'Count') return { outType: 'int', materializers: {} };
-  if (component === 'Select') {
+  if (component === 'Select' || component === 'RelationBatch') {
     const table = stringPort(ports, 'table');
     if (table === undefined) throw new Error(`outtype: ${at}: Select node requires a literal 'table' port`);
     const projection = stringArrayPort(ports, 'select');
@@ -351,7 +351,7 @@ export function crudNodeAsType(
   if (typeof table !== 'string') {
     throw new Error(`outtype: ${at}: ${component} node requires a literal 'table' string port to type its output (got ${JSON.stringify(table)})`);
   }
-  if (component === 'Select') {
+  if (component === 'Select' || component === 'RelationBatch') {
     const select = ports['select'];
     if (!Array.isArray(select) || select.length === 0) {
       throw new Error(
@@ -405,4 +405,3 @@ export function deriveReadOutTypes(
   }
   return { byNode, outputType: outputType(component.output, byNode, `component '${component.name}' output`), materializersByNode };
 }
-

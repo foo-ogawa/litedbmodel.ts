@@ -2,38 +2,15 @@
 //! end to end and print canonical JSON so the TS leg asserts byte-equality vs the mode-2 oracle.
 //!
 //! This binary is a litedbmodel-CONSUMER: for each op it builds the typed input, obtains the
-//! runtime-backed handler from the GENERATED companion (`companion_<op>::handler` / `::run`), and calls
-//! the GENERATED runner (`generated_<op>::run_native_raw_struct_<Comp>`). It supplies NO `node_*` of its
-//! own — those come from litedbmodel (the generated companion + litedbmodel_runtime). Every DB access
+//! runtime-backed adapter co-located in the GENERATED module, and calls the public
+//! `generated_<op>::run`. It supplies NO `node_*` of its own — those come from litedbmodel codegen and
+//! litedbmodel_runtime. Every DB access
 //! goes through litedbmodel_runtime's `Driver`; there is NO `rusqlite` here (the old hand-written
 //! `seam.rs` is retired) and NO per-op handler glue (the old per-op `*Seam` structs are retired).
 
 // The bc-generated native modules (runtime-free) + the litedbmodel-generated companions (the
 // boundary-injected node_* handlers + wire adapter). Paired 1:1; a companion refers to its module as
 // `super::generated_<op>`.
-mod companion_byids;
-mod companion_bymaybe;
-mod companion_capped;
-mod companion_createmany;
-mod companion_createuser;
-mod companion_deleteuser;
-mod companion_feed;
-mod companion_findunique;
-mod companion_recent;
-mod companion_relbatch;
-mod companion_relbatch_rel_posts;
-mod companion_relsingle;
-mod companion_relsingle_rel_comments;
-mod companion_renameuser;
-mod companion_tenantfeed;
-mod companion_txdelete;
-mod companion_txnestedcreate;
-mod companion_txnestedupdate;
-mod companion_txnestedupsert;
-mod companion_txrollback;
-mod companion_updatemany;
-mod companion_upsert;
-mod companion_upsertmany;
 mod generated_byids;
 mod generated_bymaybe;
 mod generated_capped;
@@ -44,9 +21,7 @@ mod generated_feed;
 mod generated_findunique;
 mod generated_recent;
 mod generated_relbatch;
-mod generated_relbatch_rel_posts;
 mod generated_relsingle;
-mod generated_relsingle_rel_comments;
 mod generated_renameuser;
 mod generated_tenantfeed;
 mod generated_txdelete;
@@ -61,7 +36,7 @@ mod generated_upsertmany;
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
 use litedbmodel_runtime::{
-    encode_value, execute_bundle, execute_transaction_bundle, relation_op, Driver, Node, SqlFailure,
+    encode_value, execute_bundle, execute_transaction_bundle, Driver, Node, SqlFailure,
     SqliteDriver, Value,
 };
 // `read_bundle_pooled` is the mode-2 relation read — used ONLY on the livedb `readrel` path (pg/mysql,
@@ -342,11 +317,8 @@ fn main() {
         }
         "findunique" => {
             let email = args.get(3).expect("findunique needs <email>").clone();
-            let out = generated_findunique::run_native_raw_struct_FindUnique(
-                &companion_findunique::handler(d),
-                generated_findunique::InNRFindUnique { email },
-            )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let out = generated_findunique::run(d, generated_findunique::InNRFindUnique { email })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> =
                 out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));
@@ -358,11 +330,8 @@ fn main() {
             } else {
                 raw.split(',').map(|s| s.parse().expect("id")).collect()
             };
-            let out = generated_byids::run_native_raw_struct_ByIds(
-                &companion_byids::handler(d),
-                generated_byids::InNRByIds { ids },
-            )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let out = generated_byids::run(d, generated_byids::InNRByIds { ids })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> =
                 out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));
@@ -374,11 +343,8 @@ fn main() {
             } else {
                 Some(raw.parse().expect("limit"))
             };
-            let out = generated_recent::run_native_raw_struct_Recent(
-                &companion_recent::handler(d),
-                generated_recent::InNRRecent { limit },
-            )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let out = generated_recent::run(d, generated_recent::InNRRecent { limit })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> =
                 out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!("{}", user_rows_json(&items));
@@ -387,7 +353,7 @@ fn main() {
             // #135/#136: the GUARDED find entry enforces the baked hardLimit (2). The seed has > 2 users,
             // so the cap trips ⇒ `run` returns RuntimeError::Limit (context=find), byte-equal to mode-2.
             // This EXERCISES the auto-wired guarded companion `run` (compiled by this crate build).
-            match companion_capped::run(d, generated_capped::InNRCappedFind {}) {
+            match generated_capped::run(d, generated_capped::InNRCappedFind {}) {
                 Ok(rows) => println!("OK:{}", rows.len()),
                 Err(litedbmodel_runtime::RuntimeError::Limit(l)) => {
                     println!("LIMIT:{}:{}:{}", l.context, l.limit, l.count)
@@ -407,8 +373,8 @@ fn main() {
             } else {
                 Some(raw.parse().expect("published"))
             };
-            let out = generated_bymaybe::run_native_raw_struct_ByAuthorMaybePublished(
-                &companion_bymaybe::handler(d),
+            let out = generated_bymaybe::run(
+                d,
                 generated_bymaybe::InNRByAuthorMaybePublished {
                     author_id,
                     published,
@@ -435,11 +401,8 @@ fn main() {
                 .expect("author_id")
                 .parse()
                 .expect("author_id int");
-            let out = generated_feed::run_native_raw_struct_PostsWithAuthor(
-                &companion_feed::handler(d),
-                generated_feed::InNRPostsWithAuthor { author_id },
-            )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let out = generated_feed::run(d, generated_feed::InNRPostsWithAuthor { author_id })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let authors: Vec<String> = out
                 .authors
                 .iter()
@@ -475,8 +438,8 @@ fn main() {
                 .expect("tenant_id")
                 .parse()
                 .expect("tenant_id int");
-            let out = generated_tenantfeed::run_native_raw_struct_UsersWithPosts(
-                &companion_tenantfeed::handler(d),
+            let out = generated_tenantfeed::run(
+                d,
                 generated_tenantfeed::InNRUsersWithPosts { tenant_id },
             )
             .unwrap_or_else(|e| panic!("behavior failed: {e}"));
@@ -528,16 +491,10 @@ fn main() {
                 .expect("tenant_id")
                 .parse()
                 .expect("tenant_id int");
-            let out = generated_relbatch::run_native_raw_struct_ByTenant(
-                &companion_relbatch::handler(d),
-                generated_relbatch::InNRByTenant { tenant_id },
-            )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let op = relation_op(companion_relbatch::relation_ops_json(), "posts")
-                .unwrap_or_else(|e| panic!("relation op: {}", e.message()));
-            let hydrated =
-                companion_relbatch::hydrate_posts(&op, out, |u| (u.tenant_id, u.user_id), d)
-                    .unwrap_or_else(|e| panic!("hydrate posts: {}", e.message()));
+            let out = generated_relbatch::run(d, generated_relbatch::InNRByTenant { tenant_id })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let hydrated = generated_relbatch::hydrate_posts(out, d)
+                .unwrap_or_else(|e| panic!("hydrate posts: {}", e.message()));
             let rows: Vec<String> = hydrated
                 .iter()
                 .map(|(u, _)| {
@@ -580,14 +537,9 @@ fn main() {
                 .expect("author_id")
                 .parse()
                 .expect("author_id int");
-            let out = generated_relsingle::run_native_raw_struct_ByAuthor(
-                &companion_relsingle::handler(d),
-                generated_relsingle::InNRByAuthor { author_id },
-            )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
-            let op = relation_op(companion_relsingle::relation_ops_json(), "comments")
-                .unwrap_or_else(|e| panic!("relation op: {}", e.message()));
-            let hydrated = companion_relsingle::hydrate_comments(&op, out, |p| p.id, d)
+            let out = generated_relsingle::run(d, generated_relsingle::InNRByAuthor { author_id })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let hydrated = generated_relsingle::hydrate_comments(out, d)
                 .unwrap_or_else(|e| panic!("hydrate comments: {}", e.message()));
             let rows: Vec<String> = hydrated
                 .iter()
@@ -627,11 +579,9 @@ fn main() {
         "createuser" => {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
-            let out = generated_createuser::run_native_raw_struct_CreateUser(
-                &companion_createuser::handler(d),
-                generated_createuser::InNRCreateUser { email, name },
-            )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let out =
+                generated_createuser::run(d, generated_createuser::InNRCreateUser { email, name })
+                    .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> =
                 out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!(
@@ -653,8 +603,8 @@ fn main() {
                 .split(',')
                 .map(|s| s.to_string())
                 .collect();
-            let out = generated_createmany::run_native_raw_struct_CreateMany(
-                &companion_createmany::handler(d),
+            let out = generated_createmany::run(
+                d,
                 generated_createmany::InNRCreateMany { emails, names },
             )
             .unwrap_or_else(|e| panic!("behavior failed: {e}"));
@@ -680,8 +630,8 @@ fn main() {
                 .split(',')
                 .map(|s| s.to_string())
                 .collect();
-            let out = generated_upsertmany::run_native_raw_struct_UpsertMany(
-                &companion_upsertmany::handler(d),
+            let out = generated_upsertmany::run(
+                d,
                 generated_upsertmany::InNRUpsertMany { emails, names },
             )
             .unwrap_or_else(|e| panic!("behavior failed: {e}"));
@@ -707,11 +657,9 @@ fn main() {
                 .split(',')
                 .map(|s| s.to_string())
                 .collect();
-            let out = generated_updatemany::run_native_raw_struct_UpdateMany(
-                &companion_updatemany::handler(d),
-                generated_updatemany::InNRUpdateMany { ids, names },
-            )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let out =
+                generated_updatemany::run(d, generated_updatemany::InNRUpdateMany { ids, names })
+                    .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> =
                 out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!(
@@ -723,11 +671,8 @@ fn main() {
         "upsert" => {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
-            let out = generated_upsert::run_native_raw_struct_UpsertUser(
-                &companion_upsert::handler(d),
-                generated_upsert::InNRUpsertUser { email, name },
-            )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let out = generated_upsert::run(d, generated_upsert::InNRUpsertUser { email, name })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> =
                 out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!(
@@ -739,11 +684,9 @@ fn main() {
         "renameuser" => {
             let id: i64 = args.get(3).expect("id").parse().expect("id int");
             let name = args.get(4).expect("name").clone();
-            let out = generated_renameuser::run_native_raw_struct_RenameUser(
-                &companion_renameuser::handler(d),
-                generated_renameuser::InNRRenameUser { id, name },
-            )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let out =
+                generated_renameuser::run(d, generated_renameuser::InNRRenameUser { id, name })
+                    .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let items: Vec<(i64, String, String)> =
                 out.into_iter().map(|r| (r.id, r.email, r.name)).collect();
             println!(
@@ -754,11 +697,8 @@ fn main() {
         }
         "deleteuser" => {
             let id: i64 = args.get(3).expect("id").parse().expect("id int");
-            let out = generated_deleteuser::run_native_raw_struct_DeleteUser(
-                &companion_deleteuser::handler(d),
-                generated_deleteuser::InNRDeleteUser { id },
-            )
-            .unwrap_or_else(|e| panic!("behavior failed: {e}"));
+            let out = generated_deleteuser::run(d, generated_deleteuser::InNRDeleteUser { id })
+                .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let s: Vec<String> = out
                 .iter()
                 .map(|r| {
@@ -780,7 +720,7 @@ fn main() {
             // #136: the RETRYING/options tx entry — the input builder rebuilds the input per attempt so a
             // retryable failure re-runs the whole tx (bc-independent). A non-retryable error ⇒ Err ⇒
             // committed:false (mirrors mode-2 `execute_transaction_bundle(...).is_ok()`).
-            let committed = companion_txdelete::run_on(
+            let committed = generated_txdelete::run_on(
                 litedbmodel_runtime::ConnSource::Driver(d),
                 None,
                 tx_dialect(db_path),
@@ -801,7 +741,7 @@ fn main() {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
             let title = args.get(5).expect("title").clone();
-            let committed = companion_txnestedcreate::run_on(
+            let committed = generated_txnestedcreate::run_on(
                 litedbmodel_runtime::ConnSource::Driver(d),
                 None,
                 tx_dialect(db_path),
@@ -823,7 +763,7 @@ fn main() {
             let user_id: i64 = args.get(3).expect("user_id").parse().expect("user_id int");
             let name = args.get(4).expect("name").clone();
             let title = args.get(5).expect("title").clone();
-            let committed = companion_txnestedupdate::run_on(
+            let committed = generated_txnestedupdate::run_on(
                 litedbmodel_runtime::ConnSource::Driver(d),
                 None,
                 tx_dialect(db_path),
@@ -845,7 +785,7 @@ fn main() {
             let email = args.get(3).expect("email").clone();
             let name = args.get(4).expect("name").clone();
             let title = args.get(5).expect("title").clone();
-            let committed = companion_txnestedupsert::run_on(
+            let committed = generated_txnestedupsert::run_on(
                 litedbmodel_runtime::ConnSource::Driver(d),
                 None,
                 tx_dialect(db_path),
@@ -867,7 +807,7 @@ fn main() {
             let email = args.get(3).expect("email").clone();
             let dup_email = args.get(4).expect("dup_email").clone();
             let name = args.get(5).expect("name").clone();
-            let committed = companion_txrollback::run_on(
+            let committed = generated_txrollback::run_on(
                 litedbmodel_runtime::ConnSource::Driver(d),
                 None,
                 tx_dialect(db_path),

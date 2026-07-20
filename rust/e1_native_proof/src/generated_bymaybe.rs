@@ -69,11 +69,23 @@ pub struct BehaviorError {
 
 impl BehaviorError {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        BehaviorError { code: code.into(), message: message.into(), detail: None }
+        BehaviorError {
+            code: code.into(),
+            message: message.into(),
+            detail: None,
+        }
     }
     /// The same failure carrying the leaf's structured Error Value.
-    pub fn with_detail(code: impl Into<String>, message: impl Into<String>, detail: ErrorDetail) -> Self {
-        BehaviorError { code: code.into(), message: message.into(), detail: Some(Box::new(detail)) }
+    pub fn with_detail(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        detail: ErrorDetail,
+    ) -> Self {
+        BehaviorError {
+            code: code.into(),
+            message: message.into(),
+            detail: Some(Box::new(detail)),
+        }
     }
     /// The stable failure code (byte-equal to run_behavior) WITHOUT a bc-runtime type.
     pub fn code(&self) -> &str {
@@ -99,7 +111,10 @@ impl std::error::Error for BehaviorError {}
 fn op_failed(node: &str, policy: &str, e: BehaviorError) -> BehaviorError {
     BehaviorError {
         code: "OP_FAILED".to_string(),
-        message: format!("operation '{node}' failed under '{policy}' policy: {}", e.message),
+        message: format!(
+            "operation '{node}' failed under '{policy}' policy: {}",
+            e.message
+        ),
         detail: e.detail,
     }
 }
@@ -109,7 +124,13 @@ fn op_failed(node: &str, policy: &str, e: BehaviorError) -> BehaviorError {
 // (TYPE_MISMATCH / MISSING_PROP) so the covered read stays equivalent to run_behavior; detail.kind
 // distinguishes typeMismatch / missingField / overflow.
 #[allow(dead_code)]
-fn de_type_mismatch(model: &str, field: &str, expected: &str, actual_wire: String, raw: String) -> BehaviorError {
+fn de_type_mismatch(
+    model: &str,
+    field: &str,
+    expected: &str,
+    actual_wire: String,
+    raw: String,
+) -> BehaviorError {
     BehaviorError::with_detail(
         "TYPE_MISMATCH",
         format!("node '{model}': {field}: expected {expected}, got {actual_wire}"),
@@ -143,7 +164,13 @@ fn de_missing_field(model: &str, field: &str, expected: &str) -> BehaviorError {
 }
 
 #[allow(dead_code)]
-fn de_overflow(model: &str, field: &str, expected: &str, actual_wire: String, raw: String) -> BehaviorError {
+fn de_overflow(
+    model: &str,
+    field: &str,
+    expected: &str,
+    actual_wire: String,
+    raw: String,
+) -> BehaviorError {
     let message = format!("node '{model}': {field}: {raw} is outside the range of {expected}");
     BehaviorError::with_detail(
         "TYPE_MISMATCH",
@@ -163,15 +190,18 @@ fn de_overflow(model: &str, field: &str, expected: &str, actual_wire: String, ra
 #[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct T0 {
-    pub id: i64, // "id"
-    pub title: String, // "title"
+    pub id: i64,        // "id"
+    pub title: String,  // "title"
     pub author_id: i64, // "author_id"
     pub published: i64, // "published"
 }
 
 #[allow(dead_code)]
 fn unknown_component(component: &str) -> BehaviorError {
-    BehaviorError::new("UNKNOWN_COMPONENT", format!("component '{component}' has no handler (fail-closed)"))
+    BehaviorError::new(
+        "UNKNOWN_COMPONENT",
+        format!("component '{component}' has no handler (fail-closed)"),
+    )
 }
 
 // leaf_failure — a failure the LEAF reports (test glue): the runner assigns the node's failure code
@@ -187,11 +217,11 @@ fn leaf_failure(message: impl Into<String>) -> BehaviorError {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRByAuthorMaybePublishedN0 {
-    pub f_sql_head: String, // "sql_head"
-    pub f_sql_tail: String, // "sql_tail"
-    pub f_w0: String, // "w0"
-    pub f_w0p0: i64, // "w0p0"
-    pub f_w1: String, // "w1"
+    pub f_sql_head: String,  // "sql_head"
+    pub f_sql_tail: String,  // "sql_tail"
+    pub f_w0: String,        // "w0"
+    pub f_w0p0: i64,         // "w0p0"
+    pub f_w1: String,        // "w1"
     pub f_w1p0: Option<i64>, // "w1p0"
 }
 
@@ -200,7 +230,7 @@ pub struct PortsNRByAuthorMaybePublishedN0 {
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
 #[derive(Default)]
 pub struct InNRByAuthorMaybePublished {
-    pub author_id: i64, // "author_id"
+    pub author_id: i64,         // "author_id"
     pub published: Option<i64>, // "published"
 }
 
@@ -212,7 +242,11 @@ pub struct InNRByAuthorMaybePublished {
 // node's concrete native result (see INTEGRATION.md §6).
 pub trait HandlerNRByAuthorMaybePublished {
     type Wire: WireValue + Send;
-    fn node_n0(&self, ports: &PortsNRByAuthorMaybePublishedN0, bound: Option<String>) -> Result<Self::Wire, BehaviorError>;
+    fn node_n0(
+        &self,
+        ports: &PortsNRByAuthorMaybePublishedN0,
+        bound: Option<String>,
+    ) -> Result<Self::Wire, BehaviorError>;
 }
 
 // strict de-box wire seam — the consumer implements WireValue (+ WireRow/WireList reached via
@@ -225,15 +259,30 @@ pub trait HandlerNRByAuthorMaybePublished {
 // "S"/"N"/"BOOL"); raw_value is the offending value stringified. Concrete enums — no boxed Value.
 pub enum Probe<T> {
     Got(T),
-    Wrong { actual_wire_type: String, raw_value: String },
-    Null { actual_wire_type: String, raw_value: String },
+    Wrong {
+        actual_wire_type: String,
+        raw_value: String,
+    },
+    Null {
+        actual_wire_type: String,
+        raw_value: String,
+    },
     Absent,
 }
 
 pub enum NumProbe {
-    Got { raw: String, actual_wire_type: String },
-    Wrong { actual_wire_type: String, raw_value: String },
-    Null { actual_wire_type: String, raw_value: String },
+    Got {
+        raw: String,
+        actual_wire_type: String,
+    },
+    Wrong {
+        actual_wire_type: String,
+        raw_value: String,
+    },
+    Null {
+        actual_wire_type: String,
+        raw_value: String,
+    },
     Absent,
 }
 
@@ -302,10 +351,26 @@ pub fn run_native_raw_struct_ByAuthorMaybePublished<H: HandlerNRByAuthorMaybePub
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (Select) ──
-    let ports_n0 = PortsNRByAuthorMaybePublishedN0 { f_sql_head: "SELECT id, title, author_id, published FROM benchmark_posts".to_string(), f_sql_tail: " ORDER BY id ASC".to_string(), f_w0: "author_id = ?".to_string(), f_w0p0: in_.author_id, f_w1: "published = ?".to_string(), f_w1p0: in_.published };
+    let ports_n0 = PortsNRByAuthorMaybePublishedN0 {
+        f_sql_head: "SELECT id, title, author_id, published FROM benchmark_posts".to_string(),
+        f_sql_tail: " ORDER BY id ASC".to_string(),
+        f_w0: "author_id = ?".to_string(),
+        f_w0p0: in_.author_id,
+        f_w1: "published = ?".to_string(),
+        f_w1p0: in_.published,
+    };
     let wire_n0 = match handlers.node_n0(&ports_n0, None) {
         Ok(r) => r,
-        Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
+        Err(e) => {
+            return Err(BehaviorError {
+                code: "OP_FAILED".to_string(),
+                message: format!(
+                    "operation '{}' failed under 'fail' policy: {}",
+                    "n0", e.message
+                ),
+                detail: e.detail,
+            })
+        }
     };
     *cell_n0.borrow_mut() = match wire_n0.as_list() {
         Probe::Got(l0) => {
@@ -314,49 +379,182 @@ pub fn run_native_raw_struct_ByAuthorMaybePublished<H: HandlerNRByAuthorMaybePub
                 acc0.push(match l0.elem_row(i0) {
                     Probe::Got(sub1) => T0 {
                         id: match sub1.probe_number("id") {
-                            NumProbe::Got { raw, actual_wire_type } => match raw.parse::<i64>() {
+                            NumProbe::Got {
+                                raw,
+                                actual_wire_type,
+                            } => match raw.parse::<i64>() {
                                 Ok(n) => n,
-                                Err(_) => return Err(de_overflow("T0", "id", "int", actual_wire_type, raw)),
+                                Err(_) => {
+                                    return Err(de_overflow(
+                                        "T0",
+                                        "id",
+                                        "int",
+                                        actual_wire_type,
+                                        raw,
+                                    ))
+                                }
                             },
-                            NumProbe::Wrong { actual_wire_type, raw_value }
-                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "id", "int", actual_wire_type, raw_value)),
+                            NumProbe::Wrong {
+                                actual_wire_type,
+                                raw_value,
+                            }
+                            | NumProbe::Null {
+                                actual_wire_type,
+                                raw_value,
+                            } => {
+                                return Err(de_type_mismatch(
+                                    "T0",
+                                    "id",
+                                    "int",
+                                    actual_wire_type,
+                                    raw_value,
+                                ))
+                            }
                             NumProbe::Absent => return Err(de_missing_field("T0", "id", "int")),
                         },
                         title: match sub1.probe_string("title") {
                             Probe::Got(v) => v,
-                            Probe::Wrong { actual_wire_type, raw_value }
-                            | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "title", "string", actual_wire_type, raw_value)),
+                            Probe::Wrong {
+                                actual_wire_type,
+                                raw_value,
+                            }
+                            | Probe::Null {
+                                actual_wire_type,
+                                raw_value,
+                            } => {
+                                return Err(de_type_mismatch(
+                                    "T0",
+                                    "title",
+                                    "string",
+                                    actual_wire_type,
+                                    raw_value,
+                                ))
+                            }
                             Probe::Absent => return Err(de_missing_field("T0", "title", "string")),
                         },
                         author_id: match sub1.probe_number("author_id") {
-                            NumProbe::Got { raw, actual_wire_type } => match raw.parse::<i64>() {
+                            NumProbe::Got {
+                                raw,
+                                actual_wire_type,
+                            } => match raw.parse::<i64>() {
                                 Ok(n) => n,
-                                Err(_) => return Err(de_overflow("T0", "author_id", "int", actual_wire_type, raw)),
+                                Err(_) => {
+                                    return Err(de_overflow(
+                                        "T0",
+                                        "author_id",
+                                        "int",
+                                        actual_wire_type,
+                                        raw,
+                                    ))
+                                }
                             },
-                            NumProbe::Wrong { actual_wire_type, raw_value }
-                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "author_id", "int", actual_wire_type, raw_value)),
-                            NumProbe::Absent => return Err(de_missing_field("T0", "author_id", "int")),
+                            NumProbe::Wrong {
+                                actual_wire_type,
+                                raw_value,
+                            }
+                            | NumProbe::Null {
+                                actual_wire_type,
+                                raw_value,
+                            } => {
+                                return Err(de_type_mismatch(
+                                    "T0",
+                                    "author_id",
+                                    "int",
+                                    actual_wire_type,
+                                    raw_value,
+                                ))
+                            }
+                            NumProbe::Absent => {
+                                return Err(de_missing_field("T0", "author_id", "int"))
+                            }
                         },
                         published: match sub1.probe_number("published") {
-                            NumProbe::Got { raw, actual_wire_type } => match raw.parse::<i64>() {
+                            NumProbe::Got {
+                                raw,
+                                actual_wire_type,
+                            } => match raw.parse::<i64>() {
                                 Ok(n) => n,
-                                Err(_) => return Err(de_overflow("T0", "published", "int", actual_wire_type, raw)),
+                                Err(_) => {
+                                    return Err(de_overflow(
+                                        "T0",
+                                        "published",
+                                        "int",
+                                        actual_wire_type,
+                                        raw,
+                                    ))
+                                }
                             },
-                            NumProbe::Wrong { actual_wire_type, raw_value }
-                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "published", "int", actual_wire_type, raw_value)),
-                            NumProbe::Absent => return Err(de_missing_field("T0", "published", "int")),
+                            NumProbe::Wrong {
+                                actual_wire_type,
+                                raw_value,
+                            }
+                            | NumProbe::Null {
+                                actual_wire_type,
+                                raw_value,
+                            } => {
+                                return Err(de_type_mismatch(
+                                    "T0",
+                                    "published",
+                                    "int",
+                                    actual_wire_type,
+                                    raw_value,
+                                ))
+                            }
+                            NumProbe::Absent => {
+                                return Err(de_missing_field("T0", "published", "int"))
+                            }
                         },
                     },
-                    Probe::Wrong { actual_wire_type, raw_value }
-                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:int,title:string,author_id:int,published:int}", actual_wire_type, raw_value)),
-                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:int,title:string,author_id:int,published:int}")),
+                    Probe::Wrong {
+                        actual_wire_type,
+                        raw_value,
+                    }
+                    | Probe::Null {
+                        actual_wire_type,
+                        raw_value,
+                    } => {
+                        return Err(de_type_mismatch(
+                            "n0",
+                            "n0",
+                            "obj{id:int,title:string,author_id:int,published:int}",
+                            actual_wire_type,
+                            raw_value,
+                        ))
+                    }
+                    Probe::Absent => {
+                        return Err(de_missing_field(
+                            "n0",
+                            "n0",
+                            "obj{id:int,title:string,author_id:int,published:int}",
+                        ))
+                    }
                 });
             }
             acc0
-        },
-        Probe::Wrong { actual_wire_type, raw_value }
-        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:int,title:string,author_id:int,published:int})", actual_wire_type, raw_value)),
-        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:int,title:string,author_id:int,published:int})")),
+        }
+        Probe::Wrong {
+            actual_wire_type,
+            raw_value,
+        }
+        | Probe::Null {
+            actual_wire_type,
+            raw_value,
+        } => {
+            return Err(de_type_mismatch(
+                "n0",
+                "n0",
+                "arr(obj{id:int,title:string,author_id:int,published:int})",
+                actual_wire_type,
+                raw_value,
+            ))
+        }
+        Probe::Absent => {
+            return Err(de_missing_field(
+                "n0",
+                "n0",
+                "arr(obj{id:int,title:string,author_id:int,published:int})",
+            ))
+        }
     };
     produced_n0.set(true);
     let __out = cell_n0.borrow().clone();
@@ -368,3 +566,94 @@ pub fn run_native_raw_struct_ByAuthorMaybePublished<H: HandlerNRByAuthorMaybePub
 // (the consumer builds the CONCRETE InNR_<comp> input + implements the CONCRETE HandlerNR<comp> trait).
 // See INTEGRATION.md §6.
 pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["ByAuthorMaybePublished"];
+
+// litedbmodel static runtime adapter for `generated_bymaybe` (co-located with the bc core).
+// bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
+// THIS companion — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
+// delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire
+// classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the
+// orphan rule forbids the module-local wire trait impls living in the runtime crate).
+use litedbmodel_runtime::{Driver, SqlFailure, Value, Wire};
+// The dialect is a CONNECTION property (`self.driver.dialect()`), not baked here — the generated
+// SQL is dialect-neutral in its placeholders (`?`); the runtime renumbers `?`→`$N` per connection.
+
+litedbmodel_runtime::wire_impls!();
+
+/// Map a runtime SQL failure to the module-local BehaviorError (byte-equal codes: the bc runner
+/// re-wraps a node failure as OP_FAILED regardless, so only the message/detail cross this seam).
+fn cvt(e: SqlFailure) -> BehaviorError {
+    BehaviorError::new(e.kind, e.message)
+}
+
+// The handler holds a ConnSource (#135): a single Driver (routing=None, byte-identical single-pool)
+// OR a RoutingConfig (read→reader / write→writer, named-DB). node_* resolves the ctx per statement
+// via `self.src.ctx()` — reader/writer routing is applied ONCE in the central seam, never per op.
+pub struct Rt<'a> {
+    src: litedbmodel_runtime::ConnSource<'a>,
+}
+impl<'a> HandlerNRByAuthorMaybePublished for Rt<'a> {
+    type Wire = Wire;
+    fn node_n0(
+        &self,
+        ports: &PortsNRByAuthorMaybePublishedN0,
+        _bound: Option<String>,
+    ) -> Result<Wire, BehaviorError> {
+        let frags = vec![
+            litedbmodel_runtime::SkipFrag {
+                sql: ports.f_w0.clone(),
+                present: true,
+                params: vec![litedbmodel_runtime::wp(&ports.f_w0p0)],
+            },
+            litedbmodel_runtime::SkipFrag {
+                sql: ports.f_w1.clone(),
+                present: ports.f_w1p0.is_some(),
+                params: ports
+                    .f_w1p0
+                    .iter()
+                    .map(|v| litedbmodel_runtime::wp(v))
+                    .collect(),
+            },
+        ];
+        let (sql, params) = litedbmodel_runtime::build_skip_params(
+            &ports.f_sql_head,
+            &[],
+            &frags,
+            &ports.f_sql_tail,
+            &[],
+        );
+        let ctx = self.src.ctx().map_err(cvt)?;
+        litedbmodel_runtime::exec(&ctx, &sql, &params, litedbmodel_runtime::ExecMode::Rows)
+            .map_err(cvt)
+    }
+}
+
+/// The litedbmodel-consumer entry: build the runtime-backed handler for `ByAuthorMaybePublished` over a SINGLE
+/// driver (byte-identical single-pool path). The consumer calls
+/// `run_native_raw_struct_ByAuthorMaybePublished(&handler(driver), in_)` — supplying NO node_* itself.
+pub fn handler(driver: &dyn Driver) -> Rt<'_> {
+    Rt {
+        src: litedbmodel_runtime::ConnSource::Driver(driver),
+    }
+}
+
+/// The ROUTED consumer entry (#135): the handler routes each read to the reader pool and each write
+/// to the writer pool (named-DB via the registry) through the SAME central `connection_for` seam.
+pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> {
+    Rt {
+        src: litedbmodel_runtime::ConnSource::Routing(routing),
+    }
+}
+
+pub fn run(
+    driver: &dyn Driver,
+    in_: InNRByAuthorMaybePublished,
+) -> Result<Vec<T0>, litedbmodel_runtime::RuntimeError> {
+    run_native_raw_struct_ByAuthorMaybePublished(&handler(driver), in_).map_err(|e| {
+        litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure {
+            kind: e.code,
+            policy: "fail".to_string(),
+            sqlite_code: None,
+            message: e.message,
+        })
+    })
+}

@@ -48,6 +48,7 @@ import type { Component } from './authoring';
  */
 export type CatalogName =
   | 'Select'
+  | 'RelationBatch'
   | 'Count'
   | 'Insert'
   | 'Update'
@@ -139,6 +140,14 @@ export const LITEDBMODEL_CATALOG: Catalog = {
   // Read: `items` (a Select root yields a row list; per-row collapse to `item` is the
   // consumer's cardinality concern, mirrored from graphddb Query's `cardinality` port).
   Select: entry('Select', { ...SELECT_PORTS, cardinality: P('string') }, 'items', true),
+  // Internal native relation query. `sql` is produced by compileRelationOp from the RelationDecl
+  // SSoT; `key.*` are typed parent-key arrays. It is still an authored BC component, not raw IR.
+  RelationBatch: entry(
+    'RelationBatch',
+    { table: P('string', true), select: P('string[]', true), sql: P('string', true), keyShape: P('string', true), targetKeys: P('string[]', true) },
+    'items',
+    true,
+  ),
   // COUNT(*) aggregate read (v1 `DBModel._count`): `SELECT COUNT(*) as count FROM t[ WHERE …]`.
   // Only `table` (required) + the optional `where` fragment tree — v1's count carries no
   // projection/order/limit/offset (it counts the filtered rows). Output is a one-row `[{count}]`
@@ -172,6 +181,7 @@ export function catalogEntry(name: string): CatalogEntry | undefined {
 /** The catalog names litedbmodel declares (the C2 per-DSL surface). */
 export const CATALOG_NAMES: readonly CatalogName[] = [
   'Select',
+  'RelationBatch',
   'Count',
   'Insert',
   'Update',
@@ -253,6 +263,7 @@ export function assertComponentsInCatalog(components: readonly Component[]): voi
       for (const p of Object.keys(ports)) {
         if (p in entryDef.inputPorts) continue;
         if (isWriteItem && WRITE_PORT_FAMILIES.some((f) => p.startsWith(f))) continue;
+        if (ref.component === 'RelationBatch' && p.startsWith('key.')) continue;
         errs.push(`${c.name}/${n.id} (${ref.component}): port '${p}' is not declared by the catalog entry (nor a write record-family port)`);
       }
     }

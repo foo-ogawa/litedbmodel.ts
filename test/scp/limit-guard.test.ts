@@ -30,7 +30,8 @@ import {
   type In,
   type RelationDecl,
 } from '../../src/scp';
-import { generateRustCompanion } from '../../src/scp/codegen';
+import { generateRustExecutable } from '../../src/scp/codegen';
+import { registeredLanguages } from 'behavior-contracts';
 
 const L = components();
 
@@ -215,7 +216,7 @@ describe('#135 native companion find-guard auto-wiring (rust)', () => {
     setLimitConfig({ findHardLimit: 5 });
     const bundle = compileBundle(publishBehaviors(Feed), 'Posts', [], 'sqlite', undefined, resolver);
     expect(bundle.readGraph!.findGuard).toEqual({ hardLimit: 5, nodeId: bundle.readGraph!.findGuard!.nodeId, model: 'Posts' });
-    const companion = generateRustCompanion(bundle, 'generated_posts', resolver);
+    const companion = generateRustExecutable(bundle, 'generated_posts', resolver, registeredLanguages());
     // A typed guarded entry that returns the runner's Vec<Row> as RuntimeError-fallible…
     expect(companion).toMatch(/pub fn run\(driver: &dyn Driver, in_: InNRPosts\) -> Result<Vec<[^>]+>, litedbmodel_runtime::RuntimeError>/);
     // …runs the bc runner, maps its BehaviorError → RuntimeError::Sql…
@@ -229,8 +230,8 @@ describe('#135 native companion find-guard auto-wiring (rust)', () => {
     resetLimitConfig();
     const bundle = compileBundle(publishBehaviors(Feed), 'Posts', [], 'sqlite', undefined, resolver);
     expect(bundle.readGraph!.findGuard).toBeUndefined();
-    const companion = generateRustCompanion(bundle, 'generated_posts', resolver);
+    const companion = generateRustExecutable(bundle, 'generated_posts', resolver, registeredLanguages());
     expect(companion).not.toContain('check_find_hard_limit');
-    expect(companion).not.toMatch(/pub fn run\(/);
+    expect(companion).toMatch(/pub fn run\(/);
   });
 });
