@@ -28,6 +28,8 @@ pub mod exec_context;
 pub mod middleware;
 pub mod node;
 pub mod relation;
+#[cfg(feature = "interpreter")]
+pub mod relation_interpreter;
 pub mod runtime;
 pub mod static_bundle;
 pub mod tx_options;
@@ -89,9 +91,10 @@ pub use codegen_exec::{
     Wire,
 };
 pub use node::{decode_value, encode_value, eval_expr, EvalError, Node};
-pub use relation::{
-    build_relation_params, check_relation_hard_limit, hydrate_children, read_bundle_pooled,
-    stitch_relation, stitch_relation_tree, IntoKeyTuple,
+pub use relation::{build_relation_params, execute_relation_batch, hydrate_children, IntoKeyTuple};
+#[cfg(feature = "interpreter")]
+pub use relation_interpreter::{
+    read_bundle, read_bundle_pooled, stitch_relation, stitch_relation_tree,
 };
 pub use runtime::{
     execute_bundle, execute_bundle_pooled, execute_transaction_bundle,

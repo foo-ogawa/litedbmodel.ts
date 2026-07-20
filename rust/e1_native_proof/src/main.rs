@@ -8,8 +8,8 @@
 //! goes through litedbmodel_runtime's `Driver`; there is NO `rusqlite` here (the old hand-written
 //! `seam.rs` is retired) and NO per-op handler glue (the old per-op `*Seam` structs are retired).
 
-// The bc-generated native modules (runtime-free) + the litedbmodel-generated companions (the
-// boundary-injected node_* handlers + wire adapter). Paired 1:1; a companion refers to its module as
+// The bc-generated native modules (runtime-free) + the litedbmodel-generated adapters (the
+// boundary-injected node_* handlers + wire adapter). Paired 1:1; a adapter refers to its module as
 // `super::generated_<op>`.
 mod generated_byids;
 mod generated_bymaybe;
@@ -35,15 +35,7 @@ mod generated_upsertmany;
 
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
-use litedbmodel_runtime::{
-    encode_value, execute_bundle, execute_transaction_bundle, Driver, Node, SqlFailure,
-    SqliteDriver, Value,
-};
-// `read_bundle_pooled` is the mode-2 relation read — used ONLY on the livedb `readrel` path (pg/mysql,
-// gated below), so its import mirrors that `#[cfg(feature = "livedb")]` (no unused-import in the default
-// SQLite build).
-#[cfg(feature = "livedb")]
-use litedbmodel_runtime::read_bundle_pooled;
+use litedbmodel_runtime::{Driver, SqlFailure, SqliteDriver, Value};
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,8 +44,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 //
 // The N+1 proof: a batched relation must run 1 parent + 1 batched child = 2 queries (not 1+N), and a
 // batch write 1 statement + 1 state-read = 2 (not N+1). Counting lives HERE (the litedbmodel-consumer),
-// NOT in the runtime/companion: a `CountingDriver` decorator over the runtime `SqliteDriver` increments
-// on each `prepare` (one per statement the runtime issues). The runtime + companion stay unchanged;
+// NOT in the runtime/adapter: a `CountingDriver` decorator over the runtime `SqliteDriver` increments
+// on each `prepare` (one per statement the runtime issues). The runtime + adapter stay unchanged;
 // this is a consumer-side measurement at the Driver seam.
 static QUERY_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -78,7 +70,7 @@ impl Driver for CountingDriver {
 
 // Open the concrete runtime Driver the consumer runs against — the ONE place the reference cell picks
 // a DB. `pg:<libpq-conn>` / `mysql:<url>` (the `livedb` feature) route to the live PostgresDriver /
-// MysqlDriver; anything else is a sqlite file path. The SAME generated module + companion + runtime
+// MysqlDriver; anything else is a sqlite file path. The SAME generated module + adapter + runtime
 // path runs on whichever Driver this returns — the dialect difference is the baked SQL + the Driver,
 // never the executor.
 fn open_driver(spec: &str) -> Box<dyn Driver> {
@@ -234,87 +226,6 @@ fn main() {
     let d: &dyn Driver = &driver;
 
     match op.as_str() {
-        // The mode-2 INTERPRETER oracle (epic #123/#124 commit 3): run the SAME op via the runtime's
-        // mode-2 entry (`execute_bundle` for read/write, `execute_transaction_bundle` for tx) on the
-        // SAME live connection, and print the SAME canonical shape the native leg prints. The livedb
-        // harness runs native (codegen path) AND this (interpreter path) against the same DB and asserts
-        // byte-equal — a REAL conformance check (two DISTINCT code paths, one real DB), NOT a circular
-        // self-comparison. Usage: `mode2 <spec> <read|write|tx> <bundle.json> <input.json>`.
-        "mode2" => {
-            let kind = args.get(3).expect("mode2 <kind>");
-            let bundle = Node::parse(
-                &std::fs::read_to_string(args.get(4).expect("mode2 <bundle.json>"))
-                    .expect("read bundle"),
-            )
-            .expect("parse bundle json");
-            let input = Node::parse(
-                &std::fs::read_to_string(args.get(5).expect("mode2 <input.json>"))
-                    .expect("read input"),
-            )
-            .expect("parse input json");
-            match kind.as_str() {
-                "read" => {
-                    let v = execute_bundle(&bundle, &input, d)
-                        .unwrap_or_else(|e| panic!("mode2 read: {}", e.message()));
-                    println!("{}", encode_value(&v).to_json_string());
-                }
-                "readrel" => {
-                    // The mode-2 INTERPRETER relation read: the SAME hydrated `read_bundle_pooled` path
-                    // the livedb_runner uses at 132/132 (primary via `execute_bundle_pooled` + the
-                    // op-independent stitch SSoT `run_relation_op`/`distribute_to_parent`). The stitch is
-                    // SHARED with the native companion by design (like the Driver) — NOT re-implemented
-                    // here; the DISTINCT comparison is the parent+child de-box (interpreter vs codegen).
-                    // Emits the hydrated `[{...parent, <rel>:[children]}]` envelope; the harness normalizes
-                    // it and the native `{rows,posts}` to the common {parents, per-parent children} canon.
-                    let with_names: Vec<String> = bundle
-                        .get("relations")
-                        .and_then(|r| r.as_object())
-                        .map(|pairs| pairs.iter().map(|(k, _)| k.clone()).collect())
-                        .unwrap_or_default();
-                    let empty: std::collections::HashMap<String, &(dyn Driver + Sync)> =
-                        std::collections::HashMap::new();
-                    #[cfg(feature = "livedb")]
-                    {
-                        let v = if let Some(conn) = db_path.strip_prefix("pg:") {
-                            let drv = PostgresDriver::connect(conn).expect("connect postgres");
-                            read_bundle_pooled(&bundle, &input, &drv, &with_names, &empty)
-                        } else if let Some(url) = db_path.strip_prefix("mysql:") {
-                            let drv = MysqlDriver::connect(url).expect("connect mysql");
-                            read_bundle_pooled(&bundle, &input, &drv, &with_names, &empty)
-                        } else {
-                            panic!("mode2 readrel requires a pg:/mysql: spec");
-                        }
-                        .unwrap_or_else(|e| panic!("mode2 readrel: {}", e.message()));
-                        println!("{}", encode_value(&v).to_json_string());
-                    }
-                    #[cfg(not(feature = "livedb"))]
-                    {
-                        let _ = (&with_names, &empty);
-                        panic!("mode2 readrel requires --features livedb");
-                    }
-                }
-                "write" => {
-                    let v = execute_bundle(&bundle, &input, d)
-                        .unwrap_or_else(|e| panic!("mode2 write: {}", e.message()));
-                    println!(
-                        "{{\"result\":{},\"state\":{}}}",
-                        encode_value(&v).to_json_string(),
-                        table_state(d)
-                    );
-                }
-                "tx" => {
-                    // Ok ⇒ committed; Err (a statement failed under its policy — e.g. the rollback control's
-                    // UNIQUE clash) ⇒ rolled back. SAME commit/rollback semantics as the native envelope.
-                    let committed = execute_transaction_bundle(&bundle, &input, d).is_ok();
-                    println!(
-                        "{{\"result\":{{\"committed\":{}}},\"state\":{}}}",
-                        committed,
-                        tx_state(d)
-                    );
-                }
-                other => panic!("unknown mode2 kind '{other}'"),
-            }
-        }
         "findunique" => {
             let email = args.get(3).expect("findunique needs <email>").clone();
             let out = generated_findunique::run(d, generated_findunique::InNRFindUnique { email })
@@ -352,7 +263,7 @@ fn main() {
         "capped" => {
             // #135/#136: the GUARDED find entry enforces the baked hardLimit (2). The seed has > 2 users,
             // so the cap trips ⇒ `run` returns RuntimeError::Limit (context=find), byte-equal to mode-2.
-            // This EXERCISES the auto-wired guarded companion `run` (compiled by this crate build).
+            // This EXERCISES the auto-wired guarded adapter `run` (compiled by this crate build).
             match generated_capped::run(d, generated_capped::InNRCappedFind {}) {
                 Ok(rows) => println!("OK:{}", rows.len()),
                 Err(litedbmodel_runtime::RuntimeError::Limit(l)) => {
@@ -480,7 +391,7 @@ fn main() {
             );
         }
         // relbatch/relsingle (#131 → #140): the native module carries the PRIMARY read ONLY. The relation is
-        // v1 lazy-batch loading — a RUNTIME concern: after the native de-boxed parent read, the companion's
+        // v1 lazy-batch loading — a RUNTIME concern: after the native de-boxed parent read, the adapter's
         // TYPED hydrator (`hydrate_<rel>`) drives the SHARED `hydrate_relation_typed` — the loader dedupes,
         // runs ONE batched child query (op.sql, the SQL SSoT), and the child rows DE-BOX to TYPED structs via
         // the bc child module (NO `Value::Obj` grouped/retained). 1 parent + 1 batched child = 2 queries (no

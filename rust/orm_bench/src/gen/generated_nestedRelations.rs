@@ -504,7 +504,7 @@ pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["FindAll"];
 
 // litedbmodel static runtime adapter for `generated_nestedRelations` (co-located with the bc core).
 // bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
-// THIS companion — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
+// THIS adapter — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
 // delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire
 // classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the
 // orphan rule forbids the module-local wire trait impls living in the runtime crate).
@@ -603,12 +603,6 @@ pub fn hydrate_posts(
             message: e.message,
         })
     })?;
-    litedbmodel_runtime::check_relation_hard_limit(
-        None,
-        child_rows.len(),
-        Some("benchmark_posts"),
-        "posts",
-    )?;
     let level_raw = litedbmodel_runtime::hydrate_children(
         parents,
         |parent| parent.id,
@@ -635,12 +629,6 @@ pub fn hydrate_posts(
             message: e.message,
         })
     })?;
-    litedbmodel_runtime::check_relation_hard_limit(
-        None,
-        child_rows.len(),
-        Some("benchmark_comments"),
-        "comments",
-    )?;
     let level_0 = litedbmodel_runtime::hydrate_children(
         level_raw
             .iter()
@@ -1200,7 +1188,7 @@ pub mod rel_posts {
 
     // litedbmodel static runtime adapter for `rel_posts` (co-located with the bc core).
     // bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
-    // THIS companion — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
+    // THIS adapter — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
     // delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire
     // classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the
     // orphan rule forbids the module-local wire trait impls living in the runtime crate).
@@ -1234,17 +1222,18 @@ pub mod rel_posts {
                 .iter()
                 .map(|v| litedbmodel_runtime::wp(v))
                 .collect::<Vec<Value>>()];
-            if columns.first().is_none_or(Vec::is_empty) {
-                return Ok(Wire::from_rows(Vec::new()));
-            }
-            let (sql, params) = litedbmodel_runtime::build_relation_params(
+            let ctx = self.src.ctx().map_err(cvt)?;
+            litedbmodel_runtime::execute_relation_batch(
+                &ctx,
                 &ports.f_sql,
                 &columns,
                 litedbmodel_runtime::ArrayParamShape::SingleJson,
-            );
-            let ctx = self.src.ctx().map_err(cvt)?;
-            litedbmodel_runtime::exec(&ctx, &sql, &params, litedbmodel_runtime::ExecMode::Rows)
-                .map_err(cvt)
+                None,
+                Some("benchmark_posts"),
+                "posts",
+            )
+            .map(Wire::from_rows)
+            .map_err(cvt)
         }
     }
 
@@ -1808,7 +1797,7 @@ pub mod rel_posts_comments {
 
     // litedbmodel static runtime adapter for `rel_posts_comments` (co-located with the bc core).
     // bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
-    // THIS companion — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
+    // THIS adapter — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
     // delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire
     // classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the
     // orphan rule forbids the module-local wire trait impls living in the runtime crate).
@@ -1842,17 +1831,18 @@ pub mod rel_posts_comments {
                 .iter()
                 .map(|v| litedbmodel_runtime::wp(v))
                 .collect::<Vec<Value>>()];
-            if columns.first().is_none_or(Vec::is_empty) {
-                return Ok(Wire::from_rows(Vec::new()));
-            }
-            let (sql, params) = litedbmodel_runtime::build_relation_params(
+            let ctx = self.src.ctx().map_err(cvt)?;
+            litedbmodel_runtime::execute_relation_batch(
+                &ctx,
                 &ports.f_sql,
                 &columns,
                 litedbmodel_runtime::ArrayParamShape::SingleJson,
-            );
-            let ctx = self.src.ctx().map_err(cvt)?;
-            litedbmodel_runtime::exec(&ctx, &sql, &params, litedbmodel_runtime::ExecMode::Rows)
-                .map_err(cvt)
+                None,
+                Some("benchmark_comments"),
+                "comments",
+            )
+            .map(Wire::from_rows)
+            .map_err(cvt)
         }
     }
 
@@ -1886,4 +1876,8 @@ pub mod rel_posts_comments {
             })
         })
     }
+}
+#[cfg(feature = "oracle")]
+pub fn interpreter_bundle() -> litedbmodel_runtime::Node {
+    litedbmodel_runtime::Node::Object(vec![("dialect".to_string(), litedbmodel_runtime::Node::Str("sqlite".to_string())),("name".to_string(), litedbmodel_runtime::Node::Str("FindAll".to_string())),("readGraph".to_string(), litedbmodel_runtime::Node::Object(vec![("dialect".to_string(), litedbmodel_runtime::Node::Str("sqlite".to_string())),("name".to_string(), litedbmodel_runtime::Node::Str("FindAll".to_string())),("ir".to_string(), litedbmodel_runtime::Node::Object(vec![("irVersion".to_string(), litedbmodel_runtime::Node::Int(1i64)),("exprVersion".to_string(), litedbmodel_runtime::Node::Int(2i64)),("components".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Object(vec![("body".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Object(vec![("component".to_string(), litedbmodel_runtime::Node::Str("Select".to_string())),("id".to_string(), litedbmodel_runtime::Node::Str("n0".to_string())),("outType".to_string(), litedbmodel_runtime::Node::Object(vec![("arr".to_string(), litedbmodel_runtime::Node::Object(vec![("obj".to_string(), litedbmodel_runtime::Node::Object(vec![("id".to_string(), litedbmodel_runtime::Node::Str("int".to_string())),("email".to_string(), litedbmodel_runtime::Node::Str("string".to_string())),("name".to_string(), litedbmodel_runtime::Node::Str("string".to_string()))]))]))])),("ports".to_string(), litedbmodel_runtime::Node::Object(vec![("limit".to_string(), litedbmodel_runtime::Node::Int(100i64)),("order".to_string(), litedbmodel_runtime::Node::Str("id ASC".to_string())),("select".to_string(), litedbmodel_runtime::Node::Object(vec![("arr".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Str("id".to_string()),litedbmodel_runtime::Node::Str("email".to_string()),litedbmodel_runtime::Node::Str("name".to_string())]))])),("table".to_string(), litedbmodel_runtime::Node::Str("benchmark_users".to_string()))]))])])),("inputPorts".to_string(), litedbmodel_runtime::Node::Object(vec![])),("name".to_string(), litedbmodel_runtime::Node::Str("FindAll".to_string())),("output".to_string(), litedbmodel_runtime::Node::Object(vec![("ref".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Str("n0".to_string())]))])),("plan".to_string(), litedbmodel_runtime::Node::Object(vec![("concurrency".to_string(), litedbmodel_runtime::Node::Int(16i64)),("groups".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Int(0i64)])]))])),("outputType".to_string(), litedbmodel_runtime::Node::Object(vec![("arr".to_string(), litedbmodel_runtime::Node::Object(vec![("obj".to_string(), litedbmodel_runtime::Node::Object(vec![("id".to_string(), litedbmodel_runtime::Node::Str("int".to_string())),("email".to_string(), litedbmodel_runtime::Node::Str("string".to_string())),("name".to_string(), litedbmodel_runtime::Node::Str("string".to_string()))]))]))]))])]))])),("statementsById".to_string(), litedbmodel_runtime::Node::Object(vec![("n0".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Object(vec![("sql".to_string(), litedbmodel_runtime::Node::Str("SELECT id, email, name FROM benchmark_users".to_string())),("params".to_string(), litedbmodel_runtime::Node::Array(vec![]))]),litedbmodel_runtime::Node::Object(vec![("sql".to_string(), litedbmodel_runtime::Node::Str(" ORDER BY id ASC".to_string())),("params".to_string(), litedbmodel_runtime::Node::Array(vec![]))]),litedbmodel_runtime::Node::Object(vec![("sql".to_string(), litedbmodel_runtime::Node::Str(" LIMIT ?".to_string())),("params".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Int(100i64)]))])]))])),("optionalHeads".to_string(), litedbmodel_runtime::Node::Array(vec![])),("materializersByNode".to_string(), litedbmodel_runtime::Node::Object(vec![("n0".to_string(), litedbmodel_runtime::Node::Object(vec![("id".to_string(), litedbmodel_runtime::Node::Str("int32".to_string()))]))]))])),("optionalHeads".to_string(), litedbmodel_runtime::Node::Array(vec![])),("relations".to_string(), litedbmodel_runtime::Node::Object(vec![("posts".to_string(), litedbmodel_runtime::Node::Object(vec![("name".to_string(), litedbmodel_runtime::Node::Str("posts".to_string())),("kind".to_string(), litedbmodel_runtime::Node::Str("hasMany".to_string())),("parentKey".to_string(), litedbmodel_runtime::Node::Str("id".to_string())),("targetKey".to_string(), litedbmodel_runtime::Node::Str("author_id".to_string())),("dialect".to_string(), litedbmodel_runtime::Node::Str("sqlite".to_string())),("keyShape".to_string(), litedbmodel_runtime::Node::Str("single_json".to_string())),("sql".to_string(), litedbmodel_runtime::Node::Str("SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC".to_string())),("targetTable".to_string(), litedbmodel_runtime::Node::Str("benchmark_posts".to_string())),("select".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Str("id".to_string()),litedbmodel_runtime::Node::Str("title".to_string()),litedbmodel_runtime::Node::Str("author_id".to_string())])),("materializers".to_string(), litedbmodel_runtime::Node::Object(vec![("id".to_string(), litedbmodel_runtime::Node::Str("int32".to_string())),("author_id".to_string(), litedbmodel_runtime::Node::Str("int32".to_string()))])),("childRelations".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Object(vec![("name".to_string(), litedbmodel_runtime::Node::Str("comments".to_string())),("kind".to_string(), litedbmodel_runtime::Node::Str("hasMany".to_string())),("parentKey".to_string(), litedbmodel_runtime::Node::Str("id".to_string())),("targetKey".to_string(), litedbmodel_runtime::Node::Str("post_id".to_string())),("dialect".to_string(), litedbmodel_runtime::Node::Str("sqlite".to_string())),("keyShape".to_string(), litedbmodel_runtime::Node::Str("single_json".to_string())),("sql".to_string(), litedbmodel_runtime::Node::Str("SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC".to_string())),("targetTable".to_string(), litedbmodel_runtime::Node::Str("benchmark_comments".to_string())),("select".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Str("id".to_string()),litedbmodel_runtime::Node::Str("body".to_string()),litedbmodel_runtime::Node::Str("post_id".to_string())])),("materializers".to_string(), litedbmodel_runtime::Node::Object(vec![("id".to_string(), litedbmodel_runtime::Node::Str("int32".to_string())),("post_id".to_string(), litedbmodel_runtime::Node::Str("int32".to_string()))]))])]))]))]))])
 }

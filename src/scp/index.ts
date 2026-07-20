@@ -423,7 +423,6 @@ export {
 } from './codegen';
 export type {
   CodegenLanguage,
-  SqlCatalogCompanion,
   CodegenArtifact,
 } from './codegen';
 

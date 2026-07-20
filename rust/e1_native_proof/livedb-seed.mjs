@@ -2,7 +2,7 @@
 //
 // Brings docker Postgres (:5433) / MySQL (:3307) to the SAME seeded state the sqlite proof DBs use, so
 // the rust native-codegen cell can run against a REAL pg/mysql and compare BYTE-FOR-BYTE to the SAME
-// dialect-independent mode-2 oracle (oracles*.json). Three states mirror the sqlite files:
+// dialect-independent native proof. Three states mirror the sqlite files:
 //   read  = the full orm-domain seed (== proof.db)         — reads/relations
 //   write = 3 users                                        (== write_seed.db) — write ops
 //   tx    = 3 users + 1 post (id 1, "Post B", author 2)    (== tx_seed.db)     — tx ops

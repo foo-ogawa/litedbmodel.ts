@@ -20,7 +20,7 @@ name = "orm_bench"
 path = "src/main.rs"
 
 [dependencies]
-litedbmodel_runtime = { path = "../litedbmodel_runtime" }
+litedbmodel_runtime = { path = "../litedbmodel_runtime", default-features = false, features = ["native"] }
 # Pin the transitive behavior-contracts to the EXACT version the rust/ workspace lock uses (0.8.0) — the
 # runtime is written against that rust-crate API (mirrors rust/e1_native_proof/Cargo.toml). Not used
 # directly here — a version-alignment pin only.
@@ -34,6 +34,7 @@ livedb = ["litedbmodel_runtime/livedb"]
 # `pg`: the postgres build only — selects the `bool` literal for the BOOLEAN `published` input (sqlite/
 # mysql type it `i64`). Set alongside `livedb` when building for postgres (see run-pilot.sh).
 pg = []
+oracle = ["litedbmodel_runtime/interpreter"]
 
 [profile.release]
 opt-level = 3

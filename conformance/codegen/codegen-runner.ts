@@ -15,10 +15,10 @@
  *   2. PURITY gate: for a COVERED go/rust read, the emitted module carries NO IR data, NO
  *      fingerprint, NO interpreter call (`run_behavior`), and NO boxing markers (`obj_native`/
  *      `ser_T*`/`run_plan`/`RawValue`) — the whole point of typed-native is zero-boxing. The SQL
- *      catalog companion is byte-identical to the source bundle (a real anti-sham check).
+ *      generated source contains no embedded catalog or interpreter call (a real anti-sham check).
  *   3. REAL execution byte-identity (typescript — the toolchain that can EXECUTE a generated
  *      module against the SAME thin-runtime handlers in-process): import the emitted module, pair
- *      its `bind` with the thin-runtime SQL handlers built from the companion, run against seeded
+ *      its `bind` with the generated SQL handlers, run against seeded
  *      SQLite, and assert the output equals BOTH the frozen vector AND the mode-2 thin-runtime,
  *      byte-for-byte (exact canonical comparison).
  *   4. COMPILE check (go / rust, when covered): the emitted source is parsed by the native
@@ -144,7 +144,7 @@ function line(ok: boolean, name: string, detail?: string): void {
 // ── De-interpretation gate (bc#75 anti-sham): the emitted module is REAL static straight-line
 // code — it carries the generation-time IR fingerprint (fail-closed skew gate) but NOT the IR
 // itself, and none of the interpreter machinery (RunPlan tree-walk over a baked IR). The
-// companion carries the STATIC makeSQL catalog byte-identical to the source bundle. ──
+// generated module carries the static SQL implementation. ──
 // The codegen OUTPUT must carry NO IR data and NO fingerprint (owner order): a de-interpreted
 // module embeds neither the IR it compiled away, a named IR export, NOR the generation-time
 // fingerprint. Each marker here is a hard reject if it appears in emitted source (any language).
@@ -222,13 +222,8 @@ function structuralCheck(v: Json, language: string, resolveColumnType: (table: s
       if (m.test(code)) return { kind: 'fail', detail: `typed-native purity violated: emitted ${language} code matched ${m} (should be zero-boxing)` };
     }
   }
-  // The read/write PRIMARY SQL is BAKED into the module now — the companion is companion-free for
-  // reads (retired). It carries only the runtime-stitched sidecar (relation batch ops + dialect),
-  // which must mirror the bundle byte-for-byte.
-  if (canon(art.companion.relations) !== canon(v.bundle.relations)) return { kind: 'fail', detail: 'companion relations != bundle' };
-  if (art.companion.dialect !== v.bundle.dialect) return { kind: 'fail', detail: 'companion dialect != bundle' };
-  // the read SQL must live IN the module, not the companion (retired) — the module bakes an `f_sql` literal.
-  if ((art.companion as { readGraph?: unknown }).readGraph !== undefined) return { kind: 'fail', detail: 'companion still carries readGraph (should be baked in the module)' };
+  // SQL and relation execution are baked into the generated module. There is no second public
+  // metadata surface whose contents could drift from that executable source.
   return { kind: 'ok' };
 }
 

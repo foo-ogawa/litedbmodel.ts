@@ -23,9 +23,9 @@ mod gen;
 
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
-use litedbmodel_runtime::{
-    encode_value, execute_bundle, Driver, Node, SqlFailure, SqliteDriver, Value,
-};
+#[cfg(feature = "oracle")]
+use litedbmodel_runtime::{encode_value, read_bundle, Node, Value};
+use litedbmodel_runtime::{Driver, SqlFailure, SqliteDriver};
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,7 +34,7 @@ use std::time::Instant;
 // ── query counter (consumer-side observability, #129 safety proof) ──────────────────────────────
 // A `CountingDriver` decorator over the runtime Driver increments on each `prepare` (one per statement
 // the runtime issues). The N+1 proof: a batched relation runs 1 parent + 1 batched child = 2 (not 1+N);
-// a batch write runs 1 statement (not N). The runtime + companion stay unchanged.
+// a batch write runs 1 statement (not N). The runtime + adapter stay unchanged.
 static QUERY_COUNT: AtomicUsize = AtomicUsize::new(0);
 struct CountingDriver {
     inner: Box<dyn Driver>,
@@ -78,17 +78,9 @@ fn tx_dialect(spec: &str) -> litedbmodel_runtime::TxDialect {
     }
 }
 
-// ── setup: exec the param-free setup.json (drops → ddl → seed → pg seq fixup) for a dialect ──────
-fn setup_dir(dialect: &str) -> String {
-    // The committed sqlite gen/ has its setup baked at /tmp; every dialect's setup is emitted there by
-    // codegen-build.ts. The bench always re-seeds from /tmp/ormbench/<dialect>/setup.json.
-    format!("/tmp/ormbench/{dialect}/setup.json")
-}
-fn reseed(d: &dyn Driver, dialect: &str) {
-    let raw = std::fs::read_to_string(setup_dir(dialect)).expect("read setup.json");
-    let stmts = Node::parse(&raw).expect("parse setup.json");
-    for s in stmts.as_array().expect("setup.json is an array") {
-        let sql = s.as_str().expect("setup stmt is a string");
+// ── setup: execute the generated native static statements ──────────────────────────────────────
+fn reseed(d: &dyn Driver, _dialect: &str) {
+    for sql in gen::generated_setup::STATEMENTS {
         d.prepare(sql)
             .run(&[])
             .unwrap_or_else(|e| panic!("setup `{sql}`: {}", e.message));
@@ -254,7 +246,7 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             )
             .unwrap();
         }),
-        // ── tx ops: the native RETURNING chain runs through the companion `run_on` (BEGIN…COMMIT). ──
+        // ── tx ops: the native RETURNING chain runs through the adapter `run_on` (BEGIN…COMMIT). ──
         "delete" => Box::new(move |it| {
             let _ = generated_delete::run_on(
                 litedbmodel_runtime::ConnSource::Driver(d),
@@ -340,10 +332,11 @@ fn main() {
         run_safety(dialect, spec);
         return;
     }
-    if args.get(1).map(String::as_str) == Some("verify") {
-        let dialect = args.get(2).expect("verify <dialect> <spec>");
-        let spec = args.get(3).expect("verify <dialect> <spec>");
-        run_verify(dialect, spec);
+    #[cfg(feature = "oracle")]
+    if args.get(1).map(String::as_str) == Some("oracle-tree") {
+        let dialect = args.get(2).expect("oracle-tree <dialect> <spec>");
+        let spec = args.get(3).expect("oracle-tree <dialect> <spec>");
+        run_tree_oracle(dialect, spec);
         return;
     }
     let dialect = args
@@ -377,85 +370,83 @@ fn main() {
     }
 }
 
-// ── #129 decoder correctness: filterPaginateSort projects created_at (TIMESTAMP) + published
-//    (BOOLEAN/TINYINT) — the columns the a6012dc read-decoder arms cover. Prove the NATIVE de-boxed
-//    output ≡ the mode-2 INTERPRETER (`execute_bundle`) output BYTE-FOR-BYTE on the same live DB, using
-//    the SAME `encode_value` serializer (the #124 native-vs-mode-2 oracle framework). Both paths read
-//    the SAME driver Value (the shared decoder), so equality proves the decoder is a genuine runtime fix
-//    (date→canonical string, bool→Int/bool), not a bench-only fudge. ────────────────────────────────
-fn run_verify(dialect: &str, spec: &str) {
+#[cfg(feature = "oracle")]
+fn run_tree_oracle(dialect: &str, spec: &str) {
     let driver = open_driver(spec);
     let d: &dyn Driver = driver.as_ref();
     reseed(d, dialect);
-
-    // NATIVE: run the generated filterPaginateSort, re-encode the typed rows through encode_value.
-    #[cfg(feature = "pg")]
-    let published = true;
-    #[cfg(not(feature = "pg"))]
-    let published = 1;
-    let rows = gen::generated_filterPaginateSort::run(
-        d,
-        gen::generated_filterPaginateSort::InNRFilterPaginateSort { published },
-    )
-    .expect("native filterPaginateSort");
-    let native_arr: Vec<Value> = rows
-        .iter()
-        .map(|r| {
-            #[cfg(feature = "pg")]
-            let pub_val = Value::Bool(r.published);
-            #[cfg(not(feature = "pg"))]
-            let pub_val = Value::Int(r.published);
-            Value::Obj(vec![
-                ("id".into(), Value::Int(r.id)),
-                ("title".into(), Value::Str(r.title.clone())),
-                ("content".into(), Value::Str(r.content.clone())),
-                ("published".into(), pub_val),
-                ("author_id".into(), Value::Int(r.author_id)),
-                ("created_at".into(), Value::Str(r.created_at.clone())),
-            ])
-        })
-        .collect();
-    let native_json = encode_value(&Value::Arr(native_arr)).to_json_string();
-
-    // MODE-2 (interpreter): execute_bundle over the SAME bundle + input on the SAME connection.
-    let base = format!("/tmp/ormbench/{dialect}");
-    let bundle = Node::parse(
-        &std::fs::read_to_string(format!("{base}/bundle_filterPaginateSort.json"))
-            .expect("read bundle"),
-    )
-    .expect("parse bundle");
-    let input = Node::parse(
-        &std::fs::read_to_string(format!("{base}/input_filterPaginateSort.json"))
-            .expect("read input"),
-    )
-    .expect("parse input");
-    let m2 = execute_bundle(&bundle, &input, d)
-        .unwrap_or_else(|e| panic!("mode-2 filterPaginateSort: {}", e.message()));
-    let mode2_json = encode_value(&m2).to_json_string();
-
-    let ok = native_json == mode2_json;
-    println!(
-        "filterPaginateSort {dialect}: native≡mode-2 byte-equal = {ok} ({} rows)",
-        rows.len()
+    let parents =
+        gen::generated_nestedRelations::run(d, gen::generated_nestedRelations::InNRFindAll)
+            .expect("native parents");
+    let native =
+        gen::generated_nestedRelations::hydrate_posts(parents, d).expect("native nested tree");
+    let native_value = Value::Arr(
+        native
+            .into_iter()
+            .map(|(user, posts)| {
+                Value::Obj(vec![
+                    ("id".into(), Value::Int(user.id)),
+                    ("email".into(), Value::Str(user.email)),
+                    ("name".into(), Value::Str(user.name)),
+                    (
+                        "posts".into(),
+                        Value::Arr(
+                            posts
+                                .into_iter()
+                                .map(|(post, comments)| {
+                                    Value::Obj(vec![
+                                        ("id".into(), Value::Int(post.id)),
+                                        ("title".into(), Value::Str(post.title)),
+                                        ("author_id".into(), Value::Int(post.author_id)),
+                                        (
+                                            "comments".into(),
+                                            Value::Arr(
+                                                comments
+                                                    .into_iter()
+                                                    .map(|comment| {
+                                                        Value::Obj(vec![
+                                                            ("id".into(), Value::Int(comment.id)),
+                                                            (
+                                                                "body".into(),
+                                                                Value::Str(comment.body),
+                                                            ),
+                                                            (
+                                                                "post_id".into(),
+                                                                Value::Int(comment.post_id),
+                                                            ),
+                                                        ])
+                                                    })
+                                                    .collect(),
+                                            ),
+                                        ),
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                ])
+            })
+            .collect(),
     );
-    if ok {
-        // Show the created_at (TIMESTAMP→canonical string) + published (BOOLEAN/TINYINT) of row 0 as evidence.
-        let sample: String = native_json.chars().take(200).collect();
-        println!("  sample: {sample}");
-    } else {
-        println!(
-            "  NATIVE: {}",
-            native_json.chars().take(300).collect::<String>()
-        );
-        println!(
-            "  MODE-2: {}",
-            mode2_json.chars().take(300).collect::<String>()
-        );
-    }
+    let input = Node::Object(Vec::new());
+    let names = vec!["posts".to_string()];
+    let interpreter = read_bundle(
+        &gen::generated_nestedRelations::interpreter_bundle(),
+        &input,
+        d,
+        &names,
+    )
+    .expect("interpreter nested tree");
+    assert_eq!(
+        encode_value(&native_value).to_json_string(),
+        encode_value(&interpreter).to_json_string(),
+        "nestedRelations native/interpreter tree mismatch"
+    );
+    println!("nestedRelations {dialect}: native == interpreter (full posts/comments tree)");
 }
 
 // ── #129 safety proof: N+1-avoidance (query counts) via the CountingDriver. hardLimit + reader/writer
-//    routing are proven by the dedicated companion entries (capped find, handler_routed) — see report. ─
+//    routing are proven by the dedicated adapter entries (capped find, handler_routed) — see report. ─
 fn run_safety(dialect: &str, spec: &str) {
     let counting = CountingDriver {
         inner: open_driver(spec),
@@ -511,7 +502,7 @@ fn run_safety(dialect: &str, spec: &str) {
 
     // ── find hardLimit (#135/#136): the GUARDED native find (findHardLimit=2, baked LIMIT 3) over the
     //    seed (>2 users) trips the shared check_find_hard_limit — the same guard core the ORM read
-    //    companions carry. Proves the guard FIRES end-to-end (not just an emission assert). ──
+    //    adapters carry. Proves the guard FIRES end-to-end (not just an emission assert). ──
     reseed(d, dialect);
     match gen::generated_cappedFindAll::run(d, gen::generated_cappedFindAll::InNRCappedFind {}) {
         Ok(rows) => println!(

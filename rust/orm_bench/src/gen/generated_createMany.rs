@@ -503,7 +503,7 @@ pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["CreateMany"];
 
 // litedbmodel static runtime adapter for `generated_createMany` (co-located with the bc core).
 // bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
-// THIS companion — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
+// THIS adapter — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
 // delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire
 // classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the
 // orphan rule forbids the module-local wire trait impls living in the runtime crate).

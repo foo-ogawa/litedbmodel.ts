@@ -16,6 +16,7 @@ pub mod generated_nestedFindUnique;
 pub mod generated_nestedRelations;
 pub mod generated_nestedUpdate;
 pub mod generated_nestedUpsert;
+pub mod generated_setup;
 pub mod generated_update;
 pub mod generated_updateMany;
 pub mod generated_upsert;

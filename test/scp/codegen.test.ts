@@ -26,7 +26,7 @@
  *    each node's ports from the GENUINE bound heads, dropping the marker, so the emitted TS module
  *    runs (the array-typed heads lower cleanly via bc#110).
  *  - **In-process byte-identity**: `codegenExecuteBundleForTest` (a codegen consumer reading the
- *    companion) drives the IDENTICAL static-makeSQL render/execute path `executeBundle` uses — its
+ *    generated artifact) drives the IDENTICAL static-makeSQL render/execute path `executeBundle` uses — its
  *    output equals mode-2 `executeBundle` AND the frozen vector's `expectedResult`, EXACTLY.
  *  - **WRITE bundles are NOT codegen-module cases** (#60 m1): `generateCodegenArtifact` throws if
  *    given a bundle with no `readGraph` — writes stay on the existing write/tx execution path
@@ -242,17 +242,12 @@ describe('WS7f codegen — the FROZEN exec.json vector: ts (boxed) AND go/rust (
   for (const v of EXEC_VECTORS) {
     const resolveColumnType = schemaColumnTypeResolver(v.schema);
 
-    it(`typescript: emits de-interpreted code (NO embedded IR) + byte-identical companion — ${v.name}`, () => {
+    it(`typescript: emits de-interpreted code with baked SQL and no metadata sidecar — ${v.name}`, () => {
       const art = generateCodegenArtifact(v.bundle, 'typescript', REGISTERED, resolveColumnType);
       expect(art.language).toBe('typescript');
       expect(art.module.code.length).toBeGreaterThan(0);
       assertDeInterpreted(art.module.code);
-      expect(art.companion.dialect).toBe(v.bundle.dialect);
-      expect([...art.companion.optionalHeads].sort()).toEqual([...v.bundle.optionalHeads].sort());
-      expect(canon(art.companion.relations)).toBe(canon(v.bundle.relations));
-      // The read SQL is now BAKED into the module — the companion is retired for reads (carries no
-      // readGraph). The module holds the query text; the companion is the runtime-stitch sidecar only.
-      expect((art.companion as { readGraph?: unknown }).readGraph).toBeUndefined();
+      // The generated module itself holds the executable query text.
       expect(art.module.code).toContain('SELECT');
     });
 
@@ -394,24 +389,24 @@ describe('WS7f codegen — a COVERED go/rust typed-native read: zero-boxing + by
     expect(art.module.code.length).toBeGreaterThan(0);
   });
 
-  it('rust companion: emits the wire_impls! bridge + a HandlerNR impl delegating to the runtime executor (no rusqlite, no concrete Driver)', () => {
-    const companion = generateRustExecutable(bundle, 'generated_find', resolveColumnType, REGISTERED);
+  it('rust generated module: emits the wire_impls! bridge + a HandlerNR impl delegating to the runtime executor (no rusqlite, no concrete Driver)', () => {
+    const generated = generateRustExecutable(bundle, 'generated_find', resolveColumnType, REGISTERED);
     // the orphan-rule wire bridge + the runtime import + the module glob
-    expect(companion).toContain('litedbmodel static runtime adapter for `generated_find`');
-    expect(companion).toContain('litedbmodel_runtime::wire_impls!();');
+    expect(generated).toContain('litedbmodel static runtime adapter for `generated_find`');
+    expect(generated).toContain('litedbmodel_runtime::wire_impls!();');
     // a per-component HandlerNR impl whose node_* resolves the ctx from the ConnSource (#135 — the
     // reader/writer routing seam) then delegates UNIFORMLY to the ONE runtime executor.
-    expect(companion).toContain('impl<\'a> HandlerNRFind for Rt<\'a>');
-    expect(companion).toContain('src: litedbmodel_runtime::ConnSource<\'a>');
-    expect(companion).toMatch(/let ctx = self\.src\.ctx\(\)\.map_err\(cvt\)\?;/);
-    expect(companion).toMatch(/litedbmodel_runtime::exec\(&ctx,/);
+    expect(generated).toContain('impl<\'a> HandlerNRFind for Rt<\'a>');
+    expect(generated).toContain('src: litedbmodel_runtime::ConnSource<\'a>');
+    expect(generated).toMatch(/let ctx = self\.src\.ctx\(\)\.map_err\(cvt\)\?;/);
+    expect(generated).toMatch(/litedbmodel_runtime::exec\(&ctx,/);
     // the litedbmodel-consumer entry points: a SINGLE-driver handler (byte-identical single-pool) and
     // the ROUTED handler (read→reader / write→writer) — both supply no node_*.
-    expect(companion).toContain('pub fn run(driver: &dyn Driver');
-    expect(companion).toContain('pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<');
+    expect(generated).toContain('pub fn run(driver: &dyn Driver');
+    expect(generated).toContain('pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<');
     // it is a Driver-backed delegation — NO rusqlite, NO concrete driver type, NO hand-written exec
     for (const banned of ['rusqlite', 'SqliteDriver', 'MysqlDriver', 'PostgresDriver', '.prepare(']) {
-      expect(companion).not.toContain(banned);
+      expect(generated).not.toContain(banned);
     }
   });
 

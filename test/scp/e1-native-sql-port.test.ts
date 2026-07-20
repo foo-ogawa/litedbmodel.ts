@@ -1,6 +1,6 @@
 /**
  * E1 (#116, epic #115) PROOF-OF-APPROACH — the SQL-PORT lowering: bake the per-op SQL as a NATIVE
- * LITERAL in the generated module instead of shipping it in the runtime-read JSON companion.
+ * LITERAL in the generated module instead of shipping it in the runtime-read JSON adapter.
  *
  * ## The empirical question this suite answers
  *
@@ -22,11 +22,11 @@
  *
  * No `GeneratorFailure`/`UNSUPPORTED_NODE_STRAIGHTLINE` — the SQL literal, the scalar input ref, and
  * the bare LIMIT literal are all covered port shapes. So the module carries its own query and the JSON
- * companion is not needed on the read path.
+ * adapter is not needed on the read path.
  *
  * ## What this suite proves in-process
  *
- *  1. the emitted rust module CONTAINS the SQL as a native string literal and reads NO companion;
+ *  1. the emitted rust module CONTAINS the SQL as a native string literal and reads NO adapter;
  *  2. the ONLY dependency it declares is `std` (no bc-runtime import, no JSON crate, no boxed Value);
  *  3. the lowering FAILS CLOSED (naming the shape) on every param/statement shape it cannot bake —
  *     never a silent mis-lowering.
@@ -118,7 +118,7 @@ class OrmReads extends SemanticBehavior {
 
 /** A bare row list with NO author limit — the find-hardLimit target (#135/#136). With
  * `setLimitConfig({findHardLimit})` the compile bakes `LIMIT hardLimit + 1` + a `findGuard`, and the
- * generated rust companion emits the GUARDED `run` entry (calls the shared `check_find_hard_limit`). */
+ * generated rust adapter emits the GUARDED `run` entry (calls the shared `check_find_hard_limit`). */
 class CappedReads extends SemanticBehavior {
   static columns = USER_COLUMNS;
   CappedFind(_$: Record<string, never>) {
@@ -293,10 +293,10 @@ describe('E1 — bc bakes a full-SQL static port + typed param ports (the empiri
     }
   });
 
-  it('the companion is RETIRED for reads: the module carries its own query, the companion carries no readGraph', () => {
+  it('the adapter is RETIRED for reads: the module carries its own query, the adapter carries no readGraph', () => {
     const art = generateCodegenArtifact(findUniqueBundle(), 'rust', REGISTERED, RESOLVE);
-    // The read SQL is IN the module — the companion no longer ships the read graph (retired).
-    expect((art.companion as { readGraph?: unknown }).readGraph).toBeUndefined();
+    // The read SQL is IN the module — the adapter no longer ships the read graph (retired).
+    expect(art.module.code).toContain('f_sql:');
     expect(art.module.code).toContain(EXPECTED_SQL);
   });
 });
@@ -376,8 +376,8 @@ describe('E4 (#119) — a single-key map relation bakes; the child binds the par
   });
 });
 
-describe('E4 (#131/#141) — relation declarations compile to native companion loaders', () => {
-  it('COMPOSITE-key: the module carries the PRIMARY read ONLY (no batched child SQL, no rel node); the batch op lives in bundle.relations + the companion', () => {
+describe('E4 (#131/#141) — relation declarations compile to native adapter loaders', () => {
+  it('COMPOSITE-key: the module carries the PRIMARY read ONLY (no batched child SQL, no rel node); the batch op lives in bundle.relations + the adapter', () => {
     const bundle = compileBundle(TENANT_USERS_CONTRACT, 'ByTenant', [POSTS_COMPOSITE_REL], 'sqlite', undefined, RESOLVE);
     const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE).module.code;
     // the native module bakes the PARENT read ONLY — the relation is a v1 lazy-batch RUNTIME concern.
@@ -392,23 +392,22 @@ describe('E4 (#131/#141) — relation declarations compile to native companion l
     const rel = bundle.relations.posts as unknown as { sql: string; parentKeys: string[] };
     expect(rel.sql).toContain('WHERE EXISTS (SELECT 1 FROM json_each(?) je WHERE json_extract(je.value, \'$[0]\') = benchmark_tenant_posts.tenant_id AND json_extract(je.value, \'$[1]\') = benchmark_tenant_posts.user_id)');
     expect(rel.parentKeys).toEqual(['tenant_id', 'user_id']);
-    // The companion bakes the relation SQL/key descriptor directly into its generated hydrator and
+    // The adapter bakes the relation SQL/key descriptor directly into its generated hydrator and
     // carries no JSON accessor or relation handler node (the relation is not an executor primitive).
-    const companion = rustExecutable(bundle, 'generated_relbatch', RESOLVE);
-    expect(companion).toContain('pub fn hydrate_posts');
-    expect(companion).toContain('pub mod rel_posts');
-    expect(companion).toContain('pub struct PortsNRRelPostsN0');
-    expect(companion).toContain('pub f_sql: String');
-    expect(companion).toContain('pub f_v0: Vec<i64>');
-    expect(companion).toContain('pub f_v1: Vec<i64>');
-    expect(companion).toContain('run_native_raw_struct_RelPosts(');
-    expect(companion).toContain('build_relation_params(&ports.f_sql');
-    expect(companion).toContain('sql: "SELECT tenant_id, post_id, user_id, title');
-    expect(companion).not.toContain('relation_ops_json');
-    expect(companion).not.toContain('.get("');
-    expect(companion).not.toContain('node_rel_posts');
-    expect(companion).not.toContain('RelationOp');
-    expect(companion).not.toContain('RefCell<Option<Wire>>');
+    const adapter = rustExecutable(bundle, 'generated_relbatch', RESOLVE);
+    expect(adapter).toContain('pub fn hydrate_posts');
+    expect(adapter).toContain('pub mod rel_posts');
+    expect(adapter).toContain('pub struct PortsNRRelPostsN0');
+    expect(adapter).toContain('pub f_sql: String');
+    expect(adapter).toContain('pub f_v0: Vec<i64>');
+    expect(adapter).toContain('pub f_v1: Vec<i64>');
+    expect(adapter).toContain('run_native_raw_struct_RelPosts(');
+    expect(adapter).toContain('execute_relation_batch(&ctx, &ports.f_sql');
+    expect(adapter).toContain('sql: "SELECT tenant_id, post_id, user_id, title');
+    expect(adapter).not.toContain('.get("');
+    expect(adapter).not.toContain('node_rel_posts');
+    expect(adapter).not.toContain('RelationOp');
+    expect(adapter).not.toContain('RefCell<Option<Wire>>');
   });
 
   it('SINGLE-key: the primary posts read bakes; the comments batch op (post_id IN json_each) rides bundle.relations', () => {
@@ -417,19 +416,18 @@ describe('E4 (#131/#141) — relation declarations compile to native companion l
     expect(code).toContain('f_sql: "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = ? ORDER BY id ASC".to_string()');
     expect(code).not.toContain('json_each'); // the relation child SQL is not baked into the module
     expect((bundle.relations.comments as unknown as { sql: string }).sql).toContain('WHERE post_id IN (SELECT value FROM json_each(?))');
-    const companion = rustExecutable(bundle, 'generated_relsingle', RESOLVE);
-    expect(companion).toContain('pub fn hydrate_comments');
-    expect(companion).toContain('pub mod rel_comments');
-    expect(companion).toContain('pub struct PortsNRRelCommentsN0');
-    expect(companion).toContain('pub f_sql: String');
-    expect(companion).toContain('pub f_v0: Vec<i64>');
-    expect(companion).not.toContain('pub f_v1:');
-    expect(companion).toContain('build_relation_params(&ports.f_sql');
-    expect(companion).toContain('run_native_raw_struct_RelComments(');
-    expect(companion).not.toContain('relation_ops_json');
-    expect(companion).not.toContain('.get("');
-    expect(companion).not.toContain('RelationOp');
-    expect(companion).not.toContain('RefCell<Option<Wire>>');
+    const adapter = rustExecutable(bundle, 'generated_relsingle', RESOLVE);
+    expect(adapter).toContain('pub fn hydrate_comments');
+    expect(adapter).toContain('pub mod rel_comments');
+    expect(adapter).toContain('pub struct PortsNRRelCommentsN0');
+    expect(adapter).toContain('pub f_sql: String');
+    expect(adapter).toContain('pub f_v0: Vec<i64>');
+    expect(adapter).not.toContain('pub f_v1:');
+    expect(adapter).toContain('execute_relation_batch(&ctx, &ports.f_sql');
+    expect(adapter).toContain('run_native_raw_struct_RelComments(');
+    expect(adapter).not.toContain('.get("');
+    expect(adapter).not.toContain('RelationOp');
+    expect(adapter).not.toContain('RefCell<Option<Wire>>');
   });
 });
 
@@ -558,7 +556,8 @@ const PROOF_INPUTS = ['user500@example.com', 'user1@example.com', 'user42@exampl
 const BYIDS_INPUTS: number[][] = [[1, 2, 3], [42], [], [7, 7, 9], [999999]];
 
 describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execution leg', () => {
-  it('writes /tmp/e1proof/{generated_*.rs,proof.db,oracles.json}', () => {
+  it('writes only native generated Rust modules and the seeded proof DB', () => {
+    rmSync(PROOF_DIR, { recursive: true, force: true });
     mkdirSync(PROOF_DIR, { recursive: true });
     const bundle = findUniqueBundle();
     const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE);
@@ -609,7 +608,7 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     writeFileSync(join(PROOF_DIR, 'generated_relsingle.rs'), rustExecutable(relSingleBundle, 'generated_relsingle', RESOLVE));
 
     // #135/#136 find-hardLimit fixture: compile a CAPPED bare find (findHardLimit=2 ⇒ baked LIMIT 3 +
-    // findGuard) so the generated rust companion emits the GUARDED `run` entry — COMPILED by the e1 crate
+    // findGuard) so the generated rust adapter emits the GUARDED `run` entry — COMPILED by the e1 crate
     // build (leg 3) and EXECUTED by run-proof leg 3f (the seed has > 2 users ⇒ the cap trips). The config
     // is set + RESET tightly around this ONE compile so NO other bundle gains a findGuard (byte-equality).
     setLimitConfig({ findHardLimit: 2 });
@@ -618,9 +617,9 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     expect(cappedBundle.readGraph!.findGuard).toEqual({ hardLimit: 2, nodeId: cappedBundle.readGraph!.findGuard!.nodeId, model: 'CappedFind' });
     const cappedArt = generateCodegenArtifact(cappedBundle, 'rust', REGISTERED, RESOLVE);
     writeFileSync(join(PROOF_DIR, 'generated_capped.rs'), cappedArt.module.code);
-    const cappedCompanion = rustExecutable(cappedBundle, 'generated_capped', RESOLVE);
-    expect(cappedCompanion).toContain('litedbmodel_runtime::check_find_hard_limit(2i64, rows.len() as i64, Some("CappedFind"))?;');
-    writeFileSync(join(PROOF_DIR, 'generated_capped.rs'), cappedCompanion);
+    const cappedAdapter = rustExecutable(cappedBundle, 'generated_capped', RESOLVE);
+    expect(cappedAdapter).toContain('litedbmodel_runtime::check_find_hard_limit(2i64, rows.len() as i64, Some("CappedFind"))?;');
+    writeFileSync(join(PROOF_DIR, 'generated_capped.rs'), cappedAdapter);
 
     // ONE seeded sqlite DB FILE shared by BOTH legs — the oracle and the rust run read byte-identical
     // data, so an equality pass cannot come from two independently-seeded DBs happening to agree.
@@ -670,47 +669,6 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     }
     db.close();
 
-    writeFileSync(join(PROOF_DIR, 'oracles.json'), JSON.stringify(oracles, null, 2));
-    writeFileSync(join(PROOF_DIR, 'oracles_byids.json'), JSON.stringify(byIdsOracles, null, 2));
-    writeFileSync(join(PROOF_DIR, 'oracles_recent.json'), JSON.stringify(recentOracles, null, 2));
-    writeFileSync(join(PROOF_DIR, 'oracles_bymaybe.json'), JSON.stringify(byMaybeOracles, null, 2));
-    writeFileSync(join(PROOF_DIR, 'oracles_feed.json'), JSON.stringify(feedOracles, null, 2));
-    writeFileSync(join(PROOF_DIR, 'oracles_tenantfeed.json'), JSON.stringify(tenantOracles, null, 2));
-    writeFileSync(join(PROOF_DIR, 'oracles_relbatch.json'), JSON.stringify(relOracles, null, 2));
-    writeFileSync(join(PROOF_DIR, 'oracles_relsingle.json'), JSON.stringify(relSingleOracles, null, 2));
-
-    // Read cases for the LIVE native-vs-mode-2 harness (SSoT for read inputs): each carries the native
-    // CLI op+args AND the typed mode-2 input scope, so the harness runs BOTH paths on the SAME live DB
-    // and deep-equals (no sqlite oracle). relbatch/relsingle live in the SEPARATE relCases list — they
-    // carry a relation the harness normalizes ({rows,children}) before deep-equal (see compareRel), so
-    // they are not plain reads.
-    const readCases = [
-      { key: 'findunique', op: 'findunique', args: ['user500@example.com'], input: { email: 'user500@example.com' } },
-      { key: 'findunique-miss', op: 'findunique', args: ['nobody@example.com'], input: { email: 'nobody@example.com' } },
-      { key: 'byids', op: 'byids', args: ['1,2,3'], input: { ids: [1, 2, 3] } },
-      { key: 'byids-empty', op: 'byids', args: [''], input: { ids: [] } },
-      { key: 'recent-default', op: 'recent', args: [''], input: {} },
-      { key: 'recent-3', op: 'recent', args: ['3'], input: { limit: 3 } },
-      { key: 'bymaybe-absent', op: 'bymaybe', args: ['7', ''], input: { author_id: 7 } },
-      { key: 'bymaybe-present', op: 'bymaybe', args: ['7', '1'], input: { author_id: 7, published: 1 } },
-      { key: 'feed', op: 'feed', args: ['7'], input: { author_id: 7 } },
-      { key: 'tenantfeed', op: 'tenantfeed', args: ['1'], input: { tenant_id: 1 } },
-    ];
-    writeFileSync(join(PROOF_DIR, 'cases_read.json'), JSON.stringify(readCases, null, 2));
-
-    // Batched-relation read cases: native emits {rows,posts}; the mode-2 leg runs the hydrated
-    // read_bundle_pooled path; the harness normalizes BOTH to {parents, per-parent children} and
-    // deep-equals (the stitch is the shared op-independent SSoT; the DISTINCT check is parent+child
-    // de-box). `rel` is the relation field name the hydrated envelope carries per parent.
-    const relCases = [
-      { key: 'relbatch', op: 'relbatch', args: ['1'], input: { tenant_id: 1 }, rel: 'posts' },
-      { key: 'relbatch-2', op: 'relbatch', args: ['2'], input: { tenant_id: 2 }, rel: 'posts' },
-      { key: 'relbatch-empty', op: 'relbatch', args: ['999'], input: { tenant_id: 999 }, rel: 'posts' },
-      { key: 'relsingle', op: 'relsingle', args: ['7'], input: { author_id: 7 }, rel: 'comments' },
-      { key: 'relsingle-1', op: 'relsingle', args: ['1'], input: { author_id: 1 }, rel: 'comments' },
-      { key: 'relsingle-empty', op: 'relsingle', args: ['999'], input: { author_id: 999 }, rel: 'comments' },
-    ];
-    writeFileSync(join(PROOF_DIR, 'cases_rel.json'), JSON.stringify(relCases, null, 2));
     expect(((tenantOracles['1'] as { users: unknown[] }).users).length).toBe(4);
     expect(((tenantOracles['999'] as { users: unknown[] }).users).length).toBe(0);
     // the batched relation stitched: tenant 1 → 4 users, each with their own 2 posts.
@@ -783,21 +741,21 @@ const WRITE_CASES: WriteCase[] = [
 ];
 
 describe('E3 — emit write modules + a clean seed DB + {result, state} oracles', () => {
-  it('writes /tmp/e1proof/{generated_<write>.rs, write_seed.db, oracles_write.json}', () => {
+  it('writes native write modules and a clean seed DB without serialized sidecars', () => {
     mkdirSync(PROOF_DIR, { recursive: true });
+    const emittedModules = new Set<string>();
+    for (const wc of WRITE_CASES) {
+      if (emittedModules.has(wc.op)) continue;
+      const bundle = compileBundle(WRITE_CONTRACT, wc.entry, [], 'sqlite', undefined, RESOLVE);
+      writeFileSync(join(PROOF_DIR, `generated_${wc.op}.rs`), rustExecutable(bundle, `generated_${wc.op}`, RESOLVE));
+      emittedModules.add(wc.op);
+    }
     // A clean 3-row seed the harness copies before each write run (a write mutates its copy).
     freshWriteDb(WRITE_SEED).close();
 
     const oracles: Record<string, { result: unknown; state: unknown; op: string; args: string[] }> = {};
-    const emittedModules = new Set<string>();
     for (const wc of WRITE_CASES) {
       const bundle = compileBundle(WRITE_CONTRACT, wc.entry, [], 'sqlite', undefined, RESOLVE);
-      if (!emittedModules.has(wc.op)) {
-        const art = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE);
-        writeFileSync(join(PROOF_DIR, `generated_${wc.op}.rs`), art.module.code);
-        writeFileSync(join(PROOF_DIR, `generated_${wc.op}.rs`), rustExecutable(bundle, `generated_${wc.op}`, RESOLVE));
-        emittedModules.add(wc.op);
-      }
       // The mode-2 oracle runs the write on a FRESH connection over a file-seeded DB, exactly as the
       // rust leg does (rust opens the copied seed file fresh). This matters for a non-RETURNING
       // write's `lastInsertRowid`: on a connection that just ran the seed INSERTs it would report the
@@ -815,7 +773,6 @@ describe('E3 — emit write modules + a clean seed DB + {result, state} oracles'
       // oracle's input for `execute_bundle`) so the livedb harness can run BOTH paths on the same DB.
       oracles[wc.key] = { result, state, op: wc.op, args: wc.args, input: wc.input };
     }
-    writeFileSync(join(PROOF_DIR, 'oracles_write.json'), JSON.stringify(oracles, null, 2));
 
     // sanity: INSERT returns the new row; DELETE removes id=1; upsert-conflict UPDATES user1's name.
     expect((oracles.createuser.result as { id: number }[])[0].email).toBe('zed@example.com');
@@ -1036,22 +993,23 @@ const TX_CASES: TxCase[] = [
 ];
 
 describe('E5 (#120) — emit tx modules + a users+posts seed + {result, state} executeTransactionBundle oracles', () => {
-  it('writes /tmp/e1proof/{generated_tx*.rs, tx_seed.db, oracles_tx.json}', () => {
+  it('writes native transaction modules and a clean seed DB without serialized sidecars', () => {
     mkdirSync(PROOF_DIR, { recursive: true });
-    freshTxDb(TX_SEED).close();
-
     const plans = txPlans();
     const emitted = new Set<string>();
+    for (const tc of TX_CASES) {
+      if (emitted.has(tc.op)) continue;
+      const { module, plan } = plans[tc.module];
+      const bundle = txBundleOf(module, plan);
+      writeFileSync(join(PROOF_DIR, `generated_${tc.op}.rs`), rustExecutable(bundle, `generated_${tc.op}`, RESOLVE));
+      emitted.add(tc.op);
+    }
+    freshTxDb(TX_SEED).close();
+
     const oracles: Record<string, { result: unknown; state: unknown; op: string; args: string[] }> = {};
 
     for (const tc of TX_CASES) {
       const { module, plan } = plans[tc.module];
-      if (!emitted.has(tc.op)) {
-        const art = generateCodegenArtifact(txBundleOf(module, plan), 'rust', REGISTERED, RESOLVE);
-        writeFileSync(join(PROOF_DIR, `generated_${tc.op}.rs`), art.module.code);
-        writeFileSync(join(PROOF_DIR, `generated_${tc.op}.rs`), rustExecutable(txBundleOf(module, plan), `generated_${tc.op}`, RESOLVE));
-        emitted.add(tc.op);
-      }
       // The mode-2 oracle runs the tx on a FRESH file-seeded DB (the rust leg opens the copied seed
       // fresh) — same as the write oracle. executeTransactionBundle THROWS on a statement failure (it
       // ROLLBACKs then rethrows); the rollback control catches that → {committed:false} + the (undone) state.
@@ -1071,7 +1029,6 @@ describe('E5 (#120) — emit tx modules + a users+posts seed + {result, state} e
       rmSync(oraclePath);
       oracles[tc.key] = { result: { committed }, state, op: tc.op, args: tc.args, input: tc.input };
     }
-    writeFileSync(join(PROOF_DIR, 'oracles_tx.json'), JSON.stringify(oracles, null, 2));
 
     // Sanity — the oracle state proves the CHAIN is real (not trivially both-empty):
     // nestedCreate: a new user (id 4) + a post whose author_id IS that chained id 4.
@@ -1092,12 +1049,12 @@ describe('E5 (#120) — emit tx modules + a users+posts seed + {result, state} e
   });
 });
 
-// ── LIVE-DB dialect emission (epic #123/#124 commit 2/3) — emit pg + mysql-dialect modules + companions
+// ── LIVE-DB dialect emission (epic #123/#124 commit 2/3) — emit pg + mysql-dialect modules + adapters
 //    so the rust cell can run the SAME 20 ops against docker Postgres (:5433) / MySQL (:3307) through
 //    litedbmodel_runtime's PostgresDriver/MysqlDriver and compare byte-for-byte to the SAME
 //    dialect-independent mode-2 oracle. Reuses the SAME bundle constructors (contracts / WRITE_CONTRACT /
 //    txPlans) with the dialect param — one source, per-dialect baked SQL ($N / json_each-vs-ANY / RETURNING).
-describe('LIVE — emit pg + mysql dialect modules + companions for the docker byte-equal legs', () => {
+describe('LIVE — emit pg + mysql dialect modules + adapters for the docker byte-equal legs', () => {
   const READ_SPECS: Array<[string, ReturnType<typeof publishBehaviors>, string, RelationDecl[], typeof RESOLVE]> = [
     ['findunique', CONTRACT, 'FindUnique', [], RESOLVE],
     ['byids', CONTRACT, 'ByIds', [], RESOLVE],
@@ -1114,16 +1071,16 @@ describe('LIVE — emit pg + mysql dialect modules + companions for the docker b
   ];
 
   for (const dialect of ['postgres', 'mysql'] as const) {
-    it(`writes /tmp/e1proof/${dialect}/{generated_*.rs, companion_*.rs} for all 20 ops`, () => {
+    it(`writes /tmp/e1proof/${dialect}/{generated_*.rs, adapter_*.rs} for all 20 ops`, () => {
       const dir = join(PROOF_DIR, dialect);
+      rmSync(dir, { recursive: true, force: true });
       mkdirSync(dir, { recursive: true });
       const emit = (op: string, bundle: SqlBundle, resolve: typeof RESOLVE) => {
         writeFileSync(join(dir, `generated_${op}.rs`), generateCodegenArtifact(bundle, 'rust', REGISTERED, resolve).module.code);
         writeFileSync(join(dir, `generated_${op}.rs`), rustExecutable(bundle, `generated_${op}`, resolve));
         // The SAME per-dialect bundle the mode-2 INTERPRETER oracle (`mode2` subcommand) runs — so the
         // livedb leg compares native (codegen) vs mode-2 (interpreter) on the SAME live DB, not vs the
-        // sqlite oracle. JSON-serialized (readGraph IR + transaction plan) for `Node::parse` rust-side.
-        writeFileSync(join(dir, `bundle_${op}.json`), JSON.stringify(bundle));
+        // sqlite oracle. Only the generated native Rust module is emitted.
       };
       for (const [op, contract, entry, rels, resolve] of READ_SPECS) {
         // The batched-relation SQL is compiled per the RelationDecl's own dialect (json_each vs

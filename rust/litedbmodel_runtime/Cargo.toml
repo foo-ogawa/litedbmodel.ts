@@ -44,6 +44,9 @@ tokio = { version = "1", optional = true, features = ["rt-multi-thread", "sync",
 futures-util = { version = "0.3", optional = true }
 
 [features]
+default = ["interpreter"]
+native = []
+interpreter = []
 livedb = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:sqlx", "dep:tokio", "dep:futures-util", "dep:rust_decimal", "dep:chrono"]
 
 # NO external JSON crate anywhere (not even dev): the integration tests + the micro_perf example build their

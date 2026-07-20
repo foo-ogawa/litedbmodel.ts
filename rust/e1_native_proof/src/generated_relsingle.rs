@@ -525,7 +525,7 @@ pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["ByAuthor"];
 
 // litedbmodel static runtime adapter for `generated_relsingle` (co-located with the bc core).
 // bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
-// THIS companion — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
+// THIS adapter — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
 // delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire
 // classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the
 // orphan rule forbids the module-local wire trait impls living in the runtime crate).
@@ -618,12 +618,6 @@ pub fn hydrate_comments(
             message: e.message,
         })
     })?;
-    litedbmodel_runtime::check_relation_hard_limit(
-        None,
-        child_rows.len(),
-        Some("benchmark_comments"),
-        "comments",
-    )?;
     let level = litedbmodel_runtime::hydrate_children(
         parents,
         |parent| parent.id,
@@ -1161,7 +1155,7 @@ pub mod rel_comments {
 
     // litedbmodel static runtime adapter for `rel_comments` (co-located with the bc core).
     // bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
-    // THIS companion — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
+    // THIS adapter — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
     // delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire
     // classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the
     // orphan rule forbids the module-local wire trait impls living in the runtime crate).
@@ -1195,17 +1189,18 @@ pub mod rel_comments {
                 .iter()
                 .map(|v| litedbmodel_runtime::wp(v))
                 .collect::<Vec<Value>>()];
-            if columns.first().is_none_or(Vec::is_empty) {
-                return Ok(Wire::from_rows(Vec::new()));
-            }
-            let (sql, params) = litedbmodel_runtime::build_relation_params(
+            let ctx = self.src.ctx().map_err(cvt)?;
+            litedbmodel_runtime::execute_relation_batch(
+                &ctx,
                 &ports.f_sql,
                 &columns,
                 litedbmodel_runtime::ArrayParamShape::SingleJson,
-            );
-            let ctx = self.src.ctx().map_err(cvt)?;
-            litedbmodel_runtime::exec(&ctx, &sql, &params, litedbmodel_runtime::ExecMode::Rows)
-                .map_err(cvt)
+                None,
+                Some("benchmark_comments"),
+                "comments",
+            )
+            .map(Wire::from_rows)
+            .map_err(cvt)
         }
     }
 

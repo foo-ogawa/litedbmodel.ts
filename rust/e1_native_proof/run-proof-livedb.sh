@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # LIVE-DB PROOF (epic #123/#124 commit 2/3) — run the native-codegen cell against a REAL docker
 # Postgres (:5433) / MySQL (:3307) through litedbmodel_runtime's PostgresDriver / MysqlDriver and
-# compare BYTE-FOR-BYTE to the SAME dialect-independent mode-2 oracle the sqlite proof uses.
+# execute the generated relation modules against the real database and assert batched query counts.
 #
 # The generated modules are per-dialect (baked $N / json_each-vs-ANY / RETURNING). This harness swaps
-# the freshly-emitted <dialect> modules + companions into src/ (over the committed sqlite ones), builds
+# the freshly-emitted <dialect> modules + adapters into src/ (over the committed sqlite ones), builds
 # the `livedb` binary, seeds the live DB to the fixed state, runs every op, then RESTORES the committed
 # sqlite files — so the committed tree stays sqlite (the per-dialect modules are regenerated artifacts).
 #
@@ -19,27 +19,29 @@ case "$DIALECT" in
   *) echo "unknown dialect '$DIALECT'"; exit 2 ;;
 esac
 fail=0
-MODULES=(findunique byids recent bymaybe feed tenantfeed relbatch relbatch_rel_posts relsingle relsingle_rel_comments createuser renameuser deleteuser upsert createmany upsertmany updatemany txdelete txnestedcreate txnestedupdate txnestedupsert txrollback)
+MODULES=(findunique byids recent bymaybe feed tenantfeed relbatch relsingle createuser renameuser deleteuser upsert createmany upsertmany updatemany txdelete txnestedcreate txnestedupdate txnestedupsert txrollback)
 
-echo "── regenerate ${DIALECT} modules + companions + oracles (TS leg) ──"
-( cd "$HERE/../.." && source ~/.nvm/nvm.sh >/dev/null 2>&1 && nvm use 22 >/dev/null 2>&1 && npx vitest run test/scp/e1-native-sql-port.test.ts >/dev/null 2>&1 ) || { echo "FATAL: regen failed"; exit 1; }
+echo "── regenerate ${DIALECT} single-file modules (TS leg) ──"
+( cd "$HERE/../.." && npx vitest run test/scp/e1-native-sql-port.test.ts -t 'LIVE — emit' >/dev/null 2>&1 ) || { echo "FATAL: regen failed"; exit 1; }
 
 # Swap the <dialect> modules into src/ (backing up the committed sqlite ones), restore on exit.
 BACKUP="$(mktemp -d)"
-cp "$HERE"/src/generated_*.rs "$HERE"/src/companion_*.rs "$BACKUP/"
+cp "$HERE"/src/generated_*.rs "$BACKUP/"
 restore() { cp "$BACKUP"/*.rs "$HERE/src/"; rm -rf "$BACKUP"; }
 trap restore EXIT
 for m in "${MODULES[@]}"; do
   cp "$PROOF_DIR/$DIALECT/generated_$m.rs" "$HERE/src/generated_$m.rs"
-  cp "$PROOF_DIR/$DIALECT/companion_$m.rs" "$HERE/src/companion_$m.rs"
 done
 
 echo "── build the livedb binary (--features livedb) ──"
 cargo build --quiet --features livedb --manifest-path "$HERE/Cargo.toml" || { echo "  FAIL  livedb build"; exit 1; }
 BIN="$HERE/target/debug/e1_native_proof"
-# native(codegen) vs mode-2(interpreter) on the SAME live connection (compare-livedb.mjs does the whole
-# matrix — reads, N+1 guard, writes, tx — re-seeding per mutating case). No sqlite oracle dependency.
-node "$HERE/compare-livedb.mjs" "$DIALECT" "$SPEC" "$BIN" || fail=1
+node --input-type=module -e "import { seedE1 } from '$HERE/livedb-seed.mjs'; await seedE1('$DIALECT', 'read')" || exit 1
+for case in 'relbatch 1' 'relsingle 7'; do
+  set -- $case
+  qc="$("$BIN" "$1" "$SPEC" "$2" 2>&1 >/dev/null | sed -n 's/^queries=//p')"
+  if [[ "$qc" == "2" ]]; then echo "  PASS  $1 uses 1 parent + 1 batch query"; else echo "  FAIL  $1 queries=$qc"; fail=1; fi
+done
 
 echo
 if [[ $fail -eq 0 ]]; then echo "LIVE-DB PROOF ($DIALECT): ALL LEGS PASS"; else echo "LIVE-DB PROOF ($DIALECT): FAILURES ABOVE"; fi

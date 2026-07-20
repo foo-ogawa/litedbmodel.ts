@@ -11,10 +11,8 @@
  *     own query — it needs NO runtime JSON read. Covered by bc's typed-NATIVE endpoint
  *     (`rust-typed-native` / `go-typed-native`) for go/rust and `typescript-typed` for ts; every
  *     language consumes the SAME baked-SQL ports. There is ONE lowering and NO opt-in flag.
- *  2. **Runtime-stitch sidecar** — the pure-JSON `relations` batch ops (a belongsTo/hasMany prefetch
- *     is ONE batched IN query the runtime stitches, not baked into the read module) + the
- *     write-Command `transaction` plan. The read/write PRIMARY SQL is NOT here (baked in the module);
- *     the JSON `SqlCatalogCompanion` is RETIRED for reads.
+ *  2. **Co-located static runtime adapter** — typed handlers and statically expanded relation calls
+ *     live in the same generated source file. No serialized catalog or plan sidecar is emitted.
  *
  * ## Codegen-path only; behavior-identical to the thin-runtime (mode-2), by construction
  *
@@ -87,55 +85,16 @@ export const CODEGEN_EMITTER: Partial<Record<CodegenLanguage, string>> = {
   rust: 'rust-typed-native',
 };
 
-/**
- * The SQL catalog companion sidecar. The read/write PRIMARY SQL is now BAKED into the generated
- * module (the single SQL-baking lowering), so the companion NO LONGER carries the read graph — the
- * read path is companion-free (owner: "retire the JSON SqlCatalogCompanion for reads"). What remains
- * is the runtime-stitched surface the module does NOT bake: the `relations` batch ops (a RelationDecl
- * belongsTo/hasMany prefetch is ONE batched IN query resolved by the runtime, not part of the read
- * module) and the write-Command `transaction` plan (the gate-first tx-DAG, not codegen'd). Pure JSON.
- */
-export interface SqlCatalogCompanion {
-  /** Target SQL dialect (`sqlite`/`postgres`/`mysql`) — compiled once, TS-side (spec §10). */
-  readonly dialect: DialectName;
-  /** Input heads normalized to present-as-null (absent-key SKIP) — mirrors the bundle. */
-  readonly optionalHeads: readonly string[];
-  /** Pre-compiled STATIC read-relation batch ops (spec §5/§8), keyed by relation name — the ONE
-   * batched IN query per relation the runtime stitches (not baked into the read module). */
-  readonly relations: Record<string, RelationOp>;
-  /** Derived gate-first write-time-relations transaction plan (spec §6/§8), for a Command bundle. */
-  readonly transaction?: TransactionPlan;
-  /**
-   * WRITE bundles: the codegen typed-de-box `outputType` (the TransactionResult typed shape). Rides
-   * the companion so a codegen consumer that reassembles the bundle round-trips it losslessly.
-   */
-  readonly outputType?: unknown;
-}
-
 /** The full codegen artifact for one bundle × one language. */
 export interface CodegenArtifact {
   /** The target language. */
   readonly language: CodegenLanguage;
   /** The generated behavior module (bc's SHARED STRAIGHT-LINE generator output — real static code). */
   readonly module: GeneratedModule;
-  /** The SQL catalog companion sidecar (the STATIC makeSQL execution catalog). */
-  readonly companion: SqlCatalogCompanion;
   /** The originating bundle (so the equivalence leg re-executes the SAME static bundle). */
   readonly bundle: SqlBundle;
 }
 
-
-/** The runtime-stitched sidecar carried alongside the generated module — NO read/write SQL (baked in
- * the module now), only the relation batch ops + the write-Command tx plan the module does not bake. */
-function companionOf(bundle: SqlBundle): SqlCatalogCompanion {
-  const base: SqlCatalogCompanion = {
-    dialect: bundle.dialect,
-    optionalHeads: bundle.optionalHeads,
-    relations: bundle.relations,
-    ...(bundle.outputType !== undefined ? { outputType: bundle.outputType } : {}),
-  };
-  return bundle.transaction === undefined ? base : { ...base, transaction: bundle.transaction };
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 // #60 milestone 1 — CODEGEN-ONLY typed-native lowering (#12: from the real-node read graph).
@@ -436,7 +395,7 @@ function arrayHeadNameOf(param: unknown): string | undefined {
 // litedbmodel codegen has ONE lowering: it renders each node's per-dialect SQL STATICALLY (the SAME
 // assembly `renderStatements` performs, minus the per-input value evaluation) and emits it as native
 // ports bc bakes as literals — a STATIC STRING `sql` port + one typed port per bound `?`. So the
-// generated module carries its own query and needs NO runtime JSON companion read.
+// generated module carries its own query and needs NO runtime JSON adapter read.
 //
 // bc's typed-native emitter is SQL-AGNOSTIC — it bakes any port its `portIsStatic` predicate covers
 // as a native literal (exactly how graphddb gets `f_table:"UserPermissions"`). Verified against bc
@@ -845,7 +804,7 @@ function paramPortFor(param: unknown, index: number, nodeId: string, reasons: st
  * THE SINGLE codegen lowering (#116): lower a read/write bundle's REAL `ComponentGraphIR` into a NEW,
  * CODEGEN-ONLY IR whose nodes carry the rendered per-dialect SQL as native ports bc bakes as literals
  * — a STATIC `sql` string port + one typed port per bound `?`. The generated module then CARRIES its
- * own SQL: no runtime JSON companion read.
+ * own SQL: no runtime JSON adapter read.
  *
  * Coverage: `Select`/`Count`/`Insert`/`Update`/`Delete` nodes; required + optional-`coalesce` (#122)
  * + IN-list array (bc#110) params; `skip`-optional WHERE fragments (fragmented shape, seam-assembled);
@@ -1389,12 +1348,11 @@ export function generateCodegenArtifact(
   // serialized doc, so the CLI path is equivalent by construction.
   const compiled = loadCompiledIR(ir);
   const module = generateModule(compiled, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
-  return { language: language as CodegenLanguage, module, companion: companionOf(bundle), bundle };
+  return { language: language as CodegenLanguage, module, bundle };
 }
 
 /**
- * The TS codegen EXECUTION path used to PROVE behavior-identity: a codegen runtime reads the SQL
- * catalog companion (the STATIC makeSQL bundle) and evaluates skip + value-specs → assemble →
+ * The TS codegen EXECUTION path used to PROVE behavior-identity evaluates skip + value-specs → assemble →
  * render → execute — which is EXACTLY {@link executeBundle} over the SAME bundle.
  */
 export function codegenExecuteBundleForTest(artifact: CodegenArtifact, input: Scope, db: SqliteDb): Value {
@@ -1402,12 +1360,12 @@ export function codegenExecuteBundleForTest(artifact: CodegenArtifact, input: Sc
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// RUST COMPANION EMISSION (epic #123 / #124) — the boundary-injected `node_*` handlers + wire adapter.
+// RUST STATIC ADAPTER EMISSION — boundary-injected `node_*` handlers + wire adapter.
 //
 // bc's `rust-typed-native` emitter generates the RUNTIME-FREE native module (ports structs + the INLINE
 // de-box runner + the module-local `HandlerNR<comp>` / `WireValue`/`WireRow`/`WireList` traits). bc does
 // NOT generate the handler impls (C4: handlers/wire adapters are boundary-INJECTED). litedbmodel — the
-// bc-consumer — supplies them, and THIS is where litedbmodel GENERATES that companion (not hand-written):
+// bc-consumer — supplies them, and THIS is where litedbmodel GENERATES that adapter (not hand-written):
 // per-component `impl HandlerNR<comp>` whose `node_*` methods delegate UNIFORMLY to the SINGLE
 // op-agnostic executor `exec(…, ExecMode::Rows|Summary)` — batch/skip nodes first marshal their params
 // via `build_batch_params`/`build_skip_params` then run the SAME `exec` (no dedicated executor) — plus
@@ -1416,7 +1374,7 @@ export function codegenExecuteBundleForTest(artifact: CodegenArtifact, input: Sc
 // runtime crate — the traits are local to the generated module). Derived from the SAME lowered IR
 // {@link generateCodegenArtifact} feeds bc, so ports/param facts are single-sourced.
 //
-// RELATIONS are compiled into the companion as native literals (#141). The runtime receives only the
+// RELATIONS are compiled into the adapter as native literals (#141). The runtime receives only the
 // baked SQL/key shape/limit values needed by its op-independent batch primitive; it performs no name
 // lookup, JSON parsing, or childRelations traversal. Nested levels are direct calls emitted below.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
@@ -1449,7 +1407,7 @@ function paramKeys(ports: Record<string, unknown>): string[] {
 
 /** One param port → its runtime bind expression: an IN-list / array-bound head lowers via `wp_array`
  * (always a `Value::Arr`; the Postgres-native-array vs MySQL/SQLite-`json_each(?)`-JSON DIALECT decision
- * is resolved by the Driver's param-binder — the array-bind SSoT — so the companion never branches on
+ * is resolved by the Driver's param-binder — the array-bind SSoT — so the adapter never branches on
  * dialect); every scalar (input ref, element-field ref, literal, chained tx ref) via the type-agnostic
  * `wp`. The array-ness is read off the component input port schema (the SSoT bc used to bake the field's
  * Rust type) — no re-derivation. */
@@ -1523,25 +1481,25 @@ function emitReadWriteNode(
       .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
     const columns = valueKeys.map((k) => `ports.f_${k}.iter().map(|v| litedbmodel_runtime::wp(v)).collect::<Vec<Value>>()`);
     const shape = ports.relation_shape === 'per_column' ? 'PerColumn' : 'SingleJson';
+    const relation = (bundle as unknown as { __relationBatch?: RelationOp }).__relationBatch;
+    if (relation === undefined) throw new Error(`litedbmodel relation batch '${n.id}' has no compile-time descriptor`);
     return [
       sig,
       `        let columns: Vec<Vec<Value>> = vec![${columns.join(', ')}];`,
-      `        if columns.first().is_none_or(Vec::is_empty) { return Ok(Wire::from_rows(Vec::new())); }`,
-      `        let (sql, params) = litedbmodel_runtime::build_relation_params(&ports.f_sql, &columns, litedbmodel_runtime::ArrayParamShape::${shape});`,
       `        let ctx = self.src.ctx().map_err(cvt)?;`,
-      `        litedbmodel_runtime::exec(&ctx, &sql, &params, litedbmodel_runtime::ExecMode::Rows).map_err(cvt)`,
+      `        litedbmodel_runtime::execute_relation_batch(&ctx, &ports.f_sql, &columns, litedbmodel_runtime::ArrayParamShape::${shape}, ${relation.hardLimit === undefined ? 'None' : `Some(${relation.hardLimit}i64)`}, ${relation.targetTable === undefined ? 'None' : `Some(${JSON.stringify(relation.targetTable)})`}, ${JSON.stringify(relation.name)}).map(Wire::from_rows).map_err(cvt)`,
       `    }`,
     ].join('\n');
   }
   // BATCH write: parallel column arrays zipped into ONE json_each statement.
   if ('v0' in ports) {
     const marker = batchRowsMarkerOf(bundle.readGraph?.statementsById[id] ?? []);
-    if (marker === undefined) throw new Error(`litedbmodel companion: batch node '${id}' has no batch-rows marker to derive its columns`);
+    if (marker === undefined) throw new Error(`litedbmodel adapter: batch node '${id}' has no batch-rows marker to derive its columns`);
     const cells = marker.columns.map((_, i) => `ports.f_v${i}.iter().map(|v| litedbmodel_runtime::wp(v)).collect::<Vec<Value>>()`);
     const cols = marker.columns.map((c) => JSON.stringify(c)).join(', ');
     const returning = !isSummaryOut(n.outType);
     // The param-shape DESCRIPTOR is baked from the marker type resolved at SQL generation (`__batchArray`
-    // per-column → PerColumn / `__batchRows` zipped → SingleJson). The companion is a THIN uniform
+    // per-column → PerColumn / `__batchRows` zipped → SingleJson). The adapter is a THIN uniform
     // delegate: marshal the params through the SHARED `build_batch_params` SSoT (the SAME fn mode-2's
     // render calls — no per-op zip), then run the SINGLE `exec` — no batch-specific executor.
     const shape = marker.perColumn ? 'PerColumn' : 'SingleJson';
@@ -1593,11 +1551,11 @@ function emitGuardedFindEntry(bundle: SqlBundle, comp: string, ir: ReturnType<ty
   const code = generateModule(loadCompiledIR(ir), { language: 'rust-typed-native' }).code;
   const match = code.match(new RegExp(`pub fn run_native_raw_struct_${comp}<[^>]*>\\s*\\([\\s\\S]*?\\)\\s*->\\s*Result<([\\s\\S]*?),\\s*BehaviorError>`));
   if (match === null) {
-    throw new Error(`litedbmodel companion (#135 find-guard): cannot read the return type of run_native_raw_struct_${comp} from the bc-generated module signature`);
+    throw new Error(`litedbmodel adapter (#135 find-guard): cannot read the return type of run_native_raw_struct_${comp} from the bc-generated module signature`);
   }
   const ret = match[1].trim();
   if (!ret.startsWith('Vec<')) {
-    throw new Error(`litedbmodel companion (#135 find-guard): a find guard expects a row-LIST return (Vec<…>), but run_native_raw_struct_${comp} returns '${ret}'`);
+    throw new Error(`litedbmodel adapter (#135 find-guard): a find guard expects a row-LIST return (Vec<…>), but run_native_raw_struct_${comp} returns '${ret}'`);
   }
   return [
     ``,
@@ -1636,26 +1594,25 @@ function emitNativeRunEntry(bundle: SqlBundle, comp: string, ir: ReturnType<type
 // TYPED-CHILD RELATIONS (#140) — the batched CHILD read de-boxed to a TYPED struct via bc.
 //
 // #131 keeps a relation OUT of the primary module (it is v1 lazy-batch, a runtime concern). #140 makes
-// the batched CHILD ROWS TYPED: the relation loader is STILL the ONE SQL authority (`fetch_child_rows`
-// dedupes/casts/renders/binds/execs — shared with mode-2, op.sql byte-unchanged), and the driver rows it
+// the batched CHILD ROWS TYPED: the relation loader is STILL the ONE SQL authority
+// (`execute_relation_batch` dedupes/casts/renders/binds/execs), and the driver rows it
 // fetches are de-boxed to TYPED child structs by a bc-generated CHILD MODULE — the SAME bc typed-native
 // de-box a primary read uses — so the loader's group/distribute run over typed structs, NOT `Value::Obj`.
 //
 // The child read is DECLARED-VIA-BC (`compileEager` over a bare `Select({table: targetTable, select})`
 // with the relation's `static columns` — NO hand-written IR) and generated through the SAME
-// `generateCodegenArtifact` a primary read uses. The child module's baked SQL is inert (the loader runs
-// op.sql, the SSoT); only its typed struct + bc de-box are consumed. The litedbmodel CHILD COMPANION
-// bridges the loader-fetched `Wire` into that de-box (a stash handler → `run_native_raw_struct_<Comp>`).
+// `generateCodegenArtifact` a primary read uses. Only its typed struct + bc de-box are consumed by the
+// co-located generated relation implementation.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /** The deterministic file/mod + component names for ONE relation node at `path` (e.g. `['posts']` →
  * `generated_<op>_rel_posts`; `['posts','comments']` → `generated_<op>_rel_posts_comments`). The primary
- * companion's hydrator and the child-artifact generator both derive names HERE, so they never drift. */
-function relChildNames(_primaryModuleName: string, path: readonly string[]): { module: string; companion: string; component: string } {
+ * adapter's hydrator and the child-artifact generator both derive names HERE, so they never drift. */
+function relChildNames(_primaryModuleName: string, path: readonly string[]): { module: string; adapter: string; component: string } {
   const joined = path.join('_');
   return {
     module: `rel_${joined}`,
-    companion: ``,
+    adapter: ``,
     component: `Rel${path.map(nodeCamel).join('')}`,
   };
 }
@@ -1682,7 +1639,8 @@ function compileRelationChildBundle(op: RelationOp, component: string, resolveCo
   const contract = arity === 1
     ? compileEager(component, ($, L) => (L as unknown as { RelationBatch(p: unknown): unknown }).RelationBatch({ ...base, 'key.0': ($ as Record<string, unknown>).k0 }), { columns })
     : compileEager(component, ($, L) => (L as unknown as { RelationBatch(p: unknown): unknown }).RelationBatch({ ...base, 'key.0': ($ as Record<string, unknown>).k0, 'key.1': ($ as Record<string, unknown>).k1 }), { columns });
-  return compileBundle(contract, component, [], op.dialect as DialectName, undefined, resolveColumnType);
+  const bundle = compileBundle(contract, component, [], op.dialect as DialectName, undefined, resolveColumnType);
+  return { ...bundle, __relationBatch: op } as SqlBundle;
 }
 
 /** A relation op's ordered TARGET / PARENT key columns (single-key → 1 elem; composite → the tuple). */
@@ -1715,7 +1673,7 @@ function nestedKeyOfClosure(cols: readonly string[]): string {
   return `|c| (${cols.map((c) => `c.${c}`).join(', ')})`;
 }
 
-/** Emit ONE top-level relation's TYPED hydrator into the primary companion: it drives the SHARED
+/** Emit ONE top-level relation's TYPED hydrator into the primary adapter: it drives the SHARED
  * per-level `hydrate_relation_typed` (the child rows de-box to typed structs; the loader's group/distribute
  * run over them), then UNROLLS each `childRelations` level (Rust cannot recurse generically over the
  * heterogeneous child types) — each level a batched read (N+1-free). Returns `Vec<(P, Vec<child>)>`. The
@@ -1742,7 +1700,6 @@ function emitRelationHydrator(op: RelationOp, primaryModuleName: string): string
       `${indent}    &self::${names.module}::handler(driver),`,
       `${indent}    self::${names.module}::InNR${names.component} { ${keyInputs.join(', ')} },`,
       `${indent}).map_err(|e| litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure { kind: e.code, policy: "fail".to_string(), sqlite_code: None, message: e.message }))?;`,
-      `${indent}litedbmodel_runtime::check_relation_hard_limit(${op.hardLimit === undefined ? 'None' : `Some(${op.hardLimit}i64)`}, child_rows.len(), ${op.targetTable === undefined ? 'None' : `Some(${JSON.stringify(op.targetTable)})`}, ${JSON.stringify(op.name)})?;`,
       `${indent}let ${rawVar} = litedbmodel_runtime::hydrate_children(`,
       `${indent}    ${parentsExpr}, ${keyOf}, child_rows,`,
       `${indent}    ${childKeyOfClosure(targetKeyCols(op))},`,
@@ -1808,7 +1765,7 @@ function generateRustStaticAdapter(bundle: SqlBundle, moduleName: string, resolv
     ...(inline ? [] : [`#![allow(dead_code, unused_imports, non_snake_case, clippy::all)]`]),
     `// litedbmodel static runtime adapter for \`${moduleName}\` (co-located with the bc core).`,
     `// bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits`,
-    `// THIS companion — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*`,
+    `// THIS adapter — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*`,
     `// delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire`,
     `// classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the`,
     `// orphan rule forbids the module-local wire trait impls living in the runtime crate).`,
@@ -1881,7 +1838,7 @@ function generateRustStaticAdapter(bundle: SqlBundle, moduleName: string, resolv
   const methods = c.body.filter((n) => !('cond' in n)).map((n) => emitReadWriteNode(n, comp, bundle, inputPorts));
   // #140 typed-child hydrators: one per top-level relation. Each drives the SHARED `hydrate_relation_typed`
   // (the child rows de-box to TYPED structs via the bc child module — NO `Value::Obj` grouped/retained) and
-  // batches every `childRelations` level. The child bc modules + de-box companions are emitted separately
+  // batches every `childRelations` level. The child bc modules + de-box adapters are emitted separately
   // (`generateRelationChildArtifacts`) and referenced here by the SAME `relChildNames` derivation.
   const relationHydrators = Object.values(bundle.relations).map((op) => emitRelationHydrator(op, moduleName));
   // #135 find-hardLimit auto-wiring: when the ReadGraph carries a `findGuard` (the compile baked

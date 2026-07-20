@@ -1,6 +1,6 @@
 # Native-codegen REFERENCE CELL (epic #123 / #124) — the litedbmodel-consumer that runs the generated
 # native modules end to end. It is a litedbmodel-CONSUMER: it CALLS the generated code (bc's native
-# module + litedbmodel's generated companion) and supplies NO `node_*` handler itself. Every DB access
+# module + litedbmodel's co-located generated adapter) and supplies NO `node_*` handler itself. Every DB access
 # goes through litedbmodel_runtime's Driver (NO `rusqlite` here — the old hand-written `seam.rs` that
 # re-implemented the runtime over raw rusqlite is retired).
 #
@@ -16,7 +16,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-litedbmodel_runtime = { path = "../litedbmodel_runtime" }
+litedbmodel_runtime = { path = "../litedbmodel_runtime", default-features = false, features = ["native"] }
 # Pin the transitive behavior-contracts to the EXACT version the rust/ workspace lock uses (0.8.0) —
 # litedbmodel_runtime is written against that rust-crate API. Without this exact pin, this standalone
 # crate's fresh lock would resolve the highest compatible 0.8.x (0.8.10), whose changed `ExecOutcome`
@@ -24,7 +24,7 @@ litedbmodel_runtime = { path = "../litedbmodel_runtime" }
 # feature, so no serde_json leaks in). Not used directly here — a version-alignment pin only.
 behavior-contracts = { version = "=0.8.0", default-features = false }
 
-# `livedb` (opt-in): route the SAME generated companion + runtime against docker Postgres / MySQL via
+# `livedb` (opt-in): route the SAME generated module + runtime against docker Postgres / MySQL via
 # litedbmodel_runtime's live Driver (commit 2 / commit 3 of #124). The default (SQLite) build needs
 # neither the postgres nor mysql crate.
 [features]
