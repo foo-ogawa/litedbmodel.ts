@@ -79,7 +79,7 @@ Each op runs the same logical operation two ways: **native** = litedbmodel-gener
 
 v1 measured PostgreSQL only (median_ms). Baselines differ: v1 baseline = SeaORM/Diesel; this pilot's baseline = a raw rust driver. Overlap is by the op label (ORM_OP_LABEL == v1 category).
 
-| op (label) | v2-native p50 ms | v1-native median ms | v1 SeaORM ms | v1 Diesel ms | #129 sdk p50 ms |
+| op (label) | v2-native p50 ms | v1-native median ms | v1 SeaORM ms | v1 Diesel ms | raw-driver sdk p50 ms |
 |---|--:|--:|--:|--:|--:|
 | Find all (limit 100) | 0.424 | 0.890 | 1.250 | 1.480 | 0.250 |
 | Filter, paginate & sort | 0.293 | 1.370 | 1.970 | 1.840 | 0.214 |
