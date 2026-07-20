@@ -278,16 +278,16 @@ fn run_relation_op(
     // `relation` = the relation NAME. A LimitExceededError propagates as its OWN error (not a
     // SqlFailure). Throws BEFORE grouping/hydration so an over-cap read never assembles an unbounded set.
     if let Some(cap) = op.hard_limit {
-        let count = rows.len() as i64;
-        if count > cap {
-            return Err(RuntimeError::Limit(LimitExceededError::new(
-                cap,
-                count,
-                LIMIT_CONTEXT_RELATION,
-                op.target_table.clone(),
-                Some(op.name.clone()),
-            )));
-        }
+        // The SHARED runaway check (SSoT) — the SAME `LimitExceededError::check` the find-context guard
+        // (mode-2 + native codegen read) calls, here with the relation context (EXACT count, the batch
+        // is fetched in full). One `count > cap ⇒ throw` primitive, no per-context re-implementation.
+        LimitExceededError::check(
+            cap,
+            rows.len() as i64,
+            LIMIT_CONTEXT_RELATION,
+            op.target_table.clone(),
+            Some(op.name.clone()),
+        )?;
     }
     for row in rows {
         let tuple: Vec<Value> = t_cols

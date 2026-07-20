@@ -915,6 +915,53 @@ mod tests {
         assert!(matches!(row.rt_probe_number("changes"), RtNum::Got { ref raw, .. } if raw == "2"));
     }
 
+    /// FIND HARD-LIMIT on the NATIVE read path (#135): a capped find whose baked `LIMIT hardLimit + 1`
+    /// fetches MORE than the cap trips a `LimitExceededError` (`context: find`) — the SAME shared
+    /// [`crate::errors::check_find_hard_limit`] the mode-2 `assert_find_guard` calls (so native ≡ mode-2).
+    /// This exercises the REAL native seam the litedbmodel companion's guarded read entry runs: `exec`
+    /// against the seeded DB with the `LIMIT cap + 1` baked SQL, then the shared post-fetch guard on the
+    /// de-boxed row count. The de-box (bc's, proven byte-equal elsewhere) does not change the count, so a
+    /// guard over the fetched Wire's row count is a faithful native find-guard test.
+    #[test]
+    fn native_find_read_enforces_hard_limit() {
+        use crate::errors::{check_find_hard_limit, LimitExceededError, LIMIT_CONTEXT_FIND};
+        // 5 rows seeded; cap = 2 ⇒ the compile bakes `LIMIT hardLimit + 1` = 3.
+        let d = SqliteDriver::in_memory(&[
+            "CREATE TABLE u (id INTEGER PRIMARY KEY)".to_string(),
+            "INSERT INTO u (id) VALUES (1),(2),(3),(4),(5)".to_string(),
+        ])
+        .unwrap();
+        let cap = 2i64;
+        // The native read: `exec(Rows)` on the `LIMIT cap + 1` baked SQL — at most 3 rows fetched.
+        let wire = exec(
+            &for_driver(&d),
+            "SELECT id FROM u ORDER BY id ASC LIMIT 3",
+            &[],
+            ExecMode::Rows,
+        )
+        .unwrap();
+        let count = wire.rt_len() as i64;
+        assert_eq!(count, 3); // cap + 1 ⇒ the TRUE total is known to EXCEED the cap.
+
+        // OVER cap ⇒ the shared guard trips a LimitExceededError(find), byte-identical to what mode-2
+        // (which now calls the SAME `check_find_hard_limit`) would raise for this count/cap/model.
+        let err = check_find_hard_limit(cap, count, Some("u")).unwrap_err();
+        assert_eq!(err.context, LIMIT_CONTEXT_FIND);
+        assert_eq!(err.limit, cap);
+        assert_eq!(err.count, count);
+        assert_eq!(err.model.as_deref(), Some("u"));
+        assert_eq!(err.relation, None);
+        // The message is the shared byte-identical render (`more than <limit>` for the find context).
+        assert_eq!(
+            err.message,
+            LimitExceededError::new(cap, count, LIMIT_CONTEXT_FIND, Some("u".into()), None).message
+        );
+
+        // WITHIN cap ⇒ no throw: a higher cap over the SAME fetched count passes cleanly.
+        assert!(check_find_hard_limit(count, count, Some("u")).is_ok());
+        assert!(check_find_hard_limit(count + 1, count, Some("u")).is_ok());
+    }
+
     /// The tx envelope commits on Ok and rolls back on Err (atomicity).
     #[test]
     fn run_transaction_commits_and_rolls_back() {

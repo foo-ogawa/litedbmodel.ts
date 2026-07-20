@@ -109,6 +109,51 @@ impl LimitExceededError {
             message,
         }
     }
+
+    /// The SHARED post-fetch runaway check (SSoT) — the ONE `count > limit ⇒ throw` primitive both
+    /// the FIND-context guard (mode-2 [`crate::static_bundle::assert_find_guard`] AND the native-codegen
+    /// read guard [`check_find_hard_limit`]) and the RELATION-context guard
+    /// ([`crate::relation`] `run_relation_op`) call — so no path re-implements the comparison or the
+    /// error assembly. The caller supplies the resolved `limit` (the cap baked onto the compiled
+    /// artifact at generation time), the fetched `count`, and the context/model/relation identity; the
+    /// byte-identical message is rendered by [`LimitExceededError::new`]. `Ok(())` when within the cap.
+    pub fn check(
+        limit: i64,
+        count: i64,
+        context: &str,
+        model: Option<String>,
+        relation: Option<String>,
+    ) -> Result<(), LimitExceededError> {
+        if count > limit {
+            Err(LimitExceededError::new(
+                limit, count, context, model, relation,
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// The FIND-context runaway guard shared by BOTH execution paths (SSoT): the mode-2 read-graph guard
+/// ([`crate::static_bundle::assert_find_guard`], which extracts `limit`/`model` from the ReadGraph
+/// `findGuard`) AND the native-codegen read (the litedbmodel companion's guarded entry, which bakes the
+/// SAME cap from that `findGuard` meta and passes the de-boxed row count). Both call THIS — the compile
+/// injects `LIMIT hardLimit + 1`, so a `count` of `hardLimit + 1` means the TRUE total exceeds the cap
+/// and the read fails LOUD (`context: find`) instead of loading an unbounded set. A thin find-context
+/// adapter over [`LimitExceededError::check`]; the relation guard calls that core directly with its own
+/// context. `Ok(())` when within the cap.
+pub fn check_find_hard_limit(
+    limit: i64,
+    count: i64,
+    model: Option<&str>,
+) -> Result<(), LimitExceededError> {
+    LimitExceededError::check(
+        limit,
+        count,
+        LIMIT_CONTEXT_FIND,
+        model.map(str::to_string),
+        None,
+    )
 }
 
 impl std::fmt::Display for LimitExceededError {

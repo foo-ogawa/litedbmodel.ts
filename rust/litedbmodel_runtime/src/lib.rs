@@ -57,8 +57,8 @@ pub use driver::{
     PreparedStatement, RunInfo, SqliteDriver,
 };
 pub use errors::{
-    map_sqlite_error, re_error_to_sql_failure, LimitExceededError, RuntimeError, SqlFailure,
-    LIMIT_CONTEXT_FIND, LIMIT_CONTEXT_RELATION,
+    check_find_hard_limit, map_sqlite_error, re_error_to_sql_failure, LimitExceededError,
+    RuntimeError, SqlFailure, LIMIT_CONTEXT_FIND, LIMIT_CONTEXT_RELATION,
 };
 pub use exec_context::{
     execute as seam_execute, for_driver, for_routing, run as seam_run, run_guarded, transaction,

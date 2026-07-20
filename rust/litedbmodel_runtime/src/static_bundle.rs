@@ -29,9 +29,7 @@ use behavior_contracts::{ExecOutcome, Value};
 
 use crate::codegen_exec::{build_batch_params, ArrayParamShape};
 use crate::driver::Driver;
-use crate::errors::{
-    re_error_to_sql_failure, LimitExceededError, RuntimeError, SqlFailure, LIMIT_CONTEXT_FIND,
-};
+use crate::errors::{re_error_to_sql_failure, LimitExceededError, RuntimeError, SqlFailure};
 use crate::exec_context::{self, ExecutionContext, StatementIntent};
 use crate::node::{compact_value, eval_expr, Node as J};
 
@@ -416,20 +414,10 @@ fn assert_find_guard(graph: &J, node_id: &str, value: &Value) -> Result<(), Limi
         return Ok(());
     };
     if let Value::Arr(rows) = value {
-        let count = rows.len() as i64;
-        if count > hard_limit {
-            let model = guard
-                .get("model")
-                .and_then(|m| m.as_str())
-                .map(|s| s.to_string());
-            return Err(LimitExceededError::new(
-                hard_limit,
-                count,
-                LIMIT_CONTEXT_FIND,
-                model,
-                None,
-            ));
-        }
+        let model = guard.get("model").and_then(|m| m.as_str());
+        // The SHARED find-context runaway check (SSoT) — the SAME `check_find_hard_limit` the native
+        // codegen read guard calls, so mode-2 and native trip an IDENTICAL LimitExceededError.
+        return crate::errors::check_find_hard_limit(hard_limit, rows.len() as i64, model);
     }
     Ok(())
 }
