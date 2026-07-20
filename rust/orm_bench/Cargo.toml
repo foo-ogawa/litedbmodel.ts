@@ -1,0 +1,40 @@
+# NATIVE-codegen ORM-bench cell (#129, epic #123) — the litedbmodel-CONSUMER that runs the 19 ORM ops
+# through the litedbmodel-generated native modules (bc native core + co-located static adapter) + the
+# litedbmodel_runtime Driver, and self-measures each op's latency to a flat CSV. It supplies NO `node_*`
+# of its own and holds NO hand-written exec seam — every DB access rides litedbmodel_runtime's Driver.
+#
+# A STANDALONE crate (its own `[workspace]`, deliberately NOT a member of rust/) so it never perturbs the
+# conformance bar's build/lock. Its ONLY dependency is `litedbmodel_runtime`. The generated modules live
+# in `src/gen/` (committed = sqlite; the pg/mysql legs swap the matching /tmp/ormbench/<dialect>/ files
+# in before building, exactly like the e1 livedb harness).
+[workspace]
+
+[package]
+name = "orm_bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "orm_bench"
+path = "src/main.rs"
+
+[dependencies]
+litedbmodel_runtime = { path = "../litedbmodel_runtime", default-features = false, features = ["native"] }
+# Pin the transitive behavior-contracts to the EXACT version the rust/ workspace lock uses (0.8.0) — the
+# runtime is written against that rust-crate API (mirrors rust/e1_native_proof/Cargo.toml). Not used
+# directly here — a version-alignment pin only.
+behavior-contracts = { version = "=0.8.0", default-features = false }
+
+# `livedb` (opt-in): route the SAME generated adapter + runtime against docker Postgres / MySQL via
+# litedbmodel_runtime's live Driver. The default (SQLite) build needs neither the postgres nor mysql crate.
+[features]
+default = []
+livedb = ["litedbmodel_runtime/livedb"]
+# `pg`: the postgres build only — selects the `bool` literal for the BOOLEAN `published` input (sqlite/
+# mysql type it `i64`). Set alongside `livedb` when building for postgres (see run-pilot.sh).
+pg = []
+
+[profile.release]
+opt-level = 3
+lto = true
