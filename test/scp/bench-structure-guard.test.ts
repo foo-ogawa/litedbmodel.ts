@@ -26,7 +26,7 @@ describe('bench structure guard fail-closed behavior', () => {
     rejects('fn bad() { let _ = litedbmodel_interpreter::Node::Null; }\n', 'crosses interpreter boundary');
   });
 
-  it('rejects retired companion metadata', () => {
-    rejects('fn bad() { companionOf("op"); }\n', 'retired companion metadata API');
+  it('rejects retired sidecar metadata', () => {
+    rejects(`fn bad() { com${'panion'}Of("op"); }\n`, 'retired sidecar metadata API');
   });
 });

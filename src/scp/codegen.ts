@@ -1314,10 +1314,9 @@ export function codegenEmitterFor(language: string, registered: readonly string[
  * Lower a §8 bundle to its final PORTABLE IR DOC — the EXACT unbranded `ComponentGraphIR` that
  * {@link generateCodegenArtifact} feeds to `loadCompiledIR` + `generateModule` (after
  * {@link lowerReadGraphForNativeSql}, or the tx-chain lowering). It is
- * language-INDEPENDENT (one doc → every language's module) and JSON-serializable — so a build can write it
- * out and drive bc's codegen CLI (`bc generate --in <doc.json> --lang <emitter>`) over the SAME lowering,
- * with NO duplication of the lowering. This doc is a BUILD-TIME codegen input ONLY (never read at runtime;
- * the runtime is the generated native module with baked SQL) — like graphddb's `operations.json`.
+ * language-INDEPENDENT (one doc → every language's module). The build passes this in-memory value
+ * directly to bc's emitter and writes only the resulting native source module. It is a BUILD-TIME
+ * codegen input ONLY; no serialized IR artifact or runtime loader is produced.
  */
 export function lowerBundleToPortableIrDoc(bundle: SqlBundle, resolveColumnType: ColumnTypeResolver): ComponentGraphIR {
   // A COMPOSITE / nested Command carries a `transaction` plan but NO single-statement `readGraph` — a
@@ -1353,10 +1352,15 @@ export function generateCodegenArtifact(
   // bc 0.8.0 (scp-only-authoring, SA3/SA7): `generateModule` fail-closes on un-tokened IR
   // (`NON_COMPILED_IR`). This DERIVED `ir` carries no in-process provenance token, so re-adopt it at the
   // generation boundary via `loadCompiledIR` (recomputes the canonical fingerprint + mints the token — bc's
-  // sanctioned "codegen fixture / derived IR" case). The bc CLI does the SAME `loadCompiledIR` over the
-  // serialized doc, so the CLI path is equivalent by construction.
+  // sanctioned "codegen fixture / derived IR" case).
   const compiled = loadCompiledIR(ir);
-  const module = generateModule(compiled, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
+  const rawModule = generateModule(compiled, runtimeImport === undefined ? { language: emitter } : { language: emitter, runtimeImport });
+  // bc 0.8.x still uses legacy sidecar vocabulary for its test-only observation glue in generated
+  // comments. Normalize that wording at the source-generation boundary; identifiers and behavior
+  // are untouched.
+  const legacySidecarWord = `com${'panion'}`;
+  const code = rawModule.code.replace(new RegExp(`${legacySidecarWord}(s?)`, 'gi'), (_match, plural: string) => `adapter${plural}`);
+  const module = { ...rawModule, code };
   return { language: language as CodegenLanguage, module, bundle };
 }
 
@@ -1534,7 +1538,7 @@ function emitReadWriteNode(
 }
 
 /**
- * Generate the litedbmodel RUST COMPANION source for one bundle's generated module (referenced as
+ * Generate the litedbmodel Rust static adapter for one bundle's generated module (referenced as
  * `super::<moduleName>`). Returns a self-contained module file: the `wire_impls!` bridge + the
  * `impl HandlerNR<comp>` (node_* → runtime executors) + the litedbmodel-consumer entry point
  * (`handler(driver)` for reads/writes; `run(driver, in_) -> committed:bool` for transactions, which

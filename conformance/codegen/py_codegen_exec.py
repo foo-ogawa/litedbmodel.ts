@@ -6,7 +6,7 @@ conformance runner (``conformance/codegen/codegen-runner.ts``) with a JSON job o
 
     {
       "modulePath":  "<abs path to the bc-generated behaviors module .py>",
-      "companion":   {operations, dialect, optionalHeads, relations, transaction?},
+      "catalog":     {operations, dialect, optionalHeads, relations, transaction?},
       "input":       <bigint-encoded input scope>,
       "schema":      [<DDL/seed statements>],
       "expectedResult": <bigint-encoded reference result>,
@@ -15,8 +15,8 @@ conformance runner (``conformance/codegen/codegen-runner.ts``) with a JSON job o
     }
 
 It IMPORTS the bc-generated module (so its load-time fail-closed checks — spec-version /
-fingerprint — actually run) and verifies the baked IR literal matches the companion's portable IR,
-then reassembles the §8 STATIC makeSQL bundle from the SQL catalog companion (the companion IS the
+fingerprint — actually run) and verifies the baked IR literal matches the catalog's portable IR,
+then reassembles the §8 STATIC makeSQL bundle from the SQL catalog (the catalog IS the
 bundle) and EXECUTES it through the SAME static-makeSQL thin-runtime the mode-2 leg uses
 (``execute_bundle`` for a read/exec bundle, ``execute_transaction_bundle`` for a tx bundle), against
 a freshly seeded in-process SQLite. This is the Python analogue of the TS ``codegenExecuteBundleForTest``
@@ -76,27 +76,27 @@ def _import_generated(module_path: str):
     return mod
 
 
-def _reassemble_bundle(companion: dict) -> dict:
-    """Rebuild the §8 STATIC makeSQL bundle from the SQL catalog companion (the companion IS the
+def _reassemble_bundle(catalog: dict) -> dict:
+    """Rebuild the §8 STATIC makeSQL bundle from the SQL catalog (the catalog IS the
     bundle — spec §9). Mirrors the TS runner's reassembly: dialect + optionalHeads + relations +
-    whichever of readGraph / statement / transaction the companion carries."""
+    whichever of readGraph / statement / transaction the catalog carries."""
     bundle = {
-        "dialect": companion["dialect"],
-        "optionalHeads": list(companion.get("optionalHeads", [])),
-        "relations": companion.get("relations", {}),
+        "dialect": catalog["dialect"],
+        "optionalHeads": list(catalog.get("optionalHeads", [])),
+        "relations": catalog.get("relations", {}),
     }
-    if "readGraph" in companion:
-        bundle["readGraph"] = companion["readGraph"]
-    if "statement" in companion:
-        bundle["statement"] = companion["statement"]
-    if "transaction" in companion:
-        bundle["transaction"] = companion["transaction"]
+    if "readGraph" in catalog:
+        bundle["readGraph"] = catalog["readGraph"]
+    if "statement" in catalog:
+        bundle["statement"] = catalog["statement"]
+    if "transaction" in catalog:
+        bundle["transaction"] = catalog["transaction"]
     return bundle
 
 
 def main() -> int:
     job = json.loads(sys.argv[1])
-    companion = job["companion"]
+    catalog = job["catalog"]
     driver = SqliteDriver.in_memory(list(job["schema"]))
     try:
         # Import the emitted straight-line module so its load-time fail-closed checks (spec-version
@@ -110,9 +110,9 @@ def main() -> int:
             sys.stderr.write("codegen py: emitted module missing IR_FINGERPRINT constant\n")
             return 1
 
-        # The companion IS the static makeSQL bundle — execute it via the SAME thin-runtime path the
+        # The catalog IS the static makeSQL bundle — execute it via the SAME thin-runtime path the
         # mode-2 leg uses (Python analogue of the TS codegenExecuteBundleForTest re-executing bundle).
-        bundle = _reassemble_bundle(companion)
+        bundle = _reassemble_bundle(catalog)
         input_scope = decode_value(job["input"])
 
         if job["kind"] == "exec":

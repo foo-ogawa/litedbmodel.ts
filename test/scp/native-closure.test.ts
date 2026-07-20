@@ -13,10 +13,17 @@ function crate(source: string) {
   mkdirSync(join(dir, 'src'));
   writeFileSync(join(dir, 'Cargo.toml'), `[package]\nname = "native_closure_probe"\nversion = "0.0.0"\nedition = "2021"\n\n[dependencies]\nlitedbmodel_runtime = { path = ${JSON.stringify(RUNTIME)} }\n`);
   writeFileSync(join(dir, 'src/lib.rs'), source);
-  return spawnSync('cargo', ['check', '--quiet'], {
+  const env = {
+    ...process.env,
+    CARGO_NET_OFFLINE: 'true',
+    CARGO_TARGET_DIR: join(tmpdir(), 'litedbmodel-native-closure-target'),
+  };
+  const lock = spawnSync('cargo', ['generate-lockfile', '--offline'], { cwd: dir, encoding: 'utf8', env });
+  if (lock.status !== 0) return lock;
+  return spawnSync('cargo', ['check', '--quiet', '--offline', '--locked'], {
     cwd: dir,
     encoding: 'utf8',
-    env: { ...process.env, CARGO_TARGET_DIR: join(tmpdir(), 'litedbmodel-native-closure-target') },
+    env,
   });
 }
 

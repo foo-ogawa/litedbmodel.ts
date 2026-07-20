@@ -61,7 +61,7 @@ pub use middleware::{
     SqlNext, StateAny,
 };
 // Native-codegen exec seam (epic #123/#124): the op-agnostic query-exec functions the litedbmodel
-// generated companion's `node_*` handlers call, plus the `Wire` adapter (`wire_impls!` bridges the
+// generated adapter's `node_*` handlers call, plus the `Wire` bridge (`wire_impls!` bridges the
 // module-local wire traits to it). `wire_impls!`/`__wire_probe!`/`__wire_num!` are `#[macro_export]`ed
 // at the crate root.
 pub use codegen_exec::{

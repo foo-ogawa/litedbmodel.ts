@@ -125,7 +125,7 @@ export interface SqlBundle {
    * the write's {@link TransactionResult} (entity / returnedRows rows typed via the schema SoT). A
    * READ bundle carries its outType/outputType inside `readGraph.ir` instead; a write bundle has no
    * component-graph IR (#12: the makeSQL write surrogate is eliminated — writes ride the write/tx exec
-   * path, not a codegen module), so its output type rides HERE on the bundle/companion. Present ONLY
+   * path, not a codegen module), so its output type rides HERE on the bundle. Present ONLY
    * when a column-type resolver was supplied at compile (additive/back-compat: absent → un-annotated).
    */
   readonly outputType?: unknown;

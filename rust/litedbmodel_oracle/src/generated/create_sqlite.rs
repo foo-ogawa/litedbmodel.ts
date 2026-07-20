@@ -190,9 +190,8 @@ fn de_overflow(
 #[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct T0 {
-    pub id: i64,       // "id"
-    pub email: String, // "email"
-    pub name: String,  // "name"
+    pub changes: i64,         // "changes"
+    pub lastInsertRowid: i64, // "lastInsertRowid"
 }
 
 #[allow(dead_code)]
@@ -211,31 +210,36 @@ fn leaf_failure(message: impl Into<String>) -> BehaviorError {
 }
 
 // Native ports structs (one per componentRef node; typed per the static port type — CONCRETE).
-// PortsNRCappedFindN0 — CONCRETE native ports for node 'n0' (Select). Typed fields per the
+// PortsNRCreateN0 — CONCRETE native ports for node 'n0' (Insert). Typed fields per the
 // static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
-pub struct PortsNRCappedFindN0 {
+pub struct PortsNRCreateN0 {
     pub f_sql: String, // "sql"
-    pub f_p0: i64,     // "p0"
+    pub f_p0: String,  // "p0"
+    pub f_p1: String,  // "p1"
 }
 
 // CONCRETE per-component input structs (fields = inputPorts).
-// InNRCappedFind — the CONCRETE input for 'CappedFind' (no input ports).
+// InNRCreate — the CONCRETE input for 'Create' (fields = inputPorts; typed, consumer-built —
+// NO generic Value slice, NO per-field boxing crosses the covered read boundary).
 #[derive(Default)]
-pub struct InNRCappedFind;
+pub struct InNRCreate {
+    pub email: String, // "email"
+    pub name: String,  // "name"
+}
 
 // CONCRETE per-component handler traits (one node_* method per node — native ports IN, WIRE value OUT).
-// HandlerNRCappedFind — the CONCRETE per-component handler seam: one typed method
+// HandlerNRCreate — the CONCRETE per-component handler seam: one typed method
 // per covered node (native ports struct IN, WIRE value OUT). No generic boxed-ports / boxed-value
 // / dynamic accessor crosses the covered boundary — the consumer implements each node_* by
 // returning its own wire payload as a WireValue; the generated inline de-box turns that into the
 // node's concrete native result (see INTEGRATION.md §6).
-pub trait HandlerNRCappedFind {
+pub trait HandlerNRCreate {
     type Wire: WireValue + Send;
     fn node_n0(
         &self,
-        ports: &PortsNRCappedFindN0,
+        ports: &PortsNRCreateN0,
         bound: Option<String>,
     ) -> Result<Self::Wire, BehaviorError>;
 }
@@ -320,8 +324,8 @@ pub trait WireList: Sized {
 }
 
 // Combined read runners (STRUCT-returning — the fully de-plumbed CONCRETE path).
-// run_native_raw_struct_CappedFind — the STRUCT-RETURNING combined read (bc#77/#87/#94): the fully
-// de-plumbed CONCRETE path. Generic over the per-component CONCRETE HandlerNRCappedFind trait,
+// run_native_raw_struct_Create — the STRUCT-RETURNING combined read (bc#77/#87/#94): the fully
+// de-plumbed CONCRETE path. Generic over the per-component CONCRETE HandlerNRCreate trait,
 // whose node_* methods take the node's native ports struct and return the node's result WIRE
 // (Self::Wire: WireValue). The runner builds each ports struct by direct native construction (a
 // simple string port lowers to a native Rust expr), dispatches the concrete node_* method, and
@@ -334,17 +338,18 @@ pub trait WireList: Sized {
 // method; preflight + interpret are committed in ascending index order so the value / op
 // multiset / failure precedence byte-match run_behavior. The output is a typed struct/value
 // assembled by struct literal + field access — the consumer keeps it native.
-pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
+pub fn run_native_raw_struct_Create<H: HandlerNRCreate>(
     handlers: &H,
-    _in_: InNRCappedFind,
+    in_: InNRCreate,
 ) -> Result<Vec<T0>, BehaviorError> {
     let cell_n0: RefCell<Vec<T0>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
-    // ── op 'n0' (Select) ──
-    let ports_n0 = PortsNRCappedFindN0 {
-        f_sql: "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT ?".to_string(),
-        f_p0: 3i64,
+    // ── op 'n0' (Insert) ──
+    let ports_n0 = PortsNRCreateN0 {
+        f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?)".to_string(),
+        f_p0: in_.email.clone(),
+        f_p1: in_.name.clone(),
     };
     let wire_n0 = match handlers.node_n0(&ports_n0, None) {
         Ok(r) => r,
@@ -365,7 +370,7 @@ pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
             for i0 in 0..l0.len() {
                 acc0.push(match l0.elem_row(i0) {
                     Probe::Got(sub1) => T0 {
-                        id: match sub1.probe_number("id") {
+                        changes: match sub1.probe_number("changes") {
                             NumProbe::Got {
                                 raw,
                                 actual_wire_type,
@@ -374,7 +379,7 @@ pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
                                 Err(_) => {
                                     return Err(de_overflow(
                                         "T0",
-                                        "id",
+                                        "changes",
                                         "int",
                                         actual_wire_type,
                                         raw,
@@ -391,53 +396,51 @@ pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
                             } => {
                                 return Err(de_type_mismatch(
                                     "T0",
-                                    "id",
+                                    "changes",
                                     "int",
                                     actual_wire_type,
                                     raw_value,
                                 ))
                             }
-                            NumProbe::Absent => return Err(de_missing_field("T0", "id", "int")),
+                            NumProbe::Absent => {
+                                return Err(de_missing_field("T0", "changes", "int"))
+                            }
                         },
-                        email: match sub1.probe_string("email") {
-                            Probe::Got(v) => v,
-                            Probe::Wrong {
+                        lastInsertRowid: match sub1.probe_number("lastInsertRowid") {
+                            NumProbe::Got {
+                                raw,
+                                actual_wire_type,
+                            } => match raw.parse::<i64>() {
+                                Ok(n) => n,
+                                Err(_) => {
+                                    return Err(de_overflow(
+                                        "T0",
+                                        "lastInsertRowid",
+                                        "int",
+                                        actual_wire_type,
+                                        raw,
+                                    ))
+                                }
+                            },
+                            NumProbe::Wrong {
                                 actual_wire_type,
                                 raw_value,
                             }
-                            | Probe::Null {
+                            | NumProbe::Null {
                                 actual_wire_type,
                                 raw_value,
                             } => {
                                 return Err(de_type_mismatch(
                                     "T0",
-                                    "email",
-                                    "string",
+                                    "lastInsertRowid",
+                                    "int",
                                     actual_wire_type,
                                     raw_value,
                                 ))
                             }
-                            Probe::Absent => return Err(de_missing_field("T0", "email", "string")),
-                        },
-                        name: match sub1.probe_string("name") {
-                            Probe::Got(v) => v,
-                            Probe::Wrong {
-                                actual_wire_type,
-                                raw_value,
+                            NumProbe::Absent => {
+                                return Err(de_missing_field("T0", "lastInsertRowid", "int"))
                             }
-                            | Probe::Null {
-                                actual_wire_type,
-                                raw_value,
-                            } => {
-                                return Err(de_type_mismatch(
-                                    "T0",
-                                    "name",
-                                    "string",
-                                    actual_wire_type,
-                                    raw_value,
-                                ))
-                            }
-                            Probe::Absent => return Err(de_missing_field("T0", "name", "string")),
                         },
                     },
                     Probe::Wrong {
@@ -451,7 +454,7 @@ pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
                         return Err(de_type_mismatch(
                             "n0",
                             "n0",
-                            "obj{id:int,email:string,name:string}",
+                            "obj{changes:int,lastInsertRowid:int}",
                             actual_wire_type,
                             raw_value,
                         ))
@@ -460,7 +463,7 @@ pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
                         return Err(de_missing_field(
                             "n0",
                             "n0",
-                            "obj{id:int,email:string,name:string}",
+                            "obj{changes:int,lastInsertRowid:int}",
                         ))
                     }
                 });
@@ -478,7 +481,7 @@ pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
             return Err(de_type_mismatch(
                 "n0",
                 "n0",
-                "arr(obj{id:int,email:string,name:string})",
+                "arr(obj{changes:int,lastInsertRowid:int})",
                 actual_wire_type,
                 raw_value,
             ))
@@ -487,7 +490,7 @@ pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
             return Err(de_missing_field(
                 "n0",
                 "n0",
-                "arr(obj{id:int,email:string,name:string})",
+                "arr(obj{changes:int,lastInsertRowid:int})",
             ))
         }
     };
@@ -500,9 +503,9 @@ pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
 // driven via run_native_raw_struct_<comp>(handlers, in_) -> Result<T, BehaviorError>: a STRUCT return
 // (the consumer builds the CONCRETE InNR_<comp> input + implements the CONCRETE HandlerNR<comp> trait).
 // See INTEGRATION.md §6.
-pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["CappedFind"];
+pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["Create"];
 
-// litedbmodel static runtime adapter for `generated_cappedFindAll` (co-located with the bc core).
+// litedbmodel static runtime adapter for `create_sqlite` (co-located with the bc core).
 // bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
 // THIS adapter — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
 // delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire
@@ -526,27 +529,30 @@ fn cvt(e: SqlFailure) -> BehaviorError {
 pub struct Rt<'a> {
     src: litedbmodel_runtime::ConnSource<'a>,
 }
-impl<'a> HandlerNRCappedFind for Rt<'a> {
+impl<'a> HandlerNRCreate for Rt<'a> {
     type Wire = Wire;
     fn node_n0(
         &self,
-        ports: &PortsNRCappedFindN0,
+        ports: &PortsNRCreateN0,
         _bound: Option<String>,
     ) -> Result<Wire, BehaviorError> {
         let ctx = self.src.ctx().map_err(cvt)?;
         litedbmodel_runtime::exec(
             &ctx,
             &ports.f_sql,
-            &[litedbmodel_runtime::wp(&ports.f_p0)],
-            litedbmodel_runtime::ExecMode::Rows,
+            &[
+                litedbmodel_runtime::wp(&ports.f_p0),
+                litedbmodel_runtime::wp(&ports.f_p1),
+            ],
+            litedbmodel_runtime::ExecMode::Summary,
         )
         .map_err(cvt)
     }
 }
 
-/// The litedbmodel-consumer entry: build the runtime-backed handler for `CappedFind` over a SINGLE
+/// The litedbmodel-consumer entry: build the runtime-backed handler for `Create` over a SINGLE
 /// driver (byte-identical single-pool path). The consumer calls
-/// `run_native_raw_struct_CappedFind(&handler(driver), in_)` — supplying NO node_* itself.
+/// `run_native_raw_struct_Create(&handler(driver), in_)` — supplying NO node_* itself.
 pub fn handler(driver: &dyn Driver) -> Rt<'_> {
     Rt {
         src: litedbmodel_runtime::ConnSource::Driver(driver),
@@ -561,24 +567,16 @@ pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> {
     }
 }
 
-/// The GUARDED find entry (#135): run the native read, then enforce the find hard-limit via the
-/// SAME shared `check_find_hard_limit` the mode-2 read-graph guard calls (cap/model baked from the
-/// ReadGraph findGuard meta; the `LIMIT hardLimit + 1` is already in the baked SQL). A cap-exceeding
-/// read throws `LimitExceededError` (`context: find`), byte-equal to mode-2 — surfaced OUTSIDE the
-/// runner (the runner's BehaviorError maps to RuntimeError::Sql). The litedbmodel-consumer calls
-/// THIS for a capped find, not the bare runner.
 pub fn run(
     driver: &dyn Driver,
-    in_: InNRCappedFind,
+    in_: InNRCreate,
 ) -> Result<Vec<T0>, litedbmodel_runtime::RuntimeError> {
-    let rows = run_native_raw_struct_CappedFind(&handler(driver), in_).map_err(|e| {
+    run_native_raw_struct_Create(&handler(driver), in_).map_err(|e| {
         litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure {
             kind: e.code,
             policy: "fail".to_string(),
             sqlite_code: None,
             message: e.message,
         })
-    })?;
-    litedbmodel_runtime::check_find_hard_limit(2i64, rows.len() as i64, Some("CappedFind"))?;
-    Ok(rows)
+    })
 }

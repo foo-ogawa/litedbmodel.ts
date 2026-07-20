@@ -52,25 +52,22 @@ check(
 // ── 5. The dialect `?`→`$N` renumber is reused from static_bundle (SQL-gen stage), not re-done here. ──
 check('invariant 5: pg placeholder renumber reused (render_placeholders), not re-implemented', execSrc.includes('render_placeholders'), 'exec seam does not reuse render_placeholders');
 
-// ── 6/7/8. The e1 GENERATED + COMPANION files carry NO rusqlite and NO concrete Driver type — the
-//    companion is a uniform ports→executor delegation over the runtime Driver, not a per-DB adapter. ──
+// ── 6/7/8. Each E1 operation is one GENERATED file containing its co-located static adapter. ───────
 const e1src = 'rust/e1_native_proof/src';
-const genCompFiles = existsSync(join(ROOT, e1src))
-  ? readdirSync(join(ROOT, e1src)).filter((f) => /^(generated|companion)_.*\.rs$/.test(f))
+const generatedFiles = existsSync(join(ROOT, e1src))
+  ? readdirSync(join(ROOT, e1src)).filter((f) => /^generated_.*\.rs$/.test(f))
   : [];
-check('e1 has generated + companion files', genCompFiles.length >= 40, `found ${genCompFiles.length} (want 20 generated + 20 companion)`);
+check('e1 has one generated module per operation', generatedFiles.length >= 20, `found ${generatedFiles.length} generated modules`);
 for (const marker of ['rusqlite', 'SqliteDriver', 'MysqlDriver', 'PostgresDriver']) {
-  const hits = genCompFiles.filter((f) => rd(join(e1src, f)).includes(marker));
-  check(`generated/companion carry no \`${marker}\` (Driver is injected via runtime)`, hits.length === 0, hits.join(', '));
+  const hits = generatedFiles.filter((f) => rd(join(e1src, f)).includes(marker));
+  check(`generated modules carry no \`${marker}\` (Driver is injected via runtime)`, hits.length === 0, hits.join(', '));
 }
-// The companion is a uniform delegation: every node_* body calls a litedbmodel_runtime executor.
-const companionFiles = genCompFiles.filter((f) => f.startsWith('companion_'));
-const noHandwrittenExec = companionFiles.every((f) => {
+const noHandwrittenExec = generatedFiles.every((f) => {
   const s = rd(join(e1src, f));
-  // no direct driver.prepare / raw SQL execution hand-written in a companion (must go through the executors).
+  // No direct driver.prepare / raw SQL execution in an operation module; adapters use shared executors.
   return !/\.prepare\(|\.query\(|\.execute_batch\(/.test(s);
 });
-check('invariant 7: companions delegate to runtime executors (no hand-written driver exec)', noHandwrittenExec);
+check('invariant 7: generated adapters delegate to runtime executors', noHandwrittenExec);
 
 // ── The heavy mysql RETURNING-emulation SCAFFOLD is gone: no `mysqlWriteReselect`, no emitted
 //    `/*scp-reselect: SELECT…*/` marker (the driver emulates RETURNING). The LIGHTWEIGHT `/*scp:pk=…*/`

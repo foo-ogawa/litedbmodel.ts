@@ -19,7 +19,7 @@
 //! from THIS crate. So the CLASSIFICATION logic lives here (the `rt_*` methods on [`Wire`] returning the
 //! neutral [`RtProbe`]/[`RtNum`]), and the litedbmodel codegen emits a one-line [`wire_impls!`] macro
 //! invocation per module that expands the module-local trait impls, each delegating to these `rt_*`
-//! methods (bc C4: handlers/wire adapters are boundary-injected, never bc-generated — so the companion
+//! methods (bc C4: handlers/wire adapters are boundary-injected, never bc-generated — so the adapter
 //! is litedbmodel's generated output, not hand-written).
 
 use behavior_contracts::Value;
@@ -456,11 +456,11 @@ impl Wire {
     }
 }
 
-// ── Params: native ports → bc scalar Value (type-agnostic; the companion lists ports in order) ──────
+// ── Params: native ports → bc scalar Value (type-agnostic; the adapter lists ports in order) ────────
 
-/// Lower a native ports SCALAR field to a bound bc [`Value`]. The generated companion calls
+/// Lower a native ports SCALAR field to a bound bc [`Value`]. The generated adapter calls
 /// `wp(&ports.f_pN)` for each `?` in placeholder order — it does not need the scalar's Rust type
-/// (inference resolves it), so the companion stays a thin per-op param LIST, not a type table.
+/// (inference resolves it), so the adapter stays a thin per-op param LIST, not a type table.
 pub trait ToWireParam {
     fn to_wire_param(&self) -> Value;
 }
@@ -518,7 +518,7 @@ impl ToWireArray for Vec<String> {
 pub fn wp_array<T: ToWireArray>(v: &T) -> Value {
     // Always a `Value::Arr` — the DIALECT decision (Postgres native array vs MySQL/SQLite `json_each(?)`
     // JSON string) is resolved by the Driver's param-binder (the array-bind SSoT), NOT here. The
-    // generated companion never branches on dialect (invariant #3).
+    // generated adapter never branches on dialect (invariant #3).
     Value::Arr(v.wire_elems())
 }
 
@@ -574,14 +574,14 @@ pub enum ExecMode {
     SummarySingle,
 }
 
-/// The connection SOURCE a generated read/write companion resolves its [`ExecutionContext`] from
+/// The connection SOURCE a generated read/write adapter resolves its [`ExecutionContext`] from
 /// (#135) — so a native op is routed by the SAME `connection_for` seam the mode-2 runtime uses:
 ///   - [`ConnSource::Driver`] — a single [`Driver`] (routing = None): every intent lands on that one
-///     driver (byte-identical to the pre-#135 `for_driver` companion path).
+///     driver (byte-identical to the pre-#135 `for_driver` adapter path).
 ///   - [`ConnSource::Routing`] — a [`RoutingConfig`] (registry + writer-sticky): a READ routes to the
 ///     reader pool, a WRITE / tx to the writer pool, named-DB by `intent.db` (design §3 steps 2-4).
 ///
-/// The companion's `node_*` builds the ctx via [`ConnSource::ctx`] and hands it to [`exec`] — so
+/// The adapter's `node_*` builds the ctx via [`ConnSource::ctx`] and hands it to [`exec`] — so
 /// reader/writer routing is applied ONCE, in the central seam, never re-implemented per op. `Copy`
 /// because it holds only references (the caller owns the driver / routing).
 #[derive(Clone, Copy)]
@@ -709,7 +709,7 @@ pub enum ArrayParamShape {
 
 /// Build the bind params for a batch write from the records as PARALLEL columns (`columns[j]` names
 /// `cells[j]`, the already bc-`Value` cells for column j) per the generation-stage `shape` DESCRIPTOR —
-/// the SINGLE input-marshaling SSoT the native companion AND the mode-2 render
+/// the SINGLE input-marshaling SSoT the native adapter AND the mode-2 render
 /// The interpreter adapter calls the same helper (there is NO second zip). `n_params` = the
 /// statement's `?` count (SingleJson binds the ONE zipped JSON to every `?`). Dialect-blind: the shape is
 /// decided once at SQL generation, never re-inspected here. The caller runs the params through the SINGLE
@@ -789,10 +789,10 @@ pub fn run_transaction<R, E>(
 /// or retry-exhausted error re-raises as [`SqlFailure`], which the consumer maps to committed:false).
 ///
 /// RETRY on the native path (#136) is litedbmodel-side and bc-INDEPENDENT: the body is `impl Fn`
-/// (re-runnable per attempt); the companion re-supplies the input each attempt via an input-BUILDER
+/// (re-runnable per attempt); the adapter re-supplies the input each attempt via an input-BUILDER
 /// closure (`make_in: impl Fn() -> InNR<comp>`, called inside the body), so NO bc `Clone` derive on the
 /// generated `InNR<comp>` is needed. The body returns its failure as a [`SqlFailure`] so the retry loop
-/// can classify it (the companion recovers it from the bc runner's error message, whose OP_FAILED text
+/// can classify it (the adapter recovers it from the bc runner's error message, whose OP_FAILED text
 /// embeds the original driver message the SSoT matches on).
 pub fn run_transaction_on<R>(
     src: ConnSource,
@@ -814,11 +814,11 @@ pub fn run_transaction_on<R>(
 }
 
 /// The [`wire_impls!`] macro — expands the module-local `WireValue`/`WireRow`/`WireList` trait impls for
-/// [`Wire`] in the GENERATED companion (the orphan-rule bridge: the traits are local to the generated
-/// module, so the impls must live in the companion crate, but every method delegates to [`Wire`]'s
+/// [`Wire`] in the generated adapter (the orphan-rule bridge: the traits are local to the generated
+/// module, so the impls must live in the generated crate, but every method delegates to [`Wire`]'s
 /// `rt_*` classification here — the classification stays single-sourced in the runtime). The trait /
 /// enum names (`WireValue`/`WireRow`/`WireList`/`Probe`/`NumProbe`) are referenced UNQUALIFIED so
-/// macro_rules resolves them at the CALL site — the companion brings them in with
+/// macro_rules resolves them at the CALL site — the adapter brings them in with
 /// `use super::generated_<op>::*;` before invoking `litedbmodel_runtime::wire_impls!();` (a `$m:path`
 /// metavariable cannot legally prefix `::Type` in type position, so the module is imported, not passed).
 #[macro_export]
@@ -1128,7 +1128,7 @@ mod tests {
     /// FIND HARD-LIMIT on the NATIVE read path (#135): a capped find whose baked `LIMIT hardLimit + 1`
     /// fetches MORE than the cap trips a `LimitExceededError` (`context: find`) — the SAME shared
     /// [`crate::errors::check_find_hard_limit`] the mode-2 `assert_find_guard` calls (so native ≡ mode-2).
-    /// This exercises the REAL native seam the litedbmodel companion's guarded read entry runs: `exec`
+    /// This exercises the REAL native seam the litedbmodel adapter's guarded read entry runs: `exec`
     /// against the seeded DB with the `LIMIT cap + 1` baked SQL, then the shared post-fetch guard on the
     /// de-boxed row count. The de-box (bc's, proven byte-equal elsewhere) does not change the count, so a
     /// guard over the fetched Wire's row count is a faithful native find-guard test.
@@ -1384,7 +1384,7 @@ mod tests {
     }
 
     /// [`ConnSource::Driver`] (single pool) routes every intent to that one driver — byte-identical to
-    /// the pre-#135 `for_driver` companion path (read AND write land on the SAME log).
+    /// the pre-#135 `for_driver` adapter path (read AND write land on the SAME log).
     #[test]
     fn native_single_source_is_backward_compatible() {
         let (solo, log) = rec();
@@ -1511,7 +1511,7 @@ mod tests {
             retry_duration_ms: 0, // no backoff sleep in the test
             ..Default::default()
         };
-        // A per-attempt input builder (the companion's `make_in`): rebuilt each attempt, no Clone needed.
+        // A per-attempt input builder (the adapter's `make_in`): rebuilt each attempt, no Clone needed.
         let make_row = || 1i64;
         let committed = run_transaction_on(
             ConnSource::Driver(d.as_ref()),

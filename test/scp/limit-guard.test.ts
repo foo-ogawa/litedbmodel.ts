@@ -208,30 +208,30 @@ describe('hasMany relation hard-limit (batch total)', () => {
   });
 });
 
-// #135: the native rust companion auto-wires the find-hardLimit guard when the ReadGraph carries a
+// #135: the native Rust adapter auto-wires the find-hardLimit guard when the ReadGraph carries a
 // findGuard — a GUARDED `run` entry that calls the SHARED `check_find_hard_limit` with the cap/model
 // baked from the meta, raising LimitExceededError OUTSIDE the runner (byte-equal to mode-2).
-describe('#135 native companion find-guard auto-wiring (rust)', () => {
+describe('#135 native adapter find-guard auto-wiring (rust)', () => {
   it('emits a guarded run() calling check_find_hard_limit with the baked cap/model when findGuard is set', () => {
     setLimitConfig({ findHardLimit: 5 });
     const bundle = compileBundle(publishBehaviors(Feed), 'Posts', [], 'sqlite', undefined, resolver);
     expect(bundle.readGraph!.findGuard).toEqual({ hardLimit: 5, nodeId: bundle.readGraph!.findGuard!.nodeId, model: 'Posts' });
-    const companion = generateRustExecutable(bundle, 'generated_posts', resolver, registeredLanguages());
+    const source = generateRustExecutable(bundle, 'generated_posts', resolver, registeredLanguages());
     // A typed guarded entry that returns the runner's Vec<Row> as RuntimeError-fallible…
-    expect(companion).toMatch(/pub fn run\(driver: &dyn Driver, in_: InNRPosts\) -> Result<Vec<[^>]+>, litedbmodel_runtime::RuntimeError>/);
+    expect(source).toMatch(/pub fn run\(driver: &dyn Driver, in_: InNRPosts\) -> Result<Vec<[^>]+>, litedbmodel_runtime::RuntimeError>/);
     // …runs the bc runner, maps its BehaviorError → RuntimeError::Sql…
-    expect(companion).toContain('run_native_raw_struct_Posts(&handler(driver), in_)');
-    expect(companion).toContain('litedbmodel_runtime::RuntimeError::Sql(');
+    expect(source).toContain('run_native_raw_struct_Posts(&handler(driver), in_)');
+    expect(source).toContain('litedbmodel_runtime::RuntimeError::Sql(');
     // …and enforces the cap via the SHARED helper with the baked cap (5) + model ("Posts").
-    expect(companion).toContain('litedbmodel_runtime::check_find_hard_limit(5i64, rows.len() as i64, Some("Posts"))?;');
+    expect(source).toContain('litedbmodel_runtime::check_find_hard_limit(5i64, rows.len() as i64, Some("Posts"))?;');
   });
 
-  it('emits NO guarded run() when findHardLimit is disabled (no findGuard ⇒ byte-unchanged read companion)', () => {
+  it('emits NO guarded run() when findHardLimit is disabled (no findGuard ⇒ byte-unchanged module)', () => {
     resetLimitConfig();
     const bundle = compileBundle(publishBehaviors(Feed), 'Posts', [], 'sqlite', undefined, resolver);
     expect(bundle.readGraph!.findGuard).toBeUndefined();
-    const companion = generateRustExecutable(bundle, 'generated_posts', resolver, registeredLanguages());
-    expect(companion).not.toContain('check_find_hard_limit');
-    expect(companion).toMatch(/pub fn run\(/);
+    const source = generateRustExecutable(bundle, 'generated_posts', resolver, registeredLanguages());
+    expect(source).not.toContain('check_find_hard_limit');
+    expect(source).toMatch(/pub fn run\(/);
   });
 });

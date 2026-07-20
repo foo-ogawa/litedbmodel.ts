@@ -128,4 +128,4 @@ updateMany queries=1 (expect 1)
 hardLimit fired: context=find limit=2 fetched=3 (expect find/2/3)
 ```
 
-Reader/writer routing: the native read/write companions expose the `handler_routed(&RoutingConfig)` seam; the runtime routing resolver sends a read → reader pool, a write → writer pool, and a read inside a writer scope → writer (read-your-writes) — verified green by the runtime routing tests (`resolve_pool_reader_writer_split`, `named_routing_selects_the_pair`).
+Reader/writer routing: the native read/write adapters expose the `handler_routed(&RoutingConfig)` seam; the runtime routing resolver sends a read → reader pool, a write → writer pool, and a read inside a writer scope → writer (read-your-writes) — verified green by the runtime routing tests (`resolve_pool_reader_writer_split`, `named_routing_selects_the_pair`).

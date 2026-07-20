@@ -1,15 +1,37 @@
 //! Test-only native/interpreter parity harness. No bundle or parser dependency reaches native crates.
 
+#[path = "generated/create_mysql.rs"]
+mod create_mysql;
+#[path = "generated/create_postgres.rs"]
+mod create_postgres;
+#[path = "generated/create_sqlite.rs"]
+mod create_sqlite;
 #[path = "generated/fixture.rs"]
 mod fixture;
-#[path = "../../orm_bench/src/gen/mod.rs"]
-mod gen;
+#[path = "generated/nestedCreate_mysql.rs"]
+mod nested_create_mysql;
+#[path = "generated/nestedCreate_postgres.rs"]
+mod nested_create_postgres;
+#[path = "generated/nestedCreate_sqlite.rs"]
+mod nested_create_sqlite;
+#[path = "generated/nestedRelations_mysql.rs"]
+mod nested_relations_mysql;
+#[path = "generated/nestedRelations_postgres.rs"]
+mod nested_relations_postgres;
+#[path = "generated/nestedRelations_sqlite.rs"]
+mod nested_relations_sqlite;
 #[path = "generated/relation_limit_mysql.rs"]
 mod relation_limit_mysql;
 #[path = "generated/relation_limit_postgres.rs"]
 mod relation_limit_postgres;
 #[path = "generated/relation_limit_sqlite.rs"]
 mod relation_limit_sqlite;
+#[path = "generated/setup_mysql.rs"]
+mod setup_mysql;
+#[path = "generated/setup_postgres.rs"]
+mod setup_postgres;
+#[path = "generated/setup_sqlite.rs"]
+mod setup_sqlite;
 
 use litedbmodel_interpreter::{
     execute_bundle, execute_transaction_bundle, read_bundle, RuntimeError, Value,
@@ -31,8 +53,14 @@ fn open(spec: &str) -> Box<dyn Driver> {
     Box::new(SqliteDriver::open(spec).expect("open sqlite"))
 }
 
-fn reseed(driver: &dyn Driver) {
-    for sql in gen::generated_setup::STATEMENTS {
+fn reseed(dialect: &str, driver: &dyn Driver) {
+    let statements = match dialect {
+        "sqlite" => setup_sqlite::STATEMENTS,
+        "postgres" => setup_postgres::STATEMENTS,
+        "mysql" => setup_mysql::STATEMENTS,
+        _ => panic!("unsupported dialect"),
+    };
+    for sql in statements {
         driver.prepare(sql).run(&[]).expect("oracle seed statement");
     }
 }
@@ -94,59 +122,101 @@ fn state(driver: &dyn Driver) -> Value {
     ])
 }
 
-fn native_nested(driver: &dyn Driver) -> Value {
-    let parents =
-        gen::generated_nestedRelations::run(driver, gen::generated_nestedRelations::InNRFindAll)
-            .expect("native nested parents");
-    let tree = gen::generated_nestedRelations::hydrate_posts(parents, driver)
-        .expect("native nested hydrate");
-    Value::Arr(
-        tree.into_iter()
-            .map(|(user, posts)| {
-                Value::Obj(vec![
-                    ("id".into(), Value::Int(user.id)),
-                    ("email".into(), Value::Str(user.email)),
-                    ("name".into(), Value::Str(user.name)),
-                    (
-                        "posts".into(),
-                        Value::Arr(
-                            posts
-                                .into_iter()
-                                .map(|(post, comments)| {
-                                    Value::Obj(vec![
-                                        ("id".into(), Value::Int(post.id)),
-                                        ("title".into(), Value::Str(post.title)),
-                                        ("author_id".into(), Value::Int(post.author_id)),
-                                        (
-                                            "comments".into(),
-                                            Value::Arr(
-                                                comments
-                                                    .into_iter()
-                                                    .map(|comment| {
-                                                        Value::Obj(vec![
-                                                            ("id".into(), Value::Int(comment.id)),
-                                                            (
-                                                                "body".into(),
-                                                                Value::Str(comment.body),
-                                                            ),
-                                                            (
-                                                                "post_id".into(),
-                                                                Value::Int(comment.post_id),
-                                                            ),
-                                                        ])
-                                                    })
-                                                    .collect(),
-                                            ),
-                                        ),
-                                    ])
-                                })
-                                .collect(),
-                        ),
-                    ),
-                ])
-            })
-            .collect(),
-    )
+fn native_nested(dialect: &str, driver: &dyn Driver) -> Value {
+    macro_rules! run {
+        ($module:ident) => {{
+            let parents =
+                $module::run(driver, $module::InNRFindAll).expect("native nested parents");
+            let tree = $module::hydrate_posts(parents, driver).expect("native nested hydrate");
+            Value::Arr(
+                tree.into_iter()
+                    .map(|(user, posts)| {
+                        Value::Obj(vec![
+                            ("id".into(), Value::Int(user.id)),
+                            ("email".into(), Value::Str(user.email)),
+                            ("name".into(), Value::Str(user.name)),
+                            (
+                                "posts".into(),
+                                Value::Arr(
+                                    posts.into_iter().map(|(post, comments)| {
+                                        Value::Obj(vec![
+                                            ("id".into(), Value::Int(post.id)),
+                                            ("title".into(), Value::Str(post.title)),
+                                            ("author_id".into(), Value::Int(post.author_id)),
+                                            ("comments".into(), Value::Arr(comments.into_iter().map(|comment| {
+                                                Value::Obj(vec![
+                                                    ("id".into(), Value::Int(comment.id)),
+                                                    ("body".into(), Value::Str(comment.body)),
+                                                    ("post_id".into(), Value::Int(comment.post_id)),
+                                                ])
+                                            }).collect())),
+                                        ])
+                                    }).collect()),
+                            ),
+                        ])
+                    }).collect(),
+            )
+        }};
+    }
+    match dialect {
+        "sqlite" => run!(nested_relations_sqlite),
+        "postgres" => run!(nested_relations_postgres),
+        "mysql" => run!(nested_relations_mysql),
+        _ => panic!("unsupported dialect"),
+    }
+}
+
+fn native_create(dialect: &str, driver: &dyn Driver) -> Value {
+    macro_rules! run {
+        ($module:ident) => {{
+            let rows = $module::run(
+                driver,
+                $module::InNRCreate {
+                    email: "new@bench.com".into(),
+                    name: "New".into(),
+                },
+            )
+            .expect("native create");
+            Value::Arr(
+                rows.into_iter()
+                    .map(|row| {
+                        Value::Obj(vec![
+                            ("changes".into(), Value::Int(row.changes)),
+                            ("lastInsertRowid".into(), Value::Int(row.lastInsertRowid)),
+                        ])
+                    })
+                    .collect(),
+            )
+        }};
+    }
+    match dialect {
+        "sqlite" => run!(create_sqlite),
+        "postgres" => run!(create_postgres),
+        "mysql" => run!(create_mysql),
+        _ => panic!("unsupported dialect"),
+    }
+}
+
+fn native_nested_create(dialect: &str, driver: &dyn Driver) -> bool {
+    macro_rules! run {
+        ($module:ident) => {{
+            $module::run(
+                driver,
+                $module::InNRNestedCreate {
+                    email: "nc@bench.com".into(),
+                    name: "NC".into(),
+                    title: "NC Post".into(),
+                },
+            )
+            .expect("native tx")
+        }};
+    }
+    match dialect {
+        "sqlite" => run!(nested_create_sqlite),
+        "postgres" => run!(nested_create_postgres),
+        "mysql" => run!(nested_create_mysql),
+        _ => panic!("unsupported dialect"),
+    }
 }
 
 fn relation_limit_native(dialect: &str, driver: &dyn Driver) -> RuntimeError {
@@ -182,9 +252,9 @@ fn run(dialect: &str, spec: &str) {
     let driver = open(spec);
     let d = driver.as_ref();
 
-    reseed(d);
-    let native = native_nested(d);
-    reseed(d);
+    reseed(dialect, d);
+    let native = native_nested(dialect, d);
+    reseed(dialect, d);
     let interpreted = read_bundle(
         &fixture::bundle("nestedRelations", dialect),
         &fixture::input("nestedRelations", dialect),
@@ -198,28 +268,10 @@ fn run(dialect: &str, spec: &str) {
         "full nested relation result"
     );
 
-    reseed(d);
-    let native_create = gen::generated_create::run(
-        d,
-        gen::generated_create::InNRCreate {
-            email: "new@bench.com".into(),
-            name: "New".into(),
-        },
-    )
-    .expect("native create");
-    let native_create = Value::Arr(
-        native_create
-            .into_iter()
-            .map(|row| {
-                Value::Obj(vec![
-                    ("changes".into(), Value::Int(row.changes)),
-                    ("lastInsertRowid".into(), Value::Int(row.lastInsertRowid)),
-                ])
-            })
-            .collect(),
-    );
+    reseed(dialect, d);
+    let native_create = native_create(dialect, d);
     let native_create_state = state(d);
-    reseed(d);
+    reseed(dialect, d);
     let interpreted_create = execute_bundle(
         &fixture::bundle("create", dialect),
         &fixture::input("create", dialect),
@@ -236,18 +288,10 @@ fn run(dialect: &str, spec: &str) {
         "write return/state"
     );
 
-    reseed(d);
-    let native_tx = gen::generated_nestedCreate::run(
-        d,
-        gen::generated_nestedCreate::InNRNestedCreate {
-            email: "nc@bench.com".into(),
-            name: "NC".into(),
-            title: "NC Post".into(),
-        },
-    )
-    .expect("native tx");
+    reseed(dialect, d);
+    let native_tx = native_nested_create(dialect, d);
     let native_tx_state = state(d);
-    reseed(d);
+    reseed(dialect, d);
     let interpreted_tx = execute_transaction_bundle(
         &fixture::bundle("nestedCreate", dialect),
         &fixture::input("nestedCreate", dialect),
@@ -268,9 +312,9 @@ fn run(dialect: &str, spec: &str) {
         "tx return/state"
     );
 
-    reseed(d);
+    reseed(dialect, d);
     let native_limit = relation_limit_native(dialect, d);
-    reseed(d);
+    reseed(dialect, d);
     let interpreted_limit = read_bundle(
         &fixture::bundle("relationLimit", dialect),
         &fixture::input("relationLimit", dialect),

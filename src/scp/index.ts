@@ -407,7 +407,7 @@ export { dbCast, dbCastIn } from '../DBValues';
 
 // Mode-3 codegen (WS7f, #35 — spec §9 exec-mode 3): supply the litedbmodel SQL catalog to bc's
 // shared generator; emit per-language STATIC straight-line source (de-interpreted, bc#75 — real
-// static code, NOT a baked-IR interpret path) + the SQL catalog companion. Generated code is
+// static code, NOT a baked-IR interpret path) + the co-located runtime adapter. Generated code is
 // behavior-identical to the mode-2 thin-runtime (proven by the codegen conformance leg).
 export {
   CODEGEN_LANGUAGES,

@@ -1,5 +1,5 @@
 # NATIVE-codegen ORM-bench cell (#129, epic #123) — the litedbmodel-CONSUMER that runs the 19 ORM ops
-# through the litedbmodel-generated native modules (bc native module + litedbmodel companion) + the
+# through the litedbmodel-generated native modules (bc native core + co-located static adapter) + the
 # litedbmodel_runtime Driver, and self-measures each op's latency to a flat CSV. It supplies NO `node_*`
 # of its own and holds NO hand-written exec seam — every DB access rides litedbmodel_runtime's Driver.
 #
@@ -26,7 +26,7 @@ litedbmodel_runtime = { path = "../litedbmodel_runtime", default-features = fals
 # directly here — a version-alignment pin only.
 behavior-contracts = { version = "=0.8.0", default-features = false }
 
-# `livedb` (opt-in): route the SAME generated companion + runtime against docker Postgres / MySQL via
+# `livedb` (opt-in): route the SAME generated adapter + runtime against docker Postgres / MySQL via
 # litedbmodel_runtime's live Driver. The default (SQLite) build needs neither the postgres nor mysql crate.
 [features]
 default = []

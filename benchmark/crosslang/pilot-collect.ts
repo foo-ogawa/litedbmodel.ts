@@ -163,7 +163,7 @@ function main() {
     lines.push(readFileSync(safetyPath, 'utf8').trim());
     lines.push('```');
     lines.push(
-      '\nReader/writer routing: the native read/write companions expose the `handler_routed(&RoutingConfig)` ' +
+      '\nReader/writer routing: the native read/write adapters expose the `handler_routed(&RoutingConfig)` ' +
         'seam; the runtime routing resolver sends a read → reader pool, a write → writer pool, and a read ' +
         'inside a writer scope → writer (read-your-writes) — verified green by the runtime routing tests ' +
         '(`resolve_pool_reader_writer_split`, `named_routing_selects_the_pair`).',

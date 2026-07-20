@@ -1,13 +1,14 @@
 // Generates interpreter/test-only Rust fixtures from the canonical SCP/BC declarations in ops.ts.
 // It emits no JSON and is never part of native codegen-build output.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { generateRustExecutable } from '../../dist/scp/index.cjs';
 import { buildOps, buildRelationLimitOracle, type BenchOp } from './ops';
 import { ORM_DIALECTS, type OrmDialect } from './contract';
+import { ddl, dropStatements, pgSeqResetStatements, seedStatements } from './orm-domain';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const OUT = join(ROOT, 'rust/litedbmodel_oracle/src/generated');
@@ -49,14 +50,43 @@ function format(path: string): void {
   if (result.status !== 0) throw new Error(`rustfmt failed for ${path}: ${result.stderr}`);
 }
 
+function inlineLiteral(value: unknown): string {
+  if (value === null || value === undefined) return 'NULL';
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function inlineSeed(sql: string, params: readonly unknown[]): string {
+  let index = 0;
+  return sql.replaceAll('?', () => inlineLiteral(params[index++]));
+}
+
+function emitSetup(dialect: OrmDialect): void {
+  const statements = [
+    ...dropStatements(dialect),
+    ...ddl(dialect),
+    ...seedStatements(dialect).map(({ sql, params }) => inlineSeed(sql, params)),
+    ...(dialect === 'postgres' ? pgSeqResetStatements() : []),
+  ];
+  const path = join(OUT, `setup_${dialect}.rs`);
+  writeFileSync(path, `// GENERATED test-only ${dialect} setup from orm-domain.ts.\npub const STATEMENTS: &[&str] = &[\n    ${statements.map(rustString).join(',\n    ')}\n];\n`);
+  format(path);
+}
+
 mkdirSync(OUT, { recursive: true });
+const before = new Map(readdirSync(OUT).filter((name) => name.endsWith('.rs')).map((name) => [name, readFileSync(join(OUT, name), 'utf8')]));
 const bundleArms: string[] = [];
 const inputArms: string[] = [];
 for (const dialect of ORM_DIALECTS) {
   for (const op of selected(dialect)) {
     bundleArms.push(`(${rustString(op.id)}, ${rustString(dialect)}) => ${nodeLiteral(op.bundle)},`);
     inputArms.push(`(${rustString(op.id)}, ${rustString(dialect)}) => ${nodeLiteral(op.input)},`);
+    const nativePath = join(OUT, `${op.id}_${dialect}.rs`);
+    writeFileSync(nativePath, generateRustExecutable(op.bundle, `${op.id}_${dialect}`, op.resolve, REGISTERED));
+    format(nativePath);
   }
+  emitSetup(dialect);
   const limit = buildRelationLimitOracle(dialect);
   bundleArms.push(`(${rustString(limit.id)}, ${rustString(dialect)}) => ${nodeLiteral(limit.bundle)},`);
   inputArms.push(`(${rustString(limit.id)}, ${rustString(dialect)}) => ${nodeLiteral(limit.input)},`);
@@ -66,10 +96,11 @@ for (const dialect of ORM_DIALECTS) {
 }
 
 const source = `// GENERATED from ops.ts by oracle-fixture-build.ts — interpreter/test-only.\nuse litedbmodel_interpreter::Node;\n\npub fn bundle(op: &str, dialect: &str) -> Node { match (op, dialect) {\n${bundleArms.join('\n')}\n_ => panic!("unknown oracle fixture {op}/{dialect}"),\n} }\n\npub fn input(op: &str, dialect: &str) -> Node { match (op, dialect) {\n${inputArms.join('\n')}\n_ => panic!("unknown oracle input {op}/{dialect}"),\n} }\n`;
-const before = (() => { try { return readFileSync(FIXTURE, 'utf8'); } catch { return undefined; } })();
 writeFileSync(FIXTURE, source);
 format(FIXTURE);
-if (process.argv.includes('check') && before !== readFileSync(FIXTURE, 'utf8')) {
+const after = new Map(readdirSync(OUT).filter((name) => name.endsWith('.rs')).map((name) => [name, readFileSync(join(OUT, name), 'utf8')]));
+const names = new Set([...before.keys(), ...after.keys()]);
+if (process.argv.includes('check') && [...names].some((name) => before.get(name) !== after.get(name))) {
   console.error('oracle-fixture-build: DRIFT');
   process.exit(1);
 }

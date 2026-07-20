@@ -57,7 +57,7 @@ pub struct ErrorDetail {
 // covered runner returns `Result<T, BehaviorError>` over THIS local type instead of a bc-runtime
 // failure, so the fully-covered module imports ZERO bc runtime. Codes match run_behavior verbatim
 // (byte-equal). `detail` carries the leaf's structured Error Value across the seam so a caller can
-// log / skip / repair / migrate rather than parse a message. The observe companion (test glue, a
+// log / skip / repair / migrate rather than parse a message. The observe adapter (test glue, a
 // super:: submodule) bridges this local error to the bc-runtime failure at the observe boundary —
 // the covered module itself stays runtime-free.
 #[derive(Debug, Clone)]
@@ -659,7 +659,7 @@ pub mod rel_posts {
     // covered runner returns `Result<T, BehaviorError>` over THIS local type instead of a bc-runtime
     // failure, so the fully-covered module imports ZERO bc runtime. Codes match run_behavior verbatim
     // (byte-equal). `detail` carries the leaf's structured Error Value across the seam so a caller can
-    // log / skip / repair / migrate rather than parse a message. The observe companion (test glue, a
+    // log / skip / repair / migrate rather than parse a message. The observe adapter (test glue, a
     // super:: submodule) bridges this local error to the bc-runtime failure at the observe boundary —
     // the covered module itself stays runtime-free.
     #[derive(Debug, Clone)]

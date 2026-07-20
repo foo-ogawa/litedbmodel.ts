@@ -154,7 +154,7 @@ func TestSiblingRelationsDispatchConcurrently(t *testing.T) {
 		N, latency, elapsed, latency*N, atomic.LoadInt64(&db.peak))
 }
 
-// A companion sanity check that a real serial dispatch (concurrency 1) does NOT overlap, so the
+// A counterpart sanity check that a real serial dispatch (concurrency 1) does NOT overlap, so the
 // test above is measuring the parallel path, not an artifact.
 func TestConcurrencyOneStaysSerial(t *testing.T) {
 	const N = 4

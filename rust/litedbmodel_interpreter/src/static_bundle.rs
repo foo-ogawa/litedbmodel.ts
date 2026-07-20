@@ -114,7 +114,7 @@ fn assemble_make_sql(node: &MakeSqlNode) -> Result<(String, Vec<Value>), String>
 fn eval_spec(spec: &J, scope: &[(String, Value)]) -> Result<Value, String> {
     // NB: the batch markers `{__batchRows}` (mysql/sqlite json_each) / `{__batchArray}` (pg UNNEST) are
     // NOT handled here — a batch statement is marshaled WHOLE by `batch_params_of` → the SINGLE
-    // `build_batch_params` SSoT (the same fn the native companion calls), so there is no per-spec zip.
+    // `build_batch_params` SSoT (the same fn the native adapter calls), so there is no per-spec zip.
     if let Some(inner) = spec.get("__jsonArray") {
         // ONE scalar-array IN-list param. The Driver's param-binder binds it native (Postgres) or as the
         // `json_each(?)` JSON string (MySQL/SQLite, bool→1/0) — the array-bind SSoT; NO dialect branch
@@ -129,7 +129,7 @@ fn eval_spec(spec: &J, scope: &[(String, Value)]) -> Result<Value, String> {
 
 /// If a statement's value-specs are BATCH markers (createMany/updateMany/upsertMany), evaluate the
 /// per-column value arrays and marshal them through the SINGLE [`build_batch_params`] SSoT — the SAME
-/// function the native codegen companion calls (there is NO second zip). Returns `None` for a non-batch
+/// function the native codegen adapter calls (there is NO second zip). Returns `None` for a non-batch
 /// statement (the caller evaluates each value-spec). The two markers encode the generation-stage shape:
 ///   - `{__batchArray:{column, ref}}` per `?` → PerColumn (pg UNNEST: one native array per column);
 ///   - `{__batchRows:{columns, refs}}` on every `?` → SingleJson (mysql/sqlite json_each: one zipped JSON).
@@ -224,7 +224,7 @@ pub fn render_statements(
         let raw = stmt.get("sql").and_then(|s| s.as_str()).unwrap_or("");
         // Evaluate this statement's params first (a PG array cast is resolved against them below). A BATCH
         // statement (its `?`s bind `__batchRows`/`__batchArray` markers) is marshaled WHOLE through the
-        // SINGLE `build_batch_params` SSoT — the SAME fn the native codegen companion calls (no per-spec
+        // SINGLE `build_batch_params` SSoT — the SAME fn the native codegen adapter calls (no per-spec
         // second zip); a non-batch statement evaluates each value-spec.
         let stmt_start = params.len();
         if let Some(specs) = stmt.get("params").and_then(|p| p.as_array()) {

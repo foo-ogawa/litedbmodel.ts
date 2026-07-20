@@ -502,7 +502,7 @@ func renderExecuteNodeCtx(ctx *ExecutionContext, g *ReadGraph, nodeID, dialect s
 }
 
 // PrimaryNodeID exposes the read graph's primary render node id (the SELECT relations map over) so
-// the codegen bench cell's handler can render it. Exported companion to RenderExecuteNode.
+// the codegen bench cell's handler can render it. Exported counterpart to RenderExecuteNode.
 func (g *ReadGraph) PrimaryNodeID() (string, error) { return g.primaryNodeID() }
 
 // ExecuteReadGraph executes a compiled ReadGraph NATIVELY (no bc RunBehavior / no IR interpreter):

@@ -362,7 +362,7 @@ func driverForOp(op RelationOp, db SQLDB, connections map[string]SQLDB) (SQLDB, 
 // reimplemented grouping — the semantics stay single-sourced here). `opJObj` is the relation op as
 // it appears under bundle.relations[name] (pure JSON, bc-ordered). The public seam the codegen bench
 // cell uses: it runs the GENERATED de-interpreted module for the primary read (its own distinct code
-// entry — NOT ExecuteBundle), then hydrates the companion relation through this shared stitch so the
+// entry — NOT ExecuteBundle), then hydrates the related rows through this shared stitch so the
 // hydrated result is byte-identical to ReadBundle's.
 func StitchRelation(opJObj *bc.JObj, parents []bc.Value, db SQLDB) ([]bc.Value, error) {
 	op := relationOpFromJObj(opJObj)

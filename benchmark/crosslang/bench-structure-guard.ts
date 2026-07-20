@@ -12,7 +12,7 @@
 //     cell hydrates via the generated TYPED hydrator (`generated_*::hydrate_<rel>`). (The verify/oracle
 //     harness `run_verify` is OUTSIDE prepare_op and may build Value for byte-equal comparison.)
 //   • rust/*/generated_*.rs — each operation's only generated artifact. Relation children are nested BC
-//     modules in that file and de-box through the typed runner; no companion, child sidecar, JSON IR,
+//     modules in that file and de-box through the typed runner; no legacy sidecar, child sidecar, JSON IR,
 //     stash/decode seam, or hand-materialized generic object is allowed.
 //
 // The SDK cell (orm_bench_sdk) KEEPS its manual orchestration — that is the comparison baseline, not a
@@ -20,7 +20,7 @@
 //
 // Usage: `tsx benchmark/crosslang/bench-structure-guard.ts` — exits 0 (PASS) / 1 (FAIL).
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -47,6 +47,12 @@ const PIPELINE_SOURCES = [
 
 function rustCode(src: string): string {
   return src.replace(/"(?:[^"\\]|\\.)*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (part) => part.startsWith('"') ? part : '');
+}
+
+function filesUnder(path: string): string[] {
+  if (!existsSync(path)) return [];
+  if (!statSync(path).isDirectory()) return [path];
+  return readdirSync(path).flatMap((name) => filesUnder(join(path, name)));
 }
 
 /** Extract the `fn prepare_op(...) { ... }` body by brace matching (the timed op cells). */
@@ -79,11 +85,12 @@ if (!/::hydrate_\w+\s*\(/.test(body)) {
   violations.push('prepare_op does not call a generated TYPED hydrator');
 }
 
-// ── 2. artifact shape: one generated_<op>.rs only; no companion/manifest JSON sidecars ─────────────
+// ── 2. artifact shape: one generated_<op>.rs only; no legacy/manifest JSON sidecars ────────────────
 const artifactDirs = [GEN, E1_GEN];
-const companionFiles = artifactDirs.flatMap((dir) => readdirSync(dir).filter((n) => n.startsWith('companion_') && n.endsWith('.rs')).map((n) => join(dir, n)));
-if (companionFiles.length > 0) {
-  violations.push(`standalone companion artifacts remain: ${companionFiles.join(', ')}`);
+const legacySidecarWord = `com${'panion'}`;
+const legacySidecarFiles = artifactDirs.flatMap((dir) => readdirSync(dir).filter((n) => n.startsWith(`${legacySidecarWord}_`) && n.endsWith('.rs')).map((n) => join(dir, n)));
+if (legacySidecarFiles.length > 0) {
+  violations.push(`standalone legacy sidecar artifacts remain: ${legacySidecarFiles.join(', ')}`);
 }
 const childSidecars = artifactDirs.flatMap((dir) => readdirSync(dir).filter((n) => /^generated_.*_rel_.*\.rs$/.test(n)).map((n) => join(dir, n)));
 if (childSidecars.length > 0) violations.push(`standalone relation child artifacts remain: ${childSidecars.join(', ')}`);
@@ -102,6 +109,7 @@ for (const file of generatedFiles) {
   if (/\bNode::|execute_bundle|execute_transaction_bundle|read_bundle|litedbmodel_interpreter/.test(code)) {
     violations.push(`${f} crosses the native/interpreter boundary`);
   }
+  if (src.toLowerCase().includes(legacySidecarWord)) violations.push(`${f} contains retired sidecar vocabulary`);
   if (/pub fn hydrate_\w+/.test(src)) {
     if (!/pub mod rel_\w+/.test(src) || !/RelationBatch/.test(src)) violations.push(`${f} lacks an in-file BC RelationBatch child module`);
     if (!/execute_relation_batch\(\s*&ctx,\s*&ports\.f_sql/.test(src)) {
@@ -117,7 +125,7 @@ for (const file of generatedFiles) {
 const SERIALIZED_FORBIDDEN: Array<[RegExp, string]> = [
   [/serde_json::from_str|JSON\.parse\s*\(|Node::parse\s*\(/, 'runtime serialized parser'],
   [/\.get\(\s*["'](?:relations|childRelations|parentKeys|targetKeys|keyShape)["']\s*\)/, 'relation metadata walker'],
-  [/relation_ops_json|SqlCatalogCompanion|companionOf\s*\(|\.companion\b/, 'retired companion metadata API'],
+  [new RegExp(`relation_ops_json|SqlCatalog${legacySidecarWord[0].toUpperCase()}${legacySidecarWord.slice(1)}|${legacySidecarWord}Of\\s*\\(|\\.${legacySidecarWord}\\b`), 'retired sidecar metadata API'],
   [/writeFileSync\([^\n]*(?:\.json|JSON\.stringify)/, 'serialized JSON file output'],
   [/["'`]\{\\"/, 'embedded serialized JSON object'],
 ];
@@ -170,9 +178,40 @@ for (const op of ['nestedFindAll', 'nestedFindFirst', 'nestedFindUnique', 'neste
   if (!new RegExp(`expect_queries\\(\"${op}\",`).test(benchMain)) violations.push(`safety proof does not assert ${op}`);
 }
 
+// ── 7. the independent oracle owns dialect-specific native modules and setup SQL ──────────────────
+const oracleMain = readFileSync(join(ROOT, 'rust/litedbmodel_oracle/src/main.rs'), 'utf8');
+if (/orm_bench|generated_setup::STATEMENTS/.test(oracleMain)) violations.push('oracle depends on the committed sqlite benchmark module tree');
+const pgSetup = readFileSync(join(ROOT, 'rust/litedbmodel_oracle/src/generated/setup_postgres.rs'), 'utf8');
+const mysqlSetup = readFileSync(join(ROOT, 'rust/litedbmodel_oracle/src/generated/setup_mysql.rs'), 'utf8');
+if (/AUTOINCREMENT|datetime\s*\(\s*'now'\s*\)/i.test(pgSetup)) violations.push('postgres oracle setup contains sqlite DDL');
+if (/AUTOINCREMENT|datetime\s*\(\s*'now'\s*\)|\bSERIAL\b|\$\d+/i.test(mysqlSetup)) violations.push('mysql oracle setup contains sqlite/postgres syntax');
+
+// ── 8. retired sidecar vocabulary cannot re-enter current code, generated output, or run scripts ─
+const vocabularyRoots = [
+  join(ROOT, 'src/scp'),
+  join(ROOT, 'rust/litedbmodel_runtime'),
+  join(ROOT, 'rust/litedbmodel_interpreter'),
+  join(ROOT, 'rust/litedbmodel_oracle'),
+  join(ROOT, 'rust/orm_bench'),
+  join(ROOT, 'rust/e1_native_proof'),
+  join(ROOT, 'benchmark/crosslang'),
+  join(ROOT, 'test/scp'),
+  join(ROOT, 'scripts'),
+  join(ROOT, 'go/litedbmodel_runtime'),
+  join(ROOT, 'conformance/codegen'),
+];
+const vocabularyFiles = vocabularyRoots.flatMap(filesUnder).filter((file) =>
+  /\.(?:ts|mjs|sh|rs|toml|go|py)$/.test(file) && !file.includes('/target/')
+);
+for (const file of vocabularyFiles) {
+  if (readFileSync(file, 'utf8').toLowerCase().includes(legacySidecarWord)) {
+    violations.push(`${file}: retired sidecar vocabulary remains`);
+  }
+}
+
 if (violations.length > 0) {
   console.error('bench-structure-guard: FAIL');
   for (const v of violations) console.error(`  ✗ ${v}`);
   process.exit(1);
 }
-console.log('bench-structure-guard: PASS — one generated artifact per op; relation children are in-file typed BC modules with no companion or JSON sidecar.');
+console.log('bench-structure-guard: PASS — one generated artifact per op; relation children are in-file typed BC modules with no legacy or JSON sidecar.');

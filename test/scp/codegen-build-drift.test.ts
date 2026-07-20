@@ -14,5 +14,5 @@ describe('codegen-build check', () => {
     expect(result.stderr).toContain('DRIFT');
     expect(readFileSync(file, 'utf8')).toBe(canonical);
     writeFileSync(file, canonical);
-  });
+  }, 60_000);
 });

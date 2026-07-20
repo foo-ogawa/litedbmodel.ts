@@ -190,9 +190,21 @@ fn de_overflow(
 #[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct T0 {
-    pub id: i64,       // "id"
-    pub email: String, // "email"
-    pub name: String,  // "name"
+    pub id: i64, // "id"
+}
+
+#[derive(Clone, Default)]
+#[allow(dead_code)]
+pub struct T1 {
+    pub changes: i64,         // "changes"
+    pub lastInsertRowid: i64, // "lastInsertRowid"
+}
+
+#[derive(Clone, Default)]
+#[allow(dead_code)]
+pub struct T2 {
+    pub user: T0, // "user"
+    pub post: T1, // "post"
 }
 
 #[allow(dead_code)]
@@ -211,31 +223,52 @@ fn leaf_failure(message: impl Into<String>) -> BehaviorError {
 }
 
 // Native ports structs (one per componentRef node; typed per the static port type — CONCRETE).
-// PortsNRCappedFindN0 — CONCRETE native ports for node 'n0' (Select). Typed fields per the
+// PortsNRNestedCreateTxBody0 — CONCRETE native ports for node 'tx_body_0' (Insert). Typed fields per the
 // static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
-pub struct PortsNRCappedFindN0 {
+pub struct PortsNRNestedCreateTxBody0 {
+    pub f_sql: String, // "sql"
+    pub f_p0: String,  // "p0"
+    pub f_p1: String,  // "p1"
+}
+
+// PortsNRNestedCreateTxBody1 — CONCRETE native ports for node 'tx_body_1' (Insert). Typed fields per the
+// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
+// handler reads the typed fields directly off this concrete struct — no by-name accessor.
+#[derive(Clone)]
+pub struct PortsNRNestedCreateTxBody1 {
     pub f_sql: String, // "sql"
     pub f_p0: i64,     // "p0"
+    pub f_p1: String,  // "p1"
 }
 
 // CONCRETE per-component input structs (fields = inputPorts).
-// InNRCappedFind — the CONCRETE input for 'CappedFind' (no input ports).
+// InNRNestedCreate — the CONCRETE input for 'NestedCreate' (fields = inputPorts; typed, consumer-built —
+// NO generic Value slice, NO per-field boxing crosses the covered read boundary).
 #[derive(Default)]
-pub struct InNRCappedFind;
+pub struct InNRNestedCreate {
+    pub email: String, // "email"
+    pub name: String,  // "name"
+    pub title: String, // "title"
+}
 
 // CONCRETE per-component handler traits (one node_* method per node — native ports IN, WIRE value OUT).
-// HandlerNRCappedFind — the CONCRETE per-component handler seam: one typed method
+// HandlerNRNestedCreate — the CONCRETE per-component handler seam: one typed method
 // per covered node (native ports struct IN, WIRE value OUT). No generic boxed-ports / boxed-value
 // / dynamic accessor crosses the covered boundary — the consumer implements each node_* by
 // returning its own wire payload as a WireValue; the generated inline de-box turns that into the
 // node's concrete native result (see INTEGRATION.md §6).
-pub trait HandlerNRCappedFind {
+pub trait HandlerNRNestedCreate {
     type Wire: WireValue + Send;
-    fn node_n0(
+    fn node_tx_body_0(
         &self,
-        ports: &PortsNRCappedFindN0,
+        ports: &PortsNRNestedCreateTxBody0,
+        bound: Option<String>,
+    ) -> Result<Self::Wire, BehaviorError>;
+    fn node_tx_body_1(
+        &self,
+        ports: &PortsNRNestedCreateTxBody1,
         bound: Option<String>,
     ) -> Result<Self::Wire, BehaviorError>;
 }
@@ -320,8 +353,8 @@ pub trait WireList: Sized {
 }
 
 // Combined read runners (STRUCT-returning — the fully de-plumbed CONCRETE path).
-// run_native_raw_struct_CappedFind — the STRUCT-RETURNING combined read (bc#77/#87/#94): the fully
-// de-plumbed CONCRETE path. Generic over the per-component CONCRETE HandlerNRCappedFind trait,
+// run_native_raw_struct_NestedCreate — the STRUCT-RETURNING combined read (bc#77/#87/#94): the fully
+// de-plumbed CONCRETE path. Generic over the per-component CONCRETE HandlerNRNestedCreate trait,
 // whose node_* methods take the node's native ports struct and return the node's result WIRE
 // (Self::Wire: WireValue). The runner builds each ports struct by direct native construction (a
 // simple string port lowers to a native Rust expr), dispatches the concrete node_* method, and
@@ -334,139 +367,64 @@ pub trait WireList: Sized {
 // method; preflight + interpret are committed in ascending index order so the value / op
 // multiset / failure precedence byte-match run_behavior. The output is a typed struct/value
 // assembled by struct literal + field access — the consumer keeps it native.
-pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
+pub fn run_native_raw_struct_NestedCreate<H: HandlerNRNestedCreate>(
     handlers: &H,
-    _in_: InNRCappedFind,
-) -> Result<Vec<T0>, BehaviorError> {
-    let cell_n0: RefCell<Vec<T0>> = RefCell::new(Default::default());
-    let produced_n0 = std::cell::Cell::new(false);
-    let _ = &produced_n0;
-    // ── op 'n0' (Select) ──
-    let ports_n0 = PortsNRCappedFindN0 {
-        f_sql: "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT ?".to_string(),
-        f_p0: 3i64,
+    in_: InNRNestedCreate,
+) -> Result<T2, BehaviorError> {
+    let cell_tx_body_0: RefCell<T0> = RefCell::new(Default::default());
+    let produced_tx_body_0 = std::cell::Cell::new(false);
+    let _ = &produced_tx_body_0;
+    let cell_tx_body_1: RefCell<T1> = RefCell::new(Default::default());
+    let produced_tx_body_1 = std::cell::Cell::new(false);
+    let _ = &produced_tx_body_1;
+    // ── op 'tx_body_0' (Insert) ──
+    let ports_tx_body_0 = PortsNRNestedCreateTxBody0 {
+        f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id".to_string(),
+        f_p0: in_.email.clone(),
+        f_p1: in_.name.clone(),
     };
-    let wire_n0 = match handlers.node_n0(&ports_n0, None) {
+    let wire_tx_body_0 = match handlers.node_tx_body_0(&ports_tx_body_0, None) {
         Ok(r) => r,
         Err(e) => {
             return Err(BehaviorError {
                 code: "OP_FAILED".to_string(),
                 message: format!(
                     "operation '{}' failed under 'fail' policy: {}",
-                    "n0", e.message
+                    "tx_body_0", e.message
                 ),
                 detail: e.detail,
             })
         }
     };
-    *cell_n0.borrow_mut() = match wire_n0.as_list() {
-        Probe::Got(l0) => {
-            let mut acc0 = Vec::with_capacity(l0.len());
-            for i0 in 0..l0.len() {
-                acc0.push(match l0.elem_row(i0) {
-                    Probe::Got(sub1) => T0 {
-                        id: match sub1.probe_number("id") {
-                            NumProbe::Got {
-                                raw,
-                                actual_wire_type,
-                            } => match raw.parse::<i64>() {
-                                Ok(n) => n,
-                                Err(_) => {
-                                    return Err(de_overflow(
-                                        "T0",
-                                        "id",
-                                        "int",
-                                        actual_wire_type,
-                                        raw,
-                                    ))
-                                }
-                            },
-                            NumProbe::Wrong {
-                                actual_wire_type,
-                                raw_value,
-                            }
-                            | NumProbe::Null {
-                                actual_wire_type,
-                                raw_value,
-                            } => {
-                                return Err(de_type_mismatch(
-                                    "T0",
-                                    "id",
-                                    "int",
-                                    actual_wire_type,
-                                    raw_value,
-                                ))
-                            }
-                            NumProbe::Absent => return Err(de_missing_field("T0", "id", "int")),
-                        },
-                        email: match sub1.probe_string("email") {
-                            Probe::Got(v) => v,
-                            Probe::Wrong {
-                                actual_wire_type,
-                                raw_value,
-                            }
-                            | Probe::Null {
-                                actual_wire_type,
-                                raw_value,
-                            } => {
-                                return Err(de_type_mismatch(
-                                    "T0",
-                                    "email",
-                                    "string",
-                                    actual_wire_type,
-                                    raw_value,
-                                ))
-                            }
-                            Probe::Absent => return Err(de_missing_field("T0", "email", "string")),
-                        },
-                        name: match sub1.probe_string("name") {
-                            Probe::Got(v) => v,
-                            Probe::Wrong {
-                                actual_wire_type,
-                                raw_value,
-                            }
-                            | Probe::Null {
-                                actual_wire_type,
-                                raw_value,
-                            } => {
-                                return Err(de_type_mismatch(
-                                    "T0",
-                                    "name",
-                                    "string",
-                                    actual_wire_type,
-                                    raw_value,
-                                ))
-                            }
-                            Probe::Absent => return Err(de_missing_field("T0", "name", "string")),
-                        },
-                    },
-                    Probe::Wrong {
+    *cell_tx_body_0.borrow_mut() = match wire_tx_body_0.as_row() {
+        Probe::Got(sub0) => T0 {
+            id: match sub0.probe_number("id") {
+                NumProbe::Got {
+                    raw,
+                    actual_wire_type,
+                } => match raw.parse::<i64>() {
+                    Ok(n) => n,
+                    Err(_) => return Err(de_overflow("T0", "id", "int", actual_wire_type, raw)),
+                },
+                NumProbe::Wrong {
+                    actual_wire_type,
+                    raw_value,
+                }
+                | NumProbe::Null {
+                    actual_wire_type,
+                    raw_value,
+                } => {
+                    return Err(de_type_mismatch(
+                        "T0",
+                        "id",
+                        "int",
                         actual_wire_type,
                         raw_value,
-                    }
-                    | Probe::Null {
-                        actual_wire_type,
-                        raw_value,
-                    } => {
-                        return Err(de_type_mismatch(
-                            "n0",
-                            "n0",
-                            "obj{id:int,email:string,name:string}",
-                            actual_wire_type,
-                            raw_value,
-                        ))
-                    }
-                    Probe::Absent => {
-                        return Err(de_missing_field(
-                            "n0",
-                            "n0",
-                            "obj{id:int,email:string,name:string}",
-                        ))
-                    }
-                });
-            }
-            acc0
-        }
+                    ))
+                }
+                NumProbe::Absent => return Err(de_missing_field("T0", "id", "int")),
+            },
+        },
         Probe::Wrong {
             actual_wire_type,
             raw_value,
@@ -476,23 +434,133 @@ pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
             raw_value,
         } => {
             return Err(de_type_mismatch(
-                "n0",
-                "n0",
-                "arr(obj{id:int,email:string,name:string})",
+                "tx_body_0",
+                "tx_body_0",
+                "obj{id:int}",
                 actual_wire_type,
                 raw_value,
             ))
         }
-        Probe::Absent => {
-            return Err(de_missing_field(
-                "n0",
-                "n0",
-                "arr(obj{id:int,email:string,name:string})",
-            ))
-        }
+        Probe::Absent => return Err(de_missing_field("tx_body_0", "tx_body_0", "obj{id:int}")),
     };
-    produced_n0.set(true);
-    let __out = cell_n0.borrow().clone();
+    produced_tx_body_0.set(true);
+    // ── op 'tx_body_1' (Insert, parent:tx_body_0) ──
+    if produced_tx_body_0.get() {
+        let ports_tx_body_1 = PortsNRNestedCreateTxBody1 {
+            f_sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)".to_string(),
+            f_p0: cell_tx_body_0.borrow().id,
+            f_p1: in_.title.clone(),
+        };
+        let wire_tx_body_1 = match handlers.node_tx_body_1(&ports_tx_body_1, None) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(BehaviorError {
+                    code: "OP_FAILED".to_string(),
+                    message: format!(
+                        "operation '{}' failed under 'fail' policy: {}",
+                        "tx_body_1", e.message
+                    ),
+                    detail: e.detail,
+                })
+            }
+        };
+        *cell_tx_body_1.borrow_mut() = match wire_tx_body_1.as_row() {
+            Probe::Got(sub0) => T1 {
+                changes: match sub0.probe_number("changes") {
+                    NumProbe::Got {
+                        raw,
+                        actual_wire_type,
+                    } => match raw.parse::<i64>() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            return Err(de_overflow("T1", "changes", "int", actual_wire_type, raw))
+                        }
+                    },
+                    NumProbe::Wrong {
+                        actual_wire_type,
+                        raw_value,
+                    }
+                    | NumProbe::Null {
+                        actual_wire_type,
+                        raw_value,
+                    } => {
+                        return Err(de_type_mismatch(
+                            "T1",
+                            "changes",
+                            "int",
+                            actual_wire_type,
+                            raw_value,
+                        ))
+                    }
+                    NumProbe::Absent => return Err(de_missing_field("T1", "changes", "int")),
+                },
+                lastInsertRowid: match sub0.probe_number("lastInsertRowid") {
+                    NumProbe::Got {
+                        raw,
+                        actual_wire_type,
+                    } => match raw.parse::<i64>() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            return Err(de_overflow(
+                                "T1",
+                                "lastInsertRowid",
+                                "int",
+                                actual_wire_type,
+                                raw,
+                            ))
+                        }
+                    },
+                    NumProbe::Wrong {
+                        actual_wire_type,
+                        raw_value,
+                    }
+                    | NumProbe::Null {
+                        actual_wire_type,
+                        raw_value,
+                    } => {
+                        return Err(de_type_mismatch(
+                            "T1",
+                            "lastInsertRowid",
+                            "int",
+                            actual_wire_type,
+                            raw_value,
+                        ))
+                    }
+                    NumProbe::Absent => {
+                        return Err(de_missing_field("T1", "lastInsertRowid", "int"))
+                    }
+                },
+            },
+            Probe::Wrong {
+                actual_wire_type,
+                raw_value,
+            }
+            | Probe::Null {
+                actual_wire_type,
+                raw_value,
+            } => {
+                return Err(de_type_mismatch(
+                    "tx_body_1",
+                    "tx_body_1",
+                    "obj{changes:int,lastInsertRowid:int}",
+                    actual_wire_type,
+                    raw_value,
+                ))
+            }
+            Probe::Absent => {
+                return Err(de_missing_field(
+                    "tx_body_1",
+                    "tx_body_1",
+                    "obj{changes:int,lastInsertRowid:int}",
+                ))
+            }
+        };
+        produced_tx_body_1.set(true);
+    }
+    let __out = T2 {
+        user: cell_tx_body_0.borrow().clone(),
+        post: cell_tx_body_1.borrow().clone(),
+    };
     Ok(__out)
 }
 
@@ -500,9 +568,9 @@ pub fn run_native_raw_struct_CappedFind<H: HandlerNRCappedFind>(
 // driven via run_native_raw_struct_<comp>(handlers, in_) -> Result<T, BehaviorError>: a STRUCT return
 // (the consumer builds the CONCRETE InNR_<comp> input + implements the CONCRETE HandlerNR<comp> trait).
 // See INTEGRATION.md §6.
-pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["CappedFind"];
+pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["NestedCreate"];
 
-// litedbmodel static runtime adapter for `generated_cappedFindAll` (co-located with the bc core).
+// litedbmodel static runtime adapter for `nestedCreate_postgres` (co-located with the bc core).
 // bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
 // THIS adapter — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
 // delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire
@@ -520,65 +588,77 @@ fn cvt(e: SqlFailure) -> BehaviorError {
     BehaviorError::new(e.kind, e.message)
 }
 
-// The handler holds a ConnSource (#135): a single Driver (routing=None, byte-identical single-pool)
-// OR a RoutingConfig (read→reader / write→writer, named-DB). node_* resolves the ctx per statement
-// via `self.src.ctx()` — reader/writer routing is applied ONCE in the central seam, never per op.
-pub struct Rt<'a> {
-    src: litedbmodel_runtime::ConnSource<'a>,
+struct TxRt<'a, 'b, 'c> {
+    ctx: &'a litedbmodel_runtime::ExecutionContext<'b, 'c>,
 }
-impl<'a> HandlerNRCappedFind for Rt<'a> {
+impl<'a, 'b, 'c> HandlerNRNestedCreate for TxRt<'a, 'b, 'c> {
     type Wire = Wire;
-    fn node_n0(
+    fn node_tx_body_0(
         &self,
-        ports: &PortsNRCappedFindN0,
+        ports: &PortsNRNestedCreateTxBody0,
         _bound: Option<String>,
     ) -> Result<Wire, BehaviorError> {
-        let ctx = self.src.ctx().map_err(cvt)?;
         litedbmodel_runtime::exec(
-            &ctx,
+            self.ctx,
             &ports.f_sql,
-            &[litedbmodel_runtime::wp(&ports.f_p0)],
-            litedbmodel_runtime::ExecMode::Rows,
+            &[
+                litedbmodel_runtime::wp(&ports.f_p0),
+                litedbmodel_runtime::wp(&ports.f_p1),
+            ],
+            litedbmodel_runtime::ExecMode::RowSingle,
+        )
+        .map_err(cvt)
+    }
+    fn node_tx_body_1(
+        &self,
+        ports: &PortsNRNestedCreateTxBody1,
+        _bound: Option<String>,
+    ) -> Result<Wire, BehaviorError> {
+        litedbmodel_runtime::exec(
+            self.ctx,
+            &ports.f_sql,
+            &[
+                litedbmodel_runtime::wp(&ports.f_p0),
+                litedbmodel_runtime::wp(&ports.f_p1),
+            ],
+            litedbmodel_runtime::ExecMode::SummarySingle,
         )
         .map_err(cvt)
     }
 }
 
-/// The litedbmodel-consumer entry: build the runtime-backed handler for `CappedFind` over a SINGLE
-/// driver (byte-identical single-pool path). The consumer calls
-/// `run_native_raw_struct_CappedFind(&handler(driver), in_)` — supplying NO node_* itself.
-pub fn handler(driver: &dyn Driver) -> Rt<'_> {
-    Rt {
-        src: litedbmodel_runtime::ConnSource::Driver(driver),
-    }
+/// The litedbmodel-consumer entry: run the RETURNING-chained transaction (BEGIN…COMMIT / ROLLBACK
+/// via the runtime tx envelope; every statement runs on the ONE pinned tx-scoped ctx). Returns
+/// `true` when the chain committed, `false` on rollback.
+pub fn run(driver: &dyn Driver, in_: InNRNestedCreate) -> Result<bool, BehaviorError> {
+    litedbmodel_runtime::run_transaction(driver, |ctx| {
+        run_native_raw_struct_NestedCreate(&TxRt { ctx }, in_)
+    })
+    .map_err(cvt)
 }
 
-/// The ROUTED consumer entry (#135): the handler routes each read to the reader pool and each write
-/// to the writer pool (named-DB via the registry) through the SAME central `connection_for` seam.
-pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> {
-    Rt {
-        src: litedbmodel_runtime::ConnSource::Routing(routing),
-    }
-}
-
-/// The GUARDED find entry (#135): run the native read, then enforce the find hard-limit via the
-/// SAME shared `check_find_hard_limit` the mode-2 read-graph guard calls (cap/model baked from the
-/// ReadGraph findGuard meta; the `LIMIT hardLimit + 1` is already in the baked SQL). A cap-exceeding
-/// read throws `LimitExceededError` (`context: find`), byte-equal to mode-2 — surfaced OUTSIDE the
-/// runner (the runner's BehaviorError maps to RuntimeError::Sql). The litedbmodel-consumer calls
-/// THIS for a capped find, not the bare runner.
-pub fn run(
-    driver: &dyn Driver,
-    in_: InNRCappedFind,
-) -> Result<Vec<T0>, litedbmodel_runtime::RuntimeError> {
-    let rows = run_native_raw_struct_CappedFind(&handler(driver), in_).map_err(|e| {
-        litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure {
-            kind: e.code,
-            policy: "fail".to_string(),
-            sqlite_code: None,
-            message: e.message,
+/// The OPTIONS-aware / ROUTED / RETRYING tx entry (#135 routing+isolation + #136 retry): open the
+/// tx from a ConnSource (single driver, or the WRITER pool of a named connection) and apply the
+/// TransactionOptions (isolation prelude, rollback_only, and the SHARED #81 retry loop). `make_in`
+/// REBUILDS the input per attempt so a retryable failure (deadlock / serialization / connection) can
+/// re-run the whole tx on a FRESH connection — bc-independent (NO Clone on InNRNestedCreate). The bc
+/// runner's BehaviorError maps to a SqlFailure whose message the SHARED is_retryable_tx_error SSoT
+/// classifies. Returns `true` iff it committed; a non-retryable / retry-exhausted error re-raises.
+pub fn run_on(
+    src: litedbmodel_runtime::ConnSource,
+    connection: Option<&str>,
+    dialect: litedbmodel_runtime::TxDialect,
+    options: &litedbmodel_runtime::TransactionOptions,
+    make_in: impl Fn() -> InNRNestedCreate,
+) -> Result<bool, litedbmodel_runtime::SqlFailure> {
+    litedbmodel_runtime::run_transaction_on(src, connection, dialect, options, move |ctx| {
+        run_native_raw_struct_NestedCreate(&TxRt { ctx }, make_in()).map_err(|e| {
+            litedbmodel_runtime::SqlFailure {
+                kind: e.code,
+                policy: "fail".to_string(),
+                sqlite_code: None,
+                message: e.message,
+            }
         })
-    })?;
-    litedbmodel_runtime::check_find_hard_limit(2i64, rows.len() as i64, Some("CappedFind"))?;
-    Ok(rows)
+    })
 }
