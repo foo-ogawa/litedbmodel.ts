@@ -299,4 +299,16 @@ fn run_safety(dialect: &str, spec: &str) {
     println!("createMany queries={} (expect 1: one batched INSERT for 10 records)", count("createMany"));
     reseed(d, dialect);
     println!("updateMany queries={} (expect 1)", count("updateMany"));
+
+    // ── find hardLimit (#135/#136): the GUARDED native find (findHardLimit=2, baked LIMIT 3) over the
+    //    seed (>2 users) trips the shared check_find_hard_limit — the same guard core the ORM read
+    //    companions carry. Proves the guard FIRES end-to-end (not just an emission assert). ──
+    reseed(d, dialect);
+    match gen::companion_cappedFindAll::run(d, gen::generated_cappedFindAll::InNRCappedFind {}) {
+        Ok(rows) => println!("hardLimit NOT tripped — got {} rows (BUG: guard did not fire)", rows.len()),
+        Err(litedbmodel_runtime::RuntimeError::Limit(l)) => {
+            println!("hardLimit fired: context={} limit={} fetched={} (expect find/2/3)", l.context, l.limit, l.count)
+        }
+        Err(litedbmodel_runtime::RuntimeError::Sql(e)) => println!("hardLimit: unexpected SQL error: {}", e.message),
+    }
 }

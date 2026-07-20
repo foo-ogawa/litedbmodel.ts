@@ -103,7 +103,7 @@ v1 measured PostgreSQL only (median_ms). Baselines differ: v1 baseline = SeaORM/
 
 ## Safety proofs (native cell)
 
-N+1 avoidance — query counts issued at the Driver seam (a batched relation = 1 parent + 1 batched child per level; a batch write = 1 statement):
+The measured latency is the cost WITH the safety guards on. Query counts are issued at the Driver seam (a batched relation = 1 parent + 1 batched child per level; a batch write = 1 statement); the find hardLimit fires end-to-end on the guarded native read:
 
 ```
 nestedFindAll queries=2 (expect 2: 1 parent + 1 batched child)
@@ -112,4 +112,7 @@ nestedRelations queries=3 (expect 3: users + posts + comments)
 compositeRelations queries=3 (expect 3)
 createMany queries=1 (expect 1: one batched INSERT for 10 records)
 updateMany queries=1 (expect 1)
+hardLimit fired: context=find limit=2 fetched=3 (expect find/2/3)
 ```
+
+Reader/writer routing: the native read/write companions expose the `handler_routed(&RoutingConfig)` seam; the runtime routing resolver sends a read → reader pool, a write → writer pool, and a read inside a writer scope → writer (read-your-writes) — verified green by the runtime routing tests (`resolve_pool_reader_writer_split`, `named_routing_selects_the_pair`).

@@ -38,3 +38,5 @@ pub mod generated_nestedUpdate;
 pub mod companion_nestedUpdate;
 pub mod generated_nestedUpsert;
 pub mod companion_nestedUpsert;
+pub mod generated_cappedFindAll;
+pub mod companion_cappedFindAll;

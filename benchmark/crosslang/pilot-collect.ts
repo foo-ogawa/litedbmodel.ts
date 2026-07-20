@@ -146,10 +146,16 @@ function main() {
   const safetyPath = join(RESULTS, 'native-safety.txt');
   if (existsSync(safetyPath)) {
     lines.push('\n## Safety proofs (native cell)\n');
-    lines.push('N+1 avoidance — query counts issued at the Driver seam (a batched relation = 1 parent + 1 batched child per level; a batch write = 1 statement):\n');
+    lines.push('The measured latency is the cost WITH the safety guards on. Query counts are issued at the Driver seam (a batched relation = 1 parent + 1 batched child per level; a batch write = 1 statement); the find hardLimit fires end-to-end on the guarded native read:\n');
     lines.push('```');
     lines.push(readFileSync(safetyPath, 'utf8').trim());
     lines.push('```');
+    lines.push(
+      '\nReader/writer routing: the native read/write companions expose the `handler_routed(&RoutingConfig)` ' +
+        'seam; the runtime routing resolver sends a read → reader pool, a write → writer pool, and a read ' +
+        'inside a writer scope → writer (read-your-writes) — verified green by the runtime routing tests ' +
+        '(`resolve_pool_reader_writer_split`, `named_routing_selects_the_pair`).',
+    );
   }
 
   const out = join(HERE, '../ORM-PILOT.md');
