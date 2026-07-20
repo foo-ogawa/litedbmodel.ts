@@ -95,6 +95,15 @@ export interface CodegenArtifact {
   readonly bundle: SqlBundle;
 }
 
+function rustStringLiteral(value: string): string {
+  return `"${value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('"', '\\"')
+    .replaceAll('\n', '\\n')
+    .replaceAll('\r', '\\r')
+    .replaceAll('\t', '\\t')}"`;
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 // #60 milestone 1 — CODEGEN-ONLY typed-native lowering (#12: from the real-node read graph).
@@ -1487,7 +1496,7 @@ function emitReadWriteNode(
       sig,
       `        let columns: Vec<Vec<Value>> = vec![${columns.join(', ')}];`,
       `        let ctx = self.src.ctx().map_err(cvt)?;`,
-      `        litedbmodel_runtime::execute_relation_batch(&ctx, &ports.f_sql, &columns, litedbmodel_runtime::ArrayParamShape::${shape}, ${relation.hardLimit === undefined ? 'None' : `Some(${relation.hardLimit}i64)`}, ${relation.targetTable === undefined ? 'None' : `Some(${JSON.stringify(relation.targetTable)})`}, ${JSON.stringify(relation.name)}).map(Wire::from_rows).map_err(cvt)`,
+      `        litedbmodel_runtime::execute_relation_batch(&ctx, &ports.f_sql, &columns, litedbmodel_runtime::ArrayParamShape::${shape}, ${relation.hardLimit === undefined ? 'None' : `Some(${relation.hardLimit}i64)`}, ${relation.targetTable === undefined ? 'None' : `Some(${rustStringLiteral(relation.targetTable)})`}, ${rustStringLiteral(relation.name)}).map(Wire::from_rows).map_err(cvt_runtime)`,
       `    }`,
     ].join('\n');
   }
@@ -1496,7 +1505,7 @@ function emitReadWriteNode(
     const marker = batchRowsMarkerOf(bundle.readGraph?.statementsById[id] ?? []);
     if (marker === undefined) throw new Error(`litedbmodel adapter: batch node '${id}' has no batch-rows marker to derive its columns`);
     const cells = marker.columns.map((_, i) => `ports.f_v${i}.iter().map(|v| litedbmodel_runtime::wp(v)).collect::<Vec<Value>>()`);
-    const cols = marker.columns.map((c) => JSON.stringify(c)).join(', ');
+    const cols = marker.columns.map(rustStringLiteral).join(', ');
     const returning = !isSummaryOut(n.outType);
     // The param-shape DESCRIPTOR is baked from the marker type resolved at SQL generation (`__batchArray`
     // per-column → PerColumn / `__batchRows` zipped → SingleJson). The adapter is a THIN uniform
@@ -1568,7 +1577,7 @@ function emitGuardedFindEntry(bundle: SqlBundle, comp: string, ir: ReturnType<ty
     `pub fn run(driver: &dyn Driver, in_: InNR${comp}) -> Result<${ret}, litedbmodel_runtime::RuntimeError> {`,
     `    let rows = run_native_raw_struct_${comp}(&handler(driver), in_)`,
     `        .map_err(|e| litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure { kind: e.code, policy: "fail".to_string(), sqlite_code: None, message: e.message }))?;`,
-    `    litedbmodel_runtime::check_find_hard_limit(${findGuard.hardLimit}i64, rows.len() as i64, Some(${JSON.stringify(findGuard.model)}))?;`,
+    `    litedbmodel_runtime::check_find_hard_limit(${findGuard.hardLimit}i64, rows.len() as i64, Some(${rustStringLiteral(findGuard.model)}))?;`,
     `    Ok(rows)`,
     `}`,
   ];
@@ -1699,7 +1708,7 @@ function emitRelationHydrator(op: RelationOp, primaryModuleName: string): string
       `${indent}let child_rows = self::${names.module}::run_native_raw_struct_${names.component}(`,
       `${indent}    &self::${names.module}::handler(driver),`,
       `${indent}    self::${names.module}::InNR${names.component} { ${keyInputs.join(', ')} },`,
-      `${indent}).map_err(|e| litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure { kind: e.code, policy: "fail".to_string(), sqlite_code: None, message: e.message }))?;`,
+      `${indent}).map_err(self::${names.module}::runtime_error)?;`,
       `${indent}let ${rawVar} = litedbmodel_runtime::hydrate_children(`,
       `${indent}    ${parentsExpr}, ${keyOf}, child_rows,`,
       `${indent}    ${childKeyOfClosure(targetKeyCols(op))},`,
@@ -1760,6 +1769,7 @@ function generateRustStaticAdapter(bundle: SqlBundle, moduleName: string, resolv
   const comp = c.name;
   const inputPorts = c.inputPorts ?? {};
   const isTx = bundle.transaction !== undefined && bundle.readGraph === undefined;
+  const isRelationBatch = (bundle as unknown as { __relationBatch?: RelationOp }).__relationBatch !== undefined;
 
   const head = [
     ...(inline ? [] : [`#![allow(dead_code, unused_imports, non_snake_case, clippy::all)]`]),
@@ -1780,6 +1790,34 @@ function generateRustStaticAdapter(bundle: SqlBundle, moduleName: string, resolv
     `/// re-wraps a node failure as OP_FAILED regardless, so only the message/detail cross this seam).`,
     `fn cvt(e: SqlFailure) -> BehaviorError { BehaviorError::new(e.kind, e.message) }`,
     ``,
+    ...(isRelationBatch ? [
+      `fn cvt_runtime(e: litedbmodel_runtime::RuntimeError) -> BehaviorError {`,
+      `    match e {`,
+      `        litedbmodel_runtime::RuntimeError::Sql(e) => cvt(e),`,
+      `        litedbmodel_runtime::RuntimeError::Limit(e) => {`,
+      `            let mut context = std::collections::BTreeMap::new();`,
+      `            context.insert("limit".to_string(), e.limit.to_string());`,
+      `            context.insert("count".to_string(), e.count.to_string());`,
+      `            context.insert("context".to_string(), e.context.clone());`,
+      `            if let Some(relation) = &e.relation { context.insert("relation".to_string(), relation.clone()); }`,
+      `            BehaviorError::with_detail("LIMIT_EXCEEDED", e.message.clone(), ErrorDetail { kind: None, model: e.model.clone(), field: None, expected_type: None, actual_wire_type: None, raw_value: Some(e.message), context })`,
+      `        }`,
+      `    }`,
+      `}`,
+      `pub fn runtime_error(e: BehaviorError) -> litedbmodel_runtime::RuntimeError {`,
+      `    if let Some(mut detail) = e.detail {`,
+      `        let limit = detail.context.remove("limit");`,
+      `        let count = detail.context.remove("count");`,
+      `        let context = detail.context.remove("context");`,
+      `        let relation = detail.context.remove("relation");`,
+      `        if let (Some(limit), Some(count), Some(context)) = (limit, count, context) {`,
+      `            return litedbmodel_runtime::RuntimeError::Limit(litedbmodel_runtime::LimitExceededError { limit: limit.parse().expect("generated limit"), count: count.parse().expect("generated count"), context, model: detail.model, relation, message: detail.raw_value.unwrap_or(e.message) });`,
+      `        }`,
+      `    }`,
+      `    litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure { kind: e.code, policy: "fail".to_string(), sqlite_code: None, message: e.message })`,
+      `}`,
+      ``,
+    ] : []),
   ];
 
   if (isTx) {

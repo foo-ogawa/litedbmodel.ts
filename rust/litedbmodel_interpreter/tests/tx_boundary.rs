@@ -3,7 +3,7 @@
 //!
 //! The rust mirror of the TS `TxBoundary` / `TxCompleteness` / `tx_isolation` integration tests.
 //! Every assertion runs the UNMODIFIED PRODUCTION path — the public
-//! [`litedbmodel_runtime::transaction`] boundary + [`execute_transaction_bundle_ctx`] (the ambient
+//! [`litedbmodel_interpreter::transaction`] boundary + [`execute_transaction_bundle_ctx`] (the ambient
 //! JOIN + guard), on the live [`PostgresDriver`] / [`MysqlDriver`] over REAL dockerized PG (:5433) +
 //! MySQL (:3307). Nothing is swapped or mocked.
 //!
@@ -22,7 +22,7 @@
 //!
 //! Gated behind `livedb` + `LITEDBMODEL_TX_BOUNDARY=1` (never runs in the default `cargo test`):
 //!   docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml up -d postgres mysql
-//!   LITEDBMODEL_TX_BOUNDARY=1 cargo test -p litedbmodel_runtime --features livedb \
+//!   LITEDBMODEL_TX_BOUNDARY=1 cargo test -p litedbmodel_interpreter --features livedb \
 //!     --test tx_boundary -- --nocapture --test-threads=1
 
 #![cfg(feature = "livedb")]
@@ -32,9 +32,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use behavior_contracts::Value;
-use litedbmodel_runtime::exec_context::{run, transaction, StatementIntent};
-use litedbmodel_runtime::tx_options::{Dialect, IsolationLevel, TransactionOptions};
-use litedbmodel_runtime::{
+use litedbmodel_interpreter::exec_context::{run, transaction, StatementIntent};
+use litedbmodel_interpreter::tx_options::{Dialect, IsolationLevel, TransactionOptions};
+use litedbmodel_interpreter::{
     execute_transaction_bundle_ctx, for_driver, with_transaction_decided, Driver, MysqlDriver,
     Node, PostgresDriver, PreparedStatement, RunInfo, SqlFailure, TxConnection, TxDecision,
 };
@@ -377,8 +377,8 @@ fn isolation(base: &dyn Driver, dialect: &str) {
         .expect("seed");
 
     // Helper: read val inside a tx via the read seam.
-    fn read_val_in_tx(tx: &litedbmodel_runtime::ExecutionContext) -> i64 {
-        let rows = litedbmodel_runtime::exec_context::execute(
+    fn read_val_in_tx(tx: &litedbmodel_interpreter::ExecutionContext) -> i64 {
+        let rows = litedbmodel_interpreter::exec_context::execute(
             tx,
             &format!("SELECT val FROM {TBL} WHERE id = 1"),
             &[],
@@ -493,13 +493,13 @@ fn retry_real_contention(base: &(dyn Driver + Sync), dialect: &str) {
             } else {
                 ""
             };
-            litedbmodel_runtime::exec_context::execute(
+            litedbmodel_interpreter::exec_context::execute(
                 tx,
                 &format!("SELECT val FROM {TBL} WHERE id = {my_id}{lock}"),
                 &[],
                 &StatementIntent::read(),
             )?;
-            litedbmodel_runtime::exec_context::execute(
+            litedbmodel_interpreter::exec_context::execute(
                 tx,
                 &format!("SELECT val FROM {TBL} WHERE id = {other_id}{lock}"),
                 &[],

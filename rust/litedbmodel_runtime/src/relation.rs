@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 use behavior_contracts::Value;
 
 use crate::codegen_exec::{wp, ArrayParamShape, ToWireParam};
-use crate::errors::{LimitExceededError, SqlFailure, LIMIT_CONTEXT_RELATION};
+use crate::errors::{LimitExceededError, RuntimeError, LIMIT_CONTEXT_RELATION};
 use crate::exec_context::{self, ExecutionContext, StatementIntent};
-use crate::static_bundle::{render_placeholders, resolve_pg_array_cast};
+use crate::sql_render::{render_placeholders, resolve_pg_array_cast};
 
 pub(crate) fn key_identity(values: &[Value]) -> String {
     values
@@ -42,12 +42,12 @@ pub(crate) fn dedupe_tuples(tuples: &[Vec<Value>]) -> Vec<Vec<Value>> {
 }
 
 fn tuple_param(tuples: &[Vec<Value>]) -> Value {
-    Value::Str(crate::node::compact_value(&Value::Arr(
+    Value::Str(crate::value_codec::compact_value(&Value::Arr(
         tuples.iter().cloned().map(Value::Arr).collect(),
     )))
 }
 
-pub fn build_relation_params(
+fn build_relation_params(
     sql: &str,
     columns: &[Vec<Value>],
     shape: ArrayParamShape,
@@ -79,7 +79,7 @@ pub fn execute_relation_batch(
     hard_limit: Option<i64>,
     target_table: Option<&str>,
     relation: &str,
-) -> Result<Vec<Value>, SqlFailure> {
+) -> Result<Vec<Value>, RuntimeError> {
     if columns.first().is_none_or(Vec::is_empty) {
         return Ok(Vec::new());
     }
@@ -93,20 +93,16 @@ pub fn execute_relation_batch(
             LIMIT_CONTEXT_RELATION,
             target_table.map(str::to_string),
             Some(relation.to_string()),
-        )
-        .map_err(|error| SqlFailure {
-            kind: "limit_exceeded".into(),
-            policy: "fail".into(),
-            sqlite_code: None,
-            message: error.to_string(),
-        })?;
+        )?;
     }
     Ok(rows)
 }
 
-pub(crate) type RelationBatch<C> = HashMap<String, Vec<C>>;
+#[doc(hidden)]
+pub type RelationBatch<C> = HashMap<String, Vec<C>>;
 
-pub(crate) fn group_children<C>(
+#[doc(hidden)]
+pub fn group_children<C>(
     rows: Vec<C>,
     target_key_of: impl Fn(&C) -> Vec<Value>,
 ) -> RelationBatch<C> {
@@ -120,7 +116,8 @@ pub(crate) fn group_children<C>(
     batch
 }
 
-pub(crate) fn matched_children<C: Clone>(tuple: &[Value], batch: &RelationBatch<C>) -> Vec<C> {
+#[doc(hidden)]
+pub fn matched_children<C: Clone>(tuple: &[Value], batch: &RelationBatch<C>) -> Vec<C> {
     if tuple.iter().any(|value| matches!(value, Value::Null)) {
         return Vec::new();
     }

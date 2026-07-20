@@ -18,8 +18,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use behavior_contracts::Value;
-use litedbmodel_runtime::Node;
-use litedbmodel_runtime::{dispatch_read_nodes_parallel, Driver, PreparedStatement, RunInfo};
+use litedbmodel_interpreter::Node;
+use litedbmodel_interpreter::{dispatch_read_nodes_parallel, Driver, PreparedStatement, RunInfo};
 
 /// Build a native `Node` fixture from a JSON string literal — the runtime's OWN native JSON parser
 /// (the runtime + these tests carry NO external JSON crate).
@@ -58,15 +58,19 @@ impl Driver for LatencyDriver {
     }
     fn begin_tx(
         &self,
-    ) -> Result<Box<dyn litedbmodel_runtime::TxConnection + '_>, litedbmodel_runtime::SqlFailure>
-    {
-        litedbmodel_runtime::forwarding_tx(self)
+    ) -> Result<
+        Box<dyn litedbmodel_interpreter::TxConnection + '_>,
+        litedbmodel_interpreter::SqlFailure,
+    > {
+        litedbmodel_interpreter::forwarding_tx(self)
     }
     fn acquire_tx(
         &self,
-    ) -> Result<Box<dyn litedbmodel_runtime::TxConnection + '_>, litedbmodel_runtime::SqlFailure>
-    {
-        litedbmodel_runtime::forwarding_tx_no_begin(self)
+    ) -> Result<
+        Box<dyn litedbmodel_interpreter::TxConnection + '_>,
+        litedbmodel_interpreter::SqlFailure,
+    > {
+        litedbmodel_interpreter::forwarding_tx_no_begin(self)
     }
 }
 
@@ -76,7 +80,10 @@ struct LatencyStmt<'a> {
 }
 
 impl PreparedStatement for LatencyStmt<'_> {
-    fn all(&mut self, _params: &[Value]) -> Result<Vec<Value>, litedbmodel_runtime::SqlFailure> {
+    fn all(
+        &mut self,
+        _params: &[Value],
+    ) -> Result<Vec<Value>, litedbmodel_interpreter::SqlFailure> {
         self.driver.total_calls.fetch_add(1, Ordering::SeqCst);
         self.driver
             .start_order
@@ -95,7 +102,7 @@ impl PreparedStatement for LatencyStmt<'_> {
         )])])
     }
 
-    fn run(&mut self, _params: &[Value]) -> Result<RunInfo, litedbmodel_runtime::SqlFailure> {
+    fn run(&mut self, _params: &[Value]) -> Result<RunInfo, litedbmodel_interpreter::SqlFailure> {
         unreachable!("read path only")
     }
 }
@@ -153,7 +160,7 @@ fn sibling_relations_dispatch_concurrently() {
     assert_eq!(results.len(), N);
     for (i, r) in results.iter().enumerate() {
         let want = nj(&format!(r#"[{{"sql": "SELECT {i}"}}]"#));
-        let got = litedbmodel_runtime::encode_value(r);
+        let got = litedbmodel_interpreter::encode_value(r);
         assert_eq!(got, want, "node rel{i} out of order or wrong");
     }
 

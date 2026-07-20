@@ -3,20 +3,18 @@ name = "litedbmodel_runtime"
 version = "2.1.0"
 edition.workspace = true
 license.workspace = true
-description = "Thin multi-language runtime for litedbmodel v2 SCP §8 bundles (Rust port). Interprets the published SqlBundle and executes it against a SQL driver — semantics-identical to the TS reference. Delegates Expression-IR evaluation to the behavior-contracts crate."
+description = "Native SQL execution core shared by generated litedbmodel Rust modules."
 # Registry metadata (mirrors graphddb_runtime). Repo renamed to foo-ogawa/litedbmodel (2026-07-10);
 # package.json, go/go.mod, and this crate all agree on the github.com/foo-ogawa/litedbmodel path.
 repository = "https://github.com/foo-ogawa/litedbmodel"
 homepage = "https://github.com/foo-ogawa/litedbmodel"
 readme = "../README.md"
-keywords = ["orm", "sql", "ir", "runtime", "conformance"]
+keywords = ["orm", "sql", "runtime", "database"]
 categories = ["database", "api-bindings"]
 
 [dependencies]
-# NATIVE-ONLY (#8): the runtime carries NO external JSON crate. The published bundle is pure JSON, but
-# the runtime parses it through its OWN native JSON parser (`node::Node::parse`) and evaluates the
-# deferred param slots through its OWN native closed-set evaluator (`node::eval_expr`) — bc's
-# external-JSON-crate `ir` feature (`evaluate_expression`/`run_behavior`) is NOT used. `cargo tree -i external-crate` from this crate is EMPTY (default-features=false drops bc's external-crate-pulling `ir`).
+# Native runtime uses only behavior-contracts value/plan primitives; parser and interpreter code live
+# exclusively in the one-way dependent litedbmodel_interpreter crate.
 behavior-contracts = { workspace = true, default-features = false }
 # In-process SQLite driver for the conformance bar (real execution — the sanctioned in-proc
 # substitute for docker; #34 AC). `bundled` builds the SQLite amalgamation so no system libsqlite
@@ -44,11 +42,6 @@ tokio = { version = "1", optional = true, features = ["rt-multi-thread", "sync",
 futures-util = { version = "0.3", optional = true }
 
 [features]
-default = ["interpreter"]
+default = []
 native = []
-interpreter = []
 livedb = ["dep:tokio-postgres", "dep:deadpool-postgres", "dep:sqlx", "dep:tokio", "dep:futures-util", "dep:rust_decimal", "dep:chrono"]
-
-# NO external JSON crate anywhere (not even dev): the integration tests + the micro_perf example build their
-# bundle/graph fixtures through the runtime's OWN native JSON parser (`Node::parse`) — the `json!`
-# macro is retired. a repo-wide grep for that crate over rust/litedbmodel_runtime is EMPTY (src + tests + manifest).

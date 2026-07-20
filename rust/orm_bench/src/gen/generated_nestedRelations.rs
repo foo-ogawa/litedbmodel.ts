@@ -595,14 +595,7 @@ pub fn hydrate_posts(
             k0: parents.iter().map(|parent| parent.id.clone()).collect(),
         },
     )
-    .map_err(|e| {
-        litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure {
-            kind: e.code,
-            policy: "fail".to_string(),
-            sqlite_code: None,
-            message: e.message,
-        })
-    })?;
+    .map_err(self::rel_posts::runtime_error)?;
     let level_raw = litedbmodel_runtime::hydrate_children(
         parents,
         |parent| parent.id,
@@ -621,14 +614,7 @@ pub fn hydrate_posts(
                 .collect(),
         },
     )
-    .map_err(|e| {
-        litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure {
-            kind: e.code,
-            policy: "fail".to_string(),
-            sqlite_code: None,
-            message: e.message,
-        })
-    })?;
+    .map_err(self::rel_posts_comments::runtime_error)?;
     let level_0 = litedbmodel_runtime::hydrate_children(
         level_raw
             .iter()
@@ -1204,6 +1190,60 @@ pub mod rel_posts {
         BehaviorError::new(e.kind, e.message)
     }
 
+    fn cvt_runtime(e: litedbmodel_runtime::RuntimeError) -> BehaviorError {
+        match e {
+            litedbmodel_runtime::RuntimeError::Sql(e) => cvt(e),
+            litedbmodel_runtime::RuntimeError::Limit(e) => {
+                let mut context = std::collections::BTreeMap::new();
+                context.insert("limit".to_string(), e.limit.to_string());
+                context.insert("count".to_string(), e.count.to_string());
+                context.insert("context".to_string(), e.context.clone());
+                if let Some(relation) = &e.relation {
+                    context.insert("relation".to_string(), relation.clone());
+                }
+                BehaviorError::with_detail(
+                    "LIMIT_EXCEEDED",
+                    e.message.clone(),
+                    ErrorDetail {
+                        kind: None,
+                        model: e.model.clone(),
+                        field: None,
+                        expected_type: None,
+                        actual_wire_type: None,
+                        raw_value: Some(e.message),
+                        context,
+                    },
+                )
+            }
+        }
+    }
+    pub fn runtime_error(e: BehaviorError) -> litedbmodel_runtime::RuntimeError {
+        if let Some(mut detail) = e.detail {
+            let limit = detail.context.remove("limit");
+            let count = detail.context.remove("count");
+            let context = detail.context.remove("context");
+            let relation = detail.context.remove("relation");
+            if let (Some(limit), Some(count), Some(context)) = (limit, count, context) {
+                return litedbmodel_runtime::RuntimeError::Limit(
+                    litedbmodel_runtime::LimitExceededError {
+                        limit: limit.parse().expect("generated limit"),
+                        count: count.parse().expect("generated count"),
+                        context,
+                        model: detail.model,
+                        relation,
+                        message: detail.raw_value.unwrap_or(e.message),
+                    },
+                );
+            }
+        }
+        litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure {
+            kind: e.code,
+            policy: "fail".to_string(),
+            sqlite_code: None,
+            message: e.message,
+        })
+    }
+
     // The handler holds a ConnSource (#135): a single Driver (routing=None, byte-identical single-pool)
     // OR a RoutingConfig (read→reader / write→writer, named-DB). node_* resolves the ctx per statement
     // via `self.src.ctx()` — reader/writer routing is applied ONCE in the central seam, never per op.
@@ -1233,7 +1273,7 @@ pub mod rel_posts {
                 "posts",
             )
             .map(Wire::from_rows)
-            .map_err(cvt)
+            .map_err(cvt_runtime)
         }
     }
 
@@ -1813,6 +1853,60 @@ pub mod rel_posts_comments {
         BehaviorError::new(e.kind, e.message)
     }
 
+    fn cvt_runtime(e: litedbmodel_runtime::RuntimeError) -> BehaviorError {
+        match e {
+            litedbmodel_runtime::RuntimeError::Sql(e) => cvt(e),
+            litedbmodel_runtime::RuntimeError::Limit(e) => {
+                let mut context = std::collections::BTreeMap::new();
+                context.insert("limit".to_string(), e.limit.to_string());
+                context.insert("count".to_string(), e.count.to_string());
+                context.insert("context".to_string(), e.context.clone());
+                if let Some(relation) = &e.relation {
+                    context.insert("relation".to_string(), relation.clone());
+                }
+                BehaviorError::with_detail(
+                    "LIMIT_EXCEEDED",
+                    e.message.clone(),
+                    ErrorDetail {
+                        kind: None,
+                        model: e.model.clone(),
+                        field: None,
+                        expected_type: None,
+                        actual_wire_type: None,
+                        raw_value: Some(e.message),
+                        context,
+                    },
+                )
+            }
+        }
+    }
+    pub fn runtime_error(e: BehaviorError) -> litedbmodel_runtime::RuntimeError {
+        if let Some(mut detail) = e.detail {
+            let limit = detail.context.remove("limit");
+            let count = detail.context.remove("count");
+            let context = detail.context.remove("context");
+            let relation = detail.context.remove("relation");
+            if let (Some(limit), Some(count), Some(context)) = (limit, count, context) {
+                return litedbmodel_runtime::RuntimeError::Limit(
+                    litedbmodel_runtime::LimitExceededError {
+                        limit: limit.parse().expect("generated limit"),
+                        count: count.parse().expect("generated count"),
+                        context,
+                        model: detail.model,
+                        relation,
+                        message: detail.raw_value.unwrap_or(e.message),
+                    },
+                );
+            }
+        }
+        litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure {
+            kind: e.code,
+            policy: "fail".to_string(),
+            sqlite_code: None,
+            message: e.message,
+        })
+    }
+
     // The handler holds a ConnSource (#135): a single Driver (routing=None, byte-identical single-pool)
     // OR a RoutingConfig (read→reader / write→writer, named-DB). node_* resolves the ctx per statement
     // via `self.src.ctx()` — reader/writer routing is applied ONCE in the central seam, never per op.
@@ -1842,7 +1936,7 @@ pub mod rel_posts_comments {
                 "comments",
             )
             .map(Wire::from_rows)
-            .map_err(cvt)
+            .map_err(cvt_runtime)
         }
     }
 
@@ -1876,8 +1970,4 @@ pub mod rel_posts_comments {
             })
         })
     }
-}
-#[cfg(feature = "oracle")]
-pub fn interpreter_bundle() -> litedbmodel_runtime::Node {
-    litedbmodel_runtime::Node::Object(vec![("dialect".to_string(), litedbmodel_runtime::Node::Str("sqlite".to_string())),("name".to_string(), litedbmodel_runtime::Node::Str("FindAll".to_string())),("readGraph".to_string(), litedbmodel_runtime::Node::Object(vec![("dialect".to_string(), litedbmodel_runtime::Node::Str("sqlite".to_string())),("name".to_string(), litedbmodel_runtime::Node::Str("FindAll".to_string())),("ir".to_string(), litedbmodel_runtime::Node::Object(vec![("irVersion".to_string(), litedbmodel_runtime::Node::Int(1i64)),("exprVersion".to_string(), litedbmodel_runtime::Node::Int(2i64)),("components".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Object(vec![("body".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Object(vec![("component".to_string(), litedbmodel_runtime::Node::Str("Select".to_string())),("id".to_string(), litedbmodel_runtime::Node::Str("n0".to_string())),("outType".to_string(), litedbmodel_runtime::Node::Object(vec![("arr".to_string(), litedbmodel_runtime::Node::Object(vec![("obj".to_string(), litedbmodel_runtime::Node::Object(vec![("id".to_string(), litedbmodel_runtime::Node::Str("int".to_string())),("email".to_string(), litedbmodel_runtime::Node::Str("string".to_string())),("name".to_string(), litedbmodel_runtime::Node::Str("string".to_string()))]))]))])),("ports".to_string(), litedbmodel_runtime::Node::Object(vec![("limit".to_string(), litedbmodel_runtime::Node::Int(100i64)),("order".to_string(), litedbmodel_runtime::Node::Str("id ASC".to_string())),("select".to_string(), litedbmodel_runtime::Node::Object(vec![("arr".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Str("id".to_string()),litedbmodel_runtime::Node::Str("email".to_string()),litedbmodel_runtime::Node::Str("name".to_string())]))])),("table".to_string(), litedbmodel_runtime::Node::Str("benchmark_users".to_string()))]))])])),("inputPorts".to_string(), litedbmodel_runtime::Node::Object(vec![])),("name".to_string(), litedbmodel_runtime::Node::Str("FindAll".to_string())),("output".to_string(), litedbmodel_runtime::Node::Object(vec![("ref".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Str("n0".to_string())]))])),("plan".to_string(), litedbmodel_runtime::Node::Object(vec![("concurrency".to_string(), litedbmodel_runtime::Node::Int(16i64)),("groups".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Int(0i64)])]))])),("outputType".to_string(), litedbmodel_runtime::Node::Object(vec![("arr".to_string(), litedbmodel_runtime::Node::Object(vec![("obj".to_string(), litedbmodel_runtime::Node::Object(vec![("id".to_string(), litedbmodel_runtime::Node::Str("int".to_string())),("email".to_string(), litedbmodel_runtime::Node::Str("string".to_string())),("name".to_string(), litedbmodel_runtime::Node::Str("string".to_string()))]))]))]))])]))])),("statementsById".to_string(), litedbmodel_runtime::Node::Object(vec![("n0".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Object(vec![("sql".to_string(), litedbmodel_runtime::Node::Str("SELECT id, email, name FROM benchmark_users".to_string())),("params".to_string(), litedbmodel_runtime::Node::Array(vec![]))]),litedbmodel_runtime::Node::Object(vec![("sql".to_string(), litedbmodel_runtime::Node::Str(" ORDER BY id ASC".to_string())),("params".to_string(), litedbmodel_runtime::Node::Array(vec![]))]),litedbmodel_runtime::Node::Object(vec![("sql".to_string(), litedbmodel_runtime::Node::Str(" LIMIT ?".to_string())),("params".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Int(100i64)]))])]))])),("optionalHeads".to_string(), litedbmodel_runtime::Node::Array(vec![])),("materializersByNode".to_string(), litedbmodel_runtime::Node::Object(vec![("n0".to_string(), litedbmodel_runtime::Node::Object(vec![("id".to_string(), litedbmodel_runtime::Node::Str("int32".to_string()))]))]))])),("optionalHeads".to_string(), litedbmodel_runtime::Node::Array(vec![])),("relations".to_string(), litedbmodel_runtime::Node::Object(vec![("posts".to_string(), litedbmodel_runtime::Node::Object(vec![("name".to_string(), litedbmodel_runtime::Node::Str("posts".to_string())),("kind".to_string(), litedbmodel_runtime::Node::Str("hasMany".to_string())),("parentKey".to_string(), litedbmodel_runtime::Node::Str("id".to_string())),("targetKey".to_string(), litedbmodel_runtime::Node::Str("author_id".to_string())),("dialect".to_string(), litedbmodel_runtime::Node::Str("sqlite".to_string())),("keyShape".to_string(), litedbmodel_runtime::Node::Str("single_json".to_string())),("sql".to_string(), litedbmodel_runtime::Node::Str("SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC".to_string())),("targetTable".to_string(), litedbmodel_runtime::Node::Str("benchmark_posts".to_string())),("select".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Str("id".to_string()),litedbmodel_runtime::Node::Str("title".to_string()),litedbmodel_runtime::Node::Str("author_id".to_string())])),("materializers".to_string(), litedbmodel_runtime::Node::Object(vec![("id".to_string(), litedbmodel_runtime::Node::Str("int32".to_string())),("author_id".to_string(), litedbmodel_runtime::Node::Str("int32".to_string()))])),("childRelations".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Object(vec![("name".to_string(), litedbmodel_runtime::Node::Str("comments".to_string())),("kind".to_string(), litedbmodel_runtime::Node::Str("hasMany".to_string())),("parentKey".to_string(), litedbmodel_runtime::Node::Str("id".to_string())),("targetKey".to_string(), litedbmodel_runtime::Node::Str("post_id".to_string())),("dialect".to_string(), litedbmodel_runtime::Node::Str("sqlite".to_string())),("keyShape".to_string(), litedbmodel_runtime::Node::Str("single_json".to_string())),("sql".to_string(), litedbmodel_runtime::Node::Str("SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC".to_string())),("targetTable".to_string(), litedbmodel_runtime::Node::Str("benchmark_comments".to_string())),("select".to_string(), litedbmodel_runtime::Node::Array(vec![litedbmodel_runtime::Node::Str("id".to_string()),litedbmodel_runtime::Node::Str("body".to_string()),litedbmodel_runtime::Node::Str("post_id".to_string())])),("materializers".to_string(), litedbmodel_runtime::Node::Object(vec![("id".to_string(), litedbmodel_runtime::Node::Str("int32".to_string())),("post_id".to_string(), litedbmodel_runtime::Node::Str("int32".to_string()))]))])]))]))]))])
 }

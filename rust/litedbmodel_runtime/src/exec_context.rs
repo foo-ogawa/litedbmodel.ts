@@ -1,9 +1,7 @@
 //! litedbmodel v2 SCP — the **ExecutionContext + central execute/run seam** (Phase A / #76, rust).
 //!
 //! The rust port of the TS contract-defining artifact `src/scp/exec-context.ts` (#75). It replaces
-//! the raw `&dyn Driver` threaded through [`execute_bundle`](crate::runtime::execute_bundle) /
-//! [`execute_read_graph`](crate::static_bundle::execute_read_graph) /
-//! [`execute_transaction_bundle`](crate::runtime::execute_transaction_bundle) / the relation walker
+//! the raw `&dyn Driver` threaded through generated read, write, transaction, and relation executors
 //! with an [`ExecutionContext`] that carries:
 //!
 //!   1. a **connection provider** — [`ExecutionContext::connection_for`]`(intent)` resolves WHICH
@@ -316,7 +314,7 @@ fn wrap_chain<T>(
 // ── The ExecutionContext (§2 / §5) — ONE interface ────────────────────────────
 
 /// The execution context threaded (explicitly, by argument — the approved rust-idiomatic decision,
-/// not a task-local) through `execute_bundle` / `execute_read_graph` / `execute_transaction_bundle` /
+/// not a task-local) through generated read / write / transaction /
 /// the relation walker in place of a raw `&dyn Driver`. It carries the connection provider (the
 /// primary driver + an optional pinned tx connection), the middleware chain, and derives a tx-scoped
 /// ctx via [`ExecutionContext::with_tx_connection`].
@@ -838,8 +836,8 @@ pub fn with_transaction<'a, R>(
 ///
 /// ```text
 ///   transaction(&ctx, Dialect::Postgres, &opts, |tx_ctx| {
-///       execute_transaction_bundle_ctx(a_bundle, a_input, tx_ctx)?;  // ← every op inside JOINS
-///       execute_transaction_bundle_ctx(b_bundle, b_input, tx_ctx)?;  //    this ONE boundary:
+///       execute_generated_tx_a(tx_ctx)?;  // ← every op inside JOINS
+///       execute_generated_tx_b(tx_ctx)?;  //    this ONE boundary:
 ///       Ok(())                                                        //    one conn, one BEGIN…COMMIT
 ///   })
 /// ```
@@ -857,7 +855,7 @@ pub fn with_transaction<'a, R>(
 ///
 /// `body` receives the tx-scoped ctx EXPLICITLY (the approved rust-idiomatic decision — no
 /// task-local; the TS pins it in an async-local, rust threads it by argument). Every operation `body`
-/// issues receives THAT ctx: a write via [`crate::runtime::execute_transaction_bundle_ctx`], a read
+/// issues receives THAT ctx: a generated write, a read
 /// via the read seam. Because that ctx's `in_transaction()` is already true (a connection is pinned),
 /// the write's own tx-bracketing DETECTS the ambient tx and JOINS it — running its statements on the
 /// pinned owned connection WITHOUT opening its own `BEGIN/COMMIT` (see
@@ -898,7 +896,7 @@ pub fn transaction_on<'a, R>(
 /// The [`TxDecision`]-returning form of [`transaction`] (Phase B / #82): `body` decides COMMIT vs
 /// ROLLBACK (a gate short-circuit returns [`TxDecision::Rollback`] with `committed:false` — a
 /// legitimate non-error outcome), an `Err` always rolls back + retries/re-raises. This is what the
-/// write-tx plan executor ([`crate::runtime::execute_transaction_bundle_ctx`]) drives, so a
+/// generated write-tx executor drives, so a
 /// gate-first plan run inside a user `transaction()` short-circuits correctly while still JOINING.
 ///
 /// Handles the three Phase B concerns the plain [`with_transaction_decided`] does not:

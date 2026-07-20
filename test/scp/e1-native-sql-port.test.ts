@@ -682,10 +682,10 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
     // the default actually takes effect: absent limit returns 20 rows (the seed has 111).
     expect((recentOracles[''] as unknown[]).length).toBe(20);
     expect((recentOracles['3'] as unknown[]).length).toBe(3);
-    expect(JSON.stringify(oracles['user500@example.com'])).toBe('[{"id":500,"email":"user500@example.com","name":"User 500"}]');
-    expect(JSON.stringify(oracles['nobody@example.com'])).toBe('[]');
+    expect(oracles['user500@example.com']).toEqual([{ id: 500, email: 'user500@example.com', name: 'User 500' }]);
+    expect(oracles['nobody@example.com']).toEqual([]);
     // the empty IN-list must be zero rows (not an error) — the #46 case.
-    expect(JSON.stringify(byIdsOracles[''])).toBe('[]');
+    expect(byIdsOracles['']).toEqual([]);
   });
 });
 

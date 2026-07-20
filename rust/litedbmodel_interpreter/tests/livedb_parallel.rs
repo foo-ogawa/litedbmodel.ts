@@ -9,15 +9,15 @@
 //! wall time is ≈ one sleep, not N sleeps — proving the plan's `concurrency` cashes out as REAL
 //! parallel DB I/O.
 //!
-//!   cargo test -p litedbmodel_runtime --features livedb --test livedb_parallel -- --nocapture
+//!   cargo test -p litedbmodel_interpreter --features livedb --test livedb_parallel -- --nocapture
 //!   (with LITEDBMODEL_LIVEDB_PARALLEL=1 + the docker DBs up)
 
 #![cfg(feature = "livedb")]
 
 use std::time::{Duration, Instant};
 
-use litedbmodel_runtime::Node;
-use litedbmodel_runtime::{dispatch_read_nodes_parallel, MysqlDriver, PostgresDriver, Scope};
+use litedbmodel_interpreter::Node;
+use litedbmodel_interpreter::{dispatch_read_nodes_parallel, MysqlDriver, PostgresDriver, Scope};
 
 /// Build a native `Node` fixture from a JSON string literal — the runtime's OWN native JSON parser
 /// (the runtime + these tests carry NO external JSON crate).

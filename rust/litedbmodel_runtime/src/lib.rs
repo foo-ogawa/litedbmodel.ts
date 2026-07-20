@@ -1,23 +1,6 @@
-//! litedbmodel v2 SCP — Rust thin runtime (WS7e, #34).
-//!
-//! Interprets the language-neutral §8 published bundle (`SqlBundle`: sql + fragment tree +
-//! closed-set Expression-IR param slots + transaction plan, dialect-tagged) and executes it
-//! against a SQL driver, semantics-identical to the TS reference (`src/scp`) and the audited
-//! Python/PHP sibling runtimes. The generic Expression-IR evaluation and the plan/map/wire/output
-//! orchestration are delegated to the shared common core `behavior-contracts` crate
-//! (`run_behavior` / `evaluate_expression`), mirroring the TS reference's npm dependency — this
-//! crate re-implements NO generic evaluator and NO SQL generation. The SQL text comes wholly from
-//! the published bundle; the old standalone `litedbmodel.rs` SQL generation is retired.
-//!
-//! Module map (mirrors the Python/Go/PHP ports):
-//!   - [`dialect`]       — the `?`→`$N` finalize + orderByNulls dialect strategy (spec §4/§8/§10).
-//!   - [`static_bundle`] — the static makeSQL render/execute (port of `src/scp/makesql/*`); the
-//!     SOLE read/render path (the reduced fragment-tree render is retired).
-//!   - [`driver`]        — the synchronous SQL-driver seam (in-proc `rusqlite`; PG/MySQL later).
-//!   - [`errors`]        — SQLite error → structured `SqlFailure` (kind + honored bc Policy Kind).
-//!   - [`value`]         — JSON ⇄ bc `Value` conversion + the `$bigint` conformance codec.
-//!   - [`runtime`]       — the thin facade dispatching to the read graph executor + the gate-first
-//!     write transaction.
+//! Native shared runtime: Driver/exec/Wire/bind/relation primitives and structured errors.
+//! Parser, evaluator, bundle execution, and relation descriptor walking live in the physically
+//! separate `litedbmodel_interpreter` crate, which depends on this crate in one direction only.
 
 pub mod codegen_exec;
 pub mod connection_routing;
@@ -26,14 +9,10 @@ pub mod driver;
 pub mod errors;
 pub mod exec_context;
 pub mod middleware;
-pub mod node;
 pub mod relation;
-#[cfg(feature = "interpreter")]
-pub mod relation_interpreter;
-pub mod runtime;
-pub mod static_bundle;
+pub mod sql_render;
 pub mod tx_options;
-pub mod value;
+pub mod value_codec;
 
 /// WS7g (#36) live PostgreSQL / MySQL drivers — behind the `livedb` feature so the default
 /// conformance build (SQLite bar) needs neither the `postgres` nor `mysql` crate.
@@ -90,28 +69,13 @@ pub use codegen_exec::{
     ArrayParamShape, ConnSource, ExecMode, RtNum, RtProbe, SkipFrag, ToWireArray, ToWireParam,
     Wire,
 };
-pub use node::{decode_value, encode_value, eval_expr, EvalError, Node};
-pub use relation::{build_relation_params, execute_relation_batch, hydrate_children, IntoKeyTuple};
-#[cfg(feature = "interpreter")]
-pub use relation_interpreter::{
-    read_bundle, read_bundle_pooled, stitch_relation, stitch_relation_tree,
-};
-pub use runtime::{
-    execute_bundle, execute_bundle_pooled, execute_transaction_bundle,
-    execute_transaction_bundle_ctx, order_by_nulls, render_read_primary_bundle, ENTITY_ROOT,
-};
-pub use static_bundle::{
-    dispatch_read_nodes_parallel, execute_read_graph, execute_read_graph_orchestrator_for_test,
-    execute_read_graph_pooled, render_placeholders, render_read_primary, render_statements,
-    render_tx_op, RenderedSql, NODE_COMPONENT, SCOPE_PORT,
-};
+pub use relation::{execute_relation_batch, hydrate_children, IntoKeyTuple};
+pub use sql_render::render_placeholders;
 pub use tx_options::{
     begin_statements, check_write_allowed, is_connection_error, is_retryable_tx_error,
     isolation_prelude, write_in_read_only, write_outside_transaction, Dialect as TxDialect,
     IsolationLevel, TransactionOptions,
 };
-pub use value::{decode_scope, Scope};
 
-/// The bc runtime `Value` (re-exported from `behavior-contracts`) — the read/exec result type of
-/// [`execute_bundle`] / [`read_bundle_pooled`] and the row shape [`stitch_relation`] takes/returns.
+/// The bc runtime value used by native driver, wire, parameter, and relation primitives.
 pub use behavior_contracts::Value;

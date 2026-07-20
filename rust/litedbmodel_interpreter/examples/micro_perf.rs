@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use behavior_contracts::Value;
-use litedbmodel_runtime::Node;
-use litedbmodel_runtime::{
+use litedbmodel_interpreter::Node;
+use litedbmodel_interpreter::{
     execute_bundle, read_bundle_pooled, Driver, PreparedStatement, SqlFailure, SqliteDriver,
     TxConnection,
 };
@@ -147,7 +147,7 @@ fn main() {
         std::hint::black_box(&out);
     });
 
-    println!("=== litedbmodel_runtime micro re-measure (mock in-proc SQLite driver) ===");
+    println!("=== litedbmodel_interpreter micro re-measure (mock in-proc SQLite driver) ===");
     println!("iters/op = {ITERS}, warmup = {WARM}");
     println!("find    : {fus:7.2} µs/op   {fal:6.0} allocs/op");
     println!("hasMany : {hus:7.2} µs/op   {hal:6.0} allocs/op");

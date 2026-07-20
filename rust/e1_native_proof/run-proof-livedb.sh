@@ -9,8 +9,9 @@
 # sqlite files — so the committed tree stays sqlite (the per-dialect modules are regenerated artifacts).
 #
 #   bash run-proof-livedb.sh <postgres|mysql>
-set -uo pipefail
+set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$HERE/../.."
 PROOF_DIR=/tmp/e1proof
 DIALECT="${1:?usage: run-proof-livedb.sh <postgres|mysql>}"
 case "$DIALECT" in
@@ -26,12 +27,21 @@ echo "── regenerate ${DIALECT} single-file modules (TS leg) ──"
 
 # Swap the <dialect> modules into src/ (backing up the committed sqlite ones), restore on exit.
 BACKUP="$(mktemp -d)"
+ORM_BACKUP="$(mktemp -d)"
 cp "$HERE"/src/generated_*.rs "$BACKUP/"
-restore() { cp "$BACKUP"/*.rs "$HERE/src/"; rm -rf "$BACKUP"; }
+cp "$ROOT"/rust/orm_bench/src/gen/generated_*.rs "$ORM_BACKUP/"
+restore() {
+  cp "$BACKUP"/*.rs "$HERE/src/"
+  cp "$ORM_BACKUP"/*.rs "$ROOT/rust/orm_bench/src/gen/"
+  rm -rf "$BACKUP" "$ORM_BACKUP"
+}
 trap restore EXIT
 for m in "${MODULES[@]}"; do
   cp "$PROOF_DIR/$DIALECT/generated_$m.rs" "$HERE/src/generated_$m.rs"
 done
+
+( cd "$ROOT" && npx tsx benchmark/crosslang/codegen-build.ts sqlite && npx tsx benchmark/crosslang/oracle-fixture-build.ts )
+cp /tmp/ormbench/"$DIALECT"/generated_*.rs "$ROOT/rust/orm_bench/src/gen/"
 
 echo "── build the livedb binary (--features livedb) ──"
 cargo build --quiet --features livedb --manifest-path "$HERE/Cargo.toml" || { echo "  FAIL  livedb build"; exit 1; }
@@ -42,6 +52,9 @@ for case in 'relbatch 1' 'relsingle 7'; do
   qc="$("$BIN" "$1" "$SPEC" "$2" 2>&1 >/dev/null | sed -n 's/^queries=//p')"
   if [[ "$qc" == "2" ]]; then echo "  PASS  $1 uses 1 parent + 1 batch query"; else echo "  FAIL  $1 queries=$qc"; fail=1; fi
 done
+
+echo "── direct native/interpreter result + DB-state oracle ──"
+cargo run --quiet --manifest-path "$ROOT/rust/Cargo.toml" -p litedbmodel_oracle --features livedb -- "$DIALECT" "$SPEC"
 
 echo
 if [[ $fail -eq 0 ]]; then echo "LIVE-DB PROOF ($DIALECT): ALL LEGS PASS"; else echo "LIVE-DB PROOF ($DIALECT): FAILURES ABOVE"; fi

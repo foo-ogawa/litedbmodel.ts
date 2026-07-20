@@ -69,23 +69,11 @@ pub struct BehaviorError {
 
 impl BehaviorError {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        BehaviorError {
-            code: code.into(),
-            message: message.into(),
-            detail: None,
-        }
+        BehaviorError { code: code.into(), message: message.into(), detail: None }
     }
     /// The same failure carrying the leaf's structured Error Value.
-    pub fn with_detail(
-        code: impl Into<String>,
-        message: impl Into<String>,
-        detail: ErrorDetail,
-    ) -> Self {
-        BehaviorError {
-            code: code.into(),
-            message: message.into(),
-            detail: Some(Box::new(detail)),
-        }
+    pub fn with_detail(code: impl Into<String>, message: impl Into<String>, detail: ErrorDetail) -> Self {
+        BehaviorError { code: code.into(), message: message.into(), detail: Some(Box::new(detail)) }
     }
     /// The stable failure code (byte-equal to run_behavior) WITHOUT a bc-runtime type.
     pub fn code(&self) -> &str {
@@ -111,10 +99,7 @@ impl std::error::Error for BehaviorError {}
 fn op_failed(node: &str, policy: &str, e: BehaviorError) -> BehaviorError {
     BehaviorError {
         code: "OP_FAILED".to_string(),
-        message: format!(
-            "operation '{node}' failed under '{policy}' policy: {}",
-            e.message
-        ),
+        message: format!("operation '{node}' failed under '{policy}' policy: {}", e.message),
         detail: e.detail,
     }
 }
@@ -124,13 +109,7 @@ fn op_failed(node: &str, policy: &str, e: BehaviorError) -> BehaviorError {
 // (TYPE_MISMATCH / MISSING_PROP) so the covered read stays equivalent to run_behavior; detail.kind
 // distinguishes typeMismatch / missingField / overflow.
 #[allow(dead_code)]
-fn de_type_mismatch(
-    model: &str,
-    field: &str,
-    expected: &str,
-    actual_wire: String,
-    raw: String,
-) -> BehaviorError {
+fn de_type_mismatch(model: &str, field: &str, expected: &str, actual_wire: String, raw: String) -> BehaviorError {
     BehaviorError::with_detail(
         "TYPE_MISMATCH",
         format!("node '{model}': {field}: expected {expected}, got {actual_wire}"),
@@ -164,13 +143,7 @@ fn de_missing_field(model: &str, field: &str, expected: &str) -> BehaviorError {
 }
 
 #[allow(dead_code)]
-fn de_overflow(
-    model: &str,
-    field: &str,
-    expected: &str,
-    actual_wire: String,
-    raw: String,
-) -> BehaviorError {
+fn de_overflow(model: &str, field: &str, expected: &str, actual_wire: String, raw: String) -> BehaviorError {
     let message = format!("node '{model}': {field}: {raw} is outside the range of {expected}");
     BehaviorError::with_detail(
         "TYPE_MISMATCH",
@@ -190,17 +163,14 @@ fn de_overflow(
 #[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct T0 {
-    pub id: i64,       // "id"
+    pub id: i64, // "id"
     pub email: String, // "email"
-    pub name: String,  // "name"
+    pub name: String, // "name"
 }
 
 #[allow(dead_code)]
 fn unknown_component(component: &str) -> BehaviorError {
-    BehaviorError::new(
-        "UNKNOWN_COMPONENT",
-        format!("component '{component}' has no handler (fail-closed)"),
-    )
+    BehaviorError::new("UNKNOWN_COMPONENT", format!("component '{component}' has no handler (fail-closed)"))
 }
 
 // leaf_failure — a failure the LEAF reports (test glue): the runner assigns the node's failure code
@@ -217,8 +187,8 @@ fn leaf_failure(message: impl Into<String>) -> BehaviorError {
 #[derive(Clone)]
 pub struct PortsNRCreateUserN0 {
     pub f_sql: String, // "sql"
-    pub f_p0: String,  // "p0"
-    pub f_p1: String,  // "p1"
+    pub f_p0: String, // "p0"
+    pub f_p1: String, // "p1"
 }
 
 // CONCRETE per-component input structs (fields = inputPorts).
@@ -227,7 +197,7 @@ pub struct PortsNRCreateUserN0 {
 #[derive(Default)]
 pub struct InNRCreateUser {
     pub email: String, // "email"
-    pub name: String,  // "name"
+    pub name: String, // "name"
 }
 
 // CONCRETE per-component handler traits (one node_* method per node — native ports IN, WIRE value OUT).
@@ -238,11 +208,7 @@ pub struct InNRCreateUser {
 // node's concrete native result (see INTEGRATION.md §6).
 pub trait HandlerNRCreateUser {
     type Wire: WireValue + Send;
-    fn node_n0(
-        &self,
-        ports: &PortsNRCreateUserN0,
-        bound: Option<String>,
-    ) -> Result<Self::Wire, BehaviorError>;
+    fn node_n0(&self, ports: &PortsNRCreateUserN0, bound: Option<String>) -> Result<Self::Wire, BehaviorError>;
 }
 
 // strict de-box wire seam — the consumer implements WireValue (+ WireRow/WireList reached via
@@ -255,30 +221,15 @@ pub trait HandlerNRCreateUser {
 // "S"/"N"/"BOOL"); raw_value is the offending value stringified. Concrete enums — no boxed Value.
 pub enum Probe<T> {
     Got(T),
-    Wrong {
-        actual_wire_type: String,
-        raw_value: String,
-    },
-    Null {
-        actual_wire_type: String,
-        raw_value: String,
-    },
+    Wrong { actual_wire_type: String, raw_value: String },
+    Null { actual_wire_type: String, raw_value: String },
     Absent,
 }
 
 pub enum NumProbe {
-    Got {
-        raw: String,
-        actual_wire_type: String,
-    },
-    Wrong {
-        actual_wire_type: String,
-        raw_value: String,
-    },
-    Null {
-        actual_wire_type: String,
-        raw_value: String,
-    },
+    Got { raw: String, actual_wire_type: String },
+    Wrong { actual_wire_type: String, raw_value: String },
+    Null { actual_wire_type: String, raw_value: String },
     Absent,
 }
 
@@ -347,24 +298,10 @@ pub fn run_native_raw_struct_CreateUser<H: HandlerNRCreateUser>(
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (Insert) ──
-    let ports_n0 = PortsNRCreateUserN0 {
-        f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id, email, name"
-            .to_string(),
-        f_p0: in_.email.clone(),
-        f_p1: in_.name.clone(),
-    };
+    let ports_n0 = PortsNRCreateUserN0 { f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id, email, name".to_string(), f_p0: in_.email.clone(), f_p1: in_.name.clone() };
     let wire_n0 = match handlers.node_n0(&ports_n0, None) {
         Ok(r) => r,
-        Err(e) => {
-            return Err(BehaviorError {
-                code: "OP_FAILED".to_string(),
-                message: format!(
-                    "operation '{}' failed under 'fail' policy: {}",
-                    "n0", e.message
-                ),
-                detail: e.detail,
-            })
-        }
+        Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
     };
     *cell_n0.borrow_mut() = match wire_n0.as_list() {
         Probe::Got(l0) => {
@@ -373,130 +310,37 @@ pub fn run_native_raw_struct_CreateUser<H: HandlerNRCreateUser>(
                 acc0.push(match l0.elem_row(i0) {
                     Probe::Got(sub1) => T0 {
                         id: match sub1.probe_number("id") {
-                            NumProbe::Got {
-                                raw,
-                                actual_wire_type,
-                            } => match raw.parse::<i64>() {
+                            NumProbe::Got { raw, actual_wire_type } => match raw.parse::<i64>() {
                                 Ok(n) => n,
-                                Err(_) => {
-                                    return Err(de_overflow(
-                                        "T0",
-                                        "id",
-                                        "int",
-                                        actual_wire_type,
-                                        raw,
-                                    ))
-                                }
+                                Err(_) => return Err(de_overflow("T0", "id", "int", actual_wire_type, raw)),
                             },
-                            NumProbe::Wrong {
-                                actual_wire_type,
-                                raw_value,
-                            }
-                            | NumProbe::Null {
-                                actual_wire_type,
-                                raw_value,
-                            } => {
-                                return Err(de_type_mismatch(
-                                    "T0",
-                                    "id",
-                                    "int",
-                                    actual_wire_type,
-                                    raw_value,
-                                ))
-                            }
+                            NumProbe::Wrong { actual_wire_type, raw_value }
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "id", "int", actual_wire_type, raw_value)),
                             NumProbe::Absent => return Err(de_missing_field("T0", "id", "int")),
                         },
                         email: match sub1.probe_string("email") {
                             Probe::Got(v) => v,
-                            Probe::Wrong {
-                                actual_wire_type,
-                                raw_value,
-                            }
-                            | Probe::Null {
-                                actual_wire_type,
-                                raw_value,
-                            } => {
-                                return Err(de_type_mismatch(
-                                    "T0",
-                                    "email",
-                                    "string",
-                                    actual_wire_type,
-                                    raw_value,
-                                ))
-                            }
+                            Probe::Wrong { actual_wire_type, raw_value }
+                            | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "email", "string", actual_wire_type, raw_value)),
                             Probe::Absent => return Err(de_missing_field("T0", "email", "string")),
                         },
                         name: match sub1.probe_string("name") {
                             Probe::Got(v) => v,
-                            Probe::Wrong {
-                                actual_wire_type,
-                                raw_value,
-                            }
-                            | Probe::Null {
-                                actual_wire_type,
-                                raw_value,
-                            } => {
-                                return Err(de_type_mismatch(
-                                    "T0",
-                                    "name",
-                                    "string",
-                                    actual_wire_type,
-                                    raw_value,
-                                ))
-                            }
+                            Probe::Wrong { actual_wire_type, raw_value }
+                            | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "name", "string", actual_wire_type, raw_value)),
                             Probe::Absent => return Err(de_missing_field("T0", "name", "string")),
                         },
                     },
-                    Probe::Wrong {
-                        actual_wire_type,
-                        raw_value,
-                    }
-                    | Probe::Null {
-                        actual_wire_type,
-                        raw_value,
-                    } => {
-                        return Err(de_type_mismatch(
-                            "n0",
-                            "n0",
-                            "obj{id:int,email:string,name:string}",
-                            actual_wire_type,
-                            raw_value,
-                        ))
-                    }
-                    Probe::Absent => {
-                        return Err(de_missing_field(
-                            "n0",
-                            "n0",
-                            "obj{id:int,email:string,name:string}",
-                        ))
-                    }
+                    Probe::Wrong { actual_wire_type, raw_value }
+                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:int,email:string,name:string}", actual_wire_type, raw_value)),
+                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:int,email:string,name:string}")),
                 });
             }
             acc0
-        }
-        Probe::Wrong {
-            actual_wire_type,
-            raw_value,
-        }
-        | Probe::Null {
-            actual_wire_type,
-            raw_value,
-        } => {
-            return Err(de_type_mismatch(
-                "n0",
-                "n0",
-                "arr(obj{id:int,email:string,name:string})",
-                actual_wire_type,
-                raw_value,
-            ))
-        }
-        Probe::Absent => {
-            return Err(de_missing_field(
-                "n0",
-                "n0",
-                "arr(obj{id:int,email:string,name:string})",
-            ))
-        }
+        },
+        Probe::Wrong { actual_wire_type, raw_value }
+        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:int,email:string,name:string})", actual_wire_type, raw_value)),
+        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:int,email:string,name:string})")),
     };
     produced_n0.set(true);
     let __out = cell_n0.borrow().clone();
@@ -508,6 +352,7 @@ pub fn run_native_raw_struct_CreateUser<H: HandlerNRCreateUser>(
 // (the consumer builds the CONCRETE InNR_<comp> input + implements the CONCRETE HandlerNR<comp> trait).
 // See INTEGRATION.md §6.
 pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["CreateUser"];
+
 
 // litedbmodel static runtime adapter for `generated_createuser` (co-located with the bc core).
 // bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
@@ -523,64 +368,30 @@ litedbmodel_runtime::wire_impls!();
 
 /// Map a runtime SQL failure to the module-local BehaviorError (byte-equal codes: the bc runner
 /// re-wraps a node failure as OP_FAILED regardless, so only the message/detail cross this seam).
-fn cvt(e: SqlFailure) -> BehaviorError {
-    BehaviorError::new(e.kind, e.message)
-}
+fn cvt(e: SqlFailure) -> BehaviorError { BehaviorError::new(e.kind, e.message) }
 
 // The handler holds a ConnSource (#135): a single Driver (routing=None, byte-identical single-pool)
 // OR a RoutingConfig (read→reader / write→writer, named-DB). node_* resolves the ctx per statement
 // via `self.src.ctx()` — reader/writer routing is applied ONCE in the central seam, never per op.
-pub struct Rt<'a> {
-    src: litedbmodel_runtime::ConnSource<'a>,
-}
+pub struct Rt<'a> { src: litedbmodel_runtime::ConnSource<'a> }
 impl<'a> HandlerNRCreateUser for Rt<'a> {
     type Wire = Wire;
-    fn node_n0(
-        &self,
-        ports: &PortsNRCreateUserN0,
-        _bound: Option<String>,
-    ) -> Result<Wire, BehaviorError> {
+    fn node_n0(&self, ports: &PortsNRCreateUserN0, _bound: Option<String>) -> Result<Wire, BehaviorError> {
         let ctx = self.src.ctx().map_err(cvt)?;
-        litedbmodel_runtime::exec(
-            &ctx,
-            &ports.f_sql,
-            &[
-                litedbmodel_runtime::wp(&ports.f_p0),
-                litedbmodel_runtime::wp(&ports.f_p1),
-            ],
-            litedbmodel_runtime::ExecMode::Rows,
-        )
-        .map_err(cvt)
+        litedbmodel_runtime::exec(&ctx, &ports.f_sql, &[litedbmodel_runtime::wp(&ports.f_p0), litedbmodel_runtime::wp(&ports.f_p1)], litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
     }
 }
 
 /// The litedbmodel-consumer entry: build the runtime-backed handler for `CreateUser` over a SINGLE
 /// driver (byte-identical single-pool path). The consumer calls
 /// `run_native_raw_struct_CreateUser(&handler(driver), in_)` — supplying NO node_* itself.
-pub fn handler(driver: &dyn Driver) -> Rt<'_> {
-    Rt {
-        src: litedbmodel_runtime::ConnSource::Driver(driver),
-    }
-}
+pub fn handler(driver: &dyn Driver) -> Rt<'_> { Rt { src: litedbmodel_runtime::ConnSource::Driver(driver) } }
 
 /// The ROUTED consumer entry (#135): the handler routes each read to the reader pool and each write
 /// to the writer pool (named-DB via the registry) through the SAME central `connection_for` seam.
-pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> {
-    Rt {
-        src: litedbmodel_runtime::ConnSource::Routing(routing),
-    }
-}
+pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> { Rt { src: litedbmodel_runtime::ConnSource::Routing(routing) } }
 
-pub fn run(
-    driver: &dyn Driver,
-    in_: InNRCreateUser,
-) -> Result<Vec<T0>, litedbmodel_runtime::RuntimeError> {
-    run_native_raw_struct_CreateUser(&handler(driver), in_).map_err(|e| {
-        litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure {
-            kind: e.code,
-            policy: "fail".to_string(),
-            sqlite_code: None,
-            message: e.message,
-        })
-    })
+pub fn run(driver: &dyn Driver, in_: InNRCreateUser) -> Result<Vec<T0>, litedbmodel_runtime::RuntimeError> {
+    run_native_raw_struct_CreateUser(&handler(driver), in_)
+        .map_err(|e| litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure { kind: e.code, policy: "fail".to_string(), sqlite_code: None, message: e.message }))
 }

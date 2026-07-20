@@ -243,3 +243,17 @@ export function buildOps(dialect: OrmDialect = 'sqlite'): BenchOp[] {
     B('nestedUpsert', 'tx', txBundle(d, 'NestedUpsert', nestedUpsertPlan(d)), { email: 'user1@example.com', name: 'NUp', title: 'NUp Post' }),
   ];
 }
+
+/** Canonical SCP/BC source for the relation hard-limit oracle fixture. */
+export function buildRelationLimitOracle(dialect: OrmDialect): BenchOp {
+  const resolve = resolveFor(dialect);
+  const relation = { ...postsOfUser(dialect), hardLimit: 1 } as RelationDecl;
+  return {
+    id: 'relationLimit',
+    kind: 'read+rel',
+    bundle: compileBundle(USERS, 'FindAll', [relation], dialect, undefined, resolve),
+    resolve,
+    input: {},
+    withRel: 'posts',
+  };
+}

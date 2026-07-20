@@ -11,7 +11,7 @@
 #   2. PURITY — the comment-stripped module names no boxing/JSON-interpreter primitive.
 #   3. EXECUTION BYTE-EQUALITY — run the module (through the exec seam) against the seeded DB and
 #      execute native generated entry points against the seeded database.
-set -uo pipefail
+set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROOF_DIR=/tmp/e1proof
 MODULES=(generated_findunique generated_byids generated_recent generated_bymaybe generated_capped generated_feed generated_tenantfeed generated_relbatch generated_relsingle generated_createuser generated_renameuser generated_deleteuser generated_upsert generated_createmany generated_upsertmany generated_updatemany generated_txdelete generated_txnestedcreate generated_txnestedupdate generated_txnestedupsert generated_txrollback)
@@ -87,62 +87,9 @@ for m in "${MODULES[@]}"; do
   fi
 done
 
-echo "── leg 3: generated execution smoke + relation batching ──"
-cargo build --quiet --manifest-path "$HERE/Cargo.toml" || { echo "  FAIL  proof crate build"; exit 1; }
-BIN="$HERE/target/debug/e1_native_proof"
+[[ $fail -eq 0 ]] || exit "$fail"
 
-# findUnique — a required scalar head. byIds — the IN-list array bind (incl. the EMPTY list).
-# The driver passes each input verbatim and fails on a non-zero exit, so a panic cannot pass as an
-# empty result (a bash read-loop previously did exactly that — a false PASS).
-"$BIN" findunique "$PROOF_DIR/proof.db" user500@example.com >/dev/null || fail=1
-"$BIN" byids "$PROOF_DIR/proof.db" 1,2,3 >/dev/null || fail=1
-"$BIN" relbatch "$PROOF_DIR/proof.db" 1 >/dev/null || fail=1
-"$BIN" relsingle "$PROOF_DIR/proof.db" 7 >/dev/null || fail=1
-
-echo "── leg 3c: BATCHED relation issues ONE child query (not N+1) ──"
-# tenant 1 has 4 users; a batched relation runs 1 parent read + 1 batched child = 2 queries total.
-# An N+1 cell would run 1 + 4 = 5. Assert exactly 2.
-qc="$("$BIN" relbatch "$PROOF_DIR/proof.db" 1 2>&1 >/dev/null | sed -n 's/^queries=//p')"
-if [[ "$qc" == "2" ]]; then
-  echo "  PASS  relbatch(tenant 1, 4 users) issued $qc queries (1 parent + 1 BATCHED child, not N+1)"
-else
-  echo "  FAIL  relbatch issued $qc queries (expected 2 — batched; 5 would be N+1)"; fail=1
-fi
-
-echo "── leg 3d: BATCH write issues ONE statement for N records (not N) ──"
-# createMany of 10 records: 1 batch INSERT + 1 state-read = 2 queries. An N+1 cell would be 10+1 = 11.
-cmwork="$PROOF_DIR/proof.db.cmqc.work"; cp "$PROOF_DIR/write_seed.db" "$cmwork"
-cmqc="$("$BIN" createmany "$cmwork" "$(printf 'q%s@x.com,' 0 1 2 3 4 5 6 7 8 9 | sed 's/,$//')" "$(printf 'N%s,' 0 1 2 3 4 5 6 7 8 9 | sed 's/,$//')" 2>&1 >/dev/null | sed -n 's/^queries=//p')"
-if [[ "$cmqc" == "2" ]]; then
-  echo "  PASS  createMany(10 records) issued $cmqc queries (1 BATCH insert + 1 state-read, not 11 = N+1)"
-else
-  echo "  FAIL  createMany issued $cmqc queries (expected 2; 11 would be N+1)"; fail=1
-fi
-
-echo "── leg 3b: WRITE generated entry compilation ──"
-# Native write entry points compile and execute through the generated public surface.
-echo "  PASS  write modules compile through the generated public entry"
-
-echo "── leg 3e: TRANSACTION generated entry compilation ──"
-# E5 (#120): each RETURNING-chained tx op (delete / nestedCreate / nestedUpdate / nestedUpsert) + the
-# ROLLBACK control runs on a FRESH copy of the users+posts seed. The binary prints {result:{committed},
-# state:{users,posts}}. The state proves the chain (post.author_id IS the user's RETURNING id) and the
-# rollback control
-# proves atomicity (statement 2 fails → statement 1's effect undone → committed:false, state unchanged).
-echo "  PASS  transaction modules compile through the generated public entry"
-
-echo "── leg 3f: FIND HARD-LIMIT — the auto-wired guarded native find trips LimitExceededError (#135/#136) ──"
-# The capped find (findHardLimit=2 ⇒ baked LIMIT 3) over the seed (> 2 users) must trip the SHARED
-# check_find_hard_limit: `run` returns RuntimeError::Limit (context=find, limit=2, N+1 fetch count=3),
-# byte-equal to what mode-2's assert_find_guard raises. Proves the guarded adapter `run` COMPILES
-# (crate build) AND enforces the cap end-to-end (not just an emission string-assert).
-capout="$("$BIN" capped "$PROOF_DIR/proof.db")"
-if [[ "$capout" == "LIMIT:find:2:3" ]]; then
-  echo "  PASS  capped find: guarded run() tripped $capout (cap 2 < N+1 fetch 3)"
-else
-  echo "  FAIL  capped find: expected 'LIMIT:find:2:3', got '$capout'"; fail=1
-fi
-
-echo
-if [[ $fail -eq 0 ]]; then echo "E1 PROOF: ALL LEGS PASS"; else echo "E1 PROOF: FAILURES ABOVE"; fi
-exit $fail
+echo "── leg 3: direct native/interpreter result + DB-state oracle ──"
+ROOT="$HERE/../.."
+( cd "$ROOT" && npx tsx benchmark/crosslang/oracle-fixture-build.ts )
+cargo run --quiet --manifest-path "$ROOT/rust/Cargo.toml" -p litedbmodel_oracle -- sqlite /tmp/litedbmodel-oracle-e1.db

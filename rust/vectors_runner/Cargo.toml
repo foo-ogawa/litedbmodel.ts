@@ -11,5 +11,5 @@ name = "vectors_runner"
 path = "src/main.rs"
 
 [dependencies]
-litedbmodel_runtime = { path = "../litedbmodel_runtime" }
+litedbmodel_interpreter = { path = "../litedbmodel_interpreter" }
 serde_json = { workspace = true }

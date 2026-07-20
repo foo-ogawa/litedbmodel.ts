@@ -23,8 +23,6 @@ mod gen;
 
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
-#[cfg(feature = "oracle")]
-use litedbmodel_runtime::{encode_value, read_bundle, Node, Value};
 use litedbmodel_runtime::{Driver, SqlFailure, SqliteDriver};
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
@@ -332,13 +330,6 @@ fn main() {
         run_safety(dialect, spec);
         return;
     }
-    #[cfg(feature = "oracle")]
-    if args.get(1).map(String::as_str) == Some("oracle-tree") {
-        let dialect = args.get(2).expect("oracle-tree <dialect> <spec>");
-        let spec = args.get(3).expect("oracle-tree <dialect> <spec>");
-        run_tree_oracle(dialect, spec);
-        return;
-    }
     let dialect = args
         .get(1)
         .expect("usage: orm_bench <dialect> <spec> [reps] [warmup]")
@@ -370,81 +361,6 @@ fn main() {
     }
 }
 
-#[cfg(feature = "oracle")]
-fn run_tree_oracle(dialect: &str, spec: &str) {
-    let driver = open_driver(spec);
-    let d: &dyn Driver = driver.as_ref();
-    reseed(d, dialect);
-    let parents =
-        gen::generated_nestedRelations::run(d, gen::generated_nestedRelations::InNRFindAll)
-            .expect("native parents");
-    let native =
-        gen::generated_nestedRelations::hydrate_posts(parents, d).expect("native nested tree");
-    let native_value = Value::Arr(
-        native
-            .into_iter()
-            .map(|(user, posts)| {
-                Value::Obj(vec![
-                    ("id".into(), Value::Int(user.id)),
-                    ("email".into(), Value::Str(user.email)),
-                    ("name".into(), Value::Str(user.name)),
-                    (
-                        "posts".into(),
-                        Value::Arr(
-                            posts
-                                .into_iter()
-                                .map(|(post, comments)| {
-                                    Value::Obj(vec![
-                                        ("id".into(), Value::Int(post.id)),
-                                        ("title".into(), Value::Str(post.title)),
-                                        ("author_id".into(), Value::Int(post.author_id)),
-                                        (
-                                            "comments".into(),
-                                            Value::Arr(
-                                                comments
-                                                    .into_iter()
-                                                    .map(|comment| {
-                                                        Value::Obj(vec![
-                                                            ("id".into(), Value::Int(comment.id)),
-                                                            (
-                                                                "body".into(),
-                                                                Value::Str(comment.body),
-                                                            ),
-                                                            (
-                                                                "post_id".into(),
-                                                                Value::Int(comment.post_id),
-                                                            ),
-                                                        ])
-                                                    })
-                                                    .collect(),
-                                            ),
-                                        ),
-                                    ])
-                                })
-                                .collect(),
-                        ),
-                    ),
-                ])
-            })
-            .collect(),
-    );
-    let input = Node::Object(Vec::new());
-    let names = vec!["posts".to_string()];
-    let interpreter = read_bundle(
-        &gen::generated_nestedRelations::interpreter_bundle(),
-        &input,
-        d,
-        &names,
-    )
-    .expect("interpreter nested tree");
-    assert_eq!(
-        encode_value(&native_value).to_json_string(),
-        encode_value(&interpreter).to_json_string(),
-        "nestedRelations native/interpreter tree mismatch"
-    );
-    println!("nestedRelations {dialect}: native == interpreter (full posts/comments tree)");
-}
-
 // ── #129 safety proof: N+1-avoidance (query counts) via the CountingDriver. hardLimit + reader/writer
 //    routing are proven by the dedicated adapter entries (capped find, handler_routed) — see report. ─
 fn run_safety(dialect: &str, spec: &str) {
@@ -458,24 +374,17 @@ fn run_safety(dialect: &str, spec: &str) {
         prepare_op(op, d, spec)(0);
         QUERY_COUNT.load(Ordering::SeqCst)
     };
-    // A single-level batched relation = 1 parent + 1 batched child = 2 (not 1+N).
-    println!(
-        "nestedFindAll queries={} (expect 2: 1 parent + 1 batched child)",
-        count("nestedFindAll")
-    );
-    println!(
-        "nestedFindUnique queries={} (expect 2)",
-        count("nestedFindUnique")
-    );
-    // A 3-level chain = 1 per level = 3 (not N+1 per level).
-    println!(
-        "nestedRelations queries={} (expect 3: users + posts + comments)",
-        count("nestedRelations")
-    );
-    println!(
-        "compositeRelations queries={} (expect 3)",
-        count("compositeRelations")
-    );
+    let expect_queries = |op: &str, expected: usize| {
+        let actual = count(op);
+        assert_eq!(actual, expected, "{op} query-count regression");
+        println!("{op} queries={actual} (expect {expected})");
+    };
+    // Every relation benchmark cell is executed and fail-closed on its fixed batched query count.
+    expect_queries("nestedFindAll", 2);
+    expect_queries("nestedFindFirst", 2);
+    expect_queries("nestedFindUnique", 2);
+    expect_queries("nestedRelations", 3);
+    expect_queries("compositeRelations", 3);
     reseed(d, dialect);
     let users = gen::generated_nestedRelations::run(d, gen::generated_nestedRelations::InNRFindAll)
         .expect("nested relation parents");
@@ -493,12 +402,9 @@ fn run_safety(dialect: &str, spec: &str) {
     println!("nestedRelations returned comments={comment_count} (typed tree, not discarded)");
     // A batch write = 1 statement for N records (not N).
     reseed(d, dialect);
-    println!(
-        "createMany queries={} (expect 1: one batched INSERT for 10 records)",
-        count("createMany")
-    );
+    expect_queries("createMany", 1);
     reseed(d, dialect);
-    println!("updateMany queries={} (expect 1)", count("updateMany"));
+    expect_queries("updateMany", 1);
 
     // ── find hardLimit (#135/#136): the GUARDED native find (findHardLimit=2, baked LIMIT 3) over the
     //    seed (>2 users) trips the shared check_find_hard_limit — the same guard core the ORM read

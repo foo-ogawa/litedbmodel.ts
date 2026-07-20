@@ -211,35 +211,31 @@ fn leaf_failure(message: impl Into<String>) -> BehaviorError {
 }
 
 // Native ports structs (one per componentRef node; typed per the static port type — CONCRETE).
-// PortsNRFindFirstN0 — CONCRETE native ports for node 'n0' (Select). Typed fields per the
+// PortsNRFindAllN0 — CONCRETE native ports for node 'n0' (Select). Typed fields per the
 // static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
-pub struct PortsNRFindFirstN0 {
+pub struct PortsNRFindAllN0 {
     pub f_sql: String, // "sql"
-    pub f_p0: String,  // "p0"
-    pub f_p1: i64,     // "p1"
+    pub f_p0: i64,     // "p0"
 }
 
 // CONCRETE per-component input structs (fields = inputPorts).
-// InNRFindFirst — the CONCRETE input for 'FindFirst' (fields = inputPorts; typed, consumer-built —
-// NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+// InNRFindAll — the CONCRETE input for 'FindAll' (no input ports).
 #[derive(Default)]
-pub struct InNRFindFirst {
-    pub name: String, // "name"
-}
+pub struct InNRFindAll;
 
 // CONCRETE per-component handler traits (one node_* method per node — native ports IN, WIRE value OUT).
-// HandlerNRFindFirst — the CONCRETE per-component handler seam: one typed method
+// HandlerNRFindAll — the CONCRETE per-component handler seam: one typed method
 // per covered node (native ports struct IN, WIRE value OUT). No generic boxed-ports / boxed-value
 // / dynamic accessor crosses the covered boundary — the consumer implements each node_* by
 // returning its own wire payload as a WireValue; the generated inline de-box turns that into the
 // node's concrete native result (see INTEGRATION.md §6).
-pub trait HandlerNRFindFirst {
+pub trait HandlerNRFindAll {
     type Wire: WireValue + Send;
     fn node_n0(
         &self,
-        ports: &PortsNRFindFirstN0,
+        ports: &PortsNRFindAllN0,
         bound: Option<String>,
     ) -> Result<Self::Wire, BehaviorError>;
 }
@@ -324,8 +320,8 @@ pub trait WireList: Sized {
 }
 
 // Combined read runners (STRUCT-returning — the fully de-plumbed CONCRETE path).
-// run_native_raw_struct_FindFirst — the STRUCT-RETURNING combined read (bc#77/#87/#94): the fully
-// de-plumbed CONCRETE path. Generic over the per-component CONCRETE HandlerNRFindFirst trait,
+// run_native_raw_struct_FindAll — the STRUCT-RETURNING combined read (bc#77/#87/#94): the fully
+// de-plumbed CONCRETE path. Generic over the per-component CONCRETE HandlerNRFindAll trait,
 // whose node_* methods take the node's native ports struct and return the node's result WIRE
 // (Self::Wire: WireValue). The runner builds each ports struct by direct native construction (a
 // simple string port lowers to a native Rust expr), dispatches the concrete node_* method, and
@@ -338,18 +334,17 @@ pub trait WireList: Sized {
 // method; preflight + interpret are committed in ascending index order so the value / op
 // multiset / failure precedence byte-match run_behavior. The output is a typed struct/value
 // assembled by struct literal + field access — the consumer keeps it native.
-pub fn run_native_raw_struct_FindFirst<H: HandlerNRFindFirst>(
+pub fn run_native_raw_struct_FindAll<H: HandlerNRFindAll>(
     handlers: &H,
-    in_: InNRFindFirst,
+    _in_: InNRFindAll,
 ) -> Result<Vec<T0>, BehaviorError> {
     let cell_n0: RefCell<Vec<T0>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (Select) ──
-    let ports_n0 = PortsNRFindFirstN0 {
-        f_sql: "SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT ?".to_string(),
-        f_p0: in_.name.clone(),
-        f_p1: 1i64,
+    let ports_n0 = PortsNRFindAllN0 {
+        f_sql: "SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT ?".to_string(),
+        f_p0: 100i64,
     };
     let wire_n0 = match handlers.node_n0(&ports_n0, None) {
         Ok(r) => r,
@@ -505,9 +500,9 @@ pub fn run_native_raw_struct_FindFirst<H: HandlerNRFindFirst>(
 // driven via run_native_raw_struct_<comp>(handlers, in_) -> Result<T, BehaviorError>: a STRUCT return
 // (the consumer builds the CONCRETE InNR_<comp> input + implements the CONCRETE HandlerNR<comp> trait).
 // See INTEGRATION.md §6.
-pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["FindFirst"];
+pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 1] = ["FindAll"];
 
-// litedbmodel static runtime adapter for `generated_nestedFindFirst` (co-located with the bc core).
+// litedbmodel static runtime adapter for `relation_limit_sqlite` (co-located with the bc core).
 // bc emits the runtime-free native module (ports + de-box runner + wire traits); litedbmodel emits
 // THIS adapter — the boundary-injected node_* handlers + wire adapter (bc C4). Every node_*
 // delegates to litedbmodel_runtime's op-agnostic Driver-backed executors (the exec SSoT); the wire
@@ -531,30 +526,27 @@ fn cvt(e: SqlFailure) -> BehaviorError {
 pub struct Rt<'a> {
     src: litedbmodel_runtime::ConnSource<'a>,
 }
-impl<'a> HandlerNRFindFirst for Rt<'a> {
+impl<'a> HandlerNRFindAll for Rt<'a> {
     type Wire = Wire;
     fn node_n0(
         &self,
-        ports: &PortsNRFindFirstN0,
+        ports: &PortsNRFindAllN0,
         _bound: Option<String>,
     ) -> Result<Wire, BehaviorError> {
         let ctx = self.src.ctx().map_err(cvt)?;
         litedbmodel_runtime::exec(
             &ctx,
             &ports.f_sql,
-            &[
-                litedbmodel_runtime::wp(&ports.f_p0),
-                litedbmodel_runtime::wp(&ports.f_p1),
-            ],
+            &[litedbmodel_runtime::wp(&ports.f_p0)],
             litedbmodel_runtime::ExecMode::Rows,
         )
         .map_err(cvt)
     }
 }
 
-/// The litedbmodel-consumer entry: build the runtime-backed handler for `FindFirst` over a SINGLE
+/// The litedbmodel-consumer entry: build the runtime-backed handler for `FindAll` over a SINGLE
 /// driver (byte-identical single-pool path). The consumer calls
-/// `run_native_raw_struct_FindFirst(&handler(driver), in_)` — supplying NO node_* itself.
+/// `run_native_raw_struct_FindAll(&handler(driver), in_)` — supplying NO node_* itself.
 pub fn handler(driver: &dyn Driver) -> Rt<'_> {
     Rt {
         src: litedbmodel_runtime::ConnSource::Driver(driver),
@@ -571,9 +563,9 @@ pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> {
 
 pub fn run(
     driver: &dyn Driver,
-    in_: InNRFindFirst,
+    in_: InNRFindAll,
 ) -> Result<Vec<T0>, litedbmodel_runtime::RuntimeError> {
-    run_native_raw_struct_FindFirst(&handler(driver), in_).map_err(|e| {
+    run_native_raw_struct_FindAll(&handler(driver), in_).map_err(|e| {
         litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure {
             kind: e.code,
             policy: "fail".to_string(),
@@ -1229,7 +1221,7 @@ pub mod rel_posts {
                 &ports.f_sql,
                 &columns,
                 litedbmodel_runtime::ArrayParamShape::SingleJson,
-                None,
+                Some(1i64),
                 Some("benchmark_posts"),
                 "posts",
             )

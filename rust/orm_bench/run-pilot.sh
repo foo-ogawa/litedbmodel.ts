@@ -8,6 +8,7 @@
 # docker pg :5433 + mysql :3307 up (`npm run docker:livedb:up`).
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$HERE/../.."
 TMP=/tmp/ormbench
 RESULTS="$HERE/../../benchmark/crosslang/.results"
 REPS="${REPS:-500}"
@@ -22,6 +23,7 @@ swap() { # <dialect> — overlay the dialect's sole generated modules into src/g
 }
 restore() { for f in "$TMP/sqlite"/generated_*.rs; do cp "$f" "$HERE/src/gen/"; done; }
 trap restore EXIT
+( cd "$ROOT" && npx tsx benchmark/crosslang/oracle-fixture-build.ts )
 
 # ── sqlite (committed gen, default build) ──
 # Restore the sqlite gen FIRST — a prior interrupted run (or a manual pg/mysql swap) may have left a
@@ -33,18 +35,21 @@ rm -f /tmp/ormb_sqlite.db
 { "$HERE/target/release/orm_bench" sqlite /tmp/ormb_sqlite.db "$REPS" "$WARMUP" > "$RESULTS/native.sqlite.csv"; } || exit 1
 rm -f /tmp/ormb_sqlite_s.db
 "$HERE/target/release/orm_bench" safety sqlite /tmp/ormb_sqlite_s.db > "$RESULTS/native-safety.txt"
+cargo run --quiet --manifest-path "$ROOT/rust/Cargo.toml" -p litedbmodel_oracle -- sqlite /tmp/litedbmodel-oracle-pilot.db
 
 # ── postgres ──
 echo "── native × postgres (reps=$REPS) ──"
 swap postgres
 cargo build --release --quiet --features livedb,pg || { echo "pg build failed"; exit 1; }
 { "$HERE/target/release/orm_bench" postgres "$PG_SPEC" "$REPS" "$WARMUP" > "$RESULTS/native.postgres.csv"; } || { echo "pg run failed"; exit 1; }
+cargo run --quiet --manifest-path "$ROOT/rust/Cargo.toml" -p litedbmodel_oracle --features livedb -- postgres "$PG_SPEC"
 
 # ── mysql ──
 echo "── native × mysql (reps=$REPS) ──"
 swap mysql
 cargo build --release --quiet --features livedb || { echo "mysql build failed"; exit 1; }
 { "$HERE/target/release/orm_bench" mysql "$MYSQL_SPEC" "$REPS" "$WARMUP" > "$RESULTS/native.mysql.csv"; } || { echo "mysql run failed"; exit 1; }
+cargo run --quiet --manifest-path "$ROOT/rust/Cargo.toml" -p litedbmodel_oracle --features livedb -- mysql "$MYSQL_SPEC"
 
 restore
 # Merge the three per-dialect CSVs into one native.csv (single header).

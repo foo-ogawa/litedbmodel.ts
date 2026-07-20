@@ -597,14 +597,7 @@ pub fn hydrate_posts(
             k0: parents.iter().map(|parent| parent.id.clone()).collect(),
         },
     )
-    .map_err(|e| {
-        litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure {
-            kind: e.code,
-            policy: "fail".to_string(),
-            sqlite_code: None,
-            message: e.message,
-        })
-    })?;
+    .map_err(self::rel_posts::runtime_error)?;
     let level = litedbmodel_runtime::hydrate_children(
         parents,
         |parent| parent.id,
@@ -1158,6 +1151,60 @@ pub mod rel_posts {
         BehaviorError::new(e.kind, e.message)
     }
 
+    fn cvt_runtime(e: litedbmodel_runtime::RuntimeError) -> BehaviorError {
+        match e {
+            litedbmodel_runtime::RuntimeError::Sql(e) => cvt(e),
+            litedbmodel_runtime::RuntimeError::Limit(e) => {
+                let mut context = std::collections::BTreeMap::new();
+                context.insert("limit".to_string(), e.limit.to_string());
+                context.insert("count".to_string(), e.count.to_string());
+                context.insert("context".to_string(), e.context.clone());
+                if let Some(relation) = &e.relation {
+                    context.insert("relation".to_string(), relation.clone());
+                }
+                BehaviorError::with_detail(
+                    "LIMIT_EXCEEDED",
+                    e.message.clone(),
+                    ErrorDetail {
+                        kind: None,
+                        model: e.model.clone(),
+                        field: None,
+                        expected_type: None,
+                        actual_wire_type: None,
+                        raw_value: Some(e.message),
+                        context,
+                    },
+                )
+            }
+        }
+    }
+    pub fn runtime_error(e: BehaviorError) -> litedbmodel_runtime::RuntimeError {
+        if let Some(mut detail) = e.detail {
+            let limit = detail.context.remove("limit");
+            let count = detail.context.remove("count");
+            let context = detail.context.remove("context");
+            let relation = detail.context.remove("relation");
+            if let (Some(limit), Some(count), Some(context)) = (limit, count, context) {
+                return litedbmodel_runtime::RuntimeError::Limit(
+                    litedbmodel_runtime::LimitExceededError {
+                        limit: limit.parse().expect("generated limit"),
+                        count: count.parse().expect("generated count"),
+                        context,
+                        model: detail.model,
+                        relation,
+                        message: detail.raw_value.unwrap_or(e.message),
+                    },
+                );
+            }
+        }
+        litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure {
+            kind: e.code,
+            policy: "fail".to_string(),
+            sqlite_code: None,
+            message: e.message,
+        })
+    }
+
     // The handler holds a ConnSource (#135): a single Driver (routing=None, byte-identical single-pool)
     // OR a RoutingConfig (read→reader / write→writer, named-DB). node_* resolves the ctx per statement
     // via `self.src.ctx()` — reader/writer routing is applied ONCE in the central seam, never per op.
@@ -1187,7 +1234,7 @@ pub mod rel_posts {
                 "posts",
             )
             .map(Wire::from_rows)
-            .map_err(cvt)
+            .map_err(cvt_runtime)
         }
     }
 

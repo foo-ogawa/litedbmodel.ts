@@ -32,6 +32,7 @@ use crate::driver::Driver;
 use crate::errors::{re_error_to_sql_failure, LimitExceededError, RuntimeError, SqlFailure};
 use crate::exec_context::{self, ExecutionContext, StatementIntent};
 use crate::node::{compact_value, eval_expr, Node as J};
+use crate::sql_render::{render_placeholders, resolve_pg_array_cast, PG_ARRAY_CAST_TOKEN};
 
 /// Thin shim so the many `evaluate_expression(node, scope)` call sites port unchanged to the native
 /// evaluator (same signature; the native `EvalError` maps to the runtime's `String`-message form).
@@ -104,38 +105,6 @@ fn assemble_make_sql(node: &MakeSqlNode) -> Result<(String, Vec<Value>), String>
     Ok((sql, params))
 }
 
-// ── Dialect placeholder render (port of handler.ts renderPlaceholders) ─────────
-
-/// Rewrite `?` → the dialect placeholder form: PG `$N` (quote-aware), MySQL/SQLite keep `?`.
-/// Byte-for-byte port of the TS renderPlaceholders: a `?` inside a single-quoted string literal is
-/// NOT a placeholder.
-pub fn render_placeholders(sql: &str, dialect_name: &str) -> String {
-    if dialect_name != "postgres" {
-        return sql.to_string();
-    }
-    let mut out = String::with_capacity(sql.len());
-    let mut index = 0;
-    let mut in_string = false;
-    for ch in sql.chars() {
-        if in_string {
-            out.push(ch);
-            if ch == '\'' {
-                in_string = false;
-            }
-        } else if ch == '\'' {
-            out.push(ch);
-            in_string = true;
-        } else if ch == '?' {
-            index += 1;
-            out.push('$');
-            out.push_str(&index.to_string());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
 // ── Deferred value-spec evaluation (port of static-bundle.ts evalSpec) ─────────
 
 /// Evaluate one deferred value-spec against the scope, handling the `__jsonArray` marker: postgres
@@ -156,53 +125,6 @@ fn eval_spec(spec: &J, scope: &[(String, Value)]) -> Result<Value, String> {
         };
     }
     evaluate_expression(spec, scope).map_err(|e| e.message)
-}
-
-// ── Deferred PG array-cast resolution (#46 — mirrors compile-relation.ts) ──────
-
-/// The DEFERRED PG array-cast placeholder: emitted in the STATIC SQL where the `= ANY(?::<T>[])`
-/// element type is unknown at symbolic compile (a schema-less `whereIn`). Resolved at render from
-/// the BOUND array via `infer_pg_array_type` — the same render-layer step as `?`→`$N`.
-const PG_ARRAY_CAST_TOKEN: &str = "@@PG_ARRAY_CAST@@";
-
-/// Port of the ORIGINAL `inferPgArrayType` (v1 `LazyRelation`): the element type inferred from the
-/// sample values (no sqlCast at this schema-less surface). A bc integer arrives as `Value::Int`.
-fn infer_pg_array_type(values: &[Value]) -> &'static str {
-    match values.first() {
-        None => "text[]",
-        Some(Value::Bool(_)) => "boolean[]",
-        Some(Value::Int(_)) => "int[]",
-        Some(Value::Float(_)) => {
-            // A float that is an exact integer is still an int key; only a genuine fractional
-            // value is numeric (mirrors TS `Number.isInteger` over the whole array).
-            let all_int = values.iter().all(|v| match v {
-                Value::Float(f) => f.fract() == 0.0,
-                _ => false,
-            });
-            if all_int {
-                "int[]"
-            } else {
-                "numeric[]"
-            }
-        }
-        _ => "text[]",
-    }
-}
-
-/// Resolve the FIRST unresolved cast token to the element type inferred from `values` (mirrors TS
-/// `resolvePgArrayCast`). SQL with no token is returned unchanged.
-pub(crate) fn resolve_pg_array_cast(sql: &str, values: &[Value]) -> String {
-    match sql.find(PG_ARRAY_CAST_TOKEN) {
-        None => sql.to_string(),
-        Some(at) => {
-            format!(
-                "{}{}{}",
-                &sql[..at],
-                infer_pg_array_type(values),
-                &sql[at + PG_ARRAY_CAST_TOKEN.len()..]
-            )
-        }
-    }
 }
 
 /// If a statement's value-specs are BATCH markers (createMany/updateMany/upsertMany), evaluate the

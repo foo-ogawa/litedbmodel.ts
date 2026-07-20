@@ -20,9 +20,10 @@
 //
 // Usage: `tsx benchmark/crosslang/bench-structure-guard.ts` — exits 0 (PASS) / 1 (FAIL).
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const MAIN = join(ROOT, 'rust/orm_bench/src/main.rs');
@@ -30,14 +31,23 @@ const GEN = join(ROOT, 'rust/orm_bench/src/gen');
 const E1_GEN = join(ROOT, 'rust/e1_native_proof/src');
 const E1_MAIN = join(E1_GEN, 'main.rs');
 const NATIVE_RUNTIME = join(ROOT, 'rust/litedbmodel_runtime/src/relation.rs');
+const NATIVE_RUNTIME_DIR = join(ROOT, 'rust/litedbmodel_runtime');
+const INTERPRETER_DIR = join(ROOT, 'rust/litedbmodel_interpreter');
+const ORACLE_BUILD = join(ROOT, 'benchmark/crosslang/oracle-fixture-build.ts');
+const EXTRA_SOURCES = process.env.LITEDB_GUARD_EXTRA?.split(delimiter).filter(Boolean) ?? [];
 const PIPELINE_SOURCES = [
   join(ROOT, 'benchmark/crosslang/codegen-build.ts'),
   join(ROOT, 'test/scp/e1-native-sql-port.test.ts'),
   join(ROOT, 'src/scp/codegen.ts'),
   E1_MAIN,
   NATIVE_RUNTIME,
-  ...(process.env.LITEDB_GUARD_EXTRA?.split(delimiter).filter(Boolean) ?? []),
+  ORACLE_BUILD,
+  ...EXTRA_SOURCES,
 ];
+
+function rustCode(src: string): string {
+  return src.replace(/"(?:[^"\\]|\\.)*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (part) => part.startsWith('"') ? part : '');
+}
 
 /** Extract the `fn prepare_op(...) { ... }` body by brace matching (the timed op cells). */
 function prepareOpBody(src: string): string {
@@ -84,9 +94,13 @@ const generatedFiles = artifactDirs.flatMap((dir) => readdirSync(dir).filter((n)
 for (const file of generatedFiles) {
   const f = file.slice(ROOT.length + 1);
   const src = readFileSync(file, 'utf8');
-  if (/Value::Obj\s*\(\s*vec!/.test(src)) violations.push(`${f} hand-builds Value::Obj`);
-  if (/relation_ops_json|\.get\("|"\{\\"|struct DeBox|RefCell<Option<Wire>>|fn decode\(wire|_ports:\s*&PortsNR/.test(src)) {
+  const code = rustCode(src);
+  if (/Value::Obj\s*\(\s*vec!/.test(code)) violations.push(`${f} hand-builds Value::Obj`);
+  if (/relation_ops_json|\.get\(\s*["'](?:relations|childRelations|parentKeys|targetKeys|keyShape)["']\s*\)|"\{\\"|struct DeBox|RefCell<Option<Wire>>|fn decode\(wire|_ports:\s*&PortsNR/.test(code)) {
     violations.push(`${f} contains JSON traversal or the retired stash/decode seam`);
+  }
+  if (/\bNode::|execute_bundle|execute_transaction_bundle|read_bundle|litedbmodel_interpreter/.test(code)) {
+    violations.push(`${f} crosses the native/interpreter boundary`);
   }
   if (/pub fn hydrate_\w+/.test(src)) {
     if (!/pub mod rel_\w+/.test(src) || !/RelationBatch/.test(src)) violations.push(`${f} lacks an in-file BC RelationBatch child module`);
@@ -113,11 +127,48 @@ for (const file of PIPELINE_SOURCES) {
     if (pattern.test(src)) violations.push(`${file}: ${why} (${pattern})`);
   }
 }
+for (const file of EXTRA_SOURCES) {
+  const src = readFileSync(file, 'utf8');
+  if (/\bNode::|execute_bundle|read_bundle|litedbmodel_interpreter/.test(src)) {
+    violations.push(`${file}: generated/native source crosses interpreter boundary`);
+  }
+}
 const nativeRuntime = readFileSync(NATIVE_RUNTIME, 'utf8');
 if (!/pub fn execute_relation_batch\s*\(/.test(nativeRuntime)) violations.push('native runtime lacks the single relation batch core');
 if (/op_from_|RelationOp|childRelations|read_bundle_pooled/.test(nativeRuntime)) violations.push('native relation module contains interpreter metadata concerns');
 const codegenSource = readFileSync(join(ROOT, 'src/scp/codegen.ts'), 'utf8');
 if ((codegenSource.match(/execute_relation_batch\(/g) ?? []).length !== 1) violations.push('generated adapter does not have exactly one relation batch core callsite');
+
+// ── 5. physical crate closure: runtime is native-only; interpreter depends one-way on runtime ───────
+for (const retired of ['node.rs', 'runtime.rs', 'static_bundle.rs', 'value.rs', 'relation_interpreter.rs']) {
+  if (existsSync(join(NATIVE_RUNTIME_DIR, 'src', retired))) violations.push(`native runtime still owns interpreter file ${retired}`);
+}
+const nativeFiles = readdirSync(join(NATIVE_RUNTIME_DIR, 'src')).filter((name) => name.endsWith('.rs'));
+for (const name of nativeFiles) {
+  const code = rustCode(readFileSync(join(NATIVE_RUNTIME_DIR, 'src', name), 'utf8'));
+  if (/execute_bundle|execute_transaction_bundle|read_bundle|\bNode::|litedbmodel_interpreter/.test(code)) {
+    violations.push(`native runtime source ${name} references interpreter API`);
+  }
+}
+const runtimeCargo = readFileSync(join(NATIVE_RUNTIME_DIR, 'Cargo.toml'), 'utf8');
+const runtimeCargoCode = runtimeCargo.replace(/^\s*#.*$/gm, '');
+if (/^\s*(?:litedbmodel_interpreter|serde_json)\s*=/m.test(runtimeCargoCode)) violations.push('native runtime Cargo closure includes interpreter/JSON dependency');
+const interpreterCargo = readFileSync(join(INTERPRETER_DIR, 'Cargo.toml'), 'utf8');
+if (!/litedbmodel_runtime\s*=/.test(interpreterCargo)) violations.push('interpreter crate does not depend one-way on native runtime');
+const tree = spawnSync('cargo', ['tree', '--manifest-path', join(ROOT, 'rust/Cargo.toml'), '-p', 'litedbmodel_runtime'], { encoding: 'utf8' });
+if (tree.status !== 0) violations.push(`cargo tree failed: ${tree.stderr.trim()}`);
+else if (/litedbmodel_interpreter|serde_json/.test(tree.stdout)) violations.push('native runtime cargo tree reaches interpreter/JSON');
+
+// ── 6. proof scripts must invoke the direct oracle and must not accept printed/fake success ─────────
+for (const relative of ['rust/e1_native_proof/run-proof.sh', 'rust/e1_native_proof/run-proof-livedb.sh', 'rust/orm_bench/run-pilot.sh']) {
+  const script = readFileSync(join(ROOT, relative), 'utf8');
+  if (!/-p litedbmodel_oracle/.test(script)) violations.push(`${relative} does not invoke the direct oracle crate`);
+  if (/oracle\.json|verify-cells|result\.json/.test(script)) violations.push(`${relative} references retired serialized oracle transport`);
+}
+const benchMain = readFileSync(MAIN, 'utf8');
+for (const op of ['nestedFindAll', 'nestedFindFirst', 'nestedFindUnique', 'nestedRelations', 'compositeRelations']) {
+  if (!new RegExp(`expect_queries\\(\"${op}\",`).test(benchMain)) violations.push(`safety proof does not assert ${op}`);
+}
 
 if (violations.length > 0) {
   console.error('bench-structure-guard: FAIL');

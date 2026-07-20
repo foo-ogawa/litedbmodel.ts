@@ -8,8 +8,10 @@ use crate::codegen_exec::ArrayParamShape;
 use crate::driver::Driver;
 use crate::errors::{RuntimeError, SqlFailure};
 use crate::node::Node;
-use crate::relation::{execute_relation_batch, group_children, matched_children, RelationBatch};
 use crate::runtime::execute_bundle;
+use litedbmodel_runtime::relation::{
+    execute_relation_batch, group_children, matched_children, RelationBatch,
+};
 
 struct RelationOp {
     name: String,
@@ -103,7 +105,6 @@ fn fetch(
         op.target_table.as_deref(),
         &op.name,
     )
-    .map_err(RuntimeError::Sql)
 }
 
 fn grouped(op: &RelationOp, rows: Vec<Value>) -> RelationBatch<Value> {

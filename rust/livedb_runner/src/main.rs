@@ -17,8 +17,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use litedbmodel_runtime::livedb::{MysqlDriver, PostgresDriver};
-use litedbmodel_runtime::{
+use litedbmodel_interpreter::livedb::{MysqlDriver, PostgresDriver};
+use litedbmodel_interpreter::{
     encode_value, execute_bundle_pooled, execute_transaction_bundle, read_bundle_pooled, Driver,
     Node,
 };

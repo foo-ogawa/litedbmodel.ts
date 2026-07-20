@@ -45,20 +45,6 @@ function formatRust(path: string): void {
   const result = spawnSync('rustfmt', ['--edition', '2021', path], { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`rustfmt failed for ${path}: ${result.stderr}`);
 }
-function rustNode(value: unknown): string {
-  if (value === null || value === undefined) return 'litedbmodel_runtime::Node::Null';
-  if (typeof value === 'boolean') return `litedbmodel_runtime::Node::Bool(${value})`;
-  if (typeof value === 'number') return Number.isInteger(value)
-    ? `litedbmodel_runtime::Node::Int(${value}i64)`
-    : `litedbmodel_runtime::Node::Float(${value})`;
-  if (typeof value === 'string') return `litedbmodel_runtime::Node::Str(${JSON.stringify(value)}.to_string())`;
-  if (Array.isArray(value)) return `litedbmodel_runtime::Node::Array(vec![${value.map(rustNode).join(',')}])`;
-  const fields = Object.entries(value as Record<string, unknown>)
-    .filter(([, field]) => field !== undefined)
-    .map(([key, field]) => `(${JSON.stringify(key)}.to_string(), ${rustNode(field)})`);
-  return `litedbmodel_runtime::Node::Object(vec![${fields.join(',')}])`;
-}
-
 /** The generated native entry fn `run_native_raw_struct_<Component>` — parsed from the module code so
  * the manifest never re-derives the component name by hand (the emitter is the SSoT). */
 function entryOf(moduleCode: string, id: string): string {
@@ -89,13 +75,7 @@ function emitDialect(dialect: OrmDialect): ManifestOp[] {
     const moduleCode = art.module.code;
     const generated = join(dir, `generated_${op.id}.rs`);
     writeFileSync(generated, generateRustExecutable(op.bundle as never, `generated_${op.id}`, op.resolve, REGISTERED));
-    if (op.id === 'nestedRelations') {
-      writeFileSync(generated, `${readFileSync(generated, 'utf8')}\n#[cfg(feature = "oracle")]\npub fn interpreter_bundle() -> litedbmodel_runtime::Node { ${rustNode(op.bundle)} }\n`);
-    }
     formatRust(generated);
-    // The mode-2 oracle fixture for the date/bool decoder proof (#124 native-vs-mode-2 framework):
-    // filterPaginateSort projects created_at (TIMESTAMP) + published (BOOLEAN/TINYINT), so its
-    // bundle+input drive `execute_bundle` (the interpreter) to compare BYTE-EQUAL vs the native path.
     // tx ops: the native chain runs through the adapter `run_on` (BEGIN…COMMIT envelope), not a
     // bare native raw entry — so the entry name is only meaningful for read/write/batch ops.
     let entry = '';
@@ -123,6 +103,15 @@ function inlineSeed(sql: string, params: readonly unknown[]): string {
   return sql.replace(/\?/g, () => inlineLiteral(params[i++]));
 }
 
+function rustString(value: string): string {
+  return `"${value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('"', '\\"')
+    .replaceAll('\n', '\\n')
+    .replaceAll('\r', '\\r')
+    .replaceAll('\t', '\\t')}"`;
+}
+
 /** The param-free setup statement list (drops → ddl → inlined seed → pg SERIAL fixup) the rust bench
  * cells exec at startup — emitted from the orm-domain SSoT so native + SDK seed byte-identically. */
 function emitSetup(dialect: OrmDialect): void {
@@ -132,7 +121,7 @@ function emitSetup(dialect: OrmDialect): void {
     ...seedStatements(dialect).map((s) => inlineSeed(s.sql, s.params)),
     ...(dialect === 'postgres' ? pgSeqResetStatements() : []),
   ];
-  const rust = stmts.map((stmt) => JSON.stringify(stmt)).join(',\n    ');
+  const rust = stmts.map(rustString).join(',\n    ');
   const path = join(TMP, dialect, 'generated_setup.rs');
   writeFileSync(path, `// GENERATED native setup; no serialized sidecar.\npub const STATEMENTS: &[&str] = &[\n    ${rust}\n];\n`);
   formatRust(path);

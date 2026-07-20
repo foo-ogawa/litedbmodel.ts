@@ -21,13 +21,15 @@
 //! Gated behind the `livedb` feature AND `LITEDBMODEL_TX_ISOLATION=1` so it never runs in the default
 //! `cargo test` (which has no DBs). Requires the dockerized PG (:5433) + MySQL (:3307):
 //!   docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml up -d postgres mysql
-//!   LITEDBMODEL_TX_ISOLATION=1 cargo test -p litedbmodel_runtime --features livedb \
+//!   LITEDBMODEL_TX_ISOLATION=1 cargo test -p litedbmodel_interpreter --features livedb \
 //!     --test tx_isolation -- --nocapture --test-threads=1
 
 #![cfg(feature = "livedb")]
 
 use behavior_contracts::Value;
-use litedbmodel_runtime::{execute_transaction_bundle, Driver, MysqlDriver, Node, PostgresDriver};
+use litedbmodel_interpreter::{
+    execute_transaction_bundle, Driver, MysqlDriver, Node, PostgresDriver,
+};
 
 fn nj(s: &str) -> Node {
     Node::parse(s).expect("test fixture JSON parses")
@@ -102,7 +104,7 @@ fn run_insert_tx(
     id: i64,
     worker: i64,
     seq: i64,
-) -> Result<Value, litedbmodel_runtime::SqlFailure> {
+) -> Result<Value, litedbmodel_interpreter::SqlFailure> {
     let b = insert_bundle(dialect);
     execute_transaction_bundle(&b, &input(id, worker, seq), driver)
 }

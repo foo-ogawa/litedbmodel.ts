@@ -18,11 +18,11 @@
 //! pool is `Clone`-cheap and internally synchronized, the driver is `Send + Sync`: DISTINCT threads
 //! calling `all()` concurrently each check out a DISTINCT pooled connection, so the plan's
 //! `concurrency` (default 16) becomes REAL parallel DB I/O when the executor dispatches independent
-//! sibling relations in parallel (`static_bundle::dispatch_read_nodes_parallel`).
+//! sibling relations in parallel through pooled driver connections.
 //!
 //! ## Write-tx OWNS ONE pooled connection (per-execution ownership, #76 §3)
 //!
-//! A write bundle rides `execute_transaction_bundle`, which now brackets the gate-first tx-DAG via
+//! Transaction execution brackets the generated write chain via
 //! the [`ExecutionContext`](crate::exec_context) seam's `with_transaction`. The seam calls
 //! [`Driver::begin_tx`], which checks out ONE pooled connection, issues `BEGIN` on it, and returns an
 //! OWNED [`TxConnection`] handle (the rust analogue of v1 `litedbmodel.rs` `PoolTransaction`). Every
@@ -891,7 +891,7 @@ fn bind_my<'q>(
             // `json_each(?)` / `JSON_TABLE(?)` JSON string (the array-bind SSoT; the Postgres driver
             // binds a native array). Bool → 1/0 (TINYINT(1) coercion). The render sites pass the raw
             // `Value::Arr` and never branch on dialect.
-            Value::Arr(elems) => q.bind(crate::node::array_param_json(elems, true)),
+            Value::Arr(elems) => q.bind(crate::value_codec::array_param_json(elems, true)),
             other => {
                 return Err(driver_failure(format!(
                     "scp mysql driver: a {} reached the param binder (expected a scalar or array)",

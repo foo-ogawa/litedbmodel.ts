@@ -14,7 +14,7 @@
 use std::sync::{Arc, Mutex};
 
 use behavior_contracts::Value;
-use litedbmodel_runtime::{
+use litedbmodel_interpreter::{
     create_middleware, execute_bundle, seam_execute, use_middleware, with_middleware_scope,
     ExecutionContext, Node, SeamResult, SqlFailure, SqlHookFn, SqlNext, SqliteDriver,
     StatementIntent,
@@ -72,7 +72,7 @@ fn middleware_observes_the_relation_batch_sql_of_a_multi_node_read() {
 
     let observed = seen.lock().unwrap().clone();
     // The read genuinely loaded relations (a real multi-node read).
-    let out = litedbmodel_runtime::encode_value(&result);
+    let out = litedbmodel_interpreter::encode_value(&result);
     assert!(
         format!("{out:?}").contains("posts") || format!("{out:?}").contains("authors"),
         "expected a relation-loaded result, got {out:?}"
@@ -124,7 +124,7 @@ fn red_without_registration_the_relation_batch_sql_is_not_observed() {
     let seen = Arc::new(Mutex::new(Vec::<String>::new()));
 
     let result = execute_bundle(&bundle, &input, &db).expect("relation read executes (unobserved)");
-    let out = litedbmodel_runtime::encode_value(&result);
+    let out = litedbmodel_interpreter::encode_value(&result);
     // The read worked byte-identically (relations loaded) …
     assert!(
         format!("{out:?}").contains("posts") || format!("{out:?}").contains("authors"),
@@ -141,7 +141,7 @@ fn red_without_registration_the_relation_batch_sql_is_not_observed() {
 fn raw_seam_call_is_middleware_visible_too() {
     let db =
         SqliteDriver::in_memory(&["CREATE TABLE z (id INTEGER PRIMARY KEY)".to_string()]).unwrap();
-    let ctx: ExecutionContext = litedbmodel_runtime::for_driver(&db);
+    let ctx: ExecutionContext = litedbmodel_interpreter::for_driver(&db);
     let seen = Arc::new(Mutex::new(Vec::<String>::new()));
     let seen2 = seen.clone();
     with_middleware_scope(|| {

@@ -10,7 +10,7 @@
 //! fragment + coalesced LIMIT, and a single-JSON IN-list param).
 
 use behavior_contracts::{deep_equals, Value};
-use litedbmodel_runtime::{
+use litedbmodel_interpreter::{
     encode_value, execute_read_graph, execute_read_graph_orchestrator_for_test, Node, SqliteDriver,
 };
 /// Build a native `Node` fixture from a JSON string literal — the runtime's OWN native JSON parser
@@ -111,7 +111,7 @@ fn by_ids_graph() -> Node {
 /// Run one graph+input BOTH ways and assert byte-identical results. Returns the (shared) result so
 /// the caller can additionally sanity-check the row count.
 fn assert_fastpath_equals_bc(graph: &Node, input: &Node, label: &str) -> Value {
-    let input_scope = litedbmodel_runtime::decode_scope(input).unwrap();
+    let input_scope = litedbmodel_interpreter::decode_scope(input).unwrap();
     let driver_fast = SqliteDriver::in_memory(&schema()).unwrap();
     let driver_bc = SqliteDriver::in_memory(&schema()).unwrap();
 

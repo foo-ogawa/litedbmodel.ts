@@ -25,7 +25,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use litedbmodel_runtime::{
+use litedbmodel_interpreter::{
     dialect_for, encode_value, execute_bundle, execute_transaction_bundle,
     render_read_primary_bundle, stitch_relation, Driver, Node, RuntimeError, SqliteDriver, Value,
 };

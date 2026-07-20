@@ -7,7 +7,7 @@
 //! vector corpus is asserted by `rust/vectors_runner`; these are the crate-local `cargo test` gate.
 
 use behavior_contracts::{deep_equals, Value};
-use litedbmodel_runtime::{
+use litedbmodel_interpreter::{
     dialect_for, execute_bundle, execute_transaction_bundle, render_placeholders,
     render_read_primary, render_statements, Driver, Node, SqliteDriver,
 };
@@ -132,7 +132,7 @@ fn render_in_list_single_json_param_sqlite() {
     assert!(deep_equals(&r.params[0], &arr));
     // …and the sqlite/mysql Driver encoder produces the byte-identical `json_each(?)` JSON string.
     assert_eq!(
-        litedbmodel_runtime::node::array_param_json(
+        litedbmodel_interpreter::node::array_param_json(
             &[Value::Int(1), Value::Int(2), Value::Int(3)],
             false
         ),

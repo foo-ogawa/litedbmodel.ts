@@ -9,7 +9,7 @@
 //! module. It adds NO new execution engine: reads/writes funnel through the SAME central seam
 //! ([`exec_context::execute`] / [`exec_context::run`]) the mode-2 runtime uses; batched relations reuse
 //! [`crate::relation`]'s dedupe/group/align; the pg `?`→`$N` renumber reuses
-//! [`crate::static_bundle::render_placeholders`]. The old hand-written `e1_native_proof/src/seam.rs`
+//! [`crate::sql_render::render_placeholders`]. The old hand-written `e1_native_proof/src/seam.rs`
 //! (which re-implemented all of this over raw `rusqlite`) is retired — its logic lives here, Driver-backed.
 //!
 //! ## Wire classification is SSoT here; the orphan-rule bridge is a generated macro
@@ -31,7 +31,7 @@ use crate::connection_routing::RoutingConfig;
 use crate::driver::{Driver, RunInfo};
 use crate::errors::SqlFailure;
 use crate::exec_context::{self, ExecutionContext, StatementIntent, TxDecision};
-use crate::static_bundle::render_placeholders;
+use crate::sql_render::render_placeholders;
 use crate::tx_options::{Dialect as TxDialect, TransactionOptions};
 
 // ── Wire: a node result's own wire datum (a driver row list, or a synthesized write summary) ──────
@@ -710,7 +710,7 @@ pub enum ArrayParamShape {
 /// Build the bind params for a batch write from the records as PARALLEL columns (`columns[j]` names
 /// `cells[j]`, the already bc-`Value` cells for column j) per the generation-stage `shape` DESCRIPTOR —
 /// the SINGLE input-marshaling SSoT the native companion AND the mode-2 render
-/// ([`crate::static_bundle::render_statements`]) both call (there is NO second zip). `n_params` = the
+/// The interpreter adapter calls the same helper (there is NO second zip). `n_params` = the
 /// statement's `?` count (SingleJson binds the ONE zipped JSON to every `?`). Dialect-blind: the shape is
 /// decided once at SQL generation, never re-inspected here. The caller runs the params through the SINGLE
 /// [`exec`] — there is NO batch-specific executor.
@@ -750,7 +750,7 @@ pub fn build_batch_params(
                     )
                 })
                 .collect();
-            let json = crate::node::compact_value(&Value::Arr(rows));
+            let json = crate::value_codec::compact_value(&Value::Arr(rows));
             (0..n_params).map(|_| Value::Str(json.clone())).collect()
         }
     }
@@ -1463,7 +1463,7 @@ mod tests {
     }
 
     /// A native tx whose body errors with a NON-retryable failure rolls back and re-raises as a
-    /// SqlFailure (atomicity) — mirroring mode-2 `execute_transaction_bundle` (the consumer maps the Err
+    /// SqlFailure (atomicity) — the consumer maps the Err
     /// to committed:false). retry_on_error default ON does NOT retry a non-retryable error (one attempt).
     #[test]
     fn native_tx_body_error_rolls_back() {
