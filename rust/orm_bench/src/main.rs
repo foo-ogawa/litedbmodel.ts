@@ -163,7 +163,14 @@ fn run_op(op: &str, it: u64, d: &dyn Driver, spec: &str) {
             let _ = generated_findAll::run_native_raw_struct_FindAll(&companion_findAll::handler(d), generated_findAll::InNRFindAll).unwrap();
         }
         "filterPaginateSort" => {
-            let _ = generated_filterPaginateSort::run_native_raw_struct_FilterPaginateSort(&companion_filterPaginateSort::handler(d), generated_filterPaginateSort::InNRFilterPaginateSort { published: 1 }).unwrap();
+            // `published` is a BOOLEAN column on postgres (native port type `bool`) but INTEGER on
+            // sqlite/mysql (`i64`) — the ONE dialect-typed input in the 19 ops. The per-dialect gen is
+            // swapped in per build, so select the matching literal at compile time via the `pg` feature.
+            #[cfg(feature = "pg")]
+            let published = true;
+            #[cfg(not(feature = "pg"))]
+            let published = 1;
+            let _ = generated_filterPaginateSort::run_native_raw_struct_FilterPaginateSort(&companion_filterPaginateSort::handler(d), generated_filterPaginateSort::InNRFilterPaginateSort { published }).unwrap();
         }
         "findFirst" => {
             let _ = generated_findFirst::run_native_raw_struct_FindFirst(&companion_findFirst::handler(d), generated_findFirst::InNRFindFirst { name: "User%".into() }).unwrap();

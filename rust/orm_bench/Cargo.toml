@@ -31,6 +31,9 @@ behavior-contracts = { version = "=0.8.0", default-features = false }
 [features]
 default = []
 livedb = ["litedbmodel_runtime/livedb"]
+# `pg`: the postgres build only — selects the `bool` literal for the BOOLEAN `published` input (sqlite/
+# mysql type it `i64`). Set alongside `livedb` when building for postgres (see run-pilot.sh).
+pg = []
 
 [profile.release]
 opt-level = 3
