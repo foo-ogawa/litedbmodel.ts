@@ -1,7 +1,7 @@
 // Generates interpreter/test-only Rust fixtures from the canonical SCP/BC declarations in ops.ts.
 // It emits no JSON and is never part of native codegen-build output.
 
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -75,6 +75,19 @@ function emitSetup(dialect: OrmDialect): void {
 }
 
 mkdirSync(OUT, { recursive: true });
+const expectedNames = new Set([
+  'fixture.rs',
+  ...ORM_DIALECTS.flatMap((dialect) => [
+    `setup_${dialect}.rs`,
+    `relation_limit_${dialect}.rs`,
+    ...selected(dialect).map((op) => `${op.id}_${dialect}.rs`),
+  ]),
+]);
+if (!process.argv.includes('check')) {
+  for (const name of readdirSync(OUT).filter((name) => name.endsWith('.rs') && !expectedNames.has(name))) {
+    rmSync(join(OUT, name));
+  }
+}
 const before = new Map(readdirSync(OUT).filter((name) => name.endsWith('.rs')).map((name) => [name, readFileSync(join(OUT, name), 'utf8')]));
 const bundleArms: string[] = [];
 const inputArms: string[] = [];
@@ -100,8 +113,12 @@ writeFileSync(FIXTURE, source);
 format(FIXTURE);
 const after = new Map(readdirSync(OUT).filter((name) => name.endsWith('.rs')).map((name) => [name, readFileSync(join(OUT, name), 'utf8')]));
 const names = new Set([...before.keys(), ...after.keys()]);
-if (process.argv.includes('check') && [...names].some((name) => before.get(name) !== after.get(name))) {
+const unexpected = [...after.keys()].filter((name) => !expectedNames.has(name));
+const missing = [...expectedNames].filter((name) => !after.has(name));
+if (process.argv.includes('check') && (unexpected.length > 0 || missing.length > 0 || [...names].some((name) => before.get(name) !== after.get(name)))) {
   console.error('oracle-fixture-build: DRIFT');
+  if (unexpected.length > 0) console.error(`  unexpected: ${unexpected.join(', ')}`);
+  if (missing.length > 0) console.error(`  missing: ${missing.join(', ')}`);
   process.exit(1);
 }
 console.log('oracle-fixture-build: canonical interpreter/test fixtures are current');

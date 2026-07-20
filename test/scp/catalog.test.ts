@@ -26,11 +26,24 @@ const L = components();
 describe('LITEDBMODEL_CATALOG shape', () => {
   it('declares exactly the WS1 catalog names', () => {
     expect(Object.keys(LITEDBMODEL_CATALOG).sort()).toEqual(
-      ['Count', 'Delete', 'Fragment', 'Insert', 'Select', 'Tx', 'Update'],
+      ['Count', 'Delete', 'Fragment', 'Insert', 'RelationBatch', 'Select', 'Tx', 'Update'],
     );
     expect([...CATALOG_NAMES].sort()).toEqual(
-      ['Count', 'Delete', 'Fragment', 'Insert', 'Select', 'Tx', 'Update'],
+      ['Count', 'Delete', 'Fragment', 'Insert', 'RelationBatch', 'Select', 'Tx', 'Update'],
     );
+  });
+
+  it('RelationBatch is the portable typed native relation-query component', () => {
+    const relation = catalogEntry('RelationBatch');
+    expect(relation?.portableToIR).toBe(true);
+    expect(relation?.output.shape).toBe('items');
+    expect(relation?.inputPorts).toEqual({
+      table: { type: 'string', required: true },
+      select: { type: 'string[]', required: true },
+      sql: { type: 'string', required: true },
+      keyShape: { type: 'string', required: true },
+      targetKeys: { type: 'string[]', required: true },
+    });
   });
 
   it('CRUD + Fragment are portable; Tx (the atomic envelope) is not', () => {

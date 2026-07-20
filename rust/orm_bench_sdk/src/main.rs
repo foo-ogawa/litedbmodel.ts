@@ -1,6 +1,6 @@
 //! SDK-baseline ORM-bench cell (#129) — the raw-driver comparison cell for the collector's `sdk` vs
 //! `native` latency delta. It runs the SAME 19 ORM ops as `rust/orm_bench`, over the SAME seed
-//! (`/tmp/ormbench/<dialect>/setup.json`), with the SAME CLI, CSV schema, op list/order, per-iteration
+//! (the compiled `generated_setup::STATEMENTS`), with the SAME CLI, CSV schema, op list/order, per-iteration
 //! unique-key strategy, warmup/reps defaults, and re-seed-before-each-op behaviour — but it does NOT go
 //! through litedbmodel: every op is hand-written SQL issued straight at the plain driver (rusqlite for
 //! sqlite; the `postgres` / `mysql` crates behind `livedb`). The CSV cell label is `sdk`.
@@ -14,6 +14,8 @@
 //! `--features livedb` — `pg:<libpq-conn>` / `mysql:<url>`); or `orm_bench_sdk safety <dialect> <spec>`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+mod generated_setup;
 use std::time::Instant;
 
 // ── per-statement query counter (safety proof) — every prepared statement the crate issues bumps this
@@ -338,12 +340,9 @@ fn open_db(spec: &str) -> Box<dyn Db> {
     })
 }
 
-// ── setup: exec the param-free setup.json (drops → ddl → seed → pg seq fixup) for a dialect ──────────
-fn reseed(db: &mut dyn Db, dialect: &str) {
-    let raw = std::fs::read_to_string(format!("/tmp/ormbench/{dialect}/setup.json"))
-        .expect("read setup.json");
-    let stmts: Vec<String> = serde_json::from_str(&raw).expect("setup.json is a string array");
-    for sql in &stmts {
+// ── setup: exec the selected dialect's compiled static statements ──────────────────────────────────
+fn reseed(db: &mut dyn Db, _dialect: &str) {
+    for sql in generated_setup::STATEMENTS {
         db.exec(sql, &[]);
     }
 }

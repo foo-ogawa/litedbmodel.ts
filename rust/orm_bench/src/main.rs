@@ -12,8 +12,8 @@
 //! includes to resolve (the include-path walk over `childRelations`) — the batch/group/distribute SSoT
 //! stays in the runtime.
 //!
-//! Writes MUTATE state, so each op re-seeds the canonical fixture (setup.json, emitted from the
-//! orm-domain SSoT) before it runs, and the ops with a UNIQUE column vary that column per iteration.
+//! Writes MUTATE state, so each op re-seeds from the compiled `generated_setup::STATEMENTS` emitted
+//! from the orm-domain SSoT, and the ops with a UNIQUE column vary that column per iteration.
 //!
 //! Usage: `orm_bench <dialect> <spec> [reps] [warmup]`  (spec = sqlite file path, or — with
 //! `--features livedb` — `pg:<libpq-conn>` / `mysql:<url>`); or `orm_bench safety <dialect> <spec>`.

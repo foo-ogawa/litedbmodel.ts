@@ -392,9 +392,9 @@ fn main() {
         }
         // relbatch/relsingle (#131 → #140): the native module carries the PRIMARY read ONLY. The relation is
         // v1 lazy-batch loading — a RUNTIME concern: after the native de-boxed parent read, the adapter's
-        // TYPED hydrator (`hydrate_<rel>`) drives the SHARED `hydrate_relation_typed` — the loader dedupes,
-        // runs ONE batched child query (op.sql, the SQL SSoT), and the child rows DE-BOX to TYPED structs via
-        // the bc child module (NO `Value::Obj` grouped/retained). 1 parent + 1 batched child = 2 queries (no
+        // TYPED hydrator (`hydrate_<rel>`) calls `execute_relation_batch` for empty/dedupe/cast/bind/exec/limit,
+        // de-boxes child rows via BC, then calls `hydrate_children` for group/distribute. The children remain
+        // typed (NO `Value::Obj` grouped/retained). 1 parent + 1 batched child = 2 queries (no
         // N+1). The relation is NOT an executor primitive; the child de-box is bc's (same as a primary read).
         "relbatch" => {
             let tenant_id: i64 = args

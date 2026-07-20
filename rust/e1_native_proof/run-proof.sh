@@ -51,8 +51,8 @@ for m in "${MODULES[@]}"; do
     [[ -z "$first_core" ]] && first_core="$core"
     if ! bc_core_is_pure "$core"; then
       echo "  FAIL  $m: bc core crosses into litedbmodel runtime/DB execution"; fail=1
-    elif rustc --edition 2021 --crate-name bc_core --crate-type lib --emit metadata -o "$core.rmeta" "$core" 2>"$work/err"; then
-      echo "  PASS  $m/$(basename "$core"): std-only bc core"
+    elif rustc --edition 2021 --crate-name bc_core --crate-type lib -D dead-code --emit metadata -o "$core.rmeta" "$core" 2>"$work/err"; then
+      echo "  PASS  $m/$(basename "$core"): std-only bc core, no private dead code"
     else
       echo "  FAIL  $m/$(basename "$core"): bc core did not compile std-only:"; sed 's/^/        /' "$work/err"; fail=1
     fi
@@ -91,5 +91,5 @@ done
 
 echo "── leg 3: direct native/interpreter result + DB-state oracle ──"
 ROOT="$HERE/../.."
-( cd "$ROOT" && npx tsx benchmark/crosslang/oracle-fixture-build.ts )
+( cd "$ROOT" && node --import tsx benchmark/crosslang/oracle-fixture-build.ts )
 cargo run --quiet --manifest-path "$ROOT/rust/Cargo.toml" -p litedbmodel_oracle -- sqlite /tmp/litedbmodel-oracle-e1.db

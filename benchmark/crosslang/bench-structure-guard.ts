@@ -34,6 +34,7 @@ const NATIVE_RUNTIME = join(ROOT, 'rust/litedbmodel_runtime/src/relation.rs');
 const NATIVE_RUNTIME_DIR = join(ROOT, 'rust/litedbmodel_runtime');
 const INTERPRETER_DIR = join(ROOT, 'rust/litedbmodel_interpreter');
 const ORACLE_BUILD = join(ROOT, 'benchmark/crosslang/oracle-fixture-build.ts');
+const SDK_DIR = join(ROOT, 'rust/orm_bench_sdk');
 const EXTRA_SOURCES = process.env.LITEDB_GUARD_EXTRA?.split(delimiter).filter(Boolean) ?? [];
 const PIPELINE_SOURCES = [
   join(ROOT, 'benchmark/crosslang/codegen-build.ts'),
@@ -42,6 +43,9 @@ const PIPELINE_SOURCES = [
   E1_MAIN,
   NATIVE_RUNTIME,
   ORACLE_BUILD,
+  join(SDK_DIR, 'src/main.rs'),
+  join(SDK_DIR, 'run-sdk.sh'),
+  join(SDK_DIR, 'Cargo.toml'),
   ...EXTRA_SOURCES,
 ];
 
@@ -110,6 +114,13 @@ for (const file of generatedFiles) {
     violations.push(`${f} crosses the native/interpreter boundary`);
   }
   if (src.toLowerCase().includes(legacySidecarWord)) violations.push(`${f} contains retired sidecar vocabulary`);
+  if (/let _ = &produced_/.test(code)) violations.push(`${f} contains a dummy produced-flag reference`);
+  if (/#!\[allow\([^\]]*dead_code/.test(src)) violations.push(`${f} hides private dead code with a crate-level allow`);
+  for (const name of new Set(code.match(/\bproduced_[A-Za-z0-9_]+\b/g) ?? [])) {
+    if (new RegExp(`let ${name} =`).test(code) && !code.includes(`${name}.get()`)) {
+      violations.push(`${f} declares unused produced flag ${name}`);
+    }
+  }
   if (/pub fn hydrate_\w+/.test(src)) {
     if (!/pub mod rel_\w+/.test(src) || !/RelationBatch/.test(src)) violations.push(`${f} lacks an in-file BC RelationBatch child module`);
     if (!/execute_relation_batch\(\s*&ctx,\s*&ports\.f_sql/.test(src)) {
@@ -127,6 +138,7 @@ const SERIALIZED_FORBIDDEN: Array<[RegExp, string]> = [
   [/\.get\(\s*["'](?:relations|childRelations|parentKeys|targetKeys|keyShape)["']\s*\)/, 'relation metadata walker'],
   [new RegExp(`relation_ops_json|SqlCatalog${legacySidecarWord[0].toUpperCase()}${legacySidecarWord.slice(1)}|${legacySidecarWord}Of\\s*\\(|\\.${legacySidecarWord}\\b`), 'retired sidecar metadata API'],
   [/writeFileSync\([^\n]*(?:\.json|JSON\.stringify)/, 'serialized JSON file output'],
+  [/read_to_string\([^\n]*\.json|setup\.json/, 'serialized setup file input'],
   [/["'`]\{\\"/, 'embedded serialized JSON object'],
 ];
 for (const file of PIPELINE_SOURCES) {
@@ -137,8 +149,16 @@ for (const file of PIPELINE_SOURCES) {
 }
 for (const file of EXTRA_SOURCES) {
   const src = readFileSync(file, 'utf8');
+  const code = rustCode(src);
   if (/\bNode::|execute_bundle|read_bundle|litedbmodel_interpreter/.test(src)) {
     violations.push(`${file}: generated/native source crosses interpreter boundary`);
+  }
+  if (/let _ = &produced_/.test(code)) violations.push(`${file}: dummy produced-flag reference`);
+  if (/#!\[allow\([^\]]*dead_code/.test(src)) violations.push(`${file}: crate-level dead-code allow`);
+  for (const name of new Set(code.match(/\bproduced_[A-Za-z0-9_]+\b/g) ?? [])) {
+    if (new RegExp(`let ${name} =`).test(code) && !code.includes(`${name}.get()`)) {
+      violations.push(`${file}: unused produced flag ${name}`);
+    }
   }
 }
 const nativeRuntime = readFileSync(NATIVE_RUNTIME, 'utf8');
@@ -194,6 +214,7 @@ const vocabularyRoots = [
   join(ROOT, 'rust/litedbmodel_oracle'),
   join(ROOT, 'rust/orm_bench'),
   join(ROOT, 'rust/e1_native_proof'),
+  SDK_DIR,
   join(ROOT, 'benchmark/crosslang'),
   join(ROOT, 'test/scp'),
   join(ROOT, 'scripts'),
@@ -207,6 +228,14 @@ for (const file of vocabularyFiles) {
   if (readFileSync(file, 'utf8').toLowerCase().includes(legacySidecarWord)) {
     violations.push(`${file}: retired sidecar vocabulary remains`);
   }
+}
+const sdkMain = readFileSync(join(SDK_DIR, 'src/main.rs'), 'utf8');
+const sdkCargo = readFileSync(join(SDK_DIR, 'Cargo.toml'), 'utf8');
+const sdkScript = readFileSync(join(SDK_DIR, 'run-sdk.sh'), 'utf8');
+if (!/mod generated_setup;/.test(sdkMain) || !/generated_setup::STATEMENTS/.test(sdkMain)) violations.push('SDK does not compile static generated setup statements');
+if (/serde_json/.test(sdkCargo) || /setup\.json|serde_json|read_to_string/.test(sdkMain)) violations.push('SDK retains serialized setup transport');
+if (!/set -euo pipefail/.test(sdkScript) || !/trap restore EXIT/.test(sdkScript) || !/select_setup postgres/.test(sdkScript) || !/select_setup mysql/.test(sdkScript)) {
+  violations.push('SDK script is not fail-closed with dialect setup selection and restoration');
 }
 
 if (violations.length > 0) {

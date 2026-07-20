@@ -11,7 +11,8 @@
  *
  * ## Catalog names (spec §1 / §11 item 1)
  *
- * `Select` / `Insert` / `Update` / `Delete` are the CRUD leaf components. `Fragment` is
+ * `Select` / `Insert` / `Update` / `Delete` are the CRUD leaf components. `RelationBatch` is the
+ * portable typed native relation-query component. `Fragment` is
  * the dynamic WHERE/SET fragment-tree component (SKIP → fragment existence rules, §8);
  * `Tx` is the multi-statement transaction envelope. As in graphddb, the transaction
  * envelope (`Tx`) is `portableToIR: false` — a transaction is emitted as a Component

@@ -22,8 +22,16 @@ describe('bench structure guard fail-closed behavior', () => {
     rejects('fn bad() { let _ = serde_json::from_str::<Value>("{}"); }\n', 'runtime serialized parser');
   });
 
+  it('rejects a serialized SDK setup input', () => {
+    rejects('fn bad() { let _ = std::fs::read_to_string("/tmp/setup.json"); }\n', 'serialized setup file input');
+  });
+
   it('rejects a generated interpreter dependency', () => {
     rejects('fn bad() { let _ = litedbmodel_interpreter::Node::Null; }\n', 'crosses interpreter boundary');
+  });
+
+  it('rejects an unused generated produced flag', () => {
+    rejects('fn bad() { let produced_n0 = std::cell::Cell::new(false); let _ = &produced_n0; produced_n0.set(true); }\n', 'dummy produced-flag reference');
   });
 
   it('rejects retired sidecar metadata', () => {

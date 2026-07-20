@@ -95,6 +95,29 @@ export interface CodegenArtifact {
   readonly bundle: SqlBundle;
 }
 
+function pruneRustNativeDeadCode(source: string): string {
+  let code = source
+    .replace(/^#!\[allow\(dead_code,\s*/m, '#![allow(')
+    .replace(/^#\[allow\(dead_code\)\]\n/gm, '');
+
+  const producedNames = new Set(code.match(/\bproduced_[A-Za-z0-9_]+\b/g) ?? []);
+  for (const name of producedNames) {
+    code = code.replace(new RegExp(`^[ \\t]*let _ = &${name};\\n`, 'gm'), '');
+    if (!code.includes(`${name}.get()`)) {
+      code = code
+        .replace(new RegExp(`^[ \\t]*let ${name} = std::cell::Cell::new\\(false\\);\\n`, 'gm'), '')
+        .replace(new RegExp(`^[ \\t]*${name}\\.set\\(true\\);\\n`, 'gm'), '');
+    }
+  }
+
+  for (const name of ['op_failed', 'unknown_component', 'leaf_failure', 'de_type_mismatch', 'de_missing_field', 'de_overflow']) {
+    if ((code.match(new RegExp(`\\b${name}\\s*\\(`, 'g')) ?? []).length === 1) {
+      code = code.replace(new RegExp(`^fn ${name}\\b[\\s\\S]*?^}\\n`, 'm'), '');
+    }
+  }
+  return code;
+}
+
 function rustStringLiteral(value: string): string {
   return `"${value
     .replaceAll('\\', '\\\\')
@@ -1359,7 +1382,9 @@ export function generateCodegenArtifact(
   // comments. Normalize that wording at the source-generation boundary; identifiers and behavior
   // are untouched.
   const legacySidecarWord = `com${'panion'}`;
-  const code = rawModule.code.replace(new RegExp(`${legacySidecarWord}(s?)`, 'gi'), (_match, plural: string) => `adapter${plural}`);
+  const code = pruneRustNativeDeadCode(
+    rawModule.code.replace(new RegExp(`${legacySidecarWord}(s?)`, 'gi'), (_match, plural: string) => `adapter${plural}`),
+  );
   const module = { ...rawModule, code };
   return { language: language as CodegenLanguage, module, bundle };
 }
@@ -1686,9 +1711,10 @@ function nestedKeyOfClosure(cols: readonly string[]): string {
   return `|c| (${cols.map((c) => `c.${c}`).join(', ')})`;
 }
 
-/** Emit ONE top-level relation's TYPED hydrator into the primary adapter: it drives the SHARED
- * per-level `hydrate_relation_typed` (the child rows de-box to typed structs; the loader's group/distribute
- * run over them), then UNROLLS each `childRelations` level (Rust cannot recurse generically over the
+/** Emit ONE top-level relation's TYPED hydrator into the primary adapter: each child module calls
+ * `execute_relation_batch` for empty/dedupe/cast/bind/exec/limit, de-boxes the returned rows to typed
+ * structs, then calls `hydrate_children` for group/distribute. It UNROLLS each `childRelations` level
+ * (Rust cannot recurse generically over the
  * heterogeneous child types) — each level a batched read (N+1-free). Returns `Vec<(P, Vec<child>)>`. The
  * parent `key_of` is supplied by the caller (keeps the hydrator generic over the primary read struct). */
 function emitRelationHydrator(op: RelationOp, primaryModuleName: string): string {
@@ -1749,9 +1775,9 @@ function emitRelationHydrator(op: RelationOp, primaryModuleName: string): string
   };
   return [
     ``,
-    `/// TYPED hydrator for the '${op.name}' relation (#140): batch-load the child rows and de-box them to`,
-    `/// TYPED structs via the SHARED \`hydrate_relation_typed\` (loader = the ONE SQL/dedupe/group/distribute`,
-    `/// authority; children are typed, NOT \`Value::Obj\`). SQL/key metadata is baked into this function;`,
+    `/// TYPED hydrator for the '${op.name}' relation (#140): \`execute_relation_batch\` owns`,
+    `/// empty/dedupe/cast/bind/exec/limit; the child BC module de-boxes rows to typed structs;`,
+    `/// \`hydrate_children\` owns group/distribute. SQL/key metadata is baked into this function;`,
     `/// \`key_of\` is the caller's parent-key accessor. Deeper relations are direct-call expanded here.`,
     `pub fn hydrate_${op.name}(`,
     `    parents: Vec<T0>,`,
@@ -1878,9 +1904,9 @@ function generateRustStaticAdapter(bundle: SqlBundle, moduleName: string, resolv
   // (an inline `.map` runs its child per parent element; a plain read/write runs once). Relations are NOT
   // handler nodes (#131) — they ride `bundle.relations` for the runtime loader, emitted below.
   const methods = c.body.filter((n) => !('cond' in n)).map((n) => emitReadWriteNode(n, comp, bundle, inputPorts));
-  // #140 typed-child hydrators: one per top-level relation. Each drives the SHARED `hydrate_relation_typed`
-  // (the child rows de-box to TYPED structs via the bc child module — NO `Value::Obj` grouped/retained) and
-  // batches every `childRelations` level. The child bc modules + de-box adapters are emitted separately
+  // #140 typed-child hydrators: one per top-level relation. Each child module calls
+  // `execute_relation_batch`, de-boxes rows via BC, then calls `hydrate_children` to group/distribute;
+  // every `childRelations` level remains batched. The child bc modules + de-box adapters are emitted separately
   // (`generateRelationChildArtifacts`) and referenced here by the SAME `relChildNames` derivation.
   const relationHydrators = Object.values(bundle.relations).map((op) => emitRelationHydrator(op, moduleName));
   // #135 find-hardLimit auto-wiring: when the ReadGraph carries a `findGuard` (the compile baked
