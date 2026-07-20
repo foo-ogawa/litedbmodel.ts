@@ -1544,6 +1544,49 @@ function emitRelationOpsAccessor(relations: Record<string, RelationOp>): string 
  * (`handler(driver)` for reads/writes; `run(driver, in_) -> committed:bool` for transactions, which
  * wraps the chain in the runtime transaction envelope).
  */
+/**
+ * #135 find-hardLimit auto-wiring — emit the GUARDED `run` entry for a read whose ReadGraph carries a
+ * `findGuard`. It runs the bc runner, then enforces the cap via the SHARED
+ * `litedbmodel_runtime::check_find_hard_limit` (the SAME core the mode-2 `assert_find_guard` calls) with
+ * the cap/model baked from the meta — the `LimitExceededError` (`context: find`) is raised OUTSIDE the
+ * runner so it is byte-equal to mode-2 (NOT swallowed into the runner's `OP_FAILED`).
+ *
+ * The runner's typed return (`Vec<Row>`) is read from the bc-generated module's PUBLIC runner signature
+ * (`pub fn run_native_raw_struct_<Comp>… -> Result<<Ret>, BehaviorError>`) — that signature is bc's
+ * output CONTRACT, so this reads bc output, never modifies bc, and needs no bc-internal type name. Empty
+ * for a tx bundle or a read with no `findGuard` (⇒ no entry emitted, no behavior change).
+ */
+function emitGuardedFindEntry(bundle: SqlBundle, comp: string, ir: ReturnType<typeof lowerBundleToPortableIrDoc>): string[] {
+  const isTx = bundle.transaction !== undefined && bundle.readGraph === undefined;
+  const findGuard = isTx ? undefined : bundle.readGraph?.findGuard;
+  if (findGuard === undefined) return [];
+  // Read the runner's typed return from the bc-generated module's public signature (its output contract).
+  const code = generateModule(loadCompiledIR(ir), { language: 'rust-typed-native' }).code;
+  const match = code.match(new RegExp(`pub fn run_native_raw_struct_${comp}<[^>]*>\\s*\\([\\s\\S]*?\\)\\s*->\\s*Result<([\\s\\S]*?),\\s*BehaviorError>`));
+  if (match === null) {
+    throw new Error(`litedbmodel companion (#135 find-guard): cannot read the return type of run_native_raw_struct_${comp} from the bc-generated module signature`);
+  }
+  const ret = match[1].trim();
+  if (!ret.startsWith('Vec<')) {
+    throw new Error(`litedbmodel companion (#135 find-guard): a find guard expects a row-LIST return (Vec<…>), but run_native_raw_struct_${comp} returns '${ret}'`);
+  }
+  return [
+    ``,
+    `/// The GUARDED find entry (#135): run the native read, then enforce the find hard-limit via the`,
+    `/// SAME shared \`check_find_hard_limit\` the mode-2 read-graph guard calls (cap/model baked from the`,
+    `/// ReadGraph findGuard meta; the \`LIMIT hardLimit + 1\` is already in the baked SQL). A cap-exceeding`,
+    `/// read throws \`LimitExceededError\` (\`context: find\`), byte-equal to mode-2 — surfaced OUTSIDE the`,
+    `/// runner (the runner's BehaviorError maps to RuntimeError::Sql). The litedbmodel-consumer calls`,
+    `/// THIS for a capped find, not the bare runner.`,
+    `pub fn run(driver: &dyn Driver, in_: InNR${comp}) -> Result<${ret}, litedbmodel_runtime::RuntimeError> {`,
+    `    let rows = run_native_raw_struct_${comp}(&handler(driver), in_)`,
+    `        .map_err(|e| litedbmodel_runtime::RuntimeError::Sql(litedbmodel_runtime::SqlFailure { kind: e.code, policy: "fail".to_string(), sqlite_code: None, message: e.message }))?;`,
+    `    litedbmodel_runtime::check_find_hard_limit(${findGuard.hardLimit}i64, rows.len() as i64, Some(${JSON.stringify(findGuard.model)}))?;`,
+    `    Ok(rows)`,
+    `}`,
+  ];
+}
+
 export function generateRustCompanion(bundle: SqlBundle, moduleName: string, resolveColumnType: ColumnTypeResolver): string {
   const ir = lowerBundleToPortableIrDoc(bundle, resolveColumnType);
   const c = ir.components[0] as unknown as {
@@ -1625,6 +1668,13 @@ export function generateRustCompanion(bundle: SqlBundle, moduleName: string, res
   // handler nodes (#131) — they ride `bundle.relations` for the runtime loader, emitted below.
   const methods = c.body.filter((n) => !('cond' in n)).map((n) => emitReadWriteNode(n, comp, bundle, inputPorts));
   const relationsAccessor = Object.keys(bundle.relations).length > 0 ? [``, emitRelationOpsAccessor(bundle.relations)] : [];
+  // #135 find-hardLimit auto-wiring: when the ReadGraph carries a `findGuard` (the compile baked
+  // `LIMIT hardLimit + 1` + the cap/model meta), emit a GUARDED `run` entry that runs the bc runner
+  // then enforces the cap via the SHARED `check_find_hard_limit` — cap/model from the meta, the
+  // LimitExceededError surfaced OUTSIDE the runner (not potted into OP_FAILED) so it is byte-equal to
+  // mode-2. The runner's typed return (`Vec<Row>`) is read from the bc-generated module's PUBLIC runner
+  // signature (its output CONTRACT) — reading bc output, not modifying bc.
+  const guardedFindEntry = emitGuardedFindEntry(bundle, comp, ir);
   return [
     ...head,
     `// The handler holds a ConnSource (#135): a single Driver (routing=None, byte-identical single-pool)`,
@@ -1644,6 +1694,7 @@ export function generateRustCompanion(bundle: SqlBundle, moduleName: string, res
     `/// The ROUTED consumer entry (#135): the handler routes each read to the reader pool and each write`,
     `/// to the writer pool (named-DB via the registry) through the SAME central \`connection_for\` seam.`,
     `pub fn handler_routed(routing: &litedbmodel_runtime::RoutingConfig) -> Rt<'_> { Rt { src: litedbmodel_runtime::ConnSource::Routing(routing) } }`,
+    ...guardedFindEntry,
     ...relationsAccessor,
     ``,
   ].join('\n');

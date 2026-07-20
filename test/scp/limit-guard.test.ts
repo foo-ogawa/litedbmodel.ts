@@ -30,6 +30,7 @@ import {
   type In,
   type RelationDecl,
 } from '../../src/scp';
+import { generateRustCompanion } from '../../src/scp/codegen';
 
 const L = components();
 
@@ -203,5 +204,33 @@ describe('hasMany relation hard-limit (batch total)', () => {
       expect(rows.length).toBe(5);
       expect((rows[0].tags as unknown[]).length).toBe(1);
     } finally { db.close(); }
+  });
+});
+
+// #135: the native rust companion auto-wires the find-hardLimit guard when the ReadGraph carries a
+// findGuard — a GUARDED `run` entry that calls the SHARED `check_find_hard_limit` with the cap/model
+// baked from the meta, raising LimitExceededError OUTSIDE the runner (byte-equal to mode-2).
+describe('#135 native companion find-guard auto-wiring (rust)', () => {
+  it('emits a guarded run() calling check_find_hard_limit with the baked cap/model when findGuard is set', () => {
+    setLimitConfig({ findHardLimit: 5 });
+    const bundle = compileBundle(publishBehaviors(Feed), 'Posts', [], 'sqlite', undefined, resolver);
+    expect(bundle.readGraph!.findGuard).toEqual({ hardLimit: 5, nodeId: bundle.readGraph!.findGuard!.nodeId, model: 'Posts' });
+    const companion = generateRustCompanion(bundle, 'generated_posts', resolver);
+    // A typed guarded entry that returns the runner's Vec<Row> as RuntimeError-fallible…
+    expect(companion).toMatch(/pub fn run\(driver: &dyn Driver, in_: InNRPosts\) -> Result<Vec<[^>]+>, litedbmodel_runtime::RuntimeError>/);
+    // …runs the bc runner, maps its BehaviorError → RuntimeError::Sql…
+    expect(companion).toContain('run_native_raw_struct_Posts(&handler(driver), in_)');
+    expect(companion).toContain('litedbmodel_runtime::RuntimeError::Sql(');
+    // …and enforces the cap via the SHARED helper with the baked cap (5) + model ("Posts").
+    expect(companion).toContain('litedbmodel_runtime::check_find_hard_limit(5i64, rows.len() as i64, Some("Posts"))?;');
+  });
+
+  it('emits NO guarded run() when findHardLimit is disabled (no findGuard ⇒ byte-unchanged read companion)', () => {
+    resetLimitConfig();
+    const bundle = compileBundle(publishBehaviors(Feed), 'Posts', [], 'sqlite', undefined, resolver);
+    expect(bundle.readGraph!.findGuard).toBeUndefined();
+    const companion = generateRustCompanion(bundle, 'generated_posts', resolver);
+    expect(companion).not.toContain('check_find_hard_limit');
+    expect(companion).not.toMatch(/pub fn run\(/);
   });
 });
