@@ -305,10 +305,7 @@ fn fetch_child_rows(
 /// over the child row representation `C`: the Value path passes `Value` rows with an `obj_get`-based key
 /// reader, the native path passes bc-de-boxed TYPED structs with a field-access key reader. ONE grouping
 /// (insertion order preserved within a key), no Value/typed duplication.
-fn group_children<C>(
-    rows: Vec<C>,
-    target_key_of: impl Fn(&C) -> Vec<Value>,
-) -> RelationBatch<C> {
+fn group_children<C>(rows: Vec<C>, target_key_of: impl Fn(&C) -> Vec<Value>) -> RelationBatch<C> {
     let mut batch: RelationBatch<C> = HashMap::new();
     for row in rows {
         let tuple = target_key_of(&row);

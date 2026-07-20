@@ -930,7 +930,8 @@ fn my_cell_to_value(row: &MySqlRow, idx: usize) -> Result<Value, SqlFailure> {
     } else if type_name.contains("BOOL") {
         // MySQL `TINYINT(1)` surfaces to sqlx as `BOOLEAN`; the v2 read types a boolean column as an
         // INTEGER 0/1 (the resolver maps it to int, matching the sqlite path), so decode bool → Int.
-        row.try_get::<bool, _>(idx).map(|b| Value::Int(if b { 1 } else { 0 }))
+        row.try_get::<bool, _>(idx)
+            .map(|b| Value::Int(if b { 1 } else { 0 }))
     } else if type_name.contains("TIMESTAMP") {
         // sqlx maps MySQL TIMESTAMP (tz-aware) to `DateTime<Utc>` (NOT NaiveDateTime). Canonicalize to
         // the SAME `YYYY-MM-DD HH:MM:SS` text the seed + the SQLite/PG read use (date→canonical string is
