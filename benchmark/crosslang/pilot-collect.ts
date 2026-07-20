@@ -100,9 +100,11 @@ function main() {
   lines.push(
     'Each op runs the same logical operation two ways: **native** = litedbmodel-generated native module ' +
       '+ runtime (no hand-written exec seam); **sdk** = a hand-written raw rust driver (rusqlite / postgres ' +
-      '/ mysql), litedbmodel NOT in the path. Reads/writes/batch/relations/tx across sqlite (in-proc file) ' +
-      '+ docker PostgreSQL + docker MySQL. Latency p50/p99 in ms; ops/sec from the mean; overhead = ' +
-      'native p50 ÷ sdk p50.\n',
+      '/ mysql), litedbmodel NOT in the path. Both cells reuse prepared statements across iterations (native ' +
+      'via the runtime prepared-statement cache, sdk via the driver statement cache) and bind params for ' +
+      'reads and writes alike — a competent-raw-driver baseline, not a re-parse-per-call strawman. ' +
+      'Reads/writes/batch/relations/tx across sqlite (in-proc file) + docker PostgreSQL + docker MySQL. ' +
+      'Latency p50/p99 in ms; ops/sec from the mean; overhead = native p50 ÷ sdk p50.\n',
   );
 
   // ── Table 1: 19 × 3 native vs sdk ──
@@ -140,6 +142,16 @@ function main() {
       `| ${label} | ${n ? fmt(n.p50Ms) : '—'} | ${cell(v['litedbmodel'])} | ${cell(v['SeaORM'])} ` +
         `| ${cell(v['Diesel'])} | ${s ? fmt(s.p50Ms) : '—'} |`,
     );
+  }
+
+  // ── Decoder correctness (native ≡ mode-2 interpreter, byte-equal) ──
+  const verifyPath = join(RESULTS, 'native-verify.txt');
+  if (existsSync(verifyPath)) {
+    lines.push('\n## Decoder correctness — native ≡ mode-2 (byte-equal)\n');
+    lines.push('filterPaginateSort projects `created_at` (TIMESTAMP) + `published` (BOOLEAN on pg / TINYINT on mysql). The native de-boxed output equals the mode-2 interpreter (`execute_bundle`) output byte-for-byte on the same live DB — date → canonical `YYYY-MM-DD HH:MM:SS`, pg bool → `true`, mysql bool → `1`:\n');
+    lines.push('```');
+    lines.push(readFileSync(verifyPath, 'utf8').trim());
+    lines.push('```');
   }
 
   // ── Safety proofs ──

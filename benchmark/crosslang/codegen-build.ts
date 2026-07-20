@@ -73,6 +73,13 @@ function emitDialect(dialect: OrmDialect): ManifestOp[] {
     const companion = generateRustCompanion(op.bundle as never, `generated_${op.id}`, op.resolve);
     writeFileSync(join(dir, `generated_${op.id}.rs`), moduleCode);
     writeFileSync(join(dir, `companion_${op.id}.rs`), companion);
+    // The mode-2 oracle fixture for the date/bool decoder proof (#124 native-vs-mode-2 framework):
+    // filterPaginateSort projects created_at (TIMESTAMP) + published (BOOLEAN/TINYINT), so its
+    // bundle+input drive `execute_bundle` (the interpreter) to compare BYTE-EQUAL vs the native path.
+    if (op.id === 'filterPaginateSort') {
+      writeFileSync(join(dir, `bundle_${op.id}.json`), JSON.stringify(op.bundle));
+      writeFileSync(join(dir, `input_${op.id}.json`), JSON.stringify({ published: dialect === 'postgres' ? true : 1 }));
+    }
     // tx ops: the native chain runs through the companion `run_on` (BEGIN…COMMIT envelope), not a
     // bare native raw entry — so the entry name is only meaningful for read/write/batch ops.
     let entry = '';

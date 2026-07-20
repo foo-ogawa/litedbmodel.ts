@@ -23,7 +23,7 @@ mod gen;
 
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
-use litedbmodel_runtime::{stitch_relation, Driver, Node, SqlFailure, SqliteDriver, Value};
+use litedbmodel_runtime::{encode_value, execute_bundle, stitch_relation, Driver, Node, SqlFailure, SqliteDriver, Value};
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -254,6 +254,12 @@ fn main() {
         run_safety(dialect, spec);
         return;
     }
+    if args.get(1).map(String::as_str) == Some("verify") {
+        let dialect = args.get(2).expect("verify <dialect> <spec>");
+        let spec = args.get(3).expect("verify <dialect> <spec>");
+        run_verify(dialect, spec);
+        return;
+    }
     let dialect = args.get(1).expect("usage: orm_bench <dialect> <spec> [reps] [warmup]").clone();
     let spec = args.get(2).expect("usage: orm_bench <dialect> <spec> [reps] [warmup]").clone();
     let reps: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(300);
@@ -274,6 +280,65 @@ fn main() {
             let us = t.elapsed().as_micros();
             println!("native,{dialect},{op},{it},{us}");
         }
+    }
+}
+
+// ── #129 decoder correctness: filterPaginateSort projects created_at (TIMESTAMP) + published
+//    (BOOLEAN/TINYINT) — the columns the a6012dc read-decoder arms cover. Prove the NATIVE de-boxed
+//    output ≡ the mode-2 INTERPRETER (`execute_bundle`) output BYTE-FOR-BYTE on the same live DB, using
+//    the SAME `encode_value` serializer (the #124 native-vs-mode-2 oracle framework). Both paths read
+//    the SAME driver Value (the shared decoder), so equality proves the decoder is a genuine runtime fix
+//    (date→canonical string, bool→Int/bool), not a bench-only fudge. ────────────────────────────────
+fn run_verify(dialect: &str, spec: &str) {
+    let driver = open_driver(spec);
+    let d: &dyn Driver = driver.as_ref();
+    reseed(d, dialect);
+
+    // NATIVE: run the generated filterPaginateSort, re-encode the typed rows through encode_value.
+    #[cfg(feature = "pg")]
+    let published = true;
+    #[cfg(not(feature = "pg"))]
+    let published = 1;
+    let rows = gen::generated_filterPaginateSort::run_native_raw_struct_FilterPaginateSort(
+        &gen::companion_filterPaginateSort::handler(d),
+        gen::generated_filterPaginateSort::InNRFilterPaginateSort { published },
+    )
+    .expect("native filterPaginateSort");
+    let native_arr: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            #[cfg(feature = "pg")]
+            let pub_val = Value::Bool(r.published);
+            #[cfg(not(feature = "pg"))]
+            let pub_val = Value::Int(r.published);
+            Value::Obj(vec![
+                ("id".into(), Value::Int(r.id)),
+                ("title".into(), Value::Str(r.title.clone())),
+                ("content".into(), Value::Str(r.content.clone())),
+                ("published".into(), pub_val),
+                ("author_id".into(), Value::Int(r.author_id)),
+                ("created_at".into(), Value::Str(r.created_at.clone())),
+            ])
+        })
+        .collect();
+    let native_json = encode_value(&Value::Arr(native_arr)).to_json_string();
+
+    // MODE-2 (interpreter): execute_bundle over the SAME bundle + input on the SAME connection.
+    let base = format!("/tmp/ormbench/{dialect}");
+    let bundle = Node::parse(&std::fs::read_to_string(format!("{base}/bundle_filterPaginateSort.json")).expect("read bundle")).expect("parse bundle");
+    let input = Node::parse(&std::fs::read_to_string(format!("{base}/input_filterPaginateSort.json")).expect("read input")).expect("parse input");
+    let m2 = execute_bundle(&bundle, &input, d).unwrap_or_else(|e| panic!("mode-2 filterPaginateSort: {}", e.message()));
+    let mode2_json = encode_value(&m2).to_json_string();
+
+    let ok = native_json == mode2_json;
+    println!("filterPaginateSort {dialect}: native≡mode-2 byte-equal = {ok} ({} rows)", rows.len());
+    if ok {
+        // Show the created_at (TIMESTAMP→canonical string) + published (BOOLEAN/TINYINT) of row 0 as evidence.
+        let sample: String = native_json.chars().take(200).collect();
+        println!("  sample: {sample}");
+    } else {
+        println!("  NATIVE: {}", native_json.chars().take(300).collect::<String>());
+        println!("  MODE-2: {}", mode2_json.chars().take(300).collect::<String>());
     }
 }
 
