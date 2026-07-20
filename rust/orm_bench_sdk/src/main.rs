@@ -1,5 +1,5 @@
 //! SDK-baseline ORM-bench cell (#129) — the raw-driver comparison cell for the collector's `sdk` vs
-//! `native` latency delta. It runs the SAME 19 ORM ops as `rust/orm_bench`, over the SAME seed
+//! native latency comparison. It runs the 19 ORM ops over the shared benchmark seed
 //! (the compiled `generated_setup::STATEMENTS`), with the SAME CLI, CSV schema, op list/order, per-iteration
 //! unique-key strategy, warmup/reps defaults, and re-seed-before-each-op behaviour — but it does NOT go
 //! through litedbmodel: every op is hand-written SQL issued straight at the plain driver (rusqlite for

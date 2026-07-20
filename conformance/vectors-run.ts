@@ -175,37 +175,11 @@ function main(): void {
     }
   }
 
-  // ── Mode-3 codegen leg (WS7f, #35) ──────────────────────────────────────────
-  // A SEPARATE conformance concern (static codegen vs the mode-2 IR-reference runtimes above), so
-  // it is NOT folded into the per-language agreement matrix (its per-vector check count differs by
-  // design). It proves the bc-generator output is byte-identical to the thin-runtime: the emitted
-  // TS + Python modules are EXECUTED, and the go/rust/php emitted source is compiled/parsed.
-  const codegenRunner = join(HERE, 'codegen', 'codegen-runner.ts');
-  if (existsSync(codegenRunner) && existsSync(join(REPO, 'dist', 'scp', 'index.mjs'))) {
-    console.log('\nconformance(vectors): mode-3 codegen leg (bc shared generator)');
-    const cg = spawnSync('npx', ['tsx', codegenRunner], { cwd: REPO, env, encoding: 'utf-8', maxBuffer: 32 * 1024 * 1024 });
-    const summary = parseSummary(cg.stdout ?? '');
-    if (!summary) {
-      console.error(`  [FAIL] codegen no JSON summary (exit ${cg.status})`);
-      if (cg.stderr) console.error(cg.stderr.split('\n').slice(-8).join('\n'));
-      problems++;
-    } else {
-      const suiteStr = Object.entries(summary.suites).map(([k, t]) => `${k} ${t.pass}/${t.pass + t.fail}`).join(', ');
-      const bad = summary.total_fail > 0 || summary.version_mismatch || cg.status !== 0;
-      console.log(
-        `  [${bad ? 'FAIL' : 'OK  '}] codegen ${summary.total_pass}/${summary.total_pass + summary.total_fail} (${suiteStr}) [exit ${cg.status}]`,
-      );
-      if (bad) problems++;
-    }
-  } else {
-    console.log('\nconformance(vectors): mode-3 codegen leg SKIPPED (run `npm run build:scp` first)');
-  }
-
   if (problems > 0) {
     console.error(`\nconformance(vectors): ${problems} problem(s).`);
     process.exit(1);
   }
-  console.log(`\nconformance(vectors): PASS (${runnable.length} runtime(s) clean + codegen leg)`);
+  console.log(`\nconformance(vectors): PASS (${runnable.length} runtime(s) clean)`);
 }
 
 main();

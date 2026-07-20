@@ -5,13 +5,13 @@
 // Every op in `contract.ts` ORM_OPS is authored ONCE here on the litedbmodel public SCP surface, over
 // the `benchmark_*` schema + seed of `orm-domain.ts`, and compiled to a SqlBundle (read/write) or a
 // TransactionPlan bundle (the nested-write tx ops). From these bundles:
-//   • codegen-build.ts generates the rust/go/ts native modules (drift-gated);
+//   • BC consumes the authored TypeScript graph and owns native module generation;
 //   • the SDK-baseline cell runs the hand-SQL against the raw driver;
 //   • the mode-2 oracle (executeBundle / executeTransactionBundle) is the byte-equal reference.
 // The operator surface is the completed E1–E5 (reads / writes / upsert / batch / relation / tx).
 //
 // Imported from the BUILT bundle (dist/scp/index.cjs, which inlines the ESM-only behavior-contracts) so
-// this module runs standalone under tsx (codegen-build, the ts cell) as well as under vitest.
+// this module runs standalone under tsx as well as under vitest.
 import {
   SemanticBehavior,
   components,

@@ -30,8 +30,6 @@ import {
   type In,
   type RelationDecl,
 } from '../../src/scp';
-import { generateRustExecutable } from '../../src/scp/codegen';
-import { registeredLanguages } from 'behavior-contracts';
 
 const L = components();
 
@@ -205,33 +203,5 @@ describe('hasMany relation hard-limit (batch total)', () => {
       expect(rows.length).toBe(5);
       expect((rows[0].tags as unknown[]).length).toBe(1);
     } finally { db.close(); }
-  });
-});
-
-// #135: the native Rust adapter auto-wires the find-hardLimit guard when the ReadGraph carries a
-// findGuard — a GUARDED `run` entry that calls the SHARED `check_find_hard_limit` with the cap/model
-// baked from the meta, raising LimitExceededError OUTSIDE the runner (byte-equal to mode-2).
-describe('#135 native adapter find-guard auto-wiring (rust)', () => {
-  it('emits a guarded run() calling check_find_hard_limit with the baked cap/model when findGuard is set', () => {
-    setLimitConfig({ findHardLimit: 5 });
-    const bundle = compileBundle(publishBehaviors(Feed), 'Posts', [], 'sqlite', undefined, resolver);
-    expect(bundle.readGraph!.findGuard).toEqual({ hardLimit: 5, nodeId: bundle.readGraph!.findGuard!.nodeId, model: 'Posts' });
-    const source = generateRustExecutable(bundle, 'generated_posts', resolver, registeredLanguages());
-    // A typed guarded entry that returns the runner's Vec<Row> as RuntimeError-fallible…
-    expect(source).toMatch(/pub fn run\(driver: &dyn Driver, in_: InNRPosts\) -> Result<Vec<[^>]+>, litedbmodel_runtime::RuntimeError>/);
-    // …runs the bc runner, maps its BehaviorError → RuntimeError::Sql…
-    expect(source).toContain('run_native_raw_struct_Posts(&handler(driver), in_)');
-    expect(source).toContain('litedbmodel_runtime::RuntimeError::Sql(');
-    // …and enforces the cap via the SHARED helper with the baked cap (5) + model ("Posts").
-    expect(source).toContain('litedbmodel_runtime::check_find_hard_limit(5i64, rows.len() as i64, Some("Posts"))?;');
-  });
-
-  it('emits NO guarded run() when findHardLimit is disabled (no findGuard ⇒ byte-unchanged module)', () => {
-    resetLimitConfig();
-    const bundle = compileBundle(publishBehaviors(Feed), 'Posts', [], 'sqlite', undefined, resolver);
-    expect(bundle.readGraph!.findGuard).toBeUndefined();
-    const source = generateRustExecutable(bundle, 'generated_posts', resolver, registeredLanguages());
-    expect(source).not.toContain('check_find_hard_limit');
-    expect(source).toMatch(/pub fn run\(/);
   });
 });

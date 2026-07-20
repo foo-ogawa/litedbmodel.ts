@@ -967,14 +967,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "litedbmodel_oracle"
-version = "0.0.0"
-dependencies = [
- "litedbmodel_interpreter",
- "litedbmodel_runtime",
-]
-
-[[package]]
 name = "litedbmodel_runtime"
 version = "2.1.0"
 dependencies = [

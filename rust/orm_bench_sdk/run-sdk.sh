@@ -13,7 +13,6 @@ mkdir -p "$RESULTS"
 PG_SPEC='pg:host=localhost port=5433 user=testuser password=testpass dbname=testdb'
 MYSQL_SPEC='mysql:mysql://testuser:testpass@localhost:3307/testdb'
 
-( cd "$ROOT" && node --import tsx benchmark/crosslang/codegen-build.ts sqlite )
 BACKUP="$(mktemp -d)"
 cp "$HERE/src/generated_setup.rs" "$BACKUP/generated_setup.rs"
 restore() {

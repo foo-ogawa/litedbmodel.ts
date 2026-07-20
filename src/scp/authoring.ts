@@ -54,14 +54,8 @@ import {
   type Recorded,
 } from 'behavior-contracts';
 
-// bc 0.8.0 (scp-only-authoring): the public component-graph node/component types are BRANDED
-// opaque handles (`… & IrBrand`) — only `compileBehaviors` / `loadCompiledIR` mint them. litedbmodel
-// INSPECTS and additively TRANSFORMS the graph (spread + `.map` over `.components`/`.body`), which
-// yields UNBRANDED structural values; it re-adopts the branded handle only at the `generateModule`
-// seam via {@link loadCompiledIR}. So litedbmodel's internal node/component/graph types are the
-// UNBRANDED structural shapes derived from bc's serialization-doc type `ComponentGraphIRDoc` (the
-// one unbranded whole-IR export). This is the sanctioned consumer view: the brand rides only the
-// compile→generate seam handle, never the structural nodes litedbmodel walks.
+// These aliases are inspection-only structural views over BC output. Native generation must consume
+// the original `compileBehaviors` handle directly; litedbmodel must not rebuild or re-adopt IR.
 /** Unbranded whole-IR structural shape (bc `ComponentGraphIRDoc`) — litedbmodel's carried/transformed IR. */
 export type ComponentGraphIR = ComponentGraphIRDoc;
 /** Unbranded component structural shape (`ir.components[number]`). */
@@ -536,6 +530,4 @@ function makeEagerClass(name: string, fn: EagerBehavior): BehaviorClass {
   return cls;
 }
 
-// The component-graph node/component/graph types consumers (WS3) narrow the emitted IR with are
-// declared+exported as UNBRANDED structural aliases near the top of this module (bc 0.8.0: the branded
-// compile-seam handle is re-adopted only at `generateModule` via `loadCompiledIR`).
+// The component-graph node/component/graph types used for inspection are declared above.

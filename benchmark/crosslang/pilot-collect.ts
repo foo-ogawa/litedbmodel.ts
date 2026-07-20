@@ -11,7 +11,7 @@
 //   native.csv        — the native-codegen cell (orm_bench)          [required]
 //   sdk.csv           — the raw-driver SDK baseline cell (orm_bench_sdk) [required]
 //   native-safety.txt — the N+1 query-count proof lines               [optional]
-// v1 rust-native (pg leg): /Users/ogawa/Work/my-libs/litedbmodel.rs/benchmark/results/rust-benchmark-results.csv
+// Optional v1 rust-native (pg leg): pass its CSV path via V1_CSV.
 //
 // Output: benchmark/ORM-PILOT.md (results only — no issue numbers / narrative, per the doc rule).
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -22,7 +22,7 @@ import { ORM_OPS, ORM_OP_LABEL, ORM_DIALECTS } from './contract';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RESULTS = join(HERE, '.results');
-const V1_CSV = '/Users/ogawa/Work/my-libs/litedbmodel.rs/benchmark/results/rust-benchmark-results.csv';
+const V1_CSV = process.env.V1_CSV;
 
 type Cell = 'native' | 'sdk';
 interface Sample { cell: string; dialect: string; op: string; us: number }
@@ -69,7 +69,7 @@ function fmtOps(n: number): string {
 // ── v1 rust-native (pg) — keyed by the human label (== ORM_OP_LABEL == v1 `category`). ──────────────
 function parseV1(): Map<string, Record<string, number>> {
   const m = new Map<string, Record<string, number>>();
-  if (!existsSync(V1_CSV)) return m;
+  if (V1_CSV === undefined || !existsSync(V1_CSV)) return m;
   for (const line of readFileSync(V1_CSV, 'utf8').trim().split('\n').slice(1)) {
     // Columns: category,orm,median_ms,iqr_ms,stddev_ms,min_ms,max_ms — 5 numerics. category may contain
     // commas ("Filter, paginate & sort"), so anchor on the trailing 5 numerics + the orm before them.

@@ -405,27 +405,6 @@ export { compileDeleteMany, compileInsertMany } from './makesql';
 // (a standalone dist/DBValues copy is a DIFFERENT class → the compiler would not honour the cast).
 export { dbCast, dbCastIn } from '../DBValues';
 
-// Mode-3 codegen (WS7f, #35 — spec §9 exec-mode 3): supply the litedbmodel SQL catalog to bc's
-// shared generator; emit per-language STATIC straight-line source (de-interpreted, bc#75 — real
-// static code, NOT a baked-IR interpret path) + the co-located runtime adapter. Generated code is
-// behavior-identical to the mode-2 thin-runtime (proven by the codegen conformance leg).
-export {
-  CODEGEN_LANGUAGES,
-  CODEGEN_EMITTER,
-  generateCodegenArtifact,
-  generateRustExecutable,
-  lowerBundleToPortableIrDoc,
-  lowerReadGraphForNativeSql,
-  codegenEmitterFor,
-  typedEmitterFor,
-  codegenExecuteBundleForTest,
-  TypedNativeCoverageError,
-} from './codegen';
-export type {
-  CodegenLanguage,
-  CodegenArtifact,
-} from './codegen';
-
 // Read relations (WS4, #24): pre-compiled batch relation ops + staged batch resolution.
 // BOTH the declarative-select and the lazy surface resolve through the SAME compiled op.
 export {
