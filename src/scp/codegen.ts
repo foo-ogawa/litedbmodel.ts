@@ -1513,9 +1513,10 @@ export function codegenExecuteBundleForTest(artifact: CodegenArtifact, input: Sc
 // de-box runner + the module-local `HandlerNR<comp>` / `WireValue`/`WireRow`/`WireList` traits). bc does
 // NOT generate the handler impls (C4: handlers/wire adapters are boundary-INJECTED). litedbmodel — the
 // bc-consumer — supplies them, and THIS is where litedbmodel GENERATES that companion (not hand-written):
-// per-component `impl HandlerNR<comp>` whose `node_*` methods delegate UNIFORMLY to litedbmodel_runtime's
-// op-agnostic executors (the unified `exec(…, ExecMode::Rows|Summary)` + `exec_skip`/`exec_batch_write`/
-// `exec_batched_relation` — all Driver-backed, the exec SSoT), plus the one-line `wire_impls!` macro that bridges the module-local
+// per-component `impl HandlerNR<comp>` whose `node_*` methods delegate UNIFORMLY to the SINGLE
+// op-agnostic executor `exec(…, ExecMode::Rows|Summary)` — batch/skip nodes first marshal their params
+// via `build_batch_params`/`build_skip_params` then run the SAME `exec` (no dedicated executor), and a
+// batched relation reuses `exec_batched_relation`'s shared stitch — plus the one-line `wire_impls!` macro that bridges the module-local
 // wire traits to the runtime's `Wire` classification (the orphan rule forbids the impls living in the
 // runtime crate — the traits are local to the generated module). Derived from the SAME lowered IR
 // {@link generateCodegenArtifact} feeds bc, so ports/param/relation facts are single-sourced.
@@ -1607,7 +1608,10 @@ function emitReadWriteNode(
     return [
       sig,
       `        let frags = vec![${frags.join(', ')}];`,
-      `        litedbmodel_runtime::exec_skip(self.driver, &ports.f_sql_head, &[${headParams.join(', ')}], &frags, &ports.f_sql_tail, &[${tailParams.join(', ')}]).map_err(cvt)`,
+      // Assemble the present skip fragments (WHERE/AND connectors + params) via the marshaling helper,
+      // then run through the SINGLE `exec` — no skip-specific executor (the executor surface is just exec).
+      `        let (sql, params) = litedbmodel_runtime::build_skip_params(&ports.f_sql_head, &[${headParams.join(', ')}], &frags, &ports.f_sql_tail, &[${tailParams.join(', ')}]);`,
+      `        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &sql, &params, litedbmodel_runtime::ExecMode::Rows).map_err(cvt)`,
       `    }`,
     ].join('\n');
   }

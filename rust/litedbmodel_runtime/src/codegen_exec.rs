@@ -492,14 +492,13 @@ pub struct SkipFrag {
 /// present fragment's params in order, then tail params. The `?`→`$N` renumber for postgres happens
 /// HERE, post-assembly (the fragments keep `?`), reusing [`render_placeholders`] — the SAME renumber
 /// the mode-2 runtime applies. Byte-identical SQL to the mode-2 assembly for a given present-set.
-pub fn exec_skip(
-    driver: &dyn Driver,
+pub fn build_skip_params(
     head: &str,
     head_params: &[Value],
     frags: &[SkipFrag],
     tail: &str,
     tail_params: &[Value],
-) -> Result<Wire, SqlFailure> {
+) -> (String, Vec<Value>) {
     let mut sql = String::from(head);
     let mut params: Vec<Value> = head_params.to_vec();
     let mut first = true;
@@ -515,13 +514,9 @@ pub fn exec_skip(
     sql.push_str(tail);
     params.extend(tail_params.iter().cloned());
     // The assembled SQL keeps `?`; the ONE dialect renumber happens in `exec` (from the connection's
-    // dialect) — so a dropped mid-fragment can never desync the `$N` sequence.
-    exec(
-        &exec_context::for_driver(driver),
-        &sql,
-        &params,
-        ExecMode::Rows,
-    )
+    // dialect) — so a dropped mid-fragment can never desync the `$N` sequence. The caller runs the pair
+    // through the SINGLE `exec` — there is NO skip-specific executor.
+    (sql, params)
 }
 
 /// The param-shape DESCRIPTOR for a multi-column array bind — resolved ONCE from the dialect at the SQL
@@ -798,37 +793,33 @@ mod tests {
         ));
     }
 
-    /// A present skip fragment is assembled; an absent one drops (the SKIP-args model over baked literals).
+    /// A present skip fragment is assembled; an absent one drops (the SKIP-args model over baked literals):
+    /// `build_skip_params` marshals the present fragments, the SINGLE `exec` runs them (no skip executor).
     #[test]
-    fn exec_skip_assembles_only_present_fragments() {
+    fn build_skip_params_assembles_only_present_fragments() {
         let d = seeded();
-        let present = exec_skip(
-            &d,
-            "SELECT id FROM t",
-            &[],
-            &[SkipFrag {
-                sql: "name = ?".into(),
-                present: true,
-                params: vec![Value::Str("b".into())],
-            }],
-            " ORDER BY id ASC",
-            &[],
-        )
-        .unwrap();
+        let run = |frags: &[SkipFrag]| {
+            let (sql, params) =
+                build_skip_params("SELECT id FROM t", &[], frags, " ORDER BY id ASC", &[]);
+            exec(
+                &crate::exec_context::for_driver(&d),
+                &sql,
+                &params,
+                ExecMode::Rows,
+            )
+            .unwrap()
+        };
+        let present = run(&[SkipFrag {
+            sql: "name = ?".into(),
+            present: true,
+            params: vec![Value::Str("b".into())],
+        }]);
         assert_eq!(present.rt_len(), 2);
-        let dropped = exec_skip(
-            &d,
-            "SELECT id FROM t",
-            &[],
-            &[SkipFrag {
-                sql: "name = ?".into(),
-                present: false,
-                params: vec![],
-            }],
-            " ORDER BY id ASC",
-            &[],
-        )
-        .unwrap();
+        let dropped = run(&[SkipFrag {
+            sql: "name = ?".into(),
+            present: false,
+            params: vec![],
+        }]);
         assert_eq!(dropped.rt_len(), 3); // fragment dropped ⇒ all rows
     }
 
@@ -840,7 +831,7 @@ mod tests {
     /// sqlite the `?` bind order is what proves the assembly aligned the params. `bymaybe` (optional at the
     /// TAIL) can never expose this — the dropped-in-the-middle case can.
     #[test]
-    fn exec_skip_mid_optional_drop_keeps_placeholders_aligned() {
+    fn build_skip_params_mid_optional_drop_keeps_placeholders_aligned() {
         let d = seeded(); // rows id 1='a', 2='b', 3='b'
         let frags = |mid_present: bool| {
             vec![
@@ -865,29 +856,27 @@ mod tests {
                 },
             ]
         };
+        let run = |mid_present: bool| {
+            let (sql, params) = build_skip_params(
+                "SELECT id FROM t",
+                &[],
+                &frags(mid_present),
+                " ORDER BY id ASC",
+                &[],
+            );
+            exec(
+                &crate::exec_context::for_driver(&d),
+                &sql,
+                &params,
+                ExecMode::Rows,
+            )
+            .unwrap()
+        };
         // Middle DROPPED: `WHERE id >= ? AND id <= ?` bound [2, 3] → rows 2,3. If the after-fragment's `?`
         // had desynced (bound 3 to a stale third slot), the count would be wrong / the query would error.
-        let dropped = exec_skip(
-            &d,
-            "SELECT id FROM t",
-            &[],
-            &frags(false),
-            " ORDER BY id ASC",
-            &[],
-        )
-        .unwrap();
-        assert_eq!(dropped.rt_len(), 2);
+        assert_eq!(run(false).rt_len(), 2);
         // Middle PRESENT: `WHERE id >= ? AND name = ? AND id <= ?` bound [2,'nope',3] → 0 rows (no 'nope').
-        let present = exec_skip(
-            &d,
-            "SELECT id FROM t",
-            &[],
-            &frags(true),
-            " ORDER BY id ASC",
-            &[],
-        )
-        .unwrap();
-        assert_eq!(present.rt_len(), 0);
+        assert_eq!(run(true).rt_len(), 0);
     }
 
     /// `build_batch_params` (SingleJson) zips the parallel column arrays into ONE json_each param the

@@ -22,7 +22,8 @@ impl<'a> HandlerNRByAuthorMaybePublished for Rt<'a> {
     type Wire = Wire;
     fn node_n0(&self, ports: &PortsNRByAuthorMaybePublishedN0, _bound: Option<String>) -> Result<Wire, BehaviorError> {
         let frags = vec![litedbmodel_runtime::SkipFrag { sql: ports.f_w0.clone(), present: true, params: vec![litedbmodel_runtime::wp(&ports.f_w0p0)] }, litedbmodel_runtime::SkipFrag { sql: ports.f_w1.clone(), present: ports.f_w1p0.is_some(), params: ports.f_w1p0.iter().map(|v| litedbmodel_runtime::wp(v)).collect() }];
-        litedbmodel_runtime::exec_skip(self.driver, &ports.f_sql_head, &[], &frags, &ports.f_sql_tail, &[]).map_err(cvt)
+        let (sql, params) = litedbmodel_runtime::build_skip_params(&ports.f_sql_head, &[], &frags, &ports.f_sql_tail, &[]);
+        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &sql, &params, litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
     }
 }
 
