@@ -24,7 +24,7 @@ mod gen;
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
 use litedbmodel_runtime::{
-    encode_value, execute_bundle, stitch_relation, Driver, Node, SqlFailure, SqliteDriver, Value,
+    encode_value, execute_bundle, Driver, Node, SqlFailure, SqliteDriver, Value,
 };
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
@@ -95,67 +95,6 @@ fn reseed(d: &dyn Driver, dialect: &str) {
     }
 }
 
-// ── relation include-path walk (consumer side): stitch the declared top relation, then recurse into
-//    its childRelations (flatten this level's rows, stitch each child level) — one batched query per
-//    level via the runtime `stitch_relation` SSoT. Returns the top-level stitched parents. ──────────
-fn obj_get<'a>(row: &'a Value, key: &str) -> Option<&'a Value> {
-    match row {
-        Value::Obj(pairs) => pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v),
-        _ => None,
-    }
-}
-fn stitch_with_children(op_json: &Node, parents: Vec<Value>, d: &dyn Driver) -> Vec<Value> {
-    let name = op_json
-        .get("name")
-        .and_then(|n| n.as_str())
-        .expect("relation op name")
-        .to_string();
-    let stitched = stitch_relation(op_json, parents, d)
-        .unwrap_or_else(|e| panic!("stitch '{name}': {}", e.message()));
-    if let Some(children) = op_json.get("childRelations").and_then(|c| c.as_array()) {
-        let mut level: Vec<Value> = Vec::new();
-        for p in &stitched {
-            if let Some(Value::Arr(arr)) = obj_get(p, &name) {
-                level.extend(arr.iter().cloned());
-            }
-        }
-        for child in children {
-            stitch_with_children(child, level.clone(), d);
-        }
-    }
-    stitched
-}
-
-/// Build user parent rows (id/email/name) as `Value::Obj` for the relation loader (parentKey=`id`).
-fn user_parents(rows: &[(i64, String, String)]) -> Vec<Value> {
-    rows.iter()
-        .map(|(id, email, name)| {
-            Value::Obj(vec![
-                ("id".into(), Value::Int(*id)),
-                ("email".into(), Value::Str(email.clone())),
-                ("name".into(), Value::Str(name.clone())),
-            ])
-        })
-        .collect()
-}
-/// Composite tenant-user parent rows (tenant_id/user_id/name) — parentKeys=[tenant_id,user_id].
-fn tenant_parents(rows: &[(i64, i64, String)]) -> Vec<Value> {
-    rows.iter()
-        .map(|(t, u, name)| {
-            Value::Obj(vec![
-                ("tenant_id".into(), Value::Int(*t)),
-                ("user_id".into(), Value::Int(*u)),
-                ("name".into(), Value::Str(name.clone())),
-            ])
-        })
-        .collect()
-}
-
-fn rel_op(json: &str, name: &str) -> Node {
-    let ops = Node::parse(json).expect("parse relation_ops_json");
-    ops.get(name).expect("relation op present").clone()
-}
-
 // ── the 19 ORM ops (contract.ts order). Each closure runs ONE logical op for iteration `it`; mutating
 //    ops vary their UNIQUE column by `it`. Fixed inputs mirror ops.ts (the SCP SSoT). ─────────────────
 fn batch_emails(it: u64) -> Vec<String> {
@@ -215,93 +154,94 @@ fn prepare_op<'a>(op: &str, d: &'a dyn Driver, spec: &str) -> Box<dyn FnMut(u64)
             )
             .unwrap();
         }),
+        // Relation ops: the timed cell is TWO lines — (1) the generated TYPED native read, (2) the
+        // litedbmodel TYPED lazy-load (`hydrate_relation`) with a natural key accessor (`|r| r.id`). ALL
+        // orchestration (batched child read, group, multi-level stitch) is INSIDE litedbmodel; the bench
+        // reconstructs NO `Value::Obj` and parses NO metadata per iteration (the relation op is parsed
+        // ONCE here in setup). SDK cell keeps its hand orchestration (the comparison baseline).
         "nestedFindAll" => {
-            let posts = rel_op(companion_nestedFindAll::relation_ops_json(), "posts"); // parsed ONCE (setup)
+            let posts = litedbmodel_runtime::relation_op(
+                companion_nestedFindAll::relation_ops_json(),
+                "posts",
+            )
+            .unwrap();
             Box::new(move |_it| {
-                let rows = generated_nestedFindAll::run_native_raw_struct_FindAll(
+                let users = generated_nestedFindAll::run_native_raw_struct_FindAll(
                     &companion_nestedFindAll::handler(d),
                     generated_nestedFindAll::InNRFindAll,
                 )
                 .unwrap();
-                let parents = user_parents(
-                    &rows
-                        .into_iter()
-                        .map(|r| (r.id, r.email, r.name))
-                        .collect::<Vec<_>>(),
-                );
-                stitch_with_children(&posts, parents, d);
+                let _ = litedbmodel_runtime::hydrate_relation(&posts, users, |r| r.id, d).unwrap();
             })
         }
         "nestedFindFirst" => {
-            let posts = rel_op(companion_nestedFindFirst::relation_ops_json(), "posts");
+            let posts = litedbmodel_runtime::relation_op(
+                companion_nestedFindFirst::relation_ops_json(),
+                "posts",
+            )
+            .unwrap();
             Box::new(move |_it| {
-                let rows = generated_nestedFindFirst::run_native_raw_struct_FindFirst(
+                let users = generated_nestedFindFirst::run_native_raw_struct_FindFirst(
                     &companion_nestedFindFirst::handler(d),
                     generated_nestedFindFirst::InNRFindFirst {
                         name: "User%".into(),
                     },
                 )
                 .unwrap();
-                let parents = user_parents(
-                    &rows
-                        .into_iter()
-                        .map(|r| (r.id, r.email, r.name))
-                        .collect::<Vec<_>>(),
-                );
-                stitch_with_children(&posts, parents, d);
+                let _ = litedbmodel_runtime::hydrate_relation(&posts, users, |r| r.id, d).unwrap();
             })
         }
         "nestedFindUnique" => {
-            let posts = rel_op(companion_nestedFindUnique::relation_ops_json(), "posts");
+            let posts = litedbmodel_runtime::relation_op(
+                companion_nestedFindUnique::relation_ops_json(),
+                "posts",
+            )
+            .unwrap();
             Box::new(move |_it| {
-                let rows = generated_nestedFindUnique::run_native_raw_struct_FindUnique(
+                let users = generated_nestedFindUnique::run_native_raw_struct_FindUnique(
                     &companion_nestedFindUnique::handler(d),
                     generated_nestedFindUnique::InNRFindUnique {
                         email: "user1@example.com".into(),
                     },
                 )
                 .unwrap();
-                let parents = user_parents(
-                    &rows
-                        .into_iter()
-                        .map(|r| (r.id, r.email, r.name))
-                        .collect::<Vec<_>>(),
-                );
-                stitch_with_children(&posts, parents, d);
+                let _ = litedbmodel_runtime::hydrate_relation(&posts, users, |r| r.id, d).unwrap();
             })
         }
         "nestedRelations" => {
-            let posts = rel_op(companion_nestedRelations::relation_ops_json(), "posts");
+            let posts = litedbmodel_runtime::relation_op(
+                companion_nestedRelations::relation_ops_json(),
+                "posts",
+            )
+            .unwrap();
             Box::new(move |_it| {
-                let rows = generated_nestedRelations::run_native_raw_struct_FindAll(
+                let users = generated_nestedRelations::run_native_raw_struct_FindAll(
                     &companion_nestedRelations::handler(d),
                     generated_nestedRelations::InNRFindAll,
                 )
                 .unwrap();
-                let parents = user_parents(
-                    &rows
-                        .into_iter()
-                        .map(|r| (r.id, r.email, r.name))
-                        .collect::<Vec<_>>(),
-                );
-                stitch_with_children(&posts, parents, d);
+                let _ = litedbmodel_runtime::hydrate_relation(&posts, users, |r| r.id, d).unwrap();
             })
         }
         "compositeRelations" => {
-            let posts = rel_op(companion_compositeRelations::relation_ops_json(), "posts");
+            let posts = litedbmodel_runtime::relation_op(
+                companion_compositeRelations::relation_ops_json(),
+                "posts",
+            )
+            .unwrap();
             Box::new(move |_it| {
                 let rows = generated_compositeRelations::run_native_raw_struct_ByTenant(
                     &companion_compositeRelations::handler(d),
                     generated_compositeRelations::InNRByTenant { tenant_id: 1 },
                 )
                 .unwrap();
-                let parents = tenant_parents(
-                    &rows
-                        .into_iter()
-                        .map(|r| (r.tenant_id, r.user_id, r.name))
-                        .collect::<Vec<_>>(),
-                );
-                stitch_with_children(&posts, parents, d);
+                let _ = litedbmodel_runtime::hydrate_relation(
+                    &posts,
+                    rows,
+                    |r| (r.tenant_id, r.user_id),
+                    d,
+                )
+                .unwrap();
             })
         }
         "create" => Box::new(move |it| {

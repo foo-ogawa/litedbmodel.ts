@@ -150,28 +150,36 @@ fn obj_get<'a>(o: &'a Value, key: &str) -> Option<&'a Value> {
     }
 }
 
-/// The deduped, non-null parent-key TUPLES (insertion order preserved). Drop a tuple if ANY key
-/// column is null; dedupe on the stringified tuple identity. Port of the TS `dedupeKeys`.
-fn dedupe_keys(parents: &[Value], key_cols: &[String]) -> Vec<Vec<Value>> {
+/// The per-parent key TUPLE (one entry per parent, order preserved) read from Value parent rows — the
+/// KEY-EXTRACTION half of the loader for the Value parent path. A missing/null key column yields a
+/// `Value::Null` slot (dropped by [`dedupe_tuples`] before the query, and treated as "no match" by
+/// [`distribute_by_tuple`]). The typed loader ([`hydrate_relation`]) supplies the SAME shape via its
+/// `key_of` accessor instead of `obj_get`, so both paths feed the ONE batch/group core.
+fn parent_key_tuples(parents: &[Value], key_cols: &[String]) -> Vec<Vec<Value>> {
+    parents
+        .iter()
+        .map(|p| {
+            key_cols
+                .iter()
+                .map(|c| obj_get(p, c).cloned().unwrap_or(Value::Null))
+                .collect()
+        })
+        .collect()
+}
+
+/// The deduped, non-null key TUPLES for the batched child query (insertion order preserved). Drop a
+/// tuple if ANY key column is null; dedupe on the stringified tuple identity. Port of the TS `dedupeKeys`
+/// (its per-parent extraction is now [`parent_key_tuples`] / the typed `key_of`, so this dedupe is shared
+/// by BOTH parent paths — one batch/group core, no per-path re-implementation).
+fn dedupe_tuples(tuples: &[Vec<Value>]) -> Vec<Vec<Value>> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<Vec<Value>> = Vec::new();
-    for p in parents {
-        let mut tuple: Vec<Value> = Vec::with_capacity(key_cols.len());
-        let mut any_null = false;
-        for c in key_cols {
-            match obj_get(p, c) {
-                None | Some(Value::Null) => {
-                    any_null = true;
-                    break;
-                }
-                Some(v) => tuple.push(v.clone()),
-            }
-        }
-        if any_null {
+    for t in tuples {
+        if t.iter().any(|v| matches!(v, Value::Null)) {
             continue;
         }
-        if seen.insert(key_identity(&tuple)) {
-            out.push(tuple);
+        if seen.insert(key_identity(t)) {
+            out.push(t.clone());
         }
     }
     out
@@ -247,11 +255,11 @@ type RelationBatch = HashMap<String, Vec<Value>>;
 /// EMPTY key set issues NO query, matching TS.
 fn run_relation_op(
     op: &RelationOp,
-    parents: &[Value],
+    per_parent_tuples: &[Vec<Value>],
     driver: &dyn Driver,
 ) -> Result<RelationBatch, RuntimeError> {
     let p_cols = op.parent_key_cols();
-    let keys = dedupe_keys(parents, &p_cols);
+    let keys = dedupe_tuples(per_parent_tuples);
     let mut batch: RelationBatch = HashMap::new();
     let mut sql = op.sql.clone();
     if op.dialect == "postgres" {
@@ -300,26 +308,15 @@ fn run_relation_op(
     Ok(batch)
 }
 
-/// Distribute a resolved batch onto ONE parent per cardinality (port of TS `distributeToParent`):
-/// hasMany → the child list (`[]` when none); belongsTo/hasOne → the single child (or null). Keyed
-/// by the parent's key-tuple identity.
-fn distribute_to_parent(op: &RelationOp, parent: &Value, batch: &RelationBatch) -> Value {
-    let p_cols = op.parent_key_cols();
-    let mut tuple: Vec<Value> = Vec::with_capacity(p_cols.len());
-    let mut any_null = false;
-    for c in &p_cols {
-        match obj_get(parent, c) {
-            None | Some(Value::Null) => {
-                any_null = true;
-                break;
-            }
-            Some(v) => tuple.push(v.clone()),
-        }
-    }
-    let rows = if any_null {
+/// Distribute a resolved batch onto ONE parent's key TUPLE per cardinality (port of TS
+/// `distributeToParent`): hasMany → the child list (`[]` when none); belongsTo/hasOne → the single child
+/// (or null). Keyed by the parent's key-tuple identity; a null in the tuple ⇒ no match. Tuple-based so the
+/// Value path (tuple via `obj_get`) and the typed path (tuple via `key_of`) share this ONE distributor.
+fn distribute_by_tuple(op: &RelationOp, tuple: &[Value], batch: &RelationBatch) -> Value {
+    let rows = if tuple.iter().any(|v| matches!(v, Value::Null)) {
         None
     } else {
-        batch.get(&key_identity(&tuple))
+        batch.get(&key_identity(tuple))
     };
     if op.kind == "hasMany" {
         return Value::Arr(rows.cloned().unwrap_or_default());
@@ -330,27 +327,149 @@ fn distribute_to_parent(op: &RelationOp, parent: &Value, batch: &RelationBatch) 
     }
 }
 
-/// Batch-load + hydrate ONE declared relation onto an ALREADY-FETCHED parent row list, using the
-/// SAME `run_relation_op` / `distribute_to_parent` the runtime's own read path uses (NO reimplemented
-/// grouping — the semantics stay single-sourced here). `op_json` is the relation op as it appears
-/// under `bundle["relations"][name]` (pure JSON). The public seam the codegen bench cell uses: it
-/// runs the GENERATED de-interpreted module for the primary read (its own distinct code entry — NOT
-/// `execute_bundle`), then hydrates the companion relation through this shared runtime stitch so the
-/// hydrated result is byte-identical to `read_bundle_pooled`'s.
+/// Parse a relation-ops JSON blob ONCE and pick the top-level relation `name` — the meta-load entry a
+/// consumer calls in SETUP (once), so no per-iteration JSON parse ever reaches the hot path (the loader
+/// takes the parsed [`J`] node). Loud on a missing relation (a wiring bug, never a silent empty op).
+pub fn relation_op(relations_json: &str, name: &str) -> Result<J, RuntimeError> {
+    let ops = J::parse(relations_json).map_err(|e| {
+        RuntimeError::Sql(SqlFailure {
+            kind: "driver_error".into(),
+            policy: "fail".into(),
+            sqlite_code: None,
+            message: format!("relation_op: invalid relation-ops JSON: {e}"),
+        })
+    })?;
+    ops.get(name).cloned().ok_or_else(|| {
+        RuntimeError::Sql(SqlFailure {
+            kind: "driver_error".into(),
+            policy: "fail".into(),
+            sqlite_code: None,
+            message: format!("relation_op: relation '{name}' is not declared on this model"),
+        })
+    })
+}
+
+/// Recurse the declared `childRelations` over the just-hydrated child ROWS (Value — the driver's native
+/// rows; relations are a Value-path RUNTIME concern per #131, the child SQL lives in the relation
+/// metadata, NOT a bc-generated typed native module). Shared by the Value [`stitch_relation_tree`] and the
+/// typed [`hydrate_relation`] so the level traversal is single-sourced (no per-path copy).
+fn recurse_child_relations(
+    op_json: &J,
+    child_rows: Vec<Value>,
+    driver: &dyn Driver,
+) -> Result<(), RuntimeError> {
+    if let Some(children) = op_json.get("childRelations").and_then(|c| c.as_array()) {
+        for child in children {
+            stitch_relation_tree(child, child_rows.clone(), driver)?;
+        }
+    }
+    Ok(())
+}
+
+/// Batch-load + hydrate ONE declared relation onto an ALREADY-FETCHED VALUE parent row list, using the
+/// SAME `run_relation_op` / `distribute_by_tuple` core the typed path and the runtime's own read path use
+/// (NO reimplemented grouping — the semantics stay single-sourced here). `op_json` is the relation op as
+/// it appears under `bundle["relations"][name]` (pure JSON). Byte-identical to `read_bundle_pooled`'s
+/// hydration for the same parents.
 pub fn stitch_relation(
     op_json: &J,
     mut parents: Vec<Value>,
     driver: &dyn Driver,
 ) -> Result<Vec<Value>, RuntimeError> {
     let op = op_from_json(op_json);
-    let batch = run_relation_op(&op, &parents, driver)?;
-    for row in parents.iter_mut() {
-        let child = distribute_to_parent(&op, row, &batch);
+    let tuples = parent_key_tuples(&parents, &op.parent_key_cols());
+    let batch = run_relation_op(&op, &tuples, driver)?;
+    for (row, tuple) in parents.iter_mut().zip(tuples.iter()) {
+        let child = distribute_by_tuple(&op, tuple, &batch);
         if let Value::Obj(pairs) = row {
             pairs.push((op.name.clone(), child));
         }
     }
     Ok(parents)
+}
+
+/// Hydrate ONE relation op AND its declared `childRelations` recursively onto VALUE `parents` — the
+/// MULTI-LEVEL relation-loading SSoT for the Value path. Each level reuses [`stitch_relation`]; the rows
+/// hydrated at one level become the parents whose OWN `childRelations` load next (posts → comments), so a
+/// whole relation TREE is loaded with one batched query per level (never N+1). Returns the top-level
+/// parents with the relation attached.
+pub fn stitch_relation_tree(
+    op_json: &J,
+    parents: Vec<Value>,
+    driver: &dyn Driver,
+) -> Result<Vec<Value>, RuntimeError> {
+    let name = op_json
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .to_string();
+    let stitched = stitch_relation(op_json, parents, driver)?;
+    // The rows hydrated at THIS level (`stitched[i][name]`) are the parents for their child relations.
+    let mut level: Vec<Value> = Vec::new();
+    for p in &stitched {
+        if let Some(Value::Arr(arr)) = obj_get(p, &name) {
+            level.extend(arr.iter().cloned());
+        }
+    }
+    recurse_child_relations(op_json, level, driver)?;
+    Ok(stitched)
+}
+
+/// A typed parent key → the loader's scalar key TUPLE, reusing the [`crate::codegen_exec::ToWireParam`]
+/// scalar→`Value` SSoT. A single-column key is any scalar (`i64` / `String` / …); a composite key is a
+/// tuple `(A, B)`. Lets the typed [`hydrate_relation`] caller pass a NATURAL accessor (`|r| r.id`,
+/// `|r| (r.tenant_id, r.user_id)`) with NO `Value` plumbing in the consumer.
+pub trait IntoKeyTuple {
+    fn into_key_tuple(self) -> Vec<Value>;
+}
+impl<T: crate::codegen_exec::ToWireParam> IntoKeyTuple for T {
+    fn into_key_tuple(self) -> Vec<Value> {
+        vec![crate::codegen_exec::wp(&self)]
+    }
+}
+impl<A: crate::codegen_exec::ToWireParam, B: crate::codegen_exec::ToWireParam> IntoKeyTuple
+    for (A, B)
+{
+    fn into_key_tuple(self) -> Vec<Value> {
+        vec![
+            crate::codegen_exec::wp(&self.0),
+            crate::codegen_exec::wp(&self.1),
+        ]
+    }
+}
+
+/// The TYPED relation loader (#138): hydrate a relation TREE onto a TYPED native-read parent list WITHOUT
+/// re-boxing the typed rows into `Value::Obj`. The parent key is read via the caller's NATURAL accessor
+/// (`|r| r.id`, `|r| (r.tenant_id, r.user_id)`), lowered to the loader's key tuple by [`IntoKeyTuple`] —
+/// a typed field access + scalar-key bind, NOT an object reconstruction. The batched child query,
+/// grouping and distribution reuse the SAME `run_relation_op` / `distribute_by_tuple` core the Value path
+/// uses (ONE loader — no per-op / per-path copy). Child rows are the driver's native Value rows
+/// (relations are a Value-path runtime concern, #131 — there is no bc-generated typed CHILD de-box; see
+/// the report), and deeper `childRelations` recurse over them via [`recurse_child_relations`]. Returns
+/// each TYPED parent paired with its hydrated relation value — byte-equal to the Value path for the same keys.
+pub fn hydrate_relation<P, K: IntoKeyTuple>(
+    op_json: &J,
+    parents: Vec<P>,
+    key_of: impl Fn(&P) -> K,
+    driver: &dyn Driver,
+) -> Result<Vec<(P, Value)>, RuntimeError> {
+    let op = op_from_json(op_json);
+    let tuples: Vec<Vec<Value>> = parents.iter().map(|p| key_of(p).into_key_tuple()).collect();
+    let batch = run_relation_op(&op, &tuples, driver)?;
+    let mut level: Vec<Value> = Vec::new();
+    let hydrated: Vec<(P, Value)> = parents
+        .into_iter()
+        .zip(tuples.iter())
+        .map(|(p, tuple)| {
+            let child = distribute_by_tuple(&op, tuple, &batch);
+            if let Value::Arr(arr) = &child {
+                level.extend(arr.iter().cloned());
+            }
+            (p, child)
+        })
+        .collect();
+    recurse_child_relations(op_json, level, driver)?;
+    Ok(hydrated)
 }
 
 /// Run a READ bundle's primary row list, then batch-load + hydrate the selected relations onto each
@@ -422,9 +541,10 @@ pub fn read_bundle_pooled(
             })?;
         let op = op_from_json(op_json);
         let rel_driver = driver_for_op(&op, driver, connections)?;
-        let batch = run_relation_op(&op, &rows, rel_driver)?;
-        for row in rows.iter_mut() {
-            let child = distribute_to_parent(&op, row, &batch);
+        let tuples = parent_key_tuples(&rows, &op.parent_key_cols());
+        let batch = run_relation_op(&op, &tuples, rel_driver)?;
+        for (row, tuple) in rows.iter_mut().zip(tuples.iter()) {
+            let child = distribute_by_tuple(&op, tuple, &batch);
             if let Value::Obj(pairs) = row {
                 pairs.push((name.clone(), child));
             }
