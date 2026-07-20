@@ -6,7 +6,7 @@
 // classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the
 // orphan rule forbids the module-local wire trait impls living in the runtime crate).
 use super::generated_createmany::*;
-use litedbmodel_runtime::{Driver, RuntimeError, SqlFailure, Value, Wire};
+use litedbmodel_runtime::{Driver, SqlFailure, Value, Wire};
 // The dialect is a CONNECTION property (`self.driver.dialect()`), not baked here — the generated
 // SQL is dialect-neutral in its placeholders (`?`); the runtime renumbers `?`→`$N` per connection.
 
@@ -15,7 +15,6 @@ litedbmodel_runtime::wire_impls!();
 /// Map a runtime SQL failure to the module-local BehaviorError (byte-equal codes: the bc runner
 /// re-wraps a node failure as OP_FAILED regardless, so only the message/detail cross this seam).
 fn cvt(e: SqlFailure) -> BehaviorError { BehaviorError::new(e.kind, e.message) }
-fn cvt_rel(e: RuntimeError) -> BehaviorError { BehaviorError::new("RELATION_ERROR", e.message().to_string()) }
 
 pub struct Rt<'a> { driver: &'a dyn Driver }
 impl<'a> HandlerNRCreateMany for Rt<'a> {

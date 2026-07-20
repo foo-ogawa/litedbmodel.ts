@@ -6,7 +6,7 @@
 // classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the
 // orphan rule forbids the module-local wire trait impls living in the runtime crate).
 use super::generated_relsingle::*;
-use litedbmodel_runtime::{Driver, RuntimeError, SqlFailure, Value, Wire};
+use litedbmodel_runtime::{Driver, SqlFailure, Value, Wire};
 // The dialect is a CONNECTION property (`self.driver.dialect()`), not baked here — the generated
 // SQL is dialect-neutral in its placeholders (`?`); the runtime renumbers `?`→`$N` per connection.
 
@@ -15,7 +15,6 @@ litedbmodel_runtime::wire_impls!();
 /// Map a runtime SQL failure to the module-local BehaviorError (byte-equal codes: the bc runner
 /// re-wraps a node failure as OP_FAILED regardless, so only the message/detail cross this seam).
 fn cvt(e: SqlFailure) -> BehaviorError { BehaviorError::new(e.kind, e.message) }
-fn cvt_rel(e: RuntimeError) -> BehaviorError { BehaviorError::new("RELATION_ERROR", e.message().to_string()) }
 
 pub struct Rt<'a> { driver: &'a dyn Driver }
 impl<'a> HandlerNRByAuthor for Rt<'a> {
@@ -23,15 +22,13 @@ impl<'a> HandlerNRByAuthor for Rt<'a> {
     fn node_n0(&self, ports: &PortsNRByAuthorN0, _bound: Option<String>) -> Result<Wire, BehaviorError> {
         litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &[litedbmodel_runtime::wp(&ports.f_p0)], litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
     }
-    fn node_rel_comments(&self, ports: &PortsNRByAuthorRelCommentsBatch, _bound: Option<String>) -> Result<Vec<Wire>, BehaviorError> {
-        let tuples: Vec<Vec<Value>> = ports.items.iter().map(|it| vec![litedbmodel_runtime::wp(&it.f_k0)]).collect();
-        let sql = ports.items.first().map(|it| it.f_sql.clone()).unwrap_or_default();
-        litedbmodel_runtime::exec_batched_relation(self.driver, "hasMany", &sql, &["id"], &["post_id"], &tuples, litedbmodel_runtime::ArrayParamShape::SingleJson)
-            .map(|v| v.into_iter().map(Wire).collect())
-            .map_err(cvt_rel)
-    }
 }
 
 /// The litedbmodel-consumer entry: build the runtime-backed handler for `ByAuthor`. The consumer
 /// calls `run_native_raw_struct_ByAuthor(&handler(driver), in_)` — supplying NO node_* itself.
 pub fn handler(driver: &dyn Driver) -> Rt<'_> { Rt { driver } }
+
+/// The relation batch ops (v1 lazy-batch metadata) the runtime loader `stitch_relation` resolves over
+/// the primary rows — a relation is a RUNTIME concern, not baked into the native module. Pick by name.
+pub fn relation_ops_json() -> &'static str { "{\"comments\":{\"name\":\"comments\",\"kind\":\"hasMany\",\"parentKey\":\"id\",\"targetKey\":\"post_id\",\"dialect\":\"sqlite\",\"keyShape\":\"single_json\",\"sql\":\"SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC\",\"targetTable\":\"benchmark_comments\",\"select\":[\"id\",\"body\",\"post_id\"],\"materializers\":{\"id\":\"int32\",\"post_id\":\"int32\"}}}" }
+

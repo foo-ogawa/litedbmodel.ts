@@ -88,7 +88,7 @@ pub use codegen_exec::{
     ExecMode, RtNum, RtProbe, SkipFrag, ToWireArray, ToWireParam, Wire,
 };
 pub use node::{decode_value, encode_value, eval_expr, EvalError, Node};
-pub use relation::{exec_batched_relation, read_bundle_pooled, stitch_relation};
+pub use relation::{read_bundle_pooled, stitch_relation};
 pub use runtime::{
     execute_bundle, execute_bundle_pooled, execute_transaction_bundle,
     execute_transaction_bundle_ctx, order_by_nulls, render_read_primary_bundle, ENTITY_ROOT,

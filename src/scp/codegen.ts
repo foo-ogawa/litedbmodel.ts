@@ -1046,8 +1046,7 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
       // the batch/per-element structs). A plain read/write carries `n.ports`.
       if (isMap) {
         // A bc map node's `outType` is the PER-ELEMENT (per-iteration child) type — the typed-native
-        // emitter synthesizes the produced parent-aligned array `{arr: element}` itself (the SAME
-        // contract {@link injectBatchedRelations} follows). bc's `.map()` recording stamps the FULL
+        // emitter synthesizes the produced parent-aligned array `{arr: element}` itself. bc's `.map()` recording stamps the FULL
         // produced array (`arr(childOutType)`) on the node instead; left as-is the emitter re-wraps it
         // and the built value nests one `arr` deeper than the component `outputType` field declares
         // (bc#151 OUTPUT_TYPE_INCONSISTENT). Strip the outer `arr` so the node carries the element
@@ -1090,138 +1089,6 @@ export function lowerReadGraphForNativeSql(readGraph: ReadGraph, resolveColumnTy
     // optional-default ports (#122). The SAME builder the legacy lowering uses — one place only.
     const inputPorts = buildInputPorts(c, inputPortTypes, inputPortElemTypes, optionalHeadTypes);
     return { ...c, body, inputPorts, outputType: componentOutputType } as unknown as Component;
-  });
-  return { ...ir, components };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════════════════
-// NATIVE BATCHED relations (E4/#119) — bake a RelationDecl batch op as a bc BATCHED-MAP node.
-//
-// A RelationDecl relation (belongsTo/hasMany) is a BATCH: pull ALL parents' children in ONE child
-// query (N+1-avoided — the bench baseline + the litedbmodel runtime both batch). Its batched child
-// SQL is already compiled (`RelationOp.sql`: `= ANY(?)` / `unnest(?,?)` on PG, `json_each(?)` tuple
-// membership on mysql/sqlite — value-length-independent, so the text is FIXED and BAKEABLE).
-//
-// bc's BATCHED MAP (`map.batched:true`, verified) is the exact native primitive: its runner collects
-// every parent element's ports into ONE `items: Vec<PortsNR>` and calls the handler ONCE, requiring a
-// per-parent-aligned result. So we inject a batched-map node whose element ports carry the batched
-// `f_sql` + the parent's key column(s) (`f_k0`, `f_k1`, … — native scalars bc types from the parent
-// outType). The ONE generic exec seam's batched handler collects the DISTINCT parent keys, runs the
-// ONE baked query, groups children by the target key(s), and returns the per-parent lists aligned —
-// no per-row `= ?`, no N+1. This is the SAME lowering + SAME seam (no parallel relation mechanism):
-// the relation is just another baked node.
-// ═══════════════════════════════════════════════════════════════════════════════════════════
-
-/** The reserved element var a batched-relation node binds its parent-key element fields under. */
-const RELATION_ELEM_VAR = '$rel';
-
-/** Build the child-row `obj` PortableType from a relation op's projected `select` columns, typed via
- * the schema (the child table's column types) — the SAME resolver the primary read uses. */
-function relationChildRowType(relOp: RelationOp, resolveColumnType: ColumnTypeResolver): unknown {
-  const table = relOp.targetTable;
-  const cols = relOp.select;
-  if (table === undefined || cols === undefined || cols.length === 0) {
-    throw new Error(`litedbmodel codegen: relation '${relOp.name}' has no targetTable/select to type its child row (batched-native relations need the projected columns).`);
-  }
-  const obj: Record<string, BcScalar> = {};
-  for (const col of cols) obj[col] = sqlTypeToBcScalar(resolveColumnType(table, col));
-  return { obj };
-}
-
-/**
- * Inject each `bundle.relations` RelationDecl batch op into the ALREADY-LOWERED codegen IR as a bc
- * BATCHED-MAP node, and extend the component output to `{ rows, <relName>… }` so the runner returns
- * the parent rows PLUS the per-parent child lists. Runs AFTER {@link lowerReadGraphForNativeSql}
- * because the injected node is ALREADY in lowered port shape (baked `sql` + native key ports) — it
- * does not go through the authored-port lowering.
- *
- * hasMany/belongsTo. A DEPTH-0 relation hangs off the PRIMARY read node: its parent keys become
- * element-field ports `{ref:[$rel, <parentKey>]}` (bc bakes each as a native scalar read off the parent
- * ROW element). A CHAINED relation (nested `with`, level ≥ 3 — {@link RelationOp.childRelations}) hangs
- * off its PARENT relation's node, whose produced type is `arr<arr<parentRow>>`; bc's `over` strips one
- * arr level, so the element is the per-grandparent parent-ROW LIST `arr<parentRow>`. That whole list is
- * passed as ONE key port `{ref:[$relN]}` (bc types it `Vec<parentRow>`), and the exec seam flattens
- * every list's child keys into ONE batched query (N+1-free per level), aligning the per-element result.
- * The batched `f_sql` is baked verbatim. Multiple relations / children inject multiple batched-map nodes.
- */
-function injectBatchedRelations(
-  ir: ComponentGraphIR,
-  relations: Record<string, RelationOp>,
-  resolveColumnType: ColumnTypeResolver,
-): ComponentGraphIR {
-  const relNames = Object.keys(relations);
-  if (relNames.length === 0) return ir;
-  const components = ir.components.map((c) => {
-    // Skip a read that already carries an INLINE `.map` relation node: its relations are represented
-    // (and baked) as inline maps in the read graph, so `bundle.relations` is the redundant
-    // runtime-companion form — injecting it would DOUBLE the relation. Only a plain parent read (no
-    // inline map) draws its relations purely from `bundle.relations` → inject the batched form.
-    if (c.body.some((n) => 'map' in n)) return c;
-    // The PRIMARY read node the relations hang off — the first plain componentRef (non-map/cond).
-    const primary = c.body.find((n) => !('map' in n) && !('cond' in n)) as { id: string; outType?: unknown } | undefined;
-    if (primary === undefined) return c;
-    const bodyNodes: unknown[] = []; // injected batched-map nodes, in dependency (parent-before-child) order
-    const seenIds = new Set<string>();
-    const outputObj: Record<string, unknown> = { rows: { ref: [primary.id] } };
-    const outputTypeObj: Record<string, unknown> = { rows: primary.outType };
-    // Inject ONE relation (and recurse into its chained children). `overId` = the node this relation
-    // maps over; `depth` = its level (0 = over the primary ROW list; ≥1 = over a parent-relation node
-    // whose element is itself a parent-ROW LIST). Emits the batched-map node + extends the output Φ.
-    const inject = (relOp: RelationOp, overId: string, depth: number): void => {
-      const parentKeys = relOp.parentKeys ?? (relOp.parentKey !== undefined ? [relOp.parentKey] : []);
-      if (parentKeys.length === 0) {
-        throw new Error(`litedbmodel codegen: relation '${relOp.name}' has no parentKey(s) to key the batch — cannot lower natively.`);
-      }
-      const nodeId = `rel_${relOp.name}`;
-      if (seenIds.has(nodeId)) {
-        throw new Error(`litedbmodel codegen: duplicate relation node id '${nodeId}' in the chain — relation names must be unique across levels.`);
-      }
-      seenIds.add(nodeId);
-      // A bc map node's `outType` is the PER-ELEMENT (per-parent) type — the emitter synthesizes the
-      // produced parent-aligned array `[]element` (Vec<outType>). hasMany → element `arr<child>` (one
-      // parent's child LIST) → produced `arr<arr<child>>`; belongsTo/One → element `child`. The output
-      // field re-wraps it (`{arr: elemOutType}`) to the produced array.
-      const childRow = relationChildRowType(relOp, resolveColumnType);
-      const elemOutType = relOp.kind === 'hasMany' ? { arr: childRow } : childRow;
-      const elemVar = depth === 0 ? RELATION_ELEM_VAR : `${RELATION_ELEM_VAR}${depth + 1}`;
-      const ports: Record<string, unknown> = { sql: relOp.sql };
-      if (depth === 0) {
-        // The over-element is a parent ROW: one native scalar key port per parent-key column.
-        parentKeys.forEach((k, i) => {
-          ports[`k${i}`] = { ref: [elemVar, k] };
-        });
-      } else {
-        // The over-element is a parent-ROW LIST (the grandparent's child list): pass the WHOLE list as
-        // ONE port (bc types it `Vec<parentRow>`); the exec seam extracts this relation's parentKey(s)
-        // from each row, flattens across every element into ONE batched query, and re-aligns per element.
-        ports.k0 = { ref: [elemVar] };
-      }
-      bodyNodes.push({
-        id: nodeId,
-        map: { as: elemVar, component: 'Select', over: { ref: [overId] }, batched: true, relationKind: 'connection', ports },
-        outType: elemOutType,
-      });
-      outputObj[relOp.name] = { ref: [nodeId] };
-      outputTypeObj[relOp.name] = { arr: elemOutType };
-      for (const child of relOp.childRelations ?? []) inject(child, nodeId, depth + 1);
-    };
-    for (const name of relNames) inject(relations[name], primary.id, 0);
-    // Extend the exec `plan.groups` (body-index stages): each injected relation is its OWN sequential
-    // stage (a map node cannot be a PARALLEL-stage member — bc requires parallel-stage members to be
-    // plain point reads), appended in dependency order (a chained child after its parent relation).
-    const origLen = c.body.length;
-    const prevPlan = (c as unknown as { plan?: { concurrency?: number; groups?: number[][] } }).plan;
-    const plan = {
-      concurrency: prevPlan?.concurrency ?? 16,
-      groups: [...(prevPlan?.groups ?? [c.body.map((_, i) => i)]), ...bodyNodes.map((_, i) => [origLen + i])],
-    };
-    return {
-      ...c,
-      body: [...c.body, ...bodyNodes],
-      plan,
-      output: { obj: outputObj },
-      outputType: { obj: outputTypeObj },
-    } as unknown as Component;
   });
   return { ...ir, components };
 }
@@ -1452,7 +1319,7 @@ export function codegenEmitterFor(language: string, registered: readonly string[
 /**
  * Lower a §8 bundle to its final PORTABLE IR DOC — the EXACT unbranded `ComponentGraphIR` that
  * {@link generateCodegenArtifact} feeds to `loadCompiledIR` + `generateModule` (after
- * {@link lowerReadGraphForNativeSql} + {@link injectBatchedRelations}, or the tx-chain lowering). It is
+ * {@link lowerReadGraphForNativeSql}, or the tx-chain lowering). It is
  * language-INDEPENDENT (one doc → every language's module) and JSON-serializable — so a build can write it
  * out and drive bc's codegen CLI (`bc generate --in <doc.json> --lang <emitter>`) over the SAME lowering,
  * with NO duplication of the lowering. This doc is a BUILD-TIME codegen input ONLY (never read at runtime;
@@ -1472,10 +1339,12 @@ export function lowerBundleToPortableIrDoc(bundle: SqlBundle, resolveColumnType:
     );
   }
   // THE SINGLE LOWERING (#116): bake the read/write's rendered per-dialect SQL into native-literal ports
-  // (every read shape + writes). Then inject each `bundle.relations` RelationDecl batch as a bc batched-map
-  // node (E4/#119, native ONE-query relation). Additive; no relations ⇒ unchanged.
-  const readIr = lowerReadGraphForNativeSql(bundle.readGraph, resolveColumnType);
-  return injectBatchedRelations(readIr, bundle.relations, resolveColumnType);
+  // (every read shape + writes). The native module carries the PRIMARY query ONLY — a relation is NOT
+  // baked into it (#131): a RelationDecl belongsTo/hasMany is v1 LAZY-BATCH loading, a RUNTIME concern
+  // the litedbmodel relation loader resolves over the single query primitive (dedupe → ONE batched child
+  // query → group → distribute; `relation.rs`), never an executor/native-de-box primitive. The relation
+  // ops ride `bundle.relations` (the runtime metadata the loader stitches), not the generated module.
+  return lowerReadGraphForNativeSql(bundle.readGraph, resolveColumnType);
 }
 
 export function generateCodegenArtifact(
@@ -1515,11 +1384,16 @@ export function codegenExecuteBundleForTest(artifact: CodegenArtifact, input: Sc
 // bc-consumer — supplies them, and THIS is where litedbmodel GENERATES that companion (not hand-written):
 // per-component `impl HandlerNR<comp>` whose `node_*` methods delegate UNIFORMLY to the SINGLE
 // op-agnostic executor `exec(…, ExecMode::Rows|Summary)` — batch/skip nodes first marshal their params
-// via `build_batch_params`/`build_skip_params` then run the SAME `exec` (no dedicated executor), and a
-// batched relation reuses `exec_batched_relation`'s shared stitch — plus the one-line `wire_impls!` macro that bridges the module-local
+// via `build_batch_params`/`build_skip_params` then run the SAME `exec` (no dedicated executor) — plus
+// the one-line `wire_impls!` macro that bridges the module-local
 // wire traits to the runtime's `Wire` classification (the orphan rule forbids the impls living in the
 // runtime crate — the traits are local to the generated module). Derived from the SAME lowered IR
-// {@link generateCodegenArtifact} feeds bc, so ports/param/relation facts are single-sourced.
+// {@link generateCodegenArtifact} feeds bc, so ports/param facts are single-sourced.
+//
+// RELATIONS are NOT baked into the module or the handler surface (#131): a RelationDecl belongsTo/hasMany
+// is v1 LAZY-BATCH loading, a RUNTIME concern (`relation.rs`). The companion instead carries the relation
+// ops as `bundle.relations` metadata (`relation_ops_json`) the litedbmodel-consumer feeds to the runtime
+// loader `stitch_relation` after the native primary read — the relation is not an executor primitive.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /** Camelize a node id to bc's ports-struct segment (`n0`→`N0`, `rel_posts`→`RelPosts`,
@@ -1646,31 +1520,17 @@ function emitReadWriteNode(
   ].join('\n');
 }
 
-/** Emit ONE batched-relation node's `node_rel_*` handler (the bc batched-map contract: all parents'
- * key tuples IN, one per-parent child list OUT, aligned). Delegates to the runtime's
- * `exec_batched_relation` (which reuses `relation.rs`'s dedupe/group/align — ONE query, no N+1). */
-function emitBatchedRelationNode(n: Record<string, unknown>, comp: string, relations: Record<string, RelationOp>): string {
-  const id = n.id as string;
-  const camel = nodeCamel(id);
-  const relName = id.replace(/^rel_/, '');
-  const relOp = relations[relName];
-  if (relOp === undefined) throw new Error(`litedbmodel companion: batched relation node '${id}' has no RelationOp '${relName}' in bundle.relations`);
-  const parentKeys = relOp.parentKeys ?? (relOp.parentKey !== undefined ? [relOp.parentKey] : []);
-  const targetKeys = relOp.targetKeys ?? (relOp.targetKey !== undefined ? [relOp.targetKey] : []);
-  if (parentKeys.length === 0 || targetKeys.length === 0) {
-    throw new Error(`litedbmodel companion: relation '${relName}' has no parent/target keys to key the batch`);
-  }
-  const tuple = parentKeys.map((_, i) => `litedbmodel_runtime::wp(&it.f_k${i})`).join(', ');
-  const pk = parentKeys.map((k) => JSON.stringify(k)).join(', ');
-  const tk = targetKeys.map((k) => JSON.stringify(k)).join(', ');
+/** Emit the litedbmodel-consumer accessor for the bundle's relation ops (#131) — the v1 lazy-batch
+ * relation metadata (`bundle.relations`, pure JSON: baked child SQL + parent/target keys + key-shape
+ * descriptor) the RUNTIME loader `stitch_relation` interprets. Relations are NOT baked into the native
+ * module or the handler surface; the consumer runs the native PRIMARY read then stitches each named
+ * relation over the single query primitive (dedupe → ONE batched child query → group → distribute). */
+function emitRelationOpsAccessor(relations: Record<string, RelationOp>): string {
   return [
-    `    fn ${`node_${id}`}(&self, ports: &PortsNR${comp}${camel}Batch, _bound: Option<String>) -> Result<Vec<Wire>, BehaviorError> {`,
-    `        let tuples: Vec<Vec<Value>> = ports.items.iter().map(|it| vec![${tuple}]).collect();`,
-    `        let sql = ports.items.first().map(|it| it.f_sql.clone()).unwrap_or_default();`,
-    `        litedbmodel_runtime::exec_batched_relation(self.driver, ${JSON.stringify(relOp.kind)}, &sql, &[${pk}], &[${tk}], &tuples, litedbmodel_runtime::ArrayParamShape::${relOp.keyShape === 'per_column' ? 'PerColumn' : 'SingleJson'})`,
-    `            .map(|v| v.into_iter().map(Wire).collect())`,
-    `            .map_err(cvt_rel)`,
-    `    }`,
+    `/// The relation batch ops (v1 lazy-batch metadata) the runtime loader \`stitch_relation\` resolves over`,
+    `/// the primary rows — a relation is a RUNTIME concern, not baked into the native module. Pick by name.`,
+    `pub fn relation_ops_json() -> &'static str { ${JSON.stringify(JSON.stringify(relations))} }`,
+    ``,
   ].join('\n');
 }
 
@@ -1701,7 +1561,7 @@ export function generateRustCompanion(bundle: SqlBundle, moduleName: string, res
     `// classification is single-sourced in the runtime and bridged here by the wire_impls! macro (the`,
     `// orphan rule forbids the module-local wire trait impls living in the runtime crate).`,
     `use super::${moduleName}::*;`,
-    `use litedbmodel_runtime::{Driver, RuntimeError, SqlFailure, Value, Wire};`,
+    `use litedbmodel_runtime::{Driver, SqlFailure, Value, Wire};`,
     `// The dialect is a CONNECTION property (\`self.driver.dialect()\`), not baked here — the generated`,
     `// SQL is dialect-neutral in its placeholders (\`?\`); the runtime renumbers \`?\`→\`\$N\` per connection.`,
     ``,
@@ -1710,7 +1570,6 @@ export function generateRustCompanion(bundle: SqlBundle, moduleName: string, res
     `/// Map a runtime SQL failure to the module-local BehaviorError (byte-equal codes: the bc runner`,
     `/// re-wraps a node failure as OP_FAILED regardless, so only the message/detail cross this seam).`,
     `fn cvt(e: SqlFailure) -> BehaviorError { BehaviorError::new(e.kind, e.message) }`,
-    `fn cvt_rel(e: RuntimeError) -> BehaviorError { BehaviorError::new("RELATION_ERROR", e.message().to_string()) }`,
     ``,
   ];
 
@@ -1751,12 +1610,11 @@ export function generateRustCompanion(bundle: SqlBundle, moduleName: string, res
     ].join('\n');
   }
 
-  const methods = c.body
-    .filter((n) => !('cond' in n))
-    .map((n) => {
-      const batched = 'map' in n && (n.map as { batched?: unknown }).batched === true;
-      return batched ? emitBatchedRelationNode(n, comp, bundle.relations) : emitReadWriteNode(n, comp, bundle, inputPorts);
-    });
+  // Every read/write/inline-map node delegates to the SINGLE op-agnostic executor via emitReadWriteNode
+  // (an inline `.map` runs its child per parent element; a plain read/write runs once). Relations are NOT
+  // handler nodes (#131) — they ride `bundle.relations` for the runtime loader, emitted below.
+  const methods = c.body.filter((n) => !('cond' in n)).map((n) => emitReadWriteNode(n, comp, bundle, inputPorts));
+  const relationsAccessor = Object.keys(bundle.relations).length > 0 ? [``, emitRelationOpsAccessor(bundle.relations)] : [];
   return [
     ...head,
     `pub struct Rt<'a> { driver: &'a dyn Driver }`,
@@ -1768,6 +1626,7 @@ export function generateRustCompanion(bundle: SqlBundle, moduleName: string, res
     `/// The litedbmodel-consumer entry: build the runtime-backed handler for \`${comp}\`. The consumer`,
     `/// calls \`run_native_raw_struct_${comp}(&handler(driver), in_)\` — supplying NO node_* itself.`,
     `pub fn handler(driver: &dyn Driver) -> Rt<'_> { Rt { driver } }`,
+    ...relationsAccessor,
     ``,
   ].join('\n');
 }

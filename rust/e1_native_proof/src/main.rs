@@ -55,8 +55,8 @@ mod generated_upsertmany;
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
 use litedbmodel_runtime::{
-    encode_value, execute_bundle, execute_transaction_bundle, read_bundle_pooled, Driver, Node,
-    SqlFailure, SqliteDriver, Value,
+    encode_value, execute_bundle, execute_transaction_bundle, read_bundle_pooled, stitch_relation,
+    Driver, Node, SqlFailure, SqliteDriver, Value,
 };
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
@@ -480,6 +480,11 @@ fn main() {
                 users.join(",")
             );
         }
+        // relbatch/relsingle (#131): the native module carries the PRIMARY read ONLY. The relation is v1
+        // lazy-batch loading — a RUNTIME concern: after the native de-boxed parent read, the runtime loader
+        // `stitch_relation` resolves the DECLARED relation op (companion `relation_ops_json`, litedbmodel
+        // metadata) over the single query primitive (dedupe → ONE batched child query → group → distribute).
+        // 1 parent + 1 batched child = 2 queries (no N+1). The relation is NOT an executor primitive.
         "relbatch" => {
             let tenant_id: i64 = args
                 .get(3)
@@ -492,7 +497,6 @@ fn main() {
             )
             .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let rows: Vec<String> = out
-                .rows
                 .iter()
                 .map(|u| {
                     format!(
@@ -503,19 +507,36 @@ fn main() {
                     )
                 })
                 .collect();
-            let posts: Vec<String> = out
-                .posts
+            let parents: Vec<Value> = out
                 .iter()
-                .map(|inner| {
-                    let items: Vec<String> = inner
+                .map(|u| {
+                    Value::Obj(vec![
+                        ("tenant_id".to_string(), Value::Int(u.tenant_id)),
+                        ("user_id".to_string(), Value::Int(u.user_id)),
+                        ("name".to_string(), Value::Str(u.name.clone())),
+                    ])
+                })
+                .collect();
+            let ops = Node::parse(companion_relbatch::relation_ops_json()).expect("parse relation ops");
+            let op = ops.get("posts").expect("relation op 'posts'");
+            let stitched = stitch_relation(op, parents, d)
+                .unwrap_or_else(|e| panic!("stitch relation: {}", e.message()));
+            let posts: Vec<String> = stitched
+                .iter()
+                .map(|p| {
+                    let children = match obj_get(p, "posts") {
+                        Some(Value::Arr(c)) => c.as_slice(),
+                        _ => &[],
+                    };
+                    let items: Vec<String> = children
                         .iter()
-                        .map(|p| {
+                        .map(|c| {
                             format!(
                                 "{{\"tenant_id\":{},\"post_id\":{},\"user_id\":{},\"title\":{}}}",
-                                p.tenant_id,
-                                p.post_id,
-                                p.user_id,
-                                json_str(&p.title)
+                                cell_i64(c, "tenant_id"),
+                                cell_i64(c, "post_id"),
+                                cell_i64(c, "user_id"),
+                                json_str(&cell_str(c, "title"))
                             )
                         })
                         .collect();
@@ -541,7 +562,6 @@ fn main() {
             )
             .unwrap_or_else(|e| panic!("behavior failed: {e}"));
             let rows: Vec<String> = out
-                .rows
                 .iter()
                 .map(|p| {
                     format!(
@@ -552,18 +572,36 @@ fn main() {
                     )
                 })
                 .collect();
-            let comments: Vec<String> = out
-                .comments
+            let parents: Vec<Value> = out
                 .iter()
-                .map(|inner| {
-                    let items: Vec<String> = inner
+                .map(|p| {
+                    Value::Obj(vec![
+                        ("id".to_string(), Value::Int(p.id)),
+                        ("title".to_string(), Value::Str(p.title.clone())),
+                        ("author_id".to_string(), Value::Int(p.author_id)),
+                    ])
+                })
+                .collect();
+            let ops =
+                Node::parse(companion_relsingle::relation_ops_json()).expect("parse relation ops");
+            let op = ops.get("comments").expect("relation op 'comments'");
+            let stitched = stitch_relation(op, parents, d)
+                .unwrap_or_else(|e| panic!("stitch relation: {}", e.message()));
+            let comments: Vec<String> = stitched
+                .iter()
+                .map(|p| {
+                    let children = match obj_get(p, "comments") {
+                        Some(Value::Arr(c)) => c.as_slice(),
+                        _ => &[],
+                    };
+                    let items: Vec<String> = children
                         .iter()
                         .map(|c| {
                             format!(
                                 "{{\"id\":{},\"body\":{},\"post_id\":{}}}",
-                                c.id,
-                                json_str(&c.body),
-                                c.post_id
+                                cell_i64(c, "id"),
+                                json_str(&cell_str(c, "body")),
+                                cell_i64(c, "post_id")
                             )
                         })
                         .collect();

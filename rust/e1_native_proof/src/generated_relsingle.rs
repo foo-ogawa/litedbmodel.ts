@@ -168,21 +168,6 @@ pub struct T0 {
     pub author_id: i64, // "author_id"
 }
 
-#[derive(Clone, Default)]
-#[allow(dead_code)]
-pub struct T1 {
-    pub id: i64, // "id"
-    pub body: String, // "body"
-    pub post_id: i64, // "post_id"
-}
-
-#[derive(Clone, Default)]
-#[allow(dead_code)]
-pub struct T2 {
-    pub rows: Vec<T0>, // "rows"
-    pub comments: Vec<Vec<T1>>, // "comments"
-}
-
 #[allow(dead_code)]
 fn unknown_component(component: &str) -> BehaviorError {
     BehaviorError::new("UNKNOWN_COMPONENT", format!("component '{component}' has no handler (fail-closed)"))
@@ -205,23 +190,6 @@ pub struct PortsNRByAuthorN0 {
     pub f_p0: i64, // "p0"
 }
 
-// PortsNRByAuthorRelComments — CONCRETE native ports for node 'rel_comments' (Select). Typed fields per the
-// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
-// handler reads the typed fields directly off this concrete struct — no by-name accessor.
-#[derive(Clone)]
-pub struct PortsNRByAuthorRelComments {
-    pub f_sql: String, // "sql"
-    pub f_k0: i64, // "k0"
-}
-
-// PortsNRByAuthorRelCommentsBatch — CONCRETE batched ports for map 'rel_comments': the Vec of per-element CONCRETE ports structs
-// (a Vec<PortsNRByAuthorRelComments>, NOT a generic key-value container). The consumer's batched handler reads the typed
-// element ports off the concrete struct directly.
-#[derive(Clone)]
-pub struct PortsNRByAuthorRelCommentsBatch {
-    pub items: Vec<PortsNRByAuthorRelComments>,
-}
-
 // CONCRETE per-component input structs (fields = inputPorts).
 // InNRByAuthor — the CONCRETE input for 'ByAuthor' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
@@ -239,7 +207,6 @@ pub struct InNRByAuthor {
 pub trait HandlerNRByAuthor {
     type Wire: WireValue + Send;
     fn node_n0(&self, ports: &PortsNRByAuthorN0, bound: Option<String>) -> Result<Self::Wire, BehaviorError>;
-    fn node_rel_comments(&self, ports: &PortsNRByAuthorRelCommentsBatch, bound: Option<String>) -> Result<Vec<Self::Wire>, BehaviorError>;
 }
 
 // strict de-box wire seam — the consumer implements WireValue (+ WireRow/WireList reached via
@@ -324,13 +291,10 @@ pub trait WireList: Sized {
 pub fn run_native_raw_struct_ByAuthor<H: HandlerNRByAuthor>(
     handlers: &H,
     in_: InNRByAuthor,
-) -> Result<T2, BehaviorError> {
+) -> Result<Vec<T0>, BehaviorError> {
     let cell_n0: RefCell<Vec<T0>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
-    let cell_rel_comments: RefCell<Vec<Vec<T1>>> = RefCell::new(Default::default());
-    let produced_rel_comments = std::cell::Cell::new(false);
-    let _ = &produced_rel_comments;
     // ── op 'n0' (Select) ──
     let ports_n0 = PortsNRByAuthorN0 { f_sql: "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = ? ORDER BY id ASC".to_string(), f_p0: in_.author_id };
     let wire_n0 = match handlers.node_n0(&ports_n0, None) {
@@ -380,73 +344,7 @@ pub fn run_native_raw_struct_ByAuthor<H: HandlerNRByAuthor>(
         Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:int,title:string,author_id:int})")),
     };
     produced_n0.set(true);
-    // ── map 'rel_comments' (Select, batched, into:null, relationKind:connection) ──
-    let over_rel_comments = cell_n0.borrow().clone();
-    let mut built_rel_comments: Vec<Vec<T1>> = Vec::with_capacity(over_rel_comments.len());
-    let mut items_rel_comments: Vec<PortsNRByAuthorRelComments> = Vec::with_capacity(over_rel_comments.len());
-    for oel_rel_comments in over_rel_comments.iter() {
-        let ep_rel_comments = PortsNRByAuthorRelComments { f_sql: "SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC".to_string(), f_k0: oel_rel_comments.id };
-        items_rel_comments.push(ep_rel_comments);
-    }
-    if !items_rel_comments.is_empty() {
-        let want_rel_comments = items_rel_comments.len();
-        let bp_rel_comments = PortsNRByAuthorRelCommentsBatch { items: items_rel_comments };
-        let row_rel_comments = match handlers.node_rel_comments(&bp_rel_comments, None) {
-            Ok(r) => r,
-            Err(e) => return Err(op_failed("rel_comments", "fail", e)),
-        };
-        if row_rel_comments.len() != want_rel_comments {
-            return Err(BehaviorError::new("MAP_BATCH_RESULT_MISMATCH", format!("map '{}': batched handler must return a list aligned to items (want {})", "rel_comments", want_rel_comments)));
-        }
-        for er_rel_comments in row_rel_comments.into_iter() {
-            let el_rel_comments = match er_rel_comments.as_list() {
-                Probe::Got(l0) => {
-                    let mut acc0 = Vec::with_capacity(l0.len());
-                    for i0 in 0..l0.len() {
-                        acc0.push(match l0.elem_row(i0) {
-                            Probe::Got(sub1) => T1 {
-                                id: match sub1.probe_number("id") {
-                                    NumProbe::Got { raw, actual_wire_type } => match raw.parse::<i64>() {
-                                        Ok(n) => n,
-                                        Err(_) => return Err(de_overflow("T1", "id", "int", actual_wire_type, raw)),
-                                    },
-                                    NumProbe::Wrong { actual_wire_type, raw_value }
-                                    | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T1", "id", "int", actual_wire_type, raw_value)),
-                                    NumProbe::Absent => return Err(de_missing_field("T1", "id", "int")),
-                                },
-                                body: match sub1.probe_string("body") {
-                                    Probe::Got(v) => v,
-                                    Probe::Wrong { actual_wire_type, raw_value }
-                                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T1", "body", "string", actual_wire_type, raw_value)),
-                                    Probe::Absent => return Err(de_missing_field("T1", "body", "string")),
-                                },
-                                post_id: match sub1.probe_number("post_id") {
-                                    NumProbe::Got { raw, actual_wire_type } => match raw.parse::<i64>() {
-                                        Ok(n) => n,
-                                        Err(_) => return Err(de_overflow("T1", "post_id", "int", actual_wire_type, raw)),
-                                    },
-                                    NumProbe::Wrong { actual_wire_type, raw_value }
-                                    | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T1", "post_id", "int", actual_wire_type, raw_value)),
-                                    NumProbe::Absent => return Err(de_missing_field("T1", "post_id", "int")),
-                                },
-                            },
-                            Probe::Wrong { actual_wire_type, raw_value }
-                            | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("rel_comments", "rel_comments", "obj{id:int,body:string,post_id:int}", actual_wire_type, raw_value)),
-                            Probe::Absent => return Err(de_missing_field("rel_comments", "rel_comments", "obj{id:int,body:string,post_id:int}")),
-                        });
-                    }
-                    acc0
-                },
-                Probe::Wrong { actual_wire_type, raw_value }
-                | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("rel_comments", "rel_comments", "arr(obj{id:int,body:string,post_id:int})", actual_wire_type, raw_value)),
-                Probe::Absent => return Err(de_missing_field("rel_comments", "rel_comments", "arr(obj{id:int,body:string,post_id:int})")),
-            };
-            built_rel_comments.push(el_rel_comments);
-        }
-    }
-    *cell_rel_comments.borrow_mut() = built_rel_comments;
-    produced_rel_comments.set(true);
-    let __out = T2 { rows: cell_n0.borrow().clone(), comments: cell_rel_comments.borrow().clone() };
+    let __out = cell_n0.borrow().clone();
     Ok(__out)
 }
 

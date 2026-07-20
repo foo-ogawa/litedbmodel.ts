@@ -368,7 +368,8 @@ impl ToWireArray for Vec<String> {
     }
 }
 
-/// An array ports field → ONE bound param (dialect-aware; see [`ToWireArray`]).
+/// An array ports field → ONE bound param — always a `Value::Arr`; DIALECT-BLIND (the Postgres-native-
+/// array vs MySQL/SQLite-`json_each(?)`-JSON decision is the Driver param-binder's, invariant #3). See [`ToWireArray`].
 pub fn wp_array<T: ToWireArray>(v: &T) -> Value {
     // Always a `Value::Arr` — the DIALECT decision (Postgres native array vs MySQL/SQLite `json_each(?)`
     // JSON string) is resolved by the Driver's param-binder (the array-bind SSoT), NOT here. The
@@ -478,7 +479,7 @@ pub fn exec(
     }
 }
 
-/// ONE WHERE fragment handed to [`exec_skip`]: the bare predicate SQL (baked literal, NO connector),
+/// ONE WHERE fragment handed to [`build_skip_params`]: the bare predicate SQL (baked literal, NO connector),
 /// whether it is PRESENT (a required fragment is always present; a skip-optional fragment is present iff
 /// its bc#139 Option head is `Some`), and its bound params (empty when absent).
 pub struct SkipFrag {

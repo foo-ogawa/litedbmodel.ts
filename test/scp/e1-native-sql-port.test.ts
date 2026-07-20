@@ -361,28 +361,36 @@ describe('E4 (#119) — a single-key map relation bakes; the child binds the par
   });
 });
 
-describe('E4 (#119) — NATIVE BATCHED relation: ONE child query for all parents (not N+1)', () => {
-  it('bakes the BATCHED child SQL (json_each tuple membership), NOT a per-row `= ?`; keys as native ports', () => {
+describe('E4 (#131) — a relation is NOT baked into the native module; it rides bundle.relations for the runtime loader', () => {
+  it('COMPOSITE-key: the module carries the PRIMARY read ONLY (no batched child SQL, no rel node); the batch op lives in bundle.relations + the companion', () => {
     const bundle = compileBundle(TENANT_USERS_CONTRACT, 'ByTenant', [POSTS_COMPOSITE_REL], 'sqlite', undefined, RESOLVE);
     const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE).module.code;
-    // the child SQL is the BATCHED form (one query, json_each over the deduped key tuples) — the
-    // batched relation the runtime issues, NOT the per-parent `WHERE tenant_id=? AND user_id=?`.
-    expect(code).toContain('WHERE EXISTS (SELECT 1 FROM json_each(?) je WHERE json_extract(je.value, \'$[0]\') = benchmark_tenant_posts.tenant_id AND json_extract(je.value, \'$[1]\') = benchmark_tenant_posts.user_id)');
-    expect(code).not.toContain('WHERE tenant_id = ? AND user_id = ?'); // NOT the per-row form
-    // the batched map: the handler gets ALL parents at once (a Batch of items)
-    expect(code).toContain('items: Vec<PortsNRByTenantRelPosts>');
-    // both parent keys bake as native i64 element ports (the seam collects distinct + binds ONE json)
-    expect(code).toContain('f_k0: oel_rel_posts.tenant_id');
-    expect(code).toContain('f_k1: oel_rel_posts.user_id');
+    // the native module bakes the PARENT read ONLY — the relation is a v1 lazy-batch RUNTIME concern.
+    expect(code).toContain('f_sql: "SELECT tenant_id, user_id, name FROM benchmark_tenant_users WHERE tenant_id = ? ORDER BY user_id ASC".to_string()');
+    // NOT baked into the module: no batched child SQL, no relation node / batched-map ports.
+    expect(code).not.toContain('json_each');
+    expect(code).not.toContain('rel_posts');
+    expect(code).not.toContain('RelPosts');
     expect(stripRustComments(code)).not.toContain('serde_json');
+    // the batched relation op rides bundle.relations (the runtime loader's metadata) — the composite
+    // json_each tuple-membership child SQL, keyed on BOTH (tenant_id, user_id) — ONE query, no N+1.
+    const rel = bundle.relations.posts as unknown as { sql: string; parentKeys: string[] };
+    expect(rel.sql).toContain('WHERE EXISTS (SELECT 1 FROM json_each(?) je WHERE json_extract(je.value, \'$[0]\') = benchmark_tenant_posts.tenant_id AND json_extract(je.value, \'$[1]\') = benchmark_tenant_posts.user_id)');
+    expect(rel.parentKeys).toEqual(['tenant_id', 'user_id']);
+    // the companion exposes the op for the consumer to feed the runtime loader (stitch_relation), and
+    // carries NO relation handler node (the relation is not an executor primitive).
+    const companion = generateRustCompanion(bundle, 'generated_relbatch', RESOLVE);
+    expect(companion).toContain('pub fn relation_ops_json()');
+    expect(companion).not.toContain('node_rel_posts');
   });
 
-  it('SINGLE-key (nestedRelations): bakes the batched `post_id IN (json_each(?))`, one key port', () => {
+  it('SINGLE-key: the primary posts read bakes; the comments batch op (post_id IN json_each) rides bundle.relations', () => {
     const bundle = compileBundle(POSTS_SINGLE_CONTRACT, 'ByAuthor', [COMMENTS_SINGLE_REL], 'sqlite', undefined, RESOLVE);
     const code = generateCodegenArtifact(bundle, 'rust', REGISTERED, RESOLVE).module.code;
-    expect(code).toContain('f_sql: "SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC".to_string()');
-    expect(code).toContain('f_k0: oel_rel_comments.id');
-    expect(code).toContain('items: Vec<PortsNRByAuthorRelComments>');
+    expect(code).toContain('f_sql: "SELECT id, title, author_id FROM benchmark_posts WHERE author_id = ? ORDER BY id ASC".to_string()');
+    expect(code).not.toContain('json_each'); // the relation child SQL is not baked into the module
+    expect((bundle.relations.comments as unknown as { sql: string }).sql).toContain('WHERE post_id IN (SELECT value FROM json_each(?))');
+    expect(generateRustCompanion(bundle, 'generated_relsingle', RESOLVE)).toContain('relation_ops_json()');
   });
 });
 
@@ -620,8 +628,9 @@ describe('E1/E2 — emit modules + seeded DB + mode-2 oracles for the rust execu
 
     // Read cases for the LIVE native-vs-mode-2 harness (SSoT for read inputs): each carries the native
     // CLI op+args AND the typed mode-2 input scope, so the harness runs BOTH paths on the SAME live DB
-    // and deep-equals (no sqlite oracle). relbatch/relsingle are omitted — their native {rows,posts}
-    // batched-map de-box shape has no distinct interpreter entry (see report / HANDOFF).
+    // and deep-equals (no sqlite oracle). relbatch/relsingle live in the SEPARATE relCases list — they
+    // carry a relation the harness normalizes ({rows,children}) before deep-equal (see compareRel), so
+    // they are not plain reads.
     const readCases = [
       { key: 'findunique', op: 'findunique', args: ['user500@example.com'], input: { email: 'user500@example.com' } },
       { key: 'findunique-miss', op: 'findunique', args: ['nobody@example.com'], input: { email: 'nobody@example.com' } },
