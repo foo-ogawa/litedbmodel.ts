@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 use behavior_contracts::Value;
 
+use crate::codegen_exec::ArrayParamShape;
 use crate::driver::Driver;
 use crate::errors::{LimitExceededError, RuntimeError, SqlFailure, LIMIT_CONTEXT_RELATION};
 use crate::exec_context::{self, StatementIntent};
@@ -36,6 +37,11 @@ struct RelationOp {
     parent_keys: Option<Vec<String>>,
     target_keys: Option<Vec<String>>,
     dialect: String,
+    /// The COMPOSITE-key param-shape DESCRIPTOR, resolved from the dialect at SQL generation
+    /// (`compileRelationOp`) and carried on the op — so `bind_keys` binds a composite key set without
+    /// naming a DB (PerColumn `UNNEST` arrays vs SingleJson array-of-tuples). Single-key relations ignore
+    /// it (they bind ONE `Value::Arr` the Driver resolves). The array-bind SSoT, shared native/mode-2.
+    key_shape: ArrayParamShape,
     /// CROSS-DB (V0 R1): the target model's connection tag (None for a same-DB relation).
     connection: Option<String>,
     sql: String,
@@ -64,6 +70,17 @@ fn op_from_json(o: &J) -> RelationOp {
         parent_keys: str_arr("parentKeys"),
         target_keys: str_arr("targetKeys"),
         dialect: s("dialect"),
+        // `keyShape` is baked by `compileRelationOp` (per dialect): `per_column` → UNNEST arrays, else the
+        // array-of-tuples JSON. Only composite relations read it (single-key binds a Driver-resolved array).
+        // A bundle PREDATING the descriptor derives the SAME value the gen stage bakes (a backward-compat
+        // shim, NOT a second live decision — a fresh corpus always carries `keyShape`); `bind_keys` then
+        // stays dialect-blind (it reads `key_shape` only).
+        key_shape: match o.get("keyShape").and_then(|v| v.as_str()) {
+            Some("per_column") => ArrayParamShape::PerColumn,
+            Some(_) => ArrayParamShape::SingleJson,
+            None if s("dialect") == "postgres" => ArrayParamShape::PerColumn,
+            None => ArrayParamShape::SingleJson,
+        },
         connection: o
             .get("connection")
             .and_then(|v| v.as_str())
@@ -171,18 +188,19 @@ fn bind_keys(op: &RelationOp, tuples: &[Vec<Value>]) -> Vec<Value> {
         // (invariant #3: DB differences resolve in the Driver, not the executor/render layer).
         return vec![Value::Arr(tuples.iter().map(|t| t[0].clone()).collect())];
     }
-    // COMPOSITE key — the param ARITY is baked into the per-dialect SQL and CANNOT collapse to the
-    // Driver: Postgres `UNNEST($1::T[], $2::T[], …)` needs ONE array param PER key column (N params,
-    // transposed tuples); MySQL/SQLite `JSON_TABLE(?)` needs ONE array-of-tuples JSON (1 param). The
-    // placeholder COUNT differs, so the param SET is a SQL-shape concern (invariant #5: dialect SQL
-    // differences resolved at SQL generation), not a per-param bind encoding. Documented non-collapse.
-    if op.dialect == "postgres" {
-        let n_cols = op.parent_key_cols().len();
-        return (0..n_cols)
-            .map(|col| Value::Arr(tuples.iter().map(|t| t[col].clone()).collect()))
-            .collect();
+    // COMPOSITE key — the param ARITY is baked into the per-dialect SQL, so the FORM is chosen by the
+    // generation-stage `key_shape` DESCRIPTOR (invariant #5), NOT by a dialect branch here (invariant #3:
+    // the executor is dialect-blind): PerColumn → ONE array param PER key column (N params, transposed
+    // tuples, `UNNEST($1::T[], $2::T[], …)`); SingleJson → ONE array-of-tuples JSON (1 param, `JSON_TABLE(?)`).
+    match op.key_shape {
+        ArrayParamShape::PerColumn => {
+            let n_cols = op.parent_key_cols().len();
+            (0..n_cols)
+                .map(|col| Value::Arr(tuples.iter().map(|t| t[col].clone()).collect()))
+                .collect()
+        }
+        ArrayParamShape::SingleJson => vec![Value::Str(json_tuples(tuples))],
     }
-    vec![Value::Str(json_tuples(tuples))]
 }
 
 /// Compact JSON serialization of one scalar key (mirror of TS `JSON.stringify` element form).
@@ -352,9 +370,12 @@ pub fn exec_batched_relation(
     parent_keys: &[&str],
     target_keys: &[&str],
     key_tuples: &[Vec<Value>],
+    key_shape: ArrayParamShape,
 ) -> Result<Vec<Value>, RuntimeError> {
-    // The dialect is the CONNECTION's (a driver property) — `run_relation_op` uses it for the pg array
-    // cast + bind + the `?`→`$N` renumber (its own SSoT render point, shared with mode-2 relations).
+    // `op.dialect` is the CONNECTION's — `run_relation_op` uses it ONLY for the SQL-TEXT render (the pg
+    // array cast + the `?`→`$N` renumber, invariant #5); it does NOT drive the param SHAPE. The composite
+    // key-bind FORM is the `key_shape` DESCRIPTOR baked by codegen from the bundle relation op (invariant
+    // #3: the shape decision is descriptor-driven, never a dialect branch in the executor).
     let dialect = driver.dialect();
     let op = RelationOp {
         name: String::new(),
@@ -378,6 +399,7 @@ pub fn exec_batched_relation(
             None
         },
         dialect: dialect.to_string(),
+        key_shape,
         connection: None,
         sql: sql.to_string(),
         target_table: None,

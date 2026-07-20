@@ -26,7 +26,7 @@ impl<'a> HandlerNRByAuthor for Rt<'a> {
     fn node_rel_comments(&self, ports: &PortsNRByAuthorRelCommentsBatch, _bound: Option<String>) -> Result<Vec<Wire>, BehaviorError> {
         let tuples: Vec<Vec<Value>> = ports.items.iter().map(|it| vec![litedbmodel_runtime::wp(&it.f_k0)]).collect();
         let sql = ports.items.first().map(|it| it.f_sql.clone()).unwrap_or_default();
-        litedbmodel_runtime::exec_batched_relation(self.driver, "hasMany", &sql, &["id"], &["post_id"], &tuples)
+        litedbmodel_runtime::exec_batched_relation(self.driver, "hasMany", &sql, &["id"], &["post_id"], &tuples, litedbmodel_runtime::ArrayParamShape::SingleJson)
             .map(|v| v.into_iter().map(Wire).collect())
             .map_err(cvt_rel)
     }

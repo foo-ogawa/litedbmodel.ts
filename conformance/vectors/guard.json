@@ -300,6 +300,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "sqlite",
+            "keyShape": "single_json",
             "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))",
             "targetTable": "users",
             "select": [
@@ -316,6 +317,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "sqlite",
+            "keyShape": "single_json",
             "sql": "SELECT id, post_id, label FROM tags WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
             "targetTable": "tags",
             "select": [
@@ -490,6 +492,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "sqlite",
+            "keyShape": "single_json",
             "sql": "SELECT id, post_id, label FROM tags WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
             "targetTable": "tags",
             "select": [
@@ -1047,6 +1050,7 @@
             "parentKey": "author_id",
             "targetKey": "id",
             "dialect": "sqlite",
+            "keyShape": "single_json",
             "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))",
             "targetTable": "users",
             "select": [
@@ -1063,6 +1067,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "sqlite",
+            "keyShape": "single_json",
             "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 2",
             "targetTable": "tags",
             "select": [
@@ -1248,6 +1253,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "sqlite",
+            "keyShape": "single_json",
             "sql": "SELECT id, post_id, label FROM tags WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
             "targetTable": "tags",
             "select": [
@@ -1446,6 +1452,7 @@
             "parentKey": "id",
             "targetKey": "post_id",
             "dialect": "sqlite",
+            "keyShape": "single_json",
             "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 1",
             "targetTable": "tags",
             "select": [

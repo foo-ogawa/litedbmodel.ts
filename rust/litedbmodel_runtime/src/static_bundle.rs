@@ -27,6 +27,7 @@
 
 use behavior_contracts::{ExecOutcome, Value};
 
+use crate::codegen_exec::{build_batch_params, ArrayParamShape};
 use crate::driver::Driver;
 use crate::errors::{
     re_error_to_sql_failure, LimitExceededError, RuntimeError, SqlFailure, LIMIT_CONTEXT_FIND,
@@ -144,67 +145,9 @@ pub fn render_placeholders(sql: &str, dialect_name: &str) -> String {
 /// Everything else is a plain bc Expression IR value. The target dialect for an IN-list rides the
 /// marker's own `dialect` field (compiled TS-side), so no ambient dialect is threaded here.
 fn eval_spec(spec: &J, scope: &[(String, Value)]) -> Result<Value, String> {
-    // E3 (#118) batch marker `{__batchRows:{columns, refs, dialect}}` — the ONE json_each/JSON_TABLE
-    // param of a batch INSERT (createMany / upsertMany). Each `refs[j]` evaluates to a PARALLEL ARRAY
-    // of column `columns[j]`; zip into `[{col:val,…},…]` and JSON-encode (the server-side
-    // json_each/JSON_TABLE expands N records). The runtime twin of the codegen seam's zip — SAME batch
-    // JSON contract as TS `evalSpec`.
-    if let Some(m) = spec.get("__batchRows") {
-        let columns: Vec<String> = m
-            .get("columns")
-            .and_then(|c| c.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let refs: &[J] = m.get("refs").and_then(|r| r.as_array()).unwrap_or(&[]);
-        let is_mysql = m.get("dialect").and_then(|d| d.as_str()) == Some("mysql");
-        let arrays: Vec<Vec<Value>> = refs
-            .iter()
-            .map(
-                |r| match evaluate_expression(r, scope).map_err(|e| e.message)? {
-                    Value::Arr(a) => Ok(a),
-                    _ => Err(
-                        "static-bundle: __batchRows column ref did not evaluate to an array"
-                            .to_string(),
-                    ),
-                },
-            )
-            .collect::<Result<_, String>>()?;
-        let n = arrays.first().map(|a| a.len()).unwrap_or(0);
-        let mut rows: Vec<Value> = Vec::with_capacity(n);
-        for i in 0..n {
-            let mut pairs: Vec<(String, Value)> = Vec::with_capacity(columns.len());
-            for (j, col) in columns.iter().enumerate() {
-                let cell = arrays
-                    .get(j)
-                    .and_then(|a| a.get(i))
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                let cell = match cell {
-                    Value::Bool(b) if is_mysql => Value::Int(if b { 1 } else { 0 }),
-                    other => to_driver_param(&other),
-                };
-                pairs.push((col.clone(), cell));
-            }
-            rows.push(Value::Obj(pairs));
-        }
-        return Ok(Value::Str(compact_value(&Value::Arr(rows))));
-    }
-    // PG (v1) batch UNNEST param `{__batchArray:{column, ref, dialect}}` — the ref evaluates to the
-    // WHOLE array for one column; the statement's `?::<elem>[]` cast binds it as a PG array (one `?`
-    // per column). No JSON encoding — the driver binds the array directly (each cell normalized).
-    if let Some(m) = spec.get("__batchArray") {
-        let inner = m
-            .get("ref")
-            .ok_or("static-bundle: __batchArray missing 'ref'")?;
-        match evaluate_expression(inner, scope).map_err(|e| e.message)? {
-            Value::Arr(a) => return Ok(Value::Arr(a.iter().map(to_driver_param).collect())),
-            _ => return Err("static-bundle: __batchArray ref did not evaluate to an array".into()),
-        }
-    }
+    // NB: the batch markers `{__batchRows}` (mysql/sqlite json_each) / `{__batchArray}` (pg UNNEST) are
+    // NOT handled here — a batch statement is marshaled WHOLE by `batch_params_of` → the SINGLE
+    // `build_batch_params` SSoT (the same fn the native companion calls), so there is no per-spec zip.
     if let Some(inner) = spec.get("__jsonArray") {
         // ONE scalar-array IN-list param. The Driver's param-binder binds it native (Postgres) or as the
         // `json_each(?)` JSON string (MySQL/SQLite, bool→1/0) — the array-bind SSoT; NO dialect branch
@@ -264,6 +207,73 @@ pub(crate) fn resolve_pg_array_cast(sql: &str, values: &[Value]) -> String {
     }
 }
 
+/// If a statement's value-specs are BATCH markers (createMany/updateMany/upsertMany), evaluate the
+/// per-column value arrays and marshal them through the SINGLE [`build_batch_params`] SSoT — the SAME
+/// function the native codegen companion calls (there is NO second zip). Returns `None` for a non-batch
+/// statement (the caller evaluates each value-spec). The two markers encode the generation-stage shape:
+///   - `{__batchArray:{column, ref}}` per `?` → PerColumn (pg UNNEST: one native array per column);
+///   - `{__batchRows:{columns, refs}}` on every `?` → SingleJson (mysql/sqlite json_each: one zipped JSON).
+fn batch_params_of(specs: &[J], scope: &[(String, Value)]) -> Option<Result<Vec<Value>, String>> {
+    let eval_arr = |r: &J| -> Result<Vec<Value>, String> {
+        match evaluate_expression(r, scope).map_err(|e| e.message)? {
+            Value::Arr(a) => Ok(a),
+            _ => Err("static-bundle: a batch column ref did not evaluate to an array".to_string()),
+        }
+    };
+    // SingleJson: every `?` binds the SAME `__batchRows` marker (columns + parallel refs).
+    if !specs.is_empty() && specs.iter().all(|s| s.get("__batchRows").is_some()) {
+        let m = specs[0].get("__batchRows").unwrap();
+        let columns: Vec<String> = m
+            .get("columns")
+            .and_then(|c| c.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let refs: &[J] = m.get("refs").and_then(|r| r.as_array()).unwrap_or(&[]);
+        let cells: Result<Vec<Vec<Value>>, String> = refs.iter().map(eval_arr).collect();
+        return Some(cells.map(|cells| {
+            let cols: Vec<&str> = columns.iter().map(String::as_str).collect();
+            build_batch_params(&cols, &cells, ArrayParamShape::SingleJson, specs.len())
+        }));
+    }
+    // PerColumn: each `?` binds a distinct `__batchArray` marker (one column's ref).
+    if !specs.is_empty() && specs.iter().all(|s| s.get("__batchArray").is_some()) {
+        let mut columns: Vec<String> = Vec::with_capacity(specs.len());
+        let mut cells: Vec<Vec<Value>> = Vec::with_capacity(specs.len());
+        for s in specs {
+            let m = s.get("__batchArray").unwrap();
+            let col = match m.get("column").and_then(|c| c.as_str()) {
+                Some(c) => c.to_string(),
+                None => {
+                    return Some(Err(
+                        "static-bundle: __batchArray missing 'column'".to_string()
+                    ))
+                }
+            };
+            let r = match m.get("ref") {
+                Some(r) => r,
+                None => return Some(Err("static-bundle: __batchArray missing 'ref'".to_string())),
+            };
+            match eval_arr(r) {
+                Ok(a) => cells.push(a),
+                Err(e) => return Some(Err(e)),
+            }
+            columns.push(col);
+        }
+        let cols: Vec<&str> = columns.iter().map(String::as_str).collect();
+        return Some(Ok(build_batch_params(
+            &cols,
+            &cells,
+            ArrayParamShape::PerColumn,
+            specs.len(),
+        )));
+    }
+    None
+}
+
 // ── Statement-list render (port of static-bundle.ts renderStatements) ──────────
 
 /// Evaluate a list of static statement templates against a scope → final SQL + params. Byte-for-byte
@@ -292,11 +302,18 @@ pub fn render_statements(
             }
         }
         let raw = stmt.get("sql").and_then(|s| s.as_str()).unwrap_or("");
-        // Evaluate this statement's params first (a PG array cast is resolved against them below).
+        // Evaluate this statement's params first (a PG array cast is resolved against them below). A BATCH
+        // statement (its `?`s bind `__batchRows`/`__batchArray` markers) is marshaled WHOLE through the
+        // SINGLE `build_batch_params` SSoT — the SAME fn the native codegen companion calls (no per-spec
+        // second zip); a non-batch statement evaluates each value-spec.
         let stmt_start = params.len();
         if let Some(specs) = stmt.get("params").and_then(|p| p.as_array()) {
-            for spec in specs {
-                params.push(eval_spec(spec, scope)?);
+            if let Some(batch) = batch_params_of(specs, scope) {
+                params.extend(batch?);
+            } else {
+                for spec in specs {
+                    params.push(eval_spec(spec, scope)?);
+                }
             }
         }
         let n_params = params.len() - stmt_start;

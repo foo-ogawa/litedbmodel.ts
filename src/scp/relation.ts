@@ -131,6 +131,14 @@ export interface RelationOp {
   /** The target SQL dialect the batch SELECT text is compiled for. */
   readonly dialect: Dialect;
   /**
+   * COMPOSITE-key param-shape DESCRIPTOR resolved from {@link dialect} at THIS generation stage:
+   * `'per_column'` (Postgres `UNNEST($1::T[], …)` — one array param per key column) vs `'single_json'`
+   * (MySQL/SQLite `JSON_TABLE(?)` — one array-of-tuples JSON param). The runtime `bind_keys` binds a
+   * composite key set by THIS descriptor, never by re-inspecting the dialect (invariant #3 — the executor
+   * is dialect-blind; the SAME axis the batch-write `__batchArray`/`__batchRows` marker carries).
+   */
+  readonly keyShape: 'per_column' | 'single_json';
+  /**
    * CROSS-DB relations (V0 R1): the connection NAME the batch executes against (the target model's
    * DB). Present ONLY when it differs from the parent's connection (a same-DB relation omits it).
    * A per-language runtime routes the statement to the pooled driver of this name; the SQL text and
@@ -202,6 +210,9 @@ export function compileRelationOp(decl: RelationDecl, resolveColumnType?: Column
   const dialect: Dialect = decl.dialect ?? 'sqlite';
   const composite = isCompositeDecl(decl);
   const sql = compiledBatchSql(decl, dialect);
+  // The composite key-bind param-shape DESCRIPTOR — the dialect decision made ONCE here (the SAME layer
+  // that baked `sql`); the runtime binds a composite key set by this, dialect-blind (invariant #3/#5).
+  const keyShape: 'per_column' | 'single_json' = dialect === 'postgres' ? 'per_column' : 'single_json';
   // CROSS-DB (V0 R1): carry the target connection tag ONLY when set (a same-DB relation stays
   // untagged, so existing bundles are byte-unchanged — the field is additive/optional).
   const conn = decl.connection !== undefined ? { connection: decl.connection } : {};
@@ -250,6 +261,7 @@ export function compileRelationOp(decl: RelationDecl, resolveColumnType?: Column
       parentKeys: [...(decl.parentKeys as readonly string[])],
       targetKeys: [...(decl.targetKeys as readonly string[])],
       dialect,
+      keyShape,
       ...conn,
       sql,
       ...target,
@@ -262,6 +274,7 @@ export function compileRelationOp(decl: RelationDecl, resolveColumnType?: Column
     parentKey: decl.parentKey,
     targetKey: decl.targetKey,
     dialect,
+    keyShape,
     ...conn,
     sql,
     ...target,

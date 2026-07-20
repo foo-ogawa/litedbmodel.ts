@@ -26,7 +26,7 @@ impl<'a> HandlerNRByTenant for Rt<'a> {
     fn node_rel_posts(&self, ports: &PortsNRByTenantRelPostsBatch, _bound: Option<String>) -> Result<Vec<Wire>, BehaviorError> {
         let tuples: Vec<Vec<Value>> = ports.items.iter().map(|it| vec![litedbmodel_runtime::wp(&it.f_k0), litedbmodel_runtime::wp(&it.f_k1)]).collect();
         let sql = ports.items.first().map(|it| it.f_sql.clone()).unwrap_or_default();
-        litedbmodel_runtime::exec_batched_relation(self.driver, "hasMany", &sql, &["tenant_id", "user_id"], &["tenant_id", "user_id"], &tuples)
+        litedbmodel_runtime::exec_batched_relation(self.driver, "hasMany", &sql, &["tenant_id", "user_id"], &["tenant_id", "user_id"], &tuples, litedbmodel_runtime::ArrayParamShape::SingleJson)
             .map(|v| v.into_iter().map(Wire).collect())
             .map_err(cvt_rel)
     }

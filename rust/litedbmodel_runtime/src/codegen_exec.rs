@@ -524,72 +524,64 @@ pub fn exec_skip(
     )
 }
 
-/// The generic BATCH-WRITE exec (createMany / updateMany / upsertMany — ONE statement for N records).
-/// Given the baked per-dialect `sql` + the records as PARALLEL columns (`columns[j]` names `cells[j]`,
-/// the already bc-`Value` cells for column j), bind them per dialect and run ONE statement:
-///   - postgres (v1 UNNEST): ONE ARRAY param per column (`Value::Arr` → `$N::T[]`), the SAME per-column
-///     array binding [`crate::relation`]'s `bind_keys` does for a pg relation batch.
-///   - mysql/sqlite (v2 json_each/JSON_TABLE): ZIP the columns into the `[{col:val,…},…]` JSON the baked
-///     `json_each(?)` expands and bind it to EVERY `?`. Type-aware cell encoding (numeric bare, string
-///     quoted) is intrinsic to each cell's `Value` variant.
-///
-/// A RETURNING batch hands back rows; a non-returning batch hands back the summary. This dialect split
-/// is a BIND concern (the SQL text is already baked per dialect), not a second executor.
-pub fn exec_batch_write(
-    driver: &dyn Driver,
-    sql: &str,
-    columns: &[&str],
-    cells: &[Vec<Value>],
-    returning: bool,
-) -> Result<Wire, SqlFailure> {
-    // The array-bind shape is the CONNECTION's dialect (not a per-op flag) — same source as the
-    // placeholder renumber. postgres → per-column `Value::Arr` (`$N::T[]`); mysql/sqlite → the json bind.
-    let params: Vec<Value> = if driver.dialect() == "postgres" {
-        // v1 UNNEST: one array param per column, in column order (matches `UNNEST($1::T[], $2::T[], …)`).
-        cells.iter().map(|c| Value::Arr(c.clone())).collect()
-    } else {
-        // v2 json_each/JSON_TABLE: the zipped records JSON, bound to every `?` (one; or one per SET+WHERE).
-        let n = cells.first().map(|c| c.len()).unwrap_or(0);
-        let mut objs: Vec<String> = Vec::with_capacity(n);
-        for i in 0..n {
-            let fields: Vec<String> = columns
-                .iter()
-                .zip(cells.iter())
-                .map(|(col, cell)| {
-                    let mut key = String::new();
-                    crate::node::write_json_string(col, &mut key);
-                    format!("{}:{}", key, json_cell(&cell[i]))
-                })
-                .collect();
-            objs.push(format!("{{{}}}", fields.join(",")));
-        }
-        let json = format!("[{}]", objs.join(","));
-        let n_params = sql.matches('?').count();
-        (0..n_params).map(|_| Value::Str(json.clone())).collect()
-    };
-    let mode = if returning {
-        ExecMode::Rows
-    } else {
-        ExecMode::Summary
-    };
-    exec(&exec_context::for_driver(driver), sql, &params, mode)
+/// The param-shape DESCRIPTOR for a multi-column array bind — resolved ONCE from the dialect at the SQL
+/// generation stage (the SAME layer that bakes json_each-vs-UNNEST), then carried on the artifact so the
+/// marshaling is dialect-BLIND: it follows the descriptor and never names a DB. Reusable across the
+/// batch-write and composite-relation array binds (and the go/ts/py/php ports) — no per-op special case.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ArrayParamShape {
+    /// Postgres UNNEST: ONE native array param PER column (`$N::T[]`), in column order.
+    PerColumn,
+    /// MySQL/SQLite json_each/JSON_TABLE: ONE JSON param (the op-specific rows/tuples), bound to every `?`.
+    SingleJson,
 }
 
-/// A single batch-write cell → its JSON element text: a string is quoted (`"foo"`), a numeric/bool is
-/// bare (`42`) so `json_extract(…) = <int column>` matches. Type-aware because only the cell's `Value`
-/// variant knows its shape (the write's column type produced it).
-fn json_cell(v: &Value) -> String {
-    match v {
-        Value::Null => "null".to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Int(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
-        Value::Str(s) => {
-            let mut out = String::new();
-            crate::node::write_json_string(s, &mut out);
-            out
+/// Build the bind params for a batch write from the records as PARALLEL columns (`columns[j]` names
+/// `cells[j]`, the already bc-`Value` cells for column j) per the generation-stage `shape` DESCRIPTOR —
+/// the SINGLE input-marshaling SSoT the native companion AND the mode-2 render
+/// ([`crate::static_bundle::render_statements`]) both call (there is NO second zip). `n_params` = the
+/// statement's `?` count (SingleJson binds the ONE zipped JSON to every `?`). Dialect-blind: the shape is
+/// decided once at SQL generation, never re-inspected here. The caller runs the params through the SINGLE
+/// [`exec`] — there is NO batch-specific executor.
+pub fn build_batch_params(
+    columns: &[&str],
+    cells: &[Vec<Value>],
+    shape: ArrayParamShape,
+    n_params: usize,
+) -> Vec<Value> {
+    match shape {
+        // v1 UNNEST: one array param per column, in column order (`UNNEST($1::T[], $2::T[], …)`).
+        ArrayParamShape::PerColumn => cells.iter().map(|c| Value::Arr(c.clone())).collect(),
+        // v2 json_each/JSON_TABLE: ZIP the columns into `[{col:val,…},…]` (compact JSON) and bind to every
+        // `?`. A JSON batch cell bool → 1/0 (MySQL TINYINT(1); SQLite json_each coerces either) — uniform,
+        // dialect-blind. Scalars encode via the shared `compact_value` (byte-equal to the retired json_cell).
+        ArrayParamShape::SingleJson => {
+            let n = cells.first().map(|c| c.len()).unwrap_or(0);
+            let rows: Vec<Value> = (0..n)
+                .map(|i| {
+                    Value::Obj(
+                        columns
+                            .iter()
+                            .enumerate()
+                            .map(|(j, col)| {
+                                let cell = cells
+                                    .get(j)
+                                    .and_then(|a| a.get(i))
+                                    .cloned()
+                                    .unwrap_or(Value::Null);
+                                let cell = match cell {
+                                    Value::Bool(b) => Value::Int(if b { 1 } else { 0 }),
+                                    other => other,
+                                };
+                                (col.to_string(), cell)
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
+            let json = crate::node::compact_value(&Value::Arr(rows));
+            (0..n_params).map(|_| Value::Str(json.clone())).collect()
         }
-        other => format!("{other:?}"),
     }
 }
 
@@ -898,20 +890,31 @@ mod tests {
         assert_eq!(present.rt_len(), 0);
     }
 
-    /// `exec_batch_write` zips the parallel column arrays into ONE json_each statement (N rows, 1 stmt).
+    /// `build_batch_params` (SingleJson) zips the parallel column arrays into ONE json_each param the
+    /// SINGLE `exec` runs (N rows, 1 stmt) — the batch has NO dedicated executor.
     #[test]
-    fn exec_batch_write_zips_one_statement() {
+    fn build_batch_params_zips_one_statement() {
         let d = seeded();
         let cells = vec![
             vec![Value::Int(10), Value::Int(11)],
             vec![Value::Str("x".into()), Value::Str("y".into())],
         ];
-        let w = exec_batch_write(
-            &d,
-            "INSERT INTO t (id, name) SELECT json_extract(value,'$.id'), json_extract(value,'$.name') FROM json_each(?)",
+        let sql = "INSERT INTO t (id, name) SELECT json_extract(value,'$.id'), json_extract(value,'$.name') FROM json_each(?)";
+        let params = build_batch_params(
             &["id", "name"],
             &cells,
-            false,
+            ArrayParamShape::SingleJson,
+            sql.matches('?').count(),
+        );
+        // ONE zipped JSON param bound to the single `?`.
+        assert!(
+            matches!(&params[..], [Value::Str(s)] if s == r#"[{"id":10,"name":"x"},{"id":11,"name":"y"}]"#)
+        );
+        let w = exec(
+            &crate::exec_context::for_driver(&d),
+            sql,
+            &params,
+            ExecMode::Summary,
         )
         .unwrap();
         // non-returning ⇒ summary list; 2 rows inserted.

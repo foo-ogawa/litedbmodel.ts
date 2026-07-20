@@ -22,7 +22,8 @@ impl<'a> HandlerNRUpdateMany for Rt<'a> {
     type Wire = Wire;
     fn node_n0(&self, ports: &PortsNRUpdateManyN0, _bound: Option<String>) -> Result<Wire, BehaviorError> {
         let cells: Vec<Vec<Value>> = vec![ports.f_v0.iter().map(|v| litedbmodel_runtime::wp(v)).collect::<Vec<Value>>(), ports.f_v1.iter().map(|v| litedbmodel_runtime::wp(v)).collect::<Vec<Value>>()];
-        litedbmodel_runtime::exec_batch_write(self.driver, &ports.f_sql, &["id", "name"], &cells, true).map_err(cvt)
+        let params = litedbmodel_runtime::build_batch_params(&["id", "name"], &cells, litedbmodel_runtime::ArrayParamShape::SingleJson, ports.f_sql.matches('?').count());
+        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &params, litedbmodel_runtime::ExecMode::Rows).map_err(cvt)
     }
 }
 

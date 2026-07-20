@@ -667,19 +667,19 @@ const WRITE_SUMMARY_OUT_TYPE = { arr: { obj: { changes: 'int', lastInsertRowid: 
  *  - postgres (v1): the UNNEST statement whose `?`s each bind a distinct per-column
  *    `{__batchArray:{column, ref}}` marker (byte-identical to v1; the parity rule keeps pg on UNNEST).
  */
-function batchRowsMarkerOf(stmts: readonly StaticStatement[]): { columns: string[]; refs: unknown[] } | undefined {
+function batchRowsMarkerOf(stmts: readonly StaticStatement[]): { columns: string[]; refs: unknown[]; perColumn: boolean } | undefined {
   if (stmts.length !== 1) return undefined;
   const p = stmts[0].params;
   if (p.length === 0) return undefined;
   const isObj = (m: unknown): m is Record<string, unknown> => m !== null && typeof m === 'object' && !Array.isArray(m);
-  // v2 (sqlite/mysql): every `?` binds the same `__batchRows` marker.
+  // v2 (sqlite/mysql): every `?` binds the same `__batchRows` marker → SingleJson param-shape.
   if (p.every((m) => isObj(m) && '__batchRows' in m)) {
     const br = (p[0] as { __batchRows: { columns?: unknown; refs?: unknown } }).__batchRows;
     if (!Array.isArray(br.columns) || !Array.isArray(br.refs) || br.columns.length !== br.refs.length) return undefined;
-    return { columns: br.columns as string[], refs: br.refs as unknown[] };
+    return { columns: br.columns as string[], refs: br.refs as unknown[], perColumn: false };
   }
-  // v1 (postgres): each `?` binds a distinct per-column `__batchArray` marker — assemble the parallel
-  // columns/refs from them (same shape the v2 marker carries whole).
+  // v1 (postgres): each `?` binds a distinct per-column `__batchArray` marker → PerColumn param-shape
+  // (assemble the parallel columns/refs from them — same shape the v2 marker carries whole).
   if (p.every((m) => isObj(m) && '__batchArray' in m)) {
     const columns: string[] = [];
     const refs: unknown[] = [];
@@ -689,7 +689,7 @@ function batchRowsMarkerOf(stmts: readonly StaticStatement[]): { columns: string
       columns.push(ba.column);
       refs.push(ba.ref);
     }
-    return { columns, refs };
+    return { columns, refs, perColumn: true };
   }
   return undefined;
 }
@@ -1618,10 +1618,17 @@ function emitReadWriteNode(
     const cells = marker.columns.map((_, i) => `ports.f_v${i}.iter().map(|v| litedbmodel_runtime::wp(v)).collect::<Vec<Value>>()`);
     const cols = marker.columns.map((c) => JSON.stringify(c)).join(', ');
     const returning = !isSummaryOut(n.outType);
+    // The param-shape DESCRIPTOR is baked from the marker type resolved at SQL generation (`__batchArray`
+    // per-column → PerColumn / `__batchRows` zipped → SingleJson). The companion is a THIN uniform
+    // delegate: marshal the params through the SHARED `build_batch_params` SSoT (the SAME fn mode-2's
+    // render calls — no per-op zip), then run the SINGLE `exec` — no batch-specific executor.
+    const shape = marker.perColumn ? 'PerColumn' : 'SingleJson';
+    const mode = returning ? 'Rows' : 'Summary';
     return [
       sig,
       `        let cells: Vec<Vec<Value>> = vec![${cells.join(', ')}];`,
-      `        litedbmodel_runtime::exec_batch_write(self.driver, &ports.f_sql, &[${cols}], &cells, ${returning}).map_err(cvt)`,
+      `        let params = litedbmodel_runtime::build_batch_params(&[${cols}], &cells, litedbmodel_runtime::ArrayParamShape::${shape}, ports.f_sql.matches('?').count());`,
+      `        litedbmodel_runtime::exec(&litedbmodel_runtime::for_driver(self.driver), &ports.f_sql, &params, litedbmodel_runtime::ExecMode::${mode}).map_err(cvt)`,
       `    }`,
     ].join('\n');
   }
@@ -1656,7 +1663,7 @@ function emitBatchedRelationNode(n: Record<string, unknown>, comp: string, relat
     `    fn ${`node_${id}`}(&self, ports: &PortsNR${comp}${camel}Batch, _bound: Option<String>) -> Result<Vec<Wire>, BehaviorError> {`,
     `        let tuples: Vec<Vec<Value>> = ports.items.iter().map(|it| vec![${tuple}]).collect();`,
     `        let sql = ports.items.first().map(|it| it.f_sql.clone()).unwrap_or_default();`,
-    `        litedbmodel_runtime::exec_batched_relation(self.driver, ${JSON.stringify(relOp.kind)}, &sql, &[${pk}], &[${tk}], &tuples)`,
+    `        litedbmodel_runtime::exec_batched_relation(self.driver, ${JSON.stringify(relOp.kind)}, &sql, &[${pk}], &[${tk}], &tuples, litedbmodel_runtime::ArrayParamShape::${relOp.keyShape === 'per_column' ? 'PerColumn' : 'SingleJson'})`,
     `            .map(|v| v.into_iter().map(Wire).collect())`,
     `            .map_err(cvt_rel)`,
     `    }`,
