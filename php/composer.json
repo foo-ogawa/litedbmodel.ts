@@ -26,7 +26,8 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "LiteDbModel\\Runtime\\Tests\\": "tests/"
+            "LiteDbModel\\Runtime\\Tests\\": "tests/",
+            "LiteDbModel\\Bench\\": "orm_bench/"
         }
     },
     "config": {
