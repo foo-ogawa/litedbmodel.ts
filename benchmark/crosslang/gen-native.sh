@@ -59,18 +59,33 @@ GO_FLAGS=(--lang go-typed-native --in "$IR" --out "$GO_OUT" --shared-types-out "
 PY_OUT="$ROOT/python/orm_bench/behaviors_generated.py"
 PY_FLAGS=(--lang python --in "$IR" --out "$PY_OUT")
 
+# The php SSoT flag set — the LITERAL (ir-exec) twin over the SAME IR, mirror of the python leg (epic
+# #123: ts/go/rust = native de-box; py/php = literal). The php emitter embeds the portable IR as a
+# native stdClass/array literal and hands it to the shared runtime core (`Behavior::runBehavior`) via
+# `bind($handlers)` — it generates NO per-op exec logic and NO typed wire, so the typed-native flags do
+# NOT apply (`--shared-types-out`/`--leaf-transport` are rejected by the php emitter). Unlike python
+# (which consumes behavior-contracts from PyPI), the php bc runtime-core is VENDORED under
+# `LiteDbModel\Runtime\BehaviorContracts` (bc php is unpublished — vendor:bc-php), so `--runtime-import`
+# points the generated module's require-time gates (SpecVersions/Fingerprint) + `runBehavior` call at
+# that vendored namespace. The op-agnostic leaf transport (executeSQL/pluck/group) is injected at
+# RUNTIME by the bench cell via `Leaves::makeHandlers`, not baked at generate time.
+PHP_OUT="$ROOT/php/orm_bench/behaviors_generated.php"
+PHP_FLAGS=(--lang php --in "$IR" --out "$PHP_OUT" --runtime-import 'LiteDbModel\Runtime\BehaviorContracts')
+
 # 1) Author + publish + dump the IR VERBATIM (nothing transforms it after publish).
 npx tsx "$HERE/native-model.mts"
 
 # 2) Generate (or drift-check) EACH native leg via bc's own CLI, over the SAME IR.
 case "$MODE" in
   generate)
-    "$BC" generate "${FLAGS[@]}";    echo "bc generate → $OUT"
-    "$BC" generate "${GO_FLAGS[@]}"; echo "bc generate → $GO_OUT"
-    "$BC" generate "${PY_FLAGS[@]}"; echo "bc generate → $PY_OUT" ;;
+    "$BC" generate "${FLAGS[@]}";     echo "bc generate → $OUT"
+    "$BC" generate "${GO_FLAGS[@]}";  echo "bc generate → $GO_OUT"
+    "$BC" generate "${PY_FLAGS[@]}";  echo "bc generate → $PY_OUT"
+    "$BC" generate "${PHP_FLAGS[@]}"; echo "bc generate → $PHP_OUT" ;;
   check)
     "$BC" check "${FLAGS[@]}"
     "$BC" check "${GO_FLAGS[@]}"
-    "$BC" check "${PY_FLAGS[@]}" ;;
+    "$BC" check "${PY_FLAGS[@]}"
+    "$BC" check "${PHP_FLAGS[@]}" ;;
   *) echo "usage: gen-native.sh [generate|check]" >&2; exit 2 ;;
 esac
