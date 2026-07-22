@@ -21,7 +21,6 @@ package litedbmodel_runtime
 import (
 	"fmt"
 	"strconv"
-	"sync/atomic"
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
 	"github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime/wire"
@@ -35,9 +34,8 @@ const wireProbeGot uint8 = 0
 // leaf transport bound state (set by BindLeafTransport). The bench/consumer drives the generated
 // runners sequentially against ONE bound connection; ExecuteSQL funnels every SQL node through it.
 var (
-	leafExecCtx    *ExecutionContext
-	leafDialect    = "sqlite"
-	leafQueryCount int64
+	leafExecCtx *ExecutionContext
+	leafDialect = "sqlite"
 )
 
 // BindLeafTransport binds the connection (+ dialect for placeholder rendering) the free-function leaf
@@ -50,12 +48,6 @@ func BindLeafTransport(db SQLDB, dialect string) {
 // UnbindLeafTransport clears the bound connection (leaves ExecuteSQL fail-closed until re-bound).
 func UnbindLeafTransport() { leafExecCtx = nil }
 
-// ResetLeafQueryCount / LeafQueryCount expose the SQL-node count for the N+1-avoidance safety proof
-// (a batched relation issues 1 parent + 1 batched child = 2, not 1+N — Pluck/Group are in-memory and
-// do NOT count). ExecuteSQL is the ONE place a real query is issued on the native plane.
-func ResetLeafQueryCount() { atomic.StoreInt64(&leafQueryCount, 0) }
-func LeafQueryCount() int  { return int(atomic.LoadInt64(&leafQueryCount)) }
-
 // ExecuteSQL runs ONE SQL node and returns its rows as a wire list of wire rows (empty list for a
 // non-RETURNING write). Params ride as wire values: a scalar binds directly (toDriverParam); a wire
 // LIST param binds as ONE JSON array string (the `json_each(?)` batch-key contract — SAME rendering as
@@ -65,7 +57,6 @@ func ExecuteSQL(bigint bool, params []wire.WireValue, returning bool, sql string
 	if leafExecCtx == nil {
 		return wire.WireNull(), fmt.Errorf("leaf transport: no bound connection (call BindLeafTransport before running the native module)")
 	}
-	atomic.AddInt64(&leafQueryCount, 1)
 	args := make([]any, len(params))
 	for i, p := range params {
 		args[i] = leafParam(p)
