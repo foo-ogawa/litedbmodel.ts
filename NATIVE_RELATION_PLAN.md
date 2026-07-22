@@ -71,19 +71,22 @@ grounded type check of bc 0.8.15's actual rust output.
   (`decorator-adapter.ts`): the json_each/JSON_TABLE batch form (SSoT `compileWriteNode`) lowers to ONE
   `executeSQL` node whose `?`(s) all bind the ONE opaque `rows` array value (bc#156) — no `__batchRows`
   marker, no per-column parallel arrays. 1 query each (safety-proven). NOT a bc gap.
-- **B-3b. RETURNING-tx ops (delete/nestedCreate/nestedUpdate/nestedUpsert) — BLOCKED on bc#169.** These
-  are multi-statement ATOMIC transactions (BEGIN…COMMIT + rollback + RETURNING-id chaining). bc 0.8.16
-  has NO transaction/atomicity primitive anywhere — not in the IR, plan, runtime (`bind.js`/`behavior.js`)
-  nor the native emitter (`emit-typed-native-rust.js` `rustBlockBody` emits a straight-line leaf-call
-  runner with no `ctx.transaction`/BEGIN/COMMIT/ROLLBACK wrapper; the `commit` refs are the concurrency
-  orchestration, not DB commit). So an atomic multi-write component cannot be emitted natively. The
-  RETURNING-id→next-param chaining via typed `.map` is separately authorable ONCE the source (RETURNING
-  write) node carries a typed outType (litedbmodel-side), but the atomicity gap blocks genuine tx
-  regardless. Reproduced `bc generate` error (map-over-opaque-passthrough source):
-  `component 'nestedCreate': node 'n1' is a non-covered map shape (… over an input array without elemType)`.
-  Filed **bc#169** (typed-native emitter needs a `ctx.transaction`/BEGIN…COMMIT+ROLLBACK scope). These 4
-  ops still run via the litedbmodel TS interpreter (`deriveTransactionPlan`/`executeTransactionBundle`),
-  outside `generateModule`, until bc#169 lands. NOT faked/stubbed on the native plane.
+- **B-3b. RETURNING-tx ops (delete/nestedCreate/nestedUpdate/nestedUpsert) — litedbmodel-side, NOT a bc gap.**
+  The DB transaction boundary (BEGIN/COMMIT/ROLLBACK + atomicity) is the CONSUMER's responsibility, not a
+  BC feature (BC is a generic behavior framework; DB tx is domain-specific). The runtime already owns tx
+  scope (`litedbmodel_runtime` `begin_tx`/`acquire_tx`/`begin_tx_isolated`/`TxConnection`). The correct
+  model: the runtime brackets the runner call in a tx (Ok→commit / Err→rollback) and the generated runner
+  runs the body statements via `execute_sql` on the tx connection, returning `Result` — NO BEGIN/COMMIT
+  emitted into the generated code, so no bc transaction construct is needed. The remaining work is entirely
+  litedbmodel-side:
+  1. **runtime**: a `with_transaction`-style wrapper that begins a tx, runs the runner, commits on Ok /
+     rolls back on Err, threading the `TxConnection` as the ambient driver so `execute_sql` runs on it.
+  2. **authoring**: express the body (INSERT…RETURNING id → INSERT using id) as a COVERED map/chain — the
+     RETURNING-write source node must carry a typed outType so the `.map` is covered (the reproduced
+     `non-covered map shape` error is because it was NOT authored as a covered typed-source node, not a bc
+     gap). bc#169 (which framed DB-tx as a bc feature) was closed as a responsibility violation.
+  Until authored, these 4 ops still run via the TS interpreter (`deriveTransactionPlan`/`executeTransactionBundle`),
+  outside `generateModule`. NOT faked/stubbed on the native plane.
 
 ---
 
