@@ -6,7 +6,7 @@
  * (`DBModel._buildSelectSQL` / `_count`: `normalizedCond.add(condsToRecord(FIND_FILTER))`).
  * It is not a distinct SQL construct — it manifests purely as extra WHERE fragments.
  *
- * The SCP compile path (`L.Select({ where })` → `compileReadGraph` → `renderReadPrimary`)
+ * The SCP compile path (`emitRead(L, 'Select', { where })` → the `executeSQL` leaf)
  * is AUTHORED from an explicit `where`; it has NO `DBModel` class context, so it CANNOT
  * auto-apply a model's `FIND_FILTER` (there is no model reference at compile time, and no
  * production seam routes a `DBModel` into the SCP compile — grep: `FIND_FILTER` appears only
@@ -14,7 +14,7 @@
  * impossible without model context the SCP compile does not have.
  *
  * Resolution = the plan's variant chosen fail-closed: a model that DECLARES a `FIND_FILTER`
- * MUST have its scope predicates folded into the authored `L.Select({ where })`; if the
+ * MUST have its scope predicates folded into the authored `emitRead(L, 'Select', { where })`; if the
  * author routes such a model through SCP WITHOUT the scope keys, this guard throws loudly
  * ({@link FindFilterLeakError}) rather than silently dropping the filter (which would leak
  * soft-deleted / cross-tenant rows — a correctness bug, not a cosmetic one). When the scope
@@ -49,7 +49,7 @@ export class FindFilterLeakError extends Error {
         `[${missingKeys.join(', ')}] that is NOT present in the SCP-authored WHERE. The SCP ` +
         `compile cannot auto-apply FIND_FILTER (no model context at compile time), so the ` +
         `scope predicate would be silently dropped (soft-delete / tenant scope leak). Fold ` +
-        `the FIND_FILTER predicates into the authored L.Select({ where }) explicitly ` +
+        `the FIND_FILTER predicates into the authored emitRead(L, 'Select', { where }) explicitly ` +
         `(e.g. whereEq/whereIsNull on ${missingKeys.join(', ')}).`,
     );
     this.name = 'FindFilterLeakError';
@@ -72,7 +72,7 @@ export function findFilterKeys(filter: Conds | null | undefined): string[] {
  * authored WHERE key set BEFORE an SCP compile of that model. No FIND_FILTER → no-op. When
  * present, EVERY scope key must appear in `authoredWhereKeys`; any missing key throws
  * {@link FindFilterLeakError}. The caller passes the top-level keys of the object it hands to
- * `L.Select({ where })` (the same shape `condsToRecord` yields), so the check compares
+ * `emitRead(L, 'Select', { where })` (the same shape `condsToRecord` yields), so the check compares
  * like-for-like against v1's merged predicate.
  *
  * @param model  a `DBModel`-shaped source that MAY declare `FIND_FILTER`.
