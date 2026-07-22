@@ -667,7 +667,7 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
       // the parallel arrays at execute time (NOT literalized). One statement for N records.
       if (stringPort(ports, 'batch') === 'true') {
         if (dialect === 'postgres') {
-          if (resolveColumnType === undefined) throw new Error(`compileWriteNode: batch insert on postgres needs the column-type resolver (schema SoT) to derive the UNNEST element casts — pass it through compileBundle.`);
+          if (resolveColumnType === undefined) throw new Error(`compileWriteNode: batch insert on postgres needs the column-type resolver (schema SoT) to derive the UNNEST element casts — pass it through compileCreateManyBundle/compileWriteBundle (the decorator-adapter write path).`);
           return pgBatchInsert(table, sorted, values, ports, resolveColumnType, dialect);
         }
         const shapeOpts = { tableName: table, columns: sorted, records: [] as Record<string, unknown>[], ...onConflictJsonOpts(ports, sorted), ...(stringPort(ports, 'returning') !== undefined ? { returning: stringPort(ports, 'returning') } : {}) };
@@ -711,7 +711,7 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
         if (keyCols.length === 0) throw new Error(`compileWriteNode: batch Update requires at least one 'key.<field>' port`);
         const updateCols = [...setCols].sort();
         if (dialect === 'postgres') {
-          if (resolveColumnType === undefined) throw new Error(`compileWriteNode: batch update on postgres needs the column-type resolver (schema SoT) to derive the UNNEST element casts — pass it through compileBundle.`);
+          if (resolveColumnType === undefined) throw new Error(`compileWriteNode: batch update on postgres needs the column-type resolver (schema SoT) to derive the UNNEST element casts — pass it through compileCreateManyBundle/compileWriteBundle (the decorator-adapter write path).`);
           return pgBatchUpdate(table, keyCols, updateCols, key, set, ports, resolveColumnType, dialect);
         }
         const shapeOpts = { tableName: table, keyColumns: keyCols, updateColumns: updateCols, records: [] as Record<string, unknown>[], ...(stringPort(ports, 'returning') !== undefined ? { returning: stringPort(ports, 'returning') } : {}) };
