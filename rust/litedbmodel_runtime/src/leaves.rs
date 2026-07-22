@@ -266,12 +266,12 @@ pub fn execute_sql(
 /// scalar key array (`json_each` scalar `value`), composite emits an array-of-tuples (`json_each`
 /// per-ordinal `$[i]`) — the SAME shape `relation.ts bindKeys` produces for the MySQL/SQLite JSON
 /// param. Ports are spread alphabetically by the native emitter: `(col, rows)`.
-pub fn pluck_keys(col: &[&str], rows: &[WireValue]) -> Result<WireValue, BehaviorError> {
+pub fn pluck_keys(col: &[String], rows: &[WireValue]) -> Result<WireValue, BehaviorError> {
     let value_rows: Vec<Value> = rows.iter().map(wire_to_value).collect();
-    // The native emitter spreads a `{arr:'string'}` port as `Vec<&'static str>`; the grouping core
-    // keys on owned `String` columns — convert at this boundary (the leaf is the wire↔core adapter).
-    let key_cols: Vec<String> = col.iter().map(|s| (*s).to_string()).collect();
-    let tuples = crate::grouping::dedupe_key_tuples(&value_rows, &key_cols);
+    // bc 0.9.0 honors the declared `{arr:'string'}` portSchema: the native emitter spreads the port as
+    // an owned `Vec<String>` — the exact key-column tuple the grouping core keys on (the leaf is the
+    // wire↔core adapter; no borrow→owned conversion needed).
+    let tuples = crate::grouping::dedupe_key_tuples(&value_rows, col);
     let keys: Vec<WireValue> = if col.len() == 1 {
         tuples.into_iter().map(|mut t| value_to_wire(t.remove(0))).collect()
     } else {
@@ -297,18 +297,17 @@ pub fn pluck_keys(col: &[&str], rows: &[WireValue]) -> Result<WireValue, Behavio
 /// parents, pk, single)`.
 pub fn group_children(
     children: &[WireValue],
-    fk: &[&str],
+    fk: &[String],
     into: &str,
     parents: &[WireValue],
-    pk: &[&str],
+    pk: &[String],
     single: bool,
 ) -> Result<WireValue, BehaviorError> {
     let value_children: Vec<Value> = children.iter().map(wire_to_value).collect();
-    // `{arr:'string'}` ports arrive as `Vec<&'static str>`; the Value grouping core keys on owned
-    // `String` columns — convert at this leaf boundary (the wire↔core adapter).
-    let fk_cols: Vec<String> = fk.iter().map(|s| (*s).to_string()).collect();
-    let pk_cols: Vec<String> = pk.iter().map(|s| (*s).to_string()).collect();
-    let by_key = crate::grouping::group_by_key(&value_children, &fk_cols);
+    // bc 0.9.0 honors the declared `{arr:'string'}` portSchema: the `fk`/`pk` key-column tuples arrive
+    // as owned `Vec<String>` — the exact shape the Value grouping core keys on (the wire↔core adapter
+    // no longer converts).
+    let by_key = crate::grouping::group_by_key(&value_children, fk);
     let out: Vec<WireValue> = parents
         .iter()
         .map(|p| {
@@ -317,7 +316,7 @@ pub fn group_children(
                 Value::Obj(pairs) => {
                     let nested = crate::grouping::attach_to_parent(
                         &Value::Obj(pairs.clone()),
-                        &pk_cols,
+                        pk,
                         &by_key,
                         single,
                     );
@@ -350,6 +349,10 @@ mod tests {
             WireValue::List(l) => l.items.clone(),
             _ => panic!("not a list"),
         }
+    }
+    // The key-column tuple ports arrive as owned `Vec<String>` (bc 0.9.0 declared `{arr:'string'}`).
+    fn cols(c: &[&str]) -> Vec<String> {
+        c.iter().map(|s| (*s).to_string()).collect()
     }
 
     // ── with_ambient_transaction atomicity (#142): Ok → COMMIT (all rows persist), Err → ROLLBACK
@@ -394,7 +397,7 @@ mod tests {
     #[test]
     fn pluck_single_key_is_flat_scalars() {
         let rows = [wrow(&[("id", WireValue::int(2))]), wrow(&[("id", WireValue::int(1))]), wrow(&[("id", WireValue::int(2))])];
-        let out = pluck_keys(&["id"], &rows).unwrap();
+        let out = pluck_keys(&cols(&["id"]), &rows).unwrap();
         let ks = items(&out);
         assert_eq!(ks.len(), 2); // deduped, order preserved
         assert!(matches!(&ks[0], WireValue::Num(n) if n == "2"));
@@ -409,7 +412,7 @@ mod tests {
             wrow(&[("tenant_id", WireValue::int(1)), ("user_id", WireValue::int(9))]), // dup tuple
             wrow(&[("tenant_id", WireValue::int(1)), ("user_id", WireValue::int(8))]),
         ];
-        let out = pluck_keys(&["tenant_id", "user_id"], &rows).unwrap();
+        let out = pluck_keys(&cols(&["tenant_id", "user_id"]), &rows).unwrap();
         let ks = items(&out);
         assert_eq!(ks.len(), 2); // deduped on the whole tuple
         assert_eq!(items(&ks[0]).len(), 2); // each key is a 2-element tuple
@@ -428,7 +431,7 @@ mod tests {
             wrow(&[("tenant_id", WireValue::int(1)), ("user_id", WireValue::int(9)), ("title", WireValue::Str("p9".into()))]),
             wrow(&[("tenant_id", WireValue::int(1)), ("user_id", WireValue::int(8)), ("title", WireValue::Str("p8".into()))]),
         ];
-        let out = group_children(&children, &["tenant_id", "user_id"], "posts", &parents, &["tenant_id", "user_id"], false).unwrap();
+        let out = group_children(&children, &cols(&["tenant_id", "user_id"]), "posts", &parents, &cols(&["tenant_id", "user_id"]), false).unwrap();
         let ps = items(&out);
         for p in &ps {
             let posts = match p {

@@ -20,6 +20,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # serde_json-based `ir` feature (`evaluate_expression`/`run_behavior`, retired). `default-features =
 # false` drops bc's default `ir` feature so `cargo tree -i serde_json` from the runtime is EMPTY.
 # Published crate — NO local `path = "../.."` (the no-local-deps gate forbids it).
-behavior-contracts = { version = "0.8.17", default-features = false }
+behavior-contracts = { version = "0.9.0", default-features = false }
 # In-process SQLite for the conformance bar (bundled amalgamation → no system dep).
 rusqlite = { version = "0.32", features = ["bundled"] }
