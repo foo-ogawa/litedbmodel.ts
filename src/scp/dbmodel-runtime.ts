@@ -56,7 +56,6 @@ import {
   createAuthoring,
   updateAuthoring,
   deleteAuthoring,
-  compileReadBundle,
   compileReadContract,
   compileCommandBundle,
   compileCreateBundle,
@@ -304,6 +303,6 @@ export function renderRawSql(sql: string, dialect: DialectName): string {
 // Re-export the authoring builders so DBModel imports one module.
 export {
   findAuthoring, countAuthoring, createAuthoring, updateAuthoring, deleteAuthoring,
-  compileReadBundle, compileCommandBundle, compileCreateBundle, compileUpdateBundle, compileDeleteBundle, entityWrites,
+  compileCommandBundle, compileCreateBundle, compileUpdateBundle, compileDeleteBundle, entityWrites,
 };
 export type { ReadAuthoringSpec, InsertAuthoringSpec, ModelClassLike, DeriveColumnsOptions };

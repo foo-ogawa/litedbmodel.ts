@@ -23,7 +23,7 @@ import { DBModel } from '../../src/DBModel';
 import { DBConditions } from '../../src/DBConditions';
 import { compileWhere, renderPlaceholders, assembleMakeSQL, type Dialect } from '../../src/scp/makesql';
 import { assertFindFilterFolded, findFilterKeys, FindFilterLeakError } from '../../src/scp/index';
-import { SemanticBehavior, components, publishBehaviors, eq, compileBundle, type In } from '../../src/scp';
+import { SemanticBehavior, components, publishBehaviors, eq, emitRead, type In } from '../../src/scp';
 
 const dialects: Dialect[] = ['postgres', 'mysql', 'sqlite'];
 
@@ -156,11 +156,11 @@ const Lg = components();
 class ScopedRead extends SemanticBehavior {
   static columns = { docs: { id: 'INTEGER', title: 'TEXT', status: 'TEXT' } };
   Docs($: In<{ tenant_id: number; deleted_at: null; status: string }>) {
-    return Lg.Select({
+    return emitRead(Lg, 'Select', {
       table: 'docs',
       select: ['id', 'title'],
       where: [eq($.status, $.status), eq($.tenant_id, $.tenant_id), eq($.deleted_at, $.deleted_at)],
-    });
+    }, 'sqlite');
   }
 }
 
@@ -168,11 +168,11 @@ class ScopedRead extends SemanticBehavior {
 class UnscopedRead extends SemanticBehavior {
   static columns = { docs: { id: 'INTEGER', title: 'TEXT', status: 'TEXT' } };
   Docs($: In<{ status: string }>) {
-    return Lg.Select({ table: 'docs', select: ['id', 'title'], where: [eq($.status, $.status)] });
+    return emitRead(Lg, 'Select', { table: 'docs', select: ['id', 'title'], where: [eq($.status, $.status)] }, 'sqlite');
   }
 }
 
-describe('M2 FIND_FILTER guard — WIRED into compileReadGraph/compileBundle (fail-closed on the compile path)', () => {
+describe('M2 FIND_FILTER guard — WIRED into the single compile path (publishBehaviors, fail-closed)', () => {
   // The FIND_FILTER model source (only `FIND_FILTER` + `name` are read by the guard).
   const softDeleteModel = {
     name: 'Doc',
@@ -180,27 +180,23 @@ describe('M2 FIND_FILTER guard — WIRED into compileReadGraph/compileBundle (fa
   };
 
   it('THROWS FindFilterLeakError when a FIND_FILTER model compiles a read WITHOUT the scope keys', () => {
-    const contract = publishBehaviors(UnscopedRead);
-    expect(() => compileBundle(contract, 'Docs', [], 'postgres', softDeleteModel)).toThrow(FindFilterLeakError);
+    expect(() => publishBehaviors(UnscopedRead, { findFilterModel: softDeleteModel })).toThrow(FindFilterLeakError);
     try {
-      compileBundle(contract, 'Docs', [], 'postgres', softDeleteModel);
+      publishBehaviors(UnscopedRead, { findFilterModel: softDeleteModel });
     } catch (e) {
       expect((e as FindFilterLeakError).missingKeys.sort()).toEqual(['deleted_at', 'tenant_id']);
     }
   });
 
   it('does NOT throw when the read folds every FIND_FILTER scope key into the authored WHERE', () => {
-    const contract = publishBehaviors(ScopedRead);
-    expect(() => compileBundle(contract, 'Docs', [], 'postgres', softDeleteModel)).not.toThrow();
+    expect(() => publishBehaviors(ScopedRead, { findFilterModel: softDeleteModel })).not.toThrow();
   });
 
   it('is a NO-OP when NO model is supplied (back-compat — the guard only enforces with a model)', () => {
-    const contract = publishBehaviors(UnscopedRead);
-    expect(() => compileBundle(contract, 'Docs', [], 'postgres')).not.toThrow();
+    expect(() => publishBehaviors(UnscopedRead)).not.toThrow();
   });
 
   it('is a NO-OP for a model with no FIND_FILTER even when supplied', () => {
-    const contract = publishBehaviors(UnscopedRead);
-    expect(() => compileBundle(contract, 'Docs', [], 'postgres', { name: 'Unfiltered' })).not.toThrow();
+    expect(() => publishBehaviors(UnscopedRead, { findFilterModel: { name: 'Unfiltered' } })).not.toThrow();
   });
 });

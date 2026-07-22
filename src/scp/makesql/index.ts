@@ -110,25 +110,14 @@ export type {
   WriteExecOptions,
 } from './tx';
 
-// Authoring → makeSQL bundle (Phase A, epic #43/#45): the ADDITIVE producer that routes an
-// authored behavior's declared/eager query (WS2 `../authoring.ts` component IR) through the
-// makeSQL compile* — preserving the single-compile-path invariant (declaration ≡ eager).
-export {
-  compileAuthoredBehavior,
-  compileAuthoredNode,
-  compileRelationMap,
-} from './authoring-compile';
-export type { AuthoredMakeSQL, RelationMapInput } from './authoring-compile';
-
 // makeSQL lowering used by the op-independent leaf authoring (#141): `compileSelectNode` (Select/Count
-// → sql+params, consumed by decorator-adapter `emitRead`) + the read-graph compile still feeding the
-// legacy `compileBundle`/`compileReadBundle` bundle surface. The old static-bundle EXEC engine
-// (`executeReadGraph`/`executeReadGraphAsync`/`executeStaticWrite`/`executeStaticBundle`/…) is DELETED.
+// → sql+params, consumed by decorator-adapter `emitRead`). The catalog read-bundle surface
+// (`compileReadGraph`/`renderReadPrimary`/`compileAuthoredBehavior` + the static-bundle EXEC engine) is
+// DELETED (#143) — reads run the op-independent leaf graph via `executeBehavior`/`bindBehaviors`.
 export {
   compileSelectNode,
-  compileReadGraph,
 } from './static-bundle';
-export type { StaticBundle, StaticStatement, ValueSpec, ReadGraph, SqlExecutorAsync } from './static-bundle';
+export type { StaticStatement, ValueSpec, SqlExecutorAsync } from './static-bundle';
 
 // Pooled async executor factories (PG / MySQL) that turn the plan's concurrency into real parallel
 // read-relation DB I/O behind the async seam (#40).

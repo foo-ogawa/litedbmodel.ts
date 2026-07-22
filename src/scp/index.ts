@@ -58,11 +58,7 @@ export {
   compileCompositeKeyUnlimited,
   compileCompositeKeyStaticUnlimited,
   compileCompositeKeyLimited,
-  compileAuthoredBehavior,
-  compileAuthoredNode,
-  compileRelationMap,
   compileSelectNode,
-  compileReadGraph,
   configurePgDeboxTypeParsers,
   mysqlDeboxPoolOptions,
   pgConnectionPool,
@@ -80,12 +76,8 @@ export type {
   SqlExecutorAsync,
   SelectDesc as MakeSQLSelectDesc,
   RelationCompileBase,
-  AuthoredMakeSQL,
-  RelationMapInput,
-  StaticBundle,
   StaticStatement,
   ValueSpec,
-  ReadGraph,
   PgPoolLike,
   MysqlPoolLike,
   PgTypesLike,
@@ -196,9 +188,9 @@ export { sqlTypeToBcScalar, sqlTypeToMaterializeClass, materializeCell, material
 export type { BcScalar, MaterializeClass, ColumnTypeResolver, MaterializeResolver } from './coltype';
 
 // Thin TS runtime (spec §3 / §10 / §11): the op-independent leaf graph (`executeSQL`/`pluck`/`group`)
-// runs via bc `bindBehaviors` — `executeBehavior`/`read` are the SOLE ts-runtime read/write seam (#141).
-// `compileBundle` emits the §8 published artifact (Backend-Compiled once, TS-side) for the codegen path.
-export { executeBehavior, compileBundle, read } from './runtime';
+// runs via bc `bindBehaviors` — `executeBehavior`/`read` are the SOLE ts-runtime read seam (#141). The
+// catalog read-bundle surface (`compileBundle`/`compileReadGraph`) is retired (#143).
+export { executeBehavior, read } from './runtime';
 export type { SqliteDb, ExecuteOptions, SqlBundle, ReadRuntimeOptions } from './runtime';
 
 // ── Phase A (#75): the ExecutionContext + central execute/run seam + per-execution connection
@@ -430,7 +422,6 @@ export {
   DEFAULT_UNCAST_SQL_TYPE,
   findAuthoring,
   countAuthoring,
-  compileReadBundle,
   compileReadContract,
   emitRead,
   emitWrite,

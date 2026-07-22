@@ -39,24 +39,15 @@
 // `../authoring` (`BcComponent` = the unbranded component shape). The branded compile-seam handle is
 // re-adopted only at the bc `generateModule` boundary, never here (the native walker
 // reads structural nodes directly, no bc provenance gate).
-import type { Component, Component as BcComponent, ComponentGraphIR, ComponentRefNode, MapNode, FanoutNode, BehaviorModelContract } from '../authoring';
+import type { Component, ComponentRefNode, MapNode } from '../authoring';
 import { IN_SENTINEL } from './tx';
 import { type Dialect } from './handler';
-import { compileWriteNode, mysqlPkHint } from './tx';
-import { assertFindFilterFolded, type FindFilterSource } from '../find-filter-guard';
-import { deriveReadOutTypes } from './outtype';
-import { type ColumnTypeResolver, type MaterializeClass } from '../coltype';
-import { resolveFindHardLimit } from '../limit-config';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import { dbCast, dbDynamic, dbImmediate, dbTupleIn } from '../../DBValues';
 import { conditionsFor } from './json-array';
 import { compileSelect } from './compile-select';
 import { formatterFor } from './compile';
-import {
-  type ExecutionContext,
-  type SqliteDriver,
-  contextForDriver,
-} from '../exec-context';
+import type { SqliteDriver } from '../exec-context';
 import {
   BETWEEN_SENTINEL,
   LIKE_SENTINEL,
@@ -96,33 +87,12 @@ export interface StaticStatement {
   readonly whereFragment?: true;
 }
 
-/**
- * The static, portable compiled artifact of ONE authored behavior method (the read path).
- * Pure JSON — every statement's `sql` is fixed text and its `params`/`skip` are bc Expression
- * IR, so `JSON.stringify` round-trips losslessly and a per-language runtime can execute it
- * with bc + a SQL driver alone.
- */
-export interface StaticBundle {
-  readonly dialect: Dialect;
-  /** The behavior (component) name. */
-  readonly name: string;
-  /** Ordered `makeSQL` statement templates composed into the read query. */
-  readonly statements: readonly StaticStatement[];
-  /** Input heads normalized to present-as-null (absent-key SKIP; SSoT-driven). */
-  readonly optionalHeads: readonly string[];
-}
-
 // ── Structural port readers (the SAME closed-set decoding the bridge performs) ──
 
 type RefLike = ComponentRefNode | MapNode;
 
 function isMap(n: Component['body'][number]): n is MapNode {
   return 'map' in n;
-}
-
-/** A bc 0.7.3+ `FanoutNode` (connection fan-out). litedbmodel never emits these. */
-function isFanout(n: Component['body'][number]): n is FanoutNode {
-  return 'fanout' in n;
 }
 
 function nodeRef(n: RefLike): { component: string; ports: Record<string, unknown> } {
@@ -680,37 +650,6 @@ export function collectRefOptHeads(node: unknown, into: Set<string>): void {
   for (const v of Object.values(node as Record<string, unknown>)) collectRefOptHeads(v, into);
 }
 
-function skipGuardHeads(n: Component['body'][number], into: Set<string>): void {
-  if ('cond' in n) return;
-  if (isFanout(n)) return; // bc FanoutNode carries no where-ports SKIP guard (litedbmodel never emits it)
-  const ports = isMap(n) ? n.map.ports : n.ports;
-  const where = ports.where;
-  if (typeof where !== 'object' || where === null || !('arr' in where)) return;
-  const arr = (where as { arr: unknown[] }).arr;
-  if (!Array.isArray(arr)) return;
-  for (const m of arr) {
-    if (opKey(m) === 'cond') {
-      const cond = (m as Record<string, unknown[]>).cond;
-      if (Array.isArray(cond) && cond.length === 3) collectRefHeads(cond[0], into);
-    }
-  }
-}
-
-function collectRefHeads(node: unknown, into: Set<string>): void {
-  if (node === null || typeof node !== 'object') return;
-  if (Array.isArray(node)) {
-    for (const e of node) collectRefHeads(e, into);
-    return;
-  }
-  const op = opKey(node);
-  if (op === 'ref' || op === 'refOpt') {
-    const path = (node as Record<string, unknown[]>)[op];
-    if (Array.isArray(path) && path.length > 0 && typeof path[0] === 'string') into.add(path[0] as string);
-    return;
-  }
-  for (const v of Object.values(node as Record<string, unknown>)) collectRefHeads(v, into);
-}
-
 // ── FIND_FILTER leak guard: authored WHERE column keys (fail-closed model-scope enforcement) ──
 
 /**
@@ -754,8 +693,10 @@ function whereMemberColumns(node: unknown, into: Set<string>): void {
   }
 }
 
-/** The authored WHERE column-key set of a read node's `where` port (for the FIND_FILTER guard). */
-function authoredWhereKeysOf(ports: Record<string, unknown>): Set<string> {
+/** The authored WHERE column-key set of a read node's `where` port (for the FIND_FILTER guard). Consumed
+ * by the single compile path ({@link import('../authoring').publishBehaviors}) to enforce the guard over
+ * each read node's RECORDED `where` before it is lowered/stripped. */
+export function authoredWhereKeysOf(ports: Record<string, unknown>): Set<string> {
   const keys = new Set<string>();
   const arr = arrPort(ports, 'where');
   if (arr === undefined) return keys;
@@ -779,259 +720,5 @@ function authoredWhereKeysOf(ports: Record<string, unknown>): Set<string> {
  */
 export type SqliteDb = SqliteDriver;
 
-/** A read/write entry accepts either a raw {@link SqliteDb} or a full {@link ExecutionContext}. */
-export type DbOrContext = SqliteDb | ExecutionContext;
-
-
-
-
-
-// ============================================================================
-// #12 — the NATIVE read-graph walker (interpreter-free): litedbmodel composes map /
-// Φ-merge / wiring ITSELF over `compileBehaviors`' REAL `Select`/`Count`/map node IR
-// (no `__makeSqlNode`/`__scope` surrogate, no bc `runBehavior`). Each body node's SQL
-// comes from its `statementsById[id]` fragment templates (rendered against the walk
-// scope); topology (`map.over`/`as`, `plan.groups`, `output` Φ) is read off the real
-// nodes. This mirrors the rust/go/py/php native walkers — one shared orchestration model
-// across all 5 runtimes, `runBehavior` invoked on NONE of them.
-// ============================================================================
-
-/** Compile ONE authored SQL node (Select or CRUD write) into its static statements. */
-function compileNodeStatements(node: RefLike, dialect: Dialect, resolveColumnType?: ColumnTypeResolver): StaticStatement[] {
-  const component = 'map' in node ? (node as MapNode).map.component : node.component;
-  if (component === 'Select' || component === 'Count' || component === 'RelationBatch') return compileSelectNode(node, dialect);
-  const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> }, dialect, resolveColumnType);
-  // MySQL has no native RETURNING: bake the pk-hint into the readGraph write statement (the SAME
-  // `mysqlPkHint` SSoT compileSaveBundle/compileCreateManyBundle/codegen use) so the interpreter path
-  // (execute_bundle over this readGraph) honors a declared RETURNING via the driver re-select — matching
-  // the native-codegen path. No-op for pg/sqlite (native RETURNING) or a non-RETURNING write.
-  const hinted = dialect === 'mysql' ? mysqlPkHint(op) : op;
-  return [{ sql: hinted.sql, params: hinted.params }];
-}
-
-/**
- * The compiled, portable READ graph of a behavior method (#12 de-surrogated): `compileBehaviors`'
- * REAL `ComponentGraphIR` — the authored `Select`/`Count`/map nodes with their own ports (only
- * additively annotated with read `outType`/`outputType`), NOT a hand-built `__makeSqlNode`/`__scope`
- * surrogate — plus the per-node static `makeSQL` statement templates (opaque, v1-`DBConditions`-
- * sourced SQL TEXT) keyed by the real body-node id, and the optional heads. Pure JSON —
- * `JSON.stringify` round-trips, so every language runtime walks this real-node IR natively (topology
- * from the real nodes, SQL from `statementsById`) with a SQL driver — never bc `runBehavior`.
- */
-export interface ReadGraph {
-  readonly dialect: Dialect;
-  readonly name: string;
-  /** `compileBehaviors`' real `ComponentGraphIR` (real `Select`/`Count`/map nodes; outType-annotated). */
-  readonly ir: ComponentGraphIR;
-  /** Per-node static `makeSQL` statement templates (v1-sourced SQL text), keyed by real body node id. */
-  readonly statementsById: Record<string, readonly StaticStatement[]>;
-  /** Input heads normalized to present-as-null (absent-key SKIP; SSoT-driven). */
-  readonly optionalHeads: readonly string[];
-  /**
-   * TS read-path MATERIALIZERS (issue #59), per Select node: `column → MaterializeClass`. Present
-   * ONLY when a column-type resolver was supplied at compile (same gate as the `outType`
-   * annotations) — without it the read stays un-materialized (raw driver values), identical to the
-   * pre-#59 behavior. When present, the read handler coerces each raw row cell to the JS form the
-   * SQL column type declares (BIGINT→bigint, INT→number, DATE→string, BOOLEAN→boolean), consistent
-   * across sqlite/pg/mysql.
-   */
-  readonly materializersByNode?: Record<string, Record<string, MaterializeClass>>;
-  /**
-   * Hard-limit runaway guard for the top-level read (Phase E-2, epic #74; v1 `DBModel` find
-   * hard-limit). Present ONLY when a `findHardLimit` is configured AND the PRIMARY read node (the
-   * first non-cond/non-map body node — the "find" row list) had NO authored `limit` port (v1: the
-   * cap applies only when the caller set no explicit limit). At compile the read injects `LIMIT
-   * hardLimit + 1` into that node's statements; the native walker checks the primary node's fetched
-   * row count against `hardLimit` AFTER fetch and throws {@link import('../errors').LimitExceededError}
-   * (`context: 'find'`) when it exceeds. Pure JSON — the native ports (#100-103) run the SAME check
-   * off this field with no config surface of their own.
-   */
-  readonly findGuard?: {
-    /** The row cap. A primary-node fetch of MORE than this throws (`context: 'find'`). */
-    readonly hardLimit: number;
-    /** The real body-node id of the primary read node whose row count is checked. */
-    readonly nodeId: string;
-    /** The read model (behavior) name — the error's `model` field. */
-    readonly model: string;
-  };
-}
-
-/**
- * Compile a READ behavior method into a portable {@link ReadGraph} (#12 de-surrogated): keep
- * `compileBehaviors`' REAL `Select`/`Count`/map body nodes (only additively annotate each with its
- * read `outType`), and compile each node's static `makeSQL` statements ONCE into the `statementsById`
- * sidecar (keyed by the real body-node id). SYMBOLIC — no concrete input. The native walker
- * ({@link executeReadGraph}) owns map iteration / wire binding / Φ output at execute time, rendering
- * each node's statements against the walk scope — never bc `runBehavior`, never a `__scope` surrogate.
- */
-export function compileReadGraph(
-  contract: BehaviorModelContract,
-  dialect: Dialect,
-  entry?: string,
-  findFilterModel?: FindFilterSource,
-  resolveColumnType?: ColumnTypeResolver,
-): ReadGraph {
-  const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
-  if (component === undefined) throw new Error(`static-bundle: entry component '${entry ?? '<first>'}' not found in contract`);
-
-  // FIND_FILTER fail-closed guard (M2): when a `DBModel`-shaped source that DECLARES a `FIND_FILTER`
-  // (soft-delete / tenant scope) is routed through the SCP read compile, its scope predicates MUST be
-  // folded into the authored `where` of every read node — the SCP compile has no model context to
-  // auto-apply them (see find-filter-guard.ts). If any read node's authored WHERE omits a scope key,
-  // `assertFindFilterFolded` throws (never a silent cross-tenant / soft-deleted leak). No model
-  // supplied ⇒ nothing to enforce (the guard is a no-op for a model with no FIND_FILTER either way).
-  if (findFilterModel !== undefined) {
-    for (const n of component.body) {
-      if ('cond' in n) continue;
-      if (isFanout(n)) {
-        // bc 0.7.3+ `FanoutNode`. litedbmodel never emits fanout — reject fail-closed rather
-        // than mis-read it as a Select/Count ref and skip the FIND_FILTER fold check.
-        throw new Error(`static-bundle: read component '${component.name}' node '${n.id}' is a fanout node, not supported by litedbmodel (bc FanoutNode)`);
-      }
-      const ref = 'map' in n ? n.map : n;
-      if (ref.component !== 'Select' && ref.component !== 'Count') continue;
-      assertFindFilterFolded(findFilterModel, authoredWhereKeysOf(ref.ports as Record<string, unknown>));
-    }
-  }
-
-  const statementsById: Record<string, readonly StaticStatement[]> = {};
-  for (const n of component.body) {
-    if ('cond' in n) continue;
-    if (isFanout(n)) {
-      // bc 0.7.3+ `FanoutNode`. litedbmodel never emits fanout — reject fail-closed rather
-      // than feed it to `compileNodeStatements` as a catalog ref.
-      throw new Error(`static-bundle: read component '${component.name}' node '${n.id}' is a fanout node, not supported by litedbmodel (bc FanoutNode)`);
-    }
-    statementsById[n.id] = compileNodeStatements(n, dialect, resolveColumnType);
-  }
-
-  // Hard-limit runaway guard for the top-level read (Phase E-2, epic #74; v1 `DBModel` find
-  // hard-limit). The PRIMARY read node is the first non-cond/non-map body `Select` — the "find" row
-  // list. When a `findHardLimit` is configured AND the author set NO explicit `limit` on it (v1:
-  // `!opts?.limit`), inject `LIMIT hardLimit + 1` (an N+1 fetch — enough to KNOW the total exceeds
-  // the cap without loading the whole runaway set) into that node's statements, and carry the guard
-  // metadata so the native walker checks the primary node's row count post-fetch. A node that already
-  // carries an authored `limit` is left untouched (no guard, no injection — byte-identical SQL).
-  const findGuard = resolveFindGuard(component, statementsById, dialect);
-
-  // SINGLE column-type resolution (issue #59 audit — unified read+codegen): `deriveReadOutTypes`
-  // resolves every projected column of the read ONCE (via the SHARED projection parser, all shapes:
-  // bare / qualified / aliased; `*` / computed / undeclared → HARD ERROR, spec §4.1) and returns BOTH
-  // the codegen `outType`/`outputType` annotations AND the TS read-path `materializersByNode` — two
-  // projections of the ONE resolution, so they cannot diverge (there is no second, weaker read-path
-  // pass). The column types come from the model's inline `static columns` (carried on the contract as
-  // `resolveColumnType`, always present for a read model), so this runs for EVERY read: codegen writes
-  // the outType IR annotations, the runtime read path consumes the materializers. Any ambiguity /
-  // undeclared column / `*` / computed projection throws here.
-  const readTypes = resolveColumnType !== undefined ? deriveReadOutTypes(component as never, resolveColumnType) : undefined;
-  const materializers = readTypes?.materializersByNode;
-
-  // #12 (de-surrogation): the read-graph IR is `compileBehaviors`' REAL component — the authored
-  // `Select`/`Count`/map nodes with their own `table`/`select`/`where`/… ports, NOT a hand-built
-  // `__makeSqlNode` + `__scope` surrogate. litedbmodel constructs NO `ComponentGraphIR`/`BodyNode`
-  // literal here: it only ADDITIVELY annotates each node with its read `outType` (issue #59) and the
-  // component with its `outputType` — the node SHAPE/ports are `compileBehaviors`' output untouched.
-  // The compiled SQL fragment templates ride the sidecar `statementsById` (opaque, v1-`DBConditions`-
-  // sourced TEXT), keyed by the SAME real body-node id; every language runtime walks this real-node
-  // IR natively (topology from the real nodes; SQL from `statementsById[id]`), never bc `runBehavior`.
-  const annotatedBody = component.body.map((n) => {
-    if ('cond' in n) return n;
-    const outType = readTypes?.byNode.get(n.id);
-    return outType !== undefined ? { ...n, outType } : n;
-  });
-  const irComponent = {
-    ...component,
-    body: annotatedBody,
-    ...(readTypes !== undefined ? { outputType: readTypes.outputType } : {}),
-  } as unknown as BcComponent;
-  // Preserve `compileBehaviors`' OWN IR envelope (irVersion/exprVersion + any other metadata) — the
-  // read graph IR is the compiler's output with ONLY the single entry component swapped for its
-  // outType-annotated twin (additive). litedbmodel fabricates no `ComponentGraphIR`/`BodyNode`.
-  const ir: ComponentGraphIR = { ...contract.ir, components: [irComponent] };
-
-  return {
-    dialect,
-    name: component.name,
-    ir,
-    statementsById,
-    optionalHeads: [...optionalHeadsOfComponent(component, dialect, resolveColumnType)],
-    ...(materializers !== undefined && materializers.size > 0 ? { materializersByNode: Object.fromEntries(materializers) } : {}),
-    ...(findGuard !== undefined ? { findGuard } : {}),
-  };
-}
-
-/**
- * Resolve the top-level-read hard-limit guard (Phase E-2). Returns the guard metadata (and MUTATES
- * `statementsById` to inject `LIMIT hardLimit + 1` into the primary node's statements) when a
- * `findHardLimit` is configured AND the primary read node had NO authored `limit`; else `undefined`
- * (no guard, statements untouched — byte-identical SQL for the uncapped path).
- *
- * The PRIMARY read node is the first non-cond/non-map body `Select` (the "find" row list). A `Count`
- * primary is never capped (it returns a scalar, not a runaway row list). The injection reuses the
- * SAME `limitOffsetTail` + literal value-spec the authored `limit` port lowers to, so the injected
- * ` LIMIT ?` renders byte-identically to an authored limit — only the value is the baked `hardLimit
- * + 1`.
- */
-function resolveFindGuard(
-  component: Component,
-  statementsById: Record<string, readonly StaticStatement[]>,
-  dialect: Dialect,
-): ReadGraph['findGuard'] {
-  const hardLimit = resolveFindHardLimit();
-  if (hardLimit === null) return undefined; // disabled ⇒ no guard, no injection
-  // The primary read node: first non-cond, non-map, non-fanout body node that is a `Select`.
-  const primary = component.body.find(
-    (n) => !('cond' in n) && !('map' in n) && !isFanout(n) && (n as { component?: string }).component === 'Select',
-  ) as (ComponentRefNode | undefined);
-  if (primary === undefined) return undefined; // no plain Select primary (e.g. a Count-only read)
-  // v1 `!opts?.limit`: only cap a read whose primary carries NO authored `limit` port.
-  if ((primary.ports as Record<string, unknown>).limit !== undefined) return undefined;
-  const table = (primary.ports as Record<string, unknown>).table;
-  if (typeof table !== 'string') return undefined; // a Select without a literal table can't be capped
-  // Inject `LIMIT hardLimit + 1` as a literal value-spec (bc IR literal = the bare number) into the
-  // primary node's statements — the SAME shape an authored `limit` lowers to, so it renders identically.
-  const injected: StaticStatement = { sql: limitOffsetTail('limit', dialect, table), params: [hardLimit + 1] };
-  statementsById[primary.id] = [...statementsById[primary.id], injected];
-  return { hardLimit, nodeId: primary.id, model: component.name };
-}
-
-
-
-// ── Native read-graph orchestration primitives (shared by sync/async walkers) ──
-
-
-
-
-
-
-
-
-
-
 /** An async driver seam: run a rendered `{ sql, params }` and resolve to result rows (#40). */
 export type SqlExecutorAsync = (sql: string, params: unknown[]) => Promise<Record<string, unknown>[]>;
-
-
-
-
-
-
-/** Optional heads across ALL SQL nodes of a component (schema + SKIP-guard + refOpt). */
-function optionalHeadsOfComponent(component: Component, dialect: Dialect, resolveColumnType?: ColumnTypeResolver): Set<string> {
-  const optional = new Set<string>();
-  for (const [port, schema] of Object.entries(component.inputPorts)) {
-    if (schema.required !== true) optional.add(port);
-  }
-  for (const n of component.body) skipGuardHeads(n, optional);
-  for (const n of component.body) {
-    if ('cond' in n) continue;
-    if (isFanout(n)) continue; // bc FanoutNode: litedbmodel never emits it; carries no ref-opt heads.
-    const stmts = compileNodeStatements(n, dialect, resolveColumnType);
-    for (const stmt of stmts) {
-      for (const p of stmt.params) collectRefOptHeads(p, optional);
-      if (stmt.skip !== undefined) collectRefOptHeads(stmt.skip, optional);
-    }
-  }
-  return optional;
-}
-

@@ -24,7 +24,7 @@
  */
 
 import { type Scope, type Value, bindBehaviors } from 'behavior-contracts';
-import { deriveContractEffect, type BehaviorModelContract, type Component } from './authoring';
+import type { BehaviorModelContract, Component } from './authoring';
 import { contextForDriver, type AsyncExecutionContext } from './exec-context';
 import type { LeafContext, AsyncLeafContext } from './leaves';
 import { SqlFailure, mapSqliteError } from './errors';
@@ -35,12 +35,9 @@ import {
 } from './relation';
 import { buildResultSet, type ReadOptions } from './typed-object';
 import type { DialectName } from './dialect';
-import type { FindFilterSource } from './find-filter-guard';
 import type { ColumnTypeResolver } from './coltype';
 import {
-  compileReadGraph,
   collectRefOptHeads,
-  type ReadGraph,
   type StaticStatement,
   type SqliteDb as StaticSqliteDb,
 } from './makesql/static-bundle';
@@ -108,8 +105,6 @@ export interface SqlBundle {
   readonly dialect: DialectName;
   /** The behavior (component) name. */
   readonly name: string;
-  /** READ bundles: the portable read graph (surrogate IR + per-node makeSQL statements). */
-  readonly readGraph?: ReadGraph;
   /** WRITE bundles: the single base-write makeSQL statement template. */
   readonly statement?: StaticStatement;
   /** Optional input heads normalized to present-as-null (absent-key SKIP). */
@@ -218,57 +213,9 @@ export function executeBehavior(
   }
 }
 
-/**
- * Compile ONE behavior method into the serializable STATIC {@link SqlBundle} (spec §8) — the
- * published multi-language artifact. SYMBOLIC (no concrete input). A read method compiles to a
- * {@link ReadGraph}; a single-write method to a `makeSQL` statement. Pure JSON throughout.
- */
-export function compileBundle(
-  contract: BehaviorModelContract,
-  entry?: string,
-  relations: readonly RelationDecl[] = [],
-  dialectName: DialectName = 'sqlite',
-  findFilterModel?: FindFilterSource,
-  resolveColumnType?: ColumnTypeResolver,
-): SqlBundle {
-  const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
-  if (component === undefined) throw new Error(`scp runtime: entry component '${entry ?? '<first>'}' not found in contract`);
-
-  const relationOps: Record<string, RelationOp> = {};
-  for (const decl of relations) {
-    if (relationOps[decl.name] !== undefined) {
-      throw new Error(`scp runtime: duplicate relation declaration '${decl.name}'`);
-    }
-    // Bake the child column materializers (issue #59) from the SINGLE static column-type resolver at
-    // compile — the relation batch's child rows then de-box with ZERO introspection, via the SAME
-    // resolution the primary read uses (no separate materializer pass).
-    relationOps[decl.name] = compileRelationOp({ ...decl, dialect: decl.dialect ?? dialectName }, resolveColumnType);
-  }
-
-  if (deriveContractEffect(component) === 'command') {
-    // #143: the base write is the op-independent `executeSQL` leaf `emitWrite` produced (already the
-    // complete tuned write, WHERE lowered post-compile) — CONSUME its `sql`/`params` directly. Native
-    // codegen bakes the write from `contract.ir` (the leaf graph), never from this bundle, so no read-
-    // graph surrogate is emitted for a write.
-    const writeLeaf = baseWriteLeaf(component);
-    return {
-      dialect: dialectName,
-      name: component.name,
-      statement: { sql: writeLeaf.sql, params: writeLeaf.params },
-      optionalHeads: [],
-      relations: relationOps,
-    };
-  }
-
-  const readGraph = compileReadGraph(contract, dialectName, entry, findFilterModel, resolveColumnType);
-  return {
-    dialect: dialectName,
-    name: readGraph.name,
-    readGraph,
-    optionalHeads: readGraph.optionalHeads,
-    relations: relationOps,
-  };
-}
+// #143: `compileBundle` (the §8 read/write SqlBundle) is RETIRED with the catalog READ surrogate —
+// live reads run through the op-independent leaf graph (`executeBehavior`/`read` → bc `bindBehaviors`),
+// and a write bundle is produced by `compileWriteBundle` (the gate-first tx plan), never here.
 
 // #141: the sync `executeBundle` (SqlBundle → `executeStaticWrite` / `executeReadGraph`) is RETIRED.
 // Reads run through the op-independent leaf graph (`executeBehavior`/`read` → bc `bindBehaviors`);

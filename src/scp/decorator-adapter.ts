@@ -52,7 +52,6 @@ import {
   type ModelColumns,
 } from './authoring';
 import {
-  compileBundle,
   compileWriteBundle,
   compileCreateManyBundle,
   compileUpdateManyBundle,
@@ -522,30 +521,11 @@ function countPorts(table: string, $: Recorded, where?: ($: Recorded) => readonl
 }
 
 /**
- * Compile a decorated model's read (`find`/`findOne`/`findById`/`count`) into the published
- * {@link SqlBundle} straight from its metadata: derive the `static columns`, build the eager fn, run it
- * through `compileEager` (the SINGLE compile path — byte-identical to a hand-written declaration), then
- * `compileBundle`. The `entry`/method `name` names the emitted component (byte-identity requires equal
- * names, so the caller passes the method name it is standing in for, e.g. `'find'`).
- */
-export function compileReadBundle(
-  modelClass: ModelClassLike,
-  name: string,
-  fn: EagerBehavior,
-  dialect: DialectName = 'sqlite',
-  columnsOptions?: DeriveColumnsOptions,
-  relations?: readonly RelationDecl[],
-): SqlBundle {
-  const contract = compileReadContract(modelClass, name, fn, dialect, columnsOptions);
-  return compileBundle(contract, name, relations, dialect, undefined, contract.resolveColumnType);
-}
-
-/**
  * Compile a decorated model's read into the {@link BehaviorModelContract} (the authored op-independent
- * leaf-graph IR) — the SSoT the new sync ({@link import('./runtime').executeBehavior}) and async
+ * leaf-graph IR) — the SSoT the sync ({@link import('./runtime').executeBehavior}) and async
  * ({@link import('./runtime').executeBehaviorAsync}) read paths run via `bindBehaviors`. Derives the
- * model's `static columns` and lowers `fn` through `compileEager` (the single compile path). Shared by
- * {@link compileReadBundle} (legacy bundle surface) so there is one read-authoring derivation.
+ * model's `static columns` and lowers `fn` through `compileEager` (the single compile path). (The legacy
+ * `compileReadBundle`/`compileBundle` read-bundle surface is retired — reads run the leaf graph.)
  */
 export function compileReadContract(
   modelClass: ModelClassLike,

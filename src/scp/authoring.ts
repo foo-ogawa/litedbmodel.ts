@@ -66,7 +66,8 @@ export type FanoutNode = Extract<BodyNode, { fanout: unknown }>;
 export type CondNode = Extract<BodyNode, { cond: unknown }>;
 export type ComponentRefNode = Exclude<BodyNode, MapNode | FanoutNode | CondNode>;
 import { leafComponents, LEAVES, spliceWhere } from './leaves';
-import { lowerWherePort } from './makesql/static-bundle';
+import { lowerWherePort, authoredWhereKeysOf } from './makesql/static-bundle';
+import { assertFindFilterFolded, type FindFilterSource } from './find-filter-guard';
 import { deriveReadRow, outputType as composeOutputType } from './makesql/outtype';
 import type { PortableType } from 'behavior-contracts';
 import type { Dialect } from './makesql/handler';
@@ -244,6 +245,14 @@ export interface PublishBehaviorsOptions {
    * not a codegen-path IR edit: the serialized contract is native-clean by construction.
    */
   readonly nativePassthrough?: boolean;
+  /**
+   * A `DBModel`-shaped FIND_FILTER source (#47 Finding B) — a model declaring an implicit per-model
+   * scope predicate (soft-delete / tenant). When supplied, the compile fail-closes ({@link
+   * assertFindFilterFolded}) unless every scope key is FOLDED into the authored WHERE of each read node
+   * (the SCP compile has no model context to auto-apply it — a dropped key is a cross-tenant /
+   * soft-deleted leak). Absent ⇒ nothing to enforce. Read BEFORE the WHERE is lowered/stripped.
+   */
+  readonly findFilterModel?: FindFilterSource;
 }
 
 /**
@@ -294,6 +303,24 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
   // to validate against (the 8-leaf catalog is retired — the op-independent leaves' ports are checked
   // by `behaviorComponents`/`compileBehaviors` at record time).
   assertComponentGraphPortable(ir);
+
+  // #47 FIND_FILTER fail-closed guard (M2 — relocated from the retired `compileReadGraph`): a model that
+  // DECLARES a FIND_FILTER (soft-delete / tenant scope) routed through the SINGLE compile path MUST fold
+  // its scope predicates into the authored WHERE of every read node — the compile has no model context to
+  // auto-apply them. Runs HERE (before `lowerRecordedWhere` lowers + STRIPS the `where` port the guard
+  // reads), over each TOP-LEVEL read `executeSQL` node's recorded `where` (the SSoT key extractor
+  // {@link authoredWhereKeysOf}); a missing scope key throws `FindFilterLeakError`. No model ⇒ no-op.
+  if (options.findFilterModel !== undefined) {
+    for (const component of ir.components) {
+      for (const node of component.body) {
+        if ('cond' in node || 'map' in node || 'fanout' in node) continue;
+        const ref = node as { component?: string; ports?: Record<string, unknown> };
+        if (ref.component !== 'executeSQL' || ref.ports === undefined) continue;
+        if (ref.ports.write === true || ref.ports.where === undefined) continue; // reads with an authored WHERE
+        assertFindFilterFolded(options.findFilterModel, authoredWhereKeysOf(ref.ports));
+      }
+    }
+  }
 
   // #141 WHERE lowering: lower each `executeSQL` node's RECORDED `where` port (plain Expression IR —
   // bc turned the live sugar proxies into IR during `compileBehaviors`) into the node's static
