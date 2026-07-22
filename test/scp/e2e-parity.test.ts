@@ -21,6 +21,8 @@ import {
   publishBehaviors,
   compileEager,
   executeBehavior,
+  emitRead,
+  emitWrite,
   whereEq,
   whereGe,
   whereIn,
@@ -59,7 +61,7 @@ class PostSearch extends SemanticBehavior {
     posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', status: 'TEXT', created_at: 'TEXT' },
   };
   Find($: In<{ author_id: number; status?: string; since: string }>) {
-    return L.Select({
+    return emitRead(L, 'Select', {
       table: 'posts',
       select: ['id', 'author_id', 'title', 'status', 'created_at'],
       where: [
@@ -68,16 +70,16 @@ class PostSearch extends SemanticBehavior {
         whereGe($.created_at, $.since),
       ],
       order: 'id ASC',
-    });
+    }, 'sqlite');
   }
 
   ByIds($: In<{ ids: number[] }>) {
-    return L.Select({
+    return emitRead(L, 'Select', {
       table: 'posts',
       select: ['id', 'title'],
       where: [whereIn(inColumn($, 'id'), $.ids)],
       order: 'id ASC',
-    });
+    }, 'sqlite');
   }
 }
 
@@ -158,7 +160,7 @@ describe('WS3 α parity — eager path executes identically to the declaration p
     const db = freshDb();
     const decl = publishBehaviors(PostSearch);
     const eager = compileEager('ByIds', ($: Recorded, l) =>
-      l.Select({ table: 'posts', select: ['id', 'title'], where: [whereIn(inColumn($, 'id'), $.ids)], order: 'id ASC' }),
+      emitRead(l, 'Select', { table: 'posts', select: ['id', 'title'], where: [whereIn(inColumn($, 'id'), $.ids)], order: 'id ASC' }, 'sqlite'),
       { columns: { posts: { id: 'INTEGER', title: 'TEXT' } } },
     );
 
@@ -176,14 +178,15 @@ describe('WS3 α parity — eager path executes identically to the declaration p
 
 describe('WS3 α parity — INSERT (real persistence, canonical column order)', () => {
   class CreatePost extends SemanticBehavior {
+    static columns = { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT' } };
     Create($: In<{ author_id: number; title: string; created_at: string }>) {
-      return L.Insert({
+      return emitWrite(L, 'Insert', {
         table: 'posts',
         'values.author_id': $.author_id,
         'values.title': $.title,
         'values.created_at': $.created_at,
         returning: 'id, author_id, title',
-      });
+      }, 'sqlite');
     }
   }
 
