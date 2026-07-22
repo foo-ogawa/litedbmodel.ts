@@ -175,15 +175,25 @@ pub fn execute_sql(
 /// Extract the deduped, non-null key array from `rows[col]` — the batch key set a relation child
 /// fetch binds to `WHERE fk = ANY($1)` / `json_each(?)`. Insertion order preserved; a null/absent key
 /// is dropped (no partial keys). Dedupe is the shared grouping core ([`crate::grouping::dedupe_key_tuples`])
-/// — the SAME SSoT the runtime relation path uses (no duplicated grouping). Ports are spread
-/// alphabetically by the native emitter: `(col, rows)`.
-pub fn pluck_keys(col: &str, rows: &[WireValue]) -> Result<WireValue, BehaviorError> {
+/// — the SAME SSoT the runtime relation path uses (no duplicated grouping). `col` is the ordered
+/// parent-key column TUPLE (single-key → 1 column; composite → the tuple): single-key emits a flat
+/// scalar key array (`json_each` scalar `value`), composite emits an array-of-tuples (`json_each`
+/// per-ordinal `$[i]`) — the SAME shape `relation.ts bindKeys` produces for the MySQL/SQLite JSON
+/// param. Ports are spread alphabetically by the native emitter: `(col, rows)`.
+pub fn pluck_keys(col: &[&str], rows: &[WireValue]) -> Result<WireValue, BehaviorError> {
     let value_rows: Vec<Value> = rows.iter().map(wire_to_value).collect();
-    let tuples = crate::grouping::dedupe_key_tuples(&value_rows, &[col.to_string()]);
-    let keys: Vec<WireValue> = tuples
-        .into_iter()
-        .map(|mut t| value_to_wire(t.remove(0)))
-        .collect();
+    // The native emitter spreads a `{arr:'string'}` port as `Vec<&'static str>`; the grouping core
+    // keys on owned `String` columns — convert at this boundary (the leaf is the wire↔core adapter).
+    let key_cols: Vec<String> = col.iter().map(|s| (*s).to_string()).collect();
+    let tuples = crate::grouping::dedupe_key_tuples(&value_rows, &key_cols);
+    let keys: Vec<WireValue> = if col.len() == 1 {
+        tuples.into_iter().map(|mut t| value_to_wire(t.remove(0))).collect()
+    } else {
+        tuples
+            .into_iter()
+            .map(|t| WireValue::List(WireList { items: t.into_iter().map(value_to_wire).collect() }))
+            .collect()
+    };
     Ok(WireValue::List(WireList { items: keys }))
 }
 
@@ -193,19 +203,26 @@ pub fn pluck_keys(col: &str, rows: &[WireValue]) -> Result<WireValue, BehaviorEr
 /// the result under `into`. `single == true` (belongsTo/hasOne) nests the one matching child (or
 /// null); otherwise (hasMany) nests the child list (`[]` when none). Grouping is the shared core
 /// ([`crate::grouping::group_by_key`] / [`crate::grouping::attach_to_parent`]) — the SAME SSoT the
-/// runtime relation path uses (no duplicated grouping). Each parent is shallow-copied before the
-/// own-key set (matching the TS `{...par, [into]: …}` spread — the input is not mutated). Ports are
-/// spread alphabetically by the native emitter: `(children, fk, into, parents, pk, single)`.
+/// runtime relation path uses (no duplicated grouping). `pk`/`fk` are the ordered parent/child key-
+/// column TUPLES (single-key → 1 column; composite → the tuple) — the core keys on the WHOLE tuple
+/// identity, so a composite relation nests by the full key (no scalar-collapse cartesian). Each parent
+/// is shallow-copied before the own-key set (matching the TS `{...par, [into]: …}` spread — the input
+/// is not mutated). Ports are spread alphabetically by the native emitter: `(children, fk, into,
+/// parents, pk, single)`.
 pub fn group_children(
     children: &[WireValue],
-    fk: &str,
+    fk: &[&str],
     into: &str,
     parents: &[WireValue],
-    pk: &str,
+    pk: &[&str],
     single: bool,
 ) -> Result<WireValue, BehaviorError> {
     let value_children: Vec<Value> = children.iter().map(wire_to_value).collect();
-    let by_key = crate::grouping::group_by_key(&value_children, &[fk.to_string()]);
+    // `{arr:'string'}` ports arrive as `Vec<&'static str>`; the Value grouping core keys on owned
+    // `String` columns — convert at this leaf boundary (the wire↔core adapter).
+    let fk_cols: Vec<String> = fk.iter().map(|s| (*s).to_string()).collect();
+    let pk_cols: Vec<String> = pk.iter().map(|s| (*s).to_string()).collect();
+    let by_key = crate::grouping::group_by_key(&value_children, &fk_cols);
     let out: Vec<WireValue> = parents
         .iter()
         .map(|p| {
@@ -214,7 +231,7 @@ pub fn group_children(
                 Value::Obj(pairs) => {
                     let nested = crate::grouping::attach_to_parent(
                         &Value::Obj(pairs.clone()),
-                        &[pk.to_string()],
+                        &pk_cols,
                         &by_key,
                         single,
                     );
@@ -233,4 +250,69 @@ pub fn group_children(
         })
         .collect();
     Ok(WireValue::List(WireList { items: out }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wrow(pairs: &[(&str, WireValue)]) -> WireValue {
+        WireValue::Row(WireRow { entries: pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect() })
+    }
+    fn items(w: &WireValue) -> Vec<WireValue> {
+        match w {
+            WireValue::List(l) => l.items.clone(),
+            _ => panic!("not a list"),
+        }
+    }
+
+    // Single-key pluck emits a FLAT scalar key array (json_each scalar `value`).
+    #[test]
+    fn pluck_single_key_is_flat_scalars() {
+        let rows = [wrow(&[("id", WireValue::int(2))]), wrow(&[("id", WireValue::int(1))]), wrow(&[("id", WireValue::int(2))])];
+        let out = pluck_keys(&["id"], &rows).unwrap();
+        let ks = items(&out);
+        assert_eq!(ks.len(), 2); // deduped, order preserved
+        assert!(matches!(&ks[0], WireValue::Num(n) if n == "2"));
+        assert!(!matches!(&ks[0], WireValue::List(_))); // scalar, NOT a 1-tuple
+    }
+
+    // Composite pluck emits an array-of-TUPLES (json_each per-ordinal `$[i]`).
+    #[test]
+    fn pluck_composite_key_is_tuples() {
+        let rows = [
+            wrow(&[("tenant_id", WireValue::int(1)), ("user_id", WireValue::int(9))]),
+            wrow(&[("tenant_id", WireValue::int(1)), ("user_id", WireValue::int(9))]), // dup tuple
+            wrow(&[("tenant_id", WireValue::int(1)), ("user_id", WireValue::int(8))]),
+        ];
+        let out = pluck_keys(&["tenant_id", "user_id"], &rows).unwrap();
+        let ks = items(&out);
+        assert_eq!(ks.len(), 2); // deduped on the whole tuple
+        assert_eq!(items(&ks[0]).len(), 2); // each key is a 2-element tuple
+    }
+
+    // group_children keyed on a COMPOSITE tuple nests by the FULL key — NOT a cartesian cross. A parent
+    // (t=1,u=9) must receive only its (t=1,u=9) child, never the (t=1,u=8) one (which a `''`-collapse or
+    // first-column-only key would wrongly attach).
+    #[test]
+    fn group_composite_is_not_cartesian() {
+        let parents = [
+            wrow(&[("tenant_id", WireValue::int(1)), ("user_id", WireValue::int(9))]),
+            wrow(&[("tenant_id", WireValue::int(1)), ("user_id", WireValue::int(8))]),
+        ];
+        let children = [
+            wrow(&[("tenant_id", WireValue::int(1)), ("user_id", WireValue::int(9)), ("title", WireValue::Str("p9".into()))]),
+            wrow(&[("tenant_id", WireValue::int(1)), ("user_id", WireValue::int(8)), ("title", WireValue::Str("p8".into()))]),
+        ];
+        let out = group_children(&children, &["tenant_id", "user_id"], "posts", &parents, &["tenant_id", "user_id"], false).unwrap();
+        let ps = items(&out);
+        for p in &ps {
+            let posts = match p {
+                WireValue::Row(r) => r.entries.iter().find(|(k, _)| k == "posts").map(|(_, v)| v.clone()).unwrap(),
+                _ => panic!(),
+            };
+            // each parent nests EXACTLY its own one matching post (cartesian would nest both).
+            assert_eq!(items(&posts).len(), 1, "composite grouping must not be cartesian");
+        }
+    }
 }

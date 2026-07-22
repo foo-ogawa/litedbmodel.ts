@@ -396,12 +396,12 @@ function relationContext(target: RelationTarget): ExecutionContext {
 export type RelationBatch = Map<string, Record<string, unknown>[]>;
 
 /** The ordered PARENT key columns of an op (single-key → 1-element list; composite → the tuple). */
-function parentKeyCols(op: RelationOp): readonly string[] {
+export function parentKeyCols(op: RelationOp): readonly string[] {
   return op.parentKeys ?? [op.parentKey as string];
 }
 
 /** The ordered CHILD key columns of an op (single-key → 1-element list; composite → the tuple). */
-function targetKeyCols(op: RelationOp): readonly string[] {
+export function targetKeyCols(op: RelationOp): readonly string[] {
   return op.targetKeys ?? [op.targetKey as string];
 }
 

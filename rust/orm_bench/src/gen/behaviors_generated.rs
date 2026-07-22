@@ -192,7 +192,7 @@ pub struct PortsNRNestedFindAllN0 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRNestedFindAllN1 {
-    pub f_col: String, // "col"
+    pub f_col: Vec<&'static str>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -214,10 +214,10 @@ pub struct PortsNRNestedFindAllN2 {
 #[derive(Clone)]
 pub struct PortsNRNestedFindAllN3 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: String, // "fk"
+    pub f_fk: Vec<&'static str>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: String, // "pk"
+    pub f_pk: Vec<&'static str>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -238,7 +238,7 @@ pub struct PortsNRNestedFindFirstN0 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRNestedFindFirstN1 {
-    pub f_col: String, // "col"
+    pub f_col: Vec<&'static str>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -260,10 +260,10 @@ pub struct PortsNRNestedFindFirstN2 {
 #[derive(Clone)]
 pub struct PortsNRNestedFindFirstN3 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: String, // "fk"
+    pub f_fk: Vec<&'static str>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: String, // "pk"
+    pub f_pk: Vec<&'static str>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -284,7 +284,7 @@ pub struct PortsNRNestedFindUniqueN0 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRNestedFindUniqueN1 {
-    pub f_col: String, // "col"
+    pub f_col: Vec<&'static str>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -306,10 +306,10 @@ pub struct PortsNRNestedFindUniqueN2 {
 #[derive(Clone)]
 pub struct PortsNRNestedFindUniqueN3 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: String, // "fk"
+    pub f_fk: Vec<&'static str>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: String, // "pk"
+    pub f_pk: Vec<&'static str>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -330,7 +330,7 @@ pub struct PortsNRNestedRelationsN0 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRNestedRelationsN1 {
-    pub f_col: String, // "col"
+    pub f_col: Vec<&'static str>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -351,7 +351,7 @@ pub struct PortsNRNestedRelationsN2 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRNestedRelationsN3 {
-    pub f_col: String, // "col"
+    pub f_col: Vec<&'static str>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -373,10 +373,10 @@ pub struct PortsNRNestedRelationsN4 {
 #[derive(Clone)]
 pub struct PortsNRNestedRelationsN5 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: String, // "fk"
+    pub f_fk: Vec<&'static str>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: String, // "pk"
+    pub f_pk: Vec<&'static str>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -386,10 +386,90 @@ pub struct PortsNRNestedRelationsN5 {
 #[derive(Clone)]
 pub struct PortsNRNestedRelationsN6 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: String, // "fk"
+    pub f_fk: Vec<&'static str>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: String, // "pk"
+    pub f_pk: Vec<&'static str>, // "pk"
+    pub f_single: bool, // "single"
+}
+
+// PortsNRCompositeRelationsN0 — CONCRETE native ports for node 'n0' (executeSQL). Typed fields per the
+// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
+// handler reads the typed fields directly off this concrete struct — no by-name accessor.
+#[derive(Clone)]
+pub struct PortsNRCompositeRelationsN0 {
+    pub f_bigint: bool, // "bigint"
+    pub f_params: Vec<WireValue>, // "params"
+    pub f_returning: bool, // "returning"
+    pub f_sql: String, // "sql"
+    pub f_write: bool, // "write"
+}
+
+// PortsNRCompositeRelationsN1 — CONCRETE native ports for node 'n1' (pluck). Typed fields per the
+// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
+// handler reads the typed fields directly off this concrete struct — no by-name accessor.
+#[derive(Clone)]
+pub struct PortsNRCompositeRelationsN1 {
+    pub f_col: Vec<&'static str>, // "col"
+    pub f_rows: Vec<WireValue>, // "rows"
+}
+
+// PortsNRCompositeRelationsN2 — CONCRETE native ports for node 'n2' (executeSQL). Typed fields per the
+// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
+// handler reads the typed fields directly off this concrete struct — no by-name accessor.
+#[derive(Clone)]
+pub struct PortsNRCompositeRelationsN2 {
+    pub f_bigint: bool, // "bigint"
+    pub f_params: Vec<WireValue>, // "params"
+    pub f_returning: bool, // "returning"
+    pub f_sql: String, // "sql"
+    pub f_write: bool, // "write"
+}
+
+// PortsNRCompositeRelationsN3 — CONCRETE native ports for node 'n3' (pluck). Typed fields per the
+// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
+// handler reads the typed fields directly off this concrete struct — no by-name accessor.
+#[derive(Clone)]
+pub struct PortsNRCompositeRelationsN3 {
+    pub f_col: Vec<&'static str>, // "col"
+    pub f_rows: Vec<WireValue>, // "rows"
+}
+
+// PortsNRCompositeRelationsN4 — CONCRETE native ports for node 'n4' (executeSQL). Typed fields per the
+// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
+// handler reads the typed fields directly off this concrete struct — no by-name accessor.
+#[derive(Clone)]
+pub struct PortsNRCompositeRelationsN4 {
+    pub f_bigint: bool, // "bigint"
+    pub f_params: Vec<WireValue>, // "params"
+    pub f_returning: bool, // "returning"
+    pub f_sql: String, // "sql"
+    pub f_write: bool, // "write"
+}
+
+// PortsNRCompositeRelationsN5 — CONCRETE native ports for node 'n5' (group). Typed fields per the
+// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
+// handler reads the typed fields directly off this concrete struct — no by-name accessor.
+#[derive(Clone)]
+pub struct PortsNRCompositeRelationsN5 {
+    pub f_children: Vec<WireValue>, // "children"
+    pub f_fk: Vec<&'static str>, // "fk"
+    pub f_into: String, // "into"
+    pub f_parents: Vec<WireValue>, // "parents"
+    pub f_pk: Vec<&'static str>, // "pk"
+    pub f_single: bool, // "single"
+}
+
+// PortsNRCompositeRelationsN6 — CONCRETE native ports for node 'n6' (group). Typed fields per the
+// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
+// handler reads the typed fields directly off this concrete struct — no by-name accessor.
+#[derive(Clone)]
+pub struct PortsNRCompositeRelationsN6 {
+    pub f_children: Vec<WireValue>, // "children"
+    pub f_fk: Vec<&'static str>, // "fk"
+    pub f_into: String, // "into"
+    pub f_parents: Vec<WireValue>, // "parents"
+    pub f_pk: Vec<&'static str>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -422,6 +502,42 @@ pub struct PortsNRUpdateN0 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRUpsertN0 {
+    pub f_bigint: bool, // "bigint"
+    pub f_params: Vec<WireValue>, // "params"
+    pub f_returning: bool, // "returning"
+    pub f_sql: String, // "sql"
+    pub f_write: bool, // "write"
+}
+
+// PortsNRCreateManyN0 — CONCRETE native ports for node 'n0' (executeSQL). Typed fields per the
+// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
+// handler reads the typed fields directly off this concrete struct — no by-name accessor.
+#[derive(Clone)]
+pub struct PortsNRCreateManyN0 {
+    pub f_bigint: bool, // "bigint"
+    pub f_params: Vec<WireValue>, // "params"
+    pub f_returning: bool, // "returning"
+    pub f_sql: String, // "sql"
+    pub f_write: bool, // "write"
+}
+
+// PortsNRUpsertManyN0 — CONCRETE native ports for node 'n0' (executeSQL). Typed fields per the
+// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
+// handler reads the typed fields directly off this concrete struct — no by-name accessor.
+#[derive(Clone)]
+pub struct PortsNRUpsertManyN0 {
+    pub f_bigint: bool, // "bigint"
+    pub f_params: Vec<WireValue>, // "params"
+    pub f_returning: bool, // "returning"
+    pub f_sql: String, // "sql"
+    pub f_write: bool, // "write"
+}
+
+// PortsNRUpdateManyN0 — CONCRETE native ports for node 'n0' (executeSQL). Typed fields per the
+// static port type; constructed directly (no Vec, no heap key strings, no per-port Value boxing). The
+// handler reads the typed fields directly off this concrete struct — no by-name accessor.
+#[derive(Clone)]
+pub struct PortsNRUpdateManyN0 {
     pub f_bigint: bool, // "bigint"
     pub f_params: Vec<WireValue>, // "params"
     pub f_returning: bool, // "returning"
@@ -507,6 +623,10 @@ impl Default for InNRNestedFindUnique {
 #[derive(Default)]
 pub struct InNRNestedRelations;
 
+// InNRCompositeRelations — the CONCRETE input for 'compositeRelations' (no input ports).
+#[derive(Default)]
+pub struct InNRCompositeRelations;
+
 // InNRCreate — the CONCRETE input for 'create' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
 pub struct InNRCreate {
@@ -548,6 +668,45 @@ impl Default for InNRUpsert {
         InNRUpsert {
             email: WireValue::Null,
             name: WireValue::Null,
+        }
+    }
+}
+
+// InNRCreateMany — the CONCRETE input for 'createMany' (fields = inputPorts; typed, consumer-built —
+// NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+pub struct InNRCreateMany {
+    pub rows: WireValue, // "rows"
+}
+impl Default for InNRCreateMany {
+    fn default() -> Self {
+        InNRCreateMany {
+            rows: WireValue::Null,
+        }
+    }
+}
+
+// InNRUpsertMany — the CONCRETE input for 'upsertMany' (fields = inputPorts; typed, consumer-built —
+// NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+pub struct InNRUpsertMany {
+    pub rows: WireValue, // "rows"
+}
+impl Default for InNRUpsertMany {
+    fn default() -> Self {
+        InNRUpsertMany {
+            rows: WireValue::Null,
+        }
+    }
+}
+
+// InNRUpdateMany — the CONCRETE input for 'updateMany' (fields = inputPorts; typed, consumer-built —
+// NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+pub struct InNRUpdateMany {
+    pub rows: WireValue, // "rows"
+}
+impl Default for InNRUpdateMany {
+    fn default() -> Self {
+        InNRUpdateMany {
+            rows: WireValue::Null,
         }
     }
 }
@@ -876,7 +1035,7 @@ pub fn run_native_raw_struct_nestedFindAll(
     produced_n0.set(true);
     // ── op 'n1' (pluck, parent:n0) ──
     if produced_n0.get() {
-        let ports_n1 = PortsNRNestedFindAllN1 { f_col: "id".to_string(), f_rows: cell_n0.borrow().clone() };
+        let ports_n1 = PortsNRNestedFindAllN1 { f_col: vec!["id"], f_rows: cell_n0.borrow().clone() };
         let wire_n1 = match pluck_keys(&ports_n1.f_col, &ports_n1.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n1", e.message), detail: e.detail }),
@@ -901,7 +1060,7 @@ pub fn run_native_raw_struct_nestedFindAll(
     }
     // ── op 'n3' (group, parent:n0) ──
     if produced_n0.get() {
-        let ports_n3 = PortsNRNestedFindAllN3 { f_children: cell_n2.borrow().clone(), f_fk: "author_id".to_string(), f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: "id".to_string(), f_single: false };
+        let ports_n3 = PortsNRNestedFindAllN3 { f_children: cell_n2.borrow().clone(), f_fk: vec!["author_id"], f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: vec!["id"], f_single: false };
         let wire_n3 = match group_children(&ports_n3.f_children, &ports_n3.f_fk, &ports_n3.f_into, &ports_n3.f_parents, &ports_n3.f_pk, ports_n3.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n3", e.message), detail: e.detail }),
@@ -973,7 +1132,7 @@ pub fn run_native_raw_struct_nestedFindFirst(
     produced_n0.set(true);
     // ── op 'n1' (pluck, parent:n0) ──
     if produced_n0.get() {
-        let ports_n1 = PortsNRNestedFindFirstN1 { f_col: "id".to_string(), f_rows: cell_n0.borrow().clone() };
+        let ports_n1 = PortsNRNestedFindFirstN1 { f_col: vec!["id"], f_rows: cell_n0.borrow().clone() };
         let wire_n1 = match pluck_keys(&ports_n1.f_col, &ports_n1.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n1", e.message), detail: e.detail }),
@@ -998,7 +1157,7 @@ pub fn run_native_raw_struct_nestedFindFirst(
     }
     // ── op 'n3' (group, parent:n0) ──
     if produced_n0.get() {
-        let ports_n3 = PortsNRNestedFindFirstN3 { f_children: cell_n2.borrow().clone(), f_fk: "author_id".to_string(), f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: "id".to_string(), f_single: false };
+        let ports_n3 = PortsNRNestedFindFirstN3 { f_children: cell_n2.borrow().clone(), f_fk: vec!["author_id"], f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: vec!["id"], f_single: false };
         let wire_n3 = match group_children(&ports_n3.f_children, &ports_n3.f_fk, &ports_n3.f_into, &ports_n3.f_parents, &ports_n3.f_pk, ports_n3.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n3", e.message), detail: e.detail }),
@@ -1070,7 +1229,7 @@ pub fn run_native_raw_struct_nestedFindUnique(
     produced_n0.set(true);
     // ── op 'n1' (pluck, parent:n0) ──
     if produced_n0.get() {
-        let ports_n1 = PortsNRNestedFindUniqueN1 { f_col: "id".to_string(), f_rows: cell_n0.borrow().clone() };
+        let ports_n1 = PortsNRNestedFindUniqueN1 { f_col: vec!["id"], f_rows: cell_n0.borrow().clone() };
         let wire_n1 = match pluck_keys(&ports_n1.f_col, &ports_n1.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n1", e.message), detail: e.detail }),
@@ -1095,7 +1254,7 @@ pub fn run_native_raw_struct_nestedFindUnique(
     }
     // ── op 'n3' (group, parent:n0) ──
     if produced_n0.get() {
-        let ports_n3 = PortsNRNestedFindUniqueN3 { f_children: cell_n2.borrow().clone(), f_fk: "author_id".to_string(), f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: "id".to_string(), f_single: false };
+        let ports_n3 = PortsNRNestedFindUniqueN3 { f_children: cell_n2.borrow().clone(), f_fk: vec!["author_id"], f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: vec!["id"], f_single: false };
         let wire_n3 = match group_children(&ports_n3.f_children, &ports_n3.f_fk, &ports_n3.f_into, &ports_n3.f_parents, &ports_n3.f_pk, ports_n3.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n3", e.message), detail: e.detail }),
@@ -1176,7 +1335,7 @@ pub fn run_native_raw_struct_nestedRelations(
     produced_n0.set(true);
     // ── op 'n1' (pluck, parent:n0) ──
     if produced_n0.get() {
-        let ports_n1 = PortsNRNestedRelationsN1 { f_col: "id".to_string(), f_rows: cell_n0.borrow().clone() };
+        let ports_n1 = PortsNRNestedRelationsN1 { f_col: vec!["id"], f_rows: cell_n0.borrow().clone() };
         let wire_n1 = match pluck_keys(&ports_n1.f_col, &ports_n1.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n1", e.message), detail: e.detail }),
@@ -1201,7 +1360,7 @@ pub fn run_native_raw_struct_nestedRelations(
     }
     // ── op 'n3' (pluck, parent:n2) ──
     if produced_n2.get() {
-        let ports_n3 = PortsNRNestedRelationsN3 { f_col: "id".to_string(), f_rows: cell_n2.borrow().clone() };
+        let ports_n3 = PortsNRNestedRelationsN3 { f_col: vec!["id"], f_rows: cell_n2.borrow().clone() };
         let wire_n3 = match pluck_keys(&ports_n3.f_col, &ports_n3.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n3", e.message), detail: e.detail }),
@@ -1226,7 +1385,7 @@ pub fn run_native_raw_struct_nestedRelations(
     }
     // ── op 'n5' (group, parent:n2) ──
     if produced_n2.get() {
-        let ports_n5 = PortsNRNestedRelationsN5 { f_children: cell_n4.borrow().clone(), f_fk: "post_id".to_string(), f_into: "comments".to_string(), f_parents: cell_n2.borrow().clone(), f_pk: "id".to_string(), f_single: false };
+        let ports_n5 = PortsNRNestedRelationsN5 { f_children: cell_n4.borrow().clone(), f_fk: vec!["post_id"], f_into: "comments".to_string(), f_parents: cell_n2.borrow().clone(), f_pk: vec!["id"], f_single: false };
         let wire_n5 = match group_children(&ports_n5.f_children, &ports_n5.f_fk, &ports_n5.f_into, &ports_n5.f_parents, &ports_n5.f_pk, ports_n5.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n5", e.message), detail: e.detail }),
@@ -1241,7 +1400,153 @@ pub fn run_native_raw_struct_nestedRelations(
     }
     // ── op 'n6' (group, parent:n0) ──
     if produced_n0.get() {
-        let ports_n6 = PortsNRNestedRelationsN6 { f_children: cell_n5.borrow().clone(), f_fk: "author_id".to_string(), f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: "id".to_string(), f_single: false };
+        let ports_n6 = PortsNRNestedRelationsN6 { f_children: cell_n5.borrow().clone(), f_fk: vec!["author_id"], f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: vec!["id"], f_single: false };
+        let wire_n6 = match group_children(&ports_n6.f_children, &ports_n6.f_fk, &ports_n6.f_into, &ports_n6.f_parents, &ports_n6.f_pk, ports_n6.f_single) {
+            Ok(r) => r,
+            Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n6", e.message), detail: e.detail }),
+        };
+        *cell_n6.borrow_mut() = match wire_n6.as_list() {
+            Probe::Got(l0) => {
+                let mut acc0 = Vec::with_capacity(l0.len());
+                for i0 in 0..l0.len() {
+                    acc0.push(match l0.elem_row(i0) {
+                        Probe::Got(sub1) => T2 {
+
+                        },
+                        Probe::Wrong { actual_wire_type, raw_value }
+                        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n6", "n6", "obj{}", actual_wire_type, raw_value)),
+                        Probe::Absent => return Err(de_missing_field("n6", "n6", "obj{}")),
+                    });
+                }
+                acc0
+            },
+            Probe::Wrong { actual_wire_type, raw_value }
+            | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n6", "n6", "arr(obj{})", actual_wire_type, raw_value)),
+            Probe::Absent => return Err(de_missing_field("n6", "n6", "arr(obj{})")),
+        };
+        produced_n6.set(true);
+    }
+    let __out = cell_n6.borrow().clone();
+    Ok(__out)
+}
+
+// run_native_raw_struct_compositeRelations — the STRUCT-RETURNING combined read (bc#77/#87/#94): the fully
+// de-plumbed CONCRETE path. At each covered node's execution point it calls the op-agnostic leaf
+// TRANSPORT symbol DIRECTLY (the node's port fields spread — no per-node handler indirection) and
+// de-boxes the returned wire INLINE (match wire.as_*() { … } fully unrolled — no decode helper) into
+// the node's outType struct cell — no boxed handler result, no generic enum crossing, no dispatch on a dynamic value on the covered plane. Node
+// results are typed struct cells; a relation child reads the parent's REAL struct result via
+// direct field access (child-present decision from the real parent value — relationSingle /
+// connection converge). A real-concurrency stage (bc#87) is static parallel orchestration —
+// scoped worker threads (bounded by the static plan.concurrency) call the transport; preflight +
+// interpret are committed in ascending index order so the value / op multiset / failure
+// precedence byte-match run_behavior. The output is a typed struct/value assembled by struct
+// literal + field access — the consumer keeps it native.
+pub fn run_native_raw_struct_compositeRelations(
+    _in_: InNRCompositeRelations,
+) -> Result<Vec<T2>, BehaviorError> {
+    let cell_n0: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
+    let produced_n0 = std::cell::Cell::new(false);
+    let _ = &produced_n0;
+    let cell_n1: RefCell<WireValue> = RefCell::new(WireValue::Null);
+    let produced_n1 = std::cell::Cell::new(false);
+    let _ = &produced_n1;
+    let cell_n2: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
+    let produced_n2 = std::cell::Cell::new(false);
+    let _ = &produced_n2;
+    let cell_n3: RefCell<WireValue> = RefCell::new(WireValue::Null);
+    let produced_n3 = std::cell::Cell::new(false);
+    let _ = &produced_n3;
+    let cell_n4: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
+    let produced_n4 = std::cell::Cell::new(false);
+    let _ = &produced_n4;
+    let cell_n5: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
+    let produced_n5 = std::cell::Cell::new(false);
+    let _ = &produced_n5;
+    let cell_n6: RefCell<Vec<T2>> = RefCell::new(Default::default());
+    let produced_n6 = std::cell::Cell::new(false);
+    let _ = &produced_n6;
+    // ── op 'n0' (executeSQL) ──
+    let ports_n0 = PortsNRCompositeRelationsN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![]; __v }, f_returning: false, f_sql: "SELECT tenant_id, user_id, name FROM benchmark_tenant_users ORDER BY user_id ASC LIMIT 100".to_string(), f_write: false };
+    let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
+        Ok(r) => r,
+        Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
+    };
+    *cell_n0.borrow_mut() = match wire_n0.as_list() {
+        Probe::Got(l0) => l0.items.clone(),
+        Probe::Wrong { actual_wire_type, raw_value }
+        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(value)", actual_wire_type, raw_value)),
+        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(value)")),
+    };
+    produced_n0.set(true);
+    // ── op 'n1' (pluck, parent:n0) ──
+    if produced_n0.get() {
+        let ports_n1 = PortsNRCompositeRelationsN1 { f_col: vec!["tenant_id", "user_id"], f_rows: cell_n0.borrow().clone() };
+        let wire_n1 = match pluck_keys(&ports_n1.f_col, &ports_n1.f_rows) {
+            Ok(r) => r,
+            Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n1", e.message), detail: e.detail }),
+        };
+        *cell_n1.borrow_mut() = wire_n1.clone();
+        produced_n1.set(true);
+    }
+    // ── op 'n2' (executeSQL, parent:n1) ──
+    if produced_n1.get() {
+        let ports_n2 = PortsNRCompositeRelationsN2 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![cell_n1.borrow().clone()]; __v }, f_returning: false, f_sql: "SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE EXISTS (SELECT 1 FROM json_each(?) je WHERE json_extract(je.value, '$[0]') = benchmark_tenant_posts.tenant_id AND json_extract(je.value, '$[1]') = benchmark_tenant_posts.user_id) ORDER BY post_id ASC".to_string(), f_write: false };
+        let wire_n2 = match execute_sql(ports_n2.f_bigint, &ports_n2.f_params, ports_n2.f_returning, &ports_n2.f_sql, ports_n2.f_write) {
+            Ok(r) => r,
+            Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n2", e.message), detail: e.detail }),
+        };
+        *cell_n2.borrow_mut() = match wire_n2.as_list() {
+            Probe::Got(l0) => l0.items.clone(),
+            Probe::Wrong { actual_wire_type, raw_value }
+            | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n2", "n2", "arr(value)", actual_wire_type, raw_value)),
+            Probe::Absent => return Err(de_missing_field("n2", "n2", "arr(value)")),
+        };
+        produced_n2.set(true);
+    }
+    // ── op 'n3' (pluck, parent:n2) ──
+    if produced_n2.get() {
+        let ports_n3 = PortsNRCompositeRelationsN3 { f_col: vec!["tenant_id", "post_id"], f_rows: cell_n2.borrow().clone() };
+        let wire_n3 = match pluck_keys(&ports_n3.f_col, &ports_n3.f_rows) {
+            Ok(r) => r,
+            Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n3", e.message), detail: e.detail }),
+        };
+        *cell_n3.borrow_mut() = wire_n3.clone();
+        produced_n3.set(true);
+    }
+    // ── op 'n4' (executeSQL, parent:n3) ──
+    if produced_n3.get() {
+        let ports_n4 = PortsNRCompositeRelationsN4 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![cell_n3.borrow().clone()]; __v }, f_returning: false, f_sql: "SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments WHERE EXISTS (SELECT 1 FROM json_each(?) je WHERE json_extract(je.value, '$[0]') = benchmark_tenant_comments.tenant_id AND json_extract(je.value, '$[1]') = benchmark_tenant_comments.post_id) ORDER BY comment_id ASC".to_string(), f_write: false };
+        let wire_n4 = match execute_sql(ports_n4.f_bigint, &ports_n4.f_params, ports_n4.f_returning, &ports_n4.f_sql, ports_n4.f_write) {
+            Ok(r) => r,
+            Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n4", e.message), detail: e.detail }),
+        };
+        *cell_n4.borrow_mut() = match wire_n4.as_list() {
+            Probe::Got(l0) => l0.items.clone(),
+            Probe::Wrong { actual_wire_type, raw_value }
+            | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n4", "n4", "arr(value)", actual_wire_type, raw_value)),
+            Probe::Absent => return Err(de_missing_field("n4", "n4", "arr(value)")),
+        };
+        produced_n4.set(true);
+    }
+    // ── op 'n5' (group, parent:n2) ──
+    if produced_n2.get() {
+        let ports_n5 = PortsNRCompositeRelationsN5 { f_children: cell_n4.borrow().clone(), f_fk: vec!["tenant_id", "post_id"], f_into: "comments".to_string(), f_parents: cell_n2.borrow().clone(), f_pk: vec!["tenant_id", "post_id"], f_single: false };
+        let wire_n5 = match group_children(&ports_n5.f_children, &ports_n5.f_fk, &ports_n5.f_into, &ports_n5.f_parents, &ports_n5.f_pk, ports_n5.f_single) {
+            Ok(r) => r,
+            Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n5", e.message), detail: e.detail }),
+        };
+        *cell_n5.borrow_mut() = match wire_n5.as_list() {
+            Probe::Got(l0) => l0.items.clone(),
+            Probe::Wrong { actual_wire_type, raw_value }
+            | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n5", "n5", "arr(value)", actual_wire_type, raw_value)),
+            Probe::Absent => return Err(de_missing_field("n5", "n5", "arr(value)")),
+        };
+        produced_n5.set(true);
+    }
+    // ── op 'n6' (group, parent:n0) ──
+    if produced_n0.get() {
+        let ports_n6 = PortsNRCompositeRelationsN6 { f_children: cell_n5.borrow().clone(), f_fk: vec!["tenant_id", "user_id"], f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: vec!["tenant_id", "user_id"], f_single: false };
         let wire_n6 = match group_children(&ports_n6.f_children, &ports_n6.f_fk, &ports_n6.f_into, &ports_n6.f_parents, &ports_n6.f_pk, ports_n6.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n6", e.message), detail: e.detail }),
@@ -1415,8 +1720,152 @@ pub fn run_native_raw_struct_upsert(
     Ok(__out)
 }
 
+// run_native_raw_struct_createMany — the STRUCT-RETURNING combined read (bc#77/#87/#94): the fully
+// de-plumbed CONCRETE path. At each covered node's execution point it calls the op-agnostic leaf
+// TRANSPORT symbol DIRECTLY (the node's port fields spread — no per-node handler indirection) and
+// de-boxes the returned wire INLINE (match wire.as_*() { … } fully unrolled — no decode helper) into
+// the node's outType struct cell — no boxed handler result, no generic enum crossing, no dispatch on a dynamic value on the covered plane. Node
+// results are typed struct cells; a relation child reads the parent's REAL struct result via
+// direct field access (child-present decision from the real parent value — relationSingle /
+// connection converge). A real-concurrency stage (bc#87) is static parallel orchestration —
+// scoped worker threads (bounded by the static plan.concurrency) call the transport; preflight +
+// interpret are committed in ascending index order so the value / op multiset / failure
+// precedence byte-match run_behavior. The output is a typed struct/value assembled by struct
+// literal + field access — the consumer keeps it native.
+pub fn run_native_raw_struct_createMany(
+    in_: InNRCreateMany,
+) -> Result<Vec<T2>, BehaviorError> {
+    let cell_n0: RefCell<Vec<T2>> = RefCell::new(Default::default());
+    let produced_n0 = std::cell::Cell::new(false);
+    let _ = &produced_n0;
+    // ── op 'n0' (executeSQL) ──
+    let ports_n0 = PortsNRCreateManyN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.rows.clone()]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?)".to_string(), f_write: true };
+    let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
+        Ok(r) => r,
+        Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
+    };
+    *cell_n0.borrow_mut() = match wire_n0.as_list() {
+        Probe::Got(l0) => {
+            let mut acc0 = Vec::with_capacity(l0.len());
+            for i0 in 0..l0.len() {
+                acc0.push(match l0.elem_row(i0) {
+                    Probe::Got(sub1) => T2 {
+
+                    },
+                    Probe::Wrong { actual_wire_type, raw_value }
+                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{}", actual_wire_type, raw_value)),
+                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{}")),
+                });
+            }
+            acc0
+        },
+        Probe::Wrong { actual_wire_type, raw_value }
+        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{})", actual_wire_type, raw_value)),
+        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{})")),
+    };
+    produced_n0.set(true);
+    let __out = cell_n0.borrow().clone();
+    Ok(__out)
+}
+
+// run_native_raw_struct_upsertMany — the STRUCT-RETURNING combined read (bc#77/#87/#94): the fully
+// de-plumbed CONCRETE path. At each covered node's execution point it calls the op-agnostic leaf
+// TRANSPORT symbol DIRECTLY (the node's port fields spread — no per-node handler indirection) and
+// de-boxes the returned wire INLINE (match wire.as_*() { … } fully unrolled — no decode helper) into
+// the node's outType struct cell — no boxed handler result, no generic enum crossing, no dispatch on a dynamic value on the covered plane. Node
+// results are typed struct cells; a relation child reads the parent's REAL struct result via
+// direct field access (child-present decision from the real parent value — relationSingle /
+// connection converge). A real-concurrency stage (bc#87) is static parallel orchestration —
+// scoped worker threads (bounded by the static plan.concurrency) call the transport; preflight +
+// interpret are committed in ascending index order so the value / op multiset / failure
+// precedence byte-match run_behavior. The output is a typed struct/value assembled by struct
+// literal + field access — the consumer keeps it native.
+pub fn run_native_raw_struct_upsertMany(
+    in_: InNRUpsertMany,
+) -> Result<Vec<T2>, BehaviorError> {
+    let cell_n0: RefCell<Vec<T2>> = RefCell::new(Default::default());
+    let produced_n0 = std::cell::Cell::new(false);
+    let _ = &produced_n0;
+    // ── op 'n0' (executeSQL) ──
+    let ports_n0 = PortsNRUpsertManyN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.rows.clone()]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?) WHERE true ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name".to_string(), f_write: true };
+    let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
+        Ok(r) => r,
+        Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
+    };
+    *cell_n0.borrow_mut() = match wire_n0.as_list() {
+        Probe::Got(l0) => {
+            let mut acc0 = Vec::with_capacity(l0.len());
+            for i0 in 0..l0.len() {
+                acc0.push(match l0.elem_row(i0) {
+                    Probe::Got(sub1) => T2 {
+
+                    },
+                    Probe::Wrong { actual_wire_type, raw_value }
+                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{}", actual_wire_type, raw_value)),
+                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{}")),
+                });
+            }
+            acc0
+        },
+        Probe::Wrong { actual_wire_type, raw_value }
+        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{})", actual_wire_type, raw_value)),
+        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{})")),
+    };
+    produced_n0.set(true);
+    let __out = cell_n0.borrow().clone();
+    Ok(__out)
+}
+
+// run_native_raw_struct_updateMany — the STRUCT-RETURNING combined read (bc#77/#87/#94): the fully
+// de-plumbed CONCRETE path. At each covered node's execution point it calls the op-agnostic leaf
+// TRANSPORT symbol DIRECTLY (the node's port fields spread — no per-node handler indirection) and
+// de-boxes the returned wire INLINE (match wire.as_*() { … } fully unrolled — no decode helper) into
+// the node's outType struct cell — no boxed handler result, no generic enum crossing, no dispatch on a dynamic value on the covered plane. Node
+// results are typed struct cells; a relation child reads the parent's REAL struct result via
+// direct field access (child-present decision from the real parent value — relationSingle /
+// connection converge). A real-concurrency stage (bc#87) is static parallel orchestration —
+// scoped worker threads (bounded by the static plan.concurrency) call the transport; preflight +
+// interpret are committed in ascending index order so the value / op multiset / failure
+// precedence byte-match run_behavior. The output is a typed struct/value assembled by struct
+// literal + field access — the consumer keeps it native.
+pub fn run_native_raw_struct_updateMany(
+    in_: InNRUpdateMany,
+) -> Result<Vec<T2>, BehaviorError> {
+    let cell_n0: RefCell<Vec<T2>> = RefCell::new(Default::default());
+    let produced_n0 = std::cell::Cell::new(false);
+    let _ = &produced_n0;
+    // ── op 'n0' (executeSQL) ──
+    let ports_n0 = PortsNRUpdateManyN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.rows.clone(), in_.rows.clone()]; __v }, f_returning: false, f_sql: "UPDATE benchmark_users SET name = (SELECT json_extract(je.value, '$.name') FROM json_each(?) je WHERE json_extract(je.value, '$.id') = benchmark_users.id LIMIT 1) WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))".to_string(), f_write: true };
+    let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
+        Ok(r) => r,
+        Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
+    };
+    *cell_n0.borrow_mut() = match wire_n0.as_list() {
+        Probe::Got(l0) => {
+            let mut acc0 = Vec::with_capacity(l0.len());
+            for i0 in 0..l0.len() {
+                acc0.push(match l0.elem_row(i0) {
+                    Probe::Got(sub1) => T2 {
+
+                    },
+                    Probe::Wrong { actual_wire_type, raw_value }
+                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{}", actual_wire_type, raw_value)),
+                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{}")),
+                });
+            }
+            acc0
+        },
+        Probe::Wrong { actual_wire_type, raw_value }
+        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{})", actual_wire_type, raw_value)),
+        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{})")),
+    };
+    produced_n0.set(true);
+    let __out = cell_n0.borrow().clone();
+    Ok(__out)
+}
+
 // COMPONENT_NAMES_NATIVE_RAW — covered reads exposed on the combined struct-native path. Each is
 // driven via run_native_raw_struct_<comp>(in_) -> Result<T, BehaviorError>: a STRUCT return (the consumer
 // builds the CONCRETE InNR_<comp> input + supplies the op-agnostic leaf transport symbols the runner calls).
 // See INTEGRATION.md §6.
-pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 11] = ["findAll", "filterPaginateSort", "findFirst", "findUnique", "nestedFindAll", "nestedFindFirst", "nestedFindUnique", "nestedRelations", "create", "update", "upsert"];
+pub const COMPONENT_NAMES_NATIVE_RAW: [&str; 15] = ["findAll", "filterPaginateSort", "findFirst", "findUnique", "nestedFindAll", "nestedFindFirst", "nestedFindUnique", "nestedRelations", "compositeRelations", "create", "update", "upsert", "createMany", "upsertMany", "updateMany"];

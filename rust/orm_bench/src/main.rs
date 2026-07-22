@@ -17,7 +17,7 @@ mod gen;
 
 use litedbmodel_runtime::driver::PreparedStatement;
 use litedbmodel_runtime::exec_context::TxConnection;
-use litedbmodel_runtime::{with_ambient_driver, Driver, SqlFailure, SqliteDriver, WireValue};
+use litedbmodel_runtime::{with_ambient_driver, Driver, SqlFailure, SqliteDriver, WireList, WireRow, WireValue};
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -76,6 +76,7 @@ fn seed(d: &dyn Driver) {
         "DELETE FROM benchmark_comments",
         "DELETE FROM benchmark_posts",
         "DELETE FROM benchmark_users",
+        "DELETE FROM benchmark_tenant_comments",
         "DELETE FROM benchmark_tenant_posts",
         "DELETE FROM benchmark_tenant_users",
         "INSERT INTO benchmark_users (id, email, name) VALUES \
@@ -87,6 +88,10 @@ fn seed(d: &dyn Driver) {
          (1,'b',1),(2,'b',1),(3,'b',2),(4,'b',3),(5,'b',5)",
         "INSERT INTO benchmark_tenant_users (tenant_id, user_id, name) VALUES (1,1,'TU1'),(1,2,'TU2'),(1,3,'TU3')",
         "INSERT INTO benchmark_tenant_posts (tenant_id, post_id, user_id, title) VALUES (1,10,1,'TP1'),(1,11,2,'TP2')",
+        // composite level-3: comments keyed on (tenant_id, post_id) — real children so the composite
+        // grouping is exercised (grouped by the full 2-col tuple, not a cartesian cross).
+        "INSERT INTO benchmark_tenant_comments (tenant_id, comment_id, post_id, body) VALUES \
+         (1,100,10,'tc'),(1,101,10,'tc'),(1,102,11,'tc')",
     ];
     for s in STMTS {
         d.prepare(s).run(&[]).unwrap_or_else(|e| panic!("seed `{s}`: {}", e.message));
@@ -141,6 +146,9 @@ fn run_op(op: &str, it: u64) {
         "nestedRelations" => {
             bg::run_native_raw_struct_nestedRelations(bg::InNRNestedRelations).unwrap();
         }
+        "compositeRelations" => {
+            bg::run_native_raw_struct_compositeRelations(bg::InNRCompositeRelations).unwrap();
+        }
         "create" => {
             bg::run_native_raw_struct_create(bg::InNRCreate {
                 email: WireValue::Str(format!("new{it}@bench.com")),
@@ -162,8 +170,48 @@ fn run_op(op: &str, it: u64) {
             })
             .unwrap();
         }
+        "createMany" => {
+            // 10 fresh rows — email is UNIQUE NOT NULL, so vary per iteration to stay insertable.
+            bg::run_native_raw_struct_createMany(bg::InNRCreateMany { rows: user_rows(it, false) }).unwrap();
+        }
+        "upsertMany" => {
+            // 10 rows keyed on email (ON CONFLICT DO UPDATE) — idempotent across iterations.
+            bg::run_native_raw_struct_upsertMany(bg::InNRUpsertMany { rows: user_rows(it, true) }).unwrap();
+        }
+        "updateMany" => {
+            // 10 rows keyed on id (1..=10) — updates the seeded users, no-op for absent ids.
+            let items: Vec<WireValue> = (1..=10)
+                .map(|id| {
+                    WireValue::Row(WireRow {
+                        entries: vec![
+                            ("id".to_string(), WireValue::int(id)),
+                            ("name".to_string(), WireValue::Str(format!("Many {id}"))),
+                        ],
+                    })
+                })
+                .collect();
+            bg::run_native_raw_struct_updateMany(bg::InNRUpdateMany { rows: WireValue::List(WireList { items }) }).unwrap();
+        }
         other => panic!("unknown op '{other}'"),
     }
+}
+
+// Build the 10-row batch record set for createMany/upsertMany as ONE opaque `rows` wire array (the
+// json_each/JSON_TABLE batch param). `stable` reuses fixed emails (upsertMany — conflict-updates); else
+// the email varies by iteration so a plain INSERT stays insertable under the UNIQUE(email) constraint.
+fn user_rows(it: u64, stable: bool) -> WireValue {
+    let items: Vec<WireValue> = (0..10)
+        .map(|i| {
+            let email = if stable { format!("many{i}@bench.com") } else { format!("many{it}_{i}@bench.com") };
+            WireValue::Row(WireRow {
+                entries: vec![
+                    ("email".to_string(), WireValue::Str(email)),
+                    ("name".to_string(), WireValue::Str(format!("Many {i}"))),
+                ],
+            })
+        })
+        .collect();
+    WireValue::List(WireList { items })
 }
 
 // The covered ops exposed on the combined struct-native path (bg::COMPONENT_NAMES_NATIVE_RAW).
@@ -176,9 +224,13 @@ const OPS: &[&str] = &[
     "nestedFindFirst",
     "nestedFindUnique",
     "nestedRelations",
+    "compositeRelations",
     "create",
     "update",
     "upsert",
+    "createMany",
+    "upsertMany",
+    "updateMany",
 ];
 
 fn main() {
@@ -233,7 +285,17 @@ fn run_safety(_dialect: &str, spec: &str) {
         ("nestedFindFirst", 2),
         ("nestedFindUnique", 2),
         ("nestedRelations", 3),
+        // composite 3-level chain: 1 parent + 1 batched child per level = 3 (N+1-free, composite key).
+        ("compositeRelations", 3),
     ] {
+        let actual = count(op);
+        assert_eq!(actual, expected, "{op} query-count regression");
+        println!("{op} queries={actual} (expect {expected})");
+    }
+    // Batch writes are ONE statement for N records (the json_each/JSON_TABLE batch form) — the whole
+    // record set rides as ONE param, so the query count is a fixed 1, INDEPENDENT of the row count
+    // (the safety guarantee: no per-row statement fan-out).
+    for (op, expected) in [("createMany", 1usize), ("upsertMany", 1), ("updateMany", 1)] {
         let actual = count(op);
         assert_eq!(actual, expected, "{op} query-count regression");
         println!("{op} queries={actual} (expect {expected})");

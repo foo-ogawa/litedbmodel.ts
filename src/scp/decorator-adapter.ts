@@ -59,7 +59,7 @@ import {
   compileDeleteManyBundle,
   type SqlBundle,
 } from './runtime';
-import { compileRelationOp, type RelationDecl, type RelationKind, type RelationOp } from './relation';
+import { compileRelationOp, parentKeyCols, targetKeyCols, type RelationDecl, type RelationKind, type RelationOp } from './relation';
 import { sqlTypeToMaterializeClass, keyArrayElemScalar, columnTypeResolverFromColumnMap, type ColumnTypeResolver } from './coltype';
 import type { DialectName } from './dialect';
 import { compileSelectNode, type StaticStatement } from './makesql/static-bundle';
@@ -179,6 +179,57 @@ export function emitWrite(L: ComponentFns, component: 'Insert' | 'Update' | 'Del
   const portObj: Record<string, unknown> = { sql: op.sql, params: [...op.params], write: true, returning, bigint: false };
   if (Array.isArray(where) && where.length > 0) portObj.where = where; // bc records → plain IR; appended post-compile
   return (L.executeSQL as (p: Record<string, unknown>) => Recorded)(portObj);
+}
+
+/**
+ * The batch-write authoring spec (createMany / upsertMany / updateMany). `rows` is the ONE opaque
+ * input value (bc#156) the consumer binds to the whole record set — an `{arr:'value'}` array of row
+ * objects the transport json-encodes (`json_each(?)` / `JSON_TABLE(?)`). `columns` are the write
+ * columns (INSERT `values.*` / UPDATE `set.*`); `keyColumns` the UPDATE match keys.
+ */
+export interface BatchWriteAuthoringSpec {
+  readonly table: string;
+  /** INSERT value columns / UPDATE set columns. */
+  readonly columns: readonly string[];
+  /** UPDATE match-key columns (`updateMany` — omitted for INSERT). */
+  readonly keyColumns?: readonly string[];
+  /** The ONE opaque rows input (a `$`-ref to the record-set array value the consumer binds). */
+  readonly rows: Recorded;
+  /** Conflict-target column list (upsertMany) — comma-joined, as the single-write `onConflict` port. */
+  readonly onConflict?: string;
+  /** Conflict action (upsertMany) — `'update'` (default) or `'ignore'`. */
+  readonly onConflictAction?: 'update' | 'ignore';
+}
+
+/**
+ * Emit an `executeSQL` batch-write node (createMany / upsertMany / updateMany) as ONE statement whose
+ * `?`(s) all bind the ONE opaque `rows` array value (bc#156). The static batch SQL is the SSoT
+ * {@link compileWriteNode} json-batch form (`json_each`/`JSON_TABLE`) — its text is record-count
+ * INDEPENDENT (it expands the JSON server-side), so the native path lowers it to ONE `execute_sql`
+ * with `params = [rows, …]` (nQ copies of the SAME opaque input — the json-batch SSoT binds every `?`
+ * to the same records-JSON). NO `__batchRows` marker, NO per-column parallel arrays: the marker/refs
+ * are the TS ir-exec build shape, replaced HERE by the single opaque `rows` value the transport
+ * json-encodes. Native-clean: ONE statement for N records (safety: 1 query).
+ */
+export function emitBatchWrite(L: ComponentFns, component: 'Insert' | 'Update', spec: BatchWriteAuthoringSpec, dialect: DialectName): Recorded {
+  // Derive the static batch SQL + the `?` count from the SSoT compile. Only the COLUMN NAMES shape the
+  // SQL text; the parallel-array value refs feed the ir-exec `__batchRows` marker, which the native
+  // path discards — so bind placeholder `0` refs to enumerate columns, then replace the params below.
+  const base: Record<string, unknown> = { table: spec.table, batch: 'true' };
+  if (component === 'Insert') {
+    for (const c of spec.columns) base[`values.${c}`] = 0;
+    if (spec.onConflict !== undefined) base.onConflict = spec.onConflict;
+    if (spec.onConflictAction !== undefined) base.onConflictAction = spec.onConflictAction;
+  } else {
+    for (const c of spec.keyColumns ?? []) base[`key.${c}`] = 0;
+    for (const c of spec.columns) base[`set.${c}`] = 0;
+  }
+  const op = compileWriteNode({ component, ports: toIrPorts(base) } as never, dialect);
+  // The json-batch SSoT binds the SAME records-JSON to every `?` (updateMany: one per SET sub-select +
+  // the WHERE). `op.params.length` is that `?` count — bind the ONE opaque `rows` value that many times.
+  const params = Array.from({ length: op.params.length }, () => spec.rows);
+  // Batch writes are non-RETURNING (v1: createMany/upsertMany/updateMany return null — see ops.ts).
+  return (L.executeSQL as (p: Record<string, unknown>) => Recorded)({ sql: op.sql, params, write: true, returning: false, bigint: false });
 }
 import type { InsertManyBuildOptions } from './makesql/compile-crud';
 import type { UpdateManyBuildOptions } from '../drivers/types';
@@ -421,16 +472,21 @@ function buildRelationGraph(L: ComponentFns, parents: Recorded, parentTable: str
  * Single-key only for now (composite `parentKeys` is a follow-up).
  */
 function attachRelation(L: ComponentFns, parentsResult: Recorded, parentsForKeys: Recorded, op: RelationOp, parentTable: string, dialect: DialectName, keyType?: KeyTypeResolver): Recorded {
-  const parentKey = op.parentKey ?? '';
-  const targetKey = op.targetKey ?? '';
+  // The ordered parent/child key-column TUPLES (single-key → 1 column; composite → the tuple) — the
+  // SSoT {@link parentKeyCols}/{@link targetKeyCols} (relation.ts). Passing the WHOLE tuple to the
+  // pluck/group leaves is what makes a composite relation group by the full key identity (not the old
+  // `op.parentKey ?? ''` scalar collapse → cartesian). B-2 (NATIVE_RELATION_PLAN.md).
+  const parentKeys = parentKeyCols(op);
+  const targetKeys = targetKeyCols(op);
   const pluck = L.pluck as (p: Record<string, unknown>) => Recorded & { as(t: unknown): Recorded };
   const executeSQL = L.executeSQL as (p: Record<string, unknown>) => Recorded;
   const group = L.group as (p: Record<string, unknown>) => Recorded;
   // Key array is an opaque transport value (bc#156): stamp its element type via `.as` from the parent
-  // key column's de-box scalar (the SAME `static columns` de-box SoT the read projection uses). Without
+  // key column's de-box scalar (single-key → the scalar array; composite → an array of tuples). Without
   // a resolver the element type defaults to `float` (a JS-number key) — the common INT-key shape.
-  const elem = keyType !== undefined ? keyType(parentTable, parentKey) : 'float';
-  const ids = pluck({ rows: parentsForKeys, col: parentKey }).as({ arr: elem });
+  const elem = keyType !== undefined ? keyType(parentTable, parentKeys[0]) : 'float';
+  const asType = parentKeys.length === 1 ? { arr: elem } : { arr: { arr: elem } };
+  const ids = pluck({ rows: parentsForKeys, col: [...parentKeys] }).as(asType);
   // A relation child fetch is a READ (`write:false`, non-RETURNING) — the executeSQL leaf requires the
   // full read intent port set, same as `emitRead`.
   // The child fetch is a READ: carry `readColumns` (child table + projection) so `lowerReadColumns`
@@ -441,7 +497,7 @@ function attachRelation(L: ComponentFns, parentsResult: Recorded, parentsForKeys
   let children = executeSQL(childPortObj);
   // The grandchild's parent-key column lives on THIS relation's child table (`op.targetTable`).
   for (const gc of op.childRelations ?? []) children = attachRelation(L, children, children, gc, op.targetTable ?? parentTable, dialect, keyType);
-  return group({ parents: parentsResult, children, pk: parentKey, fk: targetKey, into: op.name, single: op.kind !== 'hasMany' });
+  return group({ parents: parentsResult, children, pk: [...parentKeys], fk: [...targetKeys], into: op.name, single: op.kind !== 'hasMany' });
 }
 
 /** Assemble the `Count` ports (`table`, then optional `where`) — external to the scanned frame. */

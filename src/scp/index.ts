@@ -434,6 +434,7 @@ export {
   compileReadContract,
   emitRead,
   emitWrite,
+  emitBatchWrite,
   createAuthoring,
   updateAuthoring,
   deleteAuthoring,

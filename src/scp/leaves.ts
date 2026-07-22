@@ -248,12 +248,15 @@ export const executeSQL = defineLeaf(
  */
 export const pluck = defineLeaf(
   'pluck',
-  { cardinality: 'one' as const, ports: { rows: { arr: 'value' } as const, col: 'string' as const }, output: { arr: 'string' as const } },
-  (p: { rows: Array<Record<string, unknown>>; col: string }): string[] => {
-    // bc#156 bridge: the key array is an opaque value list; its concrete element type is stamped by
-    // the authoring `.as`. The cast satisfies the `defineLeaf` return-type gate until #156 lands an
-    // opaque-value port type.
-    return dedupeKeyTuples(p.rows, [p.col]).map((t) => t[0]) as unknown as string[];
+  { cardinality: 'one' as const, ports: { rows: { arr: 'value' } as const, col: { arr: 'string' } as const }, output: { arr: 'string' as const } },
+  (p: { rows: Array<Record<string, unknown>>; col: string[] }): string[] => {
+    // `col` is the ordered parent-key column tuple (single-key → 1 column; composite → the tuple). The
+    // deduped key SET the child fetch binds (the SAME shape `relation.ts bindKeys` produces for the
+    // MySQL/SQLite JSON param): single-key → a flat scalar array (`json_each` scalar `value`); composite
+    // → an array-of-tuples (`json_each` per-ordinal `$[i]`). bc#156 bridge: the array is opaque wire —
+    // the cast satisfies the `defineLeaf` return-type gate (the concrete element type is authoring `.as`d).
+    const tuples = dedupeKeyTuples(p.rows, p.col);
+    return (p.col.length === 1 ? tuples.map((t) => t[0]) : tuples.map((t) => [...t])) as unknown as string[];
   },
 );
 
@@ -272,16 +275,20 @@ export const group = defineLeaf(
     ports: {
       parents: { arr: 'value' } as const,
       children: { arr: 'value' } as const,
-      pk: 'string' as const,
-      fk: 'string' as const,
+      pk: { arr: 'string' } as const,
+      fk: { arr: 'string' } as const,
       into: 'string' as const,
       single: 'bool' as const,
     },
     output: { obj: {} } as const,
   },
-  (p: { parents: Array<Record<string, unknown>>; children: Array<Record<string, unknown>>; pk: string; fk: string; into: string; single: boolean }): Array<Record<string, unknown>> => {
-    const byKey = groupByKey(p.children, [p.fk]);
-    return p.parents.map((par) => ({ ...par, [p.into]: attachToParent(par, [p.pk], byKey, p.single === true) }));
+  // `pk`/`fk` are the ordered parent/child key-column tuples (single-key → 1 column; composite → the
+  // tuple) — the grouping core keys on the WHOLE tuple identity, so a composite relation nests by the
+  // full key (no `''`-collapse cartesian). The core already accepts the column list; the leaf just
+  // widens the port from a scalar to the tuple.
+  (p: { parents: Array<Record<string, unknown>>; children: Array<Record<string, unknown>>; pk: string[]; fk: string[]; into: string; single: boolean }): Array<Record<string, unknown>> => {
+    const byKey = groupByKey(p.children, p.fk);
+    return p.parents.map((par) => ({ ...par, [p.into]: attachToParent(par, p.pk, byKey, p.single === true) }));
   },
 );
 
