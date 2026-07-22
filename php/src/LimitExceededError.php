@@ -61,4 +61,19 @@ final class LimitExceededError extends \RuntimeException
             . 'an N+1 query pattern. Set a higher limit or use pagination.'
         );
     }
+
+    /**
+     * The SHARED post-fetch runaway check (SSoT) — the ONE `count > limit ⇒ throw` primitive the
+     * relation-context guard ({@see Relation::runRelationOp}) calls, so no path re-implements the
+     * comparison or the error assembly (PHP port of the python `LimitExceededError.check` / rust
+     * `LimitExceededError::check` / go `CheckLimit` SSoT). Returns (no-op) when within the cap;
+     * throws otherwise. `find`-context reads run their own node-matching guard inline
+     * ({@see StaticBundle}) — the same asymmetry as the python port.
+     */
+    public static function check(int $limit, int $count, string $context, ?string $model = null, ?string $relation = null): void
+    {
+        if ($count > $limit) {
+            throw new self($limit, $count, $context, $model, $relation);
+        }
+    }
 }

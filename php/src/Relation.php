@@ -25,25 +25,6 @@ final class Relation
     private const PG_ARRAY_CAST_TOKEN = '@@PG_ARRAY_CAST@@';
 
     /**
-     * Mirror TS `String(v)` for the key-identity used by dedupe + grouping (bool → 'true'/'false',
-     * a numeric key prints without a trailing `.0` — a scanned int column is a PHP int/string).
-     */
-    private static function stringifyKey(mixed $v): string
-    {
-        if (is_bool($v)) {
-            return $v ? 'true' : 'false';
-        }
-        if (is_float($v)) {
-            // A whole float prints as an integer (JS String(7) === "7").
-            if ($v === floor($v) && is_finite($v)) {
-                return (string) (int) $v;
-            }
-            return (string) $v;
-        }
-        return (string) $v;
-    }
-
-    /**
      * The ordered PARENT / CHILD key columns (single-key → 1-element; composite → the tuple, #47 item 1).
      *
      * @return list<string>
@@ -66,18 +47,9 @@ final class Relation
     }
 
     /**
-     * The stringified key identity for dedupe/grouping (tuple → space-joined scalars, mirror of TS).
-     *
-     * @param list<mixed> $values
-     */
-    private static function keyIdentity(array $values): string
-    {
-        return implode(' ', array_map([self::class, 'stringifyKey'], $values));
-    }
-
-    /**
-     * The deduped, non-null parent-key TUPLES (insertion order preserved). Drop a tuple if ANY key
-     * column is null; dedupe on the stringified tuple identity. Port of TS dedupeKeys.
+     * The deduped, non-null parent-key TUPLES (insertion order preserved). Thin delegator to the
+     * shared grouping core ({@link Grouping::dedupeKeyTuples}) — the SSoT for the drop/dedupe/tuple
+     * semantics (no duplicated grouping logic).
      *
      * @param list<\stdClass> $parents
      * @param list<string> $keyCols
@@ -85,30 +57,7 @@ final class Relation
      */
     public static function dedupeKeys(array $parents, array $keyCols): array
     {
-        $seen = [];
-        $out = [];
-        foreach ($parents as $p) {
-            $tuple = [];
-            $anyNull = false;
-            foreach ($keyCols as $c) {
-                $v = $p->{$c} ?? null;
-                if ($v === null) {
-                    $anyNull = true;
-                    break;
-                }
-                $tuple[] = $v;
-            }
-            if ($anyNull) {
-                continue;
-            }
-            $s = self::keyIdentity($tuple);
-            if (isset($seen[$s])) {
-                continue;
-            }
-            $seen[$s] = true;
-            $out[] = $tuple;
-        }
-        return $out;
+        return Grouping::dedupeKeyTuples($parents, $keyCols);
     }
 
     /**
@@ -177,8 +126,11 @@ final class Relation
         // per-parent-`limit` relation whose fanout is already bounded). Thrown BEFORE grouping so an
         // over-cap read never assembles an unbounded result set. Cap read from the artifact ONLY.
         $rowList = is_array($rows) ? $rows : [];
-        if (isset($op->hardLimit) && count($rowList) > (int) $op->hardLimit) {
-            throw new LimitExceededError(
+        if (isset($op->hardLimit)) {
+            // The relation-context arm of the shared runaway check (SSoT) — the SAME `count > limit ⇒
+            // throw` primitive, so the comparison + error assembly live in ONE place (mirror of
+            // python relation.py). ABSENT `op->hardLimit` ⇒ NO check.
+            LimitExceededError::check(
                 (int) $op->hardLimit,
                 count($rowList),
                 'relation',
@@ -186,12 +138,9 @@ final class Relation
                 (string) $op->name,
             );
         }
-        foreach ($rowList as $row) {
-            $tuple = array_map(static fn ($c) => $row->{$c} ?? null, $tCols);
-            $k = self::keyIdentity($tuple);
-            $batch[$k][] = $row;
-        }
-        return $batch;
+        // Group the child rows by target-key identity via the shared core (a null/absent target key
+        // drops the child — the SSoT drop semantics).
+        return Grouping::groupByKey($rowList, $tCols);
     }
 
     /**
@@ -204,21 +153,10 @@ final class Relation
      */
     public static function distributeToParent(\stdClass $op, \stdClass $parent, array $batch): mixed
     {
-        $tuple = [];
-        $anyNull = false;
-        foreach (self::parentKeyCols($op) as $c) {
-            $v = $parent->{$c} ?? null;
-            if ($v === null) {
-                $anyNull = true;
-                break;
-            }
-            $tuple[] = $v;
-        }
-        $rows = $anyNull ? null : ($batch[self::keyIdentity($tuple)] ?? null);
-        if ((string) $op->kind === 'hasMany') {
-            return $rows ?? [];
-        }
-        return ($rows !== null && count($rows) > 0) ? $rows[0] : null;
+        // Delegate to the shared grouping core; cardinality maps onto its `single` flag (hasMany →
+        // list, belongsTo/hasOne → single or null). No duplicated grouping logic.
+        $single = (string) $op->kind !== 'hasMany';
+        return Grouping::attachToParent($parent, self::parentKeyCols($op), $batch, $single);
     }
 
     /**
@@ -279,13 +217,48 @@ final class Relation
             if (!($relations instanceof \stdClass) || !property_exists($relations, $name)) {
                 throw new \RuntimeException("declarative select: relation '{$name}' is not declared on this model");
             }
-            $op = $relations->{$name};
-            $relCtx = self::driverForOp($op, $ctx, $connCtx);
-            $batch = self::runRelationOp($op, $rows, $relCtx);
-            foreach ($rows as $o) {
-                $o->{$name} = self::distributeToParent($op, $o, $batch);
-            }
+            self::hydrateRelation($relations->{$name}, $rows, $ctx, $connCtx, $name);
         }
         return $rows;
+    }
+
+    /**
+     * Hydrate ONE relation edge over $parents (ONE batched query, N+1-free), then RECURSE into
+     * $op->childRelations — the batched-map-over-batched-map chain the native codegen path lowers,
+     * reproduced for the runtime/ir-exec path.
+     *
+     * One edge = one query, INDEPENDENT of the parent count: runRelationOp dedupes the parent keys and
+     * fetches ALL children with ONE `WHERE fk IN (…)` batch, then the grouping SSoT nests them onto each
+     * parent via distributeToParent. A nested level batches over the FLATTENED child rows fetched here —
+     * the EXACT objects attached to the parents (PHP object handles), so grandchildren hydrate in place
+     * (users→posts→comments = 3 queries, not 1 + N + N·M). No new mechanism: every level runs the SAME
+     * runRelationOp + grouping core.
+     *
+     * @param list<\stdClass>              $parents
+     * @param array<string,ExecutionContext> $connCtx
+     */
+    private static function hydrateRelation(\stdClass $op, array $parents, ExecutionContext $ctx, array $connCtx, string $attachName): void
+    {
+        $relCtx = self::driverForOp($op, $ctx, $connCtx);
+        $batch = self::runRelationOp($op, $parents, $relCtx);
+        foreach ($parents as $p) {
+            $p->{$attachName} = self::distributeToParent($op, $p, $batch);
+        }
+        $childOps = $op->childRelations ?? null;
+        if (is_array($childOps) && $childOps !== []) {
+            // The flattened child rows (each child appears ONCE, keyed by its target tuple) = the next
+            // level's parent set. Empty ⇒ no grandchild query (short-circuit, still N+1-free).
+            $childRows = [];
+            foreach ($batch as $group) {
+                foreach ($group as $child) {
+                    $childRows[] = $child;
+                }
+            }
+            if ($childRows !== []) {
+                foreach ($childOps as $childOp) {
+                    self::hydrateRelation($childOp, $childRows, $ctx, $connCtx, (string) $childOp->name);
+                }
+            }
+        }
     }
 }
