@@ -119,13 +119,14 @@ class BenchTx extends lm.SemanticBehavior {
     const user = lm.emitWrite(L, 'Update', { table: 'benchmark_users', 'set.name': $.name, where: [lm.whereEq($.id, $.id)], returning: 'id' }, 'sqlite');
     return user.map(($u: never) => lm.emitWrite(L, 'Update', { table: 'benchmark_posts', 'set.title': $.title, where: [lm.whereEq(($u as { author_id: unknown }).author_id, ($u as { id: unknown }).id)] }, 'sqlite')).as(TX_DEP);
   }
-  // delete: create-then-delete tx — INSERT a fresh user RETURNING id → DELETE the EXACT created row,
-  // matched by its RETURNING primary key AND its inserted email. The `id` operand is the RETURNING-chain
-  // key (matching benchmark.ts's `delete where id = user.id`); the `email` operand is the input the row
-  // was inserted with. (An id-ONLY predicate is a single typed-scalar bound param, which the bc emitter
-  // lowers to `Vec<f64>` instead of the transport's `Vec<WireValue>` — it only coerces a typed scalar to
-  // wire when a `value` input param is also present; binding the email input keeps the bound params a
-  // wire list. This is a narrow bc codegen observation, not a tx concern — see the report.)
+  // delete: create-then-delete tx — INSERT a fresh user RETURNING id → DELETE the created row.
+  // TODO(bc#172): the TRUE semantic is id-ONLY (`DELETE WHERE id = user.id`). Today a bound scalar
+  // coerces to `WireValue` (transport `&[WireValue]`) only when the node has a `value` input port
+  // (bc#156); an id-only predicate has none, so it lowers to `Vec<f64>` and mismatches the transport.
+  // bc#172 is being FIXED on the BC side (the emitter will coerce a bound scalar in a transport
+  // value-position to `WireValue` regardless) — once that lands, revert to the pure id-only predicate.
+  // Until then, INTERIM: the extra `email = $.email` (a `value` input param) keeps the bound params a
+  // wire list. Faithful (deletes the exact created row) but NOT the pure id-only semantic.
   delete($: { email: unknown; name: unknown }) {
     const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id' }, 'sqlite');
     return user.map(($u: never) => lm.emitWrite(L, 'Delete', { table: 'benchmark_users', where: [lm.whereEq(($u as { id: unknown }).id, ($u as { id: unknown }).id), lm.whereEq($.email, $.email)] }, 'sqlite')).as(TX_DEP);
