@@ -66,12 +66,39 @@ import {
   notInSubquery as scpNotInSubquery,
   exists as scpExists,
   notExists as scpNotExists,
-  compileBundle,
+  emitRead,
   type In,
+  type BehaviorModelContract,
 } from '../../src/scp/index';
-import { compileReadGraph, renderReadPrimary } from '../../src/scp/makesql/static-bundle';
+import { evaluateExpression } from 'behavior-contracts';
 
 type Rendered = { sql: string; params: unknown[] };
+
+/**
+ * Render the PRIMARY read leaf of a published contract to `{sql, params}` (#143) — the leaf-path
+ * replacement for the retired `compileReadGraph`→`renderReadPrimary`. The WHERE was lowered into the
+ * `executeSQL` node's static `sql` at publish (via the SAME `lowerWherePort` builder the retired path
+ * used, so byte-identical); render its `?`→`$N` for the dialect and evaluate each deferred value-spec
+ * param against the input (bc `evaluateExpression`, as `renderReadPrimary` did).
+ */
+function renderPrimaryRead(contract: BehaviorModelContract, entry: string, input: Record<string, unknown>, dialect: Dialect): Rendered {
+  const comp = contract.methods[entry].component;
+  const node = comp.body.find(
+    (n) => !('cond' in n) && !('map' in n) && (n as { component?: string }).component === 'executeSQL' && (n as { ports?: { write?: unknown } }).ports?.write !== true,
+  );
+  if (node === undefined) throw new Error(`makesql-golden: no read leaf for '${entry}'`);
+  const ports = (node as { ports: { sql?: unknown; params?: { arr?: unknown[] } } }).ports;
+  const params = (ports.params?.arr ?? []).map((spec) => normalizeParam(evaluateExpression(spec, input)));
+  return { sql: renderPlaceholders(String(ports.sql), dialect), params };
+}
+
+/** bc evaluates `int` to BigInt; the driver boundary (and the retired `renderReadPrimary`) normalizes a
+ * safe-range BigInt back to a JS number, recursing into array params (tuple-IN / IN-list). */
+function normalizeParam(v: unknown): unknown {
+  if (typeof v === 'bigint') return v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v;
+  if (Array.isArray(v)) return v.map(normalizeParam);
+  return v;
+}
 
 /** Assemble a compiled makeSQL bundle and render the dialect placeholder form. */
 function render(node: MakeSQL, dialect: Dialect): Rendered {
@@ -283,8 +310,8 @@ describe('A2 (#97). typed subquery / parentRef sugar — byte-matches v1 typed A
   void Usr;
 
   // The v2 typed builders emit a bc-authored WHERE member that only reaches SQL through the
-  // read-graph compile (compileBundle), so we author each construct in a tiny SemanticBehavior,
-  // compile it, and read back the rendered whereFragment statement (byte SQL + params).
+  // publish-time WHERE lowering, so we author each construct in a tiny SemanticBehavior, publish it,
+  // and read back the WHERE fragment from the read leaf's lowered sql (byte SQL + params).
   const L = components();
   const users_id = scpCol('users', 'id');
   const users_name = scpCol('users', 'name');
@@ -299,29 +326,25 @@ describe('A2 (#97). typed subquery / parentRef sugar — byte-matches v1 typed A
       orders: { user_id: 'INTEGER' },
     };
     InSub(_$: In<Record<string, never>>) {
-      return L.Select({ table: 'posts', select: ['id'], where: [scpInSubquery(_$, [posts_author, users_id], [[users_name, 'Ada']])] });
+      return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [scpInSubquery(_$, [posts_author, users_id], [[users_name, 'Ada']])] }, 'sqlite');
     }
     NotInSub(_$: In<Record<string, never>>) {
-      return L.Select({ table: 'posts', select: ['id'], where: [scpNotInSubquery(_$, [posts_author, users_id], [[users_name, 'Ada']])] });
+      return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [scpNotInSubquery(_$, [posts_author, users_id], [[users_name, 'Ada']])] }, 'sqlite');
     }
     ExistsCorr(_$: In<Record<string, never>>) {
-      return L.Select({ table: 'posts', select: ['id'], where: [scpExists(_$, [[orders_userid, scpParentRef(posts_id)]])] });
+      return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [scpExists(_$, [[orders_userid, scpParentRef(posts_id)]])] }, 'sqlite');
     }
     NotExistsCorr(_$: In<Record<string, never>>) {
-      return L.Select({ table: 'posts', select: ['id'], where: [scpNotExists(_$, [[orders_userid, scpParentRef(posts_id)]])] });
+      return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [scpNotExists(_$, [[orders_userid, scpParentRef(posts_id)]])] }, 'sqlite');
     }
   }
-  const typed = publishBehaviors(TypedSub);
-
-  /** The rendered WHERE-fragment `{sql,params}` the typed builder produces for a dialect. */
+  /** The rendered WHERE-fragment `{sql,params}` the typed builder produces for a dialect (#143: the
+   * WHERE is now lowered into the read leaf's static sql at publish — extract the clause after WHERE). */
   function typedFragment(entry: string, dialect: Dialect): Rendered {
-    const bundle = compileBundle(typed, entry, [], dialect);
-    const stmts = bundle.readGraph?.statementsById?.n0 ?? [];
-    const frag = stmts.find((s) => (s as { whereFragment?: boolean }).whereFragment) as Rendered | undefined;
-    if (!frag) throw new Error(`no whereFragment for ${entry} [${dialect}]`);
-    // The stored fragment carries `?` placeholders (renumbered to the dialect form at final assembly);
-    // render them in isolation to compare against the v1 DBConditions golden (also renderPlaceholders'd).
-    return { sql: renderPlaceholders(frag.sql, dialect), params: frag.params };
+    const full = renderPrimaryRead(publishBehaviors(TypedSub, { dialect }), entry, {}, dialect);
+    const idx = full.sql.indexOf(' WHERE ');
+    if (idx < 0) throw new Error(`no WHERE fragment for ${entry} [${dialect}]`);
+    return { sql: full.sql.slice(idx + ' WHERE '.length), params: full.params };
   }
 
   for (const dialect of dialects) {
@@ -1372,8 +1395,8 @@ describe('C. Composite STATIC per-parent-LIMIT relation form (#47 last gap)', ()
 // D. AUTHORING → live bundle path (V0 R2–R6) — the ADDED where-primitives /
 //    SELECT_PORTS reach a replayable bundle and render V1-SOURCED SQL byte-for-byte.
 //
-// These assert the LIVE-reachable path (`L.Select(...)` → compileReadGraph →
-// renderReadPrimary — the SAME path the language runtimes replay) reproduces the
+// These assert the LIVE-reachable path (`emitRead(...)` → publishBehaviors lowers the WHERE into the
+// read leaf's static sql — {@link renderPrimaryRead} renders it) reproduces the
 // ORIGINAL builder output (`DBConditions`/`dbCast`/`dbDynamic`/`dbImmediate`/`dbTupleIn`/
 // `DBSubquery`/`DBExists` for WHERE; `compileSelect`=`_buildSelectSQL` for the ports),
 // on EVERY dialect where the text differs. Nothing is compared v2-to-v2: each golden
@@ -1390,36 +1413,34 @@ describe('D. authoring→bundle path renders V1-SOURCED SQL (V0 R2–R6, all dia
       recent: { id: 'INTEGER' },
     };
     // R3-remainder WHERE primitives
-    Btw($: In<{ lo: number; hi: number }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereBetween($, 'age', $.lo, $.hi)] }); }
-    Lk($: In<{ p: string }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereLike($, 'name', $.p)] }); }
-    ILk($: In<{ p: string }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereILike($, 'name', $.p)] }); }
-    Cst($: In<{ v: string }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereCast($, 'id', 'uuid', $.v)] }); }
-    Dyn($: In<{ q: string }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereDynamic($, 'search', "to_tsvector('en', ?)", [$.q])] }); }
-    Imm(_$: In<Record<string, never>>) { return L.Select({ table: 'posts', select: ['id'], where: [whereImmediate(_$, 'created_at', 'NOW()')] }); }
-    Tpl(_$: In<Record<string, never>>) { return L.Select({ table: 'posts', select: ['id'], where: [whereTupleIn(_$, ['tenant_id', 'id'], [[1, 10], [2, 20]])] }); }
+    Btw($: In<{ lo: number; hi: number }>) { return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [whereBetween($, 'age', $.lo, $.hi)] }, 'sqlite'); }
+    Lk($: In<{ p: string }>) { return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [whereLike($, 'name', $.p)] }, 'sqlite'); }
+    ILk($: In<{ p: string }>) { return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [whereILike($, 'name', $.p)] }, 'sqlite'); }
+    Cst($: In<{ v: string }>) { return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [whereCast($, 'id', 'uuid', $.v)] }, 'sqlite'); }
+    Dyn($: In<{ q: string }>) { return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [whereDynamic($, 'search', "to_tsvector('en', ?)", [$.q])] }, 'sqlite'); }
+    Imm(_$: In<Record<string, never>>) { return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [whereImmediate(_$, 'created_at', 'NOW()')] }, 'sqlite'); }
+    Tpl(_$: In<Record<string, never>>) { return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [whereTupleIn(_$, ['tenant_id', 'id'], [[1, 10], [2, 20]])] }, 'sqlite'); }
     // R2 subquery / EXISTS
     Sub(_$: In<Record<string, never>>) {
-      return L.Select({ table: 'users', select: ['id'], where: [whereInSubquery(_$, 'users.id', { sql: 'SELECT orders.user_id FROM orders WHERE orders.status = ?', params: ['paid'] })] });
+      return emitRead(L, 'Select', { table: 'users', select: ['id'], where: [whereInSubquery(_$, 'users.id', { sql: 'SELECT orders.user_id FROM orders WHERE orders.status = ?', params: ['paid'] })] }, 'sqlite');
     }
     NotIn(_$: In<Record<string, never>>) {
-      return L.Select({ table: 'users', select: ['id'], where: [whereInSubquery(_$, 'users.id', { sql: 'SELECT banned.user_id FROM banned' }, true)] });
+      return emitRead(L, 'Select', { table: 'users', select: ['id'], where: [whereInSubquery(_$, 'users.id', { sql: 'SELECT banned.user_id FROM banned' }, true)] }, 'sqlite');
     }
     Ex(_$: In<Record<string, never>>) {
-      return L.Select({ table: 'users', select: ['id'], where: [whereExists(_$, { sql: 'SELECT 1 FROM orders WHERE orders.user_id = users.id' })] });
+      return emitRead(L, 'Select', { table: 'users', select: ['id'], where: [whereExists(_$, { sql: 'SELECT 1 FROM orders WHERE orders.user_id = users.id' })] }, 'sqlite');
     }
     NotEx(_$: In<Record<string, never>>) {
-      return L.Select({ table: 'users', select: ['id'], where: [whereExists(_$, { sql: 'SELECT 1 FROM orders WHERE orders.user_id = users.id' }, true)] });
+      return emitRead(L, 'Select', { table: 'users', select: ['id'], where: [whereExists(_$, { sql: 'SELECT 1 FROM orders WHERE orders.user_id = users.id' }, true)] }, 'sqlite');
     }
     // R3 FOR UPDATE, R4 CTE, R5 JOIN, R6 append/HAVING
-    Fu($: In<{ id: number }>) { return L.Select({ table: 'posts', select: ['id'], where: [whereEq($.id, $.id)], forUpdate: 'true' }); }
-    Hav(_$: In<Record<string, never>>) { return L.Select({ table: 'posts', select: ['author_id', 'COUNT(*) as n'], group: 'author_id', append: 'HAVING COUNT(*) > 1' }); }
-    Jn(_$: In<Record<string, never>>) { return L.Select({ table: 'posts', select: ['posts.id', 'users.name'], join: 'JOIN users ON users.id = posts.author_id' }); }
-    Cte(_$: In<Record<string, never>>) { return L.Select({ table: 'recent', select: ['id'], cte: { name: 'recent', sql: 'SELECT id FROM posts WHERE status = ?' }, cteParams: ['live'] }); }
+    Fu($: In<{ id: number }>) { return emitRead(L, 'Select', { table: 'posts', select: ['id'], where: [whereEq($.id, $.id)], forUpdate: 'true' }, 'sqlite'); }
+    Hav(_$: In<Record<string, never>>) { return emitRead(L, 'Select', { table: 'posts', select: ['author_id', 'COUNT(*) as n'], group: 'author_id', append: 'HAVING COUNT(*) > 1' }, 'sqlite'); }
+    Jn(_$: In<Record<string, never>>) { return emitRead(L, 'Select', { table: 'posts', select: ['posts.id', 'users.name'], join: 'JOIN users ON users.id = posts.author_id' }, 'sqlite'); }
+    Cte(_$: In<Record<string, never>>) { return emitRead(L, 'Select', { table: 'recent', select: ['id'], cte: { name: 'recent', sql: 'SELECT id FROM posts WHERE status = ?' }, cteParams: ['live'] }, 'sqlite'); }
   }
   function authored(entry: string, input: Record<string, unknown>, dialect: Dialect): Rendered {
-    const g = compileReadGraph(publishBehaviors(Q), dialect, entry);
-    const r = renderReadPrimary(g, input);
-    return { sql: r.sql, params: r.params };
+    return renderPrimaryRead(publishBehaviors(Q, { dialect }), entry, input, dialect);
   }
   /** v1 golden: a bare SELECT head + a DBConditions-built WHERE (the exact v1 assembly). */
   function v1Where(cond: Record<string, unknown>, dialect: Dialect, table = 'posts', cols = 'id'): Rendered {
