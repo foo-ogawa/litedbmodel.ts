@@ -1,18 +1,21 @@
 {
   "generator": "scripts/vendor-behavior-contracts-php.mjs",
   "upstream": {
-    "path": "/Users/ogawa/Work/my-libs/behavior-contracts/php/src",
-    "version": "0.8.0",
-    "commit": "d0e6b725cde4312fc12e1bcdb2376358d91b799c"
+    "path": "/Users/ogawa/Work/my-libs/behavior-contracts-wt-170/php/src",
+    "version": "0.8.17",
+    "commit": "a30d92b87f1968fd92ba71440a7c5f7afb8ff539"
   },
   "namespace": "LiteDbModel\\Runtime\\BehaviorContracts",
   "files": {
     "Constants.php": "6e5e8953b8179c0e8afb5ef9ba62797146ad3727053c1132ba802613a68c6ab9",
-    "ExprFailure.php": "105d9d591abf1f26a703d146d13c95d2a26a6d6fdba41157410202ca6a5a4346",
+    "ExprFailure.php": "6034149ce529b3b61e9a8e37c952949f1cd560f4e27c073adba404b38172afa9",
     "ExprEval.php": "b2aab13ddd0fd4482bd9a9d51d5e78652e8d4a77b66e6b79c8750f1cf23b0bd0",
-    "PlanFailure.php": "fb1e04b71eaf2f83520486d6ce81f2143e5e94316d892c7570a7af78eee62164",
-    "Plan.php": "5c4b1237cb1fc8a59eee396d56f8dfe352804feee139a1e98f98349cdb5e74bc",
-    "BehaviorFailure.php": "81aa22db59b8fa4f8760586a14ee418e67696689b5b6c600582252d827c4f22a",
-    "Behavior.php": "4bf8a574cf4b827bf0187133f94ab2d811ef1d6f65a9a51aa168e5cb935579c8"
+    "PlanFailure.php": "69b3a846807a2d064f58afc187724c6195785a238eb8290eb272ab9f40007f88",
+    "Plan.php": "8f5ed9354994890dfe3e106d91e8b5afd6376f9f306b0c3464faac4e974231ee",
+    "BehaviorFailure.php": "34f15ee9cba32dd762dcb97a8b510c5b0612fe2512c921ffd31a2d65ba492f46",
+    "Behavior.php": "d6fab7f6cb6faf2d15c15a4149a42fb4500b0436b6cd2a58171b9ff77f44010d",
+    "SpecVersions.php": "d25fcc00644bdd15259591ca637d8679bbfdcf892c0d2fc51a5ff5fd768d2e0f",
+    "FingerprintFailure.php": "754f909a0c5fce0bd15c06dc2a87e909d280dc0f86ef2eeed1fd17e04c32605e",
+    "Fingerprint.php": "e8dd8467f779f2580264abc673ffda04e18400e76c83405178c7a04fa6159a33"
   }
 }

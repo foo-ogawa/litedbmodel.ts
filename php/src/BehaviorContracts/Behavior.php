@@ -88,6 +88,26 @@ final class Behavior
         }
 
         $compProps = get_object_vars($comp);
+
+        // `{opt:T}` と宣言された input port（PortSchema `required:false`）は **省略可**で、値域は
+        // `T | null`。「キーごと省略」と「null を渡す」は同じ「値が無い」の 2 通りの綴りなので、省略
+        // されたキーは null に束縛する（可搬 IR が既に持つ宣言を読むだけ）。required な port と未宣言
+        // の名前は束縛しない: 未束縛のまま参照されれば UNKNOWN_BINDING（fail-closed はそのまま）。
+        $declaredPorts = $compProps['inputPorts'] ?? null;
+        if ($declaredPorts instanceof \stdClass) {
+            foreach (get_object_vars($declaredPorts) as $portName => $portSchema) {
+                if (!($portSchema instanceof \stdClass)) {
+                    continue;
+                }
+                if ((get_object_vars($portSchema)['required'] ?? null) !== false) {
+                    continue;
+                }
+                if (!array_key_exists((string) $portName, $input)) {
+                    $input[(string) $portName] = null;
+                }
+            }
+        }
+
         /** @var array<int,\stdClass> $body */
         $body = $compProps['body'] ?? [];
 
@@ -167,6 +187,17 @@ final class Behavior
                     return ExprEval::evaluate($condNode, $scope) === true;
                 };
 
+                // Element Error Policy Kind（scp-error.md）。既定 error; 未知 kind は fail-closed。
+                // skip は要素ごとの Failure がある文脈でのみ合法 — batched map は handler を 1 回だけ
+                // 呼び結果リストを 1 つ受け取るため fail-closed。
+                $elementPolicy = $m['elementPolicy'] ?? 'error';
+                if ($elementPolicy !== 'error' && $elementPolicy !== 'skip') {
+                    BehaviorFailure::raise('UNKNOWN_ELEMENT_POLICY', "map '{$op['id']}': unknown element policy '{$elementPolicy}' (fail-closed)");
+                }
+                if ($elementPolicy === 'skip' && $batched) {
+                    BehaviorFailure::raise('ELEMENT_POLICY_NOT_APPLICABLE', "map '{$op['id']}': elementPolicy 'skip' needs a per-element Failure, but a batched map takes ONE outcome for the whole batch (fail-closed)");
+                }
+
                 $keptIdx = []; // guard を通過した over 内 index（into の整列用）
                 $collected = [];
                 if ($batched) {
@@ -206,6 +237,11 @@ final class Behavior
                         $ports = self::evalPorts($mports, $scope);
                         $outcome = $handler($ports, $ctx + ['bound' => $el]);
                         if (array_key_exists('error', $outcome)) {
+                            // Element Error Policy（scp-error.md）: skip は失敗要素を落として続行
+                            // （順序保持・leaf は Error Value を保持）; error は map の Component Failure へ昇格。
+                            if ($elementPolicy === 'skip') {
+                                continue;
+                            }
                             return $outcome; // policy Kind は runPlan が解釈
                         }
                         $collected[] = $outcome['ok'];
@@ -292,10 +328,19 @@ final class Behavior
         };
 
         // runPlan は stage 実行・Skip 伝播・Policy Kind を担う。成功結果を results へ写す薄いラッパ。
-        $wrappedExec = static function (array $op, mixed $bound) use ($exec, &$results): array {
+        $wrappedExec = static function (array $op, mixed $bound) use ($exec, &$results, &$body, $idToIndex): array {
             $outcome = $exec($op, $bound);
             if (array_key_exists('ok', $outcome)) {
-                $results[$op['id']] = $outcome['ok'];
+                // outType conformance（scp-error.md）: 宣言は主張であり、ここで（runtime が宣言型と
+                // 返り値の両方を持つ地点で）検査する。不一致は構造化 Error Value を載せて loud に落とし、
+                // 値は宣言型へ正規化する（int→float widen / 欠落 opt→null）ので results が de-box と一致する。
+                $node = $body[$idToIndex[$op['id']]];
+                $nodeProps = get_object_vars($node);
+                $value = $outcome['ok'];
+                if (array_key_exists('outType', $nodeProps)) {
+                    $value = self::assertConformsToOutType($op['id'], $value, self::resultTypeOf($nodeProps, $nodeProps['outType']), 'result');
+                }
+                $results[$op['id']] = $value;
             }
             return $outcome;
         };
@@ -460,5 +505,198 @@ final class Behavior
             }
         }
         return $out;
+    }
+
+    // ── outType conformance（scp-error.md「The outType conformance check」）──────────────
+
+    /** 観測された値の wire 型名（ErrorDetail.actualWireType の語彙）。 */
+    private static function wireTypeName(mixed $v): string
+    {
+        if ($v === null) {
+            return 'null';
+        }
+        if (is_bool($v)) {
+            return 'bool';
+        }
+        if (is_int($v)) {
+            return 'int';
+        }
+        if (is_float($v)) {
+            return 'float';
+        }
+        if (is_string($v)) {
+            return 'string';
+        }
+        if (is_array($v)) {
+            return 'arr';
+        }
+        return 'obj';
+    }
+
+    /** 問題の値（stringify 済み・型復元のために再パースされることは無い）。 */
+    private static function rawValueOf(mixed $v): string
+    {
+        if (is_string($v)) {
+            return $v;
+        }
+        if (is_bool($v)) {
+            return $v ? 'true' : 'false';
+        }
+        if ($v === null) {
+            return 'null';
+        }
+        if (is_int($v)) {
+            return (string) $v;
+        }
+        if (is_float($v)) {
+            return Canonical::pyFloatRepr($v);
+        }
+        return Canonical::canonicalJson($v);
+    }
+
+    /**
+     * PortableType（型記法）の正準表記。宣言型は IR の stdClass/文字列で来る。
+     *
+     * @param mixed $t
+     */
+    private static function portableTypeNotation(mixed $t): string
+    {
+        if (is_string($t)) {
+            return $t;
+        }
+        if ($t instanceof \stdClass) {
+            $props = get_object_vars($t);
+            foreach (['opt', 'arr', 'map'] as $key) {
+                if (array_key_exists($key, $props)) {
+                    return $key . '(' . self::portableTypeNotation($props[$key]) . ')';
+                }
+            }
+            if (array_key_exists('obj', $props) && $props['obj'] instanceof \stdClass) {
+                $parts = [];
+                foreach (get_object_vars($props['obj']) as $k => $ft) {
+                    $parts[] = $k . ':' . self::portableTypeNotation($ft);
+                }
+                return 'obj{' . implode(',', $parts) . '}';
+            }
+        }
+        return '?';
+    }
+
+    /**
+     * ノードの宣言 outType を結果値の型へ正規化する。map ノードの outType は要素型なので
+     * 結果は `{arr: 要素型}`（compiler と同じ読み方）。map 以外は結果型そのもの。
+     *
+     * @param array<string, mixed> $nodeProps
+     * @param mixed $outType
+     */
+    private static function resultTypeOf(array $nodeProps, mixed $outType): mixed
+    {
+        if (array_key_exists('map', $nodeProps)) {
+            $wrap = new \stdClass();
+            $wrap->arr = $outType;
+            return $wrap;
+        }
+        return $outType;
+    }
+
+    /**
+     * @param mixed $expected
+     * @return never
+     */
+    private static function conformFail(string $code, string $message, string $kind, string $nodeId, string $field, mixed $expected, mixed $actual, bool $hasActual): never
+    {
+        $detail = [
+            'kind' => $kind,
+            'model' => $nodeId,
+            'field' => $field,
+            'expectedType' => self::portableTypeNotation($expected),
+        ];
+        if ($hasActual) {
+            $detail['actualWireType'] = self::wireTypeName($actual);
+            $detail['rawValue'] = self::rawValueOf($actual);
+        }
+        ExprFailure::raise($code, $message, $detail);
+    }
+
+    /**
+     * handler 結果を宣言 outType に照らして検査し、**その型の値へ正規化して返す**（scp-error.md）。
+     * 意味論は emitter の de-box と厳密一致させる（検査だけでなく値も同じ形へ正規化する）:
+     *   - float は int を受けて **値を float へ widen**（de-box の ParseFloat と同一・int のまま返すと発散）。
+     *   - opt は null 許容。宣言 obj フィールドのキー欠落は opt なら null へ materialize
+     *     （de-box の absent→None と同一・MISSING_PROP にしない）。required 欠落は MISSING_PROP のまま。
+     *   - obj は宣言フィールドを検査し、未宣言の余剰キーはそのまま通す（本 ruling の対象外）。
+     *
+     * @param mixed $t
+     * @return mixed 正規化後の値
+     */
+    private static function assertConformsToOutType(string $nodeId, mixed $v, mixed $t, string $field): mixed
+    {
+        if (is_string($t)) {
+            if ($t === 'float' && is_int($v) && !is_bool($v)) {
+                return (float) $v; // int → float へ widen（de-box: ParseFloat と同一）
+            }
+            $ok = match ($t) {
+                'string' => is_string($v),
+                'int' => is_int($v) && !is_bool($v),
+                'float' => is_float($v),
+                'bool' => is_bool($v),
+                'null' => $v === null,
+                default => true,
+            };
+            if (!$ok) {
+                self::conformFail('TYPE_MISMATCH', "node '{$nodeId}': {$field}: expected {$t}, got " . self::wireTypeName($v), 'typeMismatch', $nodeId, $field, $t, $v, true);
+            }
+            return $v;
+        }
+        if (!($t instanceof \stdClass)) {
+            return $v;
+        }
+        $props = get_object_vars($t);
+        if (array_key_exists('opt', $props)) {
+            if ($v === null) {
+                return null;
+            }
+            return self::assertConformsToOutType($nodeId, $v, $props['opt'], $field);
+        }
+        if (array_key_exists('arr', $props)) {
+            if (!is_array($v) || !array_is_list($v)) {
+                self::conformFail('TYPE_MISMATCH', "node '{$nodeId}': {$field}: expected arr, got " . self::wireTypeName($v), 'typeMismatch', $nodeId, $field, $t, $v, true);
+            }
+            $out = [];
+            foreach ($v as $i => $el) {
+                $out[] = self::assertConformsToOutType($nodeId, $el, $props['arr'], "{$field}[{$i}]");
+            }
+            return $out;
+        }
+        if (array_key_exists('map', $props)) {
+            if (!($v instanceof \stdClass)) {
+                self::conformFail('TYPE_MISMATCH', "node '{$nodeId}': {$field}: expected map, got " . self::wireTypeName($v), 'typeMismatch', $nodeId, $field, $t, $v, true);
+            }
+            $out = new \stdClass();
+            foreach (get_object_vars($v) as $k => $mv) {
+                $out->{$k} = self::assertConformsToOutType($nodeId, $mv, $props['map'], "{$field}.{$k}");
+            }
+            return $out;
+        }
+        if (array_key_exists('obj', $props) && $props['obj'] instanceof \stdClass) {
+            if (!($v instanceof \stdClass)) {
+                self::conformFail('TYPE_MISMATCH', "node '{$nodeId}': {$field}: expected obj, got " . self::wireTypeName($v), 'typeMismatch', $nodeId, $field, $t, $v, true);
+            }
+            // 未宣言の余剰キーを保持しつつ宣言フィールドを overlay する（shallow clone）。
+            $out = clone $v;
+            $vProps = get_object_vars($v);
+            foreach (get_object_vars($props['obj']) as $k => $ft) {
+                if (!array_key_exists($k, $vProps)) {
+                    if ($ft instanceof \stdClass && array_key_exists('opt', get_object_vars($ft))) {
+                        $out->{$k} = null; // absent opt → null（de-box: absent→None）
+                        continue;
+                    }
+                    self::conformFail('MISSING_PROP', "node '{$nodeId}': {$field}: missing property .{$k}", 'missingField', $nodeId, "{$field}.{$k}", $ft, null, false);
+                }
+                $out->{$k} = self::assertConformsToOutType($nodeId, $vProps[$k], $ft, "{$field}.{$k}");
+            }
+            return $out;
+        }
+        return $v;
     }
 }

@@ -30,15 +30,30 @@ final class PlanFailure extends \RuntimeException
      */
     public string $failureCode;
 
-    public function __construct(string $code, string $message)
+    /**
+     * 構造化された回復可能ペイロード（scp-error.md「The Error Value」）。leaf 由来を verbatim に
+     * 運ぶ（該当が無ければ null）。
+     *
+     * @var array<string, mixed>|null
+     */
+    public ?array $detail;
+
+    /**
+     * @param array<string, mixed>|null $detail
+     */
+    public function __construct(string $code, string $message, ?array $detail = null)
     {
         parent::__construct($message);
         $this->failureCode = $code;
+        $this->detail = $detail;
     }
 
-    /** @return never */
-    public static function raise(string $code, string $message): never
+    /**
+     * @param array<string, mixed>|null $detail
+     * @return never
+     */
+    public static function raise(string $code, string $message, ?array $detail = null): never
     {
-        throw new self($code, $message);
+        throw new self($code, $message, $detail);
     }
 }

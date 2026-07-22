@@ -169,12 +169,15 @@ final class Plan
         }
 
         // ── §3 失敗の Policy Kind 解釈 ──
+        // leaf 由来の detail は Policy Kind 解釈を跨いでそのまま運ぶ（scp-error.md: runtime は
+        // 運搬のみ・合成も推論もしない）。
+        $leafDetail = $outcome['detail'] ?? null;
         if ($policy === 'fail') {
-            PlanFailure::raise('OP_FAILED', "operation '{$op['id']}' failed under 'fail' policy: {$outcome['error']}");
+            PlanFailure::raise('OP_FAILED', "operation '{$op['id']}' failed under 'fail' policy: {$outcome['error']}", $leafDetail);
         }
         if ($policy === 'retry') {
             // 持続失敗は fail と同じ最終伝播へ収束させる（§3.2）。
-            PlanFailure::raise('OP_FAILED', "operation '{$op['id']}' failed under 'retry' policy (exhausted): {$outcome['error']}");
+            PlanFailure::raise('OP_FAILED', "operation '{$op['id']}' failed under 'retry' policy (exhausted): {$outcome['error']}", $leafDetail);
         }
         // policy === 'continue': 失敗 op は Port 未生成 → §2 の Skip 伝播（下流を Skip）。
         $skippedIdx[] = $i;

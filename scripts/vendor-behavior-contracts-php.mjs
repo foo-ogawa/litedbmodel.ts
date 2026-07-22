@@ -45,9 +45,13 @@ const repoRoot = resolve(scriptDir, '..');
 //     SKIP-`when` value evaluation (spec §8 closed operator set), AND
 //   - the unified component-graph execution (`Behavior::runBehavior` + `Plan::runPlan` — stage
 //     execution / Skip propagation / Policy Kind / map iteration / Φ output assembly), the SAME
-//     shared engine the TS/Python/Rust/Go runtimes use.
-// `Codec`/`Envelope`/`SpecVersions`/`Fingerprint`/`template`/`canonical` are NOT in
-// litedbmodel's runtime closure (verified: no `Codec::`/`Envelope::`/… call sites in the
+//     shared engine the TS/Python/Rust/Go runtimes use, AND
+//   - the require-time fail-closed gates of a bc `--lang php` GENERATED module (#141 native
+//     ir-exec leg): the emitted code compares `SpecVersions::{BEHAVIOR,EXPRESSION,PLAN}` against
+//     the baked spec versions (spec-skew reject) and recomputes `Fingerprint::componentGraph($ir)`
+//     against the baked fingerprint (tamper/stale reject). Both classes are therefore in the
+//     runtime closure and MUST be vendored (Fingerprint pulls FingerprintFailure).
+// `Codec`/`Envelope`/`template`/`canonical` remain outside the closure (no call sites in the
 // vendored set) and are intentionally not vendored.
 const VENDORED_FILES = [
   // Namespace-level shared constants (bc 0.2.3, foo-ogawa/behavior-contracts#… split
@@ -63,6 +67,11 @@ const VENDORED_FILES = [
   'Plan.php',
   'BehaviorFailure.php',
   'Behavior.php',
+  // Require-time gates of a bc `--lang php` GENERATED native module (#141). SpecVersions is
+  // standalone consts; Fingerprint recomputes the portable-IR fnv1a64 and raises FingerprintFailure.
+  'SpecVersions.php',
+  'FingerprintFailure.php',
+  'Fingerprint.php',
 ];
 
 const SRC_NAMESPACE = 'BehaviorContracts';
