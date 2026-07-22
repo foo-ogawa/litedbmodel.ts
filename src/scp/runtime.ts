@@ -24,7 +24,7 @@
  */
 
 import { type Scope, type Value, bindBehaviors } from 'behavior-contracts';
-import type { BehaviorModelContract, Component } from './authoring';
+import { deriveContractEffect, type BehaviorModelContract, type Component } from './authoring';
 import { contextForDriver, type AsyncExecutionContext } from './exec-context';
 import type { LeafContext, AsyncLeafContext } from './leaves';
 import { SqlFailure } from './errors';
@@ -44,12 +44,12 @@ import {
   type SqliteDb as StaticSqliteDb,
 } from './makesql/static-bundle';
 import {
-  compileWriteNode,
   deriveTransactionPlan,
   deriveBatchPlan,
   mysqlPkHint,
   executeTransaction,
   type BaseWrite,
+  type TxOp,
   type TransactionPlan,
   type TransactionResult,
 } from './makesql/tx';
@@ -128,22 +128,43 @@ export interface SqlBundle {
   readonly outputType?: unknown;
 }
 
-/** The primary catalog node of a component (the first non-cond, non-map body node). */
-function primaryNodeOf(component: Component): Component['body'][number] | undefined {
+/**
+ * The single TOP-LEVEL `executeSQL` WRITE leaf (`write:true`) of a Command component — its base write
+ * (#143). The base write is the op-independent `executeSQL` leaf `emitWrite` produces: its `sql`/`params`
+ * are already the complete tuned write (the WHERE lowered post-compile by `lowerRecordedWhere`), so the
+ * write-bundle/tx spine CONSUMES them directly — there is no catalog `Insert`/`Update`/`Delete` graph node
+ * to re-compile. A `.map`/fanout-nested write (a RETURNING-chained tx, native-only) is excluded: the
+ * gate-first write-bundle path is a SINGLE top-level base write (composites carry one per named entry).
+ */
+function baseWriteLeaf(component: Component): { sql: string; params: readonly unknown[] } {
+  const writes: { sql: string; params: readonly unknown[] }[] = [];
   for (const n of component.body) {
-    if ('cond' in n) continue;
-    if ('map' in n) continue;
-    return n;
+    if ('cond' in n || 'map' in n || 'fanout' in n) continue;
+    const ref = n as { component?: string; ports?: Record<string, unknown> };
+    if (ref.component !== 'executeSQL' || ref.ports?.write !== true) continue;
+    const sql = ref.ports.sql;
+    if (typeof sql !== 'string') {
+      throw new Error(`scp write: Command '${component.name}' base write leaf carries no static 'sql' (the post-compile WHERE lowering did not run).`);
+    }
+    const paramsArr = (ref.ports.params as { arr?: unknown[] } | undefined)?.arr ?? [];
+    writes.push({ sql, params: paramsArr });
   }
-  return undefined;
+  if (writes.length === 0) {
+    throw new Error(`scp write: Command '${component.name}' has no base write (an executeSQL write leaf, write:true)`);
+  }
+  if (writes.length > 1) {
+    throw new Error(
+      `scp write: Command '${component.name}' has ${writes.length} base write leaves; the write-bundle ` +
+        `path is a SINGLE-statement Command + write-time relations (multi-write DAG is the composite path, spec §6/§13).`,
+    );
+  }
+  return writes[0];
 }
 
-/** Is a component's primary catalog node a write (Insert/Update/Delete)? */
-function isWriteComponent(component: Component): boolean {
-  const p = primaryNodeOf(component);
-  if (p === undefined || 'map' in p) return false;
-  const c = (p as { component: string }).component;
-  return c === 'Insert' || c === 'Update' || c === 'Delete';
+/** Diagnostics label for a base write (its SQL verb), replacing the retired catalog component name. */
+function writeLabelOf(sql: string): string {
+  const m = /^\s*(INSERT|UPDATE|DELETE)/i.exec(sql);
+  return m === null ? 'Write' : m[1][0].toUpperCase() + m[1].slice(1).toLowerCase();
 }
 
 /**
@@ -198,20 +219,16 @@ export function compileBundle(
     relationOps[decl.name] = compileRelationOp({ ...decl, dialect: decl.dialect ?? dialectName }, resolveColumnType);
   }
 
-  if (isWriteComponent(component)) {
-    const writeNode = primaryNodeOf(component)!;
-    const op = compileWriteNode(writeNode as never, dialectName, resolveColumnType);
-    // The write's component GRAPH survives alongside its single compiled `statement`. Read and write
-    // are ONE flow (they must not be split): the graph is what a codegen lowering needs in order to
-    // bake the write's SQL into a native module, exactly as a read's does. It is ADDITIVE — mode-2
-    // execution still dispatches on `statement` FIRST (see `executeBundle`), so the write's runtime
-    // path is byte-unchanged; the graph is inert unless a codegen consumer asks for it.
-    const graph = compileReadGraph(contract, dialectName, entry, findFilterModel, resolveColumnType);
+  if (deriveContractEffect(component) === 'command') {
+    // #143: the base write is the op-independent `executeSQL` leaf `emitWrite` produced (already the
+    // complete tuned write, WHERE lowered post-compile) — CONSUME its `sql`/`params` directly. Native
+    // codegen bakes the write from `contract.ir` (the leaf graph), never from this bundle, so no read-
+    // graph surrogate is emitted for a write.
+    const writeLeaf = baseWriteLeaf(component);
     return {
       dialect: dialectName,
       name: component.name,
-      statement: { sql: op.sql, params: op.params },
-      readGraph: graph,
+      statement: { sql: writeLeaf.sql, params: writeLeaf.params },
       optionalHeads: [],
       relations: relationOps,
     };
@@ -285,38 +302,12 @@ export async function executeBehaviorAsync(
 // ── Write-time relations: Command bundle + 1-tx execution (WS5, #25 — spec §6) ──
 
 /**
- * Find the single base-write catalog node (`Insert`/`Update`/`Delete`) of a Command component.
- * WS5 initial scope is a single-statement Command (spec §6/§13). More than one write node ⇒ the
- * multi-write DAG derivation (WS8, rejected loudly here).
- */
-function baseWriteNodeOf(component: Component): Component['body'][number] {
-  const writes = component.body.filter(
-    // `fanout` (bc 0.7.3+ FanoutNode) is excluded from narrowing here: litedbmodel never emits
-    // it, and it carries no base write op, so it can never be a write node.
-    (n) =>
-      !('cond' in n) &&
-      !('map' in n) &&
-      !('fanout' in n) &&
-      (n.component === 'Insert' || n.component === 'Update' || n.component === 'Delete'),
-  );
-  if (writes.length === 0) {
-    throw new Error(`scp write: Command '${component.name}' has no base write (Insert/Update/Delete) node`);
-  }
-  if (writes.length > 1) {
-    throw new Error(
-      `scp write: Command '${component.name}' has ${writes.length} base write nodes; WS5 initial ` +
-        `scope is a SINGLE-statement Command + write-time relations (multi-write DAG is WS8, spec §6/§13).`,
-    );
-  }
-  return writes[0];
-}
-
-/**
  * Compile a Command method + its `entityWrites` save contract into a {@link SqlBundle} carrying
  * the derived, gate-first write-time-relations {@link TransactionPlan} (spec §6/§8). The base
- * write op is compiled ONCE (the SAME `compileWriteNode` — complete tuned SQL + deferred
- * Expression-IR params); {@link deriveTransactionPlan} lowers the lifecycle's §6 effect arrays
- * around it into the ordered statement list. Pure JSON; a WS7 runtime honors the SAME plan.
+ * write is the op-independent `executeSQL` leaf `emitWrite` already compiled ({@link baseWriteLeaf}
+ * — complete tuned SQL + deferred Expression-IR params, WHERE lowered post-compile); the tx runtime
+ * runs it through the SAME `executeSQL` transport. {@link deriveTransactionPlan} lowers the lifecycle's
+ * §6 effect arrays around it into the ordered statement list. Pure JSON; a WS7 runtime honors the SAME plan.
  */
 export function compileWriteBundle(
   contract: BehaviorModelContract,
@@ -332,12 +323,9 @@ export function compileWriteBundle(
   if (lifecycle === undefined) {
     throw new Error(`scp write: the '${phase}' lifecycle is not declared in the entityWrites save contract`);
   }
-  const writeNode = baseWriteNodeOf(component);
-  // MySQL has no native RETURNING; when the base write is an INSERT…RETURNING carrying a PK
-  // descriptor, annotate it with the strip-before-execute PK hint so the mysql emulation re-selects
-  // by the REAL PK (not a hardcoded `id`). PG/SQLite keep the op verbatim (native RETURNING).
-  const baseOp = dialectName === 'mysql' ? mysqlPkHint(compileWriteNode(writeNode as never, dialectName)) : compileWriteNode(writeNode as never, dialectName);
-  const base: BaseWrite = { op: baseOp, label: `${(writeNode as { component: string }).component}` };
+  const writeLeaf = baseWriteLeaf(component);
+  const baseOp: TxOp = { sql: writeLeaf.sql, params: writeLeaf.params };
+  const base: BaseWrite = { op: baseOp, label: writeLabelOf(writeLeaf.sql) };
   const plan = deriveTransactionPlan(phase, [base], lifecycle, dialectName);
 
   const bundle: SqlBundle = {
@@ -384,16 +372,16 @@ export function compileCompositeWriteBundle(
     throw new Error('scp write: a composite write bundle needs at least 2 named write members (use compileWriteBundle for a single write).');
   }
   const bases: BaseWrite[] = [];
-  let firstBaseOp: { sql: string; params: readonly unknown[] } | undefined;
+  let firstBaseOp: TxOp | undefined;
   let firstName = '';
   for (const e of entries) {
     const component = contract.components.find((c) => c.name === e.entry);
     if (component === undefined) throw new Error(`scp write: entry component '${e.entry}' not found in contract`);
     if (firstBaseOp === undefined) firstName = component.name;
-    const writeNode = baseWriteNodeOf(component);
-    const baseOp = compileWriteNode(writeNode as never, dialectName);
+    const writeLeaf = baseWriteLeaf(component);
+    const baseOp: TxOp = { sql: writeLeaf.sql, params: writeLeaf.params };
     if (firstBaseOp === undefined) firstBaseOp = baseOp;
-    bases.push({ op: baseOp, label: `${(writeNode as { component: string }).component} ${e.name}`, name: e.name, effects: e.lifecycle.effects });
+    bases.push({ op: baseOp, label: `${writeLabelOf(writeLeaf.sql)} ${e.name}`, name: e.name, effects: e.lifecycle.effects });
   }
   const plan = deriveTransactionPlan(phase, bases, { effects: {} }, dialectName);
 
@@ -412,8 +400,8 @@ export function compileCompositeWriteBundle(
 // A batch write is ONE LOGICAL operation that produces N grouped SQL statements (createMany with a
 // heterogeneous column-set groups records into one INSERT per group, mirroring `DBModel._insert`;
 // updateMany is one UNNEST/JSON/CASE statement; deleteMany is a PK-set IN-list DELETE). This is
-// DISTINCT from the deferred composite multi-write DAG (`baseWriteNodeOf` still rejects >1 authored
-// base write). The batch compilers (`compileInsertMany`/`compileUpdateMany`/`compileDeleteMany`) copy
+// DISTINCT from the deferred composite multi-write DAG (`baseWriteLeaf` rejects >1 top-level base
+// write). The batch compilers (`compileInsertMany`/`compileUpdateMany`/`compileDeleteMany`) copy
 // the v1 builders byte-for-byte; here they are lowered into a gate-free {@link TransactionPlan} of
 // body statements ({@link deriveBatchPlan}), so ALL FIVE runtimes execute the multi-statement batch
 // through the SAME per-statement tx loop with no runtime change (concrete params are literalized to

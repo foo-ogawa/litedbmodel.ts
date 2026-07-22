@@ -41,6 +41,7 @@ import {
   countingDriver,
   renderTxStatement,
   compileWriteNode,
+  emitWrite,
   whereEq,
   SqlFailure,
   type In,
@@ -78,18 +79,20 @@ function freshDb(): InstanceType<typeof Database> {
 // ── The authored Command + its write-time-relations save contract (spec §2.2 / §2.4) ──
 
 class PostCommands extends SemanticBehavior {
+  // The RETURNING projection is a typed #59 read — the inline column SoT types its de-box rows.
+  static columns = { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT' } };
   // spec §2.4: `CreatePost` returns Insert(Post, {onWrite: Post.writes.create, returning}).
   Create($: In<{ author_id: number; title: string; request_id: string }>) {
-    return L.Insert({
+    return emitWrite(L, 'Insert', {
       table: 'posts',
       'values.author_id': $.author_id,
       'values.title': $.title,
       returning: 'id, author_id, title',
-    });
+    }, 'sqlite');
   }
 
   Remove($: In<{ id: number; author_id: number }>) {
-    return L.Delete({ table: 'posts', where: [whereEq($.id, $.id)], returning: 'id' });
+    return emitWrite(L, 'Delete', { table: 'posts', where: [whereEq($.id, $.id)], returning: 'id' }, 'sqlite');
   }
 }
 
@@ -413,13 +416,14 @@ describe('WS5 — edges (many-to-many intermediate-table link in the same tx)', 
     const db = freshDb();
 
     class TagPost extends SemanticBehavior {
+      static columns = { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT' } };
       Create($: In<{ author_id: number; title: string; tag_id: number; request_id: string }>) {
-        return L.Insert({
+        return emitWrite(L, 'Insert', {
           table: 'posts',
           'values.author_id': $.author_id,
           'values.title': $.title,
           returning: 'id, author_id, title',
-        });
+        }, 'sqlite');
       }
     }
     const c = publishBehaviors(TagPost);
@@ -449,7 +453,7 @@ describe('WS5 — fail-closed derivation guards (no bodging, no silent defaults)
   it('rejects a `$.entity.*` reference when the body write has no RETURNING', () => {
     class NoReturn extends SemanticBehavior {
       Create($: In<{ author_id: number; title: string }>) {
-        return L.Insert({ table: 'posts', 'values.author_id': $.author_id, 'values.title': $.title });
+        return emitWrite(L, 'Insert', { table: 'posts', 'values.author_id': $.author_id, 'values.title': $.title }, 'sqlite');
       }
     }
     const c = publishBehaviors(NoReturn);
