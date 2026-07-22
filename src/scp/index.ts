@@ -88,8 +88,8 @@ export type {
 // The op-independent runtime leaves (#141): the SOLE execution surface — `executeSQL` transport +
 // `pluck`/`group` relation util leaves (defined once via bc `defineLeaf`/`behaviorComponents`). The
 // retired 8-leaf catalog (`Select`/`Insert`/…) + `catalogComponents` are GONE.
-export { executeSQL, pluck, group, LEAVES, leafComponents, LEAF_TRANSPORT_SYMBOLS } from './leaves';
-export type { LeafContext } from './leaves';
+export { executeSQL, pluck, group, LEAVES, leafComponents, LEAF_TRANSPORT_SYMBOLS, spliceWhere, assembleDynamicWhere, prepareSql } from './leaves';
+export type { LeafContext, DynamicWhereFrag } from './leaves';
 
 // CQRS effect derivation (spec §2.4 — graph-derived from the op-independent leaves' `write` intent).
 export { deriveContractEffect } from './authoring';

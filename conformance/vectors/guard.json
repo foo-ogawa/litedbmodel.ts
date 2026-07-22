@@ -1,147 +1,13 @@
 {
   "suite": "guard",
-  "corpusVersion": 3,
+  "corpusVersion": 4,
   "note": "Hard-limit runaway prevention (Phase E-2, epic #74): expect-error vectors assert LimitExceededError (find N+1 / relation exact-count) with baked caps; exec skip vectors assert null-disable / explicit-limit / intrinsic-LIMIT-window do NOT throw. The cross-language contract #100-103 mirror.",
   "vectors": [
     {
       "name": "find: read exceeds findHardLimit → throw (context=find)",
       "kind": "expect-error",
       "dialect": "sqlite",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Posts",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "Posts",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
-                  {
-                    "component": "Select",
-                    "id": "n0",
-                    "outType": {
-                      "arr": {
-                        "obj": {
-                          "id": "int",
-                          "author_id": "int",
-                          "title": "string",
-                          "status": "string"
-                        }
-                      }
-                    },
-                    "ports": {
-                      "order": "id ASC",
-                      "select": {
-                        "arr": [
-                          "id",
-                          "author_id",
-                          "title",
-                          "status"
-                        ]
-                      },
-                      "table": "posts",
-                      "where": {
-                        "arr": [
-                          {
-                            "eq": [
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              },
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    }
-                  }
-                ],
-                "inputPorts": {
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "Posts",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                },
-                "outputType": {
-                  "arr": {
-                    "obj": {
-                      "id": "int",
-                      "author_id": "int",
-                      "title": "string",
-                      "status": "string"
-                    }
-                  }
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title, status FROM posts",
-                "params": []
-              },
-              {
-                "sql": "author_id = ?",
-                "params": [
-                  {
-                    "ref": [
-                      "author_id"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
-              },
-              {
-                "sql": " LIMIT ?",
-                "params": [
-                  2
-                ]
-              }
-            ]
-          },
-          "optionalHeads": [],
-          "materializersByNode": {
-            "n0": {
-              "id": "int32",
-              "author_id": "int32"
-            }
-          },
-          "findGuard": {
-            "hardLimit": 1,
-            "nodeId": "n0",
-            "model": "Posts"
-          }
-        },
-        "optionalHeads": [],
-        "relations": {}
-      },
+      "entry": "Posts",
       "input": {
         "author_id": 7
       },
@@ -158,6 +24,9 @@
         "INSERT INTO tags VALUES (11, 1, 'first')",
         "INSERT INTO tags VALUES (12, 2, 'world')"
       ],
+      "config": {
+        "findHardLimit": 1
+      },
       "expectedError": {
         "name": "LimitExceededError",
         "limit": 1,
@@ -170,169 +39,7 @@
       "name": "relation: hasMany batch exceeds hasManyHardLimit → throw (exact count)",
       "kind": "expect-error",
       "dialect": "sqlite",
-      "withRelation": "tags",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Posts",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "Posts",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
-                  {
-                    "component": "Select",
-                    "id": "n0",
-                    "outType": {
-                      "arr": {
-                        "obj": {
-                          "id": "int",
-                          "author_id": "int",
-                          "title": "string",
-                          "status": "string"
-                        }
-                      }
-                    },
-                    "ports": {
-                      "order": "id ASC",
-                      "select": {
-                        "arr": [
-                          "id",
-                          "author_id",
-                          "title",
-                          "status"
-                        ]
-                      },
-                      "table": "posts",
-                      "where": {
-                        "arr": [
-                          {
-                            "eq": [
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              },
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    }
-                  }
-                ],
-                "inputPorts": {
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "Posts",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                },
-                "outputType": {
-                  "arr": {
-                    "obj": {
-                      "id": "int",
-                      "author_id": "int",
-                      "title": "string",
-                      "status": "string"
-                    }
-                  }
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title, status FROM posts",
-                "params": []
-              },
-              {
-                "sql": "author_id = ?",
-                "params": [
-                  {
-                    "ref": [
-                      "author_id"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
-              }
-            ]
-          },
-          "optionalHeads": [],
-          "materializersByNode": {
-            "n0": {
-              "id": "int32",
-              "author_id": "int32"
-            }
-          }
-        },
-        "optionalHeads": [],
-        "relations": {
-          "author": {
-            "name": "author",
-            "kind": "belongsTo",
-            "parentKey": "author_id",
-            "targetKey": "id",
-            "dialect": "sqlite",
-            "keyShape": "single_json",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))",
-            "targetTable": "users",
-            "select": [
-              "id",
-              "name"
-            ],
-            "materializers": {
-              "id": "int32"
-            }
-          },
-          "tags": {
-            "name": "tags",
-            "kind": "hasMany",
-            "parentKey": "id",
-            "targetKey": "post_id",
-            "dialect": "sqlite",
-            "keyShape": "single_json",
-            "sql": "SELECT id, post_id, label FROM tags WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
-            "targetTable": "tags",
-            "select": [
-              "id",
-              "post_id",
-              "label"
-            ],
-            "materializers": {
-              "id": "int32",
-              "post_id": "int32"
-            },
-            "hardLimit": 2
-          }
-        }
-      },
+      "entry": "Posts",
       "input": {
         "author_id": 7
       },
@@ -349,6 +56,36 @@
         "INSERT INTO tags VALUES (11, 1, 'first')",
         "INSERT INTO tags VALUES (12, 2, 'world')"
       ],
+      "config": {
+        "hasManyHardLimit": 2
+      },
+      "relations": [
+        {
+          "name": "author",
+          "kind": "belongsTo",
+          "targetTable": "users",
+          "select": [
+            "id",
+            "name"
+          ],
+          "parentKey": "author_id",
+          "targetKey": "id"
+        },
+        {
+          "name": "tags",
+          "kind": "hasMany",
+          "targetTable": "tags",
+          "select": [
+            "id",
+            "post_id",
+            "label"
+          ],
+          "parentKey": "id",
+          "targetKey": "post_id",
+          "order": "id ASC"
+        }
+      ],
+      "withRelation": "tags",
       "expectedError": {
         "name": "LimitExceededError",
         "limit": 2,
@@ -362,152 +99,7 @@
       "name": "relation: per-relation hardLimit override → throw",
       "kind": "expect-error",
       "dialect": "sqlite",
-      "withRelation": "tags",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Posts",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "Posts",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
-                  {
-                    "component": "Select",
-                    "id": "n0",
-                    "outType": {
-                      "arr": {
-                        "obj": {
-                          "id": "int",
-                          "author_id": "int",
-                          "title": "string",
-                          "status": "string"
-                        }
-                      }
-                    },
-                    "ports": {
-                      "order": "id ASC",
-                      "select": {
-                        "arr": [
-                          "id",
-                          "author_id",
-                          "title",
-                          "status"
-                        ]
-                      },
-                      "table": "posts",
-                      "where": {
-                        "arr": [
-                          {
-                            "eq": [
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              },
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    }
-                  }
-                ],
-                "inputPorts": {
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "Posts",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                },
-                "outputType": {
-                  "arr": {
-                    "obj": {
-                      "id": "int",
-                      "author_id": "int",
-                      "title": "string",
-                      "status": "string"
-                    }
-                  }
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title, status FROM posts",
-                "params": []
-              },
-              {
-                "sql": "author_id = ?",
-                "params": [
-                  {
-                    "ref": [
-                      "author_id"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
-              }
-            ]
-          },
-          "optionalHeads": [],
-          "materializersByNode": {
-            "n0": {
-              "id": "int32",
-              "author_id": "int32"
-            }
-          }
-        },
-        "optionalHeads": [],
-        "relations": {
-          "tags": {
-            "name": "tags",
-            "kind": "hasMany",
-            "parentKey": "id",
-            "targetKey": "post_id",
-            "dialect": "sqlite",
-            "keyShape": "single_json",
-            "sql": "SELECT id, post_id, label FROM tags WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
-            "targetTable": "tags",
-            "select": [
-              "id",
-              "post_id",
-              "label"
-            ],
-            "materializers": {
-              "id": "int32",
-              "post_id": "int32"
-            },
-            "hardLimit": 2
-          }
-        }
-      },
+      "entry": "Posts",
       "input": {
         "author_id": 7
       },
@@ -524,6 +116,24 @@
         "INSERT INTO tags VALUES (11, 1, 'first')",
         "INSERT INTO tags VALUES (12, 2, 'world')"
       ],
+      "config": {},
+      "relations": [
+        {
+          "name": "tags",
+          "kind": "hasMany",
+          "targetTable": "tags",
+          "select": [
+            "id",
+            "post_id",
+            "label"
+          ],
+          "parentKey": "id",
+          "targetKey": "post_id",
+          "order": "id ASC",
+          "hardLimit": 2
+        }
+      ],
+      "withRelation": "tags",
       "expectedError": {
         "name": "LimitExceededError",
         "limit": 2,
@@ -537,130 +147,7 @@
       "name": "find: findHardLimit null → no throw (disabled)",
       "kind": "exec",
       "dialect": "sqlite",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Posts",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "Posts",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
-                  {
-                    "component": "Select",
-                    "id": "n0",
-                    "outType": {
-                      "arr": {
-                        "obj": {
-                          "id": "int",
-                          "author_id": "int",
-                          "title": "string",
-                          "status": "string"
-                        }
-                      }
-                    },
-                    "ports": {
-                      "order": "id ASC",
-                      "select": {
-                        "arr": [
-                          "id",
-                          "author_id",
-                          "title",
-                          "status"
-                        ]
-                      },
-                      "table": "posts",
-                      "where": {
-                        "arr": [
-                          {
-                            "eq": [
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              },
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    }
-                  }
-                ],
-                "inputPorts": {
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "Posts",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                },
-                "outputType": {
-                  "arr": {
-                    "obj": {
-                      "id": "int",
-                      "author_id": "int",
-                      "title": "string",
-                      "status": "string"
-                    }
-                  }
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title, status FROM posts",
-                "params": []
-              },
-              {
-                "sql": "author_id = ?",
-                "params": [
-                  {
-                    "ref": [
-                      "author_id"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
-              }
-            ]
-          },
-          "optionalHeads": [],
-          "materializersByNode": {
-            "n0": {
-              "id": "int32",
-              "author_id": "int32"
-            }
-          }
-        },
-        "optionalHeads": [],
-        "relations": {}
-      },
+      "entry": "Posts",
       "input": {
         "author_id": 7
       },
@@ -677,6 +164,10 @@
         "INSERT INTO tags VALUES (11, 1, 'first')",
         "INSERT INTO tags VALUES (12, 2, 'world')"
       ],
+      "config": {
+        "findHardLimit": null
+      },
+      "relations": [],
       "expectedResult": [
         {
           "id": 1,
@@ -696,392 +187,7 @@
       "name": "find: explicit author limit → no throw (skip)",
       "kind": "exec",
       "dialect": "sqlite",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Feed",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "Feed",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
-                  {
-                    "component": "Select",
-                    "id": "n0",
-                    "outType": {
-                      "arr": {
-                        "obj": {
-                          "id": "int",
-                          "author_id": "int",
-                          "title": "string",
-                          "status": "string"
-                        }
-                      }
-                    },
-                    "ports": {
-                      "limit": {
-                        "coalesce": [
-                          {
-                            "refOpt": [
-                              "limit"
-                            ]
-                          },
-                          20
-                        ]
-                      },
-                      "order": "id ASC",
-                      "select": {
-                        "arr": [
-                          "id",
-                          "author_id",
-                          "title",
-                          "status"
-                        ]
-                      },
-                      "table": "posts",
-                      "where": {
-                        "arr": [
-                          {
-                            "eq": [
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              },
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              }
-                            ]
-                          },
-                          {
-                            "cond": [
-                              {
-                                "ne": [
-                                  {
-                                    "refOpt": [
-                                      "status"
-                                    ]
-                                  },
-                                  null
-                                ]
-                              },
-                              {
-                                "eq": [
-                                  {
-                                    "ref": [
-                                      "status"
-                                    ]
-                                  },
-                                  {
-                                    "ref": [
-                                      "status"
-                                    ]
-                                  }
-                                ]
-                              },
-                              null
-                            ]
-                          },
-                          {
-                            "ge": [
-                              {
-                                "ref": [
-                                  "created_at"
-                                ]
-                              },
-                              {
-                                "ref": [
-                                  "since"
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    }
-                  },
-                  {
-                    "id": "n1",
-                    "map": {
-                      "as": "$e0",
-                      "component": "Select",
-                      "over": {
-                        "ref": [
-                          "n0"
-                        ]
-                      },
-                      "parent": "n0",
-                      "ports": {
-                        "select": {
-                          "arr": [
-                            "id",
-                            "name"
-                          ]
-                        },
-                        "table": "users",
-                        "where": {
-                          "arr": [
-                            {
-                              "eq": [
-                                {
-                                  "ref": [
-                                    "$e0",
-                                    "id"
-                                  ]
-                                },
-                                {
-                                  "ref": [
-                                    "$e0",
-                                    "author_id"
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      }
-                    },
-                    "outType": {
-                      "arr": {
-                        "arr": {
-                          "obj": {
-                            "id": "int",
-                            "name": "string"
-                          }
-                        }
-                      }
-                    }
-                  }
-                ],
-                "inputPorts": {
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "created_at": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "limit": {
-                    "required": false,
-                    "type": "unknown"
-                  },
-                  "since": {
-                    "required": true,
-                    "type": "unknown"
-                  },
-                  "status": {
-                    "required": false,
-                    "type": "unknown"
-                  }
-                },
-                "name": "Feed",
-                "output": {
-                  "obj": {
-                    "authors": {
-                      "ref": [
-                        "n1"
-                      ]
-                    },
-                    "posts": {
-                      "ref": [
-                        "n0"
-                      ]
-                    }
-                  }
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ],
-                    [
-                      1
-                    ]
-                  ]
-                },
-                "outputType": {
-                  "obj": {
-                    "authors": {
-                      "arr": {
-                        "arr": {
-                          "obj": {
-                            "id": "int",
-                            "name": "string"
-                          }
-                        }
-                      }
-                    },
-                    "posts": {
-                      "arr": {
-                        "obj": {
-                          "id": "int",
-                          "author_id": "int",
-                          "title": "string",
-                          "status": "string"
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title, status FROM posts",
-                "params": []
-              },
-              {
-                "sql": "author_id = ?",
-                "params": [
-                  {
-                    "ref": [
-                      "author_id"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": "status = ?",
-                "params": [
-                  {
-                    "ref": [
-                      "status"
-                    ]
-                  }
-                ],
-                "whereFragment": true,
-                "skip": {
-                  "not": [
-                    {
-                      "ne": [
-                        {
-                          "refOpt": [
-                            "status"
-                          ]
-                        },
-                        null
-                      ]
-                    }
-                  ]
-                }
-              },
-              {
-                "sql": "created_at >= ?",
-                "params": [
-                  {
-                    "ref": [
-                      "since"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
-              },
-              {
-                "sql": " LIMIT ?",
-                "params": [
-                  {
-                    "coalesce": [
-                      {
-                        "refOpt": [
-                          "limit"
-                        ]
-                      },
-                      20
-                    ]
-                  }
-                ]
-              }
-            ],
-            "n1": [
-              {
-                "sql": "SELECT id, name FROM users",
-                "params": []
-              },
-              {
-                "sql": "id = ?",
-                "params": [
-                  {
-                    "ref": [
-                      "$e0",
-                      "author_id"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              }
-            ]
-          },
-          "optionalHeads": [
-            "limit",
-            "status"
-          ],
-          "materializersByNode": {
-            "n0": {
-              "id": "int32",
-              "author_id": "int32"
-            },
-            "n1": {
-              "id": "int32"
-            }
-          }
-        },
-        "optionalHeads": [
-          "limit",
-          "status"
-        ],
-        "relations": {
-          "author": {
-            "name": "author",
-            "kind": "belongsTo",
-            "parentKey": "author_id",
-            "targetKey": "id",
-            "dialect": "sqlite",
-            "keyShape": "single_json",
-            "sql": "SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))",
-            "targetTable": "users",
-            "select": [
-              "id",
-              "name"
-            ],
-            "materializers": {
-              "id": "int32"
-            }
-          },
-          "tags": {
-            "name": "tags",
-            "kind": "hasMany",
-            "parentKey": "id",
-            "targetKey": "post_id",
-            "dialect": "sqlite",
-            "keyShape": "single_json",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 2",
-            "targetTable": "tags",
-            "select": [
-              "id",
-              "post_id",
-              "label"
-            ],
-            "materializers": {
-              "id": "int32",
-              "post_id": "int32"
-            }
-          }
-        }
-      },
+      "entry": "Feed",
       "input": {
         "author_id": 7,
         "status": "live",
@@ -1101,6 +207,9 @@
         "INSERT INTO tags VALUES (11, 1, 'first')",
         "INSERT INTO tags VALUES (12, 2, 'world')"
       ],
+      "config": {
+        "findHardLimit": 1
+      },
       "expectedResult": {
         "authors": [
           [
@@ -1124,150 +233,7 @@
       "name": "relation: per-relation hardLimit null → no throw (disabled)",
       "kind": "exec",
       "dialect": "sqlite",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Posts",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "Posts",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
-                  {
-                    "component": "Select",
-                    "id": "n0",
-                    "outType": {
-                      "arr": {
-                        "obj": {
-                          "id": "int",
-                          "author_id": "int",
-                          "title": "string",
-                          "status": "string"
-                        }
-                      }
-                    },
-                    "ports": {
-                      "order": "id ASC",
-                      "select": {
-                        "arr": [
-                          "id",
-                          "author_id",
-                          "title",
-                          "status"
-                        ]
-                      },
-                      "table": "posts",
-                      "where": {
-                        "arr": [
-                          {
-                            "eq": [
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              },
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    }
-                  }
-                ],
-                "inputPorts": {
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "Posts",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                },
-                "outputType": {
-                  "arr": {
-                    "obj": {
-                      "id": "int",
-                      "author_id": "int",
-                      "title": "string",
-                      "status": "string"
-                    }
-                  }
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title, status FROM posts",
-                "params": []
-              },
-              {
-                "sql": "author_id = ?",
-                "params": [
-                  {
-                    "ref": [
-                      "author_id"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
-              }
-            ]
-          },
-          "optionalHeads": [],
-          "materializersByNode": {
-            "n0": {
-              "id": "int32",
-              "author_id": "int32"
-            }
-          }
-        },
-        "optionalHeads": [],
-        "relations": {
-          "tags": {
-            "name": "tags",
-            "kind": "hasMany",
-            "parentKey": "id",
-            "targetKey": "post_id",
-            "dialect": "sqlite",
-            "keyShape": "single_json",
-            "sql": "SELECT id, post_id, label FROM tags WHERE post_id IN (SELECT value FROM json_each(?)) ORDER BY id ASC",
-            "targetTable": "tags",
-            "select": [
-              "id",
-              "post_id",
-              "label"
-            ],
-            "materializers": {
-              "id": "int32",
-              "post_id": "int32"
-            }
-          }
-        }
-      },
+      "entry": "Posts",
       "input": {
         "author_id": 7
       },
@@ -1283,6 +249,25 @@
         "INSERT INTO tags VALUES (10, 1, 'greeting')",
         "INSERT INTO tags VALUES (11, 1, 'first')",
         "INSERT INTO tags VALUES (12, 2, 'world')"
+      ],
+      "config": {
+        "hasManyHardLimit": 1
+      },
+      "relations": [
+        {
+          "name": "tags",
+          "kind": "hasMany",
+          "targetTable": "tags",
+          "select": [
+            "id",
+            "post_id",
+            "label"
+          ],
+          "parentKey": "id",
+          "targetKey": "post_id",
+          "order": "id ASC",
+          "hardLimit": null
+        }
       ],
       "expectedResult": [
         {
@@ -1323,150 +308,7 @@
       "name": "relation: intrinsic per-parent LIMIT window → no throw (skip batch check)",
       "kind": "exec",
       "dialect": "sqlite",
-      "bundle": {
-        "dialect": "sqlite",
-        "name": "Posts",
-        "readGraph": {
-          "dialect": "sqlite",
-          "name": "Posts",
-          "ir": {
-            "irVersion": 1,
-            "exprVersion": 2,
-            "components": [
-              {
-                "body": [
-                  {
-                    "component": "Select",
-                    "id": "n0",
-                    "outType": {
-                      "arr": {
-                        "obj": {
-                          "id": "int",
-                          "author_id": "int",
-                          "title": "string",
-                          "status": "string"
-                        }
-                      }
-                    },
-                    "ports": {
-                      "order": "id ASC",
-                      "select": {
-                        "arr": [
-                          "id",
-                          "author_id",
-                          "title",
-                          "status"
-                        ]
-                      },
-                      "table": "posts",
-                      "where": {
-                        "arr": [
-                          {
-                            "eq": [
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              },
-                              {
-                                "ref": [
-                                  "author_id"
-                                ]
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    }
-                  }
-                ],
-                "inputPorts": {
-                  "author_id": {
-                    "required": true,
-                    "type": "unknown"
-                  }
-                },
-                "name": "Posts",
-                "output": {
-                  "ref": [
-                    "n0"
-                  ]
-                },
-                "plan": {
-                  "concurrency": 16,
-                  "groups": [
-                    [
-                      0
-                    ]
-                  ]
-                },
-                "outputType": {
-                  "arr": {
-                    "obj": {
-                      "id": "int",
-                      "author_id": "int",
-                      "title": "string",
-                      "status": "string"
-                    }
-                  }
-                }
-              }
-            ]
-          },
-          "statementsById": {
-            "n0": [
-              {
-                "sql": "SELECT id, author_id, title, status FROM posts",
-                "params": []
-              },
-              {
-                "sql": "author_id = ?",
-                "params": [
-                  {
-                    "ref": [
-                      "author_id"
-                    ]
-                  }
-                ],
-                "whereFragment": true
-              },
-              {
-                "sql": " ORDER BY id ASC",
-                "params": []
-              }
-            ]
-          },
-          "optionalHeads": [],
-          "materializersByNode": {
-            "n0": {
-              "id": "int32",
-              "author_id": "int32"
-            }
-          }
-        },
-        "optionalHeads": [],
-        "relations": {
-          "tags": {
-            "name": "tags",
-            "kind": "hasMany",
-            "parentKey": "id",
-            "targetKey": "post_id",
-            "dialect": "sqlite",
-            "keyShape": "single_json",
-            "sql": "WITH ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id ASC) AS _rn FROM tags WHERE post_id IN (SELECT value FROM json_each(?))) SELECT * FROM ranked WHERE _rn <= 1",
-            "targetTable": "tags",
-            "select": [
-              "id",
-              "post_id",
-              "label"
-            ],
-            "materializers": {
-              "id": "int32",
-              "post_id": "int32"
-            }
-          }
-        }
-      },
+      "entry": "Posts",
       "input": {
         "author_id": 7
       },
@@ -1482,6 +324,25 @@
         "INSERT INTO tags VALUES (10, 1, 'greeting')",
         "INSERT INTO tags VALUES (11, 1, 'first')",
         "INSERT INTO tags VALUES (12, 2, 'world')"
+      ],
+      "config": {
+        "hasManyHardLimit": 1
+      },
+      "relations": [
+        {
+          "name": "tags",
+          "kind": "hasMany",
+          "targetTable": "tags",
+          "select": [
+            "id",
+            "post_id",
+            "label"
+          ],
+          "parentKey": "id",
+          "targetKey": "post_id",
+          "order": "id ASC",
+          "limit": 1
+        }
       ],
       "expectedResult": [
         {

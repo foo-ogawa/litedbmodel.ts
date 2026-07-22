@@ -125,7 +125,7 @@ export function spliceWhere(baseSql: string, whereSql: string): string {
  * is absent from the list; a present fragment is `{sql, params}` with concrete params. See {@link
  * import('./authoring').lowerRecordedWhere} for the compile-time construction of the plan.
  */
-interface DynamicWhereFrag {
+export interface DynamicWhereFrag {
   readonly sql: string;
   readonly params: readonly unknown[];
 }
@@ -137,7 +137,7 @@ interface DynamicWhereFrag {
  * fragments' params BEFORE the base params (the WHERE precedes the LIMIT/tail `?`). Restores the shipped
  * SKIP feature on the op-independent leaf path — bounded reads never carry `whereDynamic` (native-clean).
  */
-function assembleDynamicWhere(p: { sql: string; params: unknown[]; whereDynamic: { frags?: readonly (DynamicWhereFrag | null)[] } }): { sql: string; params: unknown[] } {
+export function assembleDynamicWhere(p: { sql: string; params: unknown[]; whereDynamic: { frags?: readonly (DynamicWhereFrag | null)[] } }): { sql: string; params: unknown[] } {
   const frags = (p.whereDynamic.frags ?? []).filter((f): f is DynamicWhereFrag => f != null);
   let whereSql = '';
   const whereParams: unknown[] = [];
@@ -149,7 +149,7 @@ function assembleDynamicWhere(p: { sql: string; params: unknown[]; whereDynamic:
 }
 
 /** Prepare a statement for the seam: resolve deferred PG cast(s), render `?`→`$N`, encode params. */
-function prepareSql(p: { sql: string; params: unknown[]; write: boolean; connection?: string | null }, dialect: Dialect): { sql: string; bound: unknown[]; intent: StatementIntent } {
+export function prepareSql(p: { sql: string; params: unknown[]; write: boolean; connection?: string | null }, dialect: Dialect): { sql: string; bound: unknown[]; intent: StatementIntent } {
   let sql = p.sql;
   if (dialect === 'postgres') {
     for (const param of p.params) if (Array.isArray(param)) sql = resolvePgArrayCast(sql, param);

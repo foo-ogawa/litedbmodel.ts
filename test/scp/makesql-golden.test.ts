@@ -70,35 +70,11 @@ import {
   type In,
   type BehaviorModelContract,
 } from '../../src/scp/index';
-import { evaluateExpression } from 'behavior-contracts';
+// The read-leaf renderer is the SSoT `renderPrimaryRead` in the conformance harness (one renderer, no
+// duplication) — the leaf-path replacement for the retired `compileReadGraph`→`renderReadPrimary`.
+import { renderPrimaryRead } from '../../conformance/harness';
 
 type Rendered = { sql: string; params: unknown[] };
-
-/**
- * Render the PRIMARY read leaf of a published contract to `{sql, params}` (#143) — the leaf-path
- * replacement for the retired `compileReadGraph`→`renderReadPrimary`. The WHERE was lowered into the
- * `executeSQL` node's static `sql` at publish (via the SAME `lowerWherePort` builder the retired path
- * used, so byte-identical); render its `?`→`$N` for the dialect and evaluate each deferred value-spec
- * param against the input (bc `evaluateExpression`, as `renderReadPrimary` did).
- */
-function renderPrimaryRead(contract: BehaviorModelContract, entry: string, input: Record<string, unknown>, dialect: Dialect): Rendered {
-  const comp = contract.methods[entry].component;
-  const node = comp.body.find(
-    (n) => !('cond' in n) && !('map' in n) && (n as { component?: string }).component === 'executeSQL' && (n as { ports?: { write?: unknown } }).ports?.write !== true,
-  );
-  if (node === undefined) throw new Error(`makesql-golden: no read leaf for '${entry}'`);
-  const ports = (node as { ports: { sql?: unknown; params?: { arr?: unknown[] } } }).ports;
-  const params = (ports.params?.arr ?? []).map((spec) => normalizeParam(evaluateExpression(spec, input)));
-  return { sql: renderPlaceholders(String(ports.sql), dialect), params };
-}
-
-/** bc evaluates `int` to BigInt; the driver boundary (and the retired `renderReadPrimary`) normalizes a
- * safe-range BigInt back to a JS number, recursing into array params (tuple-IN / IN-list). */
-function normalizeParam(v: unknown): unknown {
-  if (typeof v === 'bigint') return v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v;
-  if (Array.isArray(v)) return v.map(normalizeParam);
-  return v;
-}
 
 /** Assemble a compiled makeSQL bundle and render the dialect placeholder form. */
 function render(node: MakeSQL, dialect: Dialect): Rendered {
