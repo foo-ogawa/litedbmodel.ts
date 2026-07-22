@@ -13,18 +13,37 @@
 export type BcScalar = 'string' | 'int' | 'float' | 'bool' | 'null';
 
 /**
+ * SQL 型トークンを基底型名へ正規化する SSoT（`sqlTypeToBcScalar` / `sqlTypeToMaterializeClass` が共有）。
+ * 括弧のサイズ/精度と、型判定に無関係な列修飾（`UNSIGNED`/`ZEROFILL`/`PRECISION` と NULL 可否
+ * `NOT NULL`/`NULL`）を落として基底型名だけを残す。NULL 可否は {@link sqlTypeIsNotNull} が別に読む
+ * （型スカラと直交する — nullability は outType の `opt` ラップの有無、基底スカラではない）。
+ */
+export function normalizeSqlTypeToken(sqlType: string): string {
+  return sqlType
+    .trim()
+    .toUpperCase()
+    .replace(/\(.*\)/, '')
+    .replace(/\b(UNSIGNED|ZEROFILL|PRECISION|NOT\s+NULL|NULL)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * 宣言された SQL 型が `NOT NULL` 制約を持つか（`static columns` は列制約を型トークンに書ける）。
+ * `true` の列は読み出しセルが非 null 確定 → 読み outType は `opt` ラップ無しの生スカラ（RETURNING の
+ * 主キーのような非 null 値を value 位置で消費できる — spec §4.1 の nullability）。既定（無指定）は
+ * nullable（ドライバ列は NULL を返し得る）。
+ */
+export function sqlTypeIsNotNull(sqlType: string): boolean {
+  return /\bNOT\s+NULL\b/i.test(sqlType);
+}
+
+/**
  * SQL 型（DDL のトークン。`DECIMAL(10,2)` 等の括弧やサイズは無視）→ bc outType スカラ。
  * spec §4.1 の正規表に一致。未知/曖昧は throw（fail-closed）。
  */
 export function sqlTypeToBcScalar(sqlType: string): BcScalar {
-  // 括弧のサイズ/精度・`UNSIGNED` 等の修飾を落として基底型名で判定。
-  const t = sqlType
-    .trim()
-    .toUpperCase()
-    .replace(/\(.*\)/, '')
-    .replace(/\b(UNSIGNED|ZEROFILL|PRECISION)\b/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const t = normalizeSqlTypeToken(sqlType);
   switch (t) {
     // int は既定 64bit(i64)。INTEGER も BIGINT も int（bigint を別型にしない — サイズ制限は列制約で表現）。
     case 'INTEGER':
@@ -124,13 +143,7 @@ export type MaterializeClass = 'int32' | 'int64' | 'date' | 'bool' | 'passthroug
  * `passthrough`.
  */
 export function sqlTypeToMaterializeClass(sqlType: string): MaterializeClass {
-  const t = sqlType
-    .trim()
-    .toUpperCase()
-    .replace(/\(.*\)/, '')
-    .replace(/\b(UNSIGNED|ZEROFILL|PRECISION)\b/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const t = normalizeSqlTypeToken(sqlType);
   // An ARRAY column (`TEXT[]` / `INT[]` / `NUMERIC[]` / `BOOLEAN[]` / `TIMESTAMP[]` / …) de-boxes as
   // `passthrough`: the driver's own array typeCast already parses the wire form into a JS array whose
   // ELEMENTS match the declared element outType, so the read path leaves the value unchanged (no

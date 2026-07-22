@@ -162,6 +162,13 @@ export function emitRead(L: ComponentFns, component: 'Select' | 'Count', ports: 
  * RETURNING tail + deferred `$`-ref params). `returning` is set from the authored `returning` port so
  * the leaf runs a RETURNING write through the row-returning seam (`execute`) and a plain write through
  * `run` (the affected summary) — RETURNING is preserved, never gutted.
+ *
+ * A RETURNING write returns typed ROWS (`RETURNING id` → `[{id}]`), so — exactly like a read — it
+ * carries the returning projection as the transient `readColumns` port ({table, cols}). The
+ * post-compile `#59` pass (`authoring.lowerReadColumns`) resolves those columns against the model's
+ * `static columns` (the SSoT resolver — never a hard-coded type) and stamps the node's typed `outType`
+ * (`{obj:{id:…}}`). That typed source is what makes a `.map` over a RETURNING write COVERED (a
+ * RETURNING-chained transaction: `INSERT … RETURNING id → id.map(id => INSERT … author_id=id)`).
  */
 export function emitWrite(L: ComponentFns, component: 'Insert' | 'Update' | 'Delete', ports: Record<string, unknown>, dialect: DialectName): Recorded {
   // The WHERE (Update/Delete) is DEFERRED to the transient `where` port and lowered post-compile from
@@ -178,6 +185,13 @@ export function emitWrite(L: ComponentFns, component: 'Insert' | 'Update' | 'Del
   const returning = ports.returning !== undefined;
   const portObj: Record<string, unknown> = { sql: op.sql, params: [...op.params], write: true, returning, bigint: false };
   if (Array.isArray(where) && where.length > 0) portObj.where = where; // bc records → plain IR; appended post-compile
+  // A RETURNING write's rows are typed by the SAME #59 read-column mechanism as `emitRead`: carry the
+  // returning projection (base column names) as `readColumns` so `lowerReadColumns` resolves + stamps
+  // the node's `outType`. A bare `RETURNING id` → cols `['id']`; a qualified `t.col` → the bare column.
+  if (returning && typeof ports.returning === 'string' && typeof base.table === 'string') {
+    const cols = ports.returning.split(',').map((c) => c.trim()).filter((c) => c.length > 0).map((c) => c.slice(c.lastIndexOf('.') + 1));
+    if (cols.length > 0) portObj.readColumns = { table: base.table, cols };
+  }
   return (L.executeSQL as (p: Record<string, unknown>) => Recorded)(portObj);
 }
 

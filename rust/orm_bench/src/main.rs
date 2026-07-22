@@ -15,9 +15,9 @@
 #[path = "gen/mod.rs"]
 mod gen;
 
-use litedbmodel_runtime::driver::PreparedStatement;
+use litedbmodel_runtime::driver::{forwarding_tx, forwarding_tx_no_begin, PreparedStatement};
 use litedbmodel_runtime::exec_context::TxConnection;
-use litedbmodel_runtime::{with_ambient_driver, Driver, SqlFailure, SqliteDriver, WireList, WireRow, WireValue};
+use litedbmodel_runtime::{with_ambient_driver, with_ambient_transaction, Driver, SqlFailure, SqliteDriver, WireList, WireRow, WireValue};
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -41,11 +41,14 @@ impl Driver for CountingDriver {
         QUERY_COUNT.fetch_add(1, Ordering::Relaxed);
         self.inner.prepare(sql)
     }
+    // Route the tx over a forwarding handle on `self` (not `inner`), so the tx-control BEGIN/COMMIT/
+    // ROLLBACK and every body statement run through THIS driver's counted `prepare` — the safety count
+    // of a tx op is then BEGIN + body statements + COMMIT (the whole transaction is observed).
     fn begin_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
-        self.inner.begin_tx()
+        forwarding_tx(self)
     }
     fn acquire_tx(&self) -> Result<Box<dyn TxConnection + '_>, SqlFailure> {
-        self.inner.acquire_tx()
+        forwarding_tx_no_begin(self)
     }
 }
 
@@ -99,8 +102,11 @@ fn seed(d: &dyn Driver) {
 }
 
 // ── the covered ops. Each runs ONE logical op for iteration `it` (mutating ops vary their UNIQUE
-//    column). The driver is the ambient one (bracketed by the caller); the runner takes no driver. ──
-fn run_op(op: &str, it: u64) {
+//    column). Reads/single-writes/batches resolve the AMBIENT driver (bracketed by the caller). The
+//    RETURNING-chained TRANSACTIONS run through the runtime `with_ambient_transaction(d, …)` scope
+//    (begin_tx → runner → COMMIT on Ok / ROLLBACK on Err) — the consumer's tx-boundary responsibility;
+//    the generated runner emits NO BEGIN/COMMIT, so `d` is threaded here to open/close the tx. ──
+fn run_op(d: &dyn Driver, op: &str, it: u64) {
     match op {
         "findAll" => {
             bg::run_native_raw_struct_findAll(bg::InNRFindAll).unwrap();
@@ -192,6 +198,54 @@ fn run_op(op: &str, it: u64) {
                 .collect();
             bg::run_native_raw_struct_updateMany(bg::InNRUpdateMany { rows: WireValue::List(WireList { items }) }).unwrap();
         }
+        // ── RETURNING-chained transactions (#142): each runs THROUGH the runtime tx scope. The runner
+        //    executes its 2 body statements via `execute_sql`; `with_ambient_transaction` brackets them
+        //    with BEGIN…COMMIT (ROLLBACK on any Err) — the atomicity guarantee. Measurement only here. ──
+        "nestedCreate" => {
+            // Fresh user per iteration (email is UNIQUE), then INSERT its post — INSERT user RETURNING id
+            // → INSERT post (author_id = that id).
+            with_ambient_transaction(d, || {
+                bg::run_native_raw_struct_nestedCreate(bg::InNRNestedCreate {
+                    email: WireValue::Str(format!("nc{it}@bench.com")),
+                    name: WireValue::Str("NC".into()),
+                    title: WireValue::Str("NC Post".into()),
+                })
+            })
+            .unwrap();
+        }
+        "nestedUpsert" => {
+            // Existing email (ON CONFLICT DO UPDATE) → INSERT post keyed on the upserted user's id.
+            with_ambient_transaction(d, || {
+                bg::run_native_raw_struct_nestedUpsert(bg::InNRNestedUpsert {
+                    email: WireValue::Str("user1@example.com".into()),
+                    name: WireValue::Str("NUp".into()),
+                    title: WireValue::Str("NUp Post".into()),
+                })
+            })
+            .unwrap();
+        }
+        "nestedUpdate" => {
+            // UPDATE seeded user 1 RETURNING id → UPDATE that user's posts (author_id = 1 exists in seed).
+            with_ambient_transaction(d, || {
+                bg::run_native_raw_struct_nestedUpdate(bg::InNRNestedUpdate {
+                    id: WireValue::int(1),
+                    name: WireValue::Str("NU".into()),
+                    title: WireValue::Str("NU Post".into()),
+                })
+            })
+            .unwrap();
+        }
+        "delete" => {
+            // Create-then-delete: INSERT a fresh user RETURNING id → DELETE the exact created row
+            // (its RETURNING id + inserted email). Fresh email per iteration (UNIQUE).
+            with_ambient_transaction(d, || {
+                bg::run_native_raw_struct_delete(bg::InNRDelete {
+                    email: WireValue::Str(format!("del{it}@bench.com")),
+                    name: WireValue::Str("Del".into()),
+                })
+            })
+            .unwrap();
+        }
         other => panic!("unknown op '{other}'"),
     }
 }
@@ -231,6 +285,10 @@ const OPS: &[&str] = &[
     "createMany",
     "upsertMany",
     "updateMany",
+    "nestedCreate",
+    "nestedUpsert",
+    "nestedUpdate",
+    "delete",
 ];
 
 fn main() {
@@ -255,12 +313,12 @@ fn main() {
         seed(d);
         with_ambient_driver(d, || {
             for it in 0..warmup {
-                run_op(op, it);
+                run_op(d, op, it);
             }
             for it in 0..reps {
                 let g = it + warmup;
                 let t = Instant::now();
-                run_op(op, g);
+                run_op(d, op, g);
                 let us = t.elapsed().as_micros();
                 println!("native,{dialect},{op},{it},{us}");
             }
@@ -275,7 +333,7 @@ fn run_safety(_dialect: &str, spec: &str) {
     seed(d);
     let count = |op: &str| -> usize {
         QUERY_COUNT.store(0, Ordering::SeqCst);
-        with_ambient_driver(d, || run_op(op, 0));
+        with_ambient_driver(d, || run_op(d, op, 0));
         QUERY_COUNT.load(Ordering::SeqCst)
     };
     // Each relation op is executed and fail-closed on its fixed batched query count: 1 parent + 1
@@ -299,5 +357,14 @@ fn run_safety(_dialect: &str, spec: &str) {
         let actual = count(op);
         assert_eq!(actual, expected, "{op} query-count regression");
         println!("{op} queries={actual} (expect {expected})");
+    }
+    // RETURNING-chained transactions run through the runtime `with_ambient_transaction` scope: each is
+    // BEGIN + its 2 body statements (the RETURNING write + the dependent write) + COMMIT = 4 statements.
+    // The BEGIN/COMMIT are counted because the tx runs on a forwarding handle over THIS counted driver
+    // (see CountingDriver::begin_tx) — proof the generated runner emits none of them: the runtime does.
+    for (op, expected) in [("nestedCreate", 4usize), ("nestedUpsert", 4), ("nestedUpdate", 4), ("delete", 4)] {
+        let actual = count(op);
+        assert_eq!(actual, expected, "{op} tx statement-count regression (expect BEGIN + 2 body + COMMIT)");
+        println!("{op} statements={actual} (expect {expected} = BEGIN + 2 body + COMMIT)");
     }
 }

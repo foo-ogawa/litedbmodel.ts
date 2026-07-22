@@ -305,8 +305,9 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
   // #59 read-column de-box + coverage guard (op-builder layer): resolve each read node's `readColumns`
   // (base table + explicit projection, carried by `emitRead`) against the model's `static columns`,
   // fail-close on a `*`/undeclared column AND on a read model that declared NO columns at all, and stamp
-  // the TS de-box `materializers` map the `executeSQL` leaf applies at execute. A WRITE node carries no
-  // `readColumns` (writes are exempt). The transient `readColumns` port is stripped.
+  // the TS de-box `materializers` map the `executeSQL` leaf applies at execute. A RETURNING WRITE carries
+  // `readColumns` too (its returning projection returns typed rows — the SAME mechanism), so a `.map`
+  // over it is COVERED. The transient `readColumns` port is stripped.
   lowerReadColumns(ir, resolveColumnType, className);
 
   // #141 / bc#164 native output-passthrough: make the contract native-clean for `generateModule`
@@ -342,6 +343,67 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
   };
 }
 
+/** An `executeSQL`-bearing node the transient-port lowering passes reach — see {@link executeSqlNodes}. */
+interface ExecuteSqlNodeView {
+  /** The node's `executeSQL` ports (a top-level node's `ports`, or a map/fanout's INNER `ports`). */
+  readonly ports: Record<string, unknown>;
+  /** The node id (for diagnostics). */
+  readonly id: string;
+  /** The node the result `outType` stamps onto (a map/fanout node's `outType` is its ELEMENT type). */
+  readonly outHost: { outType?: PortableType };
+}
+
+/**
+ * Every `executeSQL`-bearing node in a component body — a TOP-LEVEL node, OR the single inner op of a
+ * `.map`/fanout (a RETURNING-chained transaction: `INSERT … RETURNING id → id.map(id => INSERT …)`).
+ * The transient-port lowering passes ({@link lowerRecordedWhere} / {@link lowerReadColumns}) iterate
+ * BOTH via THIS one SSoT so a WHERE / RETURNING projection authored INSIDE a `.map` lowers exactly as a
+ * top-level one does — a `.map` is COVERED control flow (typed field access on the covered plane), so
+ * its inner statement is a first-class `executeSQL` node the passes must reach, not an opaque-wire leaf.
+ * The map/fanout node's `outType` is its ELEMENT type (the node RESULT is `{arr: element}`), so a
+ * map-inner RETURNING write stamps the SAME row type onto `outHost` a top-level one would.
+ */
+function executeSqlNodes(component: { name: string; body: readonly unknown[] }): ExecuteSqlNodeView[] {
+  const out: ExecuteSqlNodeView[] = [];
+  for (const node of component.body) {
+    if ('cond' in (node as object)) continue;
+    if ('map' in (node as object) || 'fanout' in (node as object)) {
+      const inner = 'map' in (node as object)
+        ? (node as { map: { component?: string; ports?: Record<string, unknown> } }).map
+        : (node as { fanout: { component?: string; ports?: Record<string, unknown> } }).fanout;
+      if (inner.component !== 'executeSQL' || inner.ports === undefined) continue;
+      out.push({ ports: inner.ports, id: (node as { id: string }).id, outHost: node as { outType?: PortableType } });
+    } else {
+      const ref = node as { id?: string; component?: string; ports?: Record<string, unknown> };
+      if (ref.component !== 'executeSQL' || ref.ports === undefined) continue;
+      out.push({ ports: ref.ports, id: ref.id ?? '?', outHost: ref as { outType?: PortableType } });
+    }
+  }
+  return out;
+}
+
+/**
+ * The node ids consumed as a `.map`/fanout `over` SOURCE (a bare node ref `{ref:[id]}`). Such a source
+ * is iterated with typed field access on the COVERED plane, so the native-passthrough lowering keeps it
+ * de-boxed (typed) rather than opaque-wire — see {@link lowerNativePassthrough}. Only a single-segment
+ * node ref is a covered map source; a deeper path / expression `over` is not a plain node result.
+ */
+function mapOverSources(component: { body: readonly unknown[] }): Set<string> {
+  const ids = new Set<string>();
+  for (const node of component.body) {
+    const spec = 'map' in (node as object)
+      ? (node as { map: { over?: unknown } }).map
+      : 'fanout' in (node as object)
+        ? (node as { fanout: { over?: unknown } }).fanout
+        : undefined;
+    const over = spec?.over as { ref?: unknown } | undefined;
+    if (over !== undefined && Array.isArray(over.ref) && over.ref.length === 1 && typeof over.ref[0] === 'string') {
+      ids.add(over.ref[0]);
+    }
+  }
+  return ids;
+}
+
 /**
  * Lower each `executeSQL` node's transient RECORDED `where` port into the node's static `sql`/`params`
  * and strip it (#141). `where` was recorded by bc from the where sugar, so it is plain Expression IR
@@ -349,16 +411,13 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
  * sentinel form (IN/BETWEEN/LIKE/subquery/rawPredicate) without walking a live proxy. Bounded WHERE
  * (no SKIP) assembles to a literal ` WHERE … AND …` (the `?`→`$N` render is the leaf's runtime job).
  * A SKIP/dynamic fragment fails closed — dynamic-WHERE runtime assembly is a separate (unwired) path;
- * the predicate is never silently dropped.
+ * the predicate is never silently dropped. Reaches map-inner statements too (see {@link executeSqlNodes}).
  */
 function lowerRecordedWhere(ir: ComponentGraphIR, dialect: Dialect): void {
   for (const component of ir.components) {
-    for (const node of component.body) {
-      if ('cond' in node || 'map' in node || 'fanout' in node) continue;
-      const ref = node as { id?: string; component?: string; ports?: Record<string, unknown> };
-      if (ref.component !== 'executeSQL' || ref.ports === undefined || ref.ports.where === undefined) continue;
-      const ports = ref.ports;
-      const at = `${component.name}/${ref.id ?? '?'}`;
+    for (const { ports, id } of executeSqlNodes(component)) {
+      if (ports.where === undefined) continue;
+      const at = `${component.name}/${id}`;
       // Lower per the model's dialect: the IN-list form (PG `= ANY(?)` vs MySQL/SQLite `json_each(?)`)
       // and per-column casts are dialect-specific; the `?`→`$N` render stays the leaf's runtime job.
       const fragments = lowerWherePort(ports, dialect, at);
@@ -400,15 +459,12 @@ function lowerRecordedWhere(ir: ComponentGraphIR, dialect: Dialect): void {
 function lowerReadColumns(ir: ComponentGraphIR, resolveColumnType: ColumnTypeResolver | undefined, className: string): void {
   for (const component of ir.components) {
     let stampedAny = false;
-    for (const node of component.body) {
-      if ('cond' in node || 'map' in node || 'fanout' in node) continue;
-      const ref = node as { id?: string; component?: string; ports?: Record<string, unknown> };
-      if (ref.component !== 'executeSQL' || ref.ports === undefined || ref.ports.readColumns === undefined) continue;
-      const ports = ref.ports;
-      const at = `${component.name}/${ref.id ?? '?'}`;
+    for (const { ports, id, outHost } of executeSqlNodes(component)) {
+      if (ports.readColumns === undefined) continue;
+      const at = `${component.name}/${id}`;
       // A typed read REQUIRES the model's inline `static columns` (spec §4.1: bc never infers types; the
-      // author annotates them). A read model that declares NO columns cannot de-box → fail closed at
-      // registration (never a silent raw / rounded-i64 read). Writes are exempt (no `readColumns` port).
+      // author annotates them). A model that declares NO columns cannot de-box → fail closed at
+      // registration (never a silent raw / rounded-i64 read). A non-RETURNING write carries no `readColumns`.
       if (resolveColumnType === undefined) {
         throw new Error(
           `scp read-columns (#59): read behavior '${className}' projects explicit columns at ${at} but the ` +
@@ -431,7 +487,7 @@ function lowerReadColumns(ir: ComponentGraphIR, resolveColumnType: ColumnTypeRes
       // (the SAME resolution, so the coerced JS form always equals `outType`). The #59 coverage guard
       // fires here (throws on `*` / undeclared). Stamp the row type as the node's `outType`.
       const row = deriveReadRow(table, cols as string[], resolveColumnType, at);
-      (ref as { outType?: unknown }).outType = row.outType;
+      outHost.outType = row.outType;
       if (Object.keys(row.materializers).length > 0) ports.materializers = { obj: row.materializers };
       // A projected 64-bit int column must be read in exact-integer mode so the driver returns the
       // exact i64 (not a rounded double) BEFORE `materializeCell` renders it to a decimal string — the
@@ -497,11 +553,14 @@ function terminalNodeId(component: Component): string {
  * Native output-passthrough (#141 / bc#164) — the PUBLISH-layer transform that makes a lowered contract
  * native-clean for `generateModule` (rust/go typed-native). See {@link PublishBehaviorsOptions.nativePassthrough}.
  *
- * For each component, every node EXCEPT the {@link terminalNodeId} is an INTERMEDIATE whose result feeds
- * a downstream op-agnostic leaf (parent read → `pluck` → child read → `group`, at every relation level):
- * it is flagged `wirePassthrough:true` with an opaque-wire `outType` (`{arr:'value'}` for a `many` leaf,
- * `'value'` for a `one` leaf) so bc keeps the raw `WireValue`/`Vec<WireValue>` (NO de-box) for the leaf
- * transports. The TERMINAL node keeps its concrete typed outType (the only de-box). The TS-only
+ * For each component, an INTERMEDIATE node whose result feeds a downstream op-agnostic LEAF (parent
+ * read → `pluck` → child read → `group`, at every relation level) is flagged `wirePassthrough:true`
+ * with an opaque-wire `outType` (`{arr:'value'}` for a `many` leaf, `'value'` for a `one` leaf) so bc
+ * keeps the raw `WireValue`/`Vec<WireValue>` (NO de-box) for the leaf transports. The TERMINAL node
+ * keeps its concrete typed outType. Two intermediates ALSO keep it: a node consumed as a `.map`/fanout
+ * `over` SOURCE (a RETURNING-chained transaction: `INSERT … RETURNING id → id.map(id => INSERT …)`) —
+ * a `.map` iterates a TYPED list with typed field access on the COVERED plane (it is covered control
+ * flow, not an opaque-wire leaf), so its source must de-box, exactly like the terminal. The TS-only
  * `materializers` port is stripped from every node (the native emitter de-boxes from `outType`).
  *
  * This is expressed HERE (the single publish lowering core, twin of {@link lowerReadColumns}) — NOT as a
@@ -519,13 +578,17 @@ function lowerNativePassthrough(ir: ComponentGraphIR): void {
     // (the ir-exec path ignores the dead port), so it is pruned HERE, in the native-clean transform.
     const ports = (component as { inputPorts?: Record<string, unknown> }).inputPorts;
     if (ports !== undefined) for (const k of Object.keys(ports)) if (k.startsWith('@')) delete ports[k];
+    // The TS ir-exec read-path de-box map is a TS-only concern — strip it from EVERY executeSQL node
+    // (top-level AND map/fanout inner — {@link executeSqlNodes}) so no `materializers` survives native.
+    for (const { ports: np } of executeSqlNodes(component)) delete np.materializers;
     const terminalId = terminalNodeId(component);
+    // The node ids consumed as a `.map`/fanout `over` SOURCE — they de-box (typed) like the terminal.
+    const typedSources = mapOverSources(component);
     for (const node of component.body) {
       if ('cond' in node) continue;
       const ref = node as { id?: string; component?: string; outType?: PortableType; wirePassthrough?: boolean; ports?: Record<string, unknown> };
-      // The TS ir-exec read-path de-box map is a TS-only concern — never in the native contract.
-      if (ref.ports !== undefined) delete ref.ports.materializers;
-      if (ref.id === terminalId) continue; // the terminal keeps its typed outType (the ONLY de-box).
+      // the terminal AND a `.map` source keep their typed outType (the covered-plane de-boxes).
+      if (ref.id === terminalId || (ref.id !== undefined && typedSources.has(ref.id))) continue;
       const componentName = 'map' in node ? (node as { map: { component: string } }).map.component : 'fanout' in node ? (node as { fanout: { component: string } }).fanout.component : ref.component;
       const cardinality = componentName !== undefined ? LEAF_CARDINALITY[componentName] : undefined;
       if (cardinality === undefined) {

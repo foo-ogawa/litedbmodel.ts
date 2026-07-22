@@ -88,6 +88,57 @@ class Bench extends lm.SemanticBehavior {
   updateMany($: { rows: unknown }) { return lm.emitBatchWrite(L, 'Update', { table: 'benchmark_users', columns: ['name'], keyColumns: ['id'], rows: $.rows as never }, 'sqlite'); }
 }
 
+// ── nested-write TRANSACTIONS (E5, RETURNING-chained; #142) ────────────────────────────────────────
+// The DB transaction boundary (BEGIN/COMMIT/ROLLBACK + atomicity) is the CONSUMER's (litedbmodel's)
+// responsibility, owned by the runtime `with_ambient_transaction` wrapper (begin_tx → runner →
+// COMMIT/ROLLBACK) — NOT a bc feature and NOT emitted into the generated runner (it runs the body
+// statements via `execute_sql` and returns `Result`). Each op is a COVERED typed-source `.map`:
+// `write RETURNING id → id.map(id => dependent write binding that id)`. `emitWrite` stamps the RETURNING
+// projection as the #59 `readColumns` port, so the source node carries a typed outType and the `.map`
+// de-boxes the row (`$u.id`). `id` is declared `NOT NULL` (it IS the primary key) so the RETURNING cell
+// is a non-optional scalar — consumable in the dependent statement's value position (no coalesce). The
+// map runs the dependent write ONCE per RETURNING row (exactly one), so each tx is exactly 2 statements.
+class BenchTx extends lm.SemanticBehavior {
+  static columns = {
+    benchmark_users: { id: 'INTEGER NOT NULL', email: 'TEXT', name: 'TEXT' },
+    benchmark_posts: { id: 'INTEGER NOT NULL', title: 'TEXT', author_id: 'INTEGER' },
+  } as const;
+
+  // nestedCreate: INSERT user RETURNING id → INSERT post with author_id = the new user's id.
+  nestedCreate($: { email: unknown; name: unknown; title: unknown }) {
+    const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id' }, 'sqlite');
+    return user.map(($u: never) => lm.emitWrite(L, 'Insert', { table: 'benchmark_posts', 'values.author_id': ($u as { id: unknown }).id, 'values.title': $.title }, 'sqlite')).as(TX_DEP);
+  }
+  // nestedUpsert: INSERT user ON CONFLICT DO UPDATE RETURNING id → INSERT post with author_id = that id.
+  nestedUpsert($: { email: unknown; name: unknown; title: unknown }) {
+    const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, onConflict: 'email', onConflictAction: 'update', returning: 'id' }, 'sqlite');
+    return user.map(($u: never) => lm.emitWrite(L, 'Insert', { table: 'benchmark_posts', 'values.author_id': ($u as { id: unknown }).id, 'values.title': $.title }, 'sqlite')).as(TX_DEP);
+  }
+  // nestedUpdate: UPDATE user SET name WHERE id RETURNING id → UPDATE that user's posts SET title.
+  nestedUpdate($: { id: unknown; name: unknown; title: unknown }) {
+    const user = lm.emitWrite(L, 'Update', { table: 'benchmark_users', 'set.name': $.name, where: [lm.whereEq($.id, $.id)], returning: 'id' }, 'sqlite');
+    return user.map(($u: never) => lm.emitWrite(L, 'Update', { table: 'benchmark_posts', 'set.title': $.title, where: [lm.whereEq(($u as { author_id: unknown }).author_id, ($u as { id: unknown }).id)] }, 'sqlite')).as(TX_DEP);
+  }
+  // delete: create-then-delete tx — INSERT a fresh user RETURNING id → DELETE the EXACT created row,
+  // matched by its RETURNING primary key AND its inserted email. The `id` operand is the RETURNING-chain
+  // key (matching benchmark.ts's `delete where id = user.id`); the `email` operand is the input the row
+  // was inserted with. (An id-ONLY predicate is a single typed-scalar bound param, which the bc emitter
+  // lowers to `Vec<f64>` instead of the transport's `Vec<WireValue>` — it only coerces a typed scalar to
+  // wire when a `value` input param is also present; binding the email input keeps the bound params a
+  // wire list. This is a narrow bc codegen observation, not a tx concern — see the report.)
+  delete($: { email: unknown; name: unknown }) {
+    const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id' }, 'sqlite');
+    return user.map(($u: never) => lm.emitWrite(L, 'Delete', { table: 'benchmark_users', where: [lm.whereEq(($u as { id: unknown }).id, ($u as { id: unknown }).id), lm.whereEq($.email, $.email)] }, 'sqlite')).as(TX_DEP);
+  }
+}
+
+// The `.map` element type for a RETURNING-chained tx: each dependent write is the `executeSQL` leaf,
+// whose result is the `many`-cardinality write-summary LIST (`[{…}]`). bc's map records the element
+// outType from the leaf's element OUTPUT (`{obj:{}}`), not its cardinality-adjusted list result — so the
+// map is annotated with the correct element type (`{arr:{obj:{}}}` — the dependent write returns a list,
+// the map result is a list-of-lists). The tx result is unused (the tx runs for its effects).
+const TX_DEP = { arr: { obj: {} } } as const;
+
 // Input Port type strings (erased at runtime; bc records the port NAMES from `$` access — these carry
 // the declared type into the IR). All bound values are opaque wire (`value`) — the native leaf binds them.
 const v = (...k: string[]): Record<string, { type: 'value'; required: true }> => Object.fromEntries(k.map((x) => [x, { type: 'value' as const, required: true }]));
@@ -98,11 +149,20 @@ const inputPorts: Record<string, Record<string, { type: 'value'; required: true 
   create: v('email', 'name'), update: v('id', 'name'), upsert: v('email', 'name'),
   createMany: v('rows'), upsertMany: v('rows'), updateMany: v('rows'),
 };
+const inputPortsTx: Record<string, Record<string, { type: 'value'; required: true }>> = {
+  nestedCreate: v('email', 'name', 'title'), nestedUpsert: v('email', 'name', 'title'),
+  nestedUpdate: v('id', 'name', 'title'), delete: v('email', 'name'),
+};
 
 // PUBLISH → the native-clean contract (nativePassthrough expresses #164 + strips `materializers` at the
-// publish layer). The DUMP is verbatim: nothing runs between publish and JSON.stringify.
+// publish layer). The DUMP is verbatim: nothing runs between publish and JSON.stringify. The reads/single
+// writes/batches (Bench) and the RETURNING-chained transactions (BenchTx, NOT NULL id) publish as two
+// contracts and their component lists concat into the ONE dumped IR (byte-identical to a single publish;
+// the two classes only differ in their `static columns` nullability declaration).
 const contract = lm.publishBehaviors(Bench, { dialect: 'sqlite', nativePassthrough: true, inputPorts });
+const contractTx = lm.publishBehaviors(BenchTx, { dialect: 'sqlite', nativePassthrough: true, inputPorts: inputPortsTx });
+const ir = { ...contract.ir, components: [...contract.ir.components, ...contractTx.ir.components] };
 mkdirSync(IR_DIR, { recursive: true });
-writeFileSync(IR_PATH, JSON.stringify(contract.ir));
-console.log(`native.ir.json: ${contract.ir.components.length} components → ${IR_PATH}`);
-console.log('components:', contract.ir.components.map((c) => c.name).join(', '));
+writeFileSync(IR_PATH, JSON.stringify(ir));
+console.log(`native.ir.json: ${ir.components.length} components → ${IR_PATH}`);
+console.log('components:', ir.components.map((c) => c.name).join(', '));

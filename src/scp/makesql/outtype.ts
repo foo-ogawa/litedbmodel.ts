@@ -20,7 +20,7 @@
 
 import type { PortableType, PortableScalarType } from 'behavior-contracts';
 import type { Component, ComponentRefNode, MapNode } from '../authoring';
-import { sqlTypeToBcScalar, sqlTypeToMaterializeClass, keyArrayElemScalar, type BcScalar, type MaterializeClass, type ColumnTypeResolver } from '../coltype';
+import { sqlTypeToBcScalar, sqlTypeToMaterializeClass, keyArrayElemScalar, sqlTypeIsNotNull, type BcScalar, type MaterializeClass, type ColumnTypeResolver } from '../coltype';
 import { IN_SENTINEL } from './tx';
 
 /**
@@ -247,9 +247,13 @@ export function deriveReadRow(
     const { underlying, outputKey, qualifier } = entry;
     const owner = qualifier ?? table;
     const sqlType = resolveColumnType(owner, underlying); // undeclared → throw
-    // Every read cell is nullable (a driver column may be NULL; `static columns` declares no NOT NULL),
-    // so the read scalar rides under `opt` — bc conforms `null` (absent) OR the read-de-boxed scalar.
-    obj[outputKey] = { opt: keyArrayElemScalar(sqlType) }; // read-de-boxed scalar (throws on unknown SQL type)
+    // A read cell is nullable UNLESS `static columns` declares the column `NOT NULL` — a driver column
+    // may be NULL, so the read scalar rides under `opt` (bc conforms `null`/absent OR the de-boxed
+    // scalar). A `NOT NULL` column is non-null by SQL contract → the raw scalar (no `opt`), so a
+    // RETURNING primary key can be consumed in a value position (a `.map` param) without an
+    // optional-narrowing coalesce (spec §4.1 nullability — the SSoT is the declared column constraint).
+    const scalar = keyArrayElemScalar(sqlType); // read-de-boxed scalar (throws on unknown SQL type)
+    obj[outputKey] = sqlTypeIsNotNull(sqlType) ? scalar : { opt: scalar };
     const klass = sqlTypeToMaterializeClass(sqlType);
     if (klass !== 'passthrough') materializers[outputKey] = klass; // omit passthrough (no-op coercion)
   }

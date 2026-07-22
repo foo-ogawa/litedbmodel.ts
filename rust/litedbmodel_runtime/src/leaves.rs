@@ -81,6 +81,92 @@ fn current_driver() -> Result<&'static dyn Driver, BehaviorError> {
     })
 }
 
+// ── Transaction scope for the covered plane (the CONSUMER's tx-boundary responsibility) ────────────
+//
+// The DB transaction boundary (BEGIN/COMMIT/ROLLBACK + atomicity) is litedbmodel's job, NOT a bc
+// feature and NOT emitted into the generated runner — the covered runner just runs its body statements
+// via `execute_sql` and returns `Result`. THIS wrapper brackets that runner in a transaction using the
+// EXISTING tx primitives ([`Driver::begin_tx`] issues BEGIN; [`TxConnection::commit`]/[`rollback`] issue
+// COMMIT/ROLLBACK on the owned connection) and the EXISTING ambient-driver mechanism
+// ([`with_ambient_driver`]) — no new tx execution engine, no parallel exec path. Statement execution
+// stays the ONE seam ([`execute_sql`] → [`exec_context`]); only the tx-control is added around it.
+
+/// A [`Driver`] adapter over a tx's OWNED [`TxConnection`]: it forwards every prepared statement to the
+/// pinned tx connection, so a covered runner's `execute_sql` (which resolves the ambient driver and runs
+/// through the central seam) executes ON the transaction. Installed as the ambient driver for the span
+/// of the tx body by [`with_ambient_transaction`]. `dialect` mirrors the underlying driver so
+/// `execute_sql`'s `?`→`$N` placeholder render is unchanged.
+struct TxDriver<'a> {
+    tx: std::cell::RefCell<Box<dyn crate::exec_context::TxConnection + 'a>>,
+    dialect: &'static str,
+}
+
+/// A [`PreparedStatement`] over the tx connection: `all`/`run` forward the (already placeholder-rendered)
+/// SQL to the pinned tx connection ([`crate::exec_context::TxConnection`]). The tx connection is the ONE
+/// connection the whole BEGIN…COMMIT runs on (the owned-connection contract).
+struct TxPrepared<'a, 'd> {
+    driver: &'d TxDriver<'a>,
+    sql: String,
+}
+
+impl crate::driver::PreparedStatement for TxPrepared<'_, '_> {
+    fn all(&mut self, params: &[Value]) -> Result<Vec<Value>, crate::errors::SqlFailure> {
+        self.driver.tx.borrow_mut().execute(&self.sql, params)
+    }
+    fn run(&mut self, params: &[Value]) -> Result<crate::driver::RunInfo, crate::errors::SqlFailure> {
+        self.driver.tx.borrow_mut().run(&self.sql, params)
+    }
+}
+
+impl Driver for TxDriver<'_> {
+    fn dialect(&self) -> &'static str {
+        self.dialect
+    }
+    fn prepare(&self, sql: &str) -> Box<dyn crate::driver::PreparedStatement + '_> {
+        Box::new(TxPrepared { driver: self, sql: sql.to_string() })
+    }
+    // A covered tx body never opens a NESTED transaction (the ambient IS the tx); fail closed rather
+    // than silently begin a second BEGIN on the same connection.
+    fn begin_tx(&self) -> Result<Box<dyn crate::exec_context::TxConnection + '_>, crate::errors::SqlFailure> {
+        Err(nested_tx_unsupported())
+    }
+    fn acquire_tx(&self) -> Result<Box<dyn crate::exec_context::TxConnection + '_>, crate::errors::SqlFailure> {
+        Err(nested_tx_unsupported())
+    }
+}
+
+/// A tx-pinned driver has no nested-tx path (the ambient IS the open transaction) — fail closed.
+fn nested_tx_unsupported() -> crate::errors::SqlFailure {
+    crate::errors::SqlFailure {
+        kind: "driver_error".into(),
+        policy: "fail".into(),
+        sqlite_code: None,
+        message: "scp tx-scope: nested transaction on a tx-pinned driver is not supported".into(),
+    }
+}
+
+/// Run `body` inside a transaction on `driver`, threading the tx connection as the ambient driver so a
+/// covered runner's `execute_sql` executes on it: [`Driver::begin_tx`] (BEGIN) → run `body` under the
+/// tx-pinned ambient → COMMIT on `Ok` / ROLLBACK on `Err` (the atomicity guarantee). A body error rolls
+/// back and re-raises; a COMMIT that itself fails rolls back and surfaces the error. This is the covered
+/// plane's tx boundary — the runtime owns it (the generated runner emits NO BEGIN/COMMIT).
+pub fn with_ambient_transaction<R>(
+    driver: &dyn Driver,
+    body: impl FnOnce() -> Result<R, BehaviorError>,
+) -> Result<R, BehaviorError> {
+    let tx = driver.begin_tx().map_err(sql_failure_to_behavior_error)?; // BEGIN issued on the owned connection
+    let tx_driver = TxDriver { tx: std::cell::RefCell::new(tx), dialect: driver.dialect() };
+    let result = with_ambient_driver(&tx_driver, body);
+    let tx = tx_driver.tx.into_inner();
+    match result {
+        Ok(r) => tx.commit().map(|_| r).map_err(sql_failure_to_behavior_error),
+        Err(e) => {
+            let _ = tx.rollback(); // best-effort; surface the ORIGINAL body error
+            Err(e)
+        }
+    }
+}
+
 // ── WireValue ↔ Value boundary codec (the ONLY place the two value models meet) ───────────────────
 
 /// A BC-owned [`WireValue`] → bc [`Value`] (the input to the SQL param binder + the grouping core).
@@ -264,6 +350,44 @@ mod tests {
             WireValue::List(l) => l.items.clone(),
             _ => panic!("not a list"),
         }
+    }
+
+    // ── with_ambient_transaction atomicity (#142): Ok → COMMIT (all rows persist), Err → ROLLBACK
+    //    (NO rows persist). Proves the tx boundary the covered runner relies on is genuinely atomic. ──
+    #[test]
+    fn tx_commits_on_ok_and_rolls_back_on_err() {
+        use crate::driver::{PreparedStatement, SqliteDriver};
+        let d = SqliteDriver::in_memory(&["CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)".to_string()]).unwrap();
+        let ins = |id: i64, v: &str| -> Result<(), BehaviorError> {
+            execute_sql(false, &[WireValue::int(id), WireValue::Str(v.to_string())], false, "INSERT INTO t (id, v) VALUES (?, ?)", true).map(|_| ())
+        };
+        let row_count = |d: &SqliteDriver| -> i64 {
+            let rows = d.prepare("SELECT COUNT(*) AS c FROM t").all(&[]).unwrap();
+            match &rows[0] {
+                Value::Obj(pairs) => match pairs.iter().find(|(k, _)| k == "c").map(|(_, v)| v) {
+                    Some(Value::Int(n)) => *n,
+                    other => panic!("unexpected count cell: {other:?}"),
+                },
+                other => panic!("unexpected count row: {other:?}"),
+            }
+        };
+
+        // Ok body: two inserts on the tx connection → COMMIT → both rows persist.
+        with_ambient_transaction(&d, || {
+            ins(1, "a")?;
+            ins(2, "b")?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(row_count(&d), 2, "a committed tx must persist all its writes");
+
+        // Err body: insert row 3 then fail mid-tx → ROLLBACK → row 3 must NOT persist (still 2 rows).
+        let outcome: Result<(), BehaviorError> = with_ambient_transaction(&d, || {
+            ins(3, "c")?; // this write is issued inside the tx…
+            Err(BehaviorError::new("BOOM", "mid-tx failure")) // …then the body errors → rollback
+        });
+        assert!(outcome.is_err(), "the body error must propagate");
+        assert_eq!(row_count(&d), 2, "a rolled-back tx must leave NO rows committed (row 3 gone)");
     }
 
     // Single-key pluck emits a FLAT scalar key array (json_each scalar `value`).
