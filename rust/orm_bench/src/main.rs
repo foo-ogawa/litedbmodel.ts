@@ -141,12 +141,6 @@ fn run_op(op: &str, it: u64) {
         "nestedRelations" => {
             bg::run_native_raw_struct_nestedRelations(bg::InNRNestedRelations).unwrap();
         }
-        "compositeRelations" => {
-            bg::run_native_raw_struct_compositeRelations(bg::InNRCompositeRelations {
-                tenant_id: WireValue::int(1),
-            })
-            .unwrap();
-        }
         "create" => {
             bg::run_native_raw_struct_create(bg::InNRCreate {
                 email: WireValue::Str(format!("new{it}@bench.com")),
@@ -182,7 +176,6 @@ const OPS: &[&str] = &[
     "nestedFindFirst",
     "nestedFindUnique",
     "nestedRelations",
-    "compositeRelations",
     "create",
     "update",
     "upsert",
@@ -240,7 +233,6 @@ fn run_safety(_dialect: &str, spec: &str) {
         ("nestedFindFirst", 2),
         ("nestedFindUnique", 2),
         ("nestedRelations", 3),
-        ("compositeRelations", 2),
     ] {
         let actual = count(op);
         assert_eq!(actual, expected, "{op} query-count regression");

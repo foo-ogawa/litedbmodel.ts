@@ -62,7 +62,9 @@
     "bench:coverage:roundtrip:docker": "npm run docker:livedb:up && sleep 5 && npm run bench:coverage:roundtrip; e=$?; npm run docker:livedb:down; exit $e",
     "docker:livedb:up": "docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml up -d postgres mysql",
     "docker:livedb:down": "docker compose -f docker-compose.test.yml -f docker-compose.livedb.yml down -v",
-    "conformance:livedb:docker": "npm run docker:livedb:up && sleep 5 && npm run conformance:gen:livedb && npm run conformance:livedb; e=$?; npm run docker:livedb:down; exit $e"
+    "conformance:livedb:docker": "npm run docker:livedb:up && sleep 5 && npm run conformance:gen:livedb && npm run conformance:livedb; e=$?; npm run docker:livedb:down; exit $e",
+    "native:gen": "bash benchmark/crosslang/gen-native.sh generate",
+    "bench:codegen:drift": "npm run build:scp && bash benchmark/crosslang/gen-native.sh check"
   },
   "keywords": [
     "orm",
@@ -83,7 +85,7 @@
     "url": "git+https://github.com/foo-ogawa/litedbmodel.git"
   },
   "dependencies": {
-    "behavior-contracts": "^0.8.15",
+    "behavior-contracts": "^0.8.16",
     "reflect-metadata": "^0.2.2"
   },
   "devDependencies": {

@@ -65,7 +65,7 @@ export type MapNode = Extract<BodyNode, { map: unknown }>;
 export type FanoutNode = Extract<BodyNode, { fanout: unknown }>;
 export type CondNode = Extract<BodyNode, { cond: unknown }>;
 export type ComponentRefNode = Exclude<BodyNode, MapNode | FanoutNode | CondNode>;
-import { leafComponents } from './leaves';
+import { leafComponents, LEAVES } from './leaves';
 import { lowerWherePort } from './makesql/static-bundle';
 import { deriveReadRow, outputType as composeOutputType } from './makesql/outtype';
 import type { PortableType } from 'behavior-contracts';
@@ -225,6 +225,25 @@ export interface PublishBehaviorsOptions {
    * and per-column casts differ. Default `'sqlite'`. The read/write op builders thread the model's dialect.
    */
   readonly dialect?: DialectName;
+  /**
+   * Native-codegen output-passthrough mode (#141 / bc#164). When set, the publish makes the contract
+   * NATIVE-CLEAN for `generateModule({language:'rust-typed-native'|'go-typed-native'})`:
+   *
+   *  1. **Output-passthrough (#164)**: every INTERMEDIATE node (a node whose result feeds a downstream
+   *     op-agnostic leaf — parent read → `pluck` → child read → `group`, at every relation level) is
+   *     flagged `wirePassthrough:true` with an OPAQUE-WIRE `outType` (`{arr:'value'}` for a `many`
+   *     leaf, `'value'` for a `one` leaf like `pluck`). bc then keeps its result as raw `WireValue` /
+   *     `Vec<WireValue>` (NO de-box) so it feeds the next leaf transport with no per-op `typed→Value`
+   *     re-box. ONLY the TERMINAL node (the component's output) de-boxes to its concrete typed outType.
+   *  2. **TS-only ports stripped**: the `materializers` port (the TS ir-exec read-path de-box map) is
+   *     removed from every node — the native emitter de-boxes from `outType`, never `materializers`,
+   *     so a `materializers` port would leak a TS-only concern into the native contract.
+   *
+   * Off (default): the contract is the TS ir-exec shape (`materializers` stamped, every read node
+   * typed) — unchanged for the litedbmodel runtime read path. This flag is a PUBLISH-layer transform,
+   * not a codegen-path IR edit: the serialized contract is native-clean by construction.
+   */
+  readonly nativePassthrough?: boolean;
 }
 
 /**
@@ -289,6 +308,13 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
   // the TS de-box `materializers` map the `executeSQL` leaf applies at execute. A WRITE node carries no
   // `readColumns` (writes are exempt). The transient `readColumns` port is stripped.
   lowerReadColumns(ir, resolveColumnType, className);
+
+  // #141 / bc#164 native output-passthrough: make the contract native-clean for `generateModule`
+  // (rust/go typed-native). Runs LAST (after the read outType + WHERE lowering it consumes): flags every
+  // INTERMEDIATE node opaque-wire (`wirePassthrough` + `{arr:'value'}` / `'value'`) so bc keeps its
+  // result raw `WireValue`/`Vec<WireValue>` for the op-agnostic leaves, de-boxing ONLY the terminal; and
+  // strips the TS-only `materializers` port. Off ⇒ the TS ir-exec shape (unchanged). See the option doc.
+  if (options.nativePassthrough === true) lowerNativePassthrough(ir);
 
   const methods: Record<string, BehaviorMethodSpec> = {};
   for (const component of ir.components) {
@@ -438,6 +464,98 @@ function lowerReadColumns(ir: ComponentGraphIR, resolveColumnType: ColumnTypeRes
         `component '${component.name}' output`,
       );
     }
+  }
+}
+
+/**
+ * The op-agnostic leaf cardinality SoT (`one` → single value result, `many` → list result) read from
+ * the {@link LEAVES} `defineLeaf` annotations — the SAME catalog `behaviorComponents` derives from. A
+ * `one` leaf's passthrough carries a bare opaque `'value'`; a `many` leaf's carries `{arr:'value'}`.
+ */
+const LEAF_CARDINALITY: Readonly<Record<string, 'one' | 'many'>> = Object.fromEntries(
+  Object.entries(LEAVES).map(([name, def]) => [name, (def as { meta: { cardinality: 'one' | 'many' } }).meta.cardinality]),
+);
+
+/** The single body-node id a component's `output` Φ resolves to (its TERMINAL node). Fail-closed: the
+ * native passthrough pass only supports a straight-line graph whose output is ONE node ref (every #141
+ * op — the terminal read / the outermost `group`). A non-ref / multi-node output is not native-lowerable. */
+function terminalNodeId(component: Component): string {
+  const out = (component as { output?: unknown }).output as { ref?: unknown } | undefined;
+  const ref = out?.ref;
+  const id = Array.isArray(ref) && ref.length >= 1 && typeof ref[0] === 'string' ? ref[0] : undefined;
+  if (id === undefined || !component.body.some((n) => (n as { id?: string }).id === id)) {
+    throw new Error(
+      `scp native-passthrough (#164): component '${component.name}' output is not a single body-node ref ` +
+        `(${JSON.stringify(out)}); the native output-passthrough pass requires a straight-line graph with ` +
+        `one terminal node. No-assume, no-fallback.`,
+    );
+  }
+  return id;
+}
+
+/**
+ * Native output-passthrough (#141 / bc#164) — the PUBLISH-layer transform that makes a lowered contract
+ * native-clean for `generateModule` (rust/go typed-native). See {@link PublishBehaviorsOptions.nativePassthrough}.
+ *
+ * For each component, every node EXCEPT the {@link terminalNodeId} is an INTERMEDIATE whose result feeds
+ * a downstream op-agnostic leaf (parent read → `pluck` → child read → `group`, at every relation level):
+ * it is flagged `wirePassthrough:true` with an opaque-wire `outType` (`{arr:'value'}` for a `many` leaf,
+ * `'value'` for a `one` leaf) so bc keeps the raw `WireValue`/`Vec<WireValue>` (NO de-box) for the leaf
+ * transports. The TERMINAL node keeps its concrete typed outType (the only de-box). The TS-only
+ * `materializers` port is stripped from every node (the native emitter de-boxes from `outType`).
+ *
+ * This is expressed HERE (the single publish lowering core, twin of {@link lowerReadColumns}) — NOT as a
+ * post-`generateModule` IR edit — so the serialized contract is native-clean by construction (SSoT: the
+ * one place #164 passthrough is stamped).
+ */
+function lowerNativePassthrough(ir: ComponentGraphIR): void {
+  for (const component of ir.components) {
+    // B-1: prune the `@`-prefixed sentinel Input Ports. litedbmodel's WHERE sugar (`whereLike`/`whereIn`
+    // /… — `authoring-sql.ts`) encodes structural metadata as `$[@x]` refs; bc faithfully derives an
+    // Input Port per sentinel (typed `unknown`). `lowerRecordedWhere` CONSUMES the sentinel into the
+    // static `sql`/`params`, so the derived `@x` port is now DEAD — but it survives on the component's
+    // `inputPorts`, and the native emitter lowers `unknown` to a boxed `Value` field in the input struct
+    // (`_like: Value` — an untyped-escape leak that breaks the native compile). It is a TS-only artifact
+    // (the ir-exec path ignores the dead port), so it is pruned HERE, in the native-clean transform.
+    const ports = (component as { inputPorts?: Record<string, unknown> }).inputPorts;
+    if (ports !== undefined) for (const k of Object.keys(ports)) if (k.startsWith('@')) delete ports[k];
+    const terminalId = terminalNodeId(component);
+    for (const node of component.body) {
+      if ('cond' in node) continue;
+      const ref = node as { id?: string; component?: string; outType?: PortableType; wirePassthrough?: boolean; ports?: Record<string, unknown> };
+      // The TS ir-exec read-path de-box map is a TS-only concern — never in the native contract.
+      if (ref.ports !== undefined) delete ref.ports.materializers;
+      if (ref.id === terminalId) continue; // the terminal keeps its typed outType (the ONLY de-box).
+      const componentName = 'map' in node ? (node as { map: { component: string } }).map.component : 'fanout' in node ? (node as { fanout: { component: string } }).fanout.component : ref.component;
+      const cardinality = componentName !== undefined ? LEAF_CARDINALITY[componentName] : undefined;
+      if (cardinality === undefined) {
+        throw new Error(
+          `scp native-passthrough (#164): node '${ref.id}' in '${component.name}' references unknown leaf ` +
+            `'${componentName}' (not in the op-agnostic leaf catalog). No-assume, no-fallback.`,
+        );
+      }
+      // Opaque-wire outType per cardinality: `many` → `{arr:'value'}` (Vec<WireValue>); `one` → `'value'`
+      // (bare WireValue, e.g. `pluck`'s key array bound as ONE `= ANY($1)` param). bc's guard admits
+      // exactly these two shapes for a `wirePassthrough:true` node ({@link wirePassthroughOutTypeOk}).
+      ref.outType = cardinality === 'many' ? { arr: 'value' } : 'value';
+      ref.wirePassthrough = true;
+    }
+    // The component `outputType` composes from the TERMINAL node's (unchanged) outType via the SAME
+    // `output` Φ + the shared {@link composeOutputType} SSoT — the intermediate opaque outTypes never
+    // enter it (the Φ references only the terminal), so it stays the terminal's concrete result type.
+    const byNode = new Map<string, PortableType>();
+    for (const n of component.body) {
+      if ('cond' in n) continue;
+      const t = (n as { outType?: PortableType }).outType;
+      if (t === undefined) continue;
+      const isList = 'map' in n || 'fanout' in n;
+      byNode.set((n as { id: string }).id, isList ? { arr: t } : t);
+    }
+    (component as { output: unknown; outputType?: PortableType }).outputType = composeOutputType(
+      (component as { output: unknown }).output,
+      byNode,
+      `component '${component.name}' output`,
+    );
   }
 }
 
