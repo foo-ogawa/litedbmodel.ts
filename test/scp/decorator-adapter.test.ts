@@ -22,7 +22,9 @@ import {
   createAuthoring,
   updateAuthoring,
   deleteAuthoring,
-  compileReadBundle,
+  compileReadContract,
+  emitRead,
+  emitWrite,
   compileCommandBundle,
   compileCreateBundle,
   compileUpdateBundle,
@@ -31,7 +33,6 @@ import {
   compileRelationOps,
   modelColumnResolver,
   compileEager,
-  compileBundle,
   compileWriteBundle,
   compileCreateManyBundle,
   compileUpdateManyBundle,
@@ -161,10 +162,14 @@ describe('F1 columns — @column.* → SCP static columns SQL-type token', () =>
 
 const usersColumns = { columnTypes: { name: 'TEXT' } };
 
-/** Hand-write the equivalent read declaration bundle for a User read shape (the byte-identity oracle). */
+/** Hand-write the equivalent read declaration for a read shape → its lowered leaf-graph COMPONENTS
+ * (the byte-identity oracle; the retired SqlBundle/readGraph surface is gone — reads are the contract). */
 function handRead(name: string, fn: ($: Recorded, L: ComponentFns) => unknown, cols: Record<string, Record<string, string>>) {
-  const contract = compileEager(name, fn, { columns: cols });
-  return compileBundle(contract, name, [], 'sqlite', undefined, contract.resolveColumnType);
+  return compileEager(name, fn, { columns: cols, dialect: 'sqlite' }).components;
+}
+/** The adapter's read COMPONENTS for a model + eager fn (the leaf contract the runtime executes). */
+function adapterRead(model: unknown, name: string, fn: ($: Recorded, L: ComponentFns) => unknown, dialect: 'sqlite', cols?: { columnTypes?: Record<string, string> }) {
+  return compileReadContract(model as never, name, fn, dialect, cols).components;
 }
 const USERS_COLS = { users: { id: 'INTEGER', name: 'TEXT', is_active: 'BOOLEAN', created_at: 'TIMESTAMP', big_id: 'BIGINT', ext_id: 'UUID', metadata: 'JSONB', birth_date: 'DATE', tags: 'TEXT[]' } };
 
@@ -175,14 +180,14 @@ describe('F1 reads — find/findOne/findById/count byte-identical to hand-writte
       where: ($: Recorded) => [whereEq($.id, $.id)],
       order: 'created_at DESC',
     };
-    const adapter = compileReadBundle(User as never, 'find', findAuthoring('users', spec), 'sqlite', usersColumns);
-    const hand = handRead('find', ($: Recorded, L) => L.Select({ table: 'users', select: ['id', 'name'], where: [whereEq($.id, $.id)], order: 'created_at DESC' }), USERS_COLS);
+    const adapter = adapterRead(User as never, 'find', findAuthoring('users', spec), 'sqlite', usersColumns);
+    const hand = handRead('find', ($: Recorded, L) => emitRead(L, 'Select', { table: 'users', select: ['id', 'name'], where: [whereEq($.id, $.id)], order: 'created_at DESC' }, 'sqlite'), USERS_COLS);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
   });
 
   it('findById (identity WHERE) and findOne (identity WHERE) share the find authoring', () => {
-    const byId = compileReadBundle(User as never, 'findById', findAuthoring('users', { select: ['id', 'name'], where: ($: Recorded) => [whereEq($.id, $.id)] }), 'sqlite', usersColumns);
-    const hand = handRead('findById', ($: Recorded, L) => L.Select({ table: 'users', select: ['id', 'name'], where: [whereEq($.id, $.id)] }), USERS_COLS);
+    const byId = adapterRead(User as never, 'findById', findAuthoring('users', { select: ['id', 'name'], where: ($: Recorded) => [whereEq($.id, $.id)] }), 'sqlite', usersColumns);
+    const hand = handRead('findById', ($: Recorded, L) => emitRead(L, 'Select', { table: 'users', select: ['id', 'name'], where: [whereEq($.id, $.id)] }, 'sqlite'), USERS_COLS);
     expect(JSON.stringify(byId)).toBe(JSON.stringify(hand));
   });
 
@@ -191,15 +196,15 @@ describe('F1 reads — find/findOne/findById/count byte-identical to hand-writte
       select: ['id', 'name'],
       where: ($: Recorded) => [whereEq($.id, $.id), when(ne($.name, null), () => whereEq($.name, $.name))],
     };
-    const adapter = compileReadBundle(User as never, 'find', findAuthoring('users', spec), 'sqlite', usersColumns);
-    const hand = handRead('find', ($: Recorded, L) => L.Select({ table: 'users', select: ['id', 'name'], where: [whereEq($.id, $.id), when(ne($.name, null), () => whereEq($.name, $.name))] }), USERS_COLS);
+    const adapter = adapterRead(User as never, 'find', findAuthoring('users', spec), 'sqlite', usersColumns);
+    const hand = handRead('find', ($: Recorded, L) => emitRead(L, 'Select', { table: 'users', select: ['id', 'name'], where: [whereEq($.id, $.id), when(ne($.name, null), () => whereEq($.name, $.name))] }, 'sqlite'), USERS_COLS);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
   });
 
   it('find with limit + offset', () => {
     const spec = { select: ['id', 'name'], limit: ($: Recorded) => $.lim, offset: 5 };
-    const adapter = compileReadBundle(User as never, 'find', findAuthoring('users', spec), 'sqlite', usersColumns);
-    const hand = handRead('find', ($: Recorded, L) => L.Select({ table: 'users', select: ['id', 'name'], limit: $.lim, offset: 5 }), USERS_COLS);
+    const adapter = adapterRead(User as never, 'find', findAuthoring('users', spec), 'sqlite', usersColumns);
+    const hand = handRead('find', ($: Recorded, L) => emitRead(L, 'Select', { table: 'users', select: ['id', 'name'], limit: $.lim, offset: 5 }, 'sqlite'), USERS_COLS);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
   });
 
@@ -208,14 +213,14 @@ describe('F1 reads — find/findOne/findById/count byte-identical to hand-writte
       select: ['id', 'name'],
       where: ($: Recorded) => [inSubquery($, [col('users', 'id'), col('posts', 'author_id')], [[col('posts', 'author_id'), parentRef(col('users', 'id'))]])],
     };
-    const adapter = compileReadBundle(User as never, 'find', findAuthoring('users', spec), 'sqlite', usersColumns);
-    const hand = handRead('find', ($: Recorded, L) => L.Select({ table: 'users', select: ['id', 'name'], where: [inSubquery($, [col('users', 'id'), col('posts', 'author_id')], [[col('posts', 'author_id'), parentRef(col('users', 'id'))]])] }), USERS_COLS);
+    const adapter = adapterRead(User as never, 'find', findAuthoring('users', spec), 'sqlite', usersColumns);
+    const hand = handRead('find', ($: Recorded, L) => emitRead(L, 'Select', { table: 'users', select: ['id', 'name'], where: [inSubquery($, [col('users', 'id'), col('posts', 'author_id')], [[col('posts', 'author_id'), parentRef(col('users', 'id'))]])] }, 'sqlite'), USERS_COLS);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
   });
 
   it('count with a WHERE condition', () => {
-    const adapter = compileReadBundle(User as never, 'count', countAuthoring('users', ($: Recorded) => [whereEq($.is_active, $.is_active)]), 'sqlite', usersColumns);
-    const hand = handRead('count', ($: Recorded, L) => L.Count({ table: 'users', where: [whereEq($.is_active, $.is_active)] }), USERS_COLS);
+    const adapter = adapterRead(User as never, 'count', countAuthoring('users', ($: Recorded) => [whereEq($.is_active, $.is_active)]), 'sqlite', usersColumns);
+    const hand = handRead('count', ($: Recorded, L) => emitRead(L, 'Count', { table: 'users', where: [whereEq($.is_active, $.is_active)] }, 'sqlite'), USERS_COLS);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
   });
 
@@ -230,12 +235,12 @@ describe('F1 reads — find/findOne/findById/count byte-identical to hand-writte
     }
     const cols = { user_stats: { id: 'INTEGER', post_count: 'INTEGER' } };
     const q = 'SELECT users.id, COUNT(posts.id) as post_count FROM users LEFT JOIN posts ON posts.author_id = users.id GROUP BY users.id';
-    const eager = ($: Recorded, L: ComponentFns) => L.Select(queryView(q, ['id', 'post_count'], {}, 'user_stats'));
-    const adapter = compileReadBundle(UserStats as never, 'find', eager, 'sqlite', { columnTypes: { id: 'INTEGER', post_count: 'INTEGER' } });
+    const eager = ($: Recorded, L: ComponentFns) => emitRead(L, 'Select', queryView(q, ['id', 'post_count'], {}, 'user_stats'), 'sqlite');
+    const adapter = adapterRead(UserStats as never, 'find', eager, 'sqlite', { columnTypes: { id: 'INTEGER', post_count: 'INTEGER' } });
     const hand = handRead('find', eager, cols);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
-    // The QUERY lowered onto the Select cte/cteParams ports (no base table).
-    expect(adapter.readGraph).toBeDefined();
+    // The QUERY lowered onto the read `executeSQL` leaf (cte/cteParams folded into its static sql).
+    expect(adapter[0]?.body.some((n) => (n as { component?: string }).component === 'executeSQL')).toBe(true);
   });
 
   // ── F1-audit coverage MINORs (Phase F-2 fold-in): the `group` port + the non-`text[]` array
@@ -246,8 +251,8 @@ describe('F1 reads — find/findOne/findById/count byte-identical to hand-writte
 
   it('find with a GROUP BY port (group) — byte-identical', () => {
     const spec = { select: ['author_id'], group: 'author_id', order: 'author_id ASC' };
-    const adapter = compileReadBundle(Post as never, 'find', findAuthoring('posts', spec), 'sqlite', { columnTypes: { title: 'TEXT' } });
-    const hand = handRead('find', ($: Recorded, L) => L.Select({ table: 'posts', select: ['author_id'], group: 'author_id', order: 'author_id ASC' }), { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TIMESTAMP' } });
+    const adapter = adapterRead(Post as never, 'find', findAuthoring('posts', spec), 'sqlite', { columnTypes: { title: 'TEXT' } });
+    const hand = handRead('find', ($: Recorded, L) => emitRead(L, 'Select', { table: 'posts', select: ['author_id'], group: 'author_id', order: 'author_id ASC' }, 'sqlite'), { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TIMESTAMP' } });
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
   });
 
@@ -262,11 +267,11 @@ describe('F1 reads — find/findOne/findById/count byte-identical to hand-writte
     }
     const cols = { array_cols: { id: 'INTEGER', ints: 'INT[]', nums: 'NUMERIC[]', flags: 'BOOLEAN[]', texts: 'TEXT[]' } };
     const spec = { select: ['id', 'ints', 'nums', 'flags', 'texts'] };
-    const adapter = compileReadBundle(ArrayCols as never, 'find', findAuthoring('array_cols', spec), 'sqlite');
-    const hand = handRead('find', ($: Recorded, L) => L.Select({ table: 'array_cols', select: ['id', 'ints', 'nums', 'flags', 'texts'] }), cols);
+    const adapter = adapterRead(ArrayCols as never, 'find', findAuthoring('array_cols', spec), 'sqlite');
+    const hand = handRead('find', ($: Recorded, L) => emitRead(L, 'Select', { table: 'array_cols', select: ['id', 'ints', 'nums', 'flags', 'texts'] }, 'sqlite'), cols);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
     // The array columns produce a `{ arr: <element> }` outType (not a scalar) — the F2 outtype fix.
-    expect(adapter.readGraph).toBeDefined();
+    expect(JSON.stringify(adapter)).toContain('"arr"');
   });
 
   it('deriveModelColumns maps every array family to its §4.1 array token', () => {
@@ -293,7 +298,7 @@ describe('F1 writes — create/update/delete byte-identical to hand-written SCP'
     // Phase F-2 (#105 option B): `Post.title` is a bare `@column() title?: string`, so the adapter
     // derives its SQL type from `design:type` (String → TEXT) — NOT the old blanket INTEGER default.
     // The hand oracle uses the SAME correct types (author_id/id bare Number → INTEGER, title → TEXT).
-    const contract = compileEager('create', ($: Recorded, L) => L.Insert({ table: 'posts', 'values.author_id': $.author_id, 'values.title': $.title, returning: 'id, author_id, title' }), { columns: { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TIMESTAMP' } } });
+    const contract = compileEager('create', ($: Recorded, L) => emitWrite(L, 'Insert', { table: 'posts', 'values.author_id': $.author_id, 'values.title': $.title, returning: 'id, author_id, title' }, 'sqlite'), { columns: { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TIMESTAMP' } } });
     const hand = compileWriteBundle(contract, 'create', NO_EFFECTS, 'create', 'sqlite', contract.resolveColumnType);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
   });
@@ -301,14 +306,14 @@ describe('F1 writes — create/update/delete byte-identical to hand-written SCP'
   it('update byte-identical', () => {
     const adapter = compileCommandBundle(Post as never, 'update', updateAuthoring('posts', ($: Recorded) => ({ title: $.title }), ($: Recorded) => [whereEq($.id, $.id)], { returning: 'id, title' }), NO_EFFECTS, 'update', 'sqlite');
     // Phase F-2 (#105 option B): `Post.title` (bare string) → TEXT via design:type (not INTEGER).
-    const contract = compileEager('update', ($: Recorded, L) => L.Update({ table: 'posts', where: [whereEq($.id, $.id)], 'set.title': $.title, returning: 'id, title' }), { columns: { posts: { id: 'INTEGER', title: 'TEXT' } } });
+    const contract = compileEager('update', ($: Recorded, L) => emitWrite(L, 'Update', { table: 'posts', where: [whereEq($.id, $.id)], 'set.title': $.title, returning: 'id, title' }, 'sqlite'), { columns: { posts: { id: 'INTEGER', title: 'TEXT' } } });
     const hand = compileWriteBundle(contract, 'update', NO_EFFECTS, 'update', 'sqlite', contract.resolveColumnType);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
   });
 
   it('delete byte-identical', () => {
     const adapter = compileCommandBundle(Post as never, 'delete', deleteAuthoring('posts', ($: Recorded) => [whereEq($.id, $.id)], 'id'), NO_EFFECTS, 'remove', 'sqlite');
-    const contract = compileEager('delete', ($: Recorded, L) => L.Delete({ table: 'posts', where: [whereEq($.id, $.id)], returning: 'id' }), { columns: { posts: { id: 'INTEGER' } } });
+    const contract = compileEager('delete', ($: Recorded, L) => emitWrite(L, 'Delete', { table: 'posts', where: [whereEq($.id, $.id)], returning: 'id' }, 'sqlite'), { columns: { posts: { id: 'INTEGER' } } });
     const hand = compileWriteBundle(contract, 'delete', NO_EFFECTS, 'remove', 'sqlite', contract.resolveColumnType);
     expect(JSON.stringify(adapter)).toBe(JSON.stringify(hand));
   });
@@ -412,12 +417,12 @@ describe('F1 RED proof — a wrong column-type mapping makes the generated bundl
     // Correct: id INTEGER → bc scalar `int`. Wrong: BIGINT → bc scalar `string` (exact-decimal de-box).
     // The read projects `id`, so its outType annotation differs — OBSERVABLE in the bundle bytes.
     const spec = { select: ['id', 'name'], where: ($: Recorded) => [whereEq($.id, $.id)] };
-    const correct = compileReadBundle(User as never, 'find', findAuthoring('users', spec), 'sqlite', usersColumns);
-    const wrong = compileReadBundle(User as never, 'find', findAuthoring('users', spec), 'sqlite', { columnTypes: { name: 'TEXT', id: 'BIGINT' } });
+    const correct = adapterRead(User as never, 'find', findAuthoring('users', spec), 'sqlite', usersColumns);
+    const wrong = adapterRead(User as never, 'find', findAuthoring('users', spec), 'sqlite', { columnTypes: { name: 'TEXT', id: 'BIGINT' } });
     // A byte-identity assertion against the correct hand-written bundle would go RED under the wrong map.
     expect(JSON.stringify(wrong)).not.toBe(JSON.stringify(correct));
     // And confirm the CORRECT mapping IS byte-identical to the hand-written oracle (the GREEN direction).
-    const hand = handRead('find', ($: Recorded, L) => L.Select({ table: 'users', select: ['id', 'name'], where: [whereEq($.id, $.id)] }), USERS_COLS);
+    const hand = handRead('find', ($: Recorded, L) => emitRead(L, 'Select', { table: 'users', select: ['id', 'name'], where: [whereEq($.id, $.id)] }, 'sqlite'), USERS_COLS);
     expect(JSON.stringify(correct)).toBe(JSON.stringify(hand));
   });
 

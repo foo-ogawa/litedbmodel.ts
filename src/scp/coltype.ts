@@ -142,6 +142,11 @@ export type MaterializeClass = 'int32' | 'int64' | 'date' | 'bool' | 'passthroug
  * `int` scalar splits int32/int64 by width; `date`/`bool` get their own class; everything else is
  * `passthrough`.
  */
+export function arrayElementType(sqlType: string): string | null {
+  const m = /^(.+?)\s*\[\s*\]$/.exec(normalizeSqlTypeToken(sqlType));
+  return m === null ? null : m[1].trim();
+}
+
 export function sqlTypeToMaterializeClass(sqlType: string): MaterializeClass {
   const t = normalizeSqlTypeToken(sqlType);
   // An ARRAY column (`TEXT[]` / `INT[]` / `NUMERIC[]` / `BOOLEAN[]` / `TIMESTAMP[]` / …) de-boxes as
@@ -149,9 +154,9 @@ export function sqlTypeToMaterializeClass(sqlType: string): MaterializeClass {
   // ELEMENTS match the declared element outType, so the read path leaves the value unchanged (no
   // per-cell coercion — a scalar materialize class does not apply to a whole list). The element base
   // type is still validated (an unknown element type on a DECLARED array column is a hard error too).
-  const arrayMatch = /^(.+?)\s*\[\s*\]$/.exec(t);
-  if (arrayMatch !== null) {
-    sqlTypeToMaterializeClass(arrayMatch[1].trim()); // validate the element base type (throws if unknown)
+  const element = arrayElementType(t);
+  if (element !== null) {
+    sqlTypeToMaterializeClass(element); // validate the element base type (throws if unknown)
     return 'passthrough';
   }
   switch (t) {
@@ -374,7 +379,7 @@ export function failClosedMaterializeResolverFromColumnMap(
  * `outType` SoT). THROWS for an unknown `table`/`column` (no-assume, no-fallback — a typed-native
  * read must not silently box an untyped column). Built from the model's INLINE `columns` declaration
  * at registration, it replaces the external `schemaColumnTypeResolver(ddl)` as the codegen type
- * source, so `deriveReadOutTypes` reads the declared types.
+ * source, so `deriveReadRow` (the read de-box SSoT) reads the declared types.
  */
 export function columnTypeResolverFromColumnMap(
   columnTypes: ReadonlyMap<string, ReadonlyMap<string, string>>,

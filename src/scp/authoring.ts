@@ -174,8 +174,8 @@ export interface BehaviorModelContract {
   readonly materializeResolver?: MaterializeResolver;
   /**
    * The STATIC codegen column-type resolver (issue #58/#59), derived from the SAME inline `columns`
-   * declaration — `(table, column) → SQL type token`. Feeds `deriveReadOutTypes` so the typed-native
-   * codegen `outType` annotations come from the declaration (not an external DDL). Absent when the
+   * declaration — `(table, column) → SQL type token`. Feeds `deriveReadRow` (the read de-box SSoT) so
+   * the typed-native `outType` annotations come from the declaration (not an external DDL). Absent when the
    * model declared no `columns`.
    */
   readonly resolveColumnType?: ColumnTypeResolver;
