@@ -16,12 +16,15 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 IR="$HERE/.ir/native.ir.json"
 OUT="$ROOT/rust/orm_bench/src/gen/behaviors_generated.rs"
+WIRE="$ROOT/rust/litedbmodel_runtime/src/wire.rs"
 BC="$ROOT/node_modules/.bin/bc"
 
 # The SSoT flag set — `generate` and `check` MUST use identical flags (bc `check` re-generates and
-# byte-diffs). runtime + shared wire types come from `litedbmodel_runtime`; the op-agnostic leaves map
-# to the runtime transport symbols execute_sql / pluck_keys / group_children.
-FLAGS=(--lang rust-typed-native --in "$IR" --out "$OUT"
+# byte-diffs BOTH the covered module --out AND the shared wire-type module --shared-types-out). The
+# shared wire types (WireValue/WireRow/WireList + runtime-free BehaviorError) are BC-generated (#165 /
+# bc#167) into `litedbmodel_runtime/src/wire.rs` — no hand-placement. The op-agnostic leaves map to the
+# runtime transport symbols execute_sql / pluck_keys / group_children.
+FLAGS=(--lang rust-typed-native --in "$IR" --out "$OUT" --shared-types-out "$WIRE"
   --runtime-import litedbmodel_runtime --shared-types-import litedbmodel_runtime
   --leaf-transport executeSQL=execute_sql pluck=pluck_keys group=group_children)
 

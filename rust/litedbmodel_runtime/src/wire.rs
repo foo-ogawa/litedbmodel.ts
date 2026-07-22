@@ -5,9 +5,6 @@
 // failure type lives here too so the transport crate returns `Result<WireValue, BehaviorError>` WITHOUT
 // importing the covered crate (unlike go's `error` interface, rust's runner reads the concrete
 // `.detail`/`.message`, so the type must be shared). Self-contained + runtime-free.
-//
-// TODO(bc#167): emit via `bc generate --shared-types-out`; drop this hand-placement. This file is genuine
-// `rustSharedWireTypesModule(ir)` output but hand-placed with no CLI drift gate — bc#167 will emit + gate it.
 
 // Local concrete failure type (runtime-free) — the covered runner + the transport crate share it. Only the
 // TYPE lives here; the de-box/op-failure CONSTRUCTORS stay in the covered module (they are called there).
