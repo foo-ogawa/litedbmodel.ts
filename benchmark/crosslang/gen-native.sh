@@ -49,6 +49,16 @@ GO_FLAGS=(--lang go-typed-native --in "$IR" --out "$GO_OUT" --shared-types-out "
   --leaf-transport executeSQL=ExecuteSQL pluck=PluckKeys group=GroupChildren
   --leaf-transport-import "$GO_RT")
 
+# The python SSoT flag set — the LITERAL (ir-exec) twin over the SAME IR (epic #123: ts/go/rust =
+# native de-box; py/php = literal). The python emitter embeds the portable IR as a dict literal and
+# hands it to the shared runtime core (`behavior_contracts.run_behavior`) via `bind(handlers)` — it
+# generates NO per-op exec logic and NO typed wire, so the typed-native flags do NOT apply
+# (`--shared-types-out`/`--leaf-transport` are rejected by the python emitter). The op-agnostic leaf
+# transport (executeSQL/pluck/group) is injected at RUNTIME by the bench cell via
+# `litedbmodel_runtime.make_handlers`, not baked at generate time.
+PY_OUT="$ROOT/python/orm_bench/behaviors_generated.py"
+PY_FLAGS=(--lang python --in "$IR" --out "$PY_OUT")
+
 # 1) Author + publish + dump the IR VERBATIM (nothing transforms it after publish).
 npx tsx "$HERE/native-model.mts"
 
@@ -56,9 +66,11 @@ npx tsx "$HERE/native-model.mts"
 case "$MODE" in
   generate)
     "$BC" generate "${FLAGS[@]}";    echo "bc generate → $OUT"
-    "$BC" generate "${GO_FLAGS[@]}"; echo "bc generate → $GO_OUT" ;;
+    "$BC" generate "${GO_FLAGS[@]}"; echo "bc generate → $GO_OUT"
+    "$BC" generate "${PY_FLAGS[@]}"; echo "bc generate → $PY_OUT" ;;
   check)
     "$BC" check "${FLAGS[@]}"
-    "$BC" check "${GO_FLAGS[@]}" ;;
+    "$BC" check "${GO_FLAGS[@]}"
+    "$BC" check "${PY_FLAGS[@]}" ;;
   *) echo "usage: gen-native.sh [generate|check]" >&2; exit 2 ;;
 esac
