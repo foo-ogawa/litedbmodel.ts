@@ -100,18 +100,18 @@ pub struct T0 {
 #[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct T1 {
+
+}
+
+#[derive(Clone, Default)]
+#[allow(dead_code)]
+pub struct T2 {
     pub id: Option<f64>, // "id"
     pub title: Option<String>, // "title"
     pub content: Option<String>, // "content"
     pub published: Option<f64>, // "published"
     pub author_id: Option<f64>, // "author_id"
     pub created_at: Option<String>, // "created_at"
-}
-
-#[derive(Clone, Default)]
-#[allow(dead_code)]
-pub struct T2 {
-
 }
 
 #[derive(Clone, Default)]
@@ -204,7 +204,7 @@ pub struct PortsNRNestedFindAllN0 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRNestedFindAllN1 {
-    pub f_col: Vec<&'static str>, // "col"
+    pub f_col: Vec<String>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -226,10 +226,10 @@ pub struct PortsNRNestedFindAllN2 {
 #[derive(Clone)]
 pub struct PortsNRNestedFindAllN3 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: Vec<&'static str>, // "fk"
+    pub f_fk: Vec<String>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: Vec<&'static str>, // "pk"
+    pub f_pk: Vec<String>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -250,7 +250,7 @@ pub struct PortsNRNestedFindFirstN0 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRNestedFindFirstN1 {
-    pub f_col: Vec<&'static str>, // "col"
+    pub f_col: Vec<String>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -272,10 +272,10 @@ pub struct PortsNRNestedFindFirstN2 {
 #[derive(Clone)]
 pub struct PortsNRNestedFindFirstN3 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: Vec<&'static str>, // "fk"
+    pub f_fk: Vec<String>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: Vec<&'static str>, // "pk"
+    pub f_pk: Vec<String>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -296,7 +296,7 @@ pub struct PortsNRNestedFindUniqueN0 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRNestedFindUniqueN1 {
-    pub f_col: Vec<&'static str>, // "col"
+    pub f_col: Vec<String>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -318,10 +318,10 @@ pub struct PortsNRNestedFindUniqueN2 {
 #[derive(Clone)]
 pub struct PortsNRNestedFindUniqueN3 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: Vec<&'static str>, // "fk"
+    pub f_fk: Vec<String>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: Vec<&'static str>, // "pk"
+    pub f_pk: Vec<String>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -342,7 +342,7 @@ pub struct PortsNRNestedRelationsN0 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRNestedRelationsN1 {
-    pub f_col: Vec<&'static str>, // "col"
+    pub f_col: Vec<String>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -363,7 +363,7 @@ pub struct PortsNRNestedRelationsN2 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRNestedRelationsN3 {
-    pub f_col: Vec<&'static str>, // "col"
+    pub f_col: Vec<String>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -385,10 +385,10 @@ pub struct PortsNRNestedRelationsN4 {
 #[derive(Clone)]
 pub struct PortsNRNestedRelationsN5 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: Vec<&'static str>, // "fk"
+    pub f_fk: Vec<String>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: Vec<&'static str>, // "pk"
+    pub f_pk: Vec<String>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -398,10 +398,10 @@ pub struct PortsNRNestedRelationsN5 {
 #[derive(Clone)]
 pub struct PortsNRNestedRelationsN6 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: Vec<&'static str>, // "fk"
+    pub f_fk: Vec<String>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: Vec<&'static str>, // "pk"
+    pub f_pk: Vec<String>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -422,7 +422,7 @@ pub struct PortsNRCompositeRelationsN0 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRCompositeRelationsN1 {
-    pub f_col: Vec<&'static str>, // "col"
+    pub f_col: Vec<String>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -443,7 +443,7 @@ pub struct PortsNRCompositeRelationsN2 {
 // handler reads the typed fields directly off this concrete struct — no by-name accessor.
 #[derive(Clone)]
 pub struct PortsNRCompositeRelationsN3 {
-    pub f_col: Vec<&'static str>, // "col"
+    pub f_col: Vec<String>, // "col"
     pub f_rows: Vec<WireValue>, // "rows"
 }
 
@@ -465,10 +465,10 @@ pub struct PortsNRCompositeRelationsN4 {
 #[derive(Clone)]
 pub struct PortsNRCompositeRelationsN5 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: Vec<&'static str>, // "fk"
+    pub f_fk: Vec<String>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: Vec<&'static str>, // "pk"
+    pub f_pk: Vec<String>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -478,10 +478,10 @@ pub struct PortsNRCompositeRelationsN5 {
 #[derive(Clone)]
 pub struct PortsNRCompositeRelationsN6 {
     pub f_children: Vec<WireValue>, // "children"
-    pub f_fk: Vec<&'static str>, // "fk"
+    pub f_fk: Vec<String>, // "fk"
     pub f_into: String, // "into"
     pub f_parents: Vec<WireValue>, // "parents"
-    pub f_pk: Vec<&'static str>, // "pk"
+    pub f_pk: Vec<String>, // "pk"
     pub f_single: bool, // "single"
 }
 
@@ -997,8 +997,8 @@ pub fn run_native_raw_struct_findAll(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_filterPaginateSort(
     in_: InNRFilterPaginateSort,
-) -> Result<Vec<T1>, BehaviorError> {
-    let cell_n0: RefCell<Vec<T1>> = RefCell::new(Default::default());
+) -> Result<Vec<T2>, BehaviorError> {
+    let cell_n0: RefCell<Vec<T2>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
@@ -1012,44 +1012,44 @@ pub fn run_native_raw_struct_filterPaginateSort(
             let mut acc0 = Vec::with_capacity(l0.len());
             for i0 in 0..l0.len() {
                 acc0.push(match l0.elem_row(i0) {
-                    Probe::Got(sub1) => T1 {
+                    Probe::Got(sub1) => T2 {
                         id: match sub1.probe_number("id") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
                                 Ok(n) => Some(n),
-                                Err(_) => return Err(de_overflow("T1", "id", "opt(float)", actual_wire_type, raw)),
+                                Err(_) => return Err(de_overflow("T2", "id", "opt(float)", actual_wire_type, raw)),
                             },
-                            NumProbe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T1", "id", "opt(float)", actual_wire_type, raw_value)),
+                            NumProbe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T2", "id", "opt(float)", actual_wire_type, raw_value)),
                             NumProbe::Null { .. } | NumProbe::Absent => None,
                         },
                         title: match sub1.probe_string("title") {
                             Probe::Got(v) => Some(v),
-                            Probe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T1", "title", "opt(string)", actual_wire_type, raw_value)),
+                            Probe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T2", "title", "opt(string)", actual_wire_type, raw_value)),
                             Probe::Null { .. } | Probe::Absent => None,
                         },
                         content: match sub1.probe_string("content") {
                             Probe::Got(v) => Some(v),
-                            Probe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T1", "content", "opt(string)", actual_wire_type, raw_value)),
+                            Probe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T2", "content", "opt(string)", actual_wire_type, raw_value)),
                             Probe::Null { .. } | Probe::Absent => None,
                         },
                         published: match sub1.probe_number("published") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
                                 Ok(n) => Some(n),
-                                Err(_) => return Err(de_overflow("T1", "published", "opt(float)", actual_wire_type, raw)),
+                                Err(_) => return Err(de_overflow("T2", "published", "opt(float)", actual_wire_type, raw)),
                             },
-                            NumProbe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T1", "published", "opt(float)", actual_wire_type, raw_value)),
+                            NumProbe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T2", "published", "opt(float)", actual_wire_type, raw_value)),
                             NumProbe::Null { .. } | NumProbe::Absent => None,
                         },
                         author_id: match sub1.probe_number("author_id") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
                                 Ok(n) => Some(n),
-                                Err(_) => return Err(de_overflow("T1", "author_id", "opt(float)", actual_wire_type, raw)),
+                                Err(_) => return Err(de_overflow("T2", "author_id", "opt(float)", actual_wire_type, raw)),
                             },
-                            NumProbe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T1", "author_id", "opt(float)", actual_wire_type, raw_value)),
+                            NumProbe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T2", "author_id", "opt(float)", actual_wire_type, raw_value)),
                             NumProbe::Null { .. } | NumProbe::Absent => None,
                         },
                         created_at: match sub1.probe_string("created_at") {
                             Probe::Got(v) => Some(v),
-                            Probe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T1", "created_at", "opt(string)", actual_wire_type, raw_value)),
+                            Probe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T2", "created_at", "opt(string)", actual_wire_type, raw_value)),
                             Probe::Null { .. } | Probe::Absent => None,
                         },
                     },
@@ -1213,7 +1213,7 @@ pub fn run_native_raw_struct_findUnique(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_nestedFindAll(
     _in_: InNRNestedFindAll,
-) -> Result<Vec<T2>, BehaviorError> {
+) -> Result<Vec<T1>, BehaviorError> {
     let cell_n0: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
@@ -1223,7 +1223,7 @@ pub fn run_native_raw_struct_nestedFindAll(
     let cell_n2: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
     let produced_n2 = std::cell::Cell::new(false);
     let _ = &produced_n2;
-    let cell_n3: RefCell<Vec<T2>> = RefCell::new(Default::default());
+    let cell_n3: RefCell<Vec<T1>> = RefCell::new(Default::default());
     let produced_n3 = std::cell::Cell::new(false);
     let _ = &produced_n3;
     // ── op 'n0' (executeSQL) ──
@@ -1241,7 +1241,7 @@ pub fn run_native_raw_struct_nestedFindAll(
     produced_n0.set(true);
     // ── op 'n1' (pluck, parent:n0) ──
     if produced_n0.get() {
-        let ports_n1 = PortsNRNestedFindAllN1 { f_col: vec!["id"], f_rows: cell_n0.borrow().clone() };
+        let ports_n1 = PortsNRNestedFindAllN1 { f_col: { let __v: Vec<String> = vec!["id".to_string()]; __v }, f_rows: cell_n0.borrow().clone() };
         let wire_n1 = match pluck_keys(&ports_n1.f_col, &ports_n1.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n1", e.message), detail: e.detail }),
@@ -1266,7 +1266,7 @@ pub fn run_native_raw_struct_nestedFindAll(
     }
     // ── op 'n3' (group, parent:n0) ──
     if produced_n0.get() {
-        let ports_n3 = PortsNRNestedFindAllN3 { f_children: cell_n2.borrow().clone(), f_fk: vec!["author_id"], f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: vec!["id"], f_single: false };
+        let ports_n3 = PortsNRNestedFindAllN3 { f_children: cell_n2.borrow().clone(), f_fk: { let __v: Vec<String> = vec!["author_id".to_string()]; __v }, f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: { let __v: Vec<String> = vec!["id".to_string()]; __v }, f_single: false };
         let wire_n3 = match group_children(&ports_n3.f_children, &ports_n3.f_fk, &ports_n3.f_into, &ports_n3.f_parents, &ports_n3.f_pk, ports_n3.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n3", e.message), detail: e.detail }),
@@ -1276,7 +1276,7 @@ pub fn run_native_raw_struct_nestedFindAll(
                 let mut acc0 = Vec::with_capacity(l0.len());
                 for i0 in 0..l0.len() {
                     acc0.push(match l0.elem_row(i0) {
-                        Probe::Got(sub1) => T2 {
+                        Probe::Got(sub1) => T1 {
 
                         },
                         Probe::Wrong { actual_wire_type, raw_value }
@@ -1310,7 +1310,7 @@ pub fn run_native_raw_struct_nestedFindAll(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_nestedFindFirst(
     in_: InNRNestedFindFirst,
-) -> Result<Vec<T2>, BehaviorError> {
+) -> Result<Vec<T1>, BehaviorError> {
     let cell_n0: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
@@ -1320,7 +1320,7 @@ pub fn run_native_raw_struct_nestedFindFirst(
     let cell_n2: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
     let produced_n2 = std::cell::Cell::new(false);
     let _ = &produced_n2;
-    let cell_n3: RefCell<Vec<T2>> = RefCell::new(Default::default());
+    let cell_n3: RefCell<Vec<T1>> = RefCell::new(Default::default());
     let produced_n3 = std::cell::Cell::new(false);
     let _ = &produced_n3;
     // ── op 'n0' (executeSQL) ──
@@ -1338,7 +1338,7 @@ pub fn run_native_raw_struct_nestedFindFirst(
     produced_n0.set(true);
     // ── op 'n1' (pluck, parent:n0) ──
     if produced_n0.get() {
-        let ports_n1 = PortsNRNestedFindFirstN1 { f_col: vec!["id"], f_rows: cell_n0.borrow().clone() };
+        let ports_n1 = PortsNRNestedFindFirstN1 { f_col: { let __v: Vec<String> = vec!["id".to_string()]; __v }, f_rows: cell_n0.borrow().clone() };
         let wire_n1 = match pluck_keys(&ports_n1.f_col, &ports_n1.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n1", e.message), detail: e.detail }),
@@ -1363,7 +1363,7 @@ pub fn run_native_raw_struct_nestedFindFirst(
     }
     // ── op 'n3' (group, parent:n0) ──
     if produced_n0.get() {
-        let ports_n3 = PortsNRNestedFindFirstN3 { f_children: cell_n2.borrow().clone(), f_fk: vec!["author_id"], f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: vec!["id"], f_single: false };
+        let ports_n3 = PortsNRNestedFindFirstN3 { f_children: cell_n2.borrow().clone(), f_fk: { let __v: Vec<String> = vec!["author_id".to_string()]; __v }, f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: { let __v: Vec<String> = vec!["id".to_string()]; __v }, f_single: false };
         let wire_n3 = match group_children(&ports_n3.f_children, &ports_n3.f_fk, &ports_n3.f_into, &ports_n3.f_parents, &ports_n3.f_pk, ports_n3.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n3", e.message), detail: e.detail }),
@@ -1373,7 +1373,7 @@ pub fn run_native_raw_struct_nestedFindFirst(
                 let mut acc0 = Vec::with_capacity(l0.len());
                 for i0 in 0..l0.len() {
                     acc0.push(match l0.elem_row(i0) {
-                        Probe::Got(sub1) => T2 {
+                        Probe::Got(sub1) => T1 {
 
                         },
                         Probe::Wrong { actual_wire_type, raw_value }
@@ -1407,7 +1407,7 @@ pub fn run_native_raw_struct_nestedFindFirst(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_nestedFindUnique(
     in_: InNRNestedFindUnique,
-) -> Result<Vec<T2>, BehaviorError> {
+) -> Result<Vec<T1>, BehaviorError> {
     let cell_n0: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
@@ -1417,7 +1417,7 @@ pub fn run_native_raw_struct_nestedFindUnique(
     let cell_n2: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
     let produced_n2 = std::cell::Cell::new(false);
     let _ = &produced_n2;
-    let cell_n3: RefCell<Vec<T2>> = RefCell::new(Default::default());
+    let cell_n3: RefCell<Vec<T1>> = RefCell::new(Default::default());
     let produced_n3 = std::cell::Cell::new(false);
     let _ = &produced_n3;
     // ── op 'n0' (executeSQL) ──
@@ -1435,7 +1435,7 @@ pub fn run_native_raw_struct_nestedFindUnique(
     produced_n0.set(true);
     // ── op 'n1' (pluck, parent:n0) ──
     if produced_n0.get() {
-        let ports_n1 = PortsNRNestedFindUniqueN1 { f_col: vec!["id"], f_rows: cell_n0.borrow().clone() };
+        let ports_n1 = PortsNRNestedFindUniqueN1 { f_col: { let __v: Vec<String> = vec!["id".to_string()]; __v }, f_rows: cell_n0.borrow().clone() };
         let wire_n1 = match pluck_keys(&ports_n1.f_col, &ports_n1.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n1", e.message), detail: e.detail }),
@@ -1460,7 +1460,7 @@ pub fn run_native_raw_struct_nestedFindUnique(
     }
     // ── op 'n3' (group, parent:n0) ──
     if produced_n0.get() {
-        let ports_n3 = PortsNRNestedFindUniqueN3 { f_children: cell_n2.borrow().clone(), f_fk: vec!["author_id"], f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: vec!["id"], f_single: false };
+        let ports_n3 = PortsNRNestedFindUniqueN3 { f_children: cell_n2.borrow().clone(), f_fk: { let __v: Vec<String> = vec!["author_id".to_string()]; __v }, f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: { let __v: Vec<String> = vec!["id".to_string()]; __v }, f_single: false };
         let wire_n3 = match group_children(&ports_n3.f_children, &ports_n3.f_fk, &ports_n3.f_into, &ports_n3.f_parents, &ports_n3.f_pk, ports_n3.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n3", e.message), detail: e.detail }),
@@ -1470,7 +1470,7 @@ pub fn run_native_raw_struct_nestedFindUnique(
                 let mut acc0 = Vec::with_capacity(l0.len());
                 for i0 in 0..l0.len() {
                     acc0.push(match l0.elem_row(i0) {
-                        Probe::Got(sub1) => T2 {
+                        Probe::Got(sub1) => T1 {
 
                         },
                         Probe::Wrong { actual_wire_type, raw_value }
@@ -1504,7 +1504,7 @@ pub fn run_native_raw_struct_nestedFindUnique(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_nestedRelations(
     _in_: InNRNestedRelations,
-) -> Result<Vec<T2>, BehaviorError> {
+) -> Result<Vec<T1>, BehaviorError> {
     let cell_n0: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
@@ -1523,7 +1523,7 @@ pub fn run_native_raw_struct_nestedRelations(
     let cell_n5: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
     let produced_n5 = std::cell::Cell::new(false);
     let _ = &produced_n5;
-    let cell_n6: RefCell<Vec<T2>> = RefCell::new(Default::default());
+    let cell_n6: RefCell<Vec<T1>> = RefCell::new(Default::default());
     let produced_n6 = std::cell::Cell::new(false);
     let _ = &produced_n6;
     // ── op 'n0' (executeSQL) ──
@@ -1541,7 +1541,7 @@ pub fn run_native_raw_struct_nestedRelations(
     produced_n0.set(true);
     // ── op 'n1' (pluck, parent:n0) ──
     if produced_n0.get() {
-        let ports_n1 = PortsNRNestedRelationsN1 { f_col: vec!["id"], f_rows: cell_n0.borrow().clone() };
+        let ports_n1 = PortsNRNestedRelationsN1 { f_col: { let __v: Vec<String> = vec!["id".to_string()]; __v }, f_rows: cell_n0.borrow().clone() };
         let wire_n1 = match pluck_keys(&ports_n1.f_col, &ports_n1.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n1", e.message), detail: e.detail }),
@@ -1566,7 +1566,7 @@ pub fn run_native_raw_struct_nestedRelations(
     }
     // ── op 'n3' (pluck, parent:n2) ──
     if produced_n2.get() {
-        let ports_n3 = PortsNRNestedRelationsN3 { f_col: vec!["id"], f_rows: cell_n2.borrow().clone() };
+        let ports_n3 = PortsNRNestedRelationsN3 { f_col: { let __v: Vec<String> = vec!["id".to_string()]; __v }, f_rows: cell_n2.borrow().clone() };
         let wire_n3 = match pluck_keys(&ports_n3.f_col, &ports_n3.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n3", e.message), detail: e.detail }),
@@ -1591,7 +1591,7 @@ pub fn run_native_raw_struct_nestedRelations(
     }
     // ── op 'n5' (group, parent:n2) ──
     if produced_n2.get() {
-        let ports_n5 = PortsNRNestedRelationsN5 { f_children: cell_n4.borrow().clone(), f_fk: vec!["post_id"], f_into: "comments".to_string(), f_parents: cell_n2.borrow().clone(), f_pk: vec!["id"], f_single: false };
+        let ports_n5 = PortsNRNestedRelationsN5 { f_children: cell_n4.borrow().clone(), f_fk: { let __v: Vec<String> = vec!["post_id".to_string()]; __v }, f_into: "comments".to_string(), f_parents: cell_n2.borrow().clone(), f_pk: { let __v: Vec<String> = vec!["id".to_string()]; __v }, f_single: false };
         let wire_n5 = match group_children(&ports_n5.f_children, &ports_n5.f_fk, &ports_n5.f_into, &ports_n5.f_parents, &ports_n5.f_pk, ports_n5.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n5", e.message), detail: e.detail }),
@@ -1606,7 +1606,7 @@ pub fn run_native_raw_struct_nestedRelations(
     }
     // ── op 'n6' (group, parent:n0) ──
     if produced_n0.get() {
-        let ports_n6 = PortsNRNestedRelationsN6 { f_children: cell_n5.borrow().clone(), f_fk: vec!["author_id"], f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: vec!["id"], f_single: false };
+        let ports_n6 = PortsNRNestedRelationsN6 { f_children: cell_n5.borrow().clone(), f_fk: { let __v: Vec<String> = vec!["author_id".to_string()]; __v }, f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: { let __v: Vec<String> = vec!["id".to_string()]; __v }, f_single: false };
         let wire_n6 = match group_children(&ports_n6.f_children, &ports_n6.f_fk, &ports_n6.f_into, &ports_n6.f_parents, &ports_n6.f_pk, ports_n6.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n6", e.message), detail: e.detail }),
@@ -1616,7 +1616,7 @@ pub fn run_native_raw_struct_nestedRelations(
                 let mut acc0 = Vec::with_capacity(l0.len());
                 for i0 in 0..l0.len() {
                     acc0.push(match l0.elem_row(i0) {
-                        Probe::Got(sub1) => T2 {
+                        Probe::Got(sub1) => T1 {
 
                         },
                         Probe::Wrong { actual_wire_type, raw_value }
@@ -1650,7 +1650,7 @@ pub fn run_native_raw_struct_nestedRelations(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_compositeRelations(
     _in_: InNRCompositeRelations,
-) -> Result<Vec<T2>, BehaviorError> {
+) -> Result<Vec<T1>, BehaviorError> {
     let cell_n0: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
@@ -1669,7 +1669,7 @@ pub fn run_native_raw_struct_compositeRelations(
     let cell_n5: RefCell<Vec<WireValue>> = RefCell::new(Default::default());
     let produced_n5 = std::cell::Cell::new(false);
     let _ = &produced_n5;
-    let cell_n6: RefCell<Vec<T2>> = RefCell::new(Default::default());
+    let cell_n6: RefCell<Vec<T1>> = RefCell::new(Default::default());
     let produced_n6 = std::cell::Cell::new(false);
     let _ = &produced_n6;
     // ── op 'n0' (executeSQL) ──
@@ -1687,7 +1687,7 @@ pub fn run_native_raw_struct_compositeRelations(
     produced_n0.set(true);
     // ── op 'n1' (pluck, parent:n0) ──
     if produced_n0.get() {
-        let ports_n1 = PortsNRCompositeRelationsN1 { f_col: vec!["tenant_id", "user_id"], f_rows: cell_n0.borrow().clone() };
+        let ports_n1 = PortsNRCompositeRelationsN1 { f_col: { let __v: Vec<String> = vec!["tenant_id".to_string(), "user_id".to_string()]; __v }, f_rows: cell_n0.borrow().clone() };
         let wire_n1 = match pluck_keys(&ports_n1.f_col, &ports_n1.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n1", e.message), detail: e.detail }),
@@ -1712,7 +1712,7 @@ pub fn run_native_raw_struct_compositeRelations(
     }
     // ── op 'n3' (pluck, parent:n2) ──
     if produced_n2.get() {
-        let ports_n3 = PortsNRCompositeRelationsN3 { f_col: vec!["tenant_id", "post_id"], f_rows: cell_n2.borrow().clone() };
+        let ports_n3 = PortsNRCompositeRelationsN3 { f_col: { let __v: Vec<String> = vec!["tenant_id".to_string(), "post_id".to_string()]; __v }, f_rows: cell_n2.borrow().clone() };
         let wire_n3 = match pluck_keys(&ports_n3.f_col, &ports_n3.f_rows) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n3", e.message), detail: e.detail }),
@@ -1737,7 +1737,7 @@ pub fn run_native_raw_struct_compositeRelations(
     }
     // ── op 'n5' (group, parent:n2) ──
     if produced_n2.get() {
-        let ports_n5 = PortsNRCompositeRelationsN5 { f_children: cell_n4.borrow().clone(), f_fk: vec!["tenant_id", "post_id"], f_into: "comments".to_string(), f_parents: cell_n2.borrow().clone(), f_pk: vec!["tenant_id", "post_id"], f_single: false };
+        let ports_n5 = PortsNRCompositeRelationsN5 { f_children: cell_n4.borrow().clone(), f_fk: { let __v: Vec<String> = vec!["tenant_id".to_string(), "post_id".to_string()]; __v }, f_into: "comments".to_string(), f_parents: cell_n2.borrow().clone(), f_pk: { let __v: Vec<String> = vec!["tenant_id".to_string(), "post_id".to_string()]; __v }, f_single: false };
         let wire_n5 = match group_children(&ports_n5.f_children, &ports_n5.f_fk, &ports_n5.f_into, &ports_n5.f_parents, &ports_n5.f_pk, ports_n5.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n5", e.message), detail: e.detail }),
@@ -1752,7 +1752,7 @@ pub fn run_native_raw_struct_compositeRelations(
     }
     // ── op 'n6' (group, parent:n0) ──
     if produced_n0.get() {
-        let ports_n6 = PortsNRCompositeRelationsN6 { f_children: cell_n5.borrow().clone(), f_fk: vec!["tenant_id", "user_id"], f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: vec!["tenant_id", "user_id"], f_single: false };
+        let ports_n6 = PortsNRCompositeRelationsN6 { f_children: cell_n5.borrow().clone(), f_fk: { let __v: Vec<String> = vec!["tenant_id".to_string(), "user_id".to_string()]; __v }, f_into: "posts".to_string(), f_parents: cell_n0.borrow().clone(), f_pk: { let __v: Vec<String> = vec!["tenant_id".to_string(), "user_id".to_string()]; __v }, f_single: false };
         let wire_n6 = match group_children(&ports_n6.f_children, &ports_n6.f_fk, &ports_n6.f_into, &ports_n6.f_parents, &ports_n6.f_pk, ports_n6.f_single) {
             Ok(r) => r,
             Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n6", e.message), detail: e.detail }),
@@ -1762,7 +1762,7 @@ pub fn run_native_raw_struct_compositeRelations(
                 let mut acc0 = Vec::with_capacity(l0.len());
                 for i0 in 0..l0.len() {
                     acc0.push(match l0.elem_row(i0) {
-                        Probe::Got(sub1) => T2 {
+                        Probe::Got(sub1) => T1 {
 
                         },
                         Probe::Wrong { actual_wire_type, raw_value }
@@ -1796,8 +1796,8 @@ pub fn run_native_raw_struct_compositeRelations(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_create(
     in_: InNRCreate,
-) -> Result<Vec<T2>, BehaviorError> {
-    let cell_n0: RefCell<Vec<T2>> = RefCell::new(Default::default());
+) -> Result<Vec<T1>, BehaviorError> {
+    let cell_n0: RefCell<Vec<T1>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
@@ -1811,7 +1811,7 @@ pub fn run_native_raw_struct_create(
             let mut acc0 = Vec::with_capacity(l0.len());
             for i0 in 0..l0.len() {
                 acc0.push(match l0.elem_row(i0) {
-                    Probe::Got(sub1) => T2 {
+                    Probe::Got(sub1) => T1 {
 
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
@@ -1844,8 +1844,8 @@ pub fn run_native_raw_struct_create(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_update(
     in_: InNRUpdate,
-) -> Result<Vec<T2>, BehaviorError> {
-    let cell_n0: RefCell<Vec<T2>> = RefCell::new(Default::default());
+) -> Result<Vec<T1>, BehaviorError> {
+    let cell_n0: RefCell<Vec<T1>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
@@ -1859,7 +1859,7 @@ pub fn run_native_raw_struct_update(
             let mut acc0 = Vec::with_capacity(l0.len());
             for i0 in 0..l0.len() {
                 acc0.push(match l0.elem_row(i0) {
-                    Probe::Got(sub1) => T2 {
+                    Probe::Got(sub1) => T1 {
 
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
@@ -1947,8 +1947,8 @@ pub fn run_native_raw_struct_upsert(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_createMany(
     in_: InNRCreateMany,
-) -> Result<Vec<T2>, BehaviorError> {
-    let cell_n0: RefCell<Vec<T2>> = RefCell::new(Default::default());
+) -> Result<Vec<T1>, BehaviorError> {
+    let cell_n0: RefCell<Vec<T1>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
@@ -1962,7 +1962,7 @@ pub fn run_native_raw_struct_createMany(
             let mut acc0 = Vec::with_capacity(l0.len());
             for i0 in 0..l0.len() {
                 acc0.push(match l0.elem_row(i0) {
-                    Probe::Got(sub1) => T2 {
+                    Probe::Got(sub1) => T1 {
 
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
@@ -1995,8 +1995,8 @@ pub fn run_native_raw_struct_createMany(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_upsertMany(
     in_: InNRUpsertMany,
-) -> Result<Vec<T2>, BehaviorError> {
-    let cell_n0: RefCell<Vec<T2>> = RefCell::new(Default::default());
+) -> Result<Vec<T1>, BehaviorError> {
+    let cell_n0: RefCell<Vec<T1>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
@@ -2010,7 +2010,7 @@ pub fn run_native_raw_struct_upsertMany(
             let mut acc0 = Vec::with_capacity(l0.len());
             for i0 in 0..l0.len() {
                 acc0.push(match l0.elem_row(i0) {
-                    Probe::Got(sub1) => T2 {
+                    Probe::Got(sub1) => T1 {
 
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
@@ -2043,8 +2043,8 @@ pub fn run_native_raw_struct_upsertMany(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_updateMany(
     in_: InNRUpdateMany,
-) -> Result<Vec<T2>, BehaviorError> {
-    let cell_n0: RefCell<Vec<T2>> = RefCell::new(Default::default());
+) -> Result<Vec<T1>, BehaviorError> {
+    let cell_n0: RefCell<Vec<T1>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
@@ -2058,7 +2058,7 @@ pub fn run_native_raw_struct_updateMany(
             let mut acc0 = Vec::with_capacity(l0.len());
             for i0 in 0..l0.len() {
                 acc0.push(match l0.elem_row(i0) {
-                    Probe::Got(sub1) => T2 {
+                    Probe::Got(sub1) => T1 {
 
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
@@ -2091,11 +2091,11 @@ pub fn run_native_raw_struct_updateMany(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_nestedCreate(
     in_: InNRNestedCreate,
-) -> Result<Vec<Vec<T2>>, BehaviorError> {
+) -> Result<Vec<Vec<T1>>, BehaviorError> {
     let cell_n0: RefCell<Vec<T4>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
-    let cell_n1: RefCell<Vec<Vec<T2>>> = RefCell::new(Default::default());
+    let cell_n1: RefCell<Vec<Vec<T1>>> = RefCell::new(Default::default());
     let produced_n1 = std::cell::Cell::new(false);
     let _ = &produced_n1;
     // ── op 'n0' (executeSQL) ──
@@ -2135,7 +2135,7 @@ pub fn run_native_raw_struct_nestedCreate(
     // ── map 'n1' (executeSQL, per-element, into:null, parent:n0) ──
     if produced_n0.get() {
         let over_n1 = cell_n0.borrow().clone();
-        let mut built_n1: Vec<Vec<T2>> = Vec::with_capacity(over_n1.len());
+        let mut built_n1: Vec<Vec<T1>> = Vec::with_capacity(over_n1.len());
         for oel_n1 in over_n1.iter() {
             let ep_n1 = PortsNRNestedCreateN1 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::float(oel_n1.id), in_.title.clone()]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)".to_string(), f_write: true };
             let er_n1 = match execute_sql(ep_n1.f_bigint, &ep_n1.f_params, ep_n1.f_returning, &ep_n1.f_sql, ep_n1.f_write) {
@@ -2147,7 +2147,7 @@ pub fn run_native_raw_struct_nestedCreate(
                     let mut acc0 = Vec::with_capacity(l0.len());
                     for i0 in 0..l0.len() {
                         acc0.push(match l0.elem_row(i0) {
-                            Probe::Got(sub1) => T2 {
+                            Probe::Got(sub1) => T1 {
 
                             },
                             Probe::Wrong { actual_wire_type, raw_value }
@@ -2185,11 +2185,11 @@ pub fn run_native_raw_struct_nestedCreate(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_nestedUpsert(
     in_: InNRNestedUpsert,
-) -> Result<Vec<Vec<T2>>, BehaviorError> {
+) -> Result<Vec<Vec<T1>>, BehaviorError> {
     let cell_n0: RefCell<Vec<T4>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
-    let cell_n1: RefCell<Vec<Vec<T2>>> = RefCell::new(Default::default());
+    let cell_n1: RefCell<Vec<Vec<T1>>> = RefCell::new(Default::default());
     let produced_n1 = std::cell::Cell::new(false);
     let _ = &produced_n1;
     // ── op 'n0' (executeSQL) ──
@@ -2229,7 +2229,7 @@ pub fn run_native_raw_struct_nestedUpsert(
     // ── map 'n1' (executeSQL, per-element, into:null, parent:n0) ──
     if produced_n0.get() {
         let over_n1 = cell_n0.borrow().clone();
-        let mut built_n1: Vec<Vec<T2>> = Vec::with_capacity(over_n1.len());
+        let mut built_n1: Vec<Vec<T1>> = Vec::with_capacity(over_n1.len());
         for oel_n1 in over_n1.iter() {
             let ep_n1 = PortsNRNestedUpsertN1 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::float(oel_n1.id), in_.title.clone()]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)".to_string(), f_write: true };
             let er_n1 = match execute_sql(ep_n1.f_bigint, &ep_n1.f_params, ep_n1.f_returning, &ep_n1.f_sql, ep_n1.f_write) {
@@ -2241,7 +2241,7 @@ pub fn run_native_raw_struct_nestedUpsert(
                     let mut acc0 = Vec::with_capacity(l0.len());
                     for i0 in 0..l0.len() {
                         acc0.push(match l0.elem_row(i0) {
-                            Probe::Got(sub1) => T2 {
+                            Probe::Got(sub1) => T1 {
 
                             },
                             Probe::Wrong { actual_wire_type, raw_value }
@@ -2279,11 +2279,11 @@ pub fn run_native_raw_struct_nestedUpsert(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_nestedUpdate(
     in_: InNRNestedUpdate,
-) -> Result<Vec<Vec<T2>>, BehaviorError> {
+) -> Result<Vec<Vec<T1>>, BehaviorError> {
     let cell_n0: RefCell<Vec<T4>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
-    let cell_n1: RefCell<Vec<Vec<T2>>> = RefCell::new(Default::default());
+    let cell_n1: RefCell<Vec<Vec<T1>>> = RefCell::new(Default::default());
     let produced_n1 = std::cell::Cell::new(false);
     let _ = &produced_n1;
     // ── op 'n0' (executeSQL) ──
@@ -2323,7 +2323,7 @@ pub fn run_native_raw_struct_nestedUpdate(
     // ── map 'n1' (executeSQL, per-element, into:null, parent:n0) ──
     if produced_n0.get() {
         let over_n1 = cell_n0.borrow().clone();
-        let mut built_n1: Vec<Vec<T2>> = Vec::with_capacity(over_n1.len());
+        let mut built_n1: Vec<Vec<T1>> = Vec::with_capacity(over_n1.len());
         for oel_n1 in over_n1.iter() {
             let ep_n1 = PortsNRNestedUpdateN1 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.title.clone(), WireValue::float(oel_n1.id)]; __v }, f_returning: false, f_sql: "UPDATE benchmark_posts SET title = ? WHERE author_id = ?".to_string(), f_write: true };
             let er_n1 = match execute_sql(ep_n1.f_bigint, &ep_n1.f_params, ep_n1.f_returning, &ep_n1.f_sql, ep_n1.f_write) {
@@ -2335,7 +2335,7 @@ pub fn run_native_raw_struct_nestedUpdate(
                     let mut acc0 = Vec::with_capacity(l0.len());
                     for i0 in 0..l0.len() {
                         acc0.push(match l0.elem_row(i0) {
-                            Probe::Got(sub1) => T2 {
+                            Probe::Got(sub1) => T1 {
 
                             },
                             Probe::Wrong { actual_wire_type, raw_value }
@@ -2373,11 +2373,11 @@ pub fn run_native_raw_struct_nestedUpdate(
 // literal + field access — the consumer keeps it native.
 pub fn run_native_raw_struct_delete(
     in_: InNRDelete,
-) -> Result<Vec<Vec<T2>>, BehaviorError> {
+) -> Result<Vec<Vec<T1>>, BehaviorError> {
     let cell_n0: RefCell<Vec<T4>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
-    let cell_n1: RefCell<Vec<Vec<T2>>> = RefCell::new(Default::default());
+    let cell_n1: RefCell<Vec<Vec<T1>>> = RefCell::new(Default::default());
     let produced_n1 = std::cell::Cell::new(false);
     let _ = &produced_n1;
     // ── op 'n0' (executeSQL) ──
@@ -2417,9 +2417,9 @@ pub fn run_native_raw_struct_delete(
     // ── map 'n1' (executeSQL, per-element, into:null, parent:n0) ──
     if produced_n0.get() {
         let over_n1 = cell_n0.borrow().clone();
-        let mut built_n1: Vec<Vec<T2>> = Vec::with_capacity(over_n1.len());
+        let mut built_n1: Vec<Vec<T1>> = Vec::with_capacity(over_n1.len());
         for oel_n1 in over_n1.iter() {
-            let ep_n1 = PortsNRDeleteN1 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::float(oel_n1.id), in_.email.clone()]; __v }, f_returning: false, f_sql: "DELETE FROM benchmark_users WHERE id = ? AND email = ?".to_string(), f_write: true };
+            let ep_n1 = PortsNRDeleteN1 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::float(oel_n1.id)]; __v }, f_returning: false, f_sql: "DELETE FROM benchmark_users WHERE id = ?".to_string(), f_write: true };
             let er_n1 = match execute_sql(ep_n1.f_bigint, &ep_n1.f_params, ep_n1.f_returning, &ep_n1.f_sql, ep_n1.f_write) {
                 Ok(r) => r,
                 Err(e) => return Err(op_failed("n1", "fail", e)),
@@ -2429,7 +2429,7 @@ pub fn run_native_raw_struct_delete(
                     let mut acc0 = Vec::with_capacity(l0.len());
                     for i0 in 0..l0.len() {
                         acc0.push(match l0.elem_row(i0) {
-                            Probe::Got(sub1) => T2 {
+                            Probe::Got(sub1) => T1 {
 
                             },
                             Probe::Wrong { actual_wire_type, raw_value }

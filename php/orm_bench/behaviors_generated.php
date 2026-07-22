@@ -7,7 +7,7 @@
 // (Behavior::runBehavior) — no execution logic is generated. Handlers are ALWAYS
 // injected at the boundary (IR + {effects,config,hooks} — concept.md §4.4); they
 // are never generated.
-// irFingerprint: fnv1a64:d88ebde5a85779ec
+// irFingerprint: fnv1a64:daa25d52cb64d913
 
 declare(strict_types=1);
 
@@ -15,14 +15,14 @@ declare(strict_types=1);
 $expectedSpecVersions = ['behavior' => 5, 'expression' => 2, 'plan' => 1];
 
 // FNV-1a 64 fingerprint of the source portable IR (canonical-json discipline, #208).
-$irFingerprint = 'fnv1a64:d88ebde5a85779ec';
+$irFingerprint = 'fnv1a64:daa25d52cb64d913';
 
 // Component names exposed by bind(), in IR declaration order.
 $componentNames = ['findAll', 'filterPaginateSort', 'findFirst', 'findUnique', 'nestedFindAll', 'nestedFindFirst', 'nestedFindUnique', 'nestedRelations', 'compositeRelations', 'create', 'update', 'upsert', 'createMany', 'upsertMany', 'updateMany', 'nestedCreate', 'nestedUpsert', 'nestedUpdate', 'delete'];
 
 // The portable component-graph IR, embedded as a native literal (no JSON parse at require).
 $ir = (object) [
-    "irVersion" => 1,
+    "irVersion" => 2,
     "exprVersion" => 2,
     "components" => [
         (object) [
@@ -43,6 +43,36 @@ $ir = (object) [
                                     "opt" => "string",
                                 ],
                             ],
+                        ],
+                    ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
                         ],
                     ],
                     "ports" => (object) [
@@ -114,6 +144,41 @@ $ir = (object) [
                                     "opt" => "string",
                                 ],
                             ],
+                        ],
+                    ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "where" => (object) [
+                            "elemType" => "string",
+                            "required" => false,
+                            "type" => "array",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
                         ],
                     ],
                     "ports" => (object) [
@@ -198,6 +263,41 @@ $ir = (object) [
                             ],
                         ],
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "where" => (object) [
+                            "elemType" => "string",
+                            "required" => false,
+                            "type" => "array",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -271,6 +371,41 @@ $ir = (object) [
                             ],
                         ],
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "where" => (object) [
+                            "elemType" => "string",
+                            "required" => false,
+                            "type" => "array",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -332,6 +467,36 @@ $ir = (object) [
                     "outType" => (object) [
                         "arr" => "value",
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -348,6 +513,18 @@ $ir = (object) [
                     "id" => "n1",
                     "outType" => "value",
                     "parent" => "n0",
+                    "portSchemas" => (object) [
+                        "col" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "rows" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                    ],
                     "ports" => (object) [
                         "col" => (object) [
                             "arr" => [
@@ -369,6 +546,36 @@ $ir = (object) [
                         "arr" => "value",
                     ],
                     "parent" => "n1",
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -395,6 +602,36 @@ $ir = (object) [
                         ],
                     ],
                     "parent" => "n0",
+                    "portSchemas" => (object) [
+                        "children" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "fk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "into" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "parents" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "pk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "single" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "children" => (object) [
                             "ref" => [
@@ -459,6 +696,41 @@ $ir = (object) [
                     "outType" => (object) [
                         "arr" => "value",
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "where" => (object) [
+                            "elemType" => "string",
+                            "required" => false,
+                            "type" => "array",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -481,6 +753,18 @@ $ir = (object) [
                     "id" => "n1",
                     "outType" => "value",
                     "parent" => "n0",
+                    "portSchemas" => (object) [
+                        "col" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "rows" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                    ],
                     "ports" => (object) [
                         "col" => (object) [
                             "arr" => [
@@ -502,6 +786,36 @@ $ir = (object) [
                         "arr" => "value",
                     ],
                     "parent" => "n1",
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -528,6 +842,36 @@ $ir = (object) [
                         ],
                     ],
                     "parent" => "n0",
+                    "portSchemas" => (object) [
+                        "children" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "fk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "into" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "parents" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "pk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "single" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "children" => (object) [
                             "ref" => [
@@ -597,6 +941,41 @@ $ir = (object) [
                     "outType" => (object) [
                         "arr" => "value",
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "where" => (object) [
+                            "elemType" => "string",
+                            "required" => false,
+                            "type" => "array",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -619,6 +998,18 @@ $ir = (object) [
                     "id" => "n1",
                     "outType" => "value",
                     "parent" => "n0",
+                    "portSchemas" => (object) [
+                        "col" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "rows" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                    ],
                     "ports" => (object) [
                         "col" => (object) [
                             "arr" => [
@@ -640,6 +1031,36 @@ $ir = (object) [
                         "arr" => "value",
                     ],
                     "parent" => "n1",
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -666,6 +1087,36 @@ $ir = (object) [
                         ],
                     ],
                     "parent" => "n0",
+                    "portSchemas" => (object) [
+                        "children" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "fk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "into" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "parents" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "pk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "single" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "children" => (object) [
                             "ref" => [
@@ -735,6 +1186,36 @@ $ir = (object) [
                     "outType" => (object) [
                         "arr" => "value",
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -751,6 +1232,18 @@ $ir = (object) [
                     "id" => "n1",
                     "outType" => "value",
                     "parent" => "n0",
+                    "portSchemas" => (object) [
+                        "col" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "rows" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                    ],
                     "ports" => (object) [
                         "col" => (object) [
                             "arr" => [
@@ -772,6 +1265,36 @@ $ir = (object) [
                         "arr" => "value",
                     ],
                     "parent" => "n1",
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -794,6 +1317,18 @@ $ir = (object) [
                     "id" => "n3",
                     "outType" => "value",
                     "parent" => "n2",
+                    "portSchemas" => (object) [
+                        "col" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "rows" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                    ],
                     "ports" => (object) [
                         "col" => (object) [
                             "arr" => [
@@ -815,6 +1350,36 @@ $ir = (object) [
                         "arr" => "value",
                     ],
                     "parent" => "n3",
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -839,6 +1404,36 @@ $ir = (object) [
                         "arr" => "value",
                     ],
                     "parent" => "n2",
+                    "portSchemas" => (object) [
+                        "children" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "fk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "into" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "parents" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "pk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "single" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "children" => (object) [
                             "ref" => [
@@ -874,6 +1469,36 @@ $ir = (object) [
                         ],
                     ],
                     "parent" => "n0",
+                    "portSchemas" => (object) [
+                        "children" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "fk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "into" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "parents" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "pk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "single" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "children" => (object) [
                             "ref" => [
@@ -947,6 +1572,36 @@ $ir = (object) [
                     "outType" => (object) [
                         "arr" => "value",
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -963,6 +1618,18 @@ $ir = (object) [
                     "id" => "n1",
                     "outType" => "value",
                     "parent" => "n0",
+                    "portSchemas" => (object) [
+                        "col" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "rows" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                    ],
                     "ports" => (object) [
                         "col" => (object) [
                             "arr" => [
@@ -985,6 +1652,36 @@ $ir = (object) [
                         "arr" => "value",
                     ],
                     "parent" => "n1",
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -1007,6 +1704,18 @@ $ir = (object) [
                     "id" => "n3",
                     "outType" => "value",
                     "parent" => "n2",
+                    "portSchemas" => (object) [
+                        "col" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "rows" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                    ],
                     "ports" => (object) [
                         "col" => (object) [
                             "arr" => [
@@ -1029,6 +1738,36 @@ $ir = (object) [
                         "arr" => "value",
                     ],
                     "parent" => "n3",
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -1053,6 +1792,36 @@ $ir = (object) [
                         "arr" => "value",
                     ],
                     "parent" => "n2",
+                    "portSchemas" => (object) [
+                        "children" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "fk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "into" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "parents" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "pk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "single" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "children" => (object) [
                             "ref" => [
@@ -1090,6 +1859,36 @@ $ir = (object) [
                         ],
                     ],
                     "parent" => "n0",
+                    "portSchemas" => (object) [
+                        "children" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "fk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "into" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "parents" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "pk" => (object) [
+                            "elemType" => "string",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "single" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "children" => (object) [
                             "ref" => [
@@ -1167,6 +1966,29 @@ $ir = (object) [
                             "obj" => (object) [],
                         ],
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -1227,6 +2049,34 @@ $ir = (object) [
                     "outType" => (object) [
                         "arr" => (object) [
                             "obj" => (object) [],
+                        ],
+                    ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "where" => (object) [
+                            "elemType" => "string",
+                            "required" => false,
+                            "type" => "array",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
                         ],
                     ],
                     "ports" => (object) [
@@ -1295,6 +2145,36 @@ $ir = (object) [
                             ],
                         ],
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -1361,6 +2241,29 @@ $ir = (object) [
                             "obj" => (object) [],
                         ],
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -1414,6 +2317,29 @@ $ir = (object) [
                             "obj" => (object) [],
                         ],
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -1465,6 +2391,29 @@ $ir = (object) [
                     "outType" => (object) [
                         "arr" => (object) [
                             "obj" => (object) [],
+                        ],
+                    ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
                         ],
                     ],
                     "ports" => (object) [
@@ -1527,6 +2476,36 @@ $ir = (object) [
                             ],
                         ],
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -1559,6 +2538,29 @@ $ir = (object) [
                             ],
                         ],
                         "parent" => "n0",
+                        "portSchemas" => (object) [
+                            "bigint" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                            "params" => (object) [
+                                "elemType" => "value",
+                                "required" => true,
+                                "type" => "array",
+                            ],
+                            "returning" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                            "sql" => (object) [
+                                "required" => true,
+                                "type" => "string",
+                            ],
+                            "write" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                        ],
                         "ports" => (object) [
                             "bigint" => false,
                             "params" => (object) [
@@ -1639,6 +2641,36 @@ $ir = (object) [
                             ],
                         ],
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -1671,6 +2703,29 @@ $ir = (object) [
                             ],
                         ],
                         "parent" => "n0",
+                        "portSchemas" => (object) [
+                            "bigint" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                            "params" => (object) [
+                                "elemType" => "value",
+                                "required" => true,
+                                "type" => "array",
+                            ],
+                            "returning" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                            "sql" => (object) [
+                                "required" => true,
+                                "type" => "string",
+                            ],
+                            "write" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                        ],
                         "ports" => (object) [
                             "bigint" => false,
                             "params" => (object) [
@@ -1751,6 +2806,41 @@ $ir = (object) [
                             ],
                         ],
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "where" => (object) [
+                            "elemType" => "string",
+                            "required" => false,
+                            "type" => "array",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -1783,6 +2873,34 @@ $ir = (object) [
                             ],
                         ],
                         "parent" => "n0",
+                        "portSchemas" => (object) [
+                            "bigint" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                            "params" => (object) [
+                                "elemType" => "value",
+                                "required" => true,
+                                "type" => "array",
+                            ],
+                            "returning" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                            "sql" => (object) [
+                                "required" => true,
+                                "type" => "string",
+                            ],
+                            "where" => (object) [
+                                "elemType" => "string",
+                                "required" => false,
+                                "type" => "array",
+                            ],
+                            "write" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                        ],
                         "ports" => (object) [
                             "bigint" => false,
                             "params" => (object) [
@@ -1863,6 +2981,36 @@ $ir = (object) [
                             ],
                         ],
                     ],
+                    "portSchemas" => (object) [
+                        "bigint" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "params" => (object) [
+                            "elemType" => "value",
+                            "required" => true,
+                            "type" => "array",
+                        ],
+                        "readColumns" => (object) [
+                            "elemType" => (object) [
+                                "obj" => (object) [],
+                            ],
+                            "required" => false,
+                            "type" => "object",
+                        ],
+                        "returning" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                        "sql" => (object) [
+                            "required" => true,
+                            "type" => "string",
+                        ],
+                        "write" => (object) [
+                            "required" => true,
+                            "type" => "bool",
+                        ],
+                    ],
                     "ports" => (object) [
                         "bigint" => false,
                         "params" => (object) [
@@ -1895,6 +3043,34 @@ $ir = (object) [
                             ],
                         ],
                         "parent" => "n0",
+                        "portSchemas" => (object) [
+                            "bigint" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                            "params" => (object) [
+                                "elemType" => "value",
+                                "required" => true,
+                                "type" => "array",
+                            ],
+                            "returning" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                            "sql" => (object) [
+                                "required" => true,
+                                "type" => "string",
+                            ],
+                            "where" => (object) [
+                                "elemType" => "string",
+                                "required" => false,
+                                "type" => "array",
+                            ],
+                            "write" => (object) [
+                                "required" => true,
+                                "type" => "bool",
+                            ],
+                        ],
                         "ports" => (object) [
                             "bigint" => false,
                             "params" => (object) [
@@ -1905,15 +3081,10 @@ $ir = (object) [
                                             "id",
                                         ],
                                     ],
-                                    (object) [
-                                        "ref" => [
-                                            "email",
-                                        ],
-                                    ],
                                 ],
                             ],
                             "returning" => false,
-                            "sql" => "DELETE FROM benchmark_users WHERE id = ? AND email = ?",
+                            "sql" => "DELETE FROM benchmark_users WHERE id = ?",
                             "write" => true,
                         ],
                     ],

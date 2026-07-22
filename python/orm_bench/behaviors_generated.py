@@ -4,21 +4,21 @@
 # native dict literal and handed to the EXISTING runtime core (run_behavior) —
 # no execution logic is generated. Handlers are ALWAYS injected at the boundary
 # (IR + {effects,config,hooks}); they are never generated.
-# irFingerprint: fnv1a64:d88ebde5a85779ec
+# irFingerprint: fnv1a64:daa25d52cb64d913
 from behavior_contracts import SPEC_VERSIONS, fingerprint_component_graph, run_behavior
 
 # Spec versions baked at generation time (fail-closed constant comparison at load).
 EXPECTED_SPEC_VERSIONS = {"behavior": 5, "expression": 2, "plan": 1}
 
 # FNV-1a 64 fingerprint of the source portable IR (canonical_json discipline, #208).
-IR_FINGERPRINT = "fnv1a64:d88ebde5a85779ec"
+IR_FINGERPRINT = "fnv1a64:daa25d52cb64d913"
 
 # Component names exposed by bind(), in IR declaration order.
 COMPONENT_NAMES = ("findAll", "filterPaginateSort", "findFirst", "findUnique", "nestedFindAll", "nestedFindFirst", "nestedFindUnique", "nestedRelations", "compositeRelations", "create", "update", "upsert", "createMany", "upsertMany", "updateMany", "nestedCreate", "nestedUpsert", "nestedUpdate", "delete")
 
 # The portable component-graph IR, embedded as a native dict literal (no JSON parse at runtime).
 IR = {
-  "irVersion": 1,
+  "irVersion": 2,
   "exprVersion": 2,
   "components": [
     {
@@ -39,6 +39,36 @@ IR = {
                   "opt": "string"
                 }
               }
+            }
+          },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
             }
           },
           "ports": {
@@ -110,6 +140,41 @@ IR = {
                   "opt": "string"
                 }
               }
+            }
+          },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "where": {
+              "elemType": "string",
+              "required": False,
+              "type": "array"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
             }
           },
           "ports": {
@@ -194,6 +259,41 @@ IR = {
               }
             }
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "where": {
+              "elemType": "string",
+              "required": False,
+              "type": "array"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -267,6 +367,41 @@ IR = {
               }
             }
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "where": {
+              "elemType": "string",
+              "required": False,
+              "type": "array"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -328,6 +463,36 @@ IR = {
           "outType": {
             "arr": "value"
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -344,6 +509,18 @@ IR = {
           "id": "n1",
           "outType": "value",
           "parent": "n0",
+          "portSchemas": {
+            "col": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "rows": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            }
+          },
           "ports": {
             "col": {
               "arr": [
@@ -365,6 +542,36 @@ IR = {
             "arr": "value"
           },
           "parent": "n1",
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -391,6 +598,36 @@ IR = {
             }
           },
           "parent": "n0",
+          "portSchemas": {
+            "children": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "fk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "into": {
+              "required": True,
+              "type": "string"
+            },
+            "parents": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "pk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "single": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "children": {
               "ref": [
@@ -455,6 +692,41 @@ IR = {
           "outType": {
             "arr": "value"
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "where": {
+              "elemType": "string",
+              "required": False,
+              "type": "array"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -477,6 +749,18 @@ IR = {
           "id": "n1",
           "outType": "value",
           "parent": "n0",
+          "portSchemas": {
+            "col": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "rows": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            }
+          },
           "ports": {
             "col": {
               "arr": [
@@ -498,6 +782,36 @@ IR = {
             "arr": "value"
           },
           "parent": "n1",
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -524,6 +838,36 @@ IR = {
             }
           },
           "parent": "n0",
+          "portSchemas": {
+            "children": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "fk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "into": {
+              "required": True,
+              "type": "string"
+            },
+            "parents": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "pk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "single": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "children": {
               "ref": [
@@ -593,6 +937,41 @@ IR = {
           "outType": {
             "arr": "value"
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "where": {
+              "elemType": "string",
+              "required": False,
+              "type": "array"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -615,6 +994,18 @@ IR = {
           "id": "n1",
           "outType": "value",
           "parent": "n0",
+          "portSchemas": {
+            "col": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "rows": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            }
+          },
           "ports": {
             "col": {
               "arr": [
@@ -636,6 +1027,36 @@ IR = {
             "arr": "value"
           },
           "parent": "n1",
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -662,6 +1083,36 @@ IR = {
             }
           },
           "parent": "n0",
+          "portSchemas": {
+            "children": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "fk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "into": {
+              "required": True,
+              "type": "string"
+            },
+            "parents": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "pk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "single": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "children": {
               "ref": [
@@ -731,6 +1182,36 @@ IR = {
           "outType": {
             "arr": "value"
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -747,6 +1228,18 @@ IR = {
           "id": "n1",
           "outType": "value",
           "parent": "n0",
+          "portSchemas": {
+            "col": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "rows": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            }
+          },
           "ports": {
             "col": {
               "arr": [
@@ -768,6 +1261,36 @@ IR = {
             "arr": "value"
           },
           "parent": "n1",
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -790,6 +1313,18 @@ IR = {
           "id": "n3",
           "outType": "value",
           "parent": "n2",
+          "portSchemas": {
+            "col": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "rows": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            }
+          },
           "ports": {
             "col": {
               "arr": [
@@ -811,6 +1346,36 @@ IR = {
             "arr": "value"
           },
           "parent": "n3",
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -835,6 +1400,36 @@ IR = {
             "arr": "value"
           },
           "parent": "n2",
+          "portSchemas": {
+            "children": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "fk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "into": {
+              "required": True,
+              "type": "string"
+            },
+            "parents": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "pk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "single": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "children": {
               "ref": [
@@ -870,6 +1465,36 @@ IR = {
             }
           },
           "parent": "n0",
+          "portSchemas": {
+            "children": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "fk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "into": {
+              "required": True,
+              "type": "string"
+            },
+            "parents": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "pk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "single": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "children": {
               "ref": [
@@ -943,6 +1568,36 @@ IR = {
           "outType": {
             "arr": "value"
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -959,6 +1614,18 @@ IR = {
           "id": "n1",
           "outType": "value",
           "parent": "n0",
+          "portSchemas": {
+            "col": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "rows": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            }
+          },
           "ports": {
             "col": {
               "arr": [
@@ -981,6 +1648,36 @@ IR = {
             "arr": "value"
           },
           "parent": "n1",
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -1003,6 +1700,18 @@ IR = {
           "id": "n3",
           "outType": "value",
           "parent": "n2",
+          "portSchemas": {
+            "col": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "rows": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            }
+          },
           "ports": {
             "col": {
               "arr": [
@@ -1025,6 +1734,36 @@ IR = {
             "arr": "value"
           },
           "parent": "n3",
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -1049,6 +1788,36 @@ IR = {
             "arr": "value"
           },
           "parent": "n2",
+          "portSchemas": {
+            "children": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "fk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "into": {
+              "required": True,
+              "type": "string"
+            },
+            "parents": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "pk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "single": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "children": {
               "ref": [
@@ -1086,6 +1855,36 @@ IR = {
             }
           },
           "parent": "n0",
+          "portSchemas": {
+            "children": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "fk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "into": {
+              "required": True,
+              "type": "string"
+            },
+            "parents": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "pk": {
+              "elemType": "string",
+              "required": True,
+              "type": "array"
+            },
+            "single": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "children": {
               "ref": [
@@ -1163,6 +1962,29 @@ IR = {
               "obj": {}
             }
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -1223,6 +2045,34 @@ IR = {
           "outType": {
             "arr": {
               "obj": {}
+            }
+          },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "where": {
+              "elemType": "string",
+              "required": False,
+              "type": "array"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
             }
           },
           "ports": {
@@ -1291,6 +2141,36 @@ IR = {
               }
             }
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -1357,6 +2237,29 @@ IR = {
               "obj": {}
             }
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -1410,6 +2313,29 @@ IR = {
               "obj": {}
             }
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -1461,6 +2387,29 @@ IR = {
           "outType": {
             "arr": {
               "obj": {}
+            }
+          },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
             }
           },
           "ports": {
@@ -1523,6 +2472,36 @@ IR = {
               }
             }
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -1555,6 +2534,29 @@ IR = {
               ]
             },
             "parent": "n0",
+            "portSchemas": {
+              "bigint": {
+                "required": True,
+                "type": "bool"
+              },
+              "params": {
+                "elemType": "value",
+                "required": True,
+                "type": "array"
+              },
+              "returning": {
+                "required": True,
+                "type": "bool"
+              },
+              "sql": {
+                "required": True,
+                "type": "string"
+              },
+              "write": {
+                "required": True,
+                "type": "bool"
+              }
+            },
             "ports": {
               "bigint": False,
               "params": {
@@ -1635,6 +2637,36 @@ IR = {
               }
             }
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -1667,6 +2699,29 @@ IR = {
               ]
             },
             "parent": "n0",
+            "portSchemas": {
+              "bigint": {
+                "required": True,
+                "type": "bool"
+              },
+              "params": {
+                "elemType": "value",
+                "required": True,
+                "type": "array"
+              },
+              "returning": {
+                "required": True,
+                "type": "bool"
+              },
+              "sql": {
+                "required": True,
+                "type": "string"
+              },
+              "write": {
+                "required": True,
+                "type": "bool"
+              }
+            },
             "ports": {
               "bigint": False,
               "params": {
@@ -1747,6 +2802,41 @@ IR = {
               }
             }
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "where": {
+              "elemType": "string",
+              "required": False,
+              "type": "array"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -1779,6 +2869,34 @@ IR = {
               ]
             },
             "parent": "n0",
+            "portSchemas": {
+              "bigint": {
+                "required": True,
+                "type": "bool"
+              },
+              "params": {
+                "elemType": "value",
+                "required": True,
+                "type": "array"
+              },
+              "returning": {
+                "required": True,
+                "type": "bool"
+              },
+              "sql": {
+                "required": True,
+                "type": "string"
+              },
+              "where": {
+                "elemType": "string",
+                "required": False,
+                "type": "array"
+              },
+              "write": {
+                "required": True,
+                "type": "bool"
+              }
+            },
             "ports": {
               "bigint": False,
               "params": {
@@ -1859,6 +2977,36 @@ IR = {
               }
             }
           },
+          "portSchemas": {
+            "bigint": {
+              "required": True,
+              "type": "bool"
+            },
+            "params": {
+              "elemType": "value",
+              "required": True,
+              "type": "array"
+            },
+            "readColumns": {
+              "elemType": {
+                "obj": {}
+              },
+              "required": False,
+              "type": "object"
+            },
+            "returning": {
+              "required": True,
+              "type": "bool"
+            },
+            "sql": {
+              "required": True,
+              "type": "string"
+            },
+            "write": {
+              "required": True,
+              "type": "bool"
+            }
+          },
           "ports": {
             "bigint": False,
             "params": {
@@ -1891,6 +3039,34 @@ IR = {
               ]
             },
             "parent": "n0",
+            "portSchemas": {
+              "bigint": {
+                "required": True,
+                "type": "bool"
+              },
+              "params": {
+                "elemType": "value",
+                "required": True,
+                "type": "array"
+              },
+              "returning": {
+                "required": True,
+                "type": "bool"
+              },
+              "sql": {
+                "required": True,
+                "type": "string"
+              },
+              "where": {
+                "elemType": "string",
+                "required": False,
+                "type": "array"
+              },
+              "write": {
+                "required": True,
+                "type": "bool"
+              }
+            },
             "ports": {
               "bigint": False,
               "params": {
@@ -1900,16 +3076,11 @@ IR = {
                       "$e0",
                       "id"
                     ]
-                  },
-                  {
-                    "ref": [
-                      "email"
-                    ]
                   }
                 ]
               },
               "returning": False,
-              "sql": "DELETE FROM benchmark_users WHERE id = ? AND email = ?",
+              "sql": "DELETE FROM benchmark_users WHERE id = ?",
               "write": True
             }
           },

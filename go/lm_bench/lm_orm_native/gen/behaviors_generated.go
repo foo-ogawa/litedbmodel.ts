@@ -118,16 +118,16 @@ type T0 struct {
 }
 
 type T1 struct {
+
+}
+
+type T2 struct {
 	Id         *float64 // "id"
 	Title      *string  // "title"
 	Content    *string  // "content"
 	Published  *float64 // "published"
 	Author_id  *float64 // "author_id"
 	Created_at *string  // "created_at"
-}
-
-type T2 struct {
-
 }
 
 type T3 struct {
@@ -851,9 +851,9 @@ func RunNativeRawStruct_findAll(in In_findAll) ([]T0, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_filterPaginateSort(in In_filterPaginateSort) ([]T1, error) {
+func RunNativeRawStruct_filterPaginateSort(in In_filterPaginateSort) ([]T2, error) {
 	_ = in
-	var t_n0 []T1
+	var t_n0 []T2
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
@@ -865,62 +865,62 @@ func RunNativeRawStruct_filterPaginateSort(in In_filterPaginateSort) ([]T1, erro
 	}
 	p0 := wire_n0.AsList()
 	if p0.Kind == probeGot {
-		list0 := make([]T1, 0, p0.Got.Len())
+		list0 := make([]T2, 0, p0.Got.Len())
 		for i0 := 0; i0 < p0.Got.Len(); i0++ {
-			var el0 T1
+			var el0 T2
 			p1 := p0.Got.ElemRow(i0)
 			if p1.Kind == probeGot {
-				var rec1 T1
+				var rec1 T2
 				p2 := p1.Got.ProbeNumber("id")
 				if p2.Kind == probeGot {
 					n2, nErr2 := strconv.ParseFloat(p2.Got, 64)
 					if nErr2 != nil {
-						return nil, deOverflow("T1", "id", "opt(float)", p2.ActualWireType, p2.Got)
+						return nil, deOverflow("T2", "id", "opt(float)", p2.ActualWireType, p2.Got)
 					}
 					rec1.Id = &n2
 				} else if p2.Kind == probeWrong {
-					return nil, deTypeMismatch("T1", "id", "opt(float)", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T2", "id", "opt(float)", p2.ActualWireType, p2.Raw)
 				}
 				p3 := p1.Got.ProbeString("title")
 				if p3.Kind == probeGot {
 					sv3 := p3.Got
 					rec1.Title = &sv3
 				} else if p3.Kind == probeWrong {
-					return nil, deTypeMismatch("T1", "title", "opt(string)", p3.ActualWireType, p3.Raw)
+					return nil, deTypeMismatch("T2", "title", "opt(string)", p3.ActualWireType, p3.Raw)
 				}
 				p4 := p1.Got.ProbeString("content")
 				if p4.Kind == probeGot {
 					sv4 := p4.Got
 					rec1.Content = &sv4
 				} else if p4.Kind == probeWrong {
-					return nil, deTypeMismatch("T1", "content", "opt(string)", p4.ActualWireType, p4.Raw)
+					return nil, deTypeMismatch("T2", "content", "opt(string)", p4.ActualWireType, p4.Raw)
 				}
 				p5 := p1.Got.ProbeNumber("published")
 				if p5.Kind == probeGot {
 					n5, nErr5 := strconv.ParseFloat(p5.Got, 64)
 					if nErr5 != nil {
-						return nil, deOverflow("T1", "published", "opt(float)", p5.ActualWireType, p5.Got)
+						return nil, deOverflow("T2", "published", "opt(float)", p5.ActualWireType, p5.Got)
 					}
 					rec1.Published = &n5
 				} else if p5.Kind == probeWrong {
-					return nil, deTypeMismatch("T1", "published", "opt(float)", p5.ActualWireType, p5.Raw)
+					return nil, deTypeMismatch("T2", "published", "opt(float)", p5.ActualWireType, p5.Raw)
 				}
 				p6 := p1.Got.ProbeNumber("author_id")
 				if p6.Kind == probeGot {
 					n6, nErr6 := strconv.ParseFloat(p6.Got, 64)
 					if nErr6 != nil {
-						return nil, deOverflow("T1", "author_id", "opt(float)", p6.ActualWireType, p6.Got)
+						return nil, deOverflow("T2", "author_id", "opt(float)", p6.ActualWireType, p6.Got)
 					}
 					rec1.Author_id = &n6
 				} else if p6.Kind == probeWrong {
-					return nil, deTypeMismatch("T1", "author_id", "opt(float)", p6.ActualWireType, p6.Raw)
+					return nil, deTypeMismatch("T2", "author_id", "opt(float)", p6.ActualWireType, p6.Raw)
 				}
 				p7 := p1.Got.ProbeString("created_at")
 				if p7.Kind == probeGot {
 					sv7 := p7.Got
 					rec1.Created_at = &sv7
 				} else if p7.Kind == probeWrong {
-					return nil, deTypeMismatch("T1", "created_at", "opt(string)", p7.ActualWireType, p7.Raw)
+					return nil, deTypeMismatch("T2", "created_at", "opt(string)", p7.ActualWireType, p7.Raw)
 				}
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
@@ -1112,7 +1112,7 @@ func RunNativeRawStruct_findUnique(in In_findUnique) ([]T0, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_nestedFindAll(in In_nestedFindAll) ([]T2, error) {
+func RunNativeRawStruct_nestedFindAll(in In_nestedFindAll) ([]T1, error) {
 	_ = in
 	var t_n0 []wire.WireValue
 	produced_n0 := false
@@ -1126,7 +1126,7 @@ func RunNativeRawStruct_nestedFindAll(in In_nestedFindAll) ([]T2, error) {
 	produced_n2 := false
 	_ = t_n2
 	_ = produced_n2
-	var t_n3 []T2
+	var t_n3 []T1
 	produced_n3 := false
 	_ = t_n3
 	_ = produced_n3
@@ -1185,12 +1185,12 @@ func RunNativeRawStruct_nestedFindAll(in In_nestedFindAll) ([]T2, error) {
 		}
 		p3 := wire_n3.AsList()
 		if p3.Kind == probeGot {
-			list3 := make([]T2, 0, p3.Got.Len())
+			list3 := make([]T1, 0, p3.Got.Len())
 			for i3 := 0; i3 < p3.Got.Len(); i3++ {
-				var el3 T2
+				var el3 T1
 				p4 := p3.Got.ElemRow(i3)
 				if p4.Kind == probeGot {
-					var rec4 T2
+					var rec4 T1
 					el3 = rec4
 				} else if p4.Kind == probeWrong {
 					return nil, deTypeMismatch("n3", "n3", "obj{}", p4.ActualWireType, p4.Raw)
@@ -1226,7 +1226,7 @@ func RunNativeRawStruct_nestedFindAll(in In_nestedFindAll) ([]T2, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_nestedFindFirst(in In_nestedFindFirst) ([]T2, error) {
+func RunNativeRawStruct_nestedFindFirst(in In_nestedFindFirst) ([]T1, error) {
 	_ = in
 	var t_n0 []wire.WireValue
 	produced_n0 := false
@@ -1240,7 +1240,7 @@ func RunNativeRawStruct_nestedFindFirst(in In_nestedFindFirst) ([]T2, error) {
 	produced_n2 := false
 	_ = t_n2
 	_ = produced_n2
-	var t_n3 []T2
+	var t_n3 []T1
 	produced_n3 := false
 	_ = t_n3
 	_ = produced_n3
@@ -1299,12 +1299,12 @@ func RunNativeRawStruct_nestedFindFirst(in In_nestedFindFirst) ([]T2, error) {
 		}
 		p3 := wire_n3.AsList()
 		if p3.Kind == probeGot {
-			list3 := make([]T2, 0, p3.Got.Len())
+			list3 := make([]T1, 0, p3.Got.Len())
 			for i3 := 0; i3 < p3.Got.Len(); i3++ {
-				var el3 T2
+				var el3 T1
 				p4 := p3.Got.ElemRow(i3)
 				if p4.Kind == probeGot {
-					var rec4 T2
+					var rec4 T1
 					el3 = rec4
 				} else if p4.Kind == probeWrong {
 					return nil, deTypeMismatch("n3", "n3", "obj{}", p4.ActualWireType, p4.Raw)
@@ -1340,7 +1340,7 @@ func RunNativeRawStruct_nestedFindFirst(in In_nestedFindFirst) ([]T2, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_nestedFindUnique(in In_nestedFindUnique) ([]T2, error) {
+func RunNativeRawStruct_nestedFindUnique(in In_nestedFindUnique) ([]T1, error) {
 	_ = in
 	var t_n0 []wire.WireValue
 	produced_n0 := false
@@ -1354,7 +1354,7 @@ func RunNativeRawStruct_nestedFindUnique(in In_nestedFindUnique) ([]T2, error) {
 	produced_n2 := false
 	_ = t_n2
 	_ = produced_n2
-	var t_n3 []T2
+	var t_n3 []T1
 	produced_n3 := false
 	_ = t_n3
 	_ = produced_n3
@@ -1413,12 +1413,12 @@ func RunNativeRawStruct_nestedFindUnique(in In_nestedFindUnique) ([]T2, error) {
 		}
 		p3 := wire_n3.AsList()
 		if p3.Kind == probeGot {
-			list3 := make([]T2, 0, p3.Got.Len())
+			list3 := make([]T1, 0, p3.Got.Len())
 			for i3 := 0; i3 < p3.Got.Len(); i3++ {
-				var el3 T2
+				var el3 T1
 				p4 := p3.Got.ElemRow(i3)
 				if p4.Kind == probeGot {
-					var rec4 T2
+					var rec4 T1
 					el3 = rec4
 				} else if p4.Kind == probeWrong {
 					return nil, deTypeMismatch("n3", "n3", "obj{}", p4.ActualWireType, p4.Raw)
@@ -1454,7 +1454,7 @@ func RunNativeRawStruct_nestedFindUnique(in In_nestedFindUnique) ([]T2, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_nestedRelations(in In_nestedRelations) ([]T2, error) {
+func RunNativeRawStruct_nestedRelations(in In_nestedRelations) ([]T1, error) {
 	_ = in
 	var t_n0 []wire.WireValue
 	produced_n0 := false
@@ -1480,7 +1480,7 @@ func RunNativeRawStruct_nestedRelations(in In_nestedRelations) ([]T2, error) {
 	produced_n5 := false
 	_ = t_n5
 	_ = produced_n5
-	var t_n6 []T2
+	var t_n6 []T1
 	produced_n6 := false
 	_ = t_n6
 	_ = produced_n6
@@ -1587,12 +1587,12 @@ func RunNativeRawStruct_nestedRelations(in In_nestedRelations) ([]T2, error) {
 		}
 		p6 := wire_n6.AsList()
 		if p6.Kind == probeGot {
-			list6 := make([]T2, 0, p6.Got.Len())
+			list6 := make([]T1, 0, p6.Got.Len())
 			for i6 := 0; i6 < p6.Got.Len(); i6++ {
-				var el6 T2
+				var el6 T1
 				p7 := p6.Got.ElemRow(i6)
 				if p7.Kind == probeGot {
-					var rec7 T2
+					var rec7 T1
 					el6 = rec7
 				} else if p7.Kind == probeWrong {
 					return nil, deTypeMismatch("n6", "n6", "obj{}", p7.ActualWireType, p7.Raw)
@@ -1628,7 +1628,7 @@ func RunNativeRawStruct_nestedRelations(in In_nestedRelations) ([]T2, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_compositeRelations(in In_compositeRelations) ([]T2, error) {
+func RunNativeRawStruct_compositeRelations(in In_compositeRelations) ([]T1, error) {
 	_ = in
 	var t_n0 []wire.WireValue
 	produced_n0 := false
@@ -1654,7 +1654,7 @@ func RunNativeRawStruct_compositeRelations(in In_compositeRelations) ([]T2, erro
 	produced_n5 := false
 	_ = t_n5
 	_ = produced_n5
-	var t_n6 []T2
+	var t_n6 []T1
 	produced_n6 := false
 	_ = t_n6
 	_ = produced_n6
@@ -1761,12 +1761,12 @@ func RunNativeRawStruct_compositeRelations(in In_compositeRelations) ([]T2, erro
 		}
 		p6 := wire_n6.AsList()
 		if p6.Kind == probeGot {
-			list6 := make([]T2, 0, p6.Got.Len())
+			list6 := make([]T1, 0, p6.Got.Len())
 			for i6 := 0; i6 < p6.Got.Len(); i6++ {
-				var el6 T2
+				var el6 T1
 				p7 := p6.Got.ElemRow(i6)
 				if p7.Kind == probeGot {
-					var rec7 T2
+					var rec7 T1
 					el6 = rec7
 				} else if p7.Kind == probeWrong {
 					return nil, deTypeMismatch("n6", "n6", "obj{}", p7.ActualWireType, p7.Raw)
@@ -1802,9 +1802,9 @@ func RunNativeRawStruct_compositeRelations(in In_compositeRelations) ([]T2, erro
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_create(in In_create) ([]T2, error) {
+func RunNativeRawStruct_create(in In_create) ([]T1, error) {
 	_ = in
-	var t_n0 []T2
+	var t_n0 []T1
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
@@ -1816,12 +1816,12 @@ func RunNativeRawStruct_create(in In_create) ([]T2, error) {
 	}
 	p0 := wire_n0.AsList()
 	if p0.Kind == probeGot {
-		list0 := make([]T2, 0, p0.Got.Len())
+		list0 := make([]T1, 0, p0.Got.Len())
 		for i0 := 0; i0 < p0.Got.Len(); i0++ {
-			var el0 T2
+			var el0 T1
 			p1 := p0.Got.ElemRow(i0)
 			if p1.Kind == probeGot {
-				var rec1 T2
+				var rec1 T1
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
 				return nil, deTypeMismatch("n0", "n0", "obj{}", p1.ActualWireType, p1.Raw)
@@ -1856,9 +1856,9 @@ func RunNativeRawStruct_create(in In_create) ([]T2, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_update(in In_update) ([]T2, error) {
+func RunNativeRawStruct_update(in In_update) ([]T1, error) {
 	_ = in
-	var t_n0 []T2
+	var t_n0 []T1
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
@@ -1870,12 +1870,12 @@ func RunNativeRawStruct_update(in In_update) ([]T2, error) {
 	}
 	p0 := wire_n0.AsList()
 	if p0.Kind == probeGot {
-		list0 := make([]T2, 0, p0.Got.Len())
+		list0 := make([]T1, 0, p0.Got.Len())
 		for i0 := 0; i0 < p0.Got.Len(); i0++ {
-			var el0 T2
+			var el0 T1
 			p1 := p0.Got.ElemRow(i0)
 			if p1.Kind == probeGot {
-				var rec1 T2
+				var rec1 T1
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
 				return nil, deTypeMismatch("n0", "n0", "obj{}", p1.ActualWireType, p1.Raw)
@@ -1974,9 +1974,9 @@ func RunNativeRawStruct_upsert(in In_upsert) ([]T3, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_createMany(in In_createMany) ([]T2, error) {
+func RunNativeRawStruct_createMany(in In_createMany) ([]T1, error) {
 	_ = in
-	var t_n0 []T2
+	var t_n0 []T1
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
@@ -1988,12 +1988,12 @@ func RunNativeRawStruct_createMany(in In_createMany) ([]T2, error) {
 	}
 	p0 := wire_n0.AsList()
 	if p0.Kind == probeGot {
-		list0 := make([]T2, 0, p0.Got.Len())
+		list0 := make([]T1, 0, p0.Got.Len())
 		for i0 := 0; i0 < p0.Got.Len(); i0++ {
-			var el0 T2
+			var el0 T1
 			p1 := p0.Got.ElemRow(i0)
 			if p1.Kind == probeGot {
-				var rec1 T2
+				var rec1 T1
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
 				return nil, deTypeMismatch("n0", "n0", "obj{}", p1.ActualWireType, p1.Raw)
@@ -2028,9 +2028,9 @@ func RunNativeRawStruct_createMany(in In_createMany) ([]T2, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_upsertMany(in In_upsertMany) ([]T2, error) {
+func RunNativeRawStruct_upsertMany(in In_upsertMany) ([]T1, error) {
 	_ = in
-	var t_n0 []T2
+	var t_n0 []T1
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
@@ -2042,12 +2042,12 @@ func RunNativeRawStruct_upsertMany(in In_upsertMany) ([]T2, error) {
 	}
 	p0 := wire_n0.AsList()
 	if p0.Kind == probeGot {
-		list0 := make([]T2, 0, p0.Got.Len())
+		list0 := make([]T1, 0, p0.Got.Len())
 		for i0 := 0; i0 < p0.Got.Len(); i0++ {
-			var el0 T2
+			var el0 T1
 			p1 := p0.Got.ElemRow(i0)
 			if p1.Kind == probeGot {
-				var rec1 T2
+				var rec1 T1
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
 				return nil, deTypeMismatch("n0", "n0", "obj{}", p1.ActualWireType, p1.Raw)
@@ -2082,9 +2082,9 @@ func RunNativeRawStruct_upsertMany(in In_upsertMany) ([]T2, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_updateMany(in In_updateMany) ([]T2, error) {
+func RunNativeRawStruct_updateMany(in In_updateMany) ([]T1, error) {
 	_ = in
-	var t_n0 []T2
+	var t_n0 []T1
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
@@ -2096,12 +2096,12 @@ func RunNativeRawStruct_updateMany(in In_updateMany) ([]T2, error) {
 	}
 	p0 := wire_n0.AsList()
 	if p0.Kind == probeGot {
-		list0 := make([]T2, 0, p0.Got.Len())
+		list0 := make([]T1, 0, p0.Got.Len())
 		for i0 := 0; i0 < p0.Got.Len(); i0++ {
-			var el0 T2
+			var el0 T1
 			p1 := p0.Got.ElemRow(i0)
 			if p1.Kind == probeGot {
-				var rec1 T2
+				var rec1 T1
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
 				return nil, deTypeMismatch("n0", "n0", "obj{}", p1.ActualWireType, p1.Raw)
@@ -2136,13 +2136,13 @@ func RunNativeRawStruct_updateMany(in In_updateMany) ([]T2, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_nestedCreate(in In_nestedCreate) ([][]T2, error) {
+func RunNativeRawStruct_nestedCreate(in In_nestedCreate) ([][]T1, error) {
 	_ = in
 	var t_n0 []T4
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
-	var t_n1 [][]T2
+	var t_n1 [][]T1
 	produced_n1 := false
 	_ = t_n1
 	_ = produced_n1
@@ -2196,23 +2196,23 @@ func RunNativeRawStruct_nestedCreate(in In_nestedCreate) ([][]T2, error) {
 	// ── map 'n1' (executeSQL, per-element, into:null, parent:n0) ──
 	if produced_n0 {
 		over_n1 := t_n0
-		t_n1 = make([][]T2, 0, len(over_n1))
+		t_n1 = make([][]T1, 0, len(over_n1))
 		for mk_n1 := range over_n1 {
 			oel_n1 := over_n1[mk_n1]
-			ep_n1 := PortsNR_nestedCreate_n1{Bigint: false, Params: []wire.WireValue{WireFloat(oel_n1.Id), in.Title}, Returning: false, Sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", Write: true}
+			ep_n1 := PortsNR_nestedCreate_n1{Bigint: false, Params: []wire.WireValue{wire.WireFloat(oel_n1.Id), in.Title}, Returning: false, Sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", Write: true}
 			mo_n1, mo_n1Err := litedbmodel_runtime.ExecuteSQL(ep_n1.Bigint, ep_n1.Params, ep_n1.Returning, ep_n1.Sql, ep_n1.Write)
 			if mo_n1Err != nil {
 				return nil, opFailed("n1", "fail", mo_n1Err)
 			}
-			var el_n1 []T2
+			var el_n1 []T1
 			p0 := mo_n1.AsList()
 			if p0.Kind == probeGot {
-				list0 := make([]T2, 0, p0.Got.Len())
+				list0 := make([]T1, 0, p0.Got.Len())
 				for i0 := 0; i0 < p0.Got.Len(); i0++ {
-					var el0 T2
+					var el0 T1
 					p1 := p0.Got.ElemRow(i0)
 					if p1.Kind == probeGot {
-						var rec1 T2
+						var rec1 T1
 						el0 = rec1
 					} else if p1.Kind == probeWrong {
 						return nil, deTypeMismatch("n1", "n1", "obj{}", p1.ActualWireType, p1.Raw)
@@ -2250,13 +2250,13 @@ func RunNativeRawStruct_nestedCreate(in In_nestedCreate) ([][]T2, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_nestedUpsert(in In_nestedUpsert) ([][]T2, error) {
+func RunNativeRawStruct_nestedUpsert(in In_nestedUpsert) ([][]T1, error) {
 	_ = in
 	var t_n0 []T4
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
-	var t_n1 [][]T2
+	var t_n1 [][]T1
 	produced_n1 := false
 	_ = t_n1
 	_ = produced_n1
@@ -2310,23 +2310,23 @@ func RunNativeRawStruct_nestedUpsert(in In_nestedUpsert) ([][]T2, error) {
 	// ── map 'n1' (executeSQL, per-element, into:null, parent:n0) ──
 	if produced_n0 {
 		over_n1 := t_n0
-		t_n1 = make([][]T2, 0, len(over_n1))
+		t_n1 = make([][]T1, 0, len(over_n1))
 		for mk_n1 := range over_n1 {
 			oel_n1 := over_n1[mk_n1]
-			ep_n1 := PortsNR_nestedUpsert_n1{Bigint: false, Params: []wire.WireValue{WireFloat(oel_n1.Id), in.Title}, Returning: false, Sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", Write: true}
+			ep_n1 := PortsNR_nestedUpsert_n1{Bigint: false, Params: []wire.WireValue{wire.WireFloat(oel_n1.Id), in.Title}, Returning: false, Sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", Write: true}
 			mo_n1, mo_n1Err := litedbmodel_runtime.ExecuteSQL(ep_n1.Bigint, ep_n1.Params, ep_n1.Returning, ep_n1.Sql, ep_n1.Write)
 			if mo_n1Err != nil {
 				return nil, opFailed("n1", "fail", mo_n1Err)
 			}
-			var el_n1 []T2
+			var el_n1 []T1
 			p0 := mo_n1.AsList()
 			if p0.Kind == probeGot {
-				list0 := make([]T2, 0, p0.Got.Len())
+				list0 := make([]T1, 0, p0.Got.Len())
 				for i0 := 0; i0 < p0.Got.Len(); i0++ {
-					var el0 T2
+					var el0 T1
 					p1 := p0.Got.ElemRow(i0)
 					if p1.Kind == probeGot {
-						var rec1 T2
+						var rec1 T1
 						el0 = rec1
 					} else if p1.Kind == probeWrong {
 						return nil, deTypeMismatch("n1", "n1", "obj{}", p1.ActualWireType, p1.Raw)
@@ -2364,13 +2364,13 @@ func RunNativeRawStruct_nestedUpsert(in In_nestedUpsert) ([][]T2, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_nestedUpdate(in In_nestedUpdate) ([][]T2, error) {
+func RunNativeRawStruct_nestedUpdate(in In_nestedUpdate) ([][]T1, error) {
 	_ = in
 	var t_n0 []T4
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
-	var t_n1 [][]T2
+	var t_n1 [][]T1
 	produced_n1 := false
 	_ = t_n1
 	_ = produced_n1
@@ -2424,23 +2424,23 @@ func RunNativeRawStruct_nestedUpdate(in In_nestedUpdate) ([][]T2, error) {
 	// ── map 'n1' (executeSQL, per-element, into:null, parent:n0) ──
 	if produced_n0 {
 		over_n1 := t_n0
-		t_n1 = make([][]T2, 0, len(over_n1))
+		t_n1 = make([][]T1, 0, len(over_n1))
 		for mk_n1 := range over_n1 {
 			oel_n1 := over_n1[mk_n1]
-			ep_n1 := PortsNR_nestedUpdate_n1{Bigint: false, Params: []wire.WireValue{in.Title, WireFloat(oel_n1.Id)}, Returning: false, Sql: "UPDATE benchmark_posts SET title = ? WHERE author_id = ?", Write: true}
+			ep_n1 := PortsNR_nestedUpdate_n1{Bigint: false, Params: []wire.WireValue{in.Title, wire.WireFloat(oel_n1.Id)}, Returning: false, Sql: "UPDATE benchmark_posts SET title = ? WHERE author_id = ?", Write: true}
 			mo_n1, mo_n1Err := litedbmodel_runtime.ExecuteSQL(ep_n1.Bigint, ep_n1.Params, ep_n1.Returning, ep_n1.Sql, ep_n1.Write)
 			if mo_n1Err != nil {
 				return nil, opFailed("n1", "fail", mo_n1Err)
 			}
-			var el_n1 []T2
+			var el_n1 []T1
 			p0 := mo_n1.AsList()
 			if p0.Kind == probeGot {
-				list0 := make([]T2, 0, p0.Got.Len())
+				list0 := make([]T1, 0, p0.Got.Len())
 				for i0 := 0; i0 < p0.Got.Len(); i0++ {
-					var el0 T2
+					var el0 T1
 					p1 := p0.Got.ElemRow(i0)
 					if p1.Kind == probeGot {
-						var rec1 T2
+						var rec1 T1
 						el0 = rec1
 					} else if p1.Kind == probeWrong {
 						return nil, deTypeMismatch("n1", "n1", "obj{}", p1.ActualWireType, p1.Raw)
@@ -2478,13 +2478,13 @@ func RunNativeRawStruct_nestedUpdate(in In_nestedUpdate) ([][]T2, error) {
 // index order so the observed value / op multiset / failure precedence byte-match run_behavior
 // (the goroutine spawn is the ONLY runtime element — the WHAT is baked). The output is a typed
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
-func RunNativeRawStruct_delete(in In_delete) ([][]T2, error) {
+func RunNativeRawStruct_delete(in In_delete) ([][]T1, error) {
 	_ = in
 	var t_n0 []T4
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
-	var t_n1 [][]T2
+	var t_n1 [][]T1
 	produced_n1 := false
 	_ = t_n1
 	_ = produced_n1
@@ -2538,23 +2538,23 @@ func RunNativeRawStruct_delete(in In_delete) ([][]T2, error) {
 	// ── map 'n1' (executeSQL, per-element, into:null, parent:n0) ──
 	if produced_n0 {
 		over_n1 := t_n0
-		t_n1 = make([][]T2, 0, len(over_n1))
+		t_n1 = make([][]T1, 0, len(over_n1))
 		for mk_n1 := range over_n1 {
 			oel_n1 := over_n1[mk_n1]
-			ep_n1 := PortsNR_delete_n1{Bigint: false, Params: []wire.WireValue{WireFloat(oel_n1.Id), in.Email}, Returning: false, Sql: "DELETE FROM benchmark_users WHERE id = ? AND email = ?", Write: true}
+			ep_n1 := PortsNR_delete_n1{Bigint: false, Params: []wire.WireValue{wire.WireFloat(oel_n1.Id)}, Returning: false, Sql: "DELETE FROM benchmark_users WHERE id = ?", Write: true}
 			mo_n1, mo_n1Err := litedbmodel_runtime.ExecuteSQL(ep_n1.Bigint, ep_n1.Params, ep_n1.Returning, ep_n1.Sql, ep_n1.Write)
 			if mo_n1Err != nil {
 				return nil, opFailed("n1", "fail", mo_n1Err)
 			}
-			var el_n1 []T2
+			var el_n1 []T1
 			p0 := mo_n1.AsList()
 			if p0.Kind == probeGot {
-				list0 := make([]T2, 0, p0.Got.Len())
+				list0 := make([]T1, 0, p0.Got.Len())
 				for i0 := 0; i0 < p0.Got.Len(); i0++ {
-					var el0 T2
+					var el0 T1
 					p1 := p0.Got.ElemRow(i0)
 					if p1.Kind == probeGot {
-						var rec1 T2
+						var rec1 T1
 						el0 = rec1
 					} else if p1.Kind == probeWrong {
 						return nil, deTypeMismatch("n1", "n1", "obj{}", p1.ActualWireType, p1.Raw)

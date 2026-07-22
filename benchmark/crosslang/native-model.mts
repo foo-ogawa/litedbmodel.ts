@@ -119,17 +119,14 @@ class BenchTx extends lm.SemanticBehavior {
     const user = lm.emitWrite(L, 'Update', { table: 'benchmark_users', 'set.name': $.name, where: [lm.whereEq($.id, $.id)], returning: 'id' }, 'sqlite');
     return user.map(($u: never) => lm.emitWrite(L, 'Update', { table: 'benchmark_posts', 'set.title': $.title, where: [lm.whereEq(($u as { author_id: unknown }).author_id, ($u as { id: unknown }).id)] }, 'sqlite')).as(TX_DEP);
   }
-  // delete: create-then-delete tx — INSERT a fresh user RETURNING id → DELETE the created row.
-  // TODO(bc#172): the TRUE semantic is id-ONLY (`DELETE WHERE id = user.id`). Today a bound scalar
-  // coerces to `WireValue` (transport `&[WireValue]`) only when the node has a `value` input port
-  // (bc#156); an id-only predicate has none, so it lowers to `Vec<f64>` and mismatches the transport.
-  // bc#172 is being FIXED on the BC side (the emitter will coerce a bound scalar in a transport
-  // value-position to `WireValue` regardless) — once that lands, revert to the pure id-only predicate.
-  // Until then, INTERIM: the extra `email = $.email` (a `value` input param) keeps the bound params a
-  // wire list. Faithful (deletes the exact created row) but NOT the pure id-only semantic.
+  // delete: create-then-delete tx — INSERT a fresh user RETURNING id → DELETE the created row by its
+  // id ALONE (`DELETE WHERE id = user.id`). Under bc 0.9.0 the port boundary honors the declared
+  // portSchema: the `params` transport port is declared `{arr:'value'}` so the bound RETURNING scalar
+  // materializes to `WireValue` in the transport value-position regardless of a `value` input port
+  // (bc#172 resolved). The map runs the dependent DELETE once per RETURNING row (exactly one).
   delete($: { email: unknown; name: unknown }) {
     const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id' }, 'sqlite');
-    return user.map(($u: never) => lm.emitWrite(L, 'Delete', { table: 'benchmark_users', where: [lm.whereEq(($u as { id: unknown }).id, ($u as { id: unknown }).id), lm.whereEq($.email, $.email)] }, 'sqlite')).as(TX_DEP);
+    return user.map(($u: never) => lm.emitWrite(L, 'Delete', { table: 'benchmark_users', where: [lm.whereEq(($u as { id: unknown }).id, ($u as { id: unknown }).id)] }, 'sqlite')).as(TX_DEP);
   }
 }
 
