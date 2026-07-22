@@ -67,14 +67,23 @@ grounded type check of bc 0.8.15's actual rust output.
   pluck/group leaf ports from `'string'` to a tuple shape `{arr:'string'}` (bc already emits that
   shape); (3) extend `leaves.ts encodeParams` for array-of-tuples (tuple IN). The grouping SSoT core
   already accepts column tuples. NOT a bc gap.
-- **B-3. batch + RETURNING-tx ops (the "missing 7":** createMany/upsertMany/updateMany, delete/
-  nestedCreate/nestedUpdate/nestedUpsert**).** These compile to a `SqlBundle`+`TransactionPlan`
-  (`runtime.ts`) run by a TS interpreter — never authored as a bc behavior graph, so they never reach
-  `generateModule`. **Fix:** re-author them as leaf graphs (bc's node vocabulary — node-output->param
-  chaining, cond/when/map/fanout — suffices; may need litedbmodel-defined leaves: a tx begin/commit
-  boundary, a scalar RETURNING-id extractor since pluck yields arrays). A true bc gap here can only be
-  asserted AFTER re-authoring, not before. NOTE: a bare single `DELETE ... WHERE ... RETURNING` IS
-  native-emittable today (one `executeSQL` node) — trivial to add.
+- **B-3a. batch ops (createMany/upsertMany/updateMany) — DONE.** Authored via `emitBatchWrite`
+  (`decorator-adapter.ts`): the json_each/JSON_TABLE batch form (SSoT `compileWriteNode`) lowers to ONE
+  `executeSQL` node whose `?`(s) all bind the ONE opaque `rows` array value (bc#156) — no `__batchRows`
+  marker, no per-column parallel arrays. 1 query each (safety-proven). NOT a bc gap.
+- **B-3b. RETURNING-tx ops (delete/nestedCreate/nestedUpdate/nestedUpsert) — BLOCKED on bc#169.** These
+  are multi-statement ATOMIC transactions (BEGIN…COMMIT + rollback + RETURNING-id chaining). bc 0.8.16
+  has NO transaction/atomicity primitive anywhere — not in the IR, plan, runtime (`bind.js`/`behavior.js`)
+  nor the native emitter (`emit-typed-native-rust.js` `rustBlockBody` emits a straight-line leaf-call
+  runner with no `ctx.transaction`/BEGIN/COMMIT/ROLLBACK wrapper; the `commit` refs are the concurrency
+  orchestration, not DB commit). So an atomic multi-write component cannot be emitted natively. The
+  RETURNING-id→next-param chaining via typed `.map` is separately authorable ONCE the source (RETURNING
+  write) node carries a typed outType (litedbmodel-side), but the atomicity gap blocks genuine tx
+  regardless. Reproduced `bc generate` error (map-over-opaque-passthrough source):
+  `component 'nestedCreate': node 'n1' is a non-covered map shape (… over an input array without elemType)`.
+  Filed **bc#169** (typed-native emitter needs a `ctx.transaction`/BEGIN…COMMIT+ROLLBACK scope). These 4
+  ops still run via the litedbmodel TS interpreter (`deriveTransactionPlan`/`executeTransactionBundle`),
+  outside `generateModule`, until bc#169 lands. NOT faked/stubbed on the native plane.
 
 ---
 

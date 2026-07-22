@@ -39,9 +39,9 @@ test('relation read is N+1-free (2 queries) with JSON key param on sqlite + belo
   const cls = class extends SemanticBehavior {
     Find() {
       const posts = L.executeSQL({ sql: 'SELECT id, author_id FROM posts', params: [], write: false, returning: false, bigint: false });
-      const ids = L.pluck({ rows: posts, col: 'author_id' }).as({ arr: 'float' });
+      const ids = L.pluck({ rows: posts, col: ['author_id'] }).as({ arr: 'float' });
       const authors = L.executeSQL({ sql: 'SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))', params: [ids], write: false, returning: false, bigint: false });
-      return L.group({ parents: posts, children: authors, pk: 'author_id', fk: 'id', into: 'author', single: true });
+      return L.group({ parents: posts, children: authors, pk: ['author_id'], fk: ['id'], into: 'author', single: true });
     }
   };
   const out = bindBehaviors(compileBehaviors(cls as never), ctx).run('Find', {}) as Array<Record<string, unknown>>;
@@ -60,9 +60,9 @@ test('postgres: key array binds raw, deferred cast resolves to ::int[], placehol
   const cls = class extends SemanticBehavior {
     Find() {
       const posts = L.executeSQL({ sql: 'SELECT id, author_id FROM posts', params: [], write: false, returning: false, bigint: false });
-      const ids = L.pluck({ rows: posts, col: 'author_id' }).as({ arr: 'float' });
+      const ids = L.pluck({ rows: posts, col: ['author_id'] }).as({ arr: 'float' });
       const authors = L.executeSQL({ sql: 'SELECT id, name FROM users WHERE id = ANY(?::@@PG_ARRAY_CAST@@)', params: [ids], write: false, returning: false, bigint: false });
-      return L.group({ parents: posts, children: authors, pk: 'author_id', fk: 'id', into: 'author', single: true });
+      return L.group({ parents: posts, children: authors, pk: ['author_id'], fk: ['id'], into: 'author', single: true });
     }
   };
   bindBehaviors(compileBehaviors(cls as never), ctx).run('Find', {});
