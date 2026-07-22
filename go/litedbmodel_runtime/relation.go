@@ -17,7 +17,6 @@ package litedbmodel_runtime
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	bc "github.com/foo-ogawa/behavior-contracts/go"
 )
@@ -129,69 +128,9 @@ func (op RelationOp) targetKeyCols() []string {
 	return []string{op.TargetKey}
 }
 
-// keyIdentity is the stringified key identity for dedupe/grouping (tuple → space-joined scalars).
-func keyIdentity(values []bc.Value) string {
-	parts := make([]string, len(values))
-	for i, v := range values {
-		parts[i] = stringifyKey(v)
-	}
-	return strings.Join(parts, " ")
-}
-
-// stringifyKey mirrors TS `String(v)` for the key-identity used by dedupe + grouping. A whole
-// float prints as an integer (a scanned int column arrives as float64), bool → "true"/"false".
-func stringifyKey(v bc.Value) string {
-	switch t := v.(type) {
-	case nil:
-		return "null"
-	case bool:
-		if t {
-			return "true"
-		}
-		return "false"
-	case string:
-		return t
-	case float64:
-		return encodeFloat(t)
-	case int64:
-		return encodeFloat(float64(t))
-	default:
-		return jsStringify(v)
-	}
-}
-
-// dedupeKeys returns the deduped, non-nil parent-key TUPLES (insertion order preserved). Drop a
-// tuple if ANY key column is nil; dedupe on the stringified tuple identity. Port of TS dedupeKeys.
-func dedupeKeys(parents []bc.Value, keyCols []string) [][]bc.Value {
-	seen := map[string]struct{}{}
-	out := [][]bc.Value{}
-	for _, p := range parents {
-		obj, ok := p.(*bc.Obj)
-		if !ok {
-			continue
-		}
-		tuple := make([]bc.Value, len(keyCols))
-		anyNil := false
-		for i, c := range keyCols {
-			v, present := obj.Get(c)
-			if !present || v == nil {
-				anyNil = true
-				break
-			}
-			tuple[i] = v
-		}
-		if anyNil {
-			continue
-		}
-		s := keyIdentity(tuple)
-		if _, dup := seen[s]; dup {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, tuple)
-	}
-	return out
-}
+// The key-identity + dedupe + group + attach primitives are the SHARED grouping CORE (grouping.go) —
+// the SINGLE source of truth this lazy/declarative path and the native leaf transport (leaf_transport.go)
+// both consume: KeyIdentity / DedupeKeyTuples / GroupByKey / AttachToParent (no duplicated grouping).
 
 // bindKeys binds the deduped keys to the op's params per dialect + arity (TS bindKeys). Single-key:
 // PG → ONE scalar array param; MySQL/SQLite → ONE JSON scalar-array string. Composite: PG → ONE
@@ -250,7 +189,7 @@ func RunRelationOp(op RelationOp, parents []bc.Value, db SQLDB) (RelationBatch, 
 // relation runs inside a tx-scoped ctx, else the primary db. This is the ctx-threaded core.
 func runRelationOpCtx(ctx *ExecutionContext, op RelationOp, parents []bc.Value) (RelationBatch, error) {
 	pCols := op.parentKeyCols()
-	keys := dedupeKeys(parents, pCols)
+	keys := DedupeKeyTuples(parents, pCols)
 	batch := RelationBatch{}
 	sqlText := op.SQL
 	if op.Dialect == "postgres" {
@@ -286,50 +225,17 @@ func runRelationOpCtx(ctx *ExecutionContext, op RelationOp, parents []bc.Value) 
 			Relation: op.Name,
 		}
 	}
-	for _, r := range rows {
-		obj, ok := r.(*bc.Obj)
-		if !ok {
-			continue
-		}
-		tuple := make([]bc.Value, len(tCols))
-		for i, c := range tCols {
-			tuple[i], _ = obj.Get(c)
-		}
-		k := keyIdentity(tuple)
-		batch[k] = append(batch[k], r)
-	}
+	// Group the fetched child rows by their target-key tuple identity via the shared CORE (GroupByKey).
+	batch = GroupByKey(rows, tCols)
 	return batch, nil
 }
 
 // DistributeToParent distributes a resolved batch onto ONE parent per cardinality (port of TS
 // distributeToParent): hasMany → the child list ([] when none); belongsTo/hasOne → the single child
-// (or nil). Keyed by the parent's key-tuple identity.
+// (or nil), keyed by the parent's key-tuple identity. Delegates to the shared CORE (AttachToParent) —
+// `single` = a non-hasMany cardinality (belongsTo/hasOne).
 func DistributeToParent(op RelationOp, parent *bc.Obj, batch RelationBatch) bc.Value {
-	var rows []bc.Value
-	pCols := op.parentKeyCols()
-	tuple := make([]bc.Value, len(pCols))
-	anyNil := false
-	for i, c := range pCols {
-		v, ok := parent.Get(c)
-		if !ok || v == nil {
-			anyNil = true
-			break
-		}
-		tuple[i] = v
-	}
-	if !anyNil {
-		rows = batch[keyIdentity(tuple)]
-	}
-	if op.Kind == "hasMany" {
-		if rows == nil {
-			return []bc.Value{}
-		}
-		return rows
-	}
-	if len(rows) > 0 {
-		return rows[0]
-	}
-	return nil
+	return AttachToParent(parent, op.parentKeyCols(), batch, op.Kind != "hasMany")
 }
 
 // driverForOp returns the driver a relation runs against: its tagged cross-DB connection, else the

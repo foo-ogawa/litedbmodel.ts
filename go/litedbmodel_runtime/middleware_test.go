@@ -559,7 +559,7 @@ func TestD1RelationBatchEndToEnd(t *testing.T) {
 		t.Fatalf("scope: %v", err)
 	}
 	// The relation actually loaded (2 children under parent 1) — a genuine multi-node read.
-	if got := len(batch[keyIdentity([]bc.Value{float64(1)})]); got != 2 {
+	if got := len(batch[KeyIdentity([]bc.Value{float64(1)})]); got != 2 {
 		t.Fatalf("relation load: got %d children want 2", got)
 	}
 	// The middleware saw the primary read AND the relation-batch SELECT (querying the child table).
@@ -589,7 +589,7 @@ func TestD1RelationBatchRed(t *testing.T) {
 		t.Fatalf("run relation: %v", err)
 	}
 	// The read still WORKS (byte-identical) — the relation loaded — but nothing was observed.
-	if got := len(batch[keyIdentity([]bc.Value{float64(1)})]); got != 2 {
+	if got := len(batch[KeyIdentity([]bc.Value{float64(1)})]); got != 2 {
 		t.Fatalf("relation load: got %d want 2", got)
 	}
 	if len(seen) != 0 {
