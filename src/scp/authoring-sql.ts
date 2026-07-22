@@ -65,7 +65,14 @@ function sentinelRef($: Recorded, head: string, segs: readonly string[]): Record
   return node as unknown as Recorded;
 }
 
-/** `col = value` — equality fragment (`{eq:[colRef, value]}`). */
+// #141 WHERE model: a where fragment is a bc Expression (`eq`/`ne`/… over `$`-refs). It is passed as
+// the `executeSQL` `where` PORT so bc RECORDS it (live recorder proxies → plain Expression IR); the
+// post-compile pass in `authoring.ts` then lowers the RECORDED where IR to static `col = ?` SQL +
+// param-refs via `lowerWherePort` (which decodes eq/ne/cmp + all sentinel sugar on plain IR). Lowering
+// the recorded IR — never the live proxy — is why `$.col` cols and `whereRawPredicate` work (the
+// authoring-time proxy-walk was the `NOT_RECORDABLE`/`column ref path` cause).
+
+/** `col = value` — equality fragment. */
 export function whereEq(col: Recorded, value: Operand): Recorded {
   return eq(col, value) as unknown as Recorded;
 }

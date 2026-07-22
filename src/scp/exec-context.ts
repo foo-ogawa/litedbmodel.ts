@@ -675,3 +675,42 @@ export function transaction<R>(
   // `connection` (Phase C-2) routes the tx to a NAMED connection's writer pool (default when absent).
   return withTransactionAsync(ctx, () => fn(), options, dialect, isConnectionError, connection);
 }
+
+/**
+ * **The SYNC transaction boundary (#141)** — the sync twin of {@link withTransactionAsync} for the
+ * in-process better-sqlite3 runtime. Pins ONE connection for the whole transaction (BEGIN…COMMIT on
+ * the same conn — the per-execution ownership the async path gets from the pool), issues the
+ * isolation-aware `BEGIN` ({@link beginStatements}), runs `fn(txCtx)` inside the tx scope marker
+ * (`runInTransactionScope` — so a nested write's guard/detection sees an active tx), then COMMITs or
+ * ROLLBACKs by the body's signal:
+ *   - `{ commit: true, value }`  → `COMMIT`, return `value`;
+ *   - `{ commit: false, value }` → `ROLLBACK`, return `value` (a gate short-circuit / rollbackOnly —
+ *     no committed change, but the body result is still returned, e.g. the short-circuit reason);
+ *   - a THROW from `fn`           → best-effort `ROLLBACK`, re-raise (the caller maps the driver error).
+ *
+ * Every statement `fn` issues resolves the pinned tx connection via `connectionFor` (the tx-owned
+ * conn), so the whole body runs atomically on one connection. This is the boundary the write/tx leaf
+ * path runs inside; the tx-control statements (BEGIN/COMMIT/ROLLBACK) go through the seam here, while
+ * the body's data statements ride the `executeSQL` transport leaf.
+ */
+export function withTransactionSync<R>(
+  outer: ExecutionContext,
+  fn: (txCtx: ExecutionContext) => { commit: boolean; value: R },
+  dialect: Dialect = 'sqlite',
+  isolation?: TransactionOptions['isolation'],
+): R {
+  const ctx = outer.withConnection(outer.connectionFor({ write: true }), true);
+  for (const begin of beginStatements(dialect, isolation)) run(ctx, begin, []);
+  try {
+    const r = runInTransactionScope(() => fn(ctx));
+    run(ctx, r.commit ? 'COMMIT' : 'ROLLBACK', []);
+    return r.value;
+  } catch (e) {
+    try {
+      run(ctx, 'ROLLBACK', []);
+    } catch {
+      /* ROLLBACK best-effort; the caller surfaces the original failure */
+    }
+    throw e;
+  }
+}

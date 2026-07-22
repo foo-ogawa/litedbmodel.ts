@@ -61,21 +61,10 @@ export {
   compileAuthoredBehavior,
   compileAuthoredNode,
   compileRelationMap,
-  compileStaticBundle,
   compileSelectNode,
-  executeStaticBundle,
-  executeStaticWrite,
-  executeReadBehavior,
   compileReadGraph,
-  executeReadGraph,
-  executeReadGraphAsync,
-  renderReadPrimary,
-  pgPoolExecutor,
-  mysqlPoolExecutor,
   configurePgDeboxTypeParsers,
   mysqlDeboxPoolOptions,
-  pgDeboxExecutor,
-  mysqlDeboxExecutor,
   pgConnectionPool,
   mysqlConnectionPool,
   pgPoolFactory,
@@ -104,17 +93,15 @@ export type {
   Mysql2ModuleLike,
 } from './makesql';
 
-// Catalog (spec §11 item 1)
-export {
-  LITEDBMODEL_CATALOG,
-  catalogEntry,
-  CATALOG_NAMES,
-  WRITE_CATALOG_NAMES,
-  WRITE_PORT_FAMILIES,
-  assertComponentsInCatalog,
-  deriveContractEffect,
-} from './catalog';
-export type { CatalogName, ContractEffect } from './catalog';
+// The op-independent runtime leaves (#141): the SOLE execution surface — `executeSQL` transport +
+// `pluck`/`group` relation util leaves (defined once via bc `defineLeaf`/`behaviorComponents`). The
+// retired 8-leaf catalog (`Select`/`Insert`/…) + `catalogComponents` are GONE.
+export { executeSQL, pluck, group, LEAVES, leafComponents, LEAF_TRANSPORT_SYMBOLS } from './leaves';
+export type { LeafContext } from './leaves';
+
+// CQRS effect derivation (spec §2.4 — graph-derived from the op-independent leaves' `write` intent).
+export { deriveContractEffect } from './authoring';
+export type { ContractEffect } from './authoring';
 
 // Dialect strategy table (WS6, #26 — the SSoT for PG/MySQL/SQLite SQL divergences + `?`→`$N`).
 export { dialectFor, toDollarPlaceholders, SQLITE, POSTGRES, MYSQL } from './dialect';
@@ -208,10 +195,10 @@ export type { FindFilterSource } from './find-filter-guard';
 export { sqlTypeToBcScalar, sqlTypeToMaterializeClass, materializeCell, materializeClassOrUndefined, parseSchemaColumnTypes, schemaColumnTypeResolver, materializeResolverFromColumnMap, failClosedMaterializeResolverFromColumnMap, columnTypeResolverFromColumnMap } from './coltype';
 export type { BcScalar, MaterializeClass, ColumnTypeResolver, MaterializeResolver } from './coltype';
 
-// Thin TS runtime (spec §3 / §10 / §11): validate → SKIP → expand → eval → bind → execute → assembly.
-// `compileBundle` emits the §8 published artifact (Backend-Compiled once, TS-side);
-// `executeBundle` runs that artifact via bc runtime-core alone (the multi-language target).
-export { executeBehavior, compileBundle, executeBundle, read, readBundle } from './runtime';
+// Thin TS runtime (spec §3 / §10 / §11): the op-independent leaf graph (`executeSQL`/`pluck`/`group`)
+// runs via bc `bindBehaviors` — `executeBehavior`/`read` are the SOLE ts-runtime read/write seam (#141).
+// `compileBundle` emits the §8 published artifact (Backend-Compiled once, TS-side) for the codegen path.
+export { executeBehavior, compileBundle, read } from './runtime';
 export type { SqliteDb, ExecuteOptions, SqlBundle, ReadRuntimeOptions } from './runtime';
 
 // ── Phase A (#75): the ExecutionContext + central execute/run seam + per-execution connection
@@ -341,9 +328,9 @@ export {
 } from './tx-options';
 export type { IsolationLevel, TransactionOptions, ResolvedTxOptions } from './tx-options';
 
-// The ASYNC PG / MySQL production read execution model (#40): bc `runBehaviorAsync` fans out
-// independent sibling read nodes in bounded parallel against a pooled async executor.
-export { executeBundleAsync, executeBehaviorAsync } from './runtime';
+// The ASYNC PG / MySQL production read execution model (#40): the op-independent leaf graph run via
+// bc `bindBehaviors().runAsync` over the `executeSQL` leaf's async seam (per-execution ownership).
+export { executeBehaviorAsync } from './runtime';
 export type { AsyncExecuteOptions } from './runtime';
 
 // Write-time relations (WS5, #25 — spec §6): entityWrites/edgeWrites declaration vocabulary,
@@ -444,9 +431,14 @@ export {
   findAuthoring,
   countAuthoring,
   compileReadBundle,
+  compileReadContract,
+  emitRead,
+  emitWrite,
   createAuthoring,
   updateAuthoring,
   deleteAuthoring,
+  relationReadAuthoring,
+  relationKeyTypeResolver,
   compileCommandBundle,
   compileCreateBundle,
   compileUpdateBundle,
@@ -491,3 +483,10 @@ export {
   opt,
 } from 'behavior-contracts';
 export type { In, Recorded, BehaviorClass } from 'behavior-contracts';
+
+// Re-export bc's native-codegen surface (#141 native step6/7): litedbmodel's generation script authors
+// the ops on the SCP surface (`emitRead`/`emitWrite`/relation `pluck`/`group`) and delegates ALL module
+// generation to bc `generateModule` (no litedbmodel-local generator — C4). The op-independent leaf
+// transport is declared via `leafTransport` (executeSQL→execute_sql / pluck→pluck_keys / group→group_children).
+export { generateModule, GeneratorFailure } from 'behavior-contracts';
+export type { GenerateOptions, GeneratedModule, LeafTransportOptions } from 'behavior-contracts';

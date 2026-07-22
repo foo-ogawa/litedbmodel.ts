@@ -20,7 +20,7 @@
 
 import type { PortableType, PortableScalarType } from 'behavior-contracts';
 import type { Component, ComponentRefNode, MapNode } from '../authoring';
-import { sqlTypeToBcScalar, sqlTypeToMaterializeClass, type BcScalar, type MaterializeClass, type ColumnTypeResolver } from '../coltype';
+import { sqlTypeToBcScalar, sqlTypeToMaterializeClass, keyArrayElemScalar, type BcScalar, type MaterializeClass, type ColumnTypeResolver } from '../coltype';
 import { IN_SENTINEL } from './tx';
 
 /**
@@ -210,6 +210,52 @@ function rowObjType(
   return { obj };
 }
 
+/** The read row TYPE (SSoT) + its TS-leaf coercion map — two projections of ONE column resolution. */
+export interface ReadRow {
+  /** The read row `{arr:{obj:{outputKey: readScalar}}}` — the SINGLE row-type representation (#141). */
+  readonly outType: PortableType;
+  /** `outputKey → MaterializeClass` (non-passthrough only) — the TS-leaf coercion derived from the SAME row. */
+  readonly materializers: Record<string, MaterializeClass>;
+}
+
+/**
+ * Derive the read ROW from a projection (#141 SSoT + #59 op-builder guard). Resolves each projected
+ * column ONCE via the SHARED {@link parseProjectionColumn} + the coltype SSoT, producing BOTH:
+ *   - `outType` — `{arr:{obj:{outputKey: keyArrayElemScalar(sqlType)}}}`, the READ-DE-BOXED scalar
+ *     (int32→`float`(number) / BIGINT→`string` / BOOLEAN→`bool` / DATE→`string` / text/uuid→`string`).
+ *     This is the ONE row-type representation: bc `generateModule` reads it for the NATIVE typed de-box
+ *     (#154), and it is the conform target the TS leaf coercion below produces.
+ *   - `materializers` — the TS-leaf coercion map ({@link sqlTypeToMaterializeClass}); the leaf coerces
+ *     each driver cell (BIGINT→exact string / DATE→string / BOOLEAN→boolean) so the row MATCHES `outType`
+ *     before bc conforms it (bc conform VALIDATES, does not coerce). Derived from the SAME resolution as
+ *     `outType`, so the coerced JS form always equals the declared read scalar — no second row type.
+ * This IS the #59 read-column coverage guard: `*`/`t.*` throws (unknown column list), an undeclared
+ * column or unknown SQL type throws. A COMPUTED projection (`COUNT(*)`, cast, literal) is left RAW
+ * (omitted from BOTH) — #59: "the read path leaves it raw".
+ */
+export function deriveReadRow(
+  table: string,
+  projection: readonly string[],
+  resolveColumnType: ColumnTypeResolver,
+  at: string,
+): ReadRow {
+  const obj: Record<string, PortableType> = {};
+  const materializers: Record<string, MaterializeClass> = {};
+  for (const col of projection) {
+    const entry = parseProjectionColumn(col, table, at); // throws on `*` / `t.*`
+    if (entry.kind === 'computed') continue; // computed column: read raw (no de-box / no typed field), #59
+    const { underlying, outputKey, qualifier } = entry;
+    const owner = qualifier ?? table;
+    const sqlType = resolveColumnType(owner, underlying); // undeclared → throw
+    // Every read cell is nullable (a driver column may be NULL; `static columns` declares no NOT NULL),
+    // so the read scalar rides under `opt` — bc conforms `null` (absent) OR the read-de-boxed scalar.
+    obj[outputKey] = { opt: keyArrayElemScalar(sqlType) }; // read-de-boxed scalar (throws on unknown SQL type)
+    const klass = sqlTypeToMaterializeClass(sqlType);
+    if (klass !== 'passthrough') materializers[outputKey] = klass; // omit passthrough (no-op coercion)
+  }
+  return { outType: { arr: { obj } }, materializers };
+}
+
 /** A Select/Count node's outType + (for Select) the per-output-column read-path materializer map. */
 interface NodeTypes {
   readonly outType: PortableType;
@@ -268,7 +314,7 @@ export function nodeOutType(node: RefLike, resolveColumnType: ColumnTypeResolver
  * typed output path does not cover, is a HARD ERROR (no-assume, no-fallback) — the output must be
  * a pure composition of typed node results, never a boxed dynamic tree.
  */
-function outputType(output: unknown, byNode: Map<string, PortableType>, at: string): PortableType {
+export function outputType(output: unknown, byNode: Map<string, PortableType>, at: string): PortableType {
   const op = opKey(output);
   if (op === 'ref' || op === 'refOpt') {
     const path = (output as Record<string, unknown[]>)[op];

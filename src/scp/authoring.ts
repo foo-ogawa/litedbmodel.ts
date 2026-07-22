@@ -45,7 +45,6 @@
  */
 
 import {
-  catalogComponents,
   compileBehaviors,
   SemanticBehavior,
   type BehaviorClass,
@@ -66,16 +65,37 @@ export type MapNode = Extract<BodyNode, { map: unknown }>;
 export type FanoutNode = Extract<BodyNode, { fanout: unknown }>;
 export type CondNode = Extract<BodyNode, { cond: unknown }>;
 export type ComponentRefNode = Exclude<BodyNode, MapNode | FanoutNode | CondNode>;
-import {
-  assertComponentsInCatalog,
-  deriveContractEffect,
-  LITEDBMODEL_CATALOG,
-  type CatalogName,
-  type ContractEffect,
-} from './catalog';
+import { leafComponents } from './leaves';
+import { lowerWherePort } from './makesql/static-bundle';
+import { deriveReadRow, outputType as composeOutputType } from './makesql/outtype';
+import type { PortableType } from 'behavior-contracts';
+import type { Dialect } from './makesql/handler';
+import type { DialectName } from './dialect';
 import { assertComponentGraphPortable } from './guard';
 import { failClosedMaterializeResolverFromColumnMap, columnTypeResolverFromColumnMap, type MaterializeResolver, type ColumnTypeResolver } from './coltype';
-import { parseProjectionColumn, crudNodeAsType } from './makesql/outtype';
+
+/**
+ * The CQRS effect vocabulary (spec §2.4 — derived from the graph, never authored). A component is a
+ * `'command'` iff it issues a mutating statement; else a `'query'`.
+ */
+export type ContractEffect = 'query' | 'command';
+
+/**
+ * Derive one component's Query/Command classification FROM THE GRAPH (spec §2.4): a component is a
+ * `'command'` iff any body node is an `executeSQL` leaf whose `write` port is the literal `true`
+ * (an INSERT/UPDATE/DELETE or a tx-control statement). Op is graph-derived, never author-declared —
+ * the effect no longer comes from a per-op catalog name (the 8-leaf catalog is retired), but from
+ * the op-independent transport's `write` intent.
+ */
+export function deriveContractEffect(component: Component): ContractEffect {
+  for (const n of component.body) {
+    if ('cond' in n) continue;
+    const ref = 'map' in n ? n.map : 'fanout' in n ? n.fanout : n;
+    if ((ref as { component?: string }).component !== 'executeSQL') continue;
+    if ((ref as { ports?: Record<string, unknown> }).ports?.write === true) return 'command';
+  }
+  return 'query';
+}
 
 /**
  * The litedbmodel leaf-component functions for the shared authoring surface —
@@ -101,94 +121,17 @@ import { parseProjectionColumn, crudNodeAsType } from './makesql/outtype';
  * `Tx` is in the map but is `portableToIR: false`, so wiring it is rejected at record
  * time — the atomic transaction envelope is a WS3 runtime concern, never authored.
  */
-export type ComponentFns = Record<CatalogName, (ports: Record<string, unknown>) => Recorded>;
-
-let boundRaw: ComponentFns | undefined;
-let boundComponents: ComponentFns | undefined;
+export type ComponentFns = typeof leafComponents;
 
 /**
- * The AMBIENT per-compile column-type resolver (bc 0.8.0 SA5 / #12). `lowerBehaviorClass` sets this
- * from the model's inline `static columns` immediately BEFORE `compileBehaviors` and clears it right
- * after (a synchronous window — bc records every method body inside that single call). The typed CRUD
- * leaf wrappers (Select/Insert/Update/Delete) read it to compute each authored node's determined
- * output `PortableType` and stamp it via bc's `.as(t)` recording API, so `compileBehaviors`'
- * all-nodes-typed gate passes. It is the SAME `static columns` SoT the post-compile de-box
- * (`deriveReadOutTypes`) reads — moved to authoring time so the type is fixed at compile (declare-via-BC:
- * column-types-in-authoring, no hand-built IR; SQL stays opaque text on the makeSQL leaf).
- */
-let currentResolver: ColumnTypeResolver | undefined;
-
-/** Run `fn` with the ambient compile-time column resolver bound (restored on exit — reentrancy-safe). */
-function withColumnResolver<T>(resolve: ColumnTypeResolver | undefined, fn: () => T): T {
-  const prev = currentResolver;
-  currentResolver = resolve;
-  try {
-    return fn();
-  } finally {
-    currentResolver = prev;
-  }
-}
-
-/**
- * Leaves whose authored node's output row shape is per-projection and MUST be typed via `.as` from the
- * model's `static columns` (bc 0.8.0 SA5). A `Select` (read) is de-boxed by the typed read/codegen
- * path, so its row REQUIRES the column-type SoT (fail-closed when absent — mirrors #59's
- * `assertReadColumnsDeclared`). A write (`Insert`/`Update`/`Delete`) is NOT typed-codegen'd — its
- * RETURNING de-box is derived POST-compile from the tuned SQL (`writeouttype.ts`); the write NODE's
- * compile-time outType exists only to satisfy bc's all-nodes-typed gate, so it is typed from the
- * `returning` port WHEN `static columns` is present, else annotated with the determined empty-row list
- * `{arr:{obj:{}}}` (writes stay EXEMPT from a `static columns` requirement, as before #12).
- */
-const READ_TYPED_LEAVES = new Set(['Select', 'RelationBatch']);
-const WRITE_TYPED_LEAVES = new Set(['Insert', 'Update', 'Delete']);
-
-/**
- * Wrap one raw `catalogComponents` leaf so a typed-CRUD leaf stamps its authored node's determined
- * output type via bc's `.as(t)` (bc 0.8.0 SA5). `Count` (static `int` via the catalog `elemType`),
- * `Fragment`, and `Tx` pass through unchanged (no per-projection output).
- */
-function wrapLeaf(name: CatalogName, raw: (ports: Record<string, unknown>) => Recorded): (ports: Record<string, unknown>) => Recorded {
-  const isRead = READ_TYPED_LEAVES.has(name);
-  const isWrite = WRITE_TYPED_LEAVES.has(name);
-  if (!isRead && !isWrite) return raw;
-  return (ports: Record<string, unknown>): Recorded => {
-    const handle = raw(ports);
-    // Reads REQUIRE the column-type SoT (typed de-box); writes do not (RETURNING de-box is post-compile).
-    if (isRead && currentResolver === undefined) {
-      throw new Error(
-        `scp authoring: a ${name} node needs its output row type at compile time (bc 0.8.0 all-nodes-typed ` +
-          `gate), but the model declares NO \`columns\` — a typed read REQUIRES an inline \`static columns\` ` +
-          `SoT (or \`options.columns\`). No-assume, no-fallback.`,
-      );
-    }
-    const outType = currentResolver !== undefined
-      ? crudNodeAsType(name, ports, currentResolver, `${name} node`)
-      : { arr: { obj: {} } }; // write with no `static columns`: determined empty-row list (gate-only, inert)
-    return (handle as { as(t: unknown): Recorded }).as(outType);
-  };
-}
-
-/** The raw `catalogComponents(LITEDBMODEL_CATALOG)` leaf map (memoized). */
-function rawComponents(): ComponentFns {
-  if (boundRaw === undefined) {
-    boundRaw = catalogComponents(LITEDBMODEL_CATALOG) as ComponentFns;
-  }
-  return boundRaw;
-}
-
-/**
- * The litedbmodel leaf-function map (typed, memoized). Each typed-CRUD leaf self-annotates its output
- * `PortableType` via `.as` from the ambient per-compile `static columns` resolver (see
- * {@link currentResolver}); authors call `L.Select({…})` exactly as before — the typing is automatic.
+ * The op-independent leaf-function map — `behaviorComponents({executeSQL,pluck,group})` bound once in
+ * `./leaves` (SA8 / bc#126). Authoring bodies call `L.executeSQL({sql,params,write,…})` /
+ * `L.pluck({rows,col})` / `L.group({parents,children,pk,fk,into,single})`. The per-projection read-row
+ * de-box type and the relation key-array element type are stamped by the op builders at the CALL site
+ * (they know the projection / key column), via bc's `.as` — authoring cannot parse the opaque `sql`.
  */
 export function components(): ComponentFns {
-  if (boundComponents === undefined) {
-    const raw = rawComponents();
-    const wrapped = {} as ComponentFns;
-    for (const name of Object.keys(raw) as CatalogName[]) wrapped[name] = wrapLeaf(name, raw[name]);
-    boundComponents = wrapped;
-  }
-  return boundComponents;
+  return leafComponents;
 }
 
 /**
@@ -276,6 +219,12 @@ export interface PublishBehaviorsOptions {
    * (raw driver values; pre-#59 — a model with no typed reads).
    */
   readonly columns?: ModelColumns;
+  /**
+   * The target SQL dialect for the post-compile WHERE lowering (#141) — the WHERE structure is mostly
+   * dialect-agnostic (`col = ?`), but the IN-list form (PG `= ANY(?)` vs MySQL/SQLite `json_each(?)`)
+   * and per-column casts differ. Default `'sqlite'`. The read/write op builders thread the model's dialect.
+   */
+  readonly dialect?: DialectName;
 }
 
 /**
@@ -316,15 +265,30 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
   const resolveColumnType: ColumnTypeResolver | undefined =
     columnMap !== undefined ? columnTypeResolverFromColumnMap(columnMap) : undefined;
 
-  const ir = withColumnResolver(resolveColumnType, () =>
-    compileBehaviors(cls, {
-      ...(options.inputPorts !== undefined ? { inputPorts: options.inputPorts } : {}),
-      ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
-    }),
-  );
+  const ir = compileBehaviors(cls, {
+    ...(options.inputPorts !== undefined ? { inputPorts: options.inputPorts } : {}),
+    ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
+  });
 
-  assertComponentsInCatalog(ir.components);
+  // bc runs its own `assertPortableComponentGraph` inside `compileBehaviors`; litedbmodel's
+  // portability guard is auto-applied over every port Expression IR node. There is no per-op catalog
+  // to validate against (the 8-leaf catalog is retired — the op-independent leaves' ports are checked
+  // by `behaviorComponents`/`compileBehaviors` at record time).
   assertComponentGraphPortable(ir);
+
+  // #141 WHERE lowering: lower each `executeSQL` node's RECORDED `where` port (plain Expression IR —
+  // bc turned the live sugar proxies into IR during `compileBehaviors`) into the node's static
+  // `sql`/`params`. Lowering the RECORDED IR (not the live proxy) is what makes `$.col` cols,
+  // `whereRawPredicate`, and sentinel sugar work (the authoring-time proxy walk was the NOT_RECORDABLE
+  // cause). Bounded WHERE → literal ` WHERE …` merged (native-lowerable); SKIP/dynamic → fail-closed.
+  lowerRecordedWhere(ir, (options.dialect ?? 'sqlite') as Dialect);
+
+  // #59 read-column de-box + coverage guard (op-builder layer): resolve each read node's `readColumns`
+  // (base table + explicit projection, carried by `emitRead`) against the model's `static columns`,
+  // fail-close on a `*`/undeclared column AND on a read model that declared NO columns at all, and stamp
+  // the TS de-box `materializers` map the `executeSQL` leaf applies at execute. A WRITE node carries no
+  // `readColumns` (writes are exempt). The transient `readColumns` port is stripped.
+  lowerReadColumns(ir, resolveColumnType, className);
 
   const methods: Record<string, BehaviorMethodSpec> = {};
   for (const component of ir.components) {
@@ -335,12 +299,12 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
     };
   }
 
-  // FAIL-CLOSED coverage-by-construction (issue #59 audit): every column a READ method projects MUST
-  // have a declared type. Validate NOW, at registration — a read whose projected columns aren't fully
-  // declared cannot be published (so no production read can silently skip de-box and leak a rounded
-  // i64). A model with NO `columns` but a read that projects columns fails here too (columns are
-  // REQUIRED for a typed read). A write / a read that projects no explicit columns is exempt.
-  assertReadColumnsDeclared(className, ir.components, methods, resolveColumnType);
+  // NOTE (#141 cutover): the #59 FAIL-CLOSED read-column-coverage guard was Select-node-projection
+  // based (it read the `select` port off catalog `Select` nodes). With the op-independent `executeSQL`
+  // leaf the projection lives inside the opaque `sql` text, so the guard MUST move to the op builder
+  // (`decorator-adapter`), which knows the projection and stamps each read row's de-box type via `.as`
+  // + validates the columns against `resolveColumnType`. Reinstate there before merge (no silent de-box
+  // hole in the final state).
 
   return {
     className,
@@ -352,6 +316,131 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
   };
 }
 
+/**
+ * Lower each `executeSQL` node's transient RECORDED `where` port into the node's static `sql`/`params`
+ * and strip it (#141). `where` was recorded by bc from the where sugar, so it is plain Expression IR
+ * here — {@link lowerWherePort} (the SSoT WHERE lowering, over recorded IR) decodes eq/ne/cmp + every
+ * sentinel form (IN/BETWEEN/LIKE/subquery/rawPredicate) without walking a live proxy. Bounded WHERE
+ * (no SKIP) assembles to a literal ` WHERE … AND …` (the `?`→`$N` render is the leaf's runtime job).
+ * A SKIP/dynamic fragment fails closed — dynamic-WHERE runtime assembly is a separate (unwired) path;
+ * the predicate is never silently dropped.
+ */
+function lowerRecordedWhere(ir: ComponentGraphIR, dialect: Dialect): void {
+  for (const component of ir.components) {
+    for (const node of component.body) {
+      if ('cond' in node || 'map' in node || 'fanout' in node) continue;
+      const ref = node as { id?: string; component?: string; ports?: Record<string, unknown> };
+      if (ref.component !== 'executeSQL' || ref.ports === undefined || ref.ports.where === undefined) continue;
+      const ports = ref.ports;
+      const at = `${component.name}/${ref.id ?? '?'}`;
+      // Lower per the model's dialect: the IN-list form (PG `= ANY(?)` vs MySQL/SQLite `json_each(?)`)
+      // and per-column casts are dialect-specific; the `?`→`$N` render stays the leaf's runtime job.
+      const fragments = lowerWherePort(ports, dialect, at);
+      let whereSql = '';
+      const whereParams: unknown[] = [];
+      fragments.forEach((f, i) => {
+        if (f.skip !== undefined) {
+          throw new Error(`scp WHERE (#141): a SKIP/dynamic WHERE fragment at ${at} cannot lower to static sql (dynamic-WHERE runtime assembly is not yet wired; never dropped silently).`);
+        }
+        whereSql += (i === 0 ? ' WHERE ' : ' AND ') + f.sql;
+        whereParams.push(...f.params);
+      });
+      // Splice the WHERE at its SQL position — BEFORE the first tail clause (the base sql is
+      // compile-* controlled, so the tail keyword set is deterministic), never appended after it.
+      const baseSql = String(ports.sql);
+      const tail = /\s+(GROUP BY|ORDER BY|LIMIT|OFFSET|FOR UPDATE|RETURNING)\b/i.exec(baseSql);
+      ports.sql = tail === null ? baseSql + whereSql : baseSql.slice(0, tail.index) + whereSql + baseSql.slice(tail.index);
+      // The base carries NO tail-param when the tail is present here (a `SELECT … WHERE … LIMIT ?`
+      // read passes limit/offset via the tail, appended after the WHERE params); a write's SET params
+      // precede the WHERE and RETURNING has no param — so appending the WHERE params is 1:1 with the
+      // `?` order in every current op. (cte/join head-params + LIMIT `?` is the head/where/tail follow-up.)
+      const paramsArr = (ports.params as { arr?: unknown[] } | undefined)?.arr;
+      if (Array.isArray(paramsArr)) paramsArr.push(...whereParams);
+      else ports.params = { arr: whereParams };
+      delete ports.where;
+    }
+  }
+}
+
+/**
+ * Lower each read `executeSQL` node's transient RECORDED `readColumns` port (base table + explicit
+ * projection, stamped by `emitRead`) into the TS read-path de-box `materializers` map and strip it (#59).
+ * {@link deriveReadMaterializers} (the SSoT read-column resolution, shared with the codegen `outType`
+ * path) resolves each projected column against the model's `static columns` — fail-closed on a `*`
+ * wildcard / an undeclared column (the #59 read-column COVERAGE GUARD), computed columns left raw. The
+ * resulting `outputKey → MaterializeClass` map is stamped as the `materializers` port (BIGINT→string /
+ * DATE→string / BOOLEAN→boolean); the `executeSQL` leaf applies it to the fetched rows at execute.
+ */
+function lowerReadColumns(ir: ComponentGraphIR, resolveColumnType: ColumnTypeResolver | undefined, className: string): void {
+  for (const component of ir.components) {
+    let stampedAny = false;
+    for (const node of component.body) {
+      if ('cond' in node || 'map' in node || 'fanout' in node) continue;
+      const ref = node as { id?: string; component?: string; ports?: Record<string, unknown> };
+      if (ref.component !== 'executeSQL' || ref.ports === undefined || ref.ports.readColumns === undefined) continue;
+      const ports = ref.ports;
+      const at = `${component.name}/${ref.id ?? '?'}`;
+      // A typed read REQUIRES the model's inline `static columns` (spec §4.1: bc never infers types; the
+      // author annotates them). A read model that declares NO columns cannot de-box → fail closed at
+      // registration (never a silent raw / rounded-i64 read). Writes are exempt (no `readColumns` port).
+      if (resolveColumnType === undefined) {
+        throw new Error(
+          `scp read-columns (#59): read behavior '${className}' projects explicit columns at ${at} but the ` +
+            `model declares NO \`static columns\`. A typed read REQUIRES an inline \`static columns\` ` +
+            `declaration (spec §4.1 — no-assume, no-fallback).`,
+        );
+      }
+      // bc records the `{obj:{}}`-typed port as `{obj:{table, cols:{arr:[…]}}}`; unwrap to the raw
+      // table string + projection list (the SoT `emitRead` carried).
+      const rc = ports.readColumns as { obj?: { table?: unknown; cols?: unknown } };
+      const meta = rc.obj ?? (rc as { table?: unknown; cols?: unknown });
+      const table = meta.table;
+      const colsNode = meta.cols as { arr?: unknown[] } | unknown[] | undefined;
+      const cols = Array.isArray(colsNode) ? colsNode : colsNode?.arr;
+      if (typeof table !== 'string' || !Array.isArray(cols)) {
+        throw new Error(`scp read-columns (#59): malformed 'readColumns' port at ${at} (expected {table, cols}); the emitRead stamp is broken.`);
+      }
+      // ONE column resolution → the read ROW: `outType` (the SSoT row type — bc reads it for the NATIVE
+      // typed de-box #154, and it is the TS conform target) AND the TS-leaf `materializers` coercion map
+      // (the SAME resolution, so the coerced JS form always equals `outType`). The #59 coverage guard
+      // fires here (throws on `*` / undeclared). Stamp the row type as the node's `outType`.
+      const row = deriveReadRow(table, cols as string[], resolveColumnType, at);
+      (ref as { outType?: unknown }).outType = row.outType;
+      if (Object.keys(row.materializers).length > 0) ports.materializers = { obj: row.materializers };
+      // A projected 64-bit int column must be read in exact-integer mode so the driver returns the
+      // exact i64 (not a rounded double) BEFORE `materializeCell` renders it to a decimal string — the
+      // #59 BIGINT-exact read. Flip the node's `bigint` port (sync sqlite `safeIntegers`; the async
+      // PG/MySQL path de-boxes via per-connection driver config, so the flag is inert there).
+      if (Object.values(row.materializers).includes('int64')) ports.bigint = true;
+      delete ports.readColumns;
+      stampedAny = true;
+    }
+    // Recompute the component `outputType` from the (now read-typed) node outTypes so it stays CONSISTENT
+    // with the stamped read rows — bc's native emitter (#154) fail-closes on a comp.outputType that
+    // disagrees with the node-result type. bc normally derives this at record time from `.as`, but the
+    // read outType is resolved post-compile (no ambient resolver at authoring), so it is recomposed here
+    // over the SAME `output` Φ-expression via the shared {@link composeOutputType} SSoT.
+    if (stampedAny) {
+      const byNode = new Map<string, PortableType>();
+      for (const n of component.body) {
+        if ('cond' in n) continue;
+        const t = (n as { outType?: PortableType }).outType;
+        if (t === undefined) continue;
+        // A map/fanout node's `outType` is its ELEMENT type; the node RESULT is the list `{arr: element}`
+        // (bc's type-gate SSoT: `"map" in n ? {arr:ot} : ot`). Store the RESULT type so a `{ref:[mapId]}`
+        // in the output Φ composes to the list, not the element.
+        const isList = 'map' in n || 'fanout' in n;
+        byNode.set((n as { id: string }).id, isList ? { arr: t } : t);
+      }
+      (component as { output: unknown; outputType?: PortableType }).outputType = composeOutputType(
+        (component as { output: unknown }).output,
+        byNode,
+        `component '${component.name}' output`,
+      );
+    }
+  }
+}
+
 /** Normalize a declared {@link ModelColumns} into the `Map<table, Map<column, sqlType>>` the resolvers use. */
 function toColumnMap(columns: ModelColumns): Map<string, Map<string, string>> {
   const map = new Map<string, Map<string, string>>();
@@ -361,89 +450,6 @@ function toColumnMap(columns: ModelColumns): Map<string, Map<string, string>> {
     map.set(table, inner);
   }
   return map;
-}
-
-/** A read Select node's literal `table` + explicit `select` column list (issue #59 validation). */
-interface SelectProjection { readonly table: string; readonly columns: readonly string[] }
-
-/** Read a literal string port of a body node, or `undefined` (not a literal). */
-function literalStringPort(ports: Record<string, unknown>, name: string): string | undefined {
-  const v = ports[name];
-  return typeof v === 'string' ? v : undefined;
-}
-
-/** Read a literal `{arr:[str,…]}` string-list port, or `undefined` (not a literal list). */
-function literalStringArrayPort(ports: Record<string, unknown>, name: string): string[] | undefined {
-  const v = ports[name];
-  if (v !== null && typeof v === 'object' && 'arr' in v && Array.isArray((v as { arr: unknown }).arr)) {
-    const arr = (v as { arr: unknown[] }).arr;
-    if (arr.every((e) => typeof e === 'string')) return arr as string[];
-  }
-  return undefined;
-}
-
-/** Extract each `Select` body node's `{ table, columns }` projection (skips Count / non-literal). */
-function selectProjectionsOf(component: Component): SelectProjection[] {
-  const out: SelectProjection[] = [];
-  for (const n of component.body) {
-    if ('cond' in n) continue;
-    if ('fanout' in n) {
-      // bc 0.7.3+ `FanoutNode`. litedbmodel never emits fanout — reject fail-closed rather
-      // than mis-read it as a component ref with no `Select` projection.
-      throw new Error(`selectProjectionsOf: component '${component.name}' node '${n.id}' is a fanout node, not supported by litedbmodel (bc FanoutNode)`);
-    }
-    const ref = 'map' in n ? n.map : n;
-    if (ref.component !== 'Select' && ref.component !== 'RelationBatch') continue; // Count → scalar; no projection
-    const ports = ref.ports as Record<string, unknown>;
-    const table = literalStringPort(ports, 'table');
-    const columns = literalStringArrayPort(ports, 'select');
-    if (table === undefined || columns === undefined || columns.length === 0) continue;
-    out.push({ table, columns });
-  }
-  return out;
-}
-
-/**
- * FAIL-CLOSED registration guard (issue #59 audit): every column a READ (`query`) method PROJECTS —
- * in ANY shape (bare `col`, qualified `t.col`, aliased `col AS b`) — must resolve to a declared type
- * in the model's inline `columns`. Uses the SHARED {@link parseProjectionColumn} (the SAME projection
- * parser the read-path materializer + codegen outType derivations use), so no projection shape can
- * escape validation. A `*` / computed projection, an undeclared underlying column, or a read with NO
- * `columns` declared at all, THROWS here — a typed read whose projected columns aren't fully declared
- * cannot be registered, so no production read can silently skip de-box and return a rounded i64.
- * Writes are exempt.
- */
-function assertReadColumnsDeclared(
-  className: string,
-  components: readonly Component[],
-  methods: Readonly<Record<string, BehaviorMethodSpec>>,
-  resolveColumnType: ColumnTypeResolver | undefined,
-): void {
-  for (const component of components) {
-    if (methods[component.name]?.effect !== 'query') continue; // reads only (writes exempt)
-    for (const proj of selectProjectionsOf(component)) {
-      const at = `model '${className}' method '${component.name}'`;
-      // SHARED parse (all shapes): `*` → throw; computed → no schema column (skip); bare/qualified/
-      // aliased schema column → must be declared (against its OWNER table = qualifier ?? base table).
-      const schemaCols = proj.columns
-        .map((col) => parseProjectionColumn(col, proj.table, at))
-        .filter((e): e is { kind: 'column'; underlying: string; outputKey: string; qualifier?: string } => e.kind === 'column')
-        .map((e) => ({ table: e.qualifier ?? proj.table, column: e.underlying }));
-      if (schemaCols.length === 0) continue; // only computed projections — nothing to type
-      if (resolveColumnType === undefined) {
-        // A read projecting schema columns with NO `columns` declared → fail closed (columns REQUIRED).
-        throw new Error(
-          `scp publishBehaviors: ${at} reads projecting typed columns ` +
-            `[${schemaCols.map((s) => `${s.table}.${s.column}`).join(', ')}] but the model declares NO ` +
-            `\`columns\`. A typed read REQUIRES an inline \`static columns\` declaration so the read-path ` +
-            `de-box (INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean) is always-on — never a ` +
-            `silent raw (rounded i64) result. Declare the model's \`static columns\`.`,
-        );
-      }
-      // resolveColumnType THROWS (naming the table/column) for any undeclared UNDERLYING column.
-      for (const s of schemaCols) resolveColumnType(s.table, s.column);
-    }
-  }
 }
 
 /**

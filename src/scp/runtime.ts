@@ -23,8 +23,10 @@
  * `optionalHeads` (schema-optional + SKIP-guarded + every `refOpt` head) — the SSoT.
  */
 
-import { type Scope, type Value } from 'behavior-contracts';
+import { type Scope, type Value, bindBehaviors } from 'behavior-contracts';
 import type { BehaviorModelContract, Component } from './authoring';
+import { contextForDriver, type AsyncExecutionContext } from './exec-context';
+import type { LeafContext, AsyncLeafContext } from './leaves';
 import { SqlFailure } from './errors';
 import {
   compileRelationOp,
@@ -37,14 +39,9 @@ import type { FindFilterSource } from './find-filter-guard';
 import type { ColumnTypeResolver } from './coltype';
 import {
   compileReadGraph,
-  executeReadGraph,
-  executeReadGraphAsync,
-  executeStaticWrite,
   type ReadGraph,
-  type StaticBundle,
   type StaticStatement,
   type SqliteDb as StaticSqliteDb,
-  type SqlExecutorAsync,
 } from './makesql/static-bundle';
 import {
   compileWriteNode,
@@ -161,17 +158,17 @@ export function executeBehavior(
   input: Scope,
   options: ExecuteOptions,
 ): Value {
-  // ALWAYS-ON read de-box (issue #59), STATIC: the FAIL-CLOSED materialize resolver is precomputed
-  // ONCE from the model's INLINE `static columns` declaration at registration and carried on the
-  // contract — pure in-memory map lookups, ZERO per-read DB introspection. Coverage is enforced at
-  // registration (a typed read whose projected columns aren't declared cannot be published), so
-  // INT→number / BIGINT→string / DATE→string / BOOLEAN→boolean fires for every read — never a silent
-  // raw (rounded i64) result from an undeclared column.
-  return executeBundle(
-    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, contract.resolveColumnType),
-    input,
-    options,
-  );
+  // #141: run the authored op-independent leaf graph (`executeSQL`/`pluck`/`group`) DIRECTLY via bc
+  // `bindBehaviors` — the SOLE ts-runtime execution seam. `contract.ir` is the `compileBehaviors`
+  // handle (carries the leaf-impl registry side-channel); `ctx` is the environment boundary each leaf
+  // `fn(ports, ctx)` receives (the connection seam + dialect). The retired ReadGraph/`executeReadGraph`
+  // engine is gone. Read de-box (INT→number / BIGINT→string / DATE→string) rides the `.as` outType +
+  // materialize applied at the leaf/typed-object boundary — see the read-column coverage note below.
+  const ctx: LeafContext = { exec: contextForDriver(options.db), dialect: options.dialect ?? 'sqlite' };
+  // `contract.ir` is typed as the UNBRANDED inspection alias (`ComponentGraphIRDoc`) but the runtime
+  // value IS the `compileBehaviors` handle bindBehaviors needs (same object, carrying the leaf-impl
+  // registry side-channel). Bridge the type identity at the call (value-correct — not an `any` escape).
+  return bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).run(options.entry, input);
 }
 
 /**
@@ -230,29 +227,9 @@ export function compileBundle(
   };
 }
 
-/**
- * Execute a {@link SqlBundle} (the §8 published artifact) end-to-end via the static makeSQL
- * runtime + REAL SQLite. Read bundles run the read graph via bc `runBehavior`; single-statement
- * write bundles run the write (RETURNING rows / summary). The SAME code path a thin per-language
- * runtime follows — it consumes ONLY the serialized bundle + bc, never re-running the compile.
- *
- * @throws {SqlFailure} a mapped driver failure re-surfaced at the boundary.
- */
-export function executeBundle(bundle: SqlBundle, input: Scope, options: ExecuteOptions): Value {
-  if (bundle.statement !== undefined && bundle.transaction === undefined) {
-    const view: StaticBundle = {
-      dialect: bundle.dialect,
-      name: bundle.name,
-      statements: [bundle.statement],
-      optionalHeads: bundle.optionalHeads,
-    };
-    return executeStaticWrite(view, input, options.db) as unknown as Value;
-  }
-  if (bundle.readGraph === undefined) {
-    throw new Error(`scp runtime: bundle '${bundle.name}' carries neither a read graph nor a write statement`);
-  }
-  return executeReadGraph(bundle.readGraph, input, options.db);
-}
+// #141: the sync `executeBundle` (SqlBundle → `executeStaticWrite` / `executeReadGraph`) is RETIRED.
+// Reads run through the op-independent leaf graph (`executeBehavior`/`read` → bc `bindBehaviors`);
+// single-statement writes run through the write leaf (`executeSQL` write intent) / the tx runtime.
 
 // ── Async read execution model — the PRODUCTION PG / MySQL read path (#40) ──────
 //
@@ -268,10 +245,10 @@ export function executeBundle(bundle: SqlBundle, input: Scope, options: ExecuteO
 // outcomes in declaration order), so it is byte-identical to the serial `executeBundle` output;
 // only the wall-clock changes. Writes are UNCHANGED — the write-tx path stays sync + serial.
 
-/** Async execute options: the pooled async SQL executor + the entry component (method) to run. */
+/** Async execute options: the async execution context + the entry component (method) to run. */
 export interface AsyncExecuteOptions {
-  /** The pooled async SQL executor (build via `pgPoolExecutor` / `mysqlPoolExecutor`). */
-  readonly exec: SqlExecutorAsync;
+  /** The async execution context (`PooledAsyncContext`) — the leaf's async seam (`bindBehaviors().runAsync`). */
+  readonly execAsync: AsyncExecutionContext;
   /** The behavior method (component) name to run (default: the first component). */
   readonly entry?: string;
   /** The model's read-relation declarations (spec §4/§5), compiled ONCE into the bundle. */
@@ -280,39 +257,14 @@ export interface AsyncExecuteOptions {
   readonly dialect?: DialectName;
 }
 
-/**
- * Execute a READ {@link SqlBundle} end-to-end via the ASYNC PG / MySQL execution model (#40): bc
- * `runBehaviorAsync` drives map iteration / wire binding / Φ output and dispatches independent
- * sibling read nodes in bounded parallel against the pooled async executor. This is the PRODUCTION
- * live-DB read entry point — the async twin of {@link executeBundle} for read bundles.
- *
- * Byte-identical composition (SAME IR, SAME per-node SQL text + params, SAME Φ output) to the
- * serial `executeBundle`; concurrency changes only the wall-clock. A single-relation (zero-sibling)
- * read graph runs exactly one query, so it is identical to the serial path either way.
- *
- * A single-statement WRITE bundle is NOT accepted here — the write-tx path stays sync + serial
- * (`executeBundle` / `executeTransactionBundle`); this async path is READ-only.
- *
- * @throws {SqlFailure} a mapped driver failure re-surfaced at the boundary.
- */
-export async function executeBundleAsync(
-  bundle: SqlBundle,
-  input: Scope,
-  options: AsyncExecuteOptions,
-): Promise<Value> {
-  if (bundle.readGraph === undefined) {
-    throw new Error(
-      `scp runtime: executeBundleAsync requires a READ bundle ('${bundle.name}' carries no read graph); ` +
-        `the write-tx path stays synchronous + serial (use executeBundle / executeTransactionBundle).`,
-    );
-  }
-  return executeReadGraphAsync(bundle.readGraph, input, options.exec);
-}
+// #141: the async `executeBundleAsync` (SqlBundle → `executeReadGraphAsync`) is RETIRED. The live
+// PG/MySQL read path runs through the op-independent leaf graph async ({@link executeBehaviorAsync} →
+// bc `bindBehaviors().runAsync` over the `executeSQL` leaf's async seam).
 
 /**
  * Compile + execute a READ behavior method via the ASYNC PG / MySQL execution model (#40). The
- * async twin of {@link executeBehavior} for reads: compile the contract to a {@link SqlBundle}
- * (SYMBOLIC), then run its read graph through {@link executeBundleAsync}.
+ * async twin of {@link executeBehavior} for reads: run the authored op-independent leaf graph
+ * (`executeSQL`/`pluck`/`group`) via bc `bindBehaviors().runAsync` over the pooled async seam.
  *
  * @throws {SqlFailure} a mapped driver failure re-surfaced at the boundary.
  */
@@ -321,16 +273,13 @@ export async function executeBehaviorAsync(
   input: Scope,
   options: AsyncExecuteOptions,
 ): Promise<Value> {
-  // ALWAYS-ON read de-box (issue #59), live PG/MySQL, STATIC: the materialize resolver is precomputed
-  // from the model's DDL at registration and carried on the contract — ZERO per-read introspection
-  // (no information_schema round-trips). PAIR with the per-CONNECTION driver de-box config, set ONCE
-  // at pool creation (mysql2 supportBigNumbers+bigNumberStrings+dateStrings; pg date type parsers) —
-  // see `pgDeboxExecutor` / `mysqlDeboxExecutor`.
-  return executeBundleAsync(
-    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, contract.resolveColumnType),
-    input,
-    options,
-  );
+  // #141 async: run the authored op-independent leaf graph DIRECTLY via bc `bindBehaviors().runAsync`
+  // — the async twin of the sync {@link executeBehavior}. Each `executeSQL` leaf, seeing the async ctx
+  // (`execAsync`), runs the async seam (per-execution pooled connection ownership) and returns a
+  // Promise `runAsync` awaits. The retired ReadGraph/`executeReadGraphAsync` engine is bypassed. Async
+  // read de-box rides the per-connection driver config (mysql2 bigNumberStrings/dateStrings; pg parsers).
+  const ctx: AsyncLeafContext = { execAsync: options.execAsync, dialect: options.dialect ?? 'sqlite' };
+  return bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).runAsync(options.entry, input);
 }
 
 // ── Write-time relations: Command bundle + 1-tx execution (WS5, #25 — spec §6) ──
@@ -621,22 +570,12 @@ export function read<R = Record<string, unknown>>(
   input: Scope,
   options: ReadRuntimeOptions<R>,
 ): R[] {
-  // ALWAYS-ON read de-box (issue #59), STATIC: the resolver is precomputed from the model's DDL at
-  // registration and carried on the contract — ZERO per-read introspection.
-  return readBundle(
-    compileBundle(contract, options.entry, options.relations, options.dialect, undefined, contract.resolveColumnType),
-    input,
-    options,
-  );
-}
-
-/** {@link read} against an already-compiled {@link SqlBundle} (the published §8 artifact). */
-export function readBundle<R = Record<string, unknown>>(
-  bundle: SqlBundle,
-  input: Scope,
-  options: ReadRuntimeOptions<R>,
-): R[] {
-  const out = executeBundle(bundle, input, options);
+  // #141: run the primary read through the op-independent leaf graph ({@link executeBehavior} → bc
+  // `bindBehaviors`), superseding the retired `SqlBundle`/`executeReadGraph` path. Read relations are
+  // attached over the raw rows via {@link buildResultSet} — the runtime lazy (prototype getter) +
+  // declarative (`with`) surfaces, both resolving through the shared grouping core (item 1). Read
+  // de-box (INT→number / BIGINT→string) rides the contract's materialize resolver at the seam.
+  const out = executeBehavior(contract, input, options);
   if (!Array.isArray(out)) {
     throw new Error(
       `scp read: the read behavior output is not a row list (got ${out === null ? 'null' : typeof out}); ` +
@@ -644,6 +583,13 @@ export function readBundle<R = Record<string, unknown>>(
     );
   }
   const rawRows = out as unknown as Record<string, unknown>[];
+  const dialect = options.dialect ?? 'sqlite';
+  // Compile the model's read-relation decls to STATIC relation ops (byte-identical child batch SQL),
+  // keyed by name — the SAME ops both the declarative `with` prefetch and the lazy getters resolve.
+  const relationOps: Record<string, RelationOp> = {};
+  for (const decl of options.relations ?? []) {
+    relationOps[decl.name] = compileRelationOp({ ...decl, dialect: decl.dialect ?? dialect }, contract.resolveColumnType);
+  }
   const readOpts: ReadOptions<R> = {
     ...(options.with !== undefined ? { with: options.with } : {}),
     ...(options.hydrate !== undefined ? { hydrate: options.hydrate } : {}),
@@ -651,7 +597,7 @@ export function readBundle<R = Record<string, unknown>>(
     // its target DB. Absent for a single-DB read (every relation runs on the primary `db`).
     ...(options.connections !== undefined ? { connections: options.connections } : {}),
   };
-  return buildResultSet<R>(rawRows, bundle.relations, options.db, readOpts);
+  return buildResultSet<R>(rawRows, relationOps, options.db, readOpts);
 }
 
 export { SqlFailure };

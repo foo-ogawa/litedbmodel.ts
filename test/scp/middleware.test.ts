@@ -33,6 +33,7 @@ import {
   publishBehaviors,
   SemanticBehavior,
   components,
+  emitRead,
   whereEq,
   type ExecutionContext,
 } from '../../src/scp';
@@ -195,7 +196,7 @@ class RelBehavior extends SemanticBehavior {
     child: { id: 'INTEGER', parent_id: 'INTEGER', label: 'TEXT' },
   } as const;
   Parents($: { pid: unknown }) {
-    return L.Select({ table: 'parent', select: ['id', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' });
+    return emitRead(L, 'Select', { table: 'parent', select: ['id', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' }, 'sqlite');
   }
 }
 

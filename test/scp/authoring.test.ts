@@ -1,27 +1,32 @@
 /**
  * WS2 (#22) authoring parse — the litedbmodel authoring surface (SemanticBehavior
  * declaration + eager public-API path) lowers through ONE bc compile path to one internal
- * Component-graph IR, effect is derived from the graph, SKIP-optional conditions lower to
- * a `cond` expression (fragment existence, not a new opcode), and the lower path
- * auto-applies the portability guard fail-closed (spec §2.4 / §7 / §9 / #22 AC).
+ * Component-graph IR, effect is derived from the graph, and the lower path auto-applies the
+ * portability guard fail-closed (spec §2.4 / §7 / §9 / #22 AC).
+ *
+ * #141: the leaf vocabulary is the op-independent transport ({@link emitRead}/{@link emitWrite} →
+ * ONE `executeSQL` node with assembled `sql`), NOT the retired per-op `Select`/`Insert` catalog. So
+ * a read/write behavior lowers to an `executeSQL` node whose `write` intent DERIVES the CQRS effect,
+ * and whose assembled `sql` is the v1-shaped statement — asserted here instead of the old catalog
+ * `table`/`select` port internals.
  */
 
 import { describe, it, expect } from 'vitest';
+import Database from 'better-sqlite3';
 import {
   PortabilityError,
-  runBehavior,
-  type Handlers,
 } from 'behavior-contracts';
 import {
   SemanticBehavior,
   components,
   publishBehaviors,
   compileEager,
+  emitRead,
+  emitWrite,
+  executeBehavior,
   assertComponentGraphPortable,
   eq,
   ge,
-  ne,
-  when,
   type In,
   type Recorded,
   type ComponentGraphIR,
@@ -29,43 +34,41 @@ import {
 
 const L = components();
 
-// ── A read behavior: Select + relation .map (spec §2.4 PostSearch) ────────────────────
+/** The sole `executeSQL` transport node of a component (the assembled read/write statement). */
+function execNode(contract: { methods: Record<string, { component: { body: readonly unknown[] } }> }, method: string) {
+  return contract.methods[method].component.body.find(
+    (n) => typeof n === 'object' && n !== null && 'component' in n && (n as { component: string }).component === 'executeSQL',
+  ) as { ports: { sql: string; write: boolean } };
+}
+
+// ── A read behavior (Select → executeSQL transport) ───────────────────────────────────
 class ReadBehaviors extends SemanticBehavior {
   static columns = {
     posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TEXT' },
-    users: { id: 'INTEGER', name: 'TEXT' },
   };
-  PostSearch($: In<{ authorId: number; status?: string; since: string }>) {
-    const posts = L.Select({
+  PostSearch($: In<{ id: number; since: string }>) {
+    return emitRead(L, 'Select', {
       table: 'posts',
       select: ['id', 'author_id', 'title', 'created_at'],
-      where: [
-        eq($.authorId, $.authorId),
-        when(ne($.status, null), () => eq($.status, $.status)), // SKIP-optional (§7)
-        ge($.since, $.since),
-      ],
+      where: [eq($.id, $.id), ge($.created_at, $.since)],
       order: 'created_at DESC',
-    });
-    const authors = posts.map(($p: Recorded) =>
-      L.Select({ table: 'users', select: ['id', 'name'], where: [eq($p.author_id, $p.author_id)] }),
-    );
-    return { posts, authors };
+    }, 'sqlite');
   }
 }
 
-// ── A write behavior: Insert (spec §2.4 CreatePost) ───────────────────────────────────
+// ── A write behavior (Insert → executeSQL transport, write intent) ─────────────────────
 class WriteBehaviors extends SemanticBehavior {
   CreatePost($: In<{ authorId: number; title: string }>) {
-    return L.Insert({
+    return emitWrite(L, 'Insert', {
       table: 'posts',
       'values.author_id': $.authorId,
       'values.title': $.title,
       returning: 'id, title',
-    });
+    }, 'sqlite');
   }
 }
 
-describe('WS2 authoring — read behavior (Select + relation .map)', () => {
+describe('WS2 authoring — read behavior lowers to one executeSQL transport node', () => {
   const contract = publishBehaviors(ReadBehaviors);
 
   it('publishes exactly the public methods as root components (name = method name)', () => {
@@ -73,111 +76,69 @@ describe('WS2 authoring — read behavior (Select + relation .map)', () => {
     expect(Object.keys(contract.methods)).toEqual(['PostSearch']);
   });
 
-  it('lowers the Select leaf with the WS1 catalog ports (table/select/where/order)', () => {
-    const body = contract.methods.PostSearch.component.body;
-    const select = body.find((n) => 'component' in n && n.component === 'Select');
-    expect(select).toBeDefined();
-    const ports = (select as { ports: Record<string, unknown> }).ports;
-    expect(ports.table).toBe('posts');
-    expect(ports.select).toEqual({ arr: ['id', 'author_id', 'title', 'created_at'] });
-    expect(ports.order).toBe('created_at DESC');
-  });
-
-  it('lowers the relation as a bc map node over the parent Select result', () => {
-    const body = contract.methods.PostSearch.component.body;
-    const map = body.find((n) => 'map' in n) as { map: { component: string; over: unknown } } | undefined;
-    expect(map).toBeDefined();
-    expect(map!.map.component).toBe('Select');
-    // `over` references the parent Select node result (a wire), not the input.
-    expect(map!.map.over).toEqual({ ref: [body[0].id] });
+  it('assembles the v1-shaped SELECT into the executeSQL node `sql` (head + WHERE + tail)', () => {
+    const node = execNode(contract, 'PostSearch');
+    expect(node.ports.sql).toBe(
+      'SELECT id, author_id, title, created_at FROM posts WHERE id = ? AND created_at >= ? ORDER BY created_at DESC',
+    );
+    expect(node.ports.write).toBe(false);
   });
 });
 
-describe('WS2 authoring — SKIP optional condition (fragment existence, not an opcode)', () => {
-  it('lowers `when(ne(status,null), () => eq(status,status))` to a pure cond node', () => {
-    const contract = publishBehaviors(ReadBehaviors);
-    const select = contract.methods.PostSearch.component.body.find(
-      (n) => 'component' in n && n.component === 'Select',
-    ) as { ports: { where: { arr: unknown[] } } };
-    const where = select.ports.where.arr;
-    // Second condition is the SKIP-optional one → `{cond:[ne(status,null), eq(status,status), null]}`.
-    expect(where[1]).toEqual({
-      cond: [
-        { ne: [{ ref: ['status'] }, null] },
-        { eq: [{ ref: ['status'] }, { ref: ['status'] }] },
-        null,
-      ],
-    });
-    // The `cond` operator is in bc's closed set — no litedbmodel-local opcode.
-    expect(Object.keys(where[1] as object)).toEqual(['cond']);
-  });
-});
-
-describe('WS2 authoring — effect derivation (graph-derived, never authored)', () => {
-  it('a read behavior (Select only) derives Query', () => {
-    const contract = publishBehaviors(ReadBehaviors);
-    expect(contract.methods.PostSearch.effect).toBe('query');
+describe('WS2 authoring — effect derivation (graph-derived from the executeSQL write intent, never authored)', () => {
+  it('a read behavior (write:false) derives Query', () => {
+    expect(publishBehaviors(ReadBehaviors).methods.PostSearch.effect).toBe('query');
   });
 
-  it('a write behavior (Insert) derives Command', () => {
-    const contract = publishBehaviors(WriteBehaviors);
-    expect(contract.methods.CreatePost.effect).toBe('command');
+  it('a write behavior (write:true) derives Command', () => {
+    expect(publishBehaviors(WriteBehaviors).methods.CreatePost.effect).toBe('command');
   });
 
-  it('the write behavior lowers the Insert value-family ports (values.<field>)', () => {
-    const contract = publishBehaviors(WriteBehaviors);
-    const insert = contract.methods.CreatePost.component.body.find(
-      (n) => 'component' in n && n.component === 'Insert',
-    ) as { ports: Record<string, unknown> };
-    expect(insert.ports['values.author_id']).toEqual({ ref: ['authorId'] });
-    expect(insert.ports['values.title']).toEqual({ ref: ['title'] });
-    expect(insert.ports.returning).toBe('id, title');
+  it('the write behavior assembles the INSERT … RETURNING statement (write intent)', () => {
+    const node = execNode(publishBehaviors(WriteBehaviors), 'CreatePost');
+    expect(node.ports.write).toBe(true);
+    expect(node.ports.sql).toMatch(/^INSERT INTO posts/);
+    expect(node.ports.sql).toMatch(/RETURNING id, title$/);
   });
 });
 
 describe('WS2 single compile path — eager public API ≡ SemanticBehavior declaration', () => {
-  // Declaration path: a one-method class equivalent to the eager call below.
   class EagerEquivDecl extends SemanticBehavior {
-    static columns = {
-      posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TEXT' },
-    };
-    FindPost($: In<{ authorId: number; since: string }>) {
-      return L.Select({
+    static columns = { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TEXT' } };
+    FindPost($: In<{ id: number; since: string }>) {
+      return emitRead(L, 'Select', {
         table: 'posts',
         select: ['id', 'author_id', 'title'],
-        where: [eq($.authorId, $.authorId), ge($.since, $.since)],
+        where: [eq($.id, $.id), ge($.created_at, $.since)],
         order: 'created_at DESC',
-      });
+      }, 'sqlite');
     }
   }
 
   it('produces byte-identical internal Component-graph IR for an equivalent query', () => {
     const decl = publishBehaviors(EagerEquivDecl);
     // Eager path: the SAME authoring body, funneled through compileEager (spec §9).
-    const eager = compileEager('FindPost', ($: Recorded, l) =>
-      l.Select({
+    const eager = compileEager('FindPost', ($: Recorded, _l) =>
+      emitRead(L, 'Select', {
         table: 'posts',
         select: ['id', 'author_id', 'title'],
-        where: [eq($.authorId, $.authorId), ge($.since, $.since)],
+        where: [eq($.id, $.id), ge($.created_at, $.since)],
         order: 'created_at DESC',
-      }),
+      }, 'sqlite'),
       { columns: { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT', created_at: 'TEXT' } } },
     );
-
-    // Byte-identical component IR (the single-compile-path invariant — spec §9).
     expect(JSON.stringify(eager.components)).toBe(JSON.stringify(decl.components));
-    // Same derived effect (read → query) on both paths.
     expect(eager.methods.FindPost.effect).toBe('query');
     expect(decl.methods.FindPost.effect).toBe('query');
   });
 
   it('the eager path runs the SAME native control-syntax scan (fail-closed)', () => {
-    // A native `?:` inside the eager body is rejected by bc's source scan, exactly as in a
-    // declaration method — the eager path has no unscanned-thunk hole.
+    // A native `?:` inside the eager body is rejected by bc's source scan, exactly as in a declaration.
     expect(() =>
-      compileEager('Bad', ($: Recorded, l) =>
+      compileEager('Bad', ($: Recorded, _l) =>
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        l.Select({ table: 'posts', select: ($ as { flag?: unknown }).flag ? ['id'] : ['*'] }),
+        emitRead(L, 'Select', { table: 'posts', select: ($ as { flag?: unknown }).flag ? ['id'] : ['title'] }, 'sqlite'),
+        { columns: { posts: { id: 'INTEGER', title: 'TEXT' } } },
       ),
     ).toThrow(/native control syntax/i);
   });
@@ -185,7 +146,6 @@ describe('WS2 single compile path — eager public API ≡ SemanticBehavior decl
 
 describe('WS2 guard auto-wiring — non-portable opcode is rejected fail-closed (#22 AC)', () => {
   it('assertComponentGraphPortable rejects an opcode outside bc closed set', () => {
-    // A lowered-looking IR that smuggles a non-portable single-key operator into a port.
     const ir: ComponentGraphIR = {
       irVersion: 1,
       exprVersion: 2,
@@ -193,7 +153,7 @@ describe('WS2 guard auto-wiring — non-portable opcode is rejected fail-closed 
         {
           name: 'Bogus',
           inputPorts: { x: { type: 'unknown', required: true } },
-          body: [{ id: 'n0', component: 'Select', ports: { table: 'posts', bogus: { sqlRaw: [{ ref: ['x'] }] } } }],
+          body: [{ id: 'n0', component: 'executeSQL', ports: { sql: 'SELECT 1', params: { arr: [{ sqlRaw: [{ ref: ['x'] }] }] }, write: false, returning: false, bigint: false } }],
           output: { ref: ['n0'] },
         },
       ],
@@ -208,30 +168,15 @@ describe('WS2 guard auto-wiring — non-portable opcode is rejected fail-closed 
   });
 });
 
-describe('WS2 emitted IR is runBehavior-executable (seam to WS3)', () => {
-  it('the lowered read behavior executes through bc runBehavior with stub handlers', () => {
-    const contract = publishBehaviors(ReadBehaviors);
-    // Stub SQL handlers (WS3 supplies the real driver-backed ones): Select returns a fixed
-    // row list so the map relation and output assembly are exercised end-to-end.
-    // bc's runBehavior wire plane represents an `int`-typed scalar as a JS `bigint`
-    // (a JS `number` is the `float` wire form). The real native de-box plane produces
-    // the language-native int form; this stub feeds the runBehavior/wire plane, so the
-    // INTEGER columns (id, author_id) are fed as bigint — matching the conform boundary.
-    const handlers: Handlers = {
-      Select: (ports) => {
-        if (ports.table === 'posts')
-          return { ok: [{ id: 1n, author_id: 7n, title: 'Hello', created_at: '2026-01-02' }] };
-        return { ok: [{ id: 7n, name: 'Ada' }] };
-      },
-    };
-    // `status` is supplied (null = present) so the where-port expressions bind; the
-    // SKIP fragment-tree derivation from the `cond` node is a WS1/WS3 backend-compile
-    // concern, not a runBehavior-time port evaluation.
-    const out = runBehavior(contract.ir, handlers, { authorId: 7, status: null, since: '2026-01-01' }, 'PostSearch') as {
-      posts: unknown[];
-      authors: unknown[];
-    };
-    expect(out.posts).toEqual([{ id: 1n, author_id: 7n, title: 'Hello', created_at: '2026-01-02' }]);
-    expect(out.authors).toEqual([[{ id: 7n, name: 'Ada' }]]);
+describe('WS2 emitted IR is executable end-to-end (seam to WS3 — the leaf transport)', () => {
+  it('the lowered read behavior executes through executeBehavior against real better-sqlite3', () => {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE posts (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT, created_at TEXT)');
+    db.prepare('INSERT INTO posts VALUES (?,?,?,?)').run(1, 7, 'Hello', '2026-01-02');
+    const out = executeBehavior(publishBehaviors(ReadBehaviors), { id: 1, since: '2026-01-01' } as never, {
+      db: db as never, entry: 'PostSearch', dialect: 'sqlite',
+    });
+    db.close();
+    expect(out).toEqual([{ id: 1, author_id: 7, title: 'Hello', created_at: '2026-01-02' }]);
   });
 });

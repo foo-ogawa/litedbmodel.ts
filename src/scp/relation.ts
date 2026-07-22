@@ -39,6 +39,7 @@ import { materializeCell, sqlTypeToMaterializeClass, type MaterializeClass, type
 import { parseProjectionColumn } from './makesql/outtype';
 import { resolveHasManyHardLimit } from './limit-config';
 import { LimitExceededError } from './errors';
+import { dedupeKeyTuples, groupByKey, attachToParent } from './grouping';
 import {
   compileSingleKeyUnlimited,
   compileSingleKeyLimited,
@@ -404,12 +405,6 @@ function targetKeyCols(op: RelationOp): readonly string[] {
   return op.targetKeys ?? [op.targetKey as string];
 }
 
-/** The stringified key identity for dedupe/grouping. Single scalar → `String(v)`; tuple → joined. */
-function keyIdentity(values: readonly unknown[]): string {
-  // A NUL separator no scalar `String(v)` contains, so distinct tuples never collide.
-  return values.map((v) => String(v)).join(' ');
-}
-
 /**
  * Bind the deduped keys to the batch op's params per dialect + arity. Single-key: PG binds the
  * scalar array verbatim (`= ANY(?::t[])`); MySQL/SQLite bind the JSON-encoded array. Composite: PG
@@ -445,7 +440,7 @@ export function runRelationOp(
 ): { sql: string; keys: unknown[][]; batch: RelationBatch } {
   const ctx = relationContext(db);
   const pCols = parentKeyCols(op);
-  const keys = dedupeKeys(parents, pCols);
+  const keys = dedupeKeyTuples(parents, pCols);
   const batch: RelationBatch = new Map();
   // Resolve the deferred PG array cast(s) (#46) from the REAL keys BEFORE the `?`→`$N` render. A
   // single-key op has ONE cast; a composite PG op has ONE cast PER key column — resolve each from
@@ -478,13 +473,9 @@ export function runRelationOp(
     throw new LimitExceededError(op.hardLimit, rawRows.length, 'relation', op.targetTable, op.name);
   }
   const rows = materializeChildRows(rawRows, childCols, int64Child);
-  for (const row of rows) {
-    const k = keyIdentity(tCols.map((c) => row[c]));
-    const list = batch.get(k);
-    if (list === undefined) batch.set(k, [row]);
-    else list.push(row);
-  }
-  return { sql, keys, batch };
+  // Group the child rows by their target-key identity — the shared grouping SSoT ({@link groupByKey}),
+  // the SAME core the eager `group` leaf uses (no duplicated grouping).
+  return { sql, keys, batch: groupByKey(rows, tCols) };
 }
 
 /** Materialize relation child rows (issue #59): same coercion as the primary read. */
@@ -509,37 +500,16 @@ function materializeChildRows(
 }
 
 /**
- * The deduped, non-null parent-key TUPLES (insertion order preserved — deterministic). A tuple is
- * dropped if ANY of its key columns is null/undefined (no partial keys). Deduped on the stringified
- * tuple identity (so `1` and `"1"` collapse exactly as `String(v)`).
- */
-function dedupeKeys(parents: readonly Record<string, unknown>[], keyCols: readonly string[]): unknown[][] {
-  const seen = new Set<string>();
-  const out: unknown[][] = [];
-  for (const p of parents) {
-    const tuple = keyCols.map((c) => p[c]);
-    if (tuple.some((v) => v === undefined || v === null)) continue;
-    const s = keyIdentity(tuple);
-    if (seen.has(s)) continue;
-    seen.add(s);
-    out.push(tuple);
-  }
-  return out;
-}
-
-/**
  * Distribute a resolved {@link RelationBatch} onto ONE parent per the relation cardinality:
- * `hasMany` → the child list (`[]` when none); `belongsTo`/`hasOne` → the single child (or
- * `null`). Keyed by the parent's key-tuple identity. `null`/`[]` is the declared cardinality's
- * empty representation, not an ad-hoc default.
+ * `hasMany` → the child list (`[]` when none); `belongsTo`/`hasOne` → the single child (or `null`).
+ * A thin consumer over the shared grouping SSoT ({@link attachToParent}) — the SAME core the eager
+ * `group` leaf uses (no duplicated grouping). `null`/`[]` is the declared cardinality's empty
+ * representation, not an ad-hoc default.
  */
 export function distributeToParent(
   op: RelationOp,
   parent: Record<string, unknown>,
   batch: RelationBatch,
 ): Record<string, unknown>[] | Record<string, unknown> | null {
-  const tuple = parentKeyCols(op).map((c) => parent[c]);
-  const rows = tuple.some((v) => v === undefined || v === null) ? undefined : batch.get(keyIdentity(tuple));
-  if (op.kind === 'hasMany') return rows ?? [];
-  return rows !== undefined && rows.length > 0 ? rows[0] : null;
+  return attachToParent(parent, parentKeyCols(op), batch, op.kind !== 'hasMany');
 }

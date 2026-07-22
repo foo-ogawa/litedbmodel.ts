@@ -34,25 +34,18 @@
  * text is emitted once.
  */
 
-import {
-  evaluateExpression,
-  type Scope,
-  type Value,
-} from 'behavior-contracts';
 // bc 0.8.0: the read-graph IR litedbmodel carries is DERIVED (spread + additive outType annotation)
 // from `compileBehaviors`' output — an UNBRANDED structural doc. Use the unbranded shapes from
 // `../authoring` (`BcComponent` = the unbranded component shape). The branded compile-seam handle is
-// re-adopted only at the `generateModule` boundary (see `codegen.ts`), never here (the native walker
+// re-adopted only at the bc `generateModule` boundary, never here (the native walker
 // reads structural nodes directly, no bc provenance gate).
 import type { Component, Component as BcComponent, ComponentGraphIR, ComponentRefNode, MapNode, FanoutNode, BehaviorModelContract } from '../authoring';
 import { IN_SENTINEL } from './tx';
-import { composeMakeSQL, type MakeSQL, type SqlParam } from './makesql';
-import { renderPlaceholders, type Dialect } from './handler';
+import { type Dialect } from './handler';
 import { compileWriteNode, mysqlPkHint } from './tx';
 import { assertFindFilterFolded, type FindFilterSource } from '../find-filter-guard';
 import { deriveReadOutTypes } from './outtype';
-import { materializeCell, type ColumnTypeResolver, type MaterializeClass } from '../coltype';
-import { mapSqliteError, LimitExceededError } from '../errors';
+import { type ColumnTypeResolver, type MaterializeClass } from '../coltype';
 import { resolveFindHardLimit } from '../limit-config';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import { dbCast, dbDynamic, dbImmediate, dbTupleIn } from '../../DBValues';
@@ -62,9 +55,6 @@ import { formatterFor } from './compile';
 import {
   type ExecutionContext,
   type SqliteDriver,
-  execute as seamExecute,
-  executeSafe as seamExecute_safe,
-  run as seamRun,
   contextForDriver,
 } from '../exec-context';
 import {
@@ -430,13 +420,6 @@ function v1GroupText(op: 'and' | 'or', leafSqls: readonly string[]): string {
   return parent.compile(probe);
 }
 
-/** A deferred value-spec that JSON-encodes an array value-spec at runtime (single-param IN). */
-function jsonArraySpec(dialect: Dialect, valueSpec: ValueSpec): ValueSpec {
-  // Marker op the runtime interprets: `{ __jsonArray: <valueSpec>, dialect }`. Postgres keeps
-  // the array as-is (bound as a t[] param via node-postgres); mysql/sqlite JSON-encode it.
-  return { __jsonArray: valueSpec, dialect };
-}
-
 /**
  * The IN-list membership fragment, driven by the ORIGINAL builders (never hand-rolled):
  *   - MySQL/SQLite: `conditionsFor({col:[…]})` → the single-JSON `JsonArrayConditions` form
@@ -455,15 +438,18 @@ function jsonArraySpec(dialect: Dialect, valueSpec: ValueSpec): ValueSpec {
  *     requirement here — only that the rows match. The array binds verbatim as ONE param.
  */
 function inListFragment(dialect: Dialect, column: string, valueSpec: ValueSpec): WhereFragment {
+  // The array param is bound as ONE value; the `executeSQL` leaf's `encodeParams` is the SSoT that
+  // dialect-encodes it (PostgreSQL keeps the raw array for `= ANY(?)`; MySQL/SQLite JSON-encode it for
+  // the `json_each(?)` form). So the fragment carries the plain array `valueSpec` — no separate marker.
   if (dialect === 'postgres') {
     // `col = ANY(?)` — no cast. PG infers the array element type from the column, which is correct
     // for every type INCLUDING empty and uuid (a value-inferred cast cannot, and re-broke #46).
     const conditions: ConditionObject = { __raw__: [`${column} = ANY(?)`, [PROBE]] };
-    return { sql: v1ConditionText(conditions, dialect), params: [jsonArraySpec(dialect, valueSpec)] };
+    return { sql: v1ConditionText(conditions, dialect), params: [valueSpec] };
   }
   // MySQL/SQLite: the single-JSON IN-list is the JsonArrayConditions form (v1/epic builder).
   const conditions: ConditionObject = { [column]: [PROBE] };
-  return { sql: v1ConditionText(conditions, dialect), params: [jsonArraySpec(dialect, valueSpec)] };
+  return { sql: v1ConditionText(conditions, dialect), params: [valueSpec] };
 }
 
 /**
@@ -526,7 +512,7 @@ function lowerWhereMember(node: unknown, dialect: Dialect, at: string): WhereFra
  * as the fragment's `skip` presence expression (dropped at runtime when `c` is null/false).
  * The FIRST present fragment carries no leading connector; every later one carries ` AND `.
  */
-function lowerWherePort(ports: Record<string, unknown>, dialect: Dialect, at: string): StaticStatement[] {
+export function lowerWherePort(ports: Record<string, unknown>, dialect: Dialect, at: string): StaticStatement[] {
   const arr = arrPort(ports, 'where');
   if (arr === undefined || arr.length === 0) return [];
   // Each member becomes a fragment statement. The leading ` WHERE `/` AND ` connectors are
@@ -671,85 +657,10 @@ export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatem
 
 // ── Compile a behavior method → static bundle (CRUD primary node) ──────────────
 
-/**
- * Compile ONE authored primary catalog node into its static `makeSQL` statement templates. A
- * `Select` lowers to the fragment/tail statements ({@link compileSelectNode}); a single
- * `Insert`/`Update`/`Delete` lowers via the SAME symbolic write compile the write-tx spine uses
- * ({@link compileWriteNode} in `./tx` — complete tuned SQL text + deferred Expression-IR params),
- * yielding ONE statement. This is the makeSQL SCP path for a standalone CRUD query (a Command
- * with write-time relations rides the tx-DAG plan, not this single-statement path).
- */
-function compilePrimaryNode(node: ComponentRefNode, dialect: Dialect): StaticStatement[] {
-  const component = 'map' in node ? (node as MapNode).map.component : node.component;
-  if (component === 'Select' || component === 'Count' || component === 'RelationBatch') return compileSelectNode(node, dialect);
-  if (component === 'Insert' || component === 'Update' || component === 'Delete') {
-    const op = compileWriteNode(node as { component: 'Insert' | 'Update' | 'Delete'; ports: Record<string, unknown> }, dialect);
-    return [{ sql: op.sql, params: op.params }];
-  }
-  throw new Error(`static-bundle: catalog component '${component}' has no makeSQL compile (SQL CRUD only: Select/Count/Insert/Update/Delete)`);
-}
 
-/**
- * Compile the primary CRUD query of an authored behavior method into a {@link StaticBundle}.
- * Relation `.map` nodes are NOT part of the primary bundle (they are the read-relations concern
- * — step 3, still on the reduced spine). The compile is SYMBOLIC (no concrete input); the runtime
- * ({@link executeStaticBundle} for reads / {@link executeStaticWrite} for writes) evaluates skip +
- * value-specs per-input.
- */
-export function compileStaticBundle(
-  contract: BehaviorModelContract,
-  dialect: Dialect,
-  entry?: string,
-): StaticBundle {
-  const component = entry ? contract.components.find((c) => c.name === entry) : contract.components[0];
-  if (component === undefined) throw new Error(`static-bundle: entry component '${entry ?? '<first>'}' not found in contract`);
-
-  let primary: ComponentRefNode | undefined;
-  for (const n of component.body) {
-    if ('cond' in n) continue;
-    if (isFanout(n)) {
-      // bc 0.7.3+ `FanoutNode`. litedbmodel never emits fanout — reject fail-closed rather
-      // than mistake it for the primary catalog `componentRef`.
-      throw new Error(`static-bundle: behavior '${component.name}' node '${n.id}' is a fanout node, not supported by litedbmodel (bc FanoutNode)`);
-    }
-    if (isMap(n)) continue;
-    if (primary === undefined) primary = n;
-  }
-  if (primary === undefined) throw new Error(`static-bundle: behavior '${component.name}' has no primary catalog node`);
-
-  const statements = compilePrimaryNode(primary, dialect);
-  return {
-    dialect,
-    name: component.name,
-    statements,
-    optionalHeads: [...optionalHeadsOf(component, statements)],
-  };
-}
 
 // ── Optional-head detection (SSoT-driven, mirrors ../runtime.optionalHeadsOf) ──
 
-/**
- * The OPTIONAL input heads to normalize to present-as-null (absent-key SKIP): the
- * schema-optional ports, the SKIP-`cond`-guarded heads (a guard declares its driving input
- * optional — spec §7), AND every head accessed via `refOpt` in a value-spec or skip expression
- * (the author reached for `opt(…)`/`refOpt` precisely because the binding may be absent — e.g. a
- * `coalesce`-defaulted LIMIT). bc's `evaluateExpression` fail-closes on an absent head even
- * under `refOpt`, so these must be pre-normalized to null. A REQUIRED, non-refOpt head that is
- * missing is left absent so a real wiring bug surfaces loudly. This is SSoT-driven (the
- * schema/guard/refOpt IS the optionality declaration), never an ad-hoc code default.
- */
-function optionalHeadsOf(component: Component, statements: readonly StaticStatement[]): Set<string> {
-  const optional = new Set<string>();
-  for (const [port, schema] of Object.entries(component.inputPorts)) {
-    if (schema.required !== true) optional.add(port);
-  }
-  for (const n of component.body) skipGuardHeads(n, optional);
-  for (const stmt of statements) {
-    for (const p of stmt.params) collectRefOptHeads(p, optional);
-    if (stmt.skip !== undefined) collectRefOptHeads(stmt.skip, optional);
-  }
-  return optional;
-}
 
 /** Collect every path HEAD accessed via `refOpt` in an Expression IR node. */
 function collectRefOptHeads(node: unknown, into: Set<string>): void {
@@ -853,100 +764,9 @@ function authoredWhereKeysOf(ports: Record<string, unknown>): Set<string> {
 // ── Runtime: evaluate value-specs + skip per-input, assemble, render, execute ──
 
 
-/** bc evaluates ints to bigint; convert a rendered param to a driver-bindable value. */
-function toDriverParam(v: Value): unknown {
-  if (typeof v === 'bigint') {
-    if (v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(v);
-    return v;
-  }
-  return v;
-}
 
-/** Evaluate one deferred value-spec against the input scope (handling the JSON-array marker). */
-function evalSpec(spec: ValueSpec, scope: Scope): unknown {
-  // E3 (#118) batch marker: `{__batchRows:{columns, refs, dialect}}` — the ONE json_each param of a
-  // batch INSERT (createMany / upsertMany). Each `refs[j]` evaluates to a PARALLEL ARRAY of column
-  // `columns[j]`; zip them into `[{col:val,…},…]` and JSON-encode (server-side `json_each`/`JSON_TABLE`
-  // expands N records). This is the runtime twin of the codegen seam's zip — SAME batch JSON contract.
-  if (spec !== null && typeof spec === 'object' && !Array.isArray(spec) && '__batchRows' in (spec as object)) {
-    const m = (spec as { __batchRows: { columns: string[]; refs: ValueSpec[]; dialect: Dialect } }).__batchRows;
-    const arrays = m.refs.map((r) => {
-      const a = evaluateExpression(r, scope);
-      if (!Array.isArray(a)) throw new Error('static-bundle: __batchRows column ref did not evaluate to an array');
-      return a as Value[];
-    });
-    const n = arrays.length === 0 ? 0 : arrays[0].length;
-    const rows: Record<string, unknown>[] = [];
-    for (let i = 0; i < n; i++) {
-      const row: Record<string, unknown> = {};
-      m.columns.forEach((c, j) => {
-        const v = arrays[j][i];
-        row[c] = m.dialect === 'mysql' && typeof v === 'boolean' ? (v ? 1 : 0) : toDriverParam(v);
-      });
-      rows.push(row);
-    }
-    return JSON.stringify(rows);
-  }
-  // PG (v1) batch UNNEST param: `{__batchArray:{column, ref, dialect}}` — the ref evaluates to the
-  // WHOLE array for one column; the statement's `?::<elem>[]` cast binds it as a PG array (one `?` per
-  // column). The v1 twin of the `__batchRows` JSON marker (postgres-only; the parity rule keeps pg on
-  // UNNEST). No JSON encoding — the driver binds the JS array directly (each cell driver-normalized).
-  if (spec !== null && typeof spec === 'object' && !Array.isArray(spec) && '__batchArray' in (spec as object)) {
-    const m = (spec as { __batchArray: { column: string; ref: ValueSpec; dialect: Dialect } }).__batchArray;
-    const a = evaluateExpression(m.ref, scope);
-    if (!Array.isArray(a)) throw new Error(`static-bundle: __batchArray column '${m.column}' ref did not evaluate to an array`);
-    return (a as Value[]).map((e) => toDriverParam(e));
-  }
-  if (spec !== null && typeof spec === 'object' && !Array.isArray(spec) && '__jsonArray' in (spec as object)) {
-    const marker = spec as { __jsonArray: ValueSpec; dialect: Dialect };
-    const arr = evaluateExpression(marker.__jsonArray, scope);
-    if (!Array.isArray(arr)) throw new Error('static-bundle: IN-list value-spec did not evaluate to an array');
-    if (marker.dialect === 'postgres') return arr.map((e) => toDriverParam(e as Value));
-    // MySQL/SQLite single-JSON IN-list param. A BOOLEAN element is encoded as `1`/`0` for MySQL
-    // (NOT JSON `true`/`false`): MySQL's `JSON_UNQUOTE(v)` yields the STRING `'true'`, which coerces
-    // to `0` against a TINYINT(1) — a silent mismatch. `1`/`0` is exactly what v1's `col IN (?)`
-    // bound (mysql2 sends a JS bool as `1`/`0`), preserving v1 RESULT parity. SQLite's `json_each`
-    // coerces JSON booleans natively, so it keeps the plain form.
-    const encodeElem = (e: Value): unknown =>
-      marker.dialect === 'mysql' && typeof e === 'boolean' ? (e ? 1 : 0) : toDriverParam(e);
-    return JSON.stringify((arr as Value[]).map(encodeElem));
-  }
-  return toDriverParam(evaluateExpression(spec, scope));
-}
 
-/**
- * Evaluate a list of statement templates against a scope: drop skipped statements (skip
- * expression truthy), resolve each surviving statement's WHERE-role connector from the present
- * set, build concrete `makeSQL` nodes, assemble + render to the dialect placeholder form.
- */
-function renderStatements(statements: readonly StaticStatement[], dialect: Dialect, scope: Scope): { sql: string; params: unknown[] } {
-  const nodes: MakeSQL[] = [];
-  let whereSeen = false;
-  for (const stmt of statements) {
-    if (stmt.skip !== undefined) {
-      const drop = evaluateExpression(stmt.skip, scope);
-      if (drop !== null && drop !== false) continue;
-    }
-    let sql = stmt.sql;
-    if (stmt.whereFragment === true) {
-      sql = (whereSeen ? ' AND ' : ' WHERE ') + stmt.sql;
-      whereSeen = true;
-    }
-    const params: SqlParam[] = stmt.params.map((p) => evalSpec(p, scope) as SqlParam);
-    // The authored PG IN-list emits `col = ANY(?)` with NO cast token (#46 — PG infers the array
-    // element type from the column, correct for empty/uuid where value-inference cannot). No
-    // render-time cast resolution is needed here; the relation-batch path resolves its own v1
-    // `::T[]` cast in `runRelationOp`, not on this authored-statement surface.
-    nodes.push({ sql, params });
-  }
-  const assembled = composeMakeSQL(nodes);
-  return { sql: renderPlaceholders(assembled.sql, dialect), params: assembled.params };
-}
 
-/** Evaluate a whole bundle's statements against the input scope (convenience over the list). */
-function renderBundle(bundle: StaticBundle, scope: Scope): { sql: string; params: unknown[] } {
-  return renderStatements(bundle.statements, bundle.dialect, scope);
-}
 
 /**
  * The minimal synchronous SQLite driver surface (better-sqlite3 `Database`) — the backward-compat
@@ -960,58 +780,9 @@ export type SqliteDb = SqliteDriver;
 /** A read/write entry accepts either a raw {@link SqliteDb} or a full {@link ExecutionContext}. */
 export type DbOrContext = SqliteDb | ExecutionContext;
 
-/** Coerce a `SqliteDb | ExecutionContext` argument to a ctx (raw driver ⇒ backward-compat wrapper). */
-function asContext(dbOrCtx: DbOrContext): ExecutionContext {
-  return 'connectionFor' in dbOrCtx ? dbOrCtx : contextForDriver(dbOrCtx);
-}
 
-/** Normalize omitted OPTIONAL heads to present-as-null (absent-key SKIP; SSoT-driven). */
-function normalizeInput(bundle: StaticBundle, input: Scope): Scope {
-  const out: Scope = { ...input };
-  for (const head of bundle.optionalHeads) {
-    if (!(head in out)) out[head] = null;
-  }
-  return out;
-}
 
-/**
- * Execute a {@link StaticBundle} read query end-to-end against real SQLite: normalize optional
- * heads, evaluate skip + value-specs per-input, assemble present fragments, render, and run the
- * SELECT. Returns the row list.
- */
-export function executeStaticBundle(bundle: StaticBundle, input: Scope, db: DbOrContext): Record<string, unknown>[] {
-  const ctx = asContext(db);
-  const scope = normalizeInput(bundle, input);
-  const { sql, params } = renderBundle(bundle, scope);
-  try {
-    // Central READ seam (exec-context §2): middleware → connectionFor → execute. No direct driver call.
-    return seamExecute(ctx, sql, params);
-  } catch (e) {
-    throw mapSqliteError(e);
-  }
-}
 
-/**
- * Execute a single-statement WRITE {@link StaticBundle} (Insert/Update/Delete) against real
- * SQLite: evaluate the deferred value-specs per-input, render, and run the statement. A statement
- * with a RETURNING tail returns its rows; a non-returning write returns a single-row summary
- * `[{ changes, lastInsertRowid }]`. A driver error maps to a {@link SqlFailure} at the boundary.
- * (A Command with write-time relations rides the tx-DAG plan of `./tx`, not this path.)
- */
-export function executeStaticWrite(bundle: StaticBundle, input: Scope, db: DbOrContext): Record<string, unknown>[] {
-  const ctx = asContext(db);
-  const scope = normalizeInput(bundle, input);
-  const { sql, params } = renderBundle(bundle, scope);
-  const hasReturn = /\breturning\b/i.test(sql);
-  try {
-    // Central seam (exec-context §2): a RETURNING write reads rows (execute); a bare write runs (run).
-    if (hasReturn) return seamExecute(ctx, sql, params, { write: true });
-    const info = seamRun(ctx, sql, params);
-    return [{ changes: info.changes, lastInsertRowid: toDriverParam(BigInt(info.lastInsertRowid)) }];
-  } catch (e) {
-    throw mapSqliteError(e);
-  }
-}
 
 // ============================================================================
 // #12 — the NATIVE read-graph walker (interpreter-free): litedbmodel composes map /
@@ -1222,293 +993,26 @@ function resolveFindGuard(
   return { hardLimit, nodeId: primary.id, model: component.name };
 }
 
-/**
- * Apply a node's per-column materializers (issue #59) to its raw driver rows: coerce each cell to
- * the JS form its SQL column type declares (BIGINT→bigint, INT→number, DATE→string, BOOLEAN→
- * boolean). A no-op when the node has no materializer map (read compiled without a column-type
- * resolver) or a column has no entry (defensive — only projected columns are typed). Mutates + returns
- * the same row objects (they are freshly produced by the driver, so mutation is safe).
- */
-function materializeRows(
-  rows: Record<string, unknown>[],
-  cols: Record<string, MaterializeClass> | undefined,
-  safeIntegersOn = false,
-): Record<string, unknown>[] {
-  if (cols === undefined && !safeIntegersOn) return rows;
-  for (const row of rows) {
-    for (const key of Object.keys(row)) {
-      const klass = cols?.[key];
-      if (klass !== undefined) {
-        row[key] = materializeCell(row[key], klass);
-        continue;
-      }
-      // Defensive (SQLite safeIntegers mode): when the statement was put in safe-integer mode for a
-      // BIGINT column, EVERY int column arrives as a bigint — including columns the resolver didn't
-      // type. Narrow a stray bigint back to a number when it fits safely, else to an exact string
-      // (so a value never leaks out as a raw bigint, which is not JSON-safe).
-      if (safeIntegersOn && typeof row[key] === 'bigint') {
-        const v = row[key] as bigint;
-        row[key] = v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v.toString();
-      }
-    }
-  }
-  return rows;
-}
 
-/** True iff any projected column of this node is a 64-bit int (needs the driver in exact mode). */
-function hasInt64(cols: Record<string, MaterializeClass>): boolean {
-  for (const k of Object.keys(cols)) if (cols[k] === 'int64') return true;
-  return false;
-}
 
 // ── Native read-graph orchestration primitives (shared by sync/async walkers) ──
 
-/** The read-graph body node shape the native walker recognizes (a real `compileBehaviors` node). */
-type ReadBodyNode = {
-  id: string;
-  component?: string;
-  ports?: Record<string, unknown>;
-  cond?: unknown;
-  map?: { as?: string; over?: unknown; ports?: Record<string, unknown> };
-};
 
-/** The plan stages (`groups`) as body-index lists, or one-node-per-stage in declaration order. */
-function planStages(component: BcComponent): number[][] {
-  const plan = (component as unknown as { plan?: { groups?: unknown } }).plan;
-  const groups = plan?.groups;
-  if (Array.isArray(groups)) {
-    return groups.map((st) => (Array.isArray(st) ? st.filter((i): i is number => typeof i === 'number') : []));
-  }
-  return component.body.map((_n, i) => [i]);
-}
 
-/** The plan's `concurrency` bound (default 1 — serial when absent/≤1), for the async fan-out. */
-function planConcurrency(component: BcComponent): number {
-  const plan = (component as unknown as { plan?: { concurrency?: unknown } }).plan;
-  const c = plan?.concurrency;
-  return typeof c === 'number' && c >= 1 ? c : 1;
-}
 
-/**
- * Bounded-parallel map preserving INPUT ORDER in the result. At most `limit` tasks run at once
- * (`limit <= 1` ⇒ strictly serial). Deterministic: the output array is indexed by input position,
- * regardless of completion order — mirrors bc `runPlanAsync`'s in-order commit, so the async walker's
- * assembled result equals the serial walker's byte-for-byte.
- */
-async function boundedMap<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  const cap = Math.max(1, Math.floor(limit));
-  let next = 0;
-  async function worker(): Promise<void> {
-    for (;;) {
-      const i = next++;
-      if (i >= items.length) return;
-      out[i] = await fn(items[i], i);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(cap, items.length) }, () => worker()));
-  return out;
-}
 
-/** Render + execute a node's `statementsById` fragments against `scope`, through the seam, with #59 de-box. */
-function execReadNodeSync(graph: ReadGraph, nodeId: string, scope: Scope, ctx: ExecutionContext): Value {
-  const stmts = graph.statementsById[nodeId];
-  if (stmts === undefined) throw new Error(`static-bundle: no statements for node '${nodeId}'`);
-  const { sql, params } = renderStatements(stmts, graph.dialect, scope);
-  const cols = graph.materializersByNode?.[nodeId];
-  try {
-    // A BIGINT-projecting node runs in safe-integer mode so int8 comes back as an EXACT bigint (a JS
-    // number would round it — the #59 hole); `materializeRows` then narrows/stringifies. Both paths
-    // funnel through the central READ seam (middleware → connectionFor → execute) — no direct driver.
-    const safeIntegersOn = cols !== undefined && hasInt64(cols);
-    const rows = (safeIntegersOn ? seamExecute_safe(ctx, sql, params) : seamExecute(ctx, sql, params)) as Record<string, unknown>[];
-    return materializeRows(rows, cols, safeIntegersOn) as unknown as Value;
-  } catch (e) {
-    throw mapSqliteError(e);
-  }
-}
 
-/** Compute ONE read-graph body node's value against `base`: a `cond` join, a `map` (per-element
- * render+execute under the `as` binding), or a componentRef (render+execute). Through the seam ctx. */
-function computeReadNodeSync(graph: ReadGraph, node: ReadBodyNode, base: Scope, ctx: ExecutionContext): Value {
-  if (node.cond !== undefined) return evaluateExpression(node.cond, base) as Value;
-  if (node.map !== undefined) {
-    const over = evaluateExpression(node.map.over, base);
-    if (!Array.isArray(over)) throw new Error(`static-bundle: map '${node.id}': 'over' is not an array`);
-    const asName = node.map.as ?? '$';
-    const out: Value[] = [];
-    for (const el of over) {
-      out.push(execReadNodeSync(graph, node.id, { ...base, [asName]: el as Value }, ctx));
-    }
-    return out as unknown as Value;
-  }
-  return execReadNodeSync(graph, node.id, base, ctx);
-}
 
-/**
- * Post-fetch hard-limit runaway guard (Phase E-2, epic #74; v1 `DBModel` find hard-limit). When
- * `graph.findGuard` targets `nodeId` and the node's computed value is a row list longer than the
- * cap, throw {@link LimitExceededError} (`context: 'find'`). The read injected `LIMIT hardLimit + 1`
- * at compile, so a length of `hardLimit + 1` means the TRUE total exceeds the cap. A no-op for every
- * other node / an uncapped graph. The SAME check the native ports (#100-103) run off `findGuard`.
- */
-function assertFindGuard(graph: ReadGraph, nodeId: string, value: Value): void {
-  const guard = graph.findGuard;
-  if (guard === undefined || guard.nodeId !== nodeId) return;
-  if (Array.isArray(value) && value.length > guard.hardLimit) {
-    throw new LimitExceededError(guard.hardLimit, value.length, 'find', guard.model);
-  }
-}
 
-/** Normalize omitted OPTIONAL heads to present-as-null (absent-key SKIP; SSoT-driven). */
-function normalizeReadInput(graph: ReadGraph, input: Scope): Scope {
-  const out: Scope = { ...input };
-  for (const head of graph.optionalHeads) if (!(head in out)) out[head] = null;
-  return out;
-}
 
-/**
- * Execute a compiled {@link ReadGraph} via the NATIVE walker (#12): walk `compileBehaviors`' REAL
- * `Select`/`Count`/map node IR in `plan.groups` stage order — computing each node's rows from its
- * `statementsById` fragments (rendered against the walk scope) and committing `(nodeId → value)` —
- * then evaluate the component's `output` Φ expression. NO bc `runBehavior`, NO `__makeSqlNode`
- * surrogate; litedbmodel owns map iteration / wire binding / Φ output. This is the SAME native
- * orchestration model the rust/go/py/php runtimes follow — one shape, all 5 languages, interpreter-free.
- */
-export function executeReadGraph(graph: ReadGraph, input: Scope, db: DbOrContext): Value {
-  const ctx = asContext(db);
-  const component = graph.ir.components[0];
-  const body = component.body as unknown as ReadBodyNode[];
-  const output = (component as unknown as { output?: unknown }).output ?? null;
-  const normalized = normalizeReadInput(graph, input);
-
-  try {
-    const results: [string, Value][] = [];
-    for (const stage of planStages(component)) {
-      // Commit stage members in ascending body index (deterministic failure precedence).
-      const ordered = [...stage].sort((a, b) => a - b);
-      const base: Scope = { ...normalized };
-      for (const [id, v] of results) base[id] = v;
-      for (const idx of ordered) {
-        const node = body[idx];
-        const v = computeReadNodeSync(graph, node, base, ctx);
-        assertFindGuard(graph, node.id, v); // Phase E-2: throw if the primary read exceeded the cap
-        base[node.id] = results[results.push([node.id, v]) - 1][1];
-      }
-    }
-    const scope: Scope = { ...normalized };
-    for (const [id, v] of results) scope[id] = v;
-    return evaluateExpression(output, scope) as Value;
-  } catch (e) {
-    throw reErrorToSqlFailure(e);
-  }
-}
 
 /** An async driver seam: run a rendered `{ sql, params }` and resolve to result rows (#40). */
 export type SqlExecutorAsync = (sql: string, params: unknown[]) => Promise<Record<string, unknown>[]>;
 
-/** Render + execute a node's `statementsById` fragments against `scope`, async driver, with #59 de-box. */
-async function execReadNodeAsync(graph: ReadGraph, nodeId: string, scope: Scope, exec: SqlExecutorAsync): Promise<Value> {
-  const stmts = graph.statementsById[nodeId];
-  if (stmts === undefined) throw new Error(`static-bundle: no statements for node '${nodeId}'`);
-  const { sql, params } = renderStatements(stmts, graph.dialect, scope);
-  try {
-    const rows = await exec(sql, params);
-    // #59 materializers: the pooled PG/MySQL drivers are configured so int8/BIGINT arrive as a string
-    // (→ bigint) and BOOLEAN as a JS boolean; `materializeCell` coerces each to the SQL-type JS form.
-    return materializeRows(rows, graph.materializersByNode?.[nodeId]) as unknown as Value;
-  } catch (e) {
-    throw mapSqliteError(e);
-  }
-}
 
-/** Async twin of {@link computeReadNodeSync}: dispatches a map stage's per-element queries in bounded
- * parallel (the live PG/MySQL fan-out, capped at `concurrency`); a componentRef runs one query; a
- * `cond` is pure. */
-async function computeReadNodeAsync(graph: ReadGraph, node: ReadBodyNode, base: Scope, exec: SqlExecutorAsync, concurrency: number): Promise<Value> {
-  if (node.cond !== undefined) return evaluateExpression(node.cond, base) as Value;
-  if (node.map !== undefined) {
-    const over = evaluateExpression(node.map.over, base);
-    if (!Array.isArray(over)) throw new Error(`static-bundle: map '${node.id}': 'over' is not an array`);
-    const asName = node.map.as ?? '$';
-    return (await boundedMap(over, concurrency, (el) =>
-      execReadNodeAsync(graph, node.id, { ...base, [asName]: el as Value }, exec),
-    )) as unknown as Value;
-  }
-  return execReadNodeAsync(graph, node.id, base, exec);
-}
 
-/**
- * Async twin of {@link executeReadGraph} — the live PG / MySQL execution model (#40). Byte-identical
- * composition (SAME real-node IR, SAME per-node SQL text + params, SAME Φ output); within a plan stage
- * the INDEPENDENT sibling nodes are dispatched concurrently against the pooled async executor (each
- * `exec` resolving on its own pooled connection), and a map node's per-element queries fan out in
- * bounded parallel. The result is deterministic (stage outcomes commit in declaration order), so it
- * equals the serial `executeReadGraph` output exactly; only the wall-clock changes.
- */
-export async function executeReadGraphAsync(
-  graph: ReadGraph,
-  input: Scope,
-  exec: SqlExecutorAsync,
-): Promise<Value> {
-  const component = graph.ir.components[0];
-  const body = component.body as unknown as ReadBodyNode[];
-  const output = (component as unknown as { output?: unknown }).output ?? null;
-  const concurrency = planConcurrency(component);
-  const normalized = normalizeReadInput(graph, input);
 
-  try {
-    const results: [string, Value][] = [];
-    for (const stage of planStages(component)) {
-      const ordered = [...stage].sort((a, b) => a - b);
-      const base: Scope = { ...normalized };
-      for (const [id, v] of results) base[id] = v;
-      // Independent siblings of a stage run in bounded parallel (capped at the plan concurrency;
-      // concurrency ≤ 1 ⇒ serial); committed in ascending body index order for determinism.
-      const vals = await boundedMap(ordered, concurrency, (idx) => computeReadNodeAsync(graph, body[idx], base, exec, concurrency));
-      // Phase E-2: throw if the primary read exceeded the cap (checked per computed node).
-      ordered.forEach((idx, i) => assertFindGuard(graph, body[idx].id, vals[i]));
-      ordered.forEach((idx, i) => results.push([body[idx].id, vals[i]]));
-    }
-    const scope: Scope = { ...normalized };
-    for (const [id, v] of results) scope[id] = v;
-    return evaluateExpression(output, scope) as Value;
-  } catch (e) {
-    throw reErrorToSqlFailure(e);
-  }
-}
 
-/**
- * Convenience: compile + execute a READ behavior method whose output may be a Φ-merge of SQL
- * nodes (including relation `.map` nodes). Equivalent to `executeReadGraph(compileReadGraph(...))`.
- */
-export function executeReadBehavior(
-  contract: BehaviorModelContract,
-  input: Scope,
-  dialect: Dialect,
-  db: SqliteDb,
-  entry?: string,
-): Value {
-  return executeReadGraph(compileReadGraph(contract, dialect, entry), input, db);
-}
-
-/**
- * Render the PRIMARY read node's statements of a {@link ReadGraph} against an input scope to its
- * dialect SQL text + bound params (the render axis for conformance golden). The primary node is
- * the first non-map body node (the root SELECT the relations map over). Optional heads are
- * normalized to present-as-null first (absent-key SKIP), so an omitted optional head renders the
- * SAME text a runtime would produce.
- */
-export function renderReadPrimary(graph: ReadGraph, input: Scope): { sql: string; params: unknown[] } {
-  const ids = Object.keys(graph.statementsById);
-  // The primary node is the first body node in the real-node IR order (map nodes reference it).
-  const bodyIds = graph.ir.components[0].body.map((n) => n.id).filter((id) => ids.includes(id));
-  const primaryId = bodyIds[0];
-  if (primaryId === undefined) throw new Error('static-bundle: read graph has no primary node to render');
-  const scope: Scope = { ...input };
-  for (const head of graph.optionalHeads) if (!(head in scope)) scope[head] = null;
-  return renderStatements(graph.statementsById[primaryId], graph.dialect, scope);
-}
 
 /** Optional heads across ALL SQL nodes of a component (schema + SKIP-guard + refOpt). */
 function optionalHeadsOfComponent(component: Component, dialect: Dialect, resolveColumnType?: ColumnTypeResolver): Set<string> {
@@ -1529,10 +1033,3 @@ function optionalHeadsOfComponent(component: Component, dialect: Dialect, resolv
   return optional;
 }
 
-/** Re-surface a mapped SqlFailure from a runBehavior OP_FAILED message (SQLITE_* code embedded). */
-function reErrorToSqlFailure(e: unknown): unknown {
-  const message = e instanceof Error ? e.message : String(e);
-  const m = /(SQLITE_[A-Z_]+)/.exec(message);
-  if (m) return mapSqliteError({ code: m[1], message });
-  return e;
-}

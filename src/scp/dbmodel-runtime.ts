@@ -47,10 +47,8 @@ import {
   pgPoolFactory,
   mysqlPoolFactory,
 } from './makesql/pool-executor';
-import type { SqlExecutorAsync } from './makesql/static-bundle';
-import { executeBundleAsync, type SqlBundle } from './runtime';
+import { executeBehaviorAsync, type SqlBundle } from './runtime';
 import { executeTransactionAsync, type TransactionResult } from './makesql/tx';
-import { executeAsync, type AsyncExecutionContext } from './exec-context';
 import type { TransactionOptions } from './tx-options';
 import {
   findAuthoring,
@@ -59,6 +57,7 @@ import {
   updateAuthoring,
   deleteAuthoring,
   compileReadBundle,
+  compileReadContract,
   compileCommandBundle,
   compileCreateBundle,
   compileUpdateBundle,
@@ -101,12 +100,14 @@ export interface RuntimeContextOptions {
   readonly writerStickyDuration?: number;
 }
 
-/** The assembled runtime context: the routed ctx, the reader executor, the dialect, and a closer. */
+/** The assembled runtime context: the routed ctx, the dialect, and a closer. */
 export interface RuntimeContext {
-  /** The Phase A-E execution context (routing + middleware + tx-pinning) over real pools. */
+  /**
+   * The Phase A-E execution context (routing + middleware + tx-pinning) over real pools. This IS the
+   * async read/write seam: reads run `bindBehaviors().runAsync` over `executeBehaviorAsync({execAsync: ctx})`
+   * (#141 — the retired reader `SqlExecutorAsync` / `executeReadGraphAsync` path is gone).
+   */
   readonly ctx: PooledAsyncContext;
-  /** The reader-side async executor for `executeBundleAsync` (read fan-out), threaded via the ctx seam. */
-  readonly exec: SqlExecutorAsync;
   /** The compiled SQL dialect (`postgres` / `mysql`). */
   readonly dialect: DialectName;
   /** Shut every constructed pool (v1 `closeAllPools`). */
@@ -186,15 +187,10 @@ export function buildContextFromConfig(config: RuntimeDbConfig, options: Runtime
   );
   const ctx = new PooledAsyncContext(built.routing);
 
-  // Reader-side executor: threaded through the ctx seam so middleware + reader routing + an ambient tx
-  // pin all apply to every read (see readerExec). No separate reader pool needed — the ctx's registry
-  // resolves the reader pool per read intent.
-  const runtime: RuntimeContext = {
-    ctx,
-    dialect,
-    close: built.close,
-    exec: (sql: string, params: unknown[]) => executeAsync(ctx as unknown as AsyncExecutionContext, sql, params, { write: false }),
-  };
+  // The `ctx` (PooledAsyncContext) IS the async read/write seam — reads run through
+  // `executeBehaviorAsync({execAsync: ctx})` (bindBehaviors().runAsync over the executeSQL leaf). No
+  // separate reader `SqlExecutorAsync` (#141 — the old reader-executor + async ReadGraph engine is gone).
+  const runtime: RuntimeContext = { ctx, dialect, close: built.close };
   return runtime;
 }
 
@@ -255,8 +251,11 @@ export async function executeReadAsync(
 ): Promise<Record<string, unknown>[]> {
   const table = tableOf(model);
   const fullSpec: ReadAuthoringSpec = { ...spec, where: bridge.empty ? undefined : bridge.where };
-  const bundle = compileReadBundle(model, method, findAuthoring(table, fullSpec), ctx.dialect, columnsOptions);
-  const out = await executeBundleAsync(bundle, bridge.input as Scope, { exec: ctx.exec, dialect: ctx.dialect });
+  // #141 async read: author the op-independent leaf graph (contract) and run it via the async leaf
+  // path (`bindBehaviors().runAsync` over the `PooledAsyncContext`), superseding the retired
+  // ReadGraph/`executeReadGraphAsync` bundle path.
+  const contract = compileReadContract(model, method, findAuthoring(table, fullSpec, ctx.dialect), ctx.dialect, columnsOptions);
+  const out = await executeBehaviorAsync(contract, bridge.input as Scope, { execAsync: ctx.ctx, entry: method, dialect: ctx.dialect });
   return out as unknown as Record<string, unknown>[];
 }
 
@@ -268,8 +267,8 @@ export async function executeCountAsync(
   columnsOptions?: DeriveColumnsOptions,
 ): Promise<Record<string, unknown>[]> {
   const table = tableOf(model);
-  const bundle = compileReadBundle(model, 'count', countAuthoring(table, bridge.empty ? undefined : bridge.where), ctx.dialect, columnsOptions);
-  const out = await executeBundleAsync(bundle, bridge.input as Scope, { exec: ctx.exec, dialect: ctx.dialect });
+  const contract = compileReadContract(model, 'count', countAuthoring(table, bridge.empty ? undefined : bridge.where, ctx.dialect), ctx.dialect, columnsOptions);
+  const out = await executeBehaviorAsync(contract, bridge.input as Scope, { execAsync: ctx.ctx, entry: 'count', dialect: ctx.dialect });
   return out as unknown as Record<string, unknown>[];
 }
 

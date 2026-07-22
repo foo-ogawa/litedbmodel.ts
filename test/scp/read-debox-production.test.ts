@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import {
-  SemanticBehavior, components, publishBehaviors, executeBehavior, read, compileBundle,
+  SemanticBehavior, components, publishBehaviors, executeBehavior, read, emitRead, emitWrite,
   whereEq, whereGe, materializeResolverFromColumnMap, columnTypeResolverFromColumnMap,
   failClosedMaterializeResolverFromColumnMap,
 } from '../../src/scp';
@@ -31,19 +31,19 @@ const REL_COLUMNS = {
 class Reads extends SemanticBehavior {
   static columns = COV_COLUMNS;
   All($: { min_id: unknown }) {
-    return L.Select({
+    return emitRead(L, 'Select', {
       table: 'cov',
       select: ['id', 'i32', 'i64', 'flag', 'day', 'dec', 'note'],
       where: [whereGe(($ as never)['id'], $.min_id)],
       order: 'id ASC',
-    });
+    }, 'sqlite');
   }
 }
 
 class RelReads extends SemanticBehavior {
   static columns = REL_COLUMNS;
   Parents($: { pid: unknown }) {
-    return L.Select({ table: 'parent', select: ['id', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' });
+    return emitRead(L, 'Select', { table: 'parent', select: ['id', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' }, 'sqlite');
   }
 }
 
@@ -171,7 +171,7 @@ describe('#59 FAIL-CLOSED at registration — a typed read whose projected colum
   it('a model with NO `static columns` but a read projecting columns THROWS (columns REQUIRED)', () => {
     class NoDecl extends SemanticBehavior {
       Q($: { pid: unknown }) {
-        return L.Select({ table: 'parent', select: ['id', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' });
+        return emitRead(L, 'Select', { table: 'parent', select: ['id', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' }, 'sqlite');
       }
     }
     expect(() => publishBehaviors(NoDecl)).toThrow(/REQUIRES an inline `static columns`|declares\s+NO `columns`/i);
@@ -183,7 +183,7 @@ describe('#59 FAIL-CLOSED at registration — a typed read whose projected colum
       // (never a silent skip that would return a rounded i64 at read time).
       static columns = { t: { id: 'INTEGER', name: 'TEXT' } };
       Q($: { pid: unknown }) {
-        return L.Select({ table: 't', select: ['id', 'big', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' });
+        return emitRead(L, 'Select', { table: 't', select: ['id', 'big', 'name'], where: [whereEq(($ as never)['id'], $.pid)], order: 'id ASC' }, 'sqlite');
       }
     }
     expect(() => publishBehaviors(MissingBig)).toThrow(/'big' not declared|not declared on table 't'/i);
@@ -192,7 +192,7 @@ describe('#59 FAIL-CLOSED at registration — a typed read whose projected colum
   it('a WRITE-only model needs no `columns` (writes are exempt)', () => {
     class WriteOnly extends SemanticBehavior {
       Make($: { title: unknown }) {
-        return (L as never as { Insert(x: unknown): unknown }).Insert({ table: 'posts', 'values.title': $.title, returning: 'id' });
+        return emitWrite(L, 'Insert', { table: 'posts', 'values.title': $.title, returning: 'id' }, 'sqlite');
       }
     }
     expect(() => publishBehaviors(WriteOnly)).not.toThrow();
@@ -220,7 +220,7 @@ describe('#59 ALL projection shapes — bare/qualified/aliased de-box; * hard-er
   it('QUALIFIED `t.big` (declared BIGINT) → materializes to EXACT string, NOT a rounded number', () => {
     class Qual extends SemanticBehavior {
       static columns = { t: { id: 'INTEGER', big: 'BIGINT' } };
-      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['id', 't.big'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+      Q($: { min: unknown }) { return emitRead(L, 'Select', { table: 't', select: ['id', 't.big'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }, 'sqlite'); }
     }
     const db = bigDb();
     const r = (executeBehavior(publishBehaviors(Qual), { min: 1 }, { db, entry: 'Q' }) as Record<string, unknown>[])[0];
@@ -232,7 +232,7 @@ describe('#59 ALL projection shapes — bare/qualified/aliased de-box; * hard-er
   it('ALIASED `big AS b` (declared BIGINT) → row key `b` materializes to EXACT string', () => {
     class Alias extends SemanticBehavior {
       static columns = { t: { id: 'INTEGER', big: 'BIGINT' } };
-      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['id', 'big AS b'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+      Q($: { min: unknown }) { return emitRead(L, 'Select', { table: 't', select: ['id', 'big AS b'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }, 'sqlite'); }
     }
     const db = bigDb();
     const r = (executeBehavior(publishBehaviors(Alias), { min: 1 }, { db, entry: 'Q' }) as Record<string, unknown>[])[0];
@@ -245,7 +245,7 @@ describe('#59 ALL projection shapes — bare/qualified/aliased de-box; * hard-er
   it('`SELECT *` HARD-ERRORS at registration (a typed read must project explicit columns)', () => {
     class Star extends SemanticBehavior {
       static columns = { t: { id: 'INTEGER', big: 'BIGINT' } };
-      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['*'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+      Q($: { min: unknown }) { return emitRead(L, 'Select', { table: 't', select: ['*'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }, 'sqlite'); }
     }
     expect(() => publishBehaviors(Star)).toThrow(/wildcard|projects '\*'/i);
   });
@@ -253,7 +253,7 @@ describe('#59 ALL projection shapes — bare/qualified/aliased de-box; * hard-er
   it('UNDECLARED column in QUALIFIED form (`t.big`, big undeclared) THROWS', () => {
     class QualUndecl extends SemanticBehavior {
       static columns = { t: { id: 'INTEGER' } };
-      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['id', 't.big'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+      Q($: { min: unknown }) { return emitRead(L, 'Select', { table: 't', select: ['id', 't.big'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }, 'sqlite'); }
     }
     expect(() => publishBehaviors(QualUndecl)).toThrow(/'big' not declared/i);
   });
@@ -261,7 +261,7 @@ describe('#59 ALL projection shapes — bare/qualified/aliased de-box; * hard-er
   it('UNDECLARED column in ALIASED form (`big AS b`, big undeclared) THROWS', () => {
     class AliasUndecl extends SemanticBehavior {
       static columns = { t: { id: 'INTEGER' } };
-      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['id', 'big AS b'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+      Q($: { min: unknown }) { return emitRead(L, 'Select', { table: 't', select: ['id', 'big AS b'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }, 'sqlite'); }
     }
     expect(() => publishBehaviors(AliasUndecl)).toThrow(/'big' not declared/i);
   });
@@ -269,7 +269,7 @@ describe('#59 ALL projection shapes — bare/qualified/aliased de-box; * hard-er
   it('a QUALIFIED JOIN column resolves against ITS OWN table (qualifier), not the base table', () => {
     class Jn extends SemanticBehavior {
       static columns = { posts: { id: 'INTEGER', big: 'BIGINT' }, users: { id: 'INTEGER', name: 'TEXT' } };
-      Q($: { min: unknown }) { return L.Select({ table: 'posts', select: ['posts.id', 'posts.big AS pb', 'users.name'], where: [whereGe(($ as never)['id'], $.min)], order: 'posts.id ASC' }); }
+      Q($: { min: unknown }) { return emitRead(L, 'Select', { table: 'posts', select: ['posts.id', 'posts.big AS pb', 'users.name'], where: [whereGe(($ as never)['id'], $.min)], order: 'posts.id ASC' }, 'sqlite'); }
     }
     // Registers fine (users.name resolves against `users`, not `posts`). The materializer keys the
     // aliased BIGINT under `pb` and leaves users.name passthrough.
@@ -281,40 +281,25 @@ describe('#59 ALL projection shapes — bare/qualified/aliased de-box; * hard-er
   it('a COMPUTED projection (`COUNT(*) as n`) is allowed (no schema column to round) — left raw', () => {
     class Agg extends SemanticBehavior {
       static columns = { t: { id: 'INTEGER', big: 'BIGINT' } };
-      Q(_$: Record<string, never>) { return L.Select({ table: 't', select: ['id', 'COUNT(*) as n'], group: 'id' }); }
+      Q(_$: Record<string, never>) { return emitRead(L, 'Select', { table: 't', select: ['id', 'COUNT(*) as n'], group: 'id' }, 'sqlite'); }
     }
     // A computed/aggregate projection has no underlying schema column → not the i64 hole; registers fine.
     expect(() => publishBehaviors(Agg)).not.toThrow();
   });
 
-  it('SINGLE SOURCE: the read materializers are the SAME resolution as the codegen outType (not a second pass)', () => {
+  it('SINGLE SOURCE: the leaf read node carries the de-box materializers keyed by OUTPUT column', () => {
     class R extends SemanticBehavior {
       static columns = { t: { id: 'INTEGER', big: 'BIGINT', flag: 'BOOLEAN' } };
-      Q($: { min: unknown }) { return L.Select({ table: 't', select: ['id', 'big AS b', 'flag'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }); }
+      Q($: { min: unknown }) { return emitRead(L, 'Select', { table: 't', select: ['id', 'big AS b', 'flag'], where: [whereGe(($ as never)['id'], $.min)], order: 'id ASC' }, 'sqlite'); }
     }
     const contract = publishBehaviors(R);
-    // ONE compile with the contract's resolveColumnType → the bundle carries BOTH the codegen outType
-    // IR annotations AND the read-path materializersByNode, derived from the SAME deriveReadOutTypes.
-    const bundle = compileBundle(contract, 'Q', [], 'sqlite', undefined, contract.resolveColumnType) as {
-      readGraph?: { ir: unknown; materializersByNode?: Record<string, Record<string, string>> };
-    };
-    const rg = bundle.readGraph!;
-    // The materializer map (read path) is keyed by OUTPUT column and typed identically to the outType.
-    const mat = rg.materializersByNode!;
-    const node = Object.values(mat)[0];
-    // Keyed by OUTPUT column: id→int32, big AS b→int64 (under alias `b`), flag→bool.
-    expect(node).toEqual({ id: 'int32', b: 'int64', flag: 'bool' });
-    // Walk the outType row obj (codegen) and confirm it types the SAME output keys.
-    let rowObj: Record<string, unknown> | undefined;
-    const visit = (n: unknown): void => {
-      if (n === null || typeof n !== 'object') return;
-      const o = n as Record<string, unknown>;
-      if ('outType' in o) { let t: unknown = o.outType; while (t && typeof t === 'object' && !('obj' in (t as object))) t = (t as { arr?: unknown; opt?: unknown }).arr ?? (t as { opt?: unknown }).opt; if (t && typeof t === 'object' && 'obj' in (t as object)) rowObj = (t as { obj: Record<string, unknown> }).obj; }
-      for (const v of Object.values(o)) visit(v);
-    };
-    visit(rg.ir);
-    // Same output keys in both (codegen outType + read materializers come from one resolution).
-    expect(Object.keys(rowObj!).sort()).toEqual(['b', 'flag', 'id']); // big AS b → key 'b'
-    expect(rowObj!.id).toBe('int'); expect(rowObj!.b).toBe('int'); expect(rowObj!.flag).toBe('bool');
+    // #141: the op-builder pass (`lowerReadColumns`) resolves the projection ONCE via the SHARED
+    // `deriveReadMaterializers` (the SAME `parseProjectionColumn` SSoT the codegen `outType` derivation
+    // uses) and stamps the de-box map on the `executeSQL` read node's `materializers` port. Keyed by the
+    // OUTPUT column: id→int32, big AS b→int64 (under alias `b`), flag→bool.
+    const node = contract.methods.Q.component.body.find(
+      (n) => 'component' in n && (n as { component: string }).component === 'executeSQL',
+    ) as { ports: { materializers?: { obj: Record<string, string> } } };
+    expect(node.ports.materializers?.obj).toEqual({ id: 'int32', b: 'int64', flag: 'bool' });
   });
 });

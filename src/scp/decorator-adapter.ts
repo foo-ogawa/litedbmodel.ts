@@ -46,6 +46,7 @@
 
 import {
   compileEager,
+  type BehaviorModelContract,
   type ComponentFns,
   type EagerBehavior,
   type ModelColumns,
@@ -59,8 +60,126 @@ import {
   type SqlBundle,
 } from './runtime';
 import { compileRelationOp, type RelationDecl, type RelationKind, type RelationOp } from './relation';
-import { sqlTypeToMaterializeClass, columnTypeResolverFromColumnMap, type ColumnTypeResolver } from './coltype';
+import { sqlTypeToMaterializeClass, keyArrayElemScalar, columnTypeResolverFromColumnMap, type ColumnTypeResolver } from './coltype';
 import type { DialectName } from './dialect';
+import { compileSelectNode, type StaticStatement } from './makesql/static-bundle';
+import { compileWriteNode } from './makesql/tx';
+
+// ── #141 op→leaf-graph lowering (read path) ────────────────────────────────────
+//
+// The op builders lower a SELECT/COUNT to the op-independent `executeSQL` leaf by running the SAME
+// `compileSelectNode` (the SSoT op→sql+params lowering) at AUTHORING time over a synthetic catalog
+// node, then assembling its statements. A BOUNDED op (no SKIP fragment) assembles to a LITERAL sql
+// string (native-lowerable — the bench declared ops); a dynamic-WHERE/SKIP op is a ts-runtime-only
+// concern that assembles per-input (not yet wired to the structured `executeSQL` path — see the
+// throw below; bounded is this phase's scope).
+
+/**
+ * Assemble a BOUNDED read (no SKIP fragment) into ONE literal `{ sql, params }`: concatenate the head
+ * + WHERE fragments (` WHERE `/` AND ` connectors resolved deterministically since all are present) +
+ * tail. `params` are the deferred value-specs (bc `$`-ref Expression IR), 1:1 with the `?`.
+ */
+function assembleBoundedRead(statements: readonly StaticStatement[]): { sql: string; params: unknown[] } {
+  let sql = '';
+  const params: unknown[] = [];
+  let whereCount = 0;
+  for (const st of statements) {
+    if (st.skip !== undefined) {
+      throw new Error(
+        'scp read (#141): a dynamic-WHERE/SKIP read is not yet wired to the structured `executeSQL` runtime-assemble path ' +
+          '(bounded ops only in this phase). The SKIP fragment must ride a ts-runtime structured `executeSQL` input.',
+      );
+    }
+    sql += st.whereFragment === true ? (whereCount++ === 0 ? ` WHERE ${st.sql}` : ` AND ${st.sql}`) : st.sql;
+    params.push(...st.params);
+  }
+  return { sql, params };
+}
+
+/**
+ * Wrap the raw authoring ports into the IR-form `compileSelectNode` reads — the SAME shape bc's
+ * recording produces for a hand-authored `L.Select({…})`, so `emitRead` (which bypasses bc recording
+ * for the base ports and drives `compileSelectNode` directly) feeds it an equivalent node. Array ports
+ * (`select`/`where`/`cteParams`/`joinParams`) become `{arr:[…]}`; the `cte` map port becomes
+ * `{obj:{name,sql}}`; string/expr ports (`table`/`join`/`order`/`group`/`limit`/`offset`) pass through.
+ * The `where`/`cteParams`/`joinParams` MEMBERS are bc expression nodes (`eq(col,val)` from the
+ * where-sugar / `$`-ref value-specs) — the SAME nodes `compileSelectNode`/`lowerWherePort` decode.
+ */
+function toIrPorts(ports: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...ports };
+  if (Array.isArray(out.select)) out.select = { arr: out.select };
+  if (Array.isArray(out.where)) out.where = { arr: out.where };
+  if (Array.isArray(out.cteParams)) out.cteParams = { arr: out.cteParams };
+  if (Array.isArray(out.joinParams)) out.joinParams = { arr: out.joinParams };
+  if (out.cte !== null && typeof out.cte === 'object' && !Array.isArray(out.cte) && !('obj' in (out.cte as object))) {
+    out.cte = { obj: out.cte };
+  }
+  return out;
+}
+
+/**
+ * Emit an `executeSQL` read node from a synthetic Select/Count catalog node. The base SQL (head +
+ * ORDER/LIMIT tail, NO WHERE) is lowered at authoring via {@link compileSelectNode} (literal sql —
+ * native-lowerable). The WHERE is passed as the transient `where` PORT: bc RECORDS the where sugar
+ * (live `$`-ref/`whereRawPredicate`/sentinel proxies → plain Expression IR), and the post-compile
+ * pass in `authoring.ts` ({@link import('./authoring').lowerRecordedWhere}) lowers the RECORDED IR
+ * into the node's static `sql`/`params` — never walking a live proxy (the `NOT_RECORDABLE` cause).
+ */
+export function emitRead(L: ComponentFns, component: 'Select' | 'Count', ports: Record<string, unknown>, dialect: DialectName): Recorded {
+  const where = ports.where;
+  const base: Record<string, unknown> = { ...ports };
+  delete base.where;
+  // Inline a LITERAL LIMIT/OFFSET into the SQL text instead of deferring it as a `?` param (v1 inlined
+  // them too). This keeps the executeSQL `params` a UNIFORM `value[]` of value-specs — the native single
+  // transport requires every param element to spread as `&[WireValue]` (bc#156/#160); a mixed
+  // value-ref + i64-literal params array is not natively coverable. A value-ref (dynamic) limit stays a
+  // deferred param (it spreads as a WireValue like any bound value).
+  const litLimit = typeof base.limit === 'number' ? base.limit : undefined;
+  const litOffset = typeof base.offset === 'number' ? base.offset : undefined;
+  if (litLimit !== undefined) delete base.limit;
+  if (litOffset !== undefined) delete base.offset;
+  const assembled = assembleBoundedRead(compileSelectNode({ id: 'r', component, ports: toIrPorts(base) } as never, dialect));
+  const params = assembled.params;
+  const sql = assembled.sql + (litLimit !== undefined ? ` LIMIT ${litLimit}` : '') + (litOffset !== undefined ? ` OFFSET ${litOffset}` : '');
+  // `params` is the opaque value list (bc#156); the leaf's `params` port element type is a nominal
+  // placeholder the ir-exec runtime does not enforce — the value-specs flow through as bc `$`-refs.
+  const portObj: Record<string, unknown> = { sql, params, write: false, returning: false, bigint: false };
+  if (Array.isArray(where) && where.length > 0) portObj.where = where; // bc records → plain IR; lowered post-compile
+  // #59 read de-box: carry the base table + explicit projection as the transient `readColumns` port so
+  // the post-compile pass (`authoring.lowerReadColumns`, which holds the model's column resolver) can
+  // resolve each column, fail-close on `*`/undeclared (the coverage guard), and stamp the de-box
+  // `materializers` map. A `Select` projects `select` (default `['*']` → the guard rejects at lowering);
+  // a `Count` returns a scalar `int` (no per-column de-box), so it carries no `readColumns`.
+  if (component === 'Select' && typeof base.table === 'string' && Array.isArray(base.select)) {
+    portObj.readColumns = { table: base.table, cols: base.select };
+  }
+  return (L.executeSQL as (p: Record<string, unknown>) => Recorded)(portObj);
+}
+
+/**
+ * Emit an `executeSQL` write node (write intent) from a synthetic Insert/Update/Delete catalog node.
+ * The op→sql+params lowering is the SSoT {@link compileWriteNode} (complete tuned SQL incl. the
+ * RETURNING tail + deferred `$`-ref params). `returning` is set from the authored `returning` port so
+ * the leaf runs a RETURNING write through the row-returning seam (`execute`) and a plain write through
+ * `run` (the affected summary) — RETURNING is preserved, never gutted.
+ */
+export function emitWrite(L: ComponentFns, component: 'Insert' | 'Update' | 'Delete', ports: Record<string, unknown>, dialect: DialectName): Recorded {
+  // The WHERE (Update/Delete) is DEFERRED to the transient `where` port and lowered post-compile from
+  // the RECORDED IR (the SAME path as reads — `lowerRecordedWhere` in authoring.ts) rather than walked
+  // as a live proxy at authoring (the NOT_RECORDABLE cause). `compileWriteNode` emits the base
+  // INSERT/UPDATE SET/DELETE (no WHERE) from the where-less ports; `lowerRecordedWhere` appends it.
+  const where = ports.where;
+  if ((component === 'Update' || component === 'Delete') && !(Array.isArray(where) && where.length > 0)) {
+    throw new Error(`decorator-adapter: ${component} requires a WHERE (no unfiltered ${component}). Provide the read/where spec.`);
+  }
+  const base: Record<string, unknown> = { ...ports };
+  delete base.where;
+  const op = compileWriteNode({ component, ports: toIrPorts(base) } as never, dialect);
+  const returning = ports.returning !== undefined;
+  const portObj: Record<string, unknown> = { sql: op.sql, params: [...op.params], write: true, returning, bigint: false };
+  if (Array.isArray(where) && where.length > 0) portObj.where = where; // bc records → plain IR; appended post-compile
+  return (L.executeSQL as (p: Record<string, unknown>) => Recorded)(portObj);
+}
 import type { InsertManyBuildOptions } from './makesql/compile-crud';
 import type { UpdateManyBuildOptions } from '../drivers/types';
 import type { EntityWritesDefinition, WriteLifecyclePhase } from './writes';
@@ -216,13 +335,13 @@ export interface ReadAuthoringSpec {
  * identity/limit-1 shape decided by the CALLER's `where`/`limit` — the authoring is identical (the
  * single-row collapse is a runtime cardinality concern, spec §5), so ONE generator serves all three.
  */
-export function findAuthoring(table: string, spec: ReadAuthoringSpec = {}): EagerBehavior {
+export function findAuthoring(table: string, spec: ReadAuthoringSpec = {}, dialect: DialectName = 'sqlite'): EagerBehavior {
   // The returned closure's SOURCE is what bc's native-control-syntax scan reads (`authoring.ts`
-  // `makeEagerClass`). It MUST contain no native control flow — so the (build-time) port assembly,
-  // which branches on spec presence, lives in the EXTERNAL {@link selectPorts} helper (its `if`s are
-  // over compile-time spec fields, NOT recorded `$` values, so they are not in the scanned frame). The
-  // closure is a bare `L.Select(selectPorts(...))` call — exactly what a hand author's method body is.
-  return ($: Recorded, L: ComponentFns) => L.Select(selectPorts(table, spec, $));
+  // `makeEagerClass`); it MUST contain no native control flow. Port assembly (`selectPorts`) and the
+  // op→sql+params lowering (`emitRead` → `compileSelectNode`) are EXTERNAL helpers (their `if`s are
+  // over compile-time spec fields / the recorded ports, not the scanned frame). The closure is a bare
+  // `emitRead(...)` call that records ONE op-independent `executeSQL` node (#141).
+  return ($: Recorded, L: ComponentFns) => emitRead(L, 'Select', selectPorts(table, spec, $), dialect);
 }
 
 /**
@@ -247,8 +366,82 @@ function selectPorts(table: string, spec: ReadAuthoringSpec, $: Recorded): Recor
  * `SELECT COUNT(*) FROM t [WHERE …]`, no projection/order/limit). The one-row `[{count}]` shape is the
  * `items` output; the consumer reads `count` (v1 `parseInt`).
  */
-export function countAuthoring(table: string, where?: ($: Recorded) => readonly unknown[]): EagerBehavior {
-  return ($: Recorded, L: ComponentFns) => L.Count(countPorts(table, $, where));
+export function countAuthoring(table: string, where?: ($: Recorded) => readonly unknown[], dialect: DialectName = 'sqlite'): EagerBehavior {
+  return ($: Recorded, L: ComponentFns) => emitRead(L, 'Count', countPorts(table, $, where), dialect);
+}
+
+// ── #141 read relations as a pluck/group graph (N+1-free: one child query per level) ──────────────
+//
+// A read WITH relations authors the FULL graph `parents = executeSQL(select) → ids = pluck(parents,fk)
+// → children = executeSQL(WHERE fk = ANY(ids)) → group(parents, children)`. bc orchestrates it; the
+// child fetch is ONE query per level (nestedFindAll = 2 queries, nestedRelations = 3). The child SQL
+// is the SSoT `compileRelationOp` (byte-identical to v1 `LazyRelation`); grouping/dedupe is the
+// `pluck`/`group` op-independent leaves (relocated `relation.ts` logic). This REPLACES the imperative
+// `runRelationOp`/`distributeToParent` post-read grouping (step 5 deletes those).
+
+/**
+ * The eager `fn($, L)` a read WITH relations lowers to: the parent `executeSQL` + a `pluck`/`group`
+ * subgraph per relation. `relations` are the model's `RelationDecl`s (compiled to the static child
+ * batch SQL by {@link compileRelationOp}). The graph build (loops/recursion) lives in the EXTERNAL
+ * {@link buildRelationGraph} so the scanned closure stays a bare call (no native control syntax).
+ */
+export function relationReadAuthoring(
+  table: string,
+  spec: ReadAuthoringSpec,
+  relations: readonly RelationDecl[],
+  dialect: DialectName = 'sqlite',
+  keyType?: KeyTypeResolver,
+): EagerBehavior {
+  return ($: Recorded, L: ComponentFns) =>
+    buildRelationGraph(L, emitRead(L, 'Select', selectPorts(table, spec, $), dialect), table, relations, dialect, keyType);
+}
+
+/**
+ * Resolve the de-box bc element scalar of a relation's parent-key column ((table, column) → bc scalar),
+ * so the `pluck` key array is stamped with the type the READ-materialized key value actually carries
+ * (INT→`float` / BIGINT→`string` / text/uuid→`string`) — see {@link import('./coltype').keyArrayElemScalar}.
+ */
+export type KeyTypeResolver = (table: string, column: string) => import('./coltype').BcScalar;
+
+/**
+ * Attach each relation's `pluck`/`group` subgraph onto the parent read result (N+1-free per level).
+ * `parentTable` is the PRIMARY read table — the parent-key column each relation plucks lives on it.
+ */
+function buildRelationGraph(L: ComponentFns, parents: Recorded, parentTable: string, relations: readonly RelationDecl[], dialect: DialectName, keyType?: KeyTypeResolver): Recorded {
+  let result = parents;
+  for (const decl of relations) result = attachRelation(L, result, parents, compileRelationOp({ ...decl, dialect }), parentTable, dialect, keyType);
+  return result;
+}
+
+/**
+ * Attach ONE relation: pluck the parent keys → one child `executeSQL(WHERE fk = ANY(keys))` →
+ * (recurse into grandchildren, keyed off the child rows) → `group` the children onto the parents.
+ * `parentsResult` is the accumulating parent node (nested fields stack); `parentsForKeys` supplies the
+ * dedup key column; `parentTable` names the table the parent-key column lives on (for its de-box type).
+ * Single-key only for now (composite `parentKeys` is a follow-up).
+ */
+function attachRelation(L: ComponentFns, parentsResult: Recorded, parentsForKeys: Recorded, op: RelationOp, parentTable: string, dialect: DialectName, keyType?: KeyTypeResolver): Recorded {
+  const parentKey = op.parentKey ?? '';
+  const targetKey = op.targetKey ?? '';
+  const pluck = L.pluck as (p: Record<string, unknown>) => Recorded & { as(t: unknown): Recorded };
+  const executeSQL = L.executeSQL as (p: Record<string, unknown>) => Recorded;
+  const group = L.group as (p: Record<string, unknown>) => Recorded;
+  // Key array is an opaque transport value (bc#156): stamp its element type via `.as` from the parent
+  // key column's de-box scalar (the SAME `static columns` de-box SoT the read projection uses). Without
+  // a resolver the element type defaults to `float` (a JS-number key) — the common INT-key shape.
+  const elem = keyType !== undefined ? keyType(parentTable, parentKey) : 'float';
+  const ids = pluck({ rows: parentsForKeys, col: parentKey }).as({ arr: elem });
+  // A relation child fetch is a READ (`write:false`, non-RETURNING) — the executeSQL leaf requires the
+  // full read intent port set, same as `emitRead`.
+  // The child fetch is a READ: carry `readColumns` (child table + projection) so `lowerReadColumns`
+  // stamps its outType — the SAME #59 mechanism as the primary `emitRead`, applied to the relation
+  // child, so the native de-box types the child rows (and `group` nests a typed child list, not empty).
+  const childPortObj: Record<string, unknown> = { sql: op.sql, params: [ids], write: false, returning: false, bigint: false };
+  if (op.targetTable !== undefined && op.select !== undefined) childPortObj.readColumns = { table: op.targetTable, cols: [...op.select] };
+  let children = executeSQL(childPortObj);
+  // The grandchild's parent-key column lives on THIS relation's child table (`op.targetTable`).
+  for (const gc of op.childRelations ?? []) children = attachRelation(L, children, children, gc, op.targetTable ?? parentTable, dialect, keyType);
+  return group({ parents: parentsResult, children, pk: parentKey, fk: targetKey, into: op.name, single: op.kind !== 'hasMany' });
 }
 
 /** Assemble the `Count` ports (`table`, then optional `where`) — external to the scanned frame. */
@@ -273,9 +466,25 @@ export function compileReadBundle(
   columnsOptions?: DeriveColumnsOptions,
   relations?: readonly RelationDecl[],
 ): SqlBundle {
-  const columns = deriveModelColumns(modelClass, columnsOptions);
-  const contract = compileEager(name, fn, { columns });
+  const contract = compileReadContract(modelClass, name, fn, dialect, columnsOptions);
   return compileBundle(contract, name, relations, dialect, undefined, contract.resolveColumnType);
+}
+
+/**
+ * Compile a decorated model's read into the {@link BehaviorModelContract} (the authored op-independent
+ * leaf-graph IR) — the SSoT the new sync ({@link import('./runtime').executeBehavior}) and async
+ * ({@link import('./runtime').executeBehaviorAsync}) read paths run via `bindBehaviors`. Derives the
+ * model's `static columns` and lowers `fn` through `compileEager` (the single compile path). Shared by
+ * {@link compileReadBundle} (legacy bundle surface) so there is one read-authoring derivation.
+ */
+export function compileReadContract(
+  modelClass: ModelClassLike,
+  name: string,
+  fn: EagerBehavior,
+  dialect: DialectName = 'sqlite',
+  columnsOptions?: DeriveColumnsOptions,
+): BehaviorModelContract {
+  return compileEager(name, fn, { columns: deriveModelColumns(modelClass, columnsOptions), dialect });
 }
 
 // ── 3. Write authoring generation (create / createMany / update / updateMany / delete) ──────────
@@ -296,10 +505,11 @@ export interface InsertAuthoringSpec {
 }
 
 /** Build the eager `fn($, L)` a plain `create` lowers to: `L.Insert({ table, values.*, sqlCast.*?, returning? })`. */
-export function createAuthoring(table: string, spec: InsertAuthoringSpec): EagerBehavior {
+export function createAuthoring(table: string, spec: InsertAuthoringSpec, dialect: DialectName = 'sqlite'): EagerBehavior {
   // Port assembly (branching on spec presence) lives in the external {@link insertPorts} helper so the
-  // scanned closure body stays free of native control syntax — see {@link findAuthoring}.
-  return ($: Recorded, L: ComponentFns) => L.Insert(insertPorts(table, spec, $));
+  // scanned closure body stays free of native control syntax — see {@link findAuthoring}. The op lowers
+  // to ONE op-independent `executeSQL` write node via {@link emitWrite} (#141).
+  return ($: Recorded, L: ComponentFns) => emitWrite(L, 'Insert', insertPorts(table, spec, $), dialect);
 }
 
 function insertPorts(table: string, spec: InsertAuthoringSpec, $: Recorded): Record<string, unknown> {
@@ -316,8 +526,9 @@ export function updateAuthoring(
   set: ($: Recorded) => Record<string, unknown>,
   where: ($: Recorded) => readonly unknown[],
   opts: { returning?: string; sqlCast?: Readonly<Record<string, string>> } = {},
+  dialect: DialectName = 'sqlite',
 ): EagerBehavior {
-  return ($: Recorded, L: ComponentFns) => L.Update(updatePorts(table, set, where, opts, $));
+  return ($: Recorded, L: ComponentFns) => emitWrite(L, 'Update', updatePorts(table, set, where, opts, $), dialect);
 }
 
 function updatePorts(
@@ -339,8 +550,9 @@ export function deleteAuthoring(
   table: string,
   where: ($: Recorded) => readonly unknown[],
   returning?: string,
+  dialect: DialectName = 'sqlite',
 ): EagerBehavior {
-  return ($: Recorded, L: ComponentFns) => L.Delete(deletePorts(table, where, $, returning));
+  return ($: Recorded, L: ComponentFns) => emitWrite(L, 'Delete', deletePorts(table, where, $, returning), dialect);
 }
 
 function deletePorts(
@@ -372,7 +584,7 @@ export function compileCommandBundle(
   columnsOptions?: DeriveColumnsOptions,
 ): SqlBundle {
   const columns = deriveModelColumns(modelClass, columnsOptions);
-  const contract = compileEager(name, fn, { columns });
+  const contract = compileEager(name, fn, { columns, dialect });
   return compileWriteBundle(contract, name, writes, phase, dialect, contract.resolveColumnType);
 }
 
@@ -428,6 +640,30 @@ export function compileDeleteBundle(
   dialect: DialectName = 'sqlite',
 ): SqlBundle {
   return compileDeleteManyBundle(name, options, dialect);
+}
+
+/**
+ * Build a {@link KeyTypeResolver} from a decorated model's `static columns` SoT — `(table, column) →`
+ * the de-box bc scalar of that key column ({@link import('./coltype').keyArrayElemScalar}). Threaded into
+ * {@link relationReadAuthoring} so each relation's `pluck` key array is stamped with the type its
+ * READ-materialized key value carries. Returns `undefined` when the model declares no columns.
+ */
+export function relationKeyTypeResolver(
+  modelClass: ModelClassLike,
+  columnsOptions?: DeriveColumnsOptions,
+): KeyTypeResolver | undefined {
+  const columns = deriveModelColumns(modelClass, columnsOptions);
+  if (Object.keys(columns).length === 0) return undefined;
+  return (table: string, column: string) => {
+    const sqlType = columns[table]?.[column];
+    if (sqlType === undefined) {
+      throw new Error(
+        `decorator-adapter: relation key column '${table}.${column}' has no declared type in the model's ` +
+          `static columns — cannot stamp the key array's de-box element type (no-assume, no-fallback).`,
+      );
+    }
+    return keyArrayElemScalar(sqlType);
+  };
 }
 
 /** The fail-closed column-type resolver for a decorated model (its `static columns` SoT), or `undefined` if it has no columns. */

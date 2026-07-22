@@ -200,6 +200,30 @@ export function sqlTypeToMaterializeClass(sqlType: string): MaterializeClass {
 }
 
 /**
+ * The bc scalar of a de-boxed READ KEY value — the element type a relation key-array (`pluck` → `.as`)
+ * carries when it is bound to `= ANY($1)` / `json_each(?)` (#141, spec §4.1). A key array is an opaque
+ * transport value list, so its bc element tag is the JS type of the READ-materialized key cell, NOT the
+ * column's `sqlTypeToBcScalar` outType: an `int32` column materializes to a JS `number` (bc `float`),
+ * a `BIGINT`/`int64` to a decimal STRING (bc `string`), a `date` to a string, a `bool` to a boolean.
+ * Derived by composing {@link sqlTypeToMaterializeClass} (the read de-box class) with the base scalar,
+ * so it stays the SINGLE type-system SoT — no hand-rolled type table at the relation call site.
+ */
+export function keyArrayElemScalar(sqlType: string): BcScalar {
+  switch (sqlTypeToMaterializeClass(sqlType)) {
+    case 'int32':
+      return 'float'; // materializes to a JS number → bc float
+    case 'int64':
+    case 'date':
+      return 'string'; // materializes to a decimal / TZ string → bc string
+    case 'bool':
+      return 'bool';
+    case 'passthrough':
+      // float stays a JS number (bc float); text / uuid / decimal-as-string / json are all bc string.
+      return sqlTypeToBcScalar(sqlType) === 'float' ? 'float' : 'string';
+  }
+}
+
+/**
  * Coerce ONE raw driver cell to the JS form its {@link MaterializeClass} declares (issue #59 TS
  * read-path de-box). NULL passes through (nullable columns). This is driver-agnostic: it accepts
  * whatever form each driver returned for the class and normalizes it —

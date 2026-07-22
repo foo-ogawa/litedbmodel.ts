@@ -33,7 +33,7 @@
  */
 
 import { evaluateExpression, type Scope, type Value } from 'behavior-contracts';
-import { assembleMakeSQL, type MakeSQL } from './makesql';
+import { assembleMakeSQL } from './makesql';
 import { sqliteInsertJson, mysqlInsertJson, sqliteUpdateManyJson, mysqlUpdateManyJson } from './json-batch';
 import { postgresSqlBuilder } from '../../drivers/PostgresSqlBuilder';
 import { sqlTypeToBcScalar, sqlTypeToMaterializeClass, type ColumnTypeResolver } from '../coltype';
@@ -45,14 +45,14 @@ import {
   type AsyncExecutionContext,
   type PooledAsyncContext,
   type SqliteDriver,
-  execute as seamExecute,
-  run as seamRun,
   executeAsync as seamExecuteAsync,
   runAsync as seamRunAsync,
   contextForDriver,
   withTransactionAsync,
+  withTransactionSync,
 } from '../exec-context';
-import { type TransactionOptions, runInTransactionScope, checkWriteAllowed } from '../tx-options';
+import { executeSQL, type LeafContext, type AsyncLeafContext } from '../leaves';
+import { type TransactionOptions, checkWriteAllowed } from '../tx-options';
 import { isConnectionError } from '../../connection-errors';
 import { DBConditions, type ConditionObject } from '../../DBConditions';
 import {
@@ -126,8 +126,8 @@ export interface TxOp {
   readonly pk?: { readonly columns: readonly string[]; readonly autoInc: string | null };
   /**
    * NATIVE-CODEGEN typing metadata (E5/#120 — the RETURNING-chained tx chain). Additive: the runtime
-   * tx ({@link executeTransaction}) IGNORES it; the codegen chain lowering
-   * ({@link import('../codegen').lowerTransactionForNativeChain}) reads it to type each statement's
+   * tx ({@link executeTransaction}) IGNORES it; the bc native-codegen chain lowering
+   * (bc `generateModule`, rust/go typed-native emitter) reads it to type each statement's
    * native param ports + its produced-row struct WITHOUT re-parsing the rendered SQL. The SHARED
    * {@link compileWriteNode} emits it from the structured ports it already has (one compiler feeds both
    * the runtime and the codegen chain). Present on a single-statement Insert/Update/Delete op; absent
@@ -727,19 +727,24 @@ export function compileWriteNode(node: WriteNodeLike, dialect: MakeSQLDialect = 
         const writeMeta = { table, bindColumns: columns, returning: returningColumns(ports), batch: true };
         return { sql: shape.sql, params: Array.from({ length: nQ }, () => marker), ...(pk !== undefined ? { pk } : {}), writeMeta };
       }
+      // The WHERE is either INLINE here (the tx-DAG path passes the recorded where node) or DEFERRED to
+      // the `executeSQL` `where` port (the emitWrite op-builder path — lowered post-compile from recorded
+      // IR, appended by `lowerRecordedWhere`). When deferred, `ports.where` is absent ⇒ emit the base
+      // `UPDATE … SET …` and the post-compile pass appends the WHERE (the op builder guarantees a WHERE).
       const where = lowerWherePort(ports, 'Update');
-      if (where.sql === '') throw new Error(`compileWriteNode: Update requires a 'where' port`);
       // v1 `DBModel._update` emits `<c> = ?::<sqlCast>` PER COLUMN on Postgres (skipping timestamp/date).
       const setClauses = setCols.map((c) => `${c} = ${castPlaceholder(dialect, sqlCastMap, c)}`).join(', ');
-      const sql = `UPDATE ${table} SET ${setClauses} WHERE ${where.sql}${returningTail(ports)}`;
+      const whereTail = where.sql === '' ? '' : ` WHERE ${where.sql}`;
+      const sql = `UPDATE ${table} SET ${setClauses}${whereTail}${returningTail(ports)}`;
       // The `?`s bind the SET columns (in setCols order) then the WHERE columns (`where.columns`).
       const writeMeta = { table, bindColumns: [...setCols, ...where.columns], returning: returningColumns(ports) };
       return { sql, params: [...setCols.map((c) => set[c]), ...where.params], writeMeta };
     }
     case 'Delete': {
+      // As Update: WHERE inline (tx-DAG, recorded where) or deferred to the `executeSQL` `where` port
+      // (emitWrite path, appended post-compile). Absent `ports.where` ⇒ base `DELETE FROM t`.
       const where = lowerWherePort(ports, 'Delete');
-      if (where.sql === '') throw new Error(`compileWriteNode: Delete requires a 'where' port`);
-      const sql = `DELETE FROM ${table} WHERE ${where.sql}${returningTail(ports)}`;
+      const sql = `DELETE FROM ${table}${where.sql === '' ? '' : ` WHERE ${where.sql}`}${returningTail(ports)}`;
       // The `?`s bind the WHERE columns; a DELETE has no SET/VALUES params.
       const writeMeta = { table, bindColumns: where.columns, returning: returningColumns(ports) };
       return { sql, params: where.params, writeMeta };
@@ -1078,16 +1083,28 @@ function toDriverParam(v: Value): unknown {
 }
 
 /**
- * Render a statement's makeSQL op against the tx scope: evaluate each deferred Expression-IR
- * param to a concrete value (bc `evaluateExpression`), build a concrete `makeSQL`, then
- * assemble + render to the dialect placeholder form. This is the SAME assemble/render the read
- * path uses — only the param values come from the tx scope, not a compile-time input.
+ * Evaluate a statement's makeSQL op against the tx scope to RAW `?` SQL + driver-coerced params:
+ * evaluate each deferred Expression-IR param to a concrete value (bc `evaluateExpression`), assemble
+ * the concrete `makeSQL` (splice nested makeSQL), and coerce each param to the driver form
+ * ({@link toDriverParam}). Placeholder render (`?`→`$N`) is NOT done here — it is the transport leaf's
+ * job (`executeSQL`) so a tx body statement rides the SAME op-independent transport as every read/write.
+ * This is the single eval/assemble/coerce for both the sync leaf exec ({@link execStatement}) and the
+ * placeholder-rendered {@link renderStatement} (async path + golden export).
+ */
+function evalAssemble(op: TxOp, scope: Scope): { sql: string; params: unknown[] } {
+  const concrete: unknown[] = op.params.map((p) => evaluateExpression(p, scope));
+  const assembled = assembleMakeSQL({ sql: op.sql, params: concrete });
+  return { sql: assembled.sql, params: assembled.params.map((p) => toDriverParam(p as Value)) };
+}
+
+/**
+ * Render a statement's makeSQL op against the tx scope to the dialect placeholder form ({@link
+ * evalAssemble} + `?`→`$N`). Used by the ASYNC tx path ({@link execStatementAsync}) and the golden
+ * export {@link renderTxStatement}; the SYNC path renders via the transport leaf ({@link execStatement}).
  */
 function renderStatement(op: TxOp, scope: Scope, dialect: MakeSQLDialect): { sql: string; params: unknown[] } {
-  const concrete: unknown[] = op.params.map((p) => evaluateExpression(p, scope));
-  const node: MakeSQL = { sql: op.sql, params: concrete };
-  const assembled = assembleMakeSQL(node);
-  return { sql: renderPlaceholders(assembled.sql, dialect), params: assembled.params.map((p) => toDriverParam(p as Value)) };
+  const { sql, params } = evalAssemble(op, scope);
+  return { sql: renderPlaceholders(sql, dialect), params };
 }
 
 function execStatement(
@@ -1096,17 +1113,15 @@ function execStatement(
   scope: Scope,
   dialect: MakeSQLDialect,
 ): { rows: Record<string, unknown>[]; changes: number } {
-  const { sql, params } = renderStatement(op, scope, dialect);
+  // A tx body statement rides the SAME op-independent transport as every read/write: the `executeSQL`
+  // leaf (placeholder render + param encode + central seam). The tx scope-eval/assemble/coerce is done
+  // first (`evalAssemble`); the leaf receives raw `?` SQL + concrete params. `write:true` ⇒ the tx-owned
+  // connection resolves via `connectionFor` (§3); a SELECT/RETURNING statement reads rows (`returning`
+  // ⇒ the row-returning seam), a bare write runs (the `[{changes,…}]` summary).
+  const { sql, params } = evalAssemble(op, scope);
   const hasReturn = /\bselect\b/i.test(sql.slice(0, 8)) || /\breturning\b/i.test(sql);
-  // Every tx body statement funnels through the central seam (middleware → connectionFor → exec).
-  // A SELECT / RETURNING statement reads rows (execute); a bare write runs (run). The tx's `intent`
-  // is write throughout, so `connectionFor` resolves the tx-owned connection (§3).
-  if (hasReturn) {
-    const rows = seamExecute(ctx, sql, params, { write: true });
-    return { rows, changes: rows.length };
-  }
-  const info = seamRun(ctx, sql, params);
-  return { rows: [], changes: info.changes };
+  const out = executeSQL.fn({ sql, params, write: true, returning: hasReturn, bigint: false }, { exec: ctx, dialect } satisfies LeafContext) as Record<string, unknown>[];
+  return hasReturn ? { rows: out, changes: out.length } : { rows: [], changes: Number(out[0]?.changes ?? 0) };
 }
 
 function gateShortCircuit(gate: GateRule, result: { rows: Record<string, unknown>[]; changes: number }): ShortCircuitReason | null {
@@ -1136,11 +1151,6 @@ function gateShortCircuit(gate: GateRule, result: { rows: Record<string, unknown
  */
 export function executeTransaction(db: DbOrContext, plan: TransactionPlan, input: Scope, dialect: MakeSQLDialect = 'sqlite'): TransactionResult {
   const outer = asContext(db);
-  // Pin ONE connection for the whole transaction (BEGIN…COMMIT on the same conn). For SQLite the
-  // base ctx already owns a single connection; deriving the tx-scoped ctx keeps the contract uniform
-  // with the async per-execution-ownership path so the native ports mirror ONE shape.
-  const ctx = outer.withConnection(outer.connectionFor({ write: true }), true);
-  seamRun(ctx, 'BEGIN', []);
   const executed: string[] = [];
   const scope: Scope = { ...input };
   let entity: Record<string, unknown> | null = null;
@@ -1153,42 +1163,39 @@ export function executeTransaction(db: DbOrContext, plan: TransactionPlan, input
     plan.statements.every((s) => s.gate === undefined && s.binds === undefined && s.role === 'body');
   const returnedRows: Record<string, unknown>[][] = [];
 
+  // The tx boundary is the sync `ctx.transaction` ({@link withTransactionSync}: pin conn → BEGIN →
+  // body → COMMIT/ROLLBACK, inside `runInTransactionScope`). The body runs the derived plan's
+  // statements in order via the `executeSQL` transport leaf ({@link execStatement}); a gate
+  // short-circuit signals `{commit:false}` so the boundary ROLLBACKs but still returns the reason.
   try {
-    // Mark the body "inside a transaction" (guard/nested detection) — the SAME async marker the
-    // async path sets; synchronous `run` keeps it on the current tick.
-    const shortCircuited = runInTransactionScope((): TransactionResult | null => {
-      for (const stmt of plan.statements) {
-        const result = execStatement(ctx, stmt.op, scope, dialect);
-        executed.push(stmt.id);
+    return withTransactionSync<TransactionResult>(
+      outer,
+      (ctx): { commit: boolean; value: TransactionResult } => {
+        for (const stmt of plan.statements) {
+          const result = execStatement(ctx, stmt.op, scope, dialect);
+          executed.push(stmt.id);
 
-        if (stmt.gate !== undefined) {
-          const reason = gateShortCircuit(stmt.gate, result);
-          if (reason !== null) {
-            seamRun(ctx, 'ROLLBACK', []);
-            return { committed: false, shortCircuit: { statementId: stmt.id, reason }, entity: null, executed };
+          if (stmt.gate !== undefined) {
+            const reason = gateShortCircuit(stmt.gate, result);
+            if (reason !== null) {
+              return { commit: false, value: { committed: false, shortCircuit: { statementId: stmt.id, reason }, entity: null, executed } };
+            }
           }
-        }
 
-        if (stmt.id === plan.entityFrom) {
-          entity = result.rows.length > 0 ? result.rows[0] : null;
-          if (entity !== null) scope[ENTITY_ROOT] = entity as unknown as Value;
+          if (stmt.id === plan.entityFrom) {
+            entity = result.rows.length > 0 ? result.rows[0] : null;
+            if (entity !== null) scope[ENTITY_ROOT] = entity as unknown as Value;
+          }
+          if (stmt.binds !== undefined && result.rows.length > 0) {
+            scope[stmt.binds] = result.rows[0] as unknown as Value;
+          }
+          if (isBatch && stmt.role === 'body' && result.rows.length > 0) returnedRows.push(result.rows);
         }
-        if (stmt.binds !== undefined && result.rows.length > 0) {
-          scope[stmt.binds] = result.rows[0] as unknown as Value;
-        }
-        if (isBatch && stmt.role === 'body' && result.rows.length > 0) returnedRows.push(result.rows);
-      }
-      return null;
-    });
-    if (shortCircuited !== null) return shortCircuited;
-    seamRun(ctx, 'COMMIT', []);
-    return { committed: true, entity, executed, ...(returnedRows.length > 0 ? { returnedRows } : {}) };
+        return { commit: true, value: { committed: true, entity, executed, ...(returnedRows.length > 0 ? { returnedRows } : {}) } };
+      },
+      dialect,
+    );
   } catch (e) {
-    try {
-      seamRun(ctx, 'ROLLBACK', []);
-    } catch {
-      /* ROLLBACK best-effort; surface the original failure below */
-    }
     throw mapSqliteError(e);
   }
 }
@@ -1255,10 +1262,15 @@ async function execStatementAsync(
   scope: Scope,
   dialect: MakeSQLDialect,
 ): Promise<{ rows: Record<string, unknown>[]; changes: number }> {
-  const { sql, params } = renderStatement(op, scope, dialect);
-  const hasReturn = /\bselect\b/i.test(sql.slice(0, 8)) || /\breturning\b/i.test(sql);
+  // Eval value-specs + assemble to RAW `?` SQL + coerced params (the SSoT `evalAssemble`, shared with
+  // the sync path). For MySQL the placeholder form IS `?` (renderPlaceholders is identity), so the
+  // emulation below reads the same text; the general path lets the leaf render `?`→`$N`.
+  const { sql, params } = evalAssemble(op, scope);
 
   if (dialect === 'mysql' && /\breturning\b/i.test(sql)) {
+    // MySQL has no native RETURNING: emulate write→re-select (an inherent multi-statement shape, NOT
+    // the renderStatement direct path). The base write + each re-select ride the async seam directly
+    // because they are a coordinated pair keyed by the write's insertId — not a single leaf call.
     const retMatch = /\s+RETURNING\s+(.+?)\s*$/is.exec(sql)!;
     const cols = stripMysqlPkHint(retMatch[1]).trim();
     const writeSql = stripMysqlPkHint(sql.slice(0, retMatch.index));
@@ -1287,12 +1299,12 @@ async function execStatementAsync(
     return { rows, changes: rows.length };
   }
 
-  if (hasReturn) {
-    const rows = await seamExecuteAsync(ctx, sql, params, { write: true });
-    return { rows, changes: rows.length };
-  }
-  const info = await seamRunAsync(ctx, sql, params);
-  return { rows: [], changes: info.changes };
+  // GENERAL async statement: rides the SAME op-independent `executeSQL` transport leaf (async branch)
+  // as every read/write — placeholder render + param encode + async seam inside the leaf. A
+  // SELECT/RETURNING reads rows; a bare write returns the `[{changes,…}]` summary.
+  const hasReturn = /\bselect\b/i.test(sql.slice(0, 8)) || /\breturning\b/i.test(sql);
+  const out = (await (executeSQL.fn({ sql, params, write: true, returning: hasReturn, bigint: false }, { execAsync: ctx, dialect } satisfies AsyncLeafContext) as unknown as Promise<Array<Record<string, unknown>>>));
+  return hasReturn ? { rows: out, changes: out.length } : { rows: [], changes: Number(out[0]?.changes ?? 0) };
 }
 
 /**

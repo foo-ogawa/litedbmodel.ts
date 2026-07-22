@@ -120,23 +120,17 @@ export {
 } from './authoring-compile';
 export type { AuthoredMakeSQL, RelationMapInput } from './authoring-compile';
 
-// The STATIC, portable makeSQL bundle + runtime (design #45 owner-confirmed static-bundle):
-// symbolic compile (no concrete input) → deferred value-specs + skip expression, bc-evaluated
-// per-input at runtime. The SOLE makeSQL read/compile path (epic #43/#45 Phase B).
+// makeSQL lowering used by the op-independent leaf authoring (#141): `compileSelectNode` (Select/Count
+// → sql+params, consumed by decorator-adapter `emitRead`) + the read-graph compile still feeding the
+// legacy `compileBundle`/`compileReadBundle` bundle surface. The old static-bundle EXEC engine
+// (`executeReadGraph`/`executeReadGraphAsync`/`executeStaticWrite`/`executeStaticBundle`/…) is DELETED.
 export {
-  compileStaticBundle,
   compileSelectNode,
-  executeStaticBundle,
-  executeStaticWrite,
-  executeReadBehavior,
   compileReadGraph,
-  executeReadGraph,
-  executeReadGraphAsync,
-  renderReadPrimary,
 } from './static-bundle';
 export type { StaticBundle, StaticStatement, ValueSpec, ReadGraph, SqlExecutorAsync } from './static-bundle';
 
 // Pooled async executor factories (PG / MySQL) that turn the plan's concurrency into real parallel
 // read-relation DB I/O behind the async seam (#40).
-export { pgPoolExecutor, mysqlPoolExecutor, configurePgDeboxTypeParsers, mysqlDeboxPoolOptions, pgDeboxExecutor, mysqlDeboxExecutor, pgConnectionPool, mysqlConnectionPool, pgPoolFactory, mysqlPoolFactory } from './pool-executor';
+export { configurePgDeboxTypeParsers, mysqlDeboxPoolOptions, pgConnectionPool, mysqlConnectionPool, pgPoolFactory, mysqlPoolFactory } from './pool-executor';
 export type { PgPoolLike, MysqlPoolLike, PgTypesLike, PgModuleLike, Mysql2ModuleLike, PgOwnedPoolLike, PgPoolClientLike, MysqlOwnedPoolLike, MysqlPoolConnLike, PgOwnedPoolWithEnd, MysqlOwnedPoolWithEnd, PgFactoryModuleLike } from './pool-executor';
