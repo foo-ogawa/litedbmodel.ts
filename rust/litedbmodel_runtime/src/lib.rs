@@ -7,6 +7,7 @@ pub mod connection_routing;
 pub mod dialect;
 pub mod driver;
 pub mod errors;
+pub mod grouping;
 pub mod exec_context;
 pub mod middleware;
 pub mod relation;
@@ -69,6 +70,9 @@ pub use codegen_exec::{
     ArrayParamShape, ConnSource, ExecMode, RtNum, RtProbe, SkipFrag, ToWireArray, ToWireParam,
     Wire,
 };
+// The shared relation-grouping CORE (#141) — the ONE Value-based grouping SSoT (twin of the TS
+// `src/scp/grouping.ts`), consumed by the op-agnostic wire leaves AND the runtime relation path.
+pub use grouping::{attach_to_parent, dedupe_key_tuples, group_by_key, key_identity};
 pub use relation::{execute_relation_batch, hydrate_children, IntoKeyTuple};
 pub use sql_render::render_placeholders;
 pub use tx_options::{

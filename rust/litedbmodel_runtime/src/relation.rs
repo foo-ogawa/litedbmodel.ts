@@ -7,29 +7,10 @@ use behavior_contracts::Value;
 use crate::codegen_exec::{wp, ArrayParamShape, ToWireParam};
 use crate::errors::{LimitExceededError, RuntimeError, LIMIT_CONTEXT_RELATION};
 use crate::exec_context::{self, ExecutionContext, StatementIntent};
+// Key identity is the SSoT grouping core (#141) — one Value-based `key_identity` for the whole crate
+// (twin of TS `src/scp/grouping.ts`); this module CONSUMES it (no second copy).
+use crate::grouping::key_identity;
 use crate::sql_render::{render_placeholders, resolve_pg_array_cast};
-
-pub(crate) fn key_identity(values: &[Value]) -> String {
-    values
-        .iter()
-        .map(stringify_key)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn stringify_key(value: &Value) -> String {
-    match value {
-        Value::Null => "null".into(),
-        Value::Bool(value) => value.to_string(),
-        Value::Int(value) => value.to_string(),
-        Value::Float(value) if value.fract() == 0.0 && value.is_finite() => {
-            (*value as i64).to_string()
-        }
-        Value::Float(value) => value.to_string(),
-        Value::Str(value) => value.clone(),
-        other => format!("{other:?}"),
-    }
-}
 
 pub(crate) fn dedupe_tuples(tuples: &[Vec<Value>]) -> Vec<Vec<Value>> {
     let mut seen = HashSet::new();
