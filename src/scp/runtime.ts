@@ -27,7 +27,7 @@ import { type Scope, type Value, bindBehaviors } from 'behavior-contracts';
 import { deriveContractEffect, type BehaviorModelContract, type Component } from './authoring';
 import { contextForDriver, type AsyncExecutionContext } from './exec-context';
 import type { LeafContext, AsyncLeafContext } from './leaves';
-import { SqlFailure } from './errors';
+import { SqlFailure, mapSqliteError } from './errors';
 import {
   compileRelationOp,
   type RelationDecl,
@@ -209,7 +209,13 @@ export function executeBehavior(
   // `contract.ir` is typed as the UNBRANDED inspection alias (`ComponentGraphIRDoc`) but the runtime
   // value IS the `compileBehaviors` handle bindBehaviors needs (same object, carrying the leaf-impl
   // registry side-channel). Bridge the type identity at the call (value-correct — not an `any` escape).
-  return bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).run(options.entry, withOptionalHeads(contract, options.entry, input));
+  // Driver errors re-surface as a structured {@link SqlFailure} at this execution boundary (spec §11),
+  // mirroring {@link executeTransaction}'s catch — the leaf transport throws the raw driver error.
+  try {
+    return bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).run(options.entry, withOptionalHeads(contract, options.entry, input));
+  } catch (e) {
+    throw mapSqliteError(e);
+  }
 }
 
 /**
@@ -316,7 +322,13 @@ export async function executeBehaviorAsync(
   // Promise `runAsync` awaits. The retired ReadGraph/`executeReadGraphAsync` engine is bypassed. Async
   // read de-box rides the per-connection driver config (mysql2 bigNumberStrings/dateStrings; pg parsers).
   const ctx: AsyncLeafContext = { execAsync: options.execAsync, dialect: options.dialect ?? 'sqlite' };
-  return bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).runAsync(options.entry, withOptionalHeads(contract, options.entry, input));
+  // Driver errors re-surface as a structured {@link SqlFailure} at this boundary (spec §11), as in the
+  // sync {@link executeBehavior} — awaited so an async driver rejection is mapped, not left raw.
+  try {
+    return await bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).runAsync(options.entry, withOptionalHeads(contract, options.entry, input));
+  } catch (e) {
+    throw mapSqliteError(e);
+  }
 }
 
 // ── Write-time relations: Command bundle + 1-tx execution (WS5, #25 — spec §6) ──

@@ -24,6 +24,8 @@ import {
   components,
   publishBehaviors,
   executeBehavior,
+  emitRead,
+  emitWrite,
   mapSqliteError,
   SqlFailure,
   whereEq,
@@ -75,7 +77,7 @@ class PostQueries extends SemanticBehavior {
   };
   // eq + SKIP-optional (absent-via-refOpt) + range + ORDER BY + LIMIT (coalesce default).
   Search($: In<{ author_id: number; status?: string; since: string; limit?: number }>) {
-    return L.Select({
+    return emitRead(L, 'Select', {
       table: 'posts',
       select: ['id', 'author_id', 'title', 'status'],
       where: [
@@ -85,53 +87,57 @@ class PostQueries extends SemanticBehavior {
       ],
       order: 'id ASC',
       limit: coalesce(opt($.limit), 20),
-    });
+    }, 'sqlite');
   }
 
   // IN-list expansion.
   ByIds($: In<{ ids: number[] }>) {
-    return L.Select({
+    return emitRead(L, 'Select', {
       table: 'posts',
       select: ['id', 'title'],
       where: [whereIn(inColumn($, 'id'), $.ids)],
       order: 'id ASC',
-    });
+    }, 'sqlite');
   }
 }
 
 class PostCommands extends SemanticBehavior {
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT' },
+    counters: { id: 'INTEGER', n: 'INTEGER' },
+  };
   Create($: In<{ author_id: number; title: string; created_at: string }>) {
-    return L.Insert({
+    return emitWrite(L, 'Insert', {
       table: 'posts',
       'values.author_id': $.author_id,
       'values.title': $.title,
       'values.created_at': $.created_at,
       returning: 'id, author_id, title',
-    });
+    }, 'sqlite');
   }
 
   Rename($: In<{ id: number; title: string }>) {
-    return L.Update({
+    return emitWrite(L, 'Update', {
       table: 'posts',
       'set.title': $.title,
       where: [whereEq($.id, $.id)],
       returning: 'id, title',
-    });
+    }, 'sqlite');
   }
 
   Remove($: In<{ id: number }>) {
-    return L.Delete({ table: 'posts', where: [whereEq($.id, $.id)], returning: 'id' });
+    return emitWrite(L, 'Delete', { table: 'posts', where: [whereEq($.id, $.id)], returning: 'id' }, 'sqlite');
   }
 
   // Bumps a counter using a SET expression (add over the current value) — closed-set
   // Expression IR computed server-side (the SET slot binds `n + bump`).
   Bump($: In<{ id: number; n: number; bump: number }>) {
-    return L.Update({
+    return emitWrite(L, 'Update', {
       table: 'counters',
       'set.n': add($.n, $.bump),
       where: [whereEq($.id, $.id)],
       returning: 'id, n',
-    });
+    }, 'sqlite');
   }
 }
 
@@ -243,14 +249,14 @@ describe('WS3 runtime — relation .map (bc drives iteration; runtime executes S
       users: { id: 'INTEGER', name: 'TEXT' },
     };
     Feed($: In<{ author_id: number }>) {
-      const posts = L.Select({
+      const posts = emitRead(L, 'Select', {
         table: 'posts',
         select: ['id', 'author_id', 'title'],
         where: [whereEq($.author_id, $.author_id)],
         order: 'id ASC',
-      });
+      }, 'sqlite');
       const authors = posts.map(($p: Recorded) =>
-        L.Select({ table: 'users', select: ['id', 'name'], where: [whereEq($p.id, $p.author_id)] }),
+        emitRead(L, 'Select', { table: 'users', select: ['id', 'name'], where: [whereEq($p.id, $p.author_id)] }, 'sqlite'),
       );
       return { posts, authors };
     }
