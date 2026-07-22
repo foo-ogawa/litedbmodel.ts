@@ -5,6 +5,7 @@
 package litedbmodel_runtime
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime/wire"
@@ -106,5 +107,65 @@ func TestGroupChildrenDistributesPerParent(t *testing.T) {
 	}
 	if got := postsLen(2); got != 0 {
 		t.Fatalf("parent id=3 expected 0 posts, got %d", got)
+	}
+}
+
+// A batch write's opaque `rows` array param (createMany/upsertMany/updateMany) rides as ONE JSON array
+// string through leafParam — the `json_each(?)` batch payload the generated batch SQL binds (SAME
+// encoding as the relation bindKeys JSON). Key order is preserved (jsStringify = insertion order).
+// (#141 slice-2 piece 3 — the go param-encoding half of rust's baked 1-statement batch.)
+func TestLeafParam_BatchRowsArrayEncoding(t *testing.T) {
+	rows := wire.WireListOf([]wire.WireValue{
+		wire.WireRowOf([]wire.WireField{
+			{Key: "email", Val: wire.WireStr("a@x")},
+			{Key: "name", Val: wire.WireStr("A")},
+		}),
+		wire.WireRowOf([]wire.WireField{
+			{Key: "email", Val: wire.WireStr("b@x")},
+			{Key: "name", Val: wire.WireStr("B")},
+		}),
+	})
+	got := leafParam(rows)
+	want := `[{"email":"a@x","name":"A"},{"email":"b@x","name":"B"}]`
+	if s, ok := got.(string); !ok || s != want {
+		t.Fatalf("batch rows leafParam = %#v, want JSON %q", got, want)
+	}
+}
+
+// A scalar param binds directly (NOT JSON-wrapped) — only an array param (batch rows / plucked keys)
+// serializes to a JSON string. Guards the leafParam array-vs-scalar branch.
+func TestLeafParam_ScalarBindsDirect(t *testing.T) {
+	if got := leafParam(wire.WireStr("user@x")); got != "user@x" {
+		t.Fatalf("scalar string leafParam = %#v, want the bare value", got)
+	}
+	// an integral wire number binds as int64 (toDriverParam collapses a whole float to the integer slot).
+	if got := leafParam(wire.WireInt(42)); got != int64(42) {
+		t.Fatalf("scalar int leafParam = %#v, want int64(42)", got)
+	}
+}
+
+// CheckFindHardLimit (#141 slice-2 piece 5): count > cap ⇒ a *LimitExceededError with the find-context
+// message; count ≤ cap ⇒ nil. Delegates to the shared checkHardLimit SSoT (twin of rust
+// check_find_hard_limit); NOT wired into the transport (the 19 ops bake explicit LIMITs).
+func TestCheckFindHardLimit(t *testing.T) {
+	if err := CheckFindHardLimit(100, 100, "benchmark_users"); err != nil {
+		t.Fatalf("count == limit must pass, got %v", err)
+	}
+	err := CheckFindHardLimit(100, 101, "benchmark_users")
+	if err == nil {
+		t.Fatal("count > limit must error")
+	}
+	var lim *LimitExceededError
+	if !errors.As(err, &lim) {
+		t.Fatalf("want *LimitExceededError, got %T", err)
+	}
+	if lim.Context != LimitContextFind || lim.Model != "benchmark_users" || lim.Limit != 100 || lim.Count != 101 {
+		t.Fatalf("unexpected limit error fields: %+v", lim)
+	}
+	want := "Query limit exceeded: find() on benchmark_users returned more than 100 records, " +
+		"but limit is 100. This usually indicates a missing WHERE clause or an N+1 query pattern. " +
+		"Set a higher limit or use pagination."
+	if lim.Error() != want {
+		t.Fatalf("find-context message mismatch:\n got: %s\nwant: %s", lim.Error(), want)
 	}
 }

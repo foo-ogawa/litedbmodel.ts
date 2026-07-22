@@ -216,13 +216,9 @@ func runRelationOpCtx(ctx *ExecutionContext, op RelationOp, parents []bc.Value) 
 	// TARGET TABLE, Relation = the relation name. Absent op.HardLimit ⇒ disabled / intrinsic-limit
 	// relation ⇒ no check. One guard point → both eager (ReadBundle) and lazy (StitchRelation). The
 	// SAME check the TS reference (runRelationOp) + the rust/py/php ports run off the same field.
-	if op.HardLimit != nil && len(rows) > *op.HardLimit {
-		return nil, &LimitExceededError{
-			Limit:    *op.HardLimit,
-			Count:    len(rows),
-			Context:  LimitContextRelation,
-			Model:    op.TargetTable,
-			Relation: op.Name,
+	if op.HardLimit != nil {
+		if err := checkHardLimit(*op.HardLimit, len(rows), LimitContextRelation, op.TargetTable, op.Name); err != nil {
+			return nil, err
 		}
 	}
 	// Group the fetched child rows by their target-key tuple identity via the shared CORE (GroupByKey).

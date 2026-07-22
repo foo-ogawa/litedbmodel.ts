@@ -5,11 +5,12 @@
 // extraction), `GroupChildren` (relation parent grouping). Post-bc#164 (wire-passthrough) each node's
 // result rides as a BC-OWNED `wire.WireValue`, so these three transports are the ONLY boundary between
 // the wire plane and the runtime: they convert `wire.WireValue` ↔ bc `Value`/`*Obj` and delegate the
-// relation shaping to the SHARED grouping CORE (grouping.go `Pluck`/`Group`). There is NO second
-// grouping implementation here — Pluck/Group ARE the single source of truth (leaves.go consumers of the
-// CORE); this file only bridges wire ↔ Value at the transport edge and issues SQL through the central
-// [Execute]/[Run] seam. This is the Go twin of the rust `execute_sql`/`pluck_keys`/`group_children`
-// leaf (same op-agnostic wire contract), NOT the py/php native-record method leaf.
+// relation shaping to the SHARED grouping CORE (grouping.go `DedupeKeyTuples`/`GroupByKey`/
+// `AttachToParent`). There is NO second grouping implementation here — that core is the single source
+// of truth (the runtime lazy path in relation.go consumes the SAME functions); this file only bridges
+// wire ↔ Value at the transport edge and issues SQL through the central [Execute]/[Run] seam. This is
+// the Go twin of the rust `execute_sql`/`pluck_keys`/`group_children` leaf (same op-agnostic wire
+// contract), NOT the py/php native-record method leaf.
 //
 // CONNECTION: the covered module calls these as free functions (bc's transport contract carries no db
 // handle), so the consumer BINDS the target connection once via [BindLeafTransport] before driving the
@@ -71,10 +72,17 @@ func ExecuteSQL(bigint bool, params []wire.WireValue, returning bool, sql string
 	}
 	text := renderPlaceholders(sql, leafDialect)
 	if write && !returning {
-		if _, err := Run(leafExecCtx, text, args, WriteIntent()); err != nil {
+		info, err := Run(leafExecCtx, text, args, WriteIntent())
+		if err != nil {
 			return wire.WireNull(), err
 		}
-		return wire.WireListOf(nil), nil
+		// The affected-write summary row — a uniform one-row `[{changes,lastInsertRowid}]` list (the
+		// TS `writeSummary` / rust `execute_sql` shape), so every leaf output is a List of Rows.
+		summary := wire.WireRowOf([]wire.WireField{
+			{Key: "changes", Val: wire.WireInt(info.Changes)},
+			{Key: "lastInsertRowid", Val: wire.WireInt(info.LastInsertRowid)},
+		})
+		return wire.WireListOf([]wire.WireValue{summary}), nil
 	}
 	rows, err := Execute(leafExecCtx, text, args, ReadIntent())
 	if err != nil {
@@ -85,6 +93,28 @@ func ExecuteSQL(bigint bool, params []wire.WireValue, returning bool, sql string
 		items[i] = valueToWire(r)
 	}
 	return wire.WireListOf(items), nil
+}
+
+// WithAmbientTransaction runs `body` inside ONE transaction on `db`, threading the tx-owned connection
+// as the AMBIENT the free-function [ExecuteSQL] resolves — so a bc-generated tx runner (which calls
+// ExecuteSQL directly, taking no db handle) executes every statement ON the transaction. BEGIN →
+// run body under the tx-pinned ambient → COMMIT on ok / ROLLBACK on a body error (atomicity). This is
+// the CONSUMER's tx-boundary responsibility (NOT a bc feature, NOT emitted into the generated runner);
+// it adds NO tx engine — it reuses the existing tx combinator ([WithTransaction], which owns BEGIN/
+// COMMIT/ROLLBACK through the central seam) and only swaps the ambient leaf ctx for the body span.
+// Go twin of the rust `with_ambient_transaction` leaf. Requires a bound transport ([BindLeafTransport]).
+func WithAmbientTransaction(db TxDB, body func() error) error {
+	base := leafExecCtx
+	if base == nil {
+		return fmt.Errorf("leaf transport: WithAmbientTransaction needs a bound transport (call BindLeafTransport first)")
+	}
+	prev := leafExecCtx
+	_, err := WithTransaction(base, db, func(txCtx *ExecutionContext) (struct{}, error) {
+		leafExecCtx = txCtx                   // the tx-owned ctx is the ambient the covered runner's ExecuteSQL resolves…
+		defer func() { leafExecCtx = prev }() // …restored on COMMIT / ROLLBACK / panic (scopes restore)
+		return struct{}{}, body()
+	})
+	return err
 }
 
 // PluckKeys extracts the deduped, non-null key array from `rows` over the ordered key-column TUPLE

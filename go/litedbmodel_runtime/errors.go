@@ -111,6 +111,29 @@ func (e *LimitExceededError) Error() string {
 		where, countPhrase, e.Limit)
 }
 
+// checkHardLimit is the SHARED post-fetch runaway check (SSoT, spec §E-2 / epic #74) — the ONE
+// `count > limit ⇒ *LimitExceededError` primitive BOTH the native-read find guard ([CheckFindHardLimit])
+// and the relation-batch guard (relation.go `runRelationOpCtx`, `op.HardLimit`) call, so no path
+// re-implements the comparison or the error assembly (the message is rendered by `Error()`). The caller
+// supplies the resolved `limit` (the cap baked on the compiled artifact), the fetched `count`, and the
+// context/model/relation identity. nil when within the cap. Go twin of rust `LimitExceededError::check`.
+func checkHardLimit(limit, count int, context LimitExceededContext, model, relation string) error {
+	if count > limit {
+		return &LimitExceededError{Limit: limit, Count: count, Context: context, Model: model, Relation: relation}
+	}
+	return nil
+}
+
+// CheckFindHardLimit is the FIND-context runaway guard for the native read plane (rust
+// `check_find_hard_limit`): a top-level read injects `LIMIT hardLimit + 1`, then this checks the fetched
+// `count` against the cap — `count > limit ⇒ *LimitExceededError`, else nil. Delegates the comparison to
+// the shared [checkHardLimit] SSoT (relation ctx has no bearing here). It is an AVAILABLE guard the
+// consumer invokes around a find-hard-limit read; like rust's, it is NOT wired into the op-agnostic
+// transport (the current 19 ops bake explicit bounded LIMITs into SQL, so none inject a find cap).
+func CheckFindHardLimit(limit, count int, model string) error {
+	return checkHardLimit(limit, count, LimitContextFind, model, "")
+}
+
 // Unwrap re-exposes the original wrapped driver error (Phase B / #83) so errors.As can reach a
 // concrete live-DB error type (*pgconn.PgError / *mysql.MySQLError) through the mapped SqlFailure —
 // keeping IsRetryableTxError's typed SQLSTATE/errno classifier LOAD-BEARING (not dead code behind the
