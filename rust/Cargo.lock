@@ -959,14 +959,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "litedbmodel_interpreter"
-version = "2.1.0"
-dependencies = [
- "behavior-contracts",
- "litedbmodel_runtime",
-]
-
-[[package]]
 name = "litedbmodel_runtime"
 version = "2.1.0"
 dependencies = [
@@ -986,14 +978,6 @@ name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
-
-[[package]]
-name = "livedb_runner"
-version = "2.1.0"
-dependencies = [
- "litedbmodel_interpreter",
- "serde_json",
-]
 
 [[package]]
 name = "lock_api"
@@ -1550,7 +1534,6 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
- "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -2178,14 +2161,6 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
-
-[[package]]
-name = "vectors_runner"
-version = "2.1.0"
-dependencies = [
- "litedbmodel_interpreter",
- "serde_json",
-]
 
 [[package]]
 name = "version_check"

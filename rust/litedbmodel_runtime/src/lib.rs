@@ -1,8 +1,7 @@
-//! Native shared runtime: Driver/exec/Wire/bind/relation primitives and structured errors.
-//! Parser, evaluator, bundle execution, and relation descriptor walking live in the physically
-//! separate `litedbmodel_interpreter` crate, which depends on this crate in one direction only.
+//! Native shared runtime for the typed-native codegen path: Driver/exec seam, the BC-owned Wire
+//! types, the op-agnostic leaves (execute_sql/pluck_keys/group_children), and the grouping SSoT.
+//! rust is native-codegen ONLY — there is no IR-exec interpreter.
 
-pub mod codegen_exec;
 pub mod connection_routing;
 pub mod dialect;
 pub mod driver;
@@ -11,7 +10,6 @@ pub mod grouping;
 pub mod exec_context;
 pub mod leaves;
 pub mod middleware;
-pub mod relation;
 pub mod sql_render;
 pub mod tx_options;
 pub mod value_codec;
@@ -63,17 +61,8 @@ pub use middleware::{
     MethodKind, MethodNext, MiddlewareDescriptor, MiddlewareHandle, RawResult, SqlHook, SqlHookFn,
     SqlNext, StateAny,
 };
-// Native-codegen exec seam (epic #123/#124): the op-agnostic query-exec functions the litedbmodel
-// generated adapter's `node_*` handlers call, plus the `Wire` bridge (`wire_impls!` bridges the
-// module-local wire traits to it). `wire_impls!`/`__wire_probe!`/`__wire_num!` are `#[macro_export]`ed
-// at the crate root.
-pub use codegen_exec::{
-    build_batch_params, build_skip_params, exec, run_transaction, run_transaction_on, wp, wp_array,
-    ArrayParamShape, ConnSource, ExecMode, RtNum, RtProbe, SkipFrag, ToWireArray, ToWireParam,
-    Wire,
-};
 // The shared relation-grouping CORE (#141) — the ONE Value-based grouping SSoT (twin of the TS
-// `src/scp/grouping.ts`), consumed by the op-agnostic wire leaves AND the runtime relation path.
+// `src/scp/grouping.ts`), consumed by the op-agnostic wire leaves.
 pub use grouping::{attach_to_parent, dedupe_key_tuples, group_by_key, key_identity};
 // The op-agnostic wire LEAVES (#141/#164) — the THREE transport symbols the native codegen calls
 // directly (`execute_sql`/`pluck_keys`/`group_children`, leaves.ts `LEAF_TRANSPORT_SYMBOLS`), plus
@@ -84,7 +73,6 @@ pub use leaves::{execute_sql, group_children, pluck_keys, with_ambient_driver};
 pub use wire::{
     BehaviorError, ErrorDetail, ErrorKind, NumProbe, Probe, WireList, WireRow, WireValue,
 };
-pub use relation::{execute_relation_batch, hydrate_children, IntoKeyTuple};
 pub use sql_render::render_placeholders;
 pub use tx_options::{
     begin_statements, check_write_allowed, is_connection_error, is_retryable_tx_error,

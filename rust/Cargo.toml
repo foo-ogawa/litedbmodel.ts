@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["litedbmodel_runtime", "litedbmodel_interpreter", "vectors_runner", "livedb_runner"]
+members = ["litedbmodel_runtime"]
 # The SQLite conformance bar (cargo build/test/check/fmt without -p) must NOT pull the live-DB
 # postgres+mysql crates — livedb_runner (which enables the `livedb` feature) is opt-in via
 # `cargo run -p livedb_runner`. default-members keeps the default build lean (WS7g #36).
-default-members = ["litedbmodel_runtime", "litedbmodel_interpreter", "vectors_runner"]
+default-members = ["litedbmodel_runtime"]
 
 [workspace.package]
 edition = "2021"

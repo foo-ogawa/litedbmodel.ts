@@ -13,8 +13,8 @@ keywords = ["orm", "sql", "runtime", "database"]
 categories = ["database", "api-bindings"]
 
 [dependencies]
-# Native runtime uses only behavior-contracts value/plan primitives; parser and interpreter code live
-# exclusively in the one-way dependent litedbmodel_interpreter crate.
+# Native-codegen runtime uses only behavior-contracts value/plan primitives. rust is native-codegen
+# ONLY — there is no IR-exec interpreter.
 behavior-contracts = { workspace = true, default-features = false }
 # In-process SQLite driver for the conformance bar (real execution — the sanctioned in-proc
 # substitute for docker; #34 AC). `bundled` builds the SQLite amalgamation so no system libsqlite
