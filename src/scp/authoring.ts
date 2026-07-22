@@ -65,7 +65,7 @@ export type MapNode = Extract<BodyNode, { map: unknown }>;
 export type FanoutNode = Extract<BodyNode, { fanout: unknown }>;
 export type CondNode = Extract<BodyNode, { cond: unknown }>;
 export type ComponentRefNode = Exclude<BodyNode, MapNode | FanoutNode | CondNode>;
-import { leafComponents, LEAVES } from './leaves';
+import { leafComponents, LEAVES, spliceWhere } from './leaves';
 import { lowerWherePort } from './makesql/static-bundle';
 import { deriveReadRow, outputType as composeOutputType } from './makesql/outtype';
 import type { PortableType } from 'behavior-contracts';
@@ -421,24 +421,35 @@ function lowerRecordedWhere(ir: ComponentGraphIR, dialect: Dialect): void {
       // Lower per the model's dialect: the IN-list form (PG `= ANY(?)` vs MySQL/SQLite `json_each(?)`)
       // and per-column casts are dialect-specific; the `?`→`$N` render stays the leaf's runtime job.
       const fragments = lowerWherePort(ports, dialect, at);
+      if (fragments.some((f) => f.skip !== undefined)) {
+        // DYNAMIC WHERE (#143 SKIP restore): a SKIP fragment's presence is per-INPUT, so the WHERE is
+        // assembled at RUNTIME by the executeSQL leaf ({@link import('./leaves').assembleDynamicWhere}).
+        // Carry EVERY fragment as a bc expr in the `whereDynamic` plan — a bounded fragment as
+        // `{obj:{sql,params}}`, a SKIP fragment wrapped in `{cond:[present, …, null]}` so bc's `cond`
+        // LAZILY yields `null` (and never evaluates its params) when the guard is false. The base
+        // `sql`/`params` (head + tail + LIMIT) stay intact; the leaf splices the surviving fragments in.
+        const frags = fragments.map((f) => {
+          const obj = { obj: { sql: f.sql, params: { arr: [...f.params] } } };
+          // `f.skip` is `{not:[guard]}` (fragment dropped when truthy); present ⇔ `{not:[f.skip]}`.
+          return f.skip !== undefined ? { cond: [{ not: [f.skip] }, obj, null] } : obj;
+        });
+        ports.whereDynamic = { obj: { frags: { arr: frags } } };
+        delete ports.where;
+        continue;
+      }
+      // BOUNDED WHERE: lower into the static `sql`/`params` at compile (native-lowerable). Splice at the
+      // SQL position — BEFORE the first tail clause — via the SSoT {@link import('./leaves').spliceWhere}
+      // (shared with the runtime dynamic assembler), never appended after the tail.
       let whereSql = '';
       const whereParams: unknown[] = [];
       fragments.forEach((f, i) => {
-        if (f.skip !== undefined) {
-          throw new Error(`scp WHERE (#141): a SKIP/dynamic WHERE fragment at ${at} cannot lower to static sql (dynamic-WHERE runtime assembly is not yet wired; never dropped silently).`);
-        }
         whereSql += (i === 0 ? ' WHERE ' : ' AND ') + f.sql;
         whereParams.push(...f.params);
       });
-      // Splice the WHERE at its SQL position — BEFORE the first tail clause (the base sql is
-      // compile-* controlled, so the tail keyword set is deterministic), never appended after it.
-      const baseSql = String(ports.sql);
-      const tail = /\s+(GROUP BY|ORDER BY|LIMIT|OFFSET|FOR UPDATE|RETURNING)\b/i.exec(baseSql);
-      ports.sql = tail === null ? baseSql + whereSql : baseSql.slice(0, tail.index) + whereSql + baseSql.slice(tail.index);
-      // The base carries NO tail-param when the tail is present here (a `SELECT … WHERE … LIMIT ?`
-      // read passes limit/offset via the tail, appended after the WHERE params); a write's SET params
-      // precede the WHERE and RETURNING has no param — so appending the WHERE params is 1:1 with the
-      // `?` order in every current op. (cte/join head-params + LIMIT `?` is the head/where/tail follow-up.)
+      ports.sql = spliceWhere(String(ports.sql), whereSql);
+      // The base carries NO tail-param when the tail is present here (a bounded `SELECT … WHERE … LIMIT`
+      // inlines the literal limit — see emitRead; a write's SET params precede the WHERE and RETURNING
+      // has no param), so appending the WHERE params is 1:1 with the `?` order in every bounded op.
       const paramsArr = (ports.params as { arr?: unknown[] } | undefined)?.arr;
       if (Array.isArray(paramsArr)) paramsArr.push(...whereParams);
       else ports.params = { arr: whereParams };

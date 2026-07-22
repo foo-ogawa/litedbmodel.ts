@@ -39,6 +39,7 @@ import type { FindFilterSource } from './find-filter-guard';
 import type { ColumnTypeResolver } from './coltype';
 import {
   compileReadGraph,
+  collectRefOptHeads,
   type ReadGraph,
   type StaticStatement,
   type SqliteDb as StaticSqliteDb,
@@ -168,6 +169,25 @@ function writeLabelOf(sql: string): string {
 }
 
 /**
+ * Present-as-null normalize the run input for the leaf path (#143): an OMITTED optional (`refOpt`) input
+ * head is set to `null` so a SKIP guard (`ne(opt($.status), null)`) or optional read drops rather than
+ * throwing — bc's `refOpt` throws `UNKNOWN_BINDING` on an absent HEAD (it only null-propagates
+ * intermediate nulls). The optional heads are the `refOpt` heads of the ENTRY component (SSoT walker
+ * {@link collectRefOptHeads}), the leaf-path replacement for the retired `SqlBundle.optionalHeads`.
+ */
+function withOptionalHeads(contract: BehaviorModelContract, entry: string | undefined, input: Scope): Scope {
+  const component = entry !== undefined ? contract.components.find((c) => c.name === entry) : contract.components[0];
+  if (component === undefined) return input;
+  const heads = new Set<string>();
+  collectRefOptHeads(component.body, heads);
+  collectRefOptHeads((component as { output?: unknown }).output, heads);
+  if (heads.size === 0) return input;
+  const scope: Scope = { ...input };
+  for (const h of heads) if (!Object.prototype.hasOwnProperty.call(scope, h)) scope[h] = null as unknown as Value;
+  return scope;
+}
+
+/**
  * Execute a published behavior contract (WS2 {@link BehaviorModelContract}) end-to-end via the
  * static makeSQL bundle. Returns the component's output (a read Φ output / row list, or a write's
  * RETURNING rows / `[{changes, lastInsertRowid}]` summary).
@@ -189,7 +209,7 @@ export function executeBehavior(
   // `contract.ir` is typed as the UNBRANDED inspection alias (`ComponentGraphIRDoc`) but the runtime
   // value IS the `compileBehaviors` handle bindBehaviors needs (same object, carrying the leaf-impl
   // registry side-channel). Bridge the type identity at the call (value-correct — not an `any` escape).
-  return bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).run(options.entry, input);
+  return bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).run(options.entry, withOptionalHeads(contract, options.entry, input));
 }
 
 /**
@@ -296,7 +316,7 @@ export async function executeBehaviorAsync(
   // Promise `runAsync` awaits. The retired ReadGraph/`executeReadGraphAsync` engine is bypassed. Async
   // read de-box rides the per-connection driver config (mysql2 bigNumberStrings/dateStrings; pg parsers).
   const ctx: AsyncLeafContext = { execAsync: options.execAsync, dialect: options.dialect ?? 'sqlite' };
-  return bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).runAsync(options.entry, input);
+  return bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).runAsync(options.entry, withOptionalHeads(contract, options.entry, input));
 }
 
 // ── Write-time relations: Command bundle + 1-tx execution (WS5, #25 — spec §6) ──

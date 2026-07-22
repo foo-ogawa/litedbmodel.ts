@@ -103,6 +103,51 @@ function jsonNumber(_key: string, value: unknown): unknown {
   return typeof value === 'bigint' ? Number(value) : value;
 }
 
+/**
+ * The SQL tail keywords the dynamic WHERE clause is spliced BEFORE (a WHERE precedes GROUP BY/ORDER
+ * BY/LIMIT/OFFSET/FOR UPDATE/RETURNING). The SSoT for the WHERE splice position — shared by the
+ * COMPILE-time bounded lowering (`authoring.lowerRecordedWhere`) and this RUNTIME dynamic assembler,
+ * so both put the WHERE at the same place regardless of which path (bounded/native vs SKIP/dynamic) runs.
+ */
+const WHERE_TAIL_RE = /\s+(GROUP BY|ORDER BY|LIMIT|OFFSET|FOR UPDATE|RETURNING)\b/i;
+
+/** Splice a ` WHERE …` clause (leading space included, or '') into `baseSql` before its first tail keyword. */
+export function spliceWhere(baseSql: string, whereSql: string): string {
+  if (whereSql === '') return baseSql;
+  const tail = WHERE_TAIL_RE.exec(baseSql);
+  return tail === null ? baseSql + whereSql : baseSql.slice(0, tail.index) + whereSql + baseSql.slice(tail.index);
+}
+
+/**
+ * A per-input DYNAMIC WHERE fragment, as `evalPorts` hands it to the leaf: bc has ALREADY evaluated the
+ * fragment's value-specs (its `params`) and its SKIP presence against the input scope. A SKIP fragment
+ * whose guard was false evaluated (LAZILY — bc's `cond` only evaluates the taken branch) to `null` and
+ * is absent from the list; a present fragment is `{sql, params}` with concrete params. See {@link
+ * import('./authoring').lowerRecordedWhere} for the compile-time construction of the plan.
+ */
+interface DynamicWhereFrag {
+  readonly sql: string;
+  readonly params: readonly unknown[];
+}
+
+/**
+ * Assemble the runtime WHERE from the evaluated `whereDynamic` plan (a read with a SKIP/dynamic
+ * fragment): drop the absent (`null`) fragments, join the surviving ones with ` WHERE `/` AND `, splice
+ * the clause into the base `sql` BEFORE its tail keyword ({@link spliceWhere}), and bind the surviving
+ * fragments' params BEFORE the base params (the WHERE precedes the LIMIT/tail `?`). Restores the shipped
+ * SKIP feature on the op-independent leaf path — bounded reads never carry `whereDynamic` (native-clean).
+ */
+function assembleDynamicWhere(p: { sql: string; params: unknown[]; whereDynamic: { frags?: readonly (DynamicWhereFrag | null)[] } }): { sql: string; params: unknown[] } {
+  const frags = (p.whereDynamic.frags ?? []).filter((f): f is DynamicWhereFrag => f != null);
+  let whereSql = '';
+  const whereParams: unknown[] = [];
+  frags.forEach((f, i) => {
+    whereSql += (i === 0 ? ' WHERE ' : ' AND ') + f.sql;
+    whereParams.push(...f.params);
+  });
+  return { sql: spliceWhere(p.sql, whereSql), params: [...whereParams, ...p.params] };
+}
+
 /** Prepare a statement for the seam: resolve deferred PG cast(s), render `?`→`$N`, encode params. */
 function prepareSql(p: { sql: string; params: unknown[]; write: boolean; connection?: string | null }, dialect: Dialect): { sql: string; bound: unknown[]; intent: StatementIntent } {
   let sql = p.sql;
@@ -197,23 +242,35 @@ export const executeSQL = defineLeaf(
       // / BOOLEAN→boolean; INT32/text/etc. omitted = no coercion). Stamped by `lowerReadColumns` from
       // the model's `static columns`; the fn coerces each output row cell through {@link materializeCell}.
       materializers: { opt: { obj: {} } as const },
+      // DYNAMIC WHERE plan (#143 SKIP restore): `{frags:[…]}` where each element is a bounded fragment
+      // `{sql, params}` or a SKIP fragment `{cond:[present, {sql, params}, null]}`. bc `evalPorts`
+      // evaluates it per-input — a SKIP guard that is false LAZILY yields `null` (bc `cond` only
+      // evaluates the taken branch, so a dropped fragment's params are never evaluated). Stamped by the
+      // post-compile pass (`authoring.lowerRecordedWhere`) ONLY when the recorded WHERE has a SKIP
+      // fragment; a fully-bounded read lowers its WHERE into the static `sql` at compile (native-clean)
+      // and never carries this port. The fn assembles the surviving fragments at runtime.
+      whereDynamic: { opt: { obj: {} } as const },
     },
     output: { obj: {} } as const,
     // `params` carries a heterogeneous value list (the bc#156 opaque-value gap); the element type is
     // a nominal placeholder the ir-exec runtime does not enforce (values flow through opaquely).
     additionalPorts: false,
   },
-  (p: { sql: string; params: unknown[]; write: boolean; returning: boolean; bigint: boolean; connection?: string | null; where?: unknown[] | null; readColumns?: unknown; materializers?: Record<string, MaterializeClass> | null }, ctx: LeafContext | AsyncLeafContext): Array<Record<string, unknown>> => {
+  (p: { sql: string; params: unknown[]; write: boolean; returning: boolean; bigint: boolean; connection?: string | null; where?: unknown[] | null; readColumns?: unknown; materializers?: Record<string, MaterializeClass> | null; whereDynamic?: { frags?: readonly (DynamicWhereFrag | null)[] } | null }, ctx: LeafContext | AsyncLeafContext): Array<Record<string, unknown>> => {
     // The `where`/`readColumns` ports are compile-time-only inputs the post-compile passes lower/strip.
     // If either reaches runtime, that pass did not run — fail closed, never silently drop the predicate
-    // (WHERE) or the read-column de-box (readColumns).
+    // (WHERE) or the read-column de-box (readColumns). A SKIP/dynamic WHERE rides the `whereDynamic` plan
+    // instead (assembled below); a stray `where` port means the bounded lowering was skipped (a bug).
     if (p.where != null) {
-      throw new Error('scp executeSQL: an unlowered `where` port reached runtime — the post-compile WHERE lowering did not run (bounded WHERE must lower to sql+params at compile; dynamic-WHERE runtime assembly is not yet wired).');
+      throw new Error('scp executeSQL: an unlowered `where` port reached runtime — the post-compile WHERE lowering did not run (bounded WHERE must lower to sql+params at compile; a SKIP/dynamic WHERE must ride the `whereDynamic` plan).');
     }
     if (p.readColumns != null) {
       throw new Error('scp executeSQL: an unlowered `readColumns` port reached runtime — the post-compile read-column lowering (#59 de-box) did not run.');
     }
-    const prepared = prepareSql(p, ctx.dialect);
+    // A SKIP/dynamic WHERE assembles its surviving fragments into the effective sql+params at run (the
+    // bc-evaluated `whereDynamic` plan); a bounded read carries no plan and passes `p` through unchanged.
+    const effective = p.whereDynamic != null ? assembleDynamicWhere(p as { sql: string; params: unknown[]; whereDynamic: { frags?: readonly (DynamicWhereFrag | null)[] } }) : p;
+    const prepared = prepareSql({ ...p, sql: effective.sql, params: effective.params }, ctx.dialect);
     const materializers = p.materializers ?? undefined;
     // A NON-returning write (`write && !returning`) uses the `run` seam and yields the affected summary;
     // a RETURNING write (`write && returning`) and every read use the `execute` seam (it yields rows —

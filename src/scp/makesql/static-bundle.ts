@@ -662,8 +662,10 @@ export function compileSelectNode(node: RefLike, dialect: Dialect): StaticStatem
 // ── Optional-head detection (SSoT-driven, mirrors ../runtime.optionalHeadsOf) ──
 
 
-/** Collect every path HEAD accessed via `refOpt` in an Expression IR node. */
-function collectRefOptHeads(node: unknown, into: Set<string>): void {
+/** Collect every path HEAD accessed via `refOpt` in an Expression IR node. The SSoT refOpt-head walker
+ * — consumed by the leaf-path input normalization ({@link import('../runtime').executeBehavior}) so an
+ * omitted optional head is present-as-null (bc's refOpt throws on an absent head). */
+export function collectRefOptHeads(node: unknown, into: Set<string>): void {
   if (node === null || typeof node !== 'object') return;
   if (Array.isArray(node)) {
     for (const e of node) collectRefOptHeads(e, into);
