@@ -27,7 +27,7 @@ import { type Scope, type Value, bindBehaviors } from 'behavior-contracts';
 import type { BehaviorModelContract, Component } from './authoring';
 import { contextForDriver, type AsyncExecutionContext } from './exec-context';
 import type { LeafContext, AsyncLeafContext } from './leaves';
-import { SqlFailure, mapSqliteError } from './errors';
+import { SqlFailure, LimitExceededError, mapSqliteError } from './errors';
 import {
   compileRelationOp,
   type RelationDecl,
@@ -164,6 +164,21 @@ function writeLabelOf(sql: string): string {
 }
 
 /**
+ * Enforce the find-hard-limit runaway guard at the read boundary (Phase E-2 — the twin of the relation
+ * guard in `runRelationOp`, off the `executeSQL` node so native stays byte-unchanged). The primary read
+ * leaf's sql was injected with `LIMIT hardLimit+1` at compile ({@link import('./authoring').lowerFindGuard}),
+ * so a bare row-list output exceeding the cap means the true total EXCEEDS it → throw. Non-array output
+ * (a Φ-wrapped relation read) is not a bare find list — the cap only governs the bare row-list read.
+ */
+function assertFindGuard(contract: BehaviorModelContract, entry: string | undefined, out: Value): void {
+  const name = entry ?? contract.components[0]?.name;
+  const guard = name !== undefined ? contract.findGuards?.[name] : undefined;
+  if (guard !== undefined && Array.isArray(out) && out.length > guard.hardLimit) {
+    throw new LimitExceededError(guard.hardLimit, out.length, 'find', guard.model);
+  }
+}
+
+/**
  * Present-as-null normalize the run input for the leaf path (#143): an OMITTED optional (`refOpt`) input
  * head is set to `null` so a SKIP guard (`ne(opt($.status), null)`) or optional read drops rather than
  * throwing — bc's `refOpt` throws `UNKNOWN_BINDING` on an absent HEAD (it only null-propagates
@@ -207,8 +222,11 @@ export function executeBehavior(
   // Driver errors re-surface as a structured {@link SqlFailure} at this execution boundary (spec §11),
   // mirroring {@link executeTransaction}'s catch — the leaf transport throws the raw driver error.
   try {
-    return bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).run(options.entry, withOptionalHeads(contract, options.entry, input));
+    const out = bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).run(options.entry, withOptionalHeads(contract, options.entry, input));
+    assertFindGuard(contract, options.entry, out); // Phase E-2 read-boundary runaway guard (post-fetch)
+    return out;
   } catch (e) {
+    if (e instanceof LimitExceededError) throw e; // a runaway-guard throw is not a driver error — never map it
     throw mapSqliteError(e);
   }
 }
@@ -272,8 +290,11 @@ export async function executeBehaviorAsync(
   // Driver errors re-surface as a structured {@link SqlFailure} at this boundary (spec §11), as in the
   // sync {@link executeBehavior} — awaited so an async driver rejection is mapped, not left raw.
   try {
-    return await bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).runAsync(options.entry, withOptionalHeads(contract, options.entry, input));
+    const out = await bindBehaviors(contract.ir as Parameters<typeof bindBehaviors>[0], ctx).runAsync(options.entry, withOptionalHeads(contract, options.entry, input));
+    assertFindGuard(contract, options.entry, out); // Phase E-2 read-boundary runaway guard (post-fetch)
+    return out;
   } catch (e) {
+    if (e instanceof LimitExceededError) throw e; // a runaway-guard throw is not a driver error — never map it
     throw mapSqliteError(e);
   }
 }

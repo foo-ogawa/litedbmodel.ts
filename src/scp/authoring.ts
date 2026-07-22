@@ -74,6 +74,7 @@ import type { Dialect } from './makesql/handler';
 import type { DialectName } from './dialect';
 import { assertComponentGraphPortable } from './guard';
 import { failClosedMaterializeResolverFromColumnMap, columnTypeResolverFromColumnMap, type MaterializeResolver, type ColumnTypeResolver } from './coltype';
+import { resolveFindHardLimit } from './limit-config';
 
 /**
  * The CQRS effect vocabulary (spec §2.4 — derived from the graph, never authored). A component is a
@@ -179,6 +180,23 @@ export interface BehaviorModelContract {
    * model declared no `columns`.
    */
   readonly resolveColumnType?: ColumnTypeResolver;
+  /**
+   * The find-hard-limit runaway guard per read method (Phase E-2, epic #74 — relocated from the retired
+   * `resolveFindGuard`). Present for a method whose primary read is a bare row list with NO authored
+   * `LIMIT` when a `findHardLimit` is configured (`resolveFindHardLimit`): the read leaf's static sql was
+   * injected with `LIMIT hardLimit + 1` (bounded fetch), and the read boundary
+   * ({@link import('./runtime').executeBehavior}) throws {@link import('./errors').LimitExceededError}
+   * (`context:'find'`) post-fetch when the row count exceeds the cap. A TS-runtime read-boundary guard —
+   * it never rides the `executeSQL` node contract (native stays byte-unchanged; the relation twin lives
+   * in `runRelationOp` the same way). Absent ⇒ disabled / an authored LIMIT governs / a Count read.
+   */
+  readonly findGuards?: Readonly<Record<string, FindGuard>>;
+}
+
+/** One method's find-hard-limit guard (the cap + the model name for the {@link import('./errors').LimitExceededError}). */
+export interface FindGuard {
+  readonly hardLimit: number;
+  readonly model: string;
 }
 
 /**
@@ -344,6 +362,12 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
   // strips the TS-only `materializers` port. Off ⇒ the TS ir-exec shape (unchanged). See the option doc.
   if (options.nativePassthrough === true) lowerNativePassthrough(ir);
 
+  // Phase E-2 find-hard-limit runaway guard (relocated from the retired `resolveFindGuard`): when a
+  // `findHardLimit` is configured, bake `LIMIT hardLimit + 1` into each capped primary read leaf's sql
+  // (bounded fetch) and record the per-method guard the read boundary enforces post-fetch. For native
+  // codegen the config is unset ⇒ `resolveFindHardLimit()` is null ⇒ no injection ⇒ sql byte-unchanged.
+  const findGuards = lowerFindGuard(ir);
+
   const methods: Record<string, BehaviorMethodSpec> = {};
   for (const component of ir.components) {
     methods[component.name] = {
@@ -367,7 +391,39 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
     methods,
     ...(materializeResolver !== undefined ? { materializeResolver } : {}),
     ...(resolveColumnType !== undefined ? { resolveColumnType } : {}),
+    ...(Object.keys(findGuards).length > 0 ? { findGuards } : {}),
   };
+}
+
+/**
+ * Bake the Phase E-2 find-hard-limit into each capped primary read leaf and return the per-method guard
+ * map (relocated from the retired `resolveFindGuard`). Mirrors the relation twin (`runRelationOp` at
+ * `relation.ts`): the cap is resolved from the SSoT {@link resolveFindHardLimit} (the global config, or
+ * an explicit override). For a component whose PRIMARY read is a bare row-list SELECT (top-level
+ * `executeSQL`, `write:false`, NOT a `COUNT(…)`) carrying NO authored `LIMIT`, inject `LIMIT hardLimit+1`
+ * into its static sql (bounded fetch, exactly as an authored limit lowers) and record `{hardLimit, model}`
+ * — the read boundary throws `LimitExceededError` post-fetch. An authored LIMIT / a Count / disabled cap ⇒
+ * no guard, no injection (byte-unchanged sql — native never configures a cap, so it is a no-op there).
+ */
+function lowerFindGuard(ir: ComponentGraphIR): Record<string, FindGuard> {
+  const cap = resolveFindHardLimit();
+  if (cap === null) return {};
+  const guards: Record<string, FindGuard> = {};
+  for (const component of ir.components) {
+    // The primary read = the first TOP-LEVEL `executeSQL` read leaf (a relation read's child fetches are
+    // inside `.map`; `pluck`/`group` are distinct leaves — so this is the model's own row-list read).
+    const primary = component.body.find(
+      (n) => !('cond' in n) && !('map' in n) && !('fanout' in n) && (n as { component?: string }).component === 'executeSQL' && (n as { ports?: { write?: unknown } }).ports?.write !== true,
+    ) as { ports: Record<string, unknown> } | undefined;
+    if (primary === undefined) continue;
+    const sql = String(primary.ports.sql);
+    // v1 `!opts?.limit`: an authored LIMIT governs (skip). A Count read is a scalar aggregate, not a
+    // row-list find (skip) — mirrors the retired guard's `Select`-only targeting.
+    if (/\bLIMIT\b/i.test(sql) || /^\s*SELECT\s+COUNT\s*\(/i.test(sql)) continue;
+    primary.ports.sql = `${sql} LIMIT ${cap + 1}`; // inline literal, exactly as an authored numeric limit lowers (emitRead)
+    guards[component.name] = { hardLimit: cap, model: component.name };
+  }
+  return guards;
 }
 
 /** An `executeSQL`-bearing node the transient-port lowering passes reach — see {@link executeSqlNodes}. */

@@ -118,6 +118,7 @@ export type {
   ComponentFns,
   BehaviorMethodSpec,
   BehaviorModelContract,
+  FindGuard,
   PublishBehaviorsOptions,
   ModelColumns,
   TypedModelClass,
