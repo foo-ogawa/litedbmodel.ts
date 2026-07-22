@@ -189,10 +189,13 @@ describe('#59 FAIL-CLOSED at registration — a typed read whose projected colum
     expect(() => publishBehaviors(MissingBig)).toThrow(/'big' not declared|not declared on table 't'/i);
   });
 
-  it('a WRITE-only model needs no `columns` (writes are exempt)', () => {
+  it('a WRITE-only model needs no `columns` (non-RETURNING writes are exempt)', () => {
+    // A non-RETURNING write returns no typed rows, so it carries no `readColumns` and needs no
+    // `static columns` — the write columns are never de-boxed (#59: only a projected read row, or a
+    // RETURNING write's returned rows, require the inline column-type declaration).
     class WriteOnly extends SemanticBehavior {
       Make($: { title: unknown }) {
-        return emitWrite(L, 'Insert', { table: 'posts', 'values.title': $.title, returning: 'id' }, 'sqlite');
+        return emitWrite(L, 'Insert', { table: 'posts', 'values.title': $.title }, 'sqlite');
       }
     }
     expect(() => publishBehaviors(WriteOnly)).not.toThrow();

@@ -29,7 +29,10 @@ function crate(source: string) {
 
 describe('native runtime dependency closure', () => {
   it('compiles as a standalone native dependency', () => {
-    expect(crate('pub fn mode() -> litedbmodel_runtime::ExecMode { litedbmodel_runtime::ExecMode::Rows }\n').status).toBe(0);
+    // #141 retired the ir-exec interpreter's `ExecMode` enum (removed in commit 026037c together with
+    // codegen_exec.rs). `StatementIntent` is the current public exec-surface type the runtime exposes;
+    // referencing it proves the crate is still a usable standalone native dependency.
+    expect(crate('pub fn intent() -> litedbmodel_runtime::StatementIntent { litedbmodel_runtime::StatementIntent::read() }\n').status).toBe(0);
   }, 60_000);
 
   it('does not expose interpreter Node', () => {

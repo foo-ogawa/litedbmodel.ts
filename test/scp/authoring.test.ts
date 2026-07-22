@@ -58,6 +58,9 @@ class ReadBehaviors extends SemanticBehavior {
 
 // ── A write behavior (Insert → executeSQL transport, write intent) ─────────────────────
 class WriteBehaviors extends SemanticBehavior {
+  // A RETURNING write returns typed ROWS, so — like a read — it requires the model's inline
+  // `static columns` to type its `RETURNING id, title` projection (#59, spec §4.1 no-fallback).
+  static columns = { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT' } };
   CreatePost($: In<{ authorId: number; title: string }>) {
     return emitWrite(L, 'Insert', {
       table: 'posts',
