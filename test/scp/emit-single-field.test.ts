@@ -18,6 +18,7 @@ import {
   entityWrites,
   compileWriteBundle,
   executeCommand,
+  emitWrite,
   type In,
   type EntityWritesDefinition,
 } from '../../src/scp';
@@ -25,13 +26,14 @@ import {
 const L = components();
 
 class PostCommands extends SemanticBehavior {
+  static columns = { posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT' } };
   Create($: In<{ author_id: number; title: string; request_id: string }>) {
-    return L.Insert({
+    return emitWrite(L, 'Insert', {
       table: 'posts',
       'values.author_id': $.author_id,
       'values.title': $.title,
       returning: 'id, author_id, title',
-    });
+    }, 'sqlite');
   }
 }
 

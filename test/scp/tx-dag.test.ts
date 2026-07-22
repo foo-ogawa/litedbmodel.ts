@@ -33,6 +33,7 @@ import {
   countingDriver,
   renderTxStatement,
   compileWriteNode,
+  emitWrite,
   type In,
   type SqlBundle,
 } from '../../src/scp';
@@ -70,24 +71,28 @@ function freshDb(): InstanceType<typeof Database> {
 // ── The composite Command: create a Post AND its first Comment in one tx (nested write) ──
 
 class BlogWrites extends SemanticBehavior {
+  static columns = {
+    posts: { id: 'INTEGER', author_id: 'INTEGER', title: 'TEXT' },
+    comments: { id: 'INTEGER', post_id: 'INTEGER', body: 'TEXT' },
+  };
   // Parent write: Insert a post, RETURNING id (so the child can reference it).
   CreatePost($: In<{ author_id: number; title: string; request_id: string }>) {
-    return L.Insert({
+    return emitWrite(L, 'Insert', {
       table: 'posts',
       'values.author_id': $.author_id,
       'values.title': $.title,
       returning: 'id, author_id, title',
-    });
+    }, 'sqlite');
   }
   // Child write: Insert a comment whose post_id comes from the PARENT's RETURNING id.
   CreateComment($: In<{ body: string }>) {
-    return L.Insert({
+    return emitWrite(L, 'Insert', {
       table: 'comments',
       // post_id is bound from `$.ref.post.id` — the parent write's RETURNING row (WS8a).
       'values.post_id': $.body, // placeholder port; the real ref is injected via the effects below
       'values.body': $.body,
       returning: 'id, post_id, body',
-    });
+    }, 'sqlite');
   }
 }
 
