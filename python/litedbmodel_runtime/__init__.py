@@ -122,6 +122,7 @@ from .relation import (
     read_bundle,
     run_relation_op,
 )
+from .leaves import make_handlers
 
 __version__ = "2.1.0"
 
@@ -246,4 +247,6 @@ __all__ = [
     "distribute_to_parent",
     "read_bundle",
     "run_relation_op",
+    # op-agnostic leaf transport for the bc-generated native (ir-exec) modules (#141 / epic #123)
+    "make_handlers",
 ]
