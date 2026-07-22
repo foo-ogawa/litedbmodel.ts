@@ -96,8 +96,10 @@ def run_relation_op(
     # off the same JSON field. Raised BEFORE grouping/hydration so an over-cap read never assembles an
     # unbounded result set. ONE guard point → both the eager (``read_bundle``) and lazy surfaces.
     hard_limit = op.get("hardLimit")
-    if hard_limit is not None and len(rows) > hard_limit:
-        raise LimitExceededError(hard_limit, len(rows), "relation", op.get("targetTable"), op.get("name"))
+    if hard_limit is not None:
+        # The relation-context arm of the shared runaway check (SSoT) — the SAME `count > limit ⇒ raise`
+        # primitive the find guard (`check_find_hard_limit`) calls, so the comparison lives in one place.
+        LimitExceededError.check(hard_limit, len(rows), "relation", op.get("targetTable"), op.get("name"))
     # Group the fetched child rows by their target-key identity — the shared grouping core (SSoT), the
     # SAME `group_by_key` the op-independent `group` leaf uses (no duplicated grouping).
     batch = group_by_key(rows, t_cols)

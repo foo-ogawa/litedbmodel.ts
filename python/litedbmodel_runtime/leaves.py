@@ -39,6 +39,7 @@ from .exec_context import (
     WRITE_INTENT,
     ExecutionContext,
     as_context,
+    current_context,
 )
 from .exec_context import execute as seam_execute
 from .exec_context import run as seam_run
@@ -72,14 +73,20 @@ def make_handlers(driver_or_ctx: Union[Driver, ExecutionContext], dialect: str) 
     ctx = as_context(driver_or_ctx)
 
     def execute_sql(ports: Mapping[str, Any], _ctx: Mapping[str, Any]) -> Outcome:
+        # Resolve the AMBIENT tx-scoped ctx when this leaf runs inside a `with_transaction` /
+        # `transaction` scope (`run_with_pinned_context` pins it), so every statement resolves the
+        # tx-OWNED connection — the tx boundary is the runtime's (BEGIN/COMMIT/ROLLBACK), not baked into
+        # the generated runner. Outside a tx, `current_context()` is None ⇒ the bound driver ctx (the
+        # documented `current_context` contract — a raw-driver callee still resolves the pinned tx conn).
+        active = current_context() or ctx
         sql = render_placeholders(ports["sql"], dialect)
         params = _bind_params(ports["params"], dialect)
         try:
             if ports.get("write") and not ports.get("returning"):
-                info = seam_run(ctx, sql, params, WRITE_INTENT)
+                info = seam_run(active, sql, params, WRITE_INTENT)
                 # The affected-write summary row (uniform ``items`` output shape — TS ``writeSummary``).
                 return {"ok": [{"changes": info.changes, "lastInsertRowid": info.last_insert_rowid}]}
-            return {"ok": seam_execute(ctx, sql, params, READ_INTENT)}
+            return {"ok": seam_execute(active, sql, params, READ_INTENT)}
         except SqlFailure as e:
             return {"error": e.message}
 

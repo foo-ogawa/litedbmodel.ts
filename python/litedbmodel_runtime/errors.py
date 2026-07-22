@@ -113,6 +113,34 @@ class LimitExceededError(Exception):
         self.model = model
         self.relation = relation
 
+    @classmethod
+    def check(
+        cls,
+        limit: int,
+        count: int,
+        context: str,
+        model: Optional[str] = None,
+        relation: Optional[str] = None,
+    ) -> None:
+        """The SHARED post-fetch runaway check (SSoT) — the ONE ``count > limit ⇒ raise`` primitive
+        both the FIND-context guard (:func:`check_find_hard_limit`) and the RELATION-context guard
+        (:func:`litedbmodel_runtime.relation.run_relation_op`) call, so no path re-implements the
+        comparison or the error assembly (Python port of the rust ``LimitExceededError::check`` /
+        go ``CheckLimit`` SSoT). ``None`` (returns) when within the cap; raises otherwise."""
+        if count > limit:
+            raise cls(limit, count, context, model, relation)
+
+
+def check_find_hard_limit(limit: int, count: int, model: Optional[str] = None) -> None:
+    """The FIND-context runaway guard (Python port of the rust ``check_find_hard_limit`` / go
+    ``CheckFindHardLimit``). The compile injects ``LIMIT hardLimit + 1``, so a fetched ``count`` of
+    ``hardLimit + 1`` means the TRUE total exceeds the cap ⇒ the read fails LOUD (``context='find'``)
+    instead of loading an unbounded set. A thin find-context adapter over :meth:`LimitExceededError.check`
+    (the relation guard calls that core directly with its own ``'relation'`` context). ``None`` (returns)
+    when within the cap; raises :class:`LimitExceededError` otherwise. The 19 native ops bake explicit
+    LIMITs so this is not wired into them (same as rust/go) — it is the available guard primitive."""
+    LimitExceededError.check(limit, count, "find", model, None)
+
 
 def _code_from_bettersqlite_tag(message: str) -> Optional[str]:
     """Extract a `SQLITE_*` code embedded by the TS seam (`[SQLITE_...] ...`) or a bare mention."""

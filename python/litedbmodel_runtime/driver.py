@@ -164,6 +164,14 @@ class SqliteDriver:
     @classmethod
     def in_memory(cls, schema: Sequence[str]) -> "SqliteDriver":
         conn = sqlite3.connect(":memory:")
+        # Autocommit (isolation_level=None): the runtime tx boundary issues BEGIN/COMMIT/ROLLBACK
+        # EXPLICITLY through the seam (exec_context.with_transaction_decided), so the connection must
+        # NOT also run stdlib sqlite3's legacy implicit-BEGIN (which would raise "cannot start a
+        # transaction within a transaction" on the explicit BEGIN after any prior uncommitted DML). This
+        # is the SQLite twin of the PG/MySQL pool factories' `autocommit=True` — the literal BEGIN…COMMIT
+        # then brackets a REAL transaction, and a non-tx statement autocommits (single-conn, byte-identical
+        # read-back).
+        conn.isolation_level = None
         conn.execute("PRAGMA foreign_keys = ON")
         for stmt in schema:
             conn.execute(stmt)
