@@ -1,9 +1,9 @@
 {
   "generator": "scripts/vendor-behavior-contracts-php.mjs",
   "upstream": {
-    "path": "/Users/ogawa/Work/my-libs/behavior-contracts-wt-170/php/src",
-    "version": "0.8.17",
-    "commit": "a30d92b87f1968fd92ba71440a7c5f7afb8ff539"
+    "path": "/Users/ogawa/Work/my-libs/behavior-contracts-090/php/src",
+    "version": "0.9.0",
+    "commit": "949bc1f22cfafdaf9c84756f33e809c5e9dd4d40"
   },
   "namespace": "LiteDbModel\\Runtime\\BehaviorContracts",
   "files": {
