@@ -1,0 +1,236 @@
+//! litedbmodel v2 SCP — the op-INDEPENDENT runtime leaves (#141 / #164), Rust wire-passthrough port
+//! of `src/scp/leaves.ts`.
+//!
+//! The whole per-DSL execution surface is THREE op-agnostic leaves — the transport symbols the
+//! native codegen calls DIRECTLY at each covered node (`execute_sql` / `pluck_keys` /
+//! `group_children`, matching `LEAF_TRANSPORT_SYMBOLS` in leaves.ts). They are NOT per-op and own NO
+//! grouping logic of their own: `pluck_keys` / `group_children` delegate to the shared grouping CORE
+//! ([`crate::grouping`]) — the SAME SSoT the runtime lazy/relation path ([`crate::relation`])
+//! consumes (no duplicated dedupe/grouping). `execute_sql` funnels through the central execute/run
+//! seam ([`crate::exec_context`]) — the ONLY driver contact.
+//!
+//! ## Wire-passthrough (#164) — the leaves speak `WireValue`, the core speaks `Value`
+//!
+//! Under #164 the covered runner holds intermediate node results as RAW wire (`Vec<WireValue>`) and
+//! NEVER de-boxes them; only the terminal node de-boxes to its concrete outType. So these leaves
+//! take/return the BC-owned [`WireValue`] (crate::wire) and convert `WireValue`↔[`Value`] at the
+//! boundary to reach the Value-based grouping core — the codec is the ONLY place the two value models
+//! meet (the grouping stays single-sourced; the wire types add a boundary codec, not a second core).
+//!
+//! ## Ambient driver — the leaves are free functions, the driver is scoped
+//!
+//! The covered runner (`run_native_raw_struct_<comp>`) takes NO driver argument — it calls the leaf
+//! transport symbols as free functions. `execute_sql` resolves the driver from a thread-scoped
+//! ambient set by [`with_ambient_driver`] (the consumer brackets each op call). This is the rust
+//! analogue of the TS `LeafContext.exec` bc injects at `bindBehaviors` time (C4 — never on the IR).
+
+use std::cell::Cell;
+
+use behavior_contracts::Value;
+
+use crate::driver::Driver;
+use crate::exec_context::{self, StatementIntent};
+use crate::sql_render::render_placeholders;
+use crate::wire::{BehaviorError, WireList, WireRow, WireValue};
+
+// ── Ambient driver (thread-scoped) ───────────────────────────────────────────────────────────────
+
+/// A type-erased pointer to the ambient [`Driver`]. Set only for the duration of a
+/// [`with_ambient_driver`] scope (which brackets the whole covered-op call), then restored — so the
+/// pointer never outlives the borrow it was made from.
+#[derive(Clone, Copy)]
+struct DriverPtr(*const (dyn Driver + 'static));
+
+thread_local! {
+    static AMBIENT_DRIVER: Cell<Option<DriverPtr>> = const { Cell::new(None) };
+}
+
+/// Run `f` with `driver` installed as the thread's ambient driver (the covered runner's
+/// `execute_sql` transport resolves it). The previous ambient is restored on return / unwind, so
+/// scopes nest. The consumer brackets each covered-op call with this (the driver argument the
+/// op-agnostic leaves no longer take explicitly).
+pub fn with_ambient_driver<R>(driver: &dyn Driver, f: impl FnOnce() -> R) -> R {
+    // SAFETY: the raw pointer is installed ONLY for the span of `f` and cleared before this function
+    // returns (the `Restore` guard runs on normal return AND on unwind), so it can never be
+    // dereferenced after `driver`'s borrow ends. The lifetime is erased to `'static` to store it in
+    // the thread-local; every read (`current_driver`) reborrows it with a shorter, call-scoped
+    // lifetime bounded by this frame.
+    let erased: *const (dyn Driver + 'static) =
+        unsafe { std::mem::transmute::<*const dyn Driver, *const (dyn Driver + 'static)>(driver) };
+    let prev = AMBIENT_DRIVER.with(|c| c.replace(Some(DriverPtr(erased))));
+
+    struct Restore(Option<DriverPtr>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            AMBIENT_DRIVER.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(prev);
+    f()
+}
+
+/// The current ambient driver, or a fail-closed [`BehaviorError`] if none is installed (the consumer
+/// must bracket the op call with [`with_ambient_driver`]). The returned reference is bounded by the
+/// caller's frame (SAFETY note on [`with_ambient_driver`]).
+fn current_driver() -> Result<&'static dyn Driver, BehaviorError> {
+    AMBIENT_DRIVER.with(|c| c.get()).map(|p| unsafe { &*p.0 }).ok_or_else(|| {
+        BehaviorError::new(
+            "NO_AMBIENT_DRIVER",
+            "scp leaf: execute_sql called with no ambient driver — bracket the op with with_ambient_driver",
+        )
+    })
+}
+
+// ── WireValue ↔ Value boundary codec (the ONLY place the two value models meet) ───────────────────
+
+/// A BC-owned [`WireValue`] → bc [`Value`] (the input to the SQL param binder + the grouping core).
+/// A `Num` rides as raw text: an integral literal → [`Value::Int`] (the driver's INTEGER model, so a
+/// key round-trips to the SAME identity the grouping core keys on), else [`Value::Float`].
+fn wire_to_value(w: &WireValue) -> Value {
+    match w {
+        WireValue::Str(s) => Value::Str(s.clone()),
+        WireValue::Num(s) => {
+            if let Ok(i) = s.parse::<i64>() {
+                Value::Int(i)
+            } else if let Ok(f) = s.parse::<f64>() {
+                Value::Float(f)
+            } else {
+                Value::Str(s.clone())
+            }
+        }
+        WireValue::Bool(b) => Value::Bool(*b),
+        WireValue::Null => Value::Null,
+        WireValue::Row(r) => Value::Obj(r.entries.iter().map(|(k, v)| (k.clone(), wire_to_value(v))).collect()),
+        WireValue::List(l) => Value::Arr(l.items.iter().map(wire_to_value).collect()),
+    }
+}
+
+/// A bc [`Value`] → BC-owned [`WireValue`] (the leaf output the covered runner de-boxes). Numbers
+/// ride as raw text (the de-box parses + range-checks — overflow is BC's to detect).
+fn value_to_wire(v: Value) -> WireValue {
+    match v {
+        Value::Null => WireValue::Null,
+        Value::Bool(b) => WireValue::Bool(b),
+        Value::Int(i) => WireValue::Num(i.to_string()),
+        Value::Float(f) => WireValue::Num(f.to_string()),
+        Value::Str(s) => WireValue::Str(s),
+        Value::Arr(a) => WireValue::List(WireList { items: a.into_iter().map(value_to_wire).collect() }),
+        Value::Obj(o) => WireValue::Row(WireRow { entries: o.into_iter().map(|(k, v)| (k, value_to_wire(v))).collect() }),
+    }
+}
+
+/// Adapt a transport-level SQL failure to the shared [`BehaviorError`] the covered runner transports.
+/// A SQL failure carries no de-box Error Value (that is the type-mismatch classifier's job), so
+/// `detail` is `None`.
+fn sql_failure_to_behavior_error(e: crate::errors::SqlFailure) -> BehaviorError {
+    BehaviorError::new("SQL_FAILURE", e.message)
+}
+
+// ── execute_sql — the SOLE op-independent SQL transport ────────────────────────────────────────────
+
+/// The SOLE SQL transport leaf (leaves.ts `executeSQL`). Binds `params` and runs `sql` through the
+/// central seam ([`exec_context::execute`] / [`exec_context::run`]) on the AMBIENT driver — the ONLY
+/// driver contact. `write` selects `run` (INSERT/UPDATE/DELETE) vs `execute` (SELECT / RETURNING); a
+/// non-returning write returns a one-row `[{changes,lastInsertRowid}]` summary so the leaf output
+/// shape is uniform (a `List` of `Row`). `?`→`$N` is rendered here (the transport's placeholder SSoT,
+/// matching the TS `prepareSql`); an array param (a relation key set) rides as [`Value::Arr`], which
+/// the driver encodes per dialect (json_each / native array). Ports are spread alphabetically by the
+/// native emitter: `(bigint, params, returning, sql, write)`.
+pub fn execute_sql(
+    bigint: bool,
+    params: &[WireValue],
+    returning: bool,
+    sql: &str,
+    write: bool,
+) -> Result<WireValue, BehaviorError> {
+    // `bigint` is the better-sqlite3 #59 safe-integers toggle; rust/PG/MySQL return BIGINT natively
+    // (i64), so there is no exact-integer read mode to select (see exec_context docs) — the port is
+    // accepted for signature parity with the TS leaf and does not branch the rust seam.
+    let _ = bigint;
+    let driver = current_driver()?;
+    let rendered = render_placeholders(sql, driver.dialect());
+    let value_params: Vec<Value> = params.iter().map(wire_to_value).collect();
+    let ctx = exec_context::for_driver(driver);
+    if write && !returning {
+        let info = exec_context::run(&ctx, &rendered, &value_params, &StatementIntent::write())
+            .map_err(sql_failure_to_behavior_error)?;
+        // The affected-write summary row (uniform `items` output shape — TS `writeSummary`).
+        Ok(WireValue::List(WireList {
+            items: vec![WireValue::Row(WireRow {
+                entries: vec![
+                    ("changes".to_string(), WireValue::int(info.changes)),
+                    ("lastInsertRowid".to_string(), WireValue::int(info.last_insert_rowid)),
+                ],
+            })],
+        }))
+    } else {
+        let rows = exec_context::execute(&ctx, &rendered, &value_params, &StatementIntent::read())
+            .map_err(sql_failure_to_behavior_error)?;
+        Ok(WireValue::List(WireList { items: rows.into_iter().map(value_to_wire).collect() }))
+    }
+}
+
+// ── pluck_keys — rows + column → the deduped key array (the `= ANY($1)` batch key set) ──────────────
+
+/// Extract the deduped, non-null key array from `rows[col]` — the batch key set a relation child
+/// fetch binds to `WHERE fk = ANY($1)` / `json_each(?)`. Insertion order preserved; a null/absent key
+/// is dropped (no partial keys). Dedupe is the shared grouping core ([`crate::grouping::dedupe_key_tuples`])
+/// — the SAME SSoT the runtime relation path uses (no duplicated grouping). Ports are spread
+/// alphabetically by the native emitter: `(col, rows)`.
+pub fn pluck_keys(col: &str, rows: &[WireValue]) -> Result<WireValue, BehaviorError> {
+    let value_rows: Vec<Value> = rows.iter().map(wire_to_value).collect();
+    let tuples = crate::grouping::dedupe_key_tuples(&value_rows, &[col.to_string()]);
+    let keys: Vec<WireValue> = tuples
+        .into_iter()
+        .map(|mut t| value_to_wire(t.remove(0)))
+        .collect();
+    Ok(WireValue::List(WireList { items: keys }))
+}
+
+// ── group_children — parents + flat children → each parent with its children nested ────────────────
+
+/// Distribute a flat `children` list onto `parents` by matching `child[fk]` to `parent[pk]`, nesting
+/// the result under `into`. `single == true` (belongsTo/hasOne) nests the one matching child (or
+/// null); otherwise (hasMany) nests the child list (`[]` when none). Grouping is the shared core
+/// ([`crate::grouping::group_by_key`] / [`crate::grouping::attach_to_parent`]) — the SAME SSoT the
+/// runtime relation path uses (no duplicated grouping). Each parent is shallow-copied before the
+/// own-key set (matching the TS `{...par, [into]: …}` spread — the input is not mutated). Ports are
+/// spread alphabetically by the native emitter: `(children, fk, into, parents, pk, single)`.
+pub fn group_children(
+    children: &[WireValue],
+    fk: &str,
+    into: &str,
+    parents: &[WireValue],
+    pk: &str,
+    single: bool,
+) -> Result<WireValue, BehaviorError> {
+    let value_children: Vec<Value> = children.iter().map(wire_to_value).collect();
+    let by_key = crate::grouping::group_by_key(&value_children, &[fk.to_string()]);
+    let out: Vec<WireValue> = parents
+        .iter()
+        .map(|p| {
+            let par = wire_to_value(p);
+            match par {
+                Value::Obj(pairs) => {
+                    let nested = crate::grouping::attach_to_parent(
+                        &Value::Obj(pairs.clone()),
+                        &[pk.to_string()],
+                        &by_key,
+                        single,
+                    );
+                    // {...par, [into]: nested}: an existing key keeps its position (value overwritten),
+                    // a new key is appended — the TS spread / Go `withOwnKey` semantics.
+                    let mut new_pairs = pairs;
+                    match new_pairs.iter_mut().find(|(k, _)| k == into) {
+                        Some(slot) => slot.1 = nested,
+                        None => new_pairs.push((into.to_string(), nested)),
+                    }
+                    value_to_wire(Value::Obj(new_pairs))
+                }
+                // Records are objects by contract (SQL rows); a non-object passes through untouched.
+                _ => p.clone(),
+            }
+        })
+        .collect();
+    Ok(WireValue::List(WireList { items: out }))
+}
