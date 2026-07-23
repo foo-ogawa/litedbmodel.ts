@@ -1,6 +1,7 @@
 //! SDK-baseline ORM-bench cell (#129) — the raw-driver comparison cell for the collector's `sdk` vs
 //! native latency comparison. It runs the 19 ORM ops over the shared benchmark seed
-//! (the compiled `generated_setup::STATEMENTS`), with the SAME CLI, CSV schema, op list/order, per-iteration
+//! (the ONE seed SSoT `benchmark/crosslang/.setup/<dialect>.json`, emitted from orm-domain.ts — the
+//! SAME fixture the native twin loads), with the SAME CLI, CSV schema, op list/order, per-iteration
 //! unique-key strategy, warmup/reps defaults, and re-seed-before-each-op behaviour — but it does NOT go
 //! through litedbmodel: every op is hand-written SQL issued straight at the plain driver (rusqlite for
 //! sqlite; the `postgres` / `mysql` crates behind `livedb`). The CSV cell label is `sdk`.
@@ -15,7 +16,6 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-mod generated_setup;
 use std::time::Instant;
 
 // ── per-statement query counter (safety proof) — every prepared statement the crate issues bumps this
@@ -345,9 +345,31 @@ fn open_db(spec: &str) -> Box<dyn Db> {
     })
 }
 
-// ── setup: exec the selected dialect's compiled static statements ──────────────────────────────────
-fn reseed(db: &mut dyn Db, _dialect: &str) {
-    for sql in generated_setup::STATEMENTS {
+// ── setup: the ONE seed SSoT (`benchmark/crosslang/.setup/<dialect>.json`, emitted from orm-domain.ts).
+//    Same fixture the native twin loads — no hand-written seed. `schema` (drop+create) is applied once
+//    at open; `delete`+`insert` (the canonical 110-user literal fixture) is re-applied before each op. ─
+struct Setup {
+    schema: Vec<String>,
+    delete: Vec<String>,
+    insert: Vec<String>,
+}
+fn load_setup(dialect: &str) -> Setup {
+    let path = format!("{}/../../benchmark/crosslang/.setup/{dialect}.json", env!("CARGO_MANIFEST_DIR"));
+    let txt = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read seed SSoT {path}: {e}"));
+    let v: serde_json::Value = serde_json::from_str(&txt).unwrap_or_else(|e| panic!("parse {path}: {e}"));
+    let arr = |k: &str| {
+        v[k].as_array().unwrap_or_else(|| panic!("{path}: `{k}` not an array"))
+            .iter().map(|s| s.as_str().expect("statement is a string").to_string()).collect::<Vec<_>>()
+    };
+    Setup { schema: arr("schema"), delete: arr("delete"), insert: arr("insert") }
+}
+fn apply_schema(db: &mut dyn Db, setup: &Setup) {
+    for sql in &setup.schema {
+        db.exec(sql, &[]);
+    }
+}
+fn reseed(db: &mut dyn Db, setup: &Setup) {
+    for sql in setup.delete.iter().chain(setup.insert.iter()) {
         db.exec(sql, &[]);
     }
 }
@@ -707,11 +729,13 @@ fn main() {
     let reps: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(300);
     let warmup: u64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(30);
 
+    let setup = load_setup(&dialect);
     let mut db = open_db(&spec);
+    apply_schema(db.as_mut(), &setup);
     println!("cell,dialect,op,iter,us");
     for op in OPS {
         // Re-seed before each op so reads see the seed state and writes start clean.
-        reseed(db.as_mut(), &dialect);
+        reseed(db.as_mut(), &setup);
         for it in 0..warmup {
             run_op(op, it, db.as_mut());
         }
@@ -727,8 +751,10 @@ fn main() {
 
 // ── #129 safety proof: N+1-avoidance (query counts) via the per-statement QUERY_COUNT. ────────────────
 fn run_safety(dialect: &str, spec: &str) {
+    let setup = load_setup(dialect);
     let mut db = open_db(spec);
-    reseed(db.as_mut(), dialect);
+    apply_schema(db.as_mut(), &setup);
+    reseed(db.as_mut(), &setup);
     let count = |op: &str, db: &mut dyn Db| {
         QUERY_COUNT.store(0, Ordering::SeqCst);
         run_op(op, 0, db);
@@ -738,8 +764,8 @@ fn run_safety(dialect: &str, spec: &str) {
     println!("nestedFindUnique queries={} (expect 2)", count("nestedFindUnique", db.as_mut()));
     println!("nestedRelations queries={} (expect 3: users + posts + comments)", count("nestedRelations", db.as_mut()));
     println!("compositeRelations queries={} (expect 3)", count("compositeRelations", db.as_mut()));
-    reseed(db.as_mut(), dialect);
+    reseed(db.as_mut(), &setup);
     println!("createMany queries={} (expect 1: one batched INSERT for 10 records)", count("createMany", db.as_mut()));
-    reseed(db.as_mut(), dialect);
+    reseed(db.as_mut(), &setup);
     println!("updateMany queries={} (expect 1)", count("updateMany", db.as_mut()));
 }

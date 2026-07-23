@@ -21,6 +21,9 @@ path = "src/main.rs"
 
 [dependencies]
 litedbmodel_runtime = { path = "../litedbmodel_runtime", default-features = false, features = ["native"] }
+# Read the ONE seed SSoT (`benchmark/crosslang/.setup/<dialect>.json`, emitted from orm-domain.ts) at
+# runtime — the cell hand-writes NO schema/seed. serde_json is a bench-only dep (NOT in the runtime).
+serde_json = "1"
 # Pin the transitive behavior-contracts to the EXACT version the rust/ workspace lock uses (0.9.3) — the
 # runtime is written against that rust-crate API (mirrors rust/e1_native_proof/Cargo.toml). Not used
 # directly here — a version-alignment pin only.

@@ -20,6 +20,9 @@ path = "src/main.rs"
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }
+# Read the ONE seed SSoT (`benchmark/crosslang/.setup/<dialect>.json`, emitted from orm-domain.ts) at
+# runtime — same fixture the native twin loads. serde_json is a bench-only dep.
+serde_json = "1"
 
 # `livedb` (opt-in): the same 19 ops against docker Postgres / MySQL via the plain `postgres` + `mysql`
 # crates. The default (SQLite) build needs neither.

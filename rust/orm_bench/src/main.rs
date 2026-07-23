@@ -52,51 +52,53 @@ impl Driver for CountingDriver {
     }
 }
 
-fn schema() -> Vec<String> {
-    gen::generated_setup::STATEMENTS.iter().map(|s| s.to_string()).collect()
+// ── the ONE seed SSoT: `benchmark/crosslang/.setup/<dialect>.json`, emitted from orm-domain.ts by
+//    emit-setup.ts. `schema` = drop+create (applied once at open); `delete`+`insert` = the canonical
+//    110-user fixture as LITERAL SQL (re-applied before each op). The cell hand-writes NOTHING. ───────
+struct Setup {
+    schema: Vec<String>,
+    delete: Vec<String>,
+    insert: Vec<String>,
+}
+fn load_setup(dialect: &str) -> Setup {
+    let path = format!("{}/../../benchmark/crosslang/.setup/{dialect}.json", env!("CARGO_MANIFEST_DIR"));
+    let txt = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read seed SSoT {path}: {e}"));
+    let v: serde_json::Value = serde_json::from_str(&txt).unwrap_or_else(|e| panic!("parse {path}: {e}"));
+    let arr = |k: &str| {
+        v[k].as_array().unwrap_or_else(|| panic!("{path}: `{k}` not an array"))
+            .iter().map(|s| s.as_str().expect("statement is a string").to_string()).collect::<Vec<_>>()
+    };
+    Setup { schema: arr("schema"), delete: arr("delete"), insert: arr("insert") }
 }
 
-fn open_driver(spec: &str) -> Box<dyn Driver> {
+fn open_driver(spec: &str, setup: &Setup) -> Box<dyn Driver> {
     #[cfg(feature = "livedb")]
     {
         if let Some(conn) = spec.strip_prefix("pg:") {
-            return Box::new(PostgresDriver::connect(conn).expect("connect postgres"));
+            let d = PostgresDriver::connect(conn).expect("connect postgres");
+            for s in &setup.schema {
+                d.prepare(s).run(&[]).unwrap_or_else(|e| panic!("schema `{s}`: {}", e.message));
+            }
+            return Box::new(d);
         }
         if let Some(url) = spec.strip_prefix("mysql:") {
-            return Box::new(MysqlDriver::connect(url).expect("connect mysql"));
+            let d = MysqlDriver::connect(url).expect("connect mysql");
+            for s in &setup.schema {
+                d.prepare(s).run(&[]).unwrap_or_else(|e| panic!("schema `{s}`: {}", e.message));
+            }
+            return Box::new(d);
         }
     }
-    let _ = spec; // sqlite pilot: an in-memory DB seeded from the generated schema (spec ignored).
-    Box::new(SqliteDriver::in_memory(&schema()).expect("open in-memory sqlite"))
+    let _ = spec; // sqlite pilot: an in-memory DB created from the canonical schema (spec ignored).
+    Box::new(SqliteDriver::in_memory(&setup.schema).expect("open in-memory sqlite"))
 }
 
 // ── seed: DELETE + INSERT the canonical fixture (schema already applied at open) ────────────────────
 // Re-run before each op so reads see a stable seed and writes start clean. Real nested data (users →
 // posts → comments; tenant users → tenant posts) so the N+1 proof is meaningful (2/3 queries returning
 // real children, not 1+N). Runs on the driver directly (not through the leaves) — no ambient needed.
-fn seed(d: &dyn Driver) {
-    const STMTS: &[&str] = &[
-        "DELETE FROM benchmark_comments",
-        "DELETE FROM benchmark_posts",
-        "DELETE FROM benchmark_users",
-        "DELETE FROM benchmark_tenant_comments",
-        "DELETE FROM benchmark_tenant_posts",
-        "DELETE FROM benchmark_tenant_users",
-        "INSERT INTO benchmark_users (id, email, name) VALUES \
-         (1,'user1@example.com','User 1'),(2,'user2@example.com','User 2'),\
-         (3,'user3@example.com','User 3'),(4,'user4@example.com','User 4'),(5,'user5@example.com','User 5')",
-        "INSERT INTO benchmark_posts (id, title, content, published, author_id) VALUES \
-         (1,'P1','c',1,1),(2,'P2','c',1,1),(3,'P3','c',1,2),(4,'P4','c',1,2),(5,'P5','c',1,3),(6,'P6','c',1,3)",
-        "INSERT INTO benchmark_comments (id, body, post_id) VALUES \
-         (1,'b',1),(2,'b',1),(3,'b',2),(4,'b',3),(5,'b',5)",
-        "INSERT INTO benchmark_tenant_users (tenant_id, user_id, name) VALUES (1,1,'TU1'),(1,2,'TU2'),(1,3,'TU3')",
-        "INSERT INTO benchmark_tenant_posts (tenant_id, post_id, user_id, title) VALUES (1,10,1,'TP1'),(1,11,2,'TP2')",
-        // composite level-3: comments keyed on (tenant_id, post_id) — real children so the composite
-        // grouping is exercised (grouped by the full 2-col tuple, not a cartesian cross).
-        "INSERT INTO benchmark_tenant_comments (tenant_id, comment_id, post_id, body) VALUES \
-         (1,100,10,'tc'),(1,101,10,'tc'),(1,102,11,'tc')",
-    ];
-    for s in STMTS {
+fn seed(d: &dyn Driver, setup: &Setup) {
+    for s in setup.delete.iter().chain(setup.insert.iter()) {
         d.prepare(s).run(&[]).unwrap_or_else(|e| panic!("seed `{s}`: {}", e.message));
     }
 }
@@ -266,13 +268,14 @@ fn main() {
     let reps: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(300);
     let warmup: u64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(30);
 
-    let driver = open_driver(&spec);
+    let setup = load_setup(&dialect);
+    let driver = open_driver(&spec, &setup);
     let d: &dyn Driver = driver.as_ref();
     println!("cell,dialect,op,iter,us");
     for op in OPS {
         // Re-seed the fixture before each op, then run the whole warmup+timed loop with the ambient
         // driver installed (the covered runner resolves it inside `execute_sql`).
-        seed(d);
+        seed(d, &setup);
         with_ambient_driver(d, || {
             for it in 0..warmup {
                 run_op(d, op, it);
@@ -289,10 +292,11 @@ fn main() {
 }
 
 // ── N+1-avoidance proof (query counts) via the CountingDriver + the ambient seam. ──────────────────
-fn run_safety(_dialect: &str, spec: &str) {
-    let counting = CountingDriver { inner: open_driver(spec) };
+fn run_safety(dialect: &str, spec: &str) {
+    let setup = load_setup(dialect);
+    let counting = CountingDriver { inner: open_driver(spec, &setup) };
     let d: &dyn Driver = &counting;
-    seed(d);
+    seed(d, &setup);
     let count = |op: &str| -> usize {
         QUERY_COUNT.store(0, Ordering::SeqCst);
         with_ambient_driver(d, || run_op(d, op, 0));
