@@ -21,10 +21,10 @@ path = "src/main.rs"
 
 [dependencies]
 litedbmodel_runtime = { path = "../litedbmodel_runtime", default-features = false, features = ["native"] }
-# Pin the transitive behavior-contracts to the EXACT version the rust/ workspace lock uses (0.9.0) — the
+# Pin the transitive behavior-contracts to the EXACT version the rust/ workspace lock uses (0.9.3) — the
 # runtime is written against that rust-crate API (mirrors rust/e1_native_proof/Cargo.toml). Not used
 # directly here — a version-alignment pin only.
-behavior-contracts = { version = "=0.9.0", default-features = false }
+behavior-contracts = { version = "=0.9.3", default-features = false }
 
 # `livedb` (opt-in): route the SAME generated adapter + runtime against docker Postgres / MySQL via
 # litedbmodel_runtime's live Driver. The default (SQLite) build needs neither the postgres nor mysql crate.

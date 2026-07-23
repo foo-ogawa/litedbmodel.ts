@@ -145,7 +145,7 @@ final class Behavior
             return array_merge($input, $results);
         };
 
-        $exec = static function (array $op, mixed $_bound) use (&$body, $idToIndex, $handlers, $baseScope): array {
+        $exec = static function (array $op, mixed $_bound) use (&$body, $idToIndex, $handlers, $baseScope, $declaredPorts): array {
             $idx = $idToIndex[$op['id']];
             $node = $body[$idx];
             $props = get_object_vars($node);
@@ -161,10 +161,15 @@ final class Behavior
 
             if ($kind === 'map') {
                 $m = get_object_vars($props['map']);
-                $over = ExprEval::evaluate($m['over'] ?? null, $baseScope());
-                if (!is_array($over)) {
-                    BehaviorFailure::raise('MAP_OVER_NOT_ARRAY', "map '{$op['id']}': 'over' did not evaluate to an array");
-                }
+                $over = self::resolveOverArray(
+                    ExprEval::evaluate($m['over'] ?? null, $baseScope()),
+                    $m['over'] ?? null,
+                    $body,
+                    $declaredPorts instanceof \stdClass ? $declaredPorts : null,
+                    (string) $op['id'],
+                    'MAP_OVER_NOT_ARRAY',
+                    'map'
+                );
                 $component = $m['component'] ?? null;
                 if (!isset($handlers[$component])) {
                     BehaviorFailure::raise('UNKNOWN_COMPONENT', "component '{$component}' has no handler (fail-closed)");
@@ -253,25 +258,32 @@ final class Behavior
                     return ['ok' => $collected];
                 }
 
-                // into（v2）: over と同じ長さ・順序の augment 済みリスト（skip 要素は無変更）。
+                // into（v2）: over と同じ長さ・順序の augment 済みリスト。guard-skip 要素は無変更で
+                // pass through するが、connection 型 into（#182）は空 connection（Plan::unproducedValue）
+                // で埋める＝writeUnproduced の whole-node skip と同一 SSoT。
                 $into = (string) $m['into'];
+                $nodeRK = self::nodeRelationKind($node);
                 $augmented = [];
                 $k = 0;
                 foreach ($over as $i => $el) {
                     if ($k < count($keptIdx) && $keptIdx[$k] === $i) {
-                        if (!($el instanceof \stdClass)) {
-                            BehaviorFailure::raise(
-                                'MAP_INTO_ELEMENT_NOT_OBJECT',
-                                "map '{$op['id']}': 'into' requires object elements (element {$i} is not an object)"
-                            );
-                        }
-                        $aug = clone $el;
-                        $aug->{$into} = $collected[$k];
-                        $augmented[] = $aug;
+                        $intoVal = $collected[$k];
                         $k++;
+                    } elseif ($nodeRK === 'connection') {
+                        $intoVal = Plan::unproducedValue($nodeRK);
                     } else {
                         $augmented[] = $el;
+                        continue;
                     }
+                    if (!($el instanceof \stdClass)) {
+                        BehaviorFailure::raise(
+                            'MAP_INTO_ELEMENT_NOT_OBJECT',
+                            "map '{$op['id']}': 'into' requires object elements (element {$i} is not an object)"
+                        );
+                    }
+                    $aug = clone $el;
+                    $aug->{$into} = $intoVal;
+                    $augmented[] = $aug;
                 }
                 return ['ok' => $augmented];
             }
@@ -280,10 +292,15 @@ final class Behavior
                 // fanout（v3）: over（id-list）→ dedup 済み 1 回の batched handler → dedupe/drop/strip →
                 // connection {items, cursor:null}。整列制約（MAP_BATCH_RESULT_MISMATCH）は適用されない。
                 $f = get_object_vars($props['fanout']);
-                $over = ExprEval::evaluate($f['over'] ?? null, $baseScope());
-                if (!is_array($over)) {
-                    BehaviorFailure::raise('FANOUT_OVER_NOT_ARRAY', "fanout '{$op['id']}': 'over' did not evaluate to an array");
-                }
+                $over = self::resolveOverArray(
+                    ExprEval::evaluate($f['over'] ?? null, $baseScope()),
+                    $f['over'] ?? null,
+                    $body,
+                    $declaredPorts instanceof \stdClass ? $declaredPorts : null,
+                    (string) $op['id'],
+                    'FANOUT_OVER_NOT_ARRAY',
+                    'fanout'
+                );
                 $component = $f['component'] ?? null;
                 if (!isset($handlers[$component])) {
                     BehaviorFailure::raise('UNKNOWN_COMPONENT', "component '{$component}' has no handler (fail-closed)");
@@ -597,6 +614,187 @@ final class Behavior
             return $wrap;
         }
         return $outType;
+    }
+
+    // ── 確定型の構造解決（fanout/map の opt-over 空反復・#177 (A)）────────────────────────
+    // TS 参照実装 behavior.ts portableTypeOfInputPort / descend / overIsDeclaredOptArr の php 版。
+
+    /** input port schema から確定 PortableType（stdClass|string。確定時のみ、他は null）。 */
+    private static function portableTypeOfInputPort(\stdClass $schema): mixed
+    {
+        $p = get_object_vars($schema);
+        $type = $p['type'] ?? null;
+        $base = null;
+        switch ($type) {
+            case 'string':
+            case 'int':
+            case 'float':
+            case 'bool':
+            case 'null':
+                $base = $type;
+                break;
+            case 'array':
+                if (array_key_exists('elemType', $p)) {
+                    $base = new \stdClass();
+                    $base->arr = $p['elemType'];
+                }
+                break;
+            case 'map':
+                if (array_key_exists('elemType', $p)) {
+                    $base = new \stdClass();
+                    $base->map = $p['elemType'];
+                }
+                break;
+        }
+        if ($base === null) {
+            return null;
+        }
+        if (($p['required'] ?? null) === false) {
+            $opt = new \stdClass();
+            $opt->opt = $base;
+            return $opt;
+        }
+        return $base;
+    }
+
+    /** 確定型 t に field を 1 段降りた型（{obj} は field 型・{opt} は内側降下再ラップ、他は null）。 */
+    private static function descendType(mixed $t, string $field): mixed
+    {
+        if (!($t instanceof \stdClass)) {
+            return null;
+        }
+        $p = get_object_vars($t);
+        if (array_key_exists('obj', $p)) {
+            $obj = $p['obj'];
+            if ($obj instanceof \stdClass) {
+                $ov = get_object_vars($obj);
+                return array_key_exists($field, $ov) ? $ov[$field] : null;
+            }
+            return null;
+        }
+        if (array_key_exists('opt', $p)) {
+            $inner = self::descendType($p['opt'], $field);
+            if ($inner === null) {
+                return null;
+            }
+            $o = new \stdClass();
+            $o->opt = $inner;
+            return $o;
+        }
+        return null;
+    }
+
+    /**
+     * bare `{ref:[…]}`/`{refOpt:[…]}`（静的 string path）なら path 配列、他は null。
+     * @return array<int,string>|null
+     */
+    private static function bareRefPath(mixed $over): ?array
+    {
+        if (!($over instanceof \stdClass)) {
+            return null;
+        }
+        $p = get_object_vars($over);
+        if (count($p) !== 1) {
+            return null;
+        }
+        $k = array_key_first($p);
+        if ($k !== 'ref' && $k !== 'refOpt') {
+            return null;
+        }
+        $path = $p[$k];
+        if (!is_array($path) || count($path) === 0) {
+            return null;
+        }
+        foreach ($path as $s) {
+            if (!is_string($s)) {
+                return null;
+            }
+        }
+        return array_values($path);
+    }
+
+    /** t が {opt:{arr:…}} 形か。 */
+    private static function isOptArrType(mixed $t): bool
+    {
+        if (!($t instanceof \stdClass)) {
+            return false;
+        }
+        $p = get_object_vars($t);
+        if (!array_key_exists('opt', $p)) {
+            return false;
+        }
+        $inner = $p['opt'];
+        return $inner instanceof \stdClass && array_key_exists('arr', get_object_vars($inner));
+    }
+
+    /**
+     * overIsDeclaredOptArr（#177 (A)）— fanout/map の over（bare ref のみ）の宣言型が {opt:{arr}} か。
+     * prior-node ref は結果型を path descend、input-port の optional array は要素型注記に関わらず宣言 opt-arr。
+     * @param array<int,\stdClass> $body
+     */
+    private static function overIsDeclaredOptArr(mixed $over, array $body, ?\stdClass $inputPorts): bool
+    {
+        $path = self::bareRefPath($over);
+        if ($path === null) {
+            return false;
+        }
+        $head = $path[0];
+        $rest = array_slice($path, 1);
+        $node = null;
+        foreach ($body as $n) {
+            if ($n instanceof \stdClass && ((get_object_vars($n)['id'] ?? null) === $head)) {
+                $node = $n;
+                break;
+            }
+        }
+        if ($node !== null) {
+            $np = get_object_vars($node);
+            if (!array_key_exists('outType', $np)) {
+                return false;
+            }
+            $cur = self::resultTypeOf($np, $np['outType']);
+        } else {
+            if ($inputPorts === null) {
+                return false;
+            }
+            $ip = get_object_vars($inputPorts);
+            if (!array_key_exists($head, $ip) || !($ip[$head] instanceof \stdClass)) {
+                return false;
+            }
+            $schema = $ip[$head];
+            if (count($rest) === 0) {
+                $sp = get_object_vars($schema);
+                return (($sp['required'] ?? null) === false) && (($sp['type'] ?? null) === 'array');
+            }
+            $cur = self::portableTypeOfInputPort($schema);
+        }
+        if ($cur === null) {
+            return false;
+        }
+        foreach ($rest as $f) {
+            $cur = self::descendType($cur, (string) $f);
+            if ($cur === null) {
+                return false;
+            }
+        }
+        return self::isOptArrType($cur);
+    }
+
+    /**
+     * resolveOverArray — fanout/map の over 値を反復対象の配列へ解決する唯一の関門。配列はそのまま・
+     * null かつ宣言 opt-arr は空配列（#177 (A) faithful 0 反復）・それ以外の非配列は fail-closed。
+     * @param array<int,\stdClass> $body
+     * @return array<int,mixed>
+     */
+    private static function resolveOverArray(mixed $over, mixed $overExpr, array $body, ?\stdClass $inputPorts, string $opId, string $code, string $label): array
+    {
+        if (is_array($over)) {
+            return $over;
+        }
+        if ($over === null && self::overIsDeclaredOptArr($overExpr, $body, $inputPorts)) {
+            return [];
+        }
+        BehaviorFailure::raise($code, "{$label} '{$opId}': 'over' did not evaluate to an array");
     }
 
     /**
