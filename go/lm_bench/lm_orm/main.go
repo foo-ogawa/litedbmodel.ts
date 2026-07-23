@@ -1,959 +1,453 @@
-// Command lm_orm — the ORM-plan EXECUTOR + live smoke — Go (epic #63).
+// Command lm_orm — the raw-driver SDK-baseline ORM-bench cell (Go), twin of go/lm_bench/lm_orm_native.
 //
-// Port of the PROVEN TS reference (benchmark/crosslang/orm-exec-ts.ts + orm-smoke.ts). Loads the
-// committed language-neutral artifact benchmark/crosslang/generated/orm-plan.json and executes ALL
-// 19 ORM ops × {sqlite, mysql, postgres} through the SHIPPED litedbmodel_runtime driver seam:
-//   - sqlite   : modernc.org/sqlite (PURE-GO, no cgo) via database/sql
-//   - postgres : rt.OpenPostgres (pgx stdlib database/sql — $N + RETURNING native)
-//   - mysql    : rt.OpenMysql (go-sql-driver/mysql, RETURNING-emulating "mysql-scp" wrapper)
+// The apples-to-apples SDK comparison for the go native cell: it runs the SAME 19 ORM ops over the SAME
+// canonical fixture (the codegen-owned behaviors.STATEMENTS DDL + behaviors.SEED — reused as FIXTURE
+// setup, never for op execution), on the SAME in-memory sqlite storage the native cell uses
+// (sql.Open("sqlite", ":memory:")) — but every op is HAND-WRITTEN SQL issued straight at database/sql.
+// litedbmodel_runtime and the bc-generated RunNativeRawStruct_* runners are NOT in the path.
 //
-// binding the BAKED per-dialect SQL from the artifact per the bindKind protocol (NO SQL gen here).
+// Fairness (a strawman SDK invalidates the comparison):
+//   - SAME storage: in-memory sqlite (no file → no fsync/WAL the native in-memory cell never pays).
+//   - Prepared-statement REUSE: every op's SQL is prepared once and cached (map[string]*sql.Stmt),
+//     matching native's runtime prepared-statement cache — not re-parsed per call.
+//   - N+1-FREE relations: parent read → pluck keys → ONE batched child read (WHERE fk IN (…)) → group
+//     in memory, the SAME query counts the native cell proves (nestedFindAll=2, nestedRelations=3,
+//     compositeRelations=3, batch write=1, RETURNING-chained tx = BEGIN + 2 body + COMMIT = 4).
+//   - SAME seed as the native twin: behaviors.STATEMENTS + behaviors.SEED, seeded ONCE (the native cell
+//     seeds once too), and the SAME per-op inputs (findUnique=user500, update id=1, …).
 //
-// This uses database/sql DIRECTLY through the shipped driver handles (the statement-level seam the
-// spec calls for), so the SAME live drivers the ir bench cell uses execute the 19 ops.
+// Modes:
 //
-// Spawn convention (run.ts orchestrator): the built binary
-//
-//	go/lm_bench/lm_orm  [--smoke]
-//
-// `--smoke` runs the 57-cell matrix and exits; without it, it runs ALL 19 ops × 3 dialects,
-// self-measures, and writes benchmark/crosslang/.results/go.csv (no stdin/stdout protocol).
+//	lm_orm                  — run all 19 ops once; print per-op statement-count + row-count; assert the
+//	                          N+1-free relation counts + the atomic tx statement counts (safety proof).
+//	lm_orm bench [reps] [warmup]
+//	                        — additionally time each op over reps iterations (after warmup) and print a
+//	                          flat CSV (cell,op,iter,us) with cell label `sdk` — the go native format.
 package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
-	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
+	behaviors "github.com/foo-ogawa/litedbmodel/go/lm_bench/lm_orm_native/gen"
 
-	_ "github.com/go-sql-driver/mysql" // BARE mysql driver (registered as "mysql") — raw baseline
-	_ "github.com/jackc/pgx/v5/stdlib" // BARE pgx stdlib driver (registered as "pgx") — raw baseline
-	_ "modernc.org/sqlite"             // PURE-GO sqlite driver (registered as "sqlite")
+	_ "modernc.org/sqlite" // PURE-GO sqlite driver (registered as "sqlite") — the raw baseline
 )
 
-const pgSchemaName = "scp_go_bench"
-const mysqlDBName = "scp_go_bench"
-
-// Raw-driver BASELINE (task: MEASURE litedbmodel's over-driver overhead, not assert it). For each
-// op×dialect the bench ALSO runs the IDENTICAL final SQL + params the runtime issues — assembled by
-// the SAME bindRelation/substParams/writePlan code — but through the BARE database/sql driver (no
-// litedbmodel_runtime wrapper). Emitted as `baseline_latency_ms`; the collector splits it into an
-// `impl: baseline` cell. runtime÷baseline = litedbmodel's over-driver cost (≈1.0× for the thin ops).
-//
-//   - sqlite   : runtime ALREADY uses the raw modernc.org/sqlite driver → baseline is a SECOND
-//     *sql.DB opened the same way (the honest ≈1.0× confirmation).
-//   - postgres : runtime uses rt.OpenPostgres = sql.Open("pgx", …); baseline opens the SAME pgx
-//     stdlib driver directly (no wrapper) → byte-identical $N + RETURNING SQL.
-//   - mysql    : runtime uses rt.OpenMysql = the RETURNING-emulating "mysql-scp" wrapper, but this
-//     executor's writePlan already strips RETURNING itself and uses tx.Exec for the mysql
-//     path (never the wrapper's QueryContext RETURNING interception), so the bare "mysql"
-//     driver runs the SAME stripped statements byte-identically.
-//
-// The baseline gets its OWN isolated pg schema / mysql db, seeded identically, so the two impls never
-// clobber each other's tables.
-const pgBaselineSchema = "scp_go_bench_baseline"
-const mysqlBaselineDB = "scp_go_bench_baseline"
-
-// execImpl selects the runtime path vs the bare-driver baseline for makeDriver.
-type execImpl string
-
-const (
-	implRuntime execImpl = "runtime"
-	implRaw     execImpl = "raw"
-)
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
+// ── the ONE exec seam. All DB access rides these methods, so the prepared-statement cache and the
+//    per-op statement counter each live in exactly one place. ────────────────────────────────────────
+type cell struct {
+	db    *sql.DB
+	stmts map[string]*sql.Stmt // per-SQL prepared-statement cache (reused across iterations)
+	count int64                // statement counter (safety proof); bumped once per prepared statement
 }
 
-// ── {{SEQ}} substitution + numeric coercion ────────────────────────────────────
-var seqCounter int64
-
-func nextSeq() int64 {
-	v := seqCounter
-	seqCounter++
-	return v
-}
-
-// substOne replaces {{SEQ}} in string params (recursing into batch-array params) and coerces
-// JSON float64 whole numbers → int64 (MySQL rejects a quoted/float LIMIT; ids must bind as ints).
-func substOne(p any, seq int64) any {
-	switch v := p.(type) {
-	case string:
-		if strings.Contains(v, "{{SEQ}}") {
-			return strings.ReplaceAll(v, "{{SEQ}}", strconv.FormatInt(seq, 10))
-		}
-		return v
-	case float64:
-		if v == float64(int64(v)) {
-			return int64(v)
-		}
-		return v
-	case []any:
-		out := make([]any, len(v))
-		for i, e := range v {
-			out[i] = substOne(e, seq)
-		}
-		return out
-	default:
-		return v
-	}
-}
-
-func substParams(params []any, seq int64) []any {
-	out := make([]any, len(params))
-	for i, p := range params {
-		out[i] = substOne(p, seq)
-	}
-	return out
-}
-
-func stripReturning(sql string) string {
-	lower := strings.ToLower(sql)
-	if at := strings.LastIndex(lower, " returning "); at >= 0 {
-		return sql[:at]
-	}
-	return sql
-}
-func hasReturning(sql string) bool {
-	return strings.Contains(strings.ToLower(sql), " returning ")
-}
-
-// toInt64Slice converts a []any of numbers (parent keys) into a typed []int64 (pgx binds a Go
-// slice as a PG array for `= ANY($1)` / UNNEST). Keys in this bench are always integer ids.
-func toInt64Slice(vals []any) []int64 {
-	out := make([]int64, len(vals))
-	for i, v := range vals {
-		switch n := v.(type) {
-		case int64:
-			out[i] = n
-		case float64:
-			out[i] = int64(n)
-		default:
-			out[i], _ = strconv.ParseInt(fmt.Sprint(v), 10, 64)
-		}
-	}
-	return out
-}
-
-// keyString stringifies a scalar cell for distinct-key dedup.
-func keyString(v any) (string, bool) {
-	if v == nil {
-		return "", false
-	}
-	return fmt.Sprint(v), true
-}
-
-// ── relation bind protocol (mirror bindRelation in orm-exec-ts.ts) ─────────────
-type relBind struct {
-	sql    string
-	params []any
-}
-
-func bindRelation(stage map[string]any, parents []map[string]any) *relBind {
-	kind := stage["bindKind"].(string)
-	sqlText := stage["sql"].(string)
-	if single, ok := stage["single"].(map[string]any); ok && single != nil {
-		pk := single["parentKey"].(string)
-		seen := map[string]bool{}
-		var keys []any
-		for _, r := range parents {
-			v := r[pk]
-			if s, ok := keyString(v); ok && !seen[s] {
-				seen[s] = true
-				keys = append(keys, v)
-			}
-		}
-		if len(keys) == 0 {
-			return nil
-		}
-		if kind == "pgArraySingle" {
-			return &relBind{sql: sqlText, params: []any{toInt64Slice(keys)}}
-		}
-		// jsonParam (sqlite/mysql): ONE param = JSON string of the distinct keys.
-		b, _ := json.Marshal(keys)
-		return &relBind{sql: sqlText, params: []any{string(b)}}
-	}
-	comp := stage["composite"].(map[string]any)
-	pks := comp["parentKeys"].([]any)
-	p0, p1 := pks[0].(string), pks[1].(string)
-	seen := map[string]bool{}
-	var t0, t1 []any
-	for _, r := range parents {
-		k0, k1 := r[p0], r[p1]
-		s0, ok0 := keyString(k0)
-		s1, ok1 := keyString(k1)
-		if ok0 && ok1 && !seen[s0+" "+s1] {
-			seen[s0+" "+s1] = true
-			t0 = append(t0, k0)
-			t1 = append(t1, k1)
-		}
-	}
-	if len(t0) == 0 {
-		return nil
-	}
-	if kind == "pgArrayComposite" {
-		return &relBind{sql: sqlText, params: []any{toInt64Slice(t0), toInt64Slice(t1)}}
-	}
-	// tupleExpand (sqlite/mysql composite): repeat groupTemplate per tuple, flatten params.
-	group := stage["groupTemplate"].(string)
-	suffix, _ := stage["suffix"].(string)
-	groups := make([]string, len(t0))
-	var flat []any
-	for i := range t0 {
-		groups[i] = group
-		flat = append(flat, substOne(t0[i], 0), substOne(t1[i], 0))
-	}
-	return &relBind{sql: sqlText + strings.Join(groups, ", ") + suffix, params: flat}
-}
-
-// ── executor ───────────────────────────────────────────────────────────────────
-type ormDriver struct {
-	dialect string
-	impl    execImpl
-	db      *sql.DB
-	// stmts is the prepared-statement cache keyed by SQL text (prepare-once, execute-many). Go's
-	// database/sql PREPAREs a fresh statement on EVERY db.Query / tx.Exec and discards it — an extra
-	// round-trip per call on pg/mysql, a re-parse on sqlite. A real Go program caches the *sql.Stmt and
-	// reuses the handle; this mirrors the shipped litedbmodel_runtime stmt cache so the bench reflects
-	// the real runtime (not a bench-only trick). A *sql.DB-level *sql.Stmt is goroutine-safe and
-	// reusable across the pool; inside a tx it is rebound via tx.Stmt(cached) (no re-prepare). RETURNING
-	// statements are NOT cached (they run at most once per op AND the mysql path strips RETURNING per
-	// call) — matching the runtime's cacheable rule.
-	stmts map[string]*sql.Stmt
-}
-
-// prepared returns the cached *sql.Stmt for sqlText, preparing + caching it on first use.
-func (d *ormDriver) prepared(sqlText string) (*sql.Stmt, error) {
-	if st := d.stmts[sqlText]; st != nil {
-		return st, nil
-	}
-	st, err := d.db.Prepare(sqlText)
-	if err != nil {
-		return nil, err
-	}
-	d.stmts[sqlText] = st
-	return st, nil
-}
-
-// cacheableStmt mirrors the runtime rule: a RETURNING statement is executed un-prepared (the mysql
-// RETURNING emulation happens at the driver-connection layer, which a prepared *sql.Stmt bypasses; pg
-// RETURNING runs at most once per op → negligible cache benefit). Everything else is cached.
-func cacheableStmt(sqlText string) bool { return !hasReturning(sqlText) }
-
-// queryAll runs a SELECT and returns rows as []map[string]any (generic column scan). It reuses the
-// driver's cached *sql.Stmt for the SQL (prepare-once) instead of re-preparing per call.
-func (d *ormDriver) queryAll(sqlText string, params []any) ([]map[string]any, error) {
-	var rows *sql.Rows
-	var err error
-	if cacheableStmt(sqlText) {
-		st, perr := d.prepared(sqlText)
-		if perr != nil {
-			return nil, perr
-		}
-		rows, err = st.Query(params...)
-	} else {
-		rows, err = d.db.Query(sqlText, params...)
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-	// One reusable scan-target pair for the whole result set (rows.Scan overwrites raw[i] each row and
-	// normalizeCell copies the cell into the per-row map immediately) — fewer per-row allocations.
-	raw := make([]any, len(cols))
-	ptrs := make([]any, len(cols))
-	for i := range raw {
-		ptrs[i] = &raw[i]
-	}
-	var out []map[string]any
-	for rows.Next() {
-		if err := rows.Scan(ptrs...); err != nil {
-			return nil, err
-		}
-		m := make(map[string]any, len(cols))
-		for i, c := range cols {
-			m[c] = normalizeCell(raw[i])
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
-}
-
-// normalizeCell coerces []byte (MySQL/PG text) to string and keeps ints/floats; used for the
-// distinct-key dedup and id extraction (byte-string keys stringify identically to their number).
-func normalizeCell(v any) any {
-	switch b := v.(type) {
-	case []byte:
-		return string(b)
-	default:
-		return v
-	}
-}
-
-// close releases the cached prepared statements, then the *sql.DB. (db.Close closes the stmts too, but
-// this drops the Go-side cache explicitly.)
-func (d *ormDriver) close() error {
-	for k, st := range d.stmts {
-		_ = st.Close()
-		delete(d.stmts, k)
-	}
-	return d.db.Close()
-}
-
-func (d *ormDriver) run(plan map[string]any) (int, error) {
-	if plan["kind"].(string) == "read" {
-		return d.readPlan(plan)
-	}
-	return d.writePlan(plan)
-}
-
-func (d *ormDriver) readPlan(plan map[string]any) (int, error) {
-	reads := plan["reads"].([]any)
-	first := reads[0].(map[string]any)
-	firstParams := substParams(asAnySlice(first["params"]), 0)
-	rows, err := d.queryAll(first["sql"].(string), firstParams)
-	if err != nil {
-		return 0, err
-	}
-	total := len(rows)
-	stageRows := [][]map[string]any{rows}
-	for _, rel := range plan["relations"].([]any) {
-		stage := rel.(map[string]any)
-		parentStmt := int(stage["parentStmt"].(float64))
-		var children []map[string]any
-		if b := bindRelation(stage, stageRows[parentStmt]); b != nil {
-			children, err = d.queryAll(b.sql, b.params)
-			if err != nil {
-				return 0, err
-			}
-		}
-		total += len(children)
-		stageRows = append(stageRows, children)
-	}
-	return total, nil
-}
-
-// txStmts is a per-transaction prepared-statement cache with PREPARE-ON-REPEAT: statements are
-// prepared ON the tx (tx.Prepare) so they use the tx's OWNED connection — the pool is pinned to ONE
-// connection (search_path / in-mem DB), so preparing on d.db while the tx holds that one conn would
-// DEADLOCK. A tx is short-lived (one owned conn, returned to the pool at commit/rollback), so a
-// prepared stmt CANNOT be reused across transactions — only WITHIN the tx body. And a single-use
-// statement pays a NET EXTRA round-trip if prepared (tx.Prepare + Exec vs a pipelined tx.Exec). So a
-// statement is executed directly on FIRST sight and only PREPARED+cached when it REPEATS within the
-// same tx (a real app's intra-tx loop of identical writes) — zero regression for one-shot statements,
-// the reuse win when it exists. The tx-scoped stmts are auto-closed at commit/rollback.
-type txStmts struct {
-	tx    *sql.Tx
-	seen  map[string]bool
-	stmts map[string]*sql.Stmt
-}
-
-func newTxStmts(tx *sql.Tx) *txStmts {
-	return &txStmts{tx: tx, seen: map[string]bool{}, stmts: map[string]*sql.Stmt{}}
-}
-
-// txExec runs a non-returning write inside the tx. Prepare-on-repeat: the first occurrence of a
-// cacheable SQL runs via a direct tx.Exec (no extra prepare round-trip); a REPEAT prepares once and
-// reuses the tx-bound *sql.Stmt. Non-cacheable SQL (RETURNING) always runs directly.
-func (t *txStmts) txExec(sqlText string, params []any) (sql.Result, error) {
-	if !cacheableStmt(sqlText) {
-		return t.tx.Exec(sqlText, params...)
-	}
-	if st := t.stmts[sqlText]; st != nil {
-		return st.Exec(params...) // already prepared (a prior repeat) — reuse
-	}
-	if !t.seen[sqlText] {
-		t.seen[sqlText] = true
-		return t.tx.Exec(sqlText, params...) // first sight — direct exec, no prepare
-	}
-	// Second sight — prepare + cache, then reuse from here on.
-	st, err := t.tx.Prepare(sqlText)
-	if err != nil {
-		return nil, err
-	}
-	t.stmts[sqlText] = st
-	return st.Exec(params...)
-}
-
-func (d *ormDriver) writePlan(plan map[string]any) (int, error) {
-	seq := nextSeq()
-	tx, err := d.db.Begin()
-	if err != nil {
-		return 0, err
-	}
-	ts := newTxStmts(tx)
-	returnedID := int64(0)
-	n := 0
-	for _, s := range plan["statements"].([]any) {
-		st := s.(map[string]any)
-		role := st["role"].(string)
-		sqlText := st["sql"].(string)
-		params := substParams(asAnySlice(st["params"]), seq)
-		if role == "useReturn" {
-			if at, ok := st["useReturnAt"].(float64); ok {
-				params[int(at)] = returnedID
-			}
-		}
-		switch {
-		case role == "insertReturn":
-			if d.dialect == "postgres" {
-				// pg native RETURNING id — not cached (runs once per op; RETURNING bypasses the cache).
-				var id int64
-				if e := tx.QueryRow(sqlText, params...).Scan(&id); e != nil {
-					_ = tx.Rollback()
-					return 0, e
-				}
-				returnedID = id
-			} else {
-				// sqlite/mysql: strip RETURNING → a plain cacheable INSERT (prepare-once via txExec).
-				res, e := ts.txExec(stripReturning(sqlText), params)
-				if e != nil {
-					_ = tx.Rollback()
-					return 0, e
-				}
-				returnedID, _ = res.LastInsertId()
-			}
-		case d.dialect == "mysql" && hasReturning(sqlText):
-			// MySQL has no native RETURNING (a plain upsert RETURNING id): strip → cacheable exec.
-			if _, e := ts.txExec(stripReturning(sqlText), params); e != nil {
-				_ = tx.Rollback()
-				return 0, e
-			}
-		case hasReturning(sqlText):
-			// pg native RETURNING / sqlite RETURNING: a row-returning statement → Query (drain). Not
-			// cached (RETURNING) — runs at most once per op.
-			r, e := tx.Query(sqlText, params...)
-			if e != nil {
-				_ = tx.Rollback()
-				return 0, e
-			}
-			r.Close()
-		default:
-			if _, e := ts.txExec(sqlText, params); e != nil {
-				_ = tx.Rollback()
-				return 0, e
-			}
-		}
-		n++
-	}
-	if e := tx.Commit(); e != nil {
-		return 0, e
-	}
-	return n, nil
-}
-
-func asAnySlice(v any) []any {
-	if v == nil {
-		return nil
-	}
-	return v.([]any)
-}
-
-// ── artifact + seed ────────────────────────────────────────────────────────────
-type artifact struct {
-	raw map[string]any
-}
-
-func (a *artifact) dialects() []string {
-	var out []string
-	for _, d := range a.raw["dialects"].([]any) {
-		out = append(out, d.(string))
-	}
-	return out
-}
-func (a *artifact) ops() []any { return a.raw["ops"].([]any) }
-func (a *artifact) schema(d string) map[string]any {
-	return a.raw["schema"].(map[string]any)[d].(map[string]any)
-}
-func (a *artifact) plan(op, d string) map[string]any {
-	return a.raw["plans"].(map[string]any)[op].(map[string]any)[d].(map[string]any)
-}
-
-func loadArtifact() *artifact {
-	_, thisFile, _, _ := runtime.Caller(0)
-	path := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "benchmark", "crosslang", "generated", "orm-plan.json")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		panic(fmt.Sprintf("read orm-plan.json: %v", err))
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(b, &raw); err != nil {
-		panic(fmt.Sprintf("parse orm-plan.json: %v", err))
-	}
-	return &artifact{raw: raw}
-}
-
-func strList(node map[string]any, key string) []string {
-	arr, _ := node[key].([]any)
-	out := make([]string, 0, len(arr))
-	for _, s := range arr {
-		out = append(out, s.(string))
-	}
-	return out
-}
-
-func pgPlaceholders(sqlText string) string {
-	var b strings.Builder
-	n := 0
-	for _, ch := range sqlText {
-		if ch == '?' {
-			n++
-			b.WriteByte('$')
-			b.WriteString(strconv.Itoa(n))
-		} else {
-			b.WriteRune(ch)
-		}
-	}
-	return b.String()
-}
-
-func seedRows(db *sql.DB, schema map[string]any, dialect string) error {
-	for _, s := range schema["seed"].([]any) {
-		row := s.(map[string]any)
-		sqlText := row["sql"].(string)
-		if dialect == "postgres" {
-			sqlText = pgPlaceholders(sqlText)
-		}
-		params := substParams(asAnySlice(row["params"]), 0)
-		if _, err := db.Exec(sqlText, params...); err != nil {
-			return fmt.Errorf("seed %q: %w", sqlText, err)
-		}
-	}
-	return nil
-}
-
-// openPostgres opens the pg *sql.DB for the given impl: `runtime` = the shipped rt.OpenPostgres
-// wrapper; `raw` = the BARE pgx stdlib driver (sql.Open("pgx", …)) directly — no litedbmodel wrapper.
-// The wrapper adds only pool sizing + Ping over the same pgx driver, so the SQL issued is identical.
-func openPostgres(impl execImpl, dsn string) (*sql.DB, error) {
-	if impl == implRaw {
-		db, err := sql.Open("pgx", dsn)
-		if err != nil {
-			return nil, err
-		}
-		if err := db.Ping(); err != nil {
-			db.Close()
-			return nil, err
-		}
-		return db, nil
-	}
-	return rt.OpenPostgres(dsn)
-}
-
-// openMysql opens the mysql *sql.DB for the given impl: `runtime` = rt.OpenMysql (the "mysql-scp"
-// RETURNING-emulating wrapper); `raw` = the BARE go-sql-driver ("mysql") directly. This executor's
-// writePlan strips RETURNING itself and drives the mysql path via tx.Exec (never the wrapper's
-// QueryContext RETURNING interception), so both handles run byte-identical stripped statements.
-func openMysql(impl execImpl, dsn string) (*sql.DB, error) {
-	if impl == implRaw {
-		db, err := sql.Open("mysql", dsn)
-		if err != nil {
-			return nil, err
-		}
-		if err := db.Ping(); err != nil {
-			db.Close()
-			return nil, err
-		}
-		return db, nil
-	}
-	return rt.OpenMysql(dsn)
-}
-
-// makeDriver builds a live *ormDriver for one dialect × impl. ALL statement assembly (DDL/seed via
-// the shared schema node, and at run time bindRelation/substParams/writePlan) is impl-agnostic — the
-// ONLY difference is the low-level *sql.DB handle: `runtime` opens via the litedbmodel_runtime
-// wrappers, `raw` opens the bare driver against an ISOLATED baseline schema/db seeded identically.
-func makeDriver(dialect string, impl execImpl, a *artifact) (*ormDriver, error) {
-	schema := a.schema(dialect)
-	switch dialect {
-	case "sqlite":
-		// sqlite runtime ALREADY uses the raw modernc.org/sqlite driver; the baseline is a SECOND
-		// identical in-memory *sql.DB (each :memory: open is its own isolated DB) → honest ≈1.0×.
-		db, err := sql.Open("sqlite", ":memory:")
-		if err != nil {
-			return nil, err
-		}
-		db.SetMaxOpenConns(1) // one in-memory connection so schema+seed+ops share the same DB
-		if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-			return nil, err
-		}
-		for _, s := range strList(schema, "ddl") {
-			if _, err := db.Exec(s); err != nil {
-				return nil, err
-			}
-		}
-		db.SetMaxIdleConns(1) // keep the single in-memory conn warm (no reconnect churn between ops)
-		if err := seedRows(db, schema, "sqlite"); err != nil {
-			return nil, err
-		}
-		return &ormDriver{dialect: "sqlite", impl: impl, db: db, stmts: map[string]*sql.Stmt{}}, nil
-	case "postgres":
-		host := envOr("TEST_DB_HOST", "localhost")
-		port := envOr("TEST_DB_PORT", "5433")
-		user := envOr("TEST_DB_USER", "testuser")
-		pass := envOr("TEST_DB_PASSWORD", "testpass")
-		dbname := envOr("TEST_DB_NAME", "testdb")
-		dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, pass, dbname)
-		schemaName := pgSchemaName
-		if impl == implRaw {
-			schemaName = pgBaselineSchema
-		}
-		db, err := openPostgres(impl, dsn)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := db.Exec("CREATE SCHEMA IF NOT EXISTS " + schemaName); err != nil {
-			return nil, err
-		}
-		if _, err := db.Exec("SET search_path TO " + schemaName); err != nil {
-			return nil, err
-		}
-		// Pin search_path for EVERY pooled connection (SET above only affects one conn).
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1) // keep that one search_path-pinned conn warm across ops (no re-SET churn)
-		for _, s := range strList(schema, "drop") {
-			if _, err := db.Exec(s); err != nil {
-				return nil, err
-			}
-		}
-		for _, s := range strList(schema, "ddl") {
-			if _, err := db.Exec(s); err != nil {
-				return nil, err
-			}
-		}
-		if err := seedRows(db, schema, "postgres"); err != nil {
-			return nil, err
-		}
-		for _, s := range strList(schema, "seqReset") {
-			if _, err := db.Exec(s); err != nil {
-				return nil, err
-			}
-		}
-		return &ormDriver{dialect: "postgres", impl: impl, db: db, stmts: map[string]*sql.Stmt{}}, nil
-	case "mysql":
-		host := envOr("TEST_MYSQL_HOST", "127.0.0.1")
-		port := envOr("TEST_MYSQL_PORT", "3307")
-		user := envOr("TEST_MYSQL_USER", "testuser")
-		pass := envOr("TEST_MYSQL_PASSWORD", "testpass")
-		bootDB := envOr("TEST_MYSQL_DB", "testdb")
-		dbName := mysqlDBName
-		if impl == implRaw {
-			dbName = mysqlBaselineDB
-		}
-		bootDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=false&multiStatements=false", user, pass, host, port, bootDB)
-		boot, err := openMysql(impl, bootDSN)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := boot.Exec("CREATE DATABASE IF NOT EXISTS " + dbName); err != nil {
-			return nil, err
-		}
-		boot.Close()
-		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=false&multiStatements=false", user, pass, host, port, dbName)
-		db, err := openMysql(impl, dsn)
-		if err != nil {
-			return nil, err
-		}
-		// The bench runs ops SEQUENTIALLY on one connection; pin the pool to a single warm conn so a
-		// cached *sql.Stmt's server-side prepared handle is reused across ops (a *sql.DB-level stmt is
-		// re-prepared per pooled conn under the hood — one warm conn = one prepare per SQL, then reuse).
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		for _, s := range strList(schema, "drop") {
-			if _, err := db.Exec(s); err != nil {
-				return nil, err
-			}
-		}
-		for _, s := range strList(schema, "ddl") {
-			if _, err := db.Exec(s); err != nil {
-				return nil, err
-			}
-		}
-		if err := seedRows(db, schema, "mysql"); err != nil {
-			return nil, err
-		}
-		return &ormDriver{dialect: "mysql", impl: impl, db: db, stmts: map[string]*sql.Stmt{}}, nil
-	default:
-		return nil, fmt.Errorf("unknown dialect %s", dialect)
-	}
-}
-
-// ── standalone smoke (mirror orm-smoke.ts) ─────────────────────────────────────
-func pad(s string, n int) string {
-	if len(s) >= n {
+func (c *cell) prep(sqlText string) *sql.Stmt {
+	if s, ok := c.stmts[sqlText]; ok {
 		return s
 	}
-	return s + strings.Repeat(" ", n-len(s))
-}
-
-func smoke() {
-	a := loadArtifact()
-	dialects := a.dialects()
-	drivers := map[string]*ormDriver{}
-	for _, d := range dialects {
-		drv, err := makeDriver(d, implRuntime, a)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "FATAL: connect %s: %v\n", d, err)
-			os.Exit(1)
-		}
-		drivers[d] = drv
+	s, err := c.db.Prepare(sqlText)
+	if err != nil {
+		panic(fmt.Sprintf("prepare %q: %v", sqlText, err))
 	}
-	pass, fail := 0, 0
-	type cell struct{ vals []string }
-	var rowsByOp []cell
-	for _, opAny := range a.ops() {
-		op := opAny.(map[string]any)
-		id := op["id"].(string)
-		c := cell{}
-		for _, d := range dialects {
-			n, err := drivers[d].run(a.plan(id, d))
-			if err != nil {
-				c.vals = append(c.vals, "ERR: "+firstLine(err.Error()))
-				fail++
-			} else {
-				c.vals = append(c.vals, strconv.Itoa(n))
-				pass++
-			}
-		}
-		rowsByOp = append(rowsByOp, c)
-	}
-	fmt.Print("\n19 ORM ops x 3 DBs — rows/op (writes report statements executed) [go]:\n\n")
-	fmt.Printf("%s %s %s postgres\n", pad("op", 42), pad("sqlite", 14), pad("mysql", 14))
-	for i, opAny := range a.ops() {
-		op := opAny.(map[string]any)
-		tag := "R "
-		if w, _ := op["write"].(bool); w {
-			tag = "W "
-		}
-		label := op["label"].(string)
-		v := rowsByOp[i].vals
-		fmt.Printf("%s %s %s %s\n", pad(tag+label, 42), pad(v[0], 14), pad(v[1], 14), v[2])
-	}
-	total := pass + fail
-	fmt.Printf("\n%d/%d cells green (%d ops x 3 DBs = %d).\n", pass, total, len(a.ops()), len(a.ops())*3)
-	for _, d := range dialects {
-		drivers[d].close()
-	}
-	if fail > 0 {
-		fmt.Fprintf(os.Stderr, "\nSMOKE FAILED: %d cell(s) errored (see ERR above).\n", fail)
-		os.Exit(1)
-	}
-	fmt.Println("SMOKE PASS [go]: all cells DB-backed on all 3 real DBs (sqlite via PURE-GO modernc.org/sqlite).")
-}
-
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
+	c.stmts[sqlText] = s
 	return s
 }
 
-// ── STANDALONE CSV bench (no protocol) ─────────────────────────────────────────
-// ONE standalone process runs ALL 19 ops × 3 dialects, self-measures, and writes a FLAT CSV to
-// benchmark/crosslang/.results/go.csv. The collector (collect.ts) reads the CSVs → CROSS-LANG.md.
-// CSV schema: language,case,dialect,metric,value   (RAW values only — collector owns the math).
-func envNum(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
+// query runs a prepared SELECT and materialises EVERY column of every row (fair vs the native cell,
+// which decodes full typed structs), returning each row as a []any. Only key columns are read
+// downstream for batching, but all columns are scanned to pay the real decode cost.
+func (c *cell) query(sqlText string, args ...any) [][]any {
+	c.count++
+	rows, err := c.prep(sqlText).Query(args...)
+	if err != nil {
+		panic(fmt.Sprintf("query %q: %v", sqlText, err))
+	}
+	defer rows.Close()
+	cols, _ := rows.Columns()
+	var out [][]any
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			panic(fmt.Sprintf("scan %q: %v", sqlText, err))
+		}
+		out = append(out, vals)
+	}
+	return out
+}
+
+// exec runs a prepared, parameterised write. Param-free control statements (BEGIN/COMMIT) go through
+// execRaw so they never hit the prepared-statement path.
+func (c *cell) exec(sqlText string, args ...any) {
+	c.count++
+	if _, err := c.prep(sqlText).Exec(args...); err != nil {
+		panic(fmt.Sprintf("exec %q: %v", sqlText, err))
+	}
+}
+
+// execRaw runs a param-free statement directly (BEGIN / COMMIT / ROLLBACK).
+func (c *cell) execRaw(sqlText string) {
+	c.count++
+	if _, err := c.db.Exec(sqlText); err != nil {
+		panic(fmt.Sprintf("exec %q: %v", sqlText, err))
+	}
+}
+
+// insertReturningID inserts one row and returns its generated id via last_insert_rowid (sqlite).
+func (c *cell) insertReturningID(sqlText string, args ...any) int64 {
+	c.count++
+	res, err := c.prep(sqlText).Exec(args...)
+	if err != nil {
+		panic(fmt.Sprintf("insert %q: %v", sqlText, err))
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		panic(fmt.Sprintf("last_insert_id %q: %v", sqlText, err))
+	}
+	return id
+}
+
+// asInt coerces a scanned cell (modernc.org/sqlite returns INTEGER as int64) to int64.
+func asInt(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	default:
+		return 0
+	}
+}
+
+// openSeeded opens a fresh in-memory sqlite (SAME storage as the native cell), applies the codegen-owned
+// schema + seed, and returns the cell. The fixture (STATEMENTS/SEED) is shared setup — it is NOT the
+// generated op runners, which the SDK bypasses entirely.
+func openSeeded() *cell {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		panic(err)
+	}
+	db.SetMaxOpenConns(1) // one in-memory connection so schema + seed + ops share the same DB
+	db.SetMaxIdleConns(1)
+	for _, s := range behaviors.STATEMENTS {
+		if _, err := db.Exec(s); err != nil {
+			panic(fmt.Sprintf("ddl %q: %v", s, err))
 		}
 	}
-	return def
-}
-
-func csvField(s string) string {
-	if strings.ContainsAny(s, ",\"\n") {
-		return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
-	}
-	return s
-}
-
-func resultsPath() string {
-	_, thisFile, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "benchmark", "crosslang", ".results", "go.csv")
-}
-
-// artifactBytes returns the size of THIS compiled binary (the native-cell artifact); ok=false if
-// the path/stat fails.
-func artifactBytes() (int64, bool) {
-	exe, err := os.Executable()
-	if err != nil {
-		return 0, false
-	}
-	info, err := os.Stat(exe)
-	if err != nil {
-		return 0, false
-	}
-	return info.Size(), true
-}
-
-func bench() {
-	const language = "go"
-	warmup := envNum("BENCH_WARMUP", 50)
-	iters := envNum("BENCH_ITER", 300)
-	tpDefault := iters
-	if tpDefault > 2000 {
-		tpDefault = 2000
-	}
-	tpIters := envNum("BENCH_TP_ITER", tpDefault)
-
-	spawnedAt := float64(time.Now().UnixNano()) / 1e6
-	a := loadArtifact()
-	dialects := a.dialects()
-	// cold = process start → runtime ready (binary start + artifact load), before any connect.
-	coldMs := (float64(time.Now().UnixNano()) / 1e6) - spawnedAt
-	if coldMs < 0 {
-		coldMs = 0
-	}
-
-	rows := []string{"language,case,dialect,metric,value"}
-	emit := func(caseID, dialect, metric, value string) {
-		rows = append(rows, fmt.Sprintf("%s,%s,%s,%s,%s", language, caseID, dialect, metric, csvField(value)))
-	}
-	f := func(v float64) string { return strconv.FormatFloat(v, 'g', -1, 64) }
-
-	live := map[string]*ormDriver{}
-	baselines := map[string]*ormDriver{}
-	for _, dialect := range dialects {
-		drv, err := makeDriver(dialect, implRuntime, a)
-		if err != nil {
-			reason := firstLine(err.Error())
-			for _, opAny := range a.ops() {
-				op := opAny.(map[string]any)
-				emit(op["id"].(string), dialect, "skipped", fmt.Sprintf("%s unreachable (%s)", dialect, reason))
-			}
-			continue
+	for _, s := range behaviors.SEED {
+		if _, err := db.Exec(s.SQL, s.Params...); err != nil {
+			panic(fmt.Sprintf("seed %q: %v", s.SQL, err))
 		}
-		live[dialect] = drv
-		// Bare-driver BASELINE (same real driver, same SQL, ISOLATED baseline schema/db). A baseline
-		// connect failure is NOT a whole-cell skip — the runtime numbers still stand; only the
-		// baseline_latency_ms rows for that dialect are dropped (honest per-dialect skip, no fake).
-		var baseline *ormDriver
-		if b, berr := makeDriver(dialect, implRaw, a); berr != nil {
-			fmt.Fprintf(os.Stderr, "[go] baseline %s unavailable (%s) — runtime metrics unaffected\n", dialect, firstLine(berr.Error()))
+	}
+	return &cell{db: db, stmts: map[string]*sql.Stmt{}}
+}
+
+// ── batch-write inputs (mirror the native cell's userRows / the ops SSoT) ────────────────────────────
+func batchRows(it int, stable bool) (emails, names []string) {
+	emails = make([]string, 10)
+	names = make([]string, 10)
+	for i := 0; i < 10; i++ {
+		if stable {
+			emails[i] = fmt.Sprintf("many%d@bench.com", i)
 		} else {
-			baseline = b
-			baselines[dialect] = b
+			emails[i] = fmt.Sprintf("many%d_%d@bench.com", it, i)
 		}
-		for _, opAny := range a.ops() {
-			op := opAny.(map[string]any)
-			caseID := op["id"].(string)
-			plan := a.plan(caseID, dialect)
-			// cost (fairness): queries/op from the plan shape; rows/op = executor's returned count.
-			queries := 0
-			if plan["kind"] == "read" {
-				queries = len(asAnySlice(plan["reads"])) + len(asAnySlice(plan["relations"]))
-			} else {
-				queries = len(asAnySlice(plan["statements"]))
-			}
-			rowsCount, err := drv.run(plan)
-			if err != nil {
-				emit(caseID, dialect, "skipped", firstLine(err.Error()))
-				continue
-			}
-			emit(caseID, dialect, "cost_queries", strconv.Itoa(queries))
-			emit(caseID, dialect, "cost_rows", strconv.Itoa(rowsCount))
-			// latency: warmup, then one row PER timed iteration.
-			for i := 0; i < warmup; i++ {
-				drv.run(plan)
-			}
-			failed := false
-			for i := 0; i < iters; i++ {
-				t0 := time.Now()
-				if _, err := drv.run(plan); err != nil {
-					emit(caseID, dialect, "skipped", firstLine(err.Error()))
-					failed = true
-					break
-				}
-				emit(caseID, dialect, "latency_ms", f(float64(time.Since(t0).Nanoseconds())/1e6))
-			}
-			if failed {
-				continue
-			}
-			// throughput: a tight loop, raw elapsed + completed.
-			t0 := time.Now()
-			for i := 0; i < tpIters; i++ {
-				drv.run(plan)
-			}
-			emit(caseID, dialect, "throughput_elapsed_ms", f(float64(time.Since(t0).Nanoseconds())/1e6))
-			emit(caseID, dialect, "throughput_completed", strconv.Itoa(tpIters))
-
-			// baseline latency: the IDENTICAL SQL/params (same assembly) through the BARE driver, SAME
-			// warmup + timed iterations → runtime÷baseline = litedbmodel's over-driver overhead. Emitted
-			// as baseline_latency_ms; the collector splits it into the `impl: baseline` cell. A baseline
-			// error mid-loop is an honest per-dialect skip (drop the rows) — the runtime rows stand.
-			if baseline != nil {
-				bPlan := a.plan(caseID, dialect)
-				for i := 0; i < warmup; i++ {
-					baseline.run(bPlan)
-				}
-				for i := 0; i < iters; i++ {
-					b0 := time.Now()
-					if _, err := baseline.run(bPlan); err != nil {
-						fmt.Fprintf(os.Stderr, "[go] baseline %s/%s errored (%s) — dropped, runtime unaffected\n", dialect, caseID, firstLine(err.Error()))
-						break
-					}
-					emit(caseID, dialect, "baseline_latency_ms", f(float64(time.Since(b0).Nanoseconds())/1e6))
-				}
-			}
-		}
+		names[i] = fmt.Sprintf("Many %d", i)
 	}
-
-	emit("", "", "cold_ms", f(coldMs))
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	emit("", "", "rss_bytes", strconv.FormatUint(m.Sys, 10))
-	emit("", "", "warmup", strconv.Itoa(warmup))
-	// artifact_bytes: this compiled binary's own size (a native-cell metric; the interpreted cells
-	// ts/python/php run on an interpreter, so they emit NO such row → the collector renders `—`).
-	if bytes, ok := artifactBytes(); ok {
-		emit("", "", "artifact_bytes", strconv.FormatInt(bytes, 10))
-	}
-
-	for _, d := range live {
-		d.close()
-	}
-	for _, d := range baselines {
-		d.close()
-	}
-
-	out := resultsPath()
-	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "FATAL: mkdir .results: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.WriteFile(out, []byte(strings.Join(rows, "\n")+"\n"), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "FATAL: write csv: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Fprintf(os.Stderr, "[%s] wrote %s (%d rows)\n", language, out, len(rows)-1)
+	return
 }
+
+// ── read helpers: ONE batched child query per level, grouped in memory (N+1-free). ──────────────────
+func (c *cell) nestedPostsFor(users [][]any) {
+	ids := pluck(users, 0)
+	if len(ids) == 0 {
+		return
+	}
+	sqlText := fmt.Sprintf(
+		"SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (%s) ORDER BY id ASC",
+		placeholders(len(ids)))
+	posts := c.query(sqlText, intArgs(ids)...)
+	groupBy(posts, 2) // author_id at col2
+}
+
+func (c *cell) nestedPostsCollectIDs(users [][]any) []int64 {
+	ids := pluck(users, 0)
+	if len(ids) == 0 {
+		return nil
+	}
+	sqlText := fmt.Sprintf(
+		"SELECT id, title, author_id FROM benchmark_posts WHERE author_id IN (%s) ORDER BY id ASC",
+		placeholders(len(ids)))
+	posts := c.query(sqlText, intArgs(ids)...)
+	groupBy(posts, 2)
+	return pluck(posts, 0)
+}
+
+func (c *cell) batchedComments(postIDs []int64) {
+	if len(postIDs) == 0 {
+		return
+	}
+	sqlText := fmt.Sprintf(
+		"SELECT id, body, post_id FROM benchmark_comments WHERE post_id IN (%s) ORDER BY id ASC",
+		placeholders(len(postIDs)))
+	comments := c.query(sqlText, intArgs(postIDs)...)
+	groupBy(comments, 2) // post_id at col2
+}
+
+// compositeRelations: tenant_users(tenant=1) → batched tenant_posts by (tenant_id,user_id) → batched
+// tenant_comments by (tenant_id,post_id). 3 queries.
+func (c *cell) compositeRelations() {
+	tusers := c.query(
+		"SELECT tenant_id, user_id, name FROM benchmark_tenant_users WHERE tenant_id = ? ORDER BY user_id ASC", 1)
+	if len(tusers) == 0 {
+		return
+	}
+	pbody := tupleIn(len(tusers), 2)
+	psql := "SELECT tenant_id, post_id, user_id, title FROM benchmark_tenant_posts WHERE (tenant_id, user_id) IN " + pbody
+	pparams := make([]any, 0, len(tusers)*2)
+	for _, r := range tusers {
+		pparams = append(pparams, asInt(r[0]), asInt(r[1])) // tenant_id, user_id
+	}
+	tposts := c.query(psql, pparams...)
+	if len(tposts) == 0 {
+		return
+	}
+	cbody := tupleIn(len(tposts), 2)
+	csql := "SELECT tenant_id, comment_id, post_id, body FROM benchmark_tenant_comments WHERE (tenant_id, post_id) IN " + cbody
+	cparams := make([]any, 0, len(tposts)*2)
+	for _, r := range tposts {
+		cparams = append(cparams, asInt(r[0]), asInt(r[1])) // tenant_id, post_id
+	}
+	c.query(csql, cparams...)
+}
+
+// updateMany: ONE statement (CASE id … END WHERE id IN (…)) — single-statement, N+1-avoided.
+func (c *cell) updateMany() {
+	_, names := batchRows(0, false)
+	var whens strings.Builder
+	params := make([]any, 0, 30)
+	for k := 0; k < 10; k++ {
+		whens.WriteString(" WHEN ? THEN ?")
+		params = append(params, int64(k+1), names[k])
+	}
+	for k := 0; k < 10; k++ {
+		params = append(params, int64(k+1))
+	}
+	sqlText := fmt.Sprintf(
+		"UPDATE benchmark_users SET name = CASE id%s END WHERE id IN (%s)",
+		whens.String(), placeholders(10))
+	c.exec(sqlText, params...)
+}
+
+// ── the 19 ops (native-cell order). Fixed inputs mirror the go native cell; mutating ops vary their
+//    UNIQUE column by it. Reads: LIMIT/ORDER shapes match the ops SSoT (== the native generated SQL). ──
+func (c *cell) op(name string, it int) {
+	switch name {
+	case "findAll":
+		c.query("SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT 100")
+	case "filterPaginateSort":
+		c.query("SELECT id, title, content, published, author_id, created_at FROM benchmark_posts "+
+			"WHERE published = ? ORDER BY created_at DESC LIMIT 20 OFFSET 10", 1)
+	case "findFirst":
+		c.query("SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1", "User%")
+	case "findUnique":
+		c.query("SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1", "user500@example.com")
+	case "nestedFindAll":
+		users := c.query("SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT 100")
+		c.nestedPostsFor(users)
+	case "nestedFindFirst":
+		users := c.query("SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1", "User%")
+		c.nestedPostsFor(users)
+	case "nestedFindUnique":
+		users := c.query("SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1", "user1@example.com")
+		c.nestedPostsFor(users)
+	case "nestedRelations":
+		users := c.query("SELECT id, email, name FROM benchmark_users ORDER BY id ASC LIMIT 100")
+		postIDs := c.nestedPostsCollectIDs(users)
+		c.batchedComments(postIDs)
+	case "compositeRelations":
+		c.compositeRelations()
+	case "create":
+		c.exec("INSERT INTO benchmark_users (email, name) VALUES (?, ?)", fmt.Sprintf("new%d@bench.com", it), "New")
+	case "update":
+		c.exec("UPDATE benchmark_users SET name = ? WHERE id = ?", "Updated 1", 1)
+	case "upsert":
+		c.exec("INSERT INTO benchmark_users (email, name) VALUES (?, ?) "+
+			"ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name",
+			"user1@example.com", "Upserted One")
+	case "createMany":
+		emails, names := batchRows(it, false)
+		c.batchInsert(emails, names, "")
+	case "upsertMany":
+		emails := []string{"user1@example.com", "user2@example.com"}
+		for k := 0; k < 8; k++ {
+			emails = append(emails, fmt.Sprintf("many%d@bench.com", k))
+		}
+		_, names := batchRows(it, true)
+		c.batchInsert(emails, names,
+			" ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name")
+	case "updateMany":
+		c.updateMany()
+	case "nestedCreate":
+		c.execRaw("BEGIN")
+		uid := c.insertReturningID("INSERT INTO benchmark_users (email, name) VALUES (?, ?)",
+			fmt.Sprintf("nc%d@bench.com", it), "NC")
+		c.exec("INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", uid, "NC Post")
+		c.execRaw("COMMIT")
+	case "nestedUpsert":
+		c.execRaw("BEGIN")
+		c.exec("INSERT INTO benchmark_users (email, name) VALUES (?, ?) "+
+			"ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name",
+			"user1@example.com", "NUp")
+		rows := c.query("SELECT id FROM benchmark_users WHERE email = ?", "user1@example.com")
+		uid := asInt(rows[0][0])
+		c.exec("INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", uid, "NUp Post")
+		c.execRaw("COMMIT")
+	case "nestedUpdate":
+		c.execRaw("BEGIN")
+		c.exec("UPDATE benchmark_users SET name = ? WHERE id = ?", "NU", 1)
+		c.exec("UPDATE benchmark_posts SET title = ? WHERE author_id = ?", "NU Post", 1)
+		c.execRaw("COMMIT")
+	case "delete":
+		c.execRaw("BEGIN")
+		uid := c.insertReturningID("INSERT INTO benchmark_users (email, name) VALUES (?, ?)",
+			fmt.Sprintf("del%d@bench.com", it), "Del")
+		c.exec("DELETE FROM benchmark_users WHERE id = ?", uid)
+		c.execRaw("COMMIT")
+	default:
+		panic("unknown op " + name)
+	}
+}
+
+// batchInsert: ONE multi-row INSERT for the 10 rows (N+1-avoided), optional ON CONFLICT tail.
+func (c *cell) batchInsert(emails, names []string, conflict string) {
+	tuples := make([]string, 10)
+	params := make([]any, 0, 20)
+	for k := 0; k < 10; k++ {
+		tuples[k] = "(?, ?)"
+		params = append(params, emails[k], names[k])
+	}
+	sqlText := "INSERT INTO benchmark_users (email, name) VALUES " + strings.Join(tuples, ",") + conflict
+	c.exec(sqlText, params...)
+}
+
+// ── small SQL helpers ────────────────────────────────────────────────────────────────────────────────
+func placeholders(n int) string { return strings.TrimSuffix(strings.Repeat("?,", n), ",") }
+
+// tupleIn builds a row-tuple IN body sqlite accepts: (VALUES (?,?),(?,?),…).
+func tupleIn(rows, cols int) string {
+	one := "(" + placeholders(cols) + ")"
+	return "(VALUES " + strings.TrimSuffix(strings.Repeat(one+",", rows), ",") + ")"
+}
+
+func pluck(rows [][]any, col int) []int64 {
+	out := make([]int64, len(rows))
+	for i, r := range rows {
+		out[i] = asInt(r[col])
+	}
+	return out
+}
+
+func intArgs(ids []int64) []any {
+	out := make([]any, len(ids))
+	for i, v := range ids {
+		out[i] = v
+	}
+	return out
+}
+
+// groupBy stitches child rows by their parent-key column (in-memory, mirrors the runtime distribute).
+func groupBy(rows [][]any, keyCol int) {
+	m := make(map[int64][]int, len(rows))
+	for idx, r := range rows {
+		k := asInt(r[keyCol])
+		m[k] = append(m[k], idx)
+	}
+	_ = m
+}
+
+var ops = []string{
+	"findAll", "filterPaginateSort", "findFirst", "findUnique",
+	"nestedFindAll", "nestedFindFirst", "nestedFindUnique", "nestedRelations", "compositeRelations",
+	"create", "update", "upsert",
+	"createMany", "upsertMany", "updateMany",
+	"nestedCreate", "nestedUpsert", "nestedUpdate", "delete",
+}
+
+// expectedStatements — the per-op hand-issued statement count (reads + writes + tx-control BEGIN/COMMIT;
+// pluck/group are in-memory and do NOT issue statements). Matches the native cell's expectations.
+var expectedStatements = map[string]int{
+	"findAll": 1, "filterPaginateSort": 1, "findFirst": 1, "findUnique": 1,
+	"nestedFindAll": 2, "nestedFindFirst": 2, "nestedFindUnique": 2, "nestedRelations": 3, "compositeRelations": 3,
+	"create": 1, "update": 1, "upsert": 1,
+	"createMany": 1, "upsertMany": 1, "updateMany": 1,
+	"nestedCreate": 4, "nestedUpsert": 5, "nestedUpdate": 4, "delete": 4,
+}
+
+var txOps = map[string]bool{"nestedCreate": true, "nestedUpsert": true, "nestedUpdate": true, "delete": true}
 
 func main() {
-	smokeMode := false
-	for _, a := range os.Args[1:] {
-		if a == "--smoke" {
-			smokeMode = true
+	doBench := len(os.Args) > 1 && os.Args[1] == "bench"
+
+	c := openSeeded()
+	defer c.db.Close()
+
+	fmt.Println("op                    statements  rows")
+	fail := 0
+	for _, name := range ops {
+		c.count = 0
+		c.op(name, 0)
+		q := int(c.count)
+		mark := "ok"
+		if exp, okk := expectedStatements[name]; okk && exp != q {
+			mark = fmt.Sprintf("STATEMENT-COUNT MISMATCH (want %d)", exp)
+			fail++
+		}
+		kind := ""
+		if txOps[name] {
+			kind = " (BEGIN + body + COMMIT)"
+		}
+		fmt.Printf("%-20s  %-10d  %s%s\n", name, q, mark, kind)
+	}
+
+	if doBench {
+		reps := 300
+		warmup := 30
+		if len(os.Args) > 2 {
+			if n, e := strconv.Atoi(os.Args[2]); e == nil {
+				reps = n
+			}
+		}
+		if len(os.Args) > 3 {
+			if n, e := strconv.Atoi(os.Args[3]); e == nil {
+				warmup = n
+			}
+		}
+		fmt.Println("\ncell,op,iter,us")
+		for _, name := range ops {
+			for it := 0; it < warmup; it++ {
+				c.op(name, it+1)
+			}
+			for it := 0; it < reps; it++ {
+				g := it + warmup + 1
+				t := time.Now()
+				c.op(name, g)
+				fmt.Printf("sdk,%s,%d,%d\n", name, it, time.Since(t).Microseconds())
+			}
 		}
 	}
-	if smokeMode {
-		smoke()
-	} else {
-		bench()
+
+	if fail > 0 {
+		fmt.Fprintf(os.Stderr, "\nFAILED: %d op(s) mismatched.\n", fail)
+		os.Exit(1)
 	}
+	fmt.Fprintln(os.Stderr, "\nOK: 19 ops ran; relation counts N+1-free; batch writes = 1 statement; tx = BEGIN + body + COMMIT.")
 }
