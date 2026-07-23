@@ -73,7 +73,7 @@ import type { PortableType } from 'behavior-contracts';
 import type { Dialect } from './makesql/handler';
 import type { DialectName } from './dialect';
 import { assertComponentGraphPortable } from './guard';
-import { failClosedMaterializeResolverFromColumnMap, columnTypeResolverFromColumnMap, type MaterializeResolver, type ColumnTypeResolver } from './coltype';
+import { failClosedMaterializeResolverFromColumnMap, columnTypeResolverFromColumnMap, withColumnResolver, type MaterializeResolver, type ColumnTypeResolver } from './coltype';
 import { resolveFindHardLimit } from './limit-config';
 
 /**
@@ -311,10 +311,15 @@ function lowerBehaviorClass(cls: BehaviorClass, options: PublishBehaviorsOptions
   const resolveColumnType: ColumnTypeResolver | undefined =
     columnMap !== undefined ? columnTypeResolverFromColumnMap(columnMap) : undefined;
 
-  const ir = compileBehaviors(cls, {
-    ...(options.inputPorts !== undefined ? { inputPorts: options.inputPorts } : {}),
-    ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
-  });
+  // Bind the schema resolver AMBIENTLY for the record pass: a batch write compiles its Postgres UNNEST
+  // element casts at record time (inside the behavior method), so `emitBatchWrite` reads THIS resolver
+  // (the SAME `static columns` SoT the post-compile de-box below consumes) via `getAmbientColumnResolver`.
+  const ir = withColumnResolver(resolveColumnType, () =>
+    compileBehaviors(cls, {
+      ...(options.inputPorts !== undefined ? { inputPorts: options.inputPorts } : {}),
+      ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
+    }),
+  );
 
   // bc runs its own `assertPortableComponentGraph` inside `compileBehaviors`; litedbmodel's
   // portability guard is auto-applied over every port Expression IR node. There is no per-op catalog

@@ -329,6 +329,40 @@ function dateToTzString(d: Date): string {
 export type ColumnTypeResolver = (table: string, column: string) => string;
 
 /**
+ * The AMBIENT compile-time {@link ColumnTypeResolver} (spec §4.1 schema SoT), bound for the duration
+ * of ONE `compileBehaviors` record pass by {@link withColumnResolver}. It exists because a batch write
+ * (`emitBatchWrite`) compiles its Postgres UNNEST element casts at RECORD time (inside the behavior
+ * method, before publish returns), so it needs the model's `static columns` resolver AT THAT MOMENT —
+ * the same resolver `publishBehaviors` builds from `static columns` and passes explicitly to the
+ * post-compile read-column de-box. Binding is synchronous + re-entrant-safe (save/restore); the
+ * `compileBehaviors` record pass runs the behavior methods synchronously, so no async boundary is
+ * crossed while it is set. Absent binding ⇒ `undefined` (a Postgres batch then fails-closed with the
+ * existing "needs the column-type resolver" error — never a silent un-cast UNNEST).
+ */
+let ambientColumnResolver: ColumnTypeResolver | undefined;
+
+/**
+ * Run `fn` with `resolver` bound as the {@link ambientColumnResolver} (restored afterward, even on
+ * throw). Used by the single lowering core to expose the model's schema SoT to record-time batch
+ * compilation. `resolver` may be `undefined` (a model that declared no `columns`) — that is bound
+ * verbatim, so a Postgres batch under such a model fails-closed as before.
+ */
+export function withColumnResolver<T>(resolver: ColumnTypeResolver | undefined, fn: () => T): T {
+  const prev = ambientColumnResolver;
+  ambientColumnResolver = resolver;
+  try {
+    return fn();
+  } finally {
+    ambientColumnResolver = prev;
+  }
+}
+
+/** Read the {@link ambientColumnResolver} bound by the enclosing {@link withColumnResolver} (or `undefined`). */
+export function getAmbientColumnResolver(): ColumnTypeResolver | undefined {
+  return ambientColumnResolver;
+}
+
+/**
  * A resolver that yields the TS read-path {@link MaterializeClass} of a `(table, column)`, or
  * `undefined` when the column's type is unknown/untypeable. Unlike {@link ColumnTypeResolver} this
  * is TOLERANT (never throws for an unknown column) — it drives the ALWAYS-ON production read-path

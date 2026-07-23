@@ -59,7 +59,7 @@ import {
   type SqlBundle,
 } from './runtime';
 import { compileRelationOp, parentKeyCols, targetKeyCols, type RelationDecl, type RelationKind, type RelationOp } from './relation';
-import { sqlTypeToMaterializeClass, keyArrayElemScalar, columnTypeResolverFromColumnMap, type ColumnTypeResolver } from './coltype';
+import { sqlTypeToMaterializeClass, keyArrayElemScalar, columnTypeResolverFromColumnMap, getAmbientColumnResolver, type ColumnTypeResolver } from './coltype';
 import type { DialectName } from './dialect';
 import { compileSelectNode, type StaticStatement } from './makesql/static-bundle';
 import { compileWriteNode } from './makesql/tx';
@@ -237,7 +237,11 @@ export function emitBatchWrite(L: ComponentFns, component: 'Insert' | 'Update', 
     for (const c of spec.keyColumns ?? []) base[`key.${c}`] = 0;
     for (const c of spec.columns) base[`set.${c}`] = 0;
   }
-  const op = compileWriteNode({ component, ports: toIrPorts(base) } as never, dialect);
+  // Postgres batch UNNEST casts are derived from the model's schema SoT: read the AMBIENT resolver the
+  // enclosing `compileBehaviors` record pass bound from `static columns` (`withColumnResolver`). On
+  // sqlite/mysql the batch form is value-length-independent JSON and needs no resolver (undefined is
+  // fine); on postgres an absent resolver still fails-closed inside `compileWriteNode`.
+  const op = compileWriteNode({ component, ports: toIrPorts(base) } as never, dialect, getAmbientColumnResolver());
   // The json-batch SSoT binds the SAME records-JSON to every `?` (updateMany: one per SET sub-select +
   // the WHERE). `op.params.length` is that `?` count — bind the ONE opaque `rows` value that many times.
   const params = Array.from({ length: op.params.length }, () => spec.rows);
