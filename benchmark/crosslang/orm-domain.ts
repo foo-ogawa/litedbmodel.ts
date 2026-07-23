@@ -41,6 +41,12 @@ export function dropStatements(dialect: OrmDialect): string[] {
   return DROP_ORDER.map((t) => `DROP TABLE IF EXISTS ${t}${cascade}`);
 }
 
+// Empty every table in child→parent order (the same order as DROP) so a per-op re-seed starts from a
+// clean fixture WITHOUT dropping/recreating the schema. Derived from the SAME DROP_ORDER SSoT.
+export function deleteStatements(_dialect: OrmDialect): string[] {
+  return DROP_ORDER.map((t) => `DELETE FROM ${t}`);
+}
+
 export function ddl(dialect: OrmDialect): string[] {
   if (dialect === 'sqlite') {
     return [
