@@ -267,17 +267,15 @@ pub fn execute_sql(
 /// per-ordinal `$[i]`) — the SAME shape `relation.ts bindKeys` produces for the MySQL/SQLite JSON
 /// param. Ports are spread alphabetically by the native emitter: `(col, rows)`.
 pub fn pluck_keys(col: &[String], rows: &[WireValue]) -> Result<WireValue, BehaviorError> {
-    let value_rows: Vec<Value> = rows.iter().map(wire_to_value).collect();
-    // bc 0.9.0 honors the declared `{arr:'string'}` portSchema: the native emitter spreads the port as
-    // an owned `Vec<String>` — the exact key-column tuple the grouping core keys on (the leaf is the
-    // wire↔core adapter; no borrow→owned conversion needed).
-    let tuples = crate::grouping::dedupe_key_tuples(&value_rows, col);
+    // The grouping core keys DIRECTLY on `WireValue` — no `WireValue`→`Value` conversion (the read path
+    // never boxes into bc's `Value`). `col` is the ordered key-column tuple spread as an owned `Vec<String>`.
+    let tuples = crate::grouping::dedupe_key_tuples(rows, col);
     let keys: Vec<WireValue> = if col.len() == 1 {
-        tuples.into_iter().map(|mut t| value_to_wire(t.remove(0))).collect()
+        tuples.into_iter().map(|mut t| t.remove(0)).collect()
     } else {
         tuples
             .into_iter()
-            .map(|t| WireValue::List(WireList { items: t.into_iter().map(value_to_wire).collect() }))
+            .map(|t| WireValue::List(WireList { items: t }))
             .collect()
     };
     Ok(WireValue::List(WireList { items: keys }))
@@ -303,30 +301,28 @@ pub fn group_children(
     pk: &[String],
     single: bool,
 ) -> Result<WireValue, BehaviorError> {
-    let value_children: Vec<Value> = children.iter().map(wire_to_value).collect();
-    // bc 0.9.0 honors the declared `{arr:'string'}` portSchema: the `fk`/`pk` key-column tuples arrive
-    // as owned `Vec<String>` — the exact shape the Value grouping core keys on (the wire↔core adapter
-    // no longer converts). `value_children` is MOVED into the grouping core (each child ends up in exactly
-    // one bucket — no per-child deep clone).
-    let by_key = crate::grouping::group_by_key(value_children, fk);
+    // The grouping core keys DIRECTLY on `WireValue` (no `WireValue`↔`Value` conversion). The buckets
+    // hold REFERENCES into `children` — no per-child clone; a matched child is cloned exactly once, when
+    // `attach_to_parent` nests it into a parent's output.
+    let by_key = crate::grouping::group_by_key(children, fk);
     let out: Vec<WireValue> = parents
         .iter()
         .map(|p| {
-            let par = wire_to_value(p);
-            // Records are objects by contract (SQL rows); a non-object passes through untouched.
-            if !matches!(par, Value::Obj(_)) {
-                return p.clone();
+            let nested = crate::grouping::attach_to_parent(p, pk, &by_key, single);
+            match p {
+                // {...p, [into]: nested}: shallow-copy the parent's entries, then set an existing `into`
+                // in place (keeps its position) or append a new one — the TS `{...par, [into]: …}` spread.
+                WireValue::Row(r) => {
+                    let mut entries = r.entries.clone();
+                    match entries.iter_mut().find(|(k, _)| k == into) {
+                        Some(slot) => slot.1 = nested,
+                        None => entries.push((into.to_string(), nested)),
+                    }
+                    WireValue::Row(WireRow { entries })
+                }
+                // Records are rows by contract (SQL rows); a non-row passes through untouched.
+                _ => p.clone(),
             }
-            // `attach_to_parent` only READS the parent's `pk` cells — borrow `par`, then MOVE it into
-            // `new_pairs` (no parent-row clone). {...par, [into]: nested}: an existing key keeps its
-            // position (value overwritten), a new key is appended — the TS spread semantics.
-            let nested = crate::grouping::attach_to_parent(&par, pk, &by_key, single);
-            let Value::Obj(mut new_pairs) = par else { unreachable!() };
-            match new_pairs.iter_mut().find(|(k, _)| k == into) {
-                Some(slot) => slot.1 = nested,
-                None => new_pairs.push((into.to_string(), nested)),
-            }
-            value_to_wire(Value::Obj(new_pairs))
         })
         .collect();
     Ok(WireValue::List(WireList { items: out }))

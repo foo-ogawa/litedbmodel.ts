@@ -1,97 +1,142 @@
 //! litedbmodel v2 SCP — the SHARED relation-grouping CORE (#141), Rust port.
 //!
-//! The ONE implementation of relation key-identity + dedupe + parent grouping over bc [`Value`]
-//! rows, byte-behaviour-identical to the TS SSoT `src/scp/grouping.ts`. It is consumed by BOTH
-//! relation surfaces so there is a single source of truth (no duplicated grouping logic):
-//!
-//!   - the EAGER graph — the op-independent `pluck` / `group` wire leaves (`crate` leaf transports),
-//!     which convert WireValue↔Value at the boundary and call THIS core;
-//!   - the RUNTIME lazy / declarative path (`crate::relation`), which groups already-fetched rows
-//!     over the SAME core.
+//! The ONE implementation of relation key-identity + dedupe + parent grouping over the RUNTIME-FREE
+//! wire rows ([`WireValue`] — the type the generated native module speaks), byte-behaviour-identical
+//! to the TS SSoT `src/scp/grouping.ts`. It works DIRECTLY on `WireValue` so the `pluck`/`group` leaf
+//! transports carry NO `WireValue`↔`Value` conversion in the hot path (the read path never boxes into
+//! bc's `Value`): the only place a wire number becomes a typed scalar is the generated module's final
+//! de-box of its OUTPUT columns.
 //!
 //! Nothing here touches SQL or a driver: it is pure in-memory grouping over already-fetched rows
-//! (bc `Value::Obj` records). Ordered TUPLE keys are supported (composite keys), matching TS.
+//! (`WireValue::Row` records). Ordered TUPLE keys are supported (composite keys), matching TS.
 
 use std::collections::HashMap;
 
-use behavior_contracts::Value;
+use crate::wire::{WireList, WireValue};
 
-/// A separator no scalar `String(v)` rendering contains, so distinct tuples never collide (matches
-/// the TS `KEY_SEP`).
+/// A separator no scalar key rendering contains, so distinct tuples never collide (matches TS `KEY_SEP`).
 const KEY_SEP: &str = " ";
 
 /// The stringified key identity for dedupe/grouping. Single scalar → its `String(v)` rendering; a
 /// tuple → the renderings joined by [`KEY_SEP`] (matches TS `keyIdentity`).
-pub fn key_identity(values: &[Value]) -> String {
+pub fn key_identity(values: &[&WireValue]) -> String {
     values
         .iter()
-        .map(stringify_key)
+        .map(|v| stringify_key(v))
         .collect::<Vec<_>>()
         .join(KEY_SEP)
 }
 
-/// Mirror of JS `String(v)` for the key identity: bool → `"true"`/`"false"`, a whole float prints as
-/// an integer (a scanned INT column arrives as a whole `f64`), a fractional float its shortest
-/// round-trip form, string verbatim, null → `"null"` (a null key is dropped before it is ever
-/// stringified, so this arm never affects a grouping result — it exists only for totality).
-fn stringify_key(value: &Value) -> String {
+/// Mirror of JS `String(v)` for the key identity over a WIRE scalar. A wire number is carried as a
+/// canonical decimal string (`WireValue::Num`), so the key is that string NORMALIZED exactly as the
+/// typed path would render it: a whole number prints as integer text (`"1.0"`→`"1"`), a fractional its
+/// shortest round-trip form, bool `"true"`/`"false"`, string verbatim. Only the KEY columns are parsed
+/// (a handful), never every cell. Null is dropped before it is ever stringified (totality arm only).
+fn stringify_key(value: &WireValue) -> String {
     match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Int(i) => i.to_string(),
-        Value::Float(f) if f.is_finite() && f.fract() == 0.0 => (*f as i64).to_string(),
-        Value::Float(f) => f.to_string(),
-        Value::Str(s) => s.clone(),
-        // A composite/array is never a scalar key (keys are scalar columns); totality fallback only.
-        other => format!("{other:?}"),
+        WireValue::Null => "null".to_string(),
+        WireValue::Bool(b) => b.to_string(),
+        WireValue::Str(s) => s.clone(),
+        WireValue::Num(s) => {
+            // Normalize identically to the typed `stringify_key` (Int/whole-Float → integer text).
+            if let Ok(i) = s.parse::<i64>() {
+                i.to_string()
+            } else if let Ok(f) = s.parse::<f64>() {
+                if f.is_finite() && f.fract() == 0.0 {
+                    (f as i64).to_string()
+                } else {
+                    f.to_string()
+                }
+            } else {
+                s.clone()
+            }
+        }
+        // A Row/List is never a scalar key (keys are scalar columns); totality fallback only.
+        WireValue::Row(_) | WireValue::List(_) => String::new(),
     }
 }
 
-/// A row field by column name (a bc `Value::Obj` is insertion-ordered pairs). `None` = the field is
-/// ABSENT (the TS `undefined`), distinct from a present `Value::Null`.
-fn field<'a>(row: &'a Value, col: &str) -> Option<&'a Value> {
-    row.obj_get(col)
+/// A row field by column name (a `WireValue::Row` is insertion-ordered pairs). `None` = the field is
+/// ABSENT (the TS `undefined`), distinct from a present `WireValue::Null`.
+fn field<'a>(row: &'a WireValue, col: &str) -> Option<&'a WireValue> {
+    match row {
+        WireValue::Row(r) => r.entries.iter().find(|(k, _)| k == col).map(|(_, v)| v),
+        _ => None,
+    }
 }
 
-/// True iff a tuple column is ABSENT or `Value::Null` (the TS `v === undefined || v === null` drop).
-fn is_missing(v: Option<&Value>) -> bool {
-    matches!(v, None | Some(Value::Null))
+/// Resolve each of `cols` to its POSITION in a sample `Row`. Every row of a SQL result set shares the
+/// SAME column order, so this is resolved ONCE and reused across all rows — replacing the per-cell
+/// linear scan with O(1) index access. `None` if `sample` is not a `Row`; an absent column resolves to
+/// `usize::MAX` (its per-row lookup then reports absent, falling back to the name scan).
+fn resolve_indices(sample: &WireValue, cols: &[String]) -> Option<Vec<usize>> {
+    let entries = match sample {
+        WireValue::Row(r) => &r.entries,
+        _ => return None,
+    };
+    Some(
+        cols.iter()
+            .map(|c| entries.iter().position(|(k, _)| k == c).unwrap_or(usize::MAX))
+            .collect(),
+    )
+}
+
+/// The key cells of `row` via precomputed `idx` (O(1) index access; verifies the column name still
+/// matches, else falls back to the linear `field`). `None` if any key column is ABSENT or `Null`
+/// (the no-partial-keys drop) — the same predicate as `field` + `is_missing`.
+fn key_cells<'a>(row: &'a WireValue, cols: &[String], idx: &[usize]) -> Option<Vec<&'a WireValue>> {
+    let entries = match row {
+        WireValue::Row(r) => &r.entries,
+        _ => return None,
+    };
+    let mut out = Vec::with_capacity(cols.len());
+    for (c, &i) in cols.iter().zip(idx) {
+        let cell = match entries.get(i) {
+            Some((k, v)) if k == c => v,
+            _ => field(row, c)?, // row shape differs from the sample — safe linear fallback
+        };
+        if matches!(cell, WireValue::Null) {
+            return None;
+        }
+        out.push(cell);
+    }
+    Some(out)
 }
 
 /// The deduped, non-null key TUPLES of `rows` over `key_cols` (insertion order preserved —
 /// deterministic). A tuple is dropped if ANY of its key columns is absent/null (no partial keys);
 /// deduped on the stringified tuple identity. Port of TS `dedupeKeyTuples`.
-pub fn dedupe_key_tuples(rows: &[Value], key_cols: &[String]) -> Vec<Vec<Value>> {
+pub fn dedupe_key_tuples(rows: &[WireValue], key_cols: &[String]) -> Vec<Vec<WireValue>> {
     let mut seen = std::collections::HashSet::new();
-    let mut out: Vec<Vec<Value>> = Vec::new();
+    let mut out: Vec<Vec<WireValue>> = Vec::new();
+    let idx = rows.iter().find_map(|r| resolve_indices(r, key_cols));
     for row in rows {
-        let cells: Vec<Option<&Value>> = key_cols.iter().map(|c| field(row, c)).collect();
-        if cells.iter().any(|v| is_missing(*v)) {
-            continue;
-        }
-        let tuple: Vec<Value> = cells.into_iter().map(|v| v.unwrap().clone()).collect();
-        if seen.insert(key_identity(&tuple)) {
-            out.push(tuple);
+        let cells = match idx.as_deref().and_then(|ix| key_cells(row, key_cols, ix)) {
+            Some(c) => c,
+            None => continue,
+        };
+        let ident = key_identity(&cells);
+        if seen.insert(ident) {
+            out.push(cells.into_iter().cloned().collect());
         }
     }
     out
 }
 
 /// Group `children` by their `fk_cols` tuple identity (a null/absent key drops the child). Child list
-/// order within a bucket is the input order (push order). Port of TS `groupByKey`. The bucket keys
-/// are looked up (never iterated) by [`attach_to_parent`], so a `HashMap` is faithful.
-pub fn group_by_key(children: Vec<Value>, fk_cols: &[String]) -> HashMap<String, Vec<Value>> {
-    let mut by_key: HashMap<String, Vec<Value>> = HashMap::new();
+/// order within a bucket is the input order (push order). Port of TS `groupByKey`. The buckets hold
+/// REFERENCES into `children` (no per-child clone — the caller borrows the children); each matched
+/// child is cloned exactly ONCE, when it is nested into its parent by [`attach_to_parent`].
+pub fn group_by_key<'a>(
+    children: &'a [WireValue],
+    fk_cols: &[String],
+) -> HashMap<String, Vec<&'a WireValue>> {
+    let mut by_key: HashMap<String, Vec<&'a WireValue>> = HashMap::new();
+    let idx = children.iter().find_map(|c| resolve_indices(c, fk_cols));
     for child in children {
-        // Compute the key from BORROWED cells (only the key columns are cloned — small), then MOVE the
-        // whole child row into its bucket (each child belongs to exactly ONE bucket) — no per-row deep clone.
-        let key = {
-            let cells: Vec<Option<&Value>> = fk_cols.iter().map(|c| field(&child, c)).collect();
-            if cells.iter().any(|v| is_missing(*v)) {
-                continue;
-            }
-            let tuple: Vec<Value> = cells.into_iter().map(|v| v.unwrap().clone()).collect();
-            key_identity(&tuple)
+        let key = match idx.as_deref().and_then(|ix| key_cells(child, fk_cols, ix)) {
+            Some(cells) => key_identity(&cells),
+            None => continue,
         };
         by_key.entry(key).or_default().push(child);
     }
@@ -99,37 +144,46 @@ pub fn group_by_key(children: Vec<Value>, fk_cols: &[String]) -> HashMap<String,
 }
 
 /// Distribute grouped children onto ONE parent per cardinality (port of TS `attachToParent`):
-/// `single == false` (hasMany) → the child list as `Value::Arr` (`[]` when none); `single == true`
-/// (belongsTo/hasOne) → the single child (or `Value::Null`). Keyed by the parent's `pk_cols` tuple
-/// identity; a null/absent parent key matches nothing (`[]`/`null`).
+/// `single == false` (hasMany) → the child list as `WireValue::List` (`[]` when none); `single == true`
+/// (belongsTo/hasOne) → the single child (or `WireValue::Null`). Keyed by the parent's `pk_cols` tuple
+/// identity; a null/absent parent key matches nothing (`[]`/`null`). The matched children are cloned
+/// here (the ONE necessary clone — they become part of the parent's owned output).
 pub fn attach_to_parent(
-    parent: &Value,
+    parent: &WireValue,
     pk_cols: &[String],
-    by_key: &HashMap<String, Vec<Value>>,
+    by_key: &HashMap<String, Vec<&WireValue>>,
     single: bool,
-) -> Value {
-    let cells: Vec<Option<&Value>> = pk_cols.iter().map(|c| field(parent, c)).collect();
-    let rows: Option<&Vec<Value>> = if cells.iter().any(|v| is_missing(*v)) {
-        None
-    } else {
-        let tuple: Vec<Value> = cells.into_iter().map(|v| v.unwrap().clone()).collect();
-        by_key.get(&key_identity(&tuple))
-    };
+) -> WireValue {
+    let idx = resolve_indices(parent, pk_cols);
+    let rows: Option<&Vec<&WireValue>> = idx
+        .as_deref()
+        .and_then(|ix| key_cells(parent, pk_cols, ix))
+        .map(|cells| key_identity(&cells))
+        .and_then(|ident| by_key.get(&ident));
     if !single {
-        return Value::Arr(rows.cloned().unwrap_or_default());
+        let items = rows
+            .map(|r| r.iter().map(|c| (*c).clone()).collect())
+            .unwrap_or_default();
+        return WireValue::List(WireList { items });
     }
     match rows.and_then(|r| r.first()) {
-        Some(child) => child.clone(),
-        None => Value::Null,
+        Some(child) => (*child).clone(),
+        None => WireValue::Null,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::WireRow;
 
-    fn row(pairs: &[(&str, Value)]) -> Value {
-        Value::Obj(pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+    fn num(n: i64) -> WireValue {
+        WireValue::Num(n.to_string())
+    }
+    fn row(pairs: &[(&str, WireValue)]) -> WireValue {
+        WireValue::Row(WireRow {
+            entries: pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+        })
     }
     fn cols(cs: &[&str]) -> Vec<String> {
         cs.iter().map(|s| s.to_string()).collect()
@@ -138,13 +192,13 @@ mod tests {
     #[test]
     fn key_identity_matches_js_string() {
         // whole float → integer text (a scanned INT column), bool/string verbatim, tuple space-joined.
-        assert_eq!(key_identity(&[Value::Float(1.0)]), "1");
-        assert_eq!(key_identity(&[Value::Int(2)]), "2");
-        assert_eq!(key_identity(&[Value::Str("x".into())]), "x");
-        assert_eq!(key_identity(&[Value::Bool(true)]), "true");
-        assert_eq!(key_identity(&[Value::Float(1.5)]), "1.5");
+        assert_eq!(key_identity(&[&WireValue::Num("1.0".into())]), "1");
+        assert_eq!(key_identity(&[&WireValue::Num("2".into())]), "2");
+        assert_eq!(key_identity(&[&WireValue::Str("x".into())]), "x");
+        assert_eq!(key_identity(&[&WireValue::Bool(true)]), "true");
+        assert_eq!(key_identity(&[&WireValue::Num("1.5".into())]), "1.5");
         assert_eq!(
-            key_identity(&[Value::Int(1), Value::Str("a".into())]),
+            key_identity(&[&WireValue::Num("1".into()), &WireValue::Str("a".into())]),
             "1 a"
         );
     }
@@ -152,74 +206,73 @@ mod tests {
     #[test]
     fn dedupe_drops_null_and_dedupes_preserving_order() {
         let rows = vec![
-            row(&[("id", Value::Int(2))]),
-            row(&[("id", Value::Int(1))]),
-            row(&[("id", Value::Int(2))]), // dup
-            row(&[("id", Value::Null)]),   // dropped (null)
-            row(&[("other", Value::Int(9))]), // dropped (absent id)
+            row(&[("id", num(2))]),
+            row(&[("id", num(1))]),
+            row(&[("id", num(2))]),           // dup
+            row(&[("id", WireValue::Null)]),  // dropped (null)
+            row(&[("other", num(9))]),        // dropped (absent id)
         ];
         let keys = dedupe_key_tuples(&rows, &cols(&["id"]));
-        let flat: Vec<i64> = keys
+        let flat: Vec<String> = keys
             .iter()
             .map(|t| match &t[0] {
-                Value::Int(i) => *i,
+                WireValue::Num(s) => s.clone(),
                 _ => panic!(),
             })
             .collect();
-        assert_eq!(flat, vec![2, 1]); // insertion order, deduped, nulls/absent dropped
+        assert_eq!(flat, vec!["2", "1"]); // insertion order, deduped, nulls/absent dropped
     }
 
     #[test]
-    fn dedupe_composite_tuple() {
-        let rows = vec![
-            row(&[("t", Value::Int(1)), ("u", Value::Int(9))]),
-            row(&[("t", Value::Int(1)), ("u", Value::Int(9))]), // dup tuple
-            row(&[("t", Value::Int(1)), ("u", Value::Int(8))]),
-            row(&[("t", Value::Int(1)), ("u", Value::Null)]), // dropped (partial null)
-        ];
-        let keys = dedupe_key_tuples(&rows, &cols(&["t", "u"]));
-        assert_eq!(keys.len(), 2);
-        assert_eq!(key_identity(&keys[0]), "1 9");
-        assert_eq!(key_identity(&keys[1]), "1 8");
-    }
-
-    #[test]
-    fn group_and_attach_has_many() {
-        let parents = vec![row(&[("id", Value::Int(1))]), row(&[("id", Value::Int(2))])];
+    fn group_and_attach_hasmany() {
         let children = vec![
-            row(&[("author_id", Value::Int(1)), ("t", Value::Str("a".into()))]),
-            row(&[("author_id", Value::Int(1)), ("t", Value::Str("b".into()))]),
-            row(&[("author_id", Value::Int(2)), ("t", Value::Str("c".into()))]),
-            row(&[("author_id", Value::Null), ("t", Value::Str("x".into()))]), // dropped
+            row(&[("id", num(10)), ("author_id", num(1))]),
+            row(&[("id", num(11)), ("author_id", num(2))]),
+            row(&[("id", num(12)), ("author_id", num(1))]),
         ];
-        let by_key = group_by_key(children.clone(), &cols(&["author_id"]));
-        // parent 1 → two children in input order
-        let a1 = attach_to_parent(&parents[0], &cols(&["id"]), &by_key, false);
-        match a1 {
-            Value::Arr(items) => assert_eq!(items.len(), 2),
-            _ => panic!("hasMany must be a list"),
+        let by_key = group_by_key(&children, &cols(&["author_id"]));
+        let parent1 = row(&[("id", num(1))]);
+        let nested = attach_to_parent(&parent1, &cols(&["id"]), &by_key, false);
+        match nested {
+            WireValue::List(l) => assert_eq!(l.items.len(), 2), // posts 10 and 12
+            _ => panic!("expected a list"),
         }
-        // parent 2 → one child
-        let a2 = attach_to_parent(&parents[1], &cols(&["id"]), &by_key, false);
-        assert!(matches!(a2, Value::Arr(ref v) if v.len() == 1));
-        // a parent with no matches → empty list
-        let a3 = attach_to_parent(&row(&[("id", Value::Int(3))]), &cols(&["id"]), &by_key, false);
-        assert!(matches!(a3, Value::Arr(ref v) if v.is_empty()));
+        // a parent with no children → empty list
+        let parent9 = row(&[("id", num(9))]);
+        match attach_to_parent(&parent9, &cols(&["id"]), &by_key, false) {
+            WireValue::List(l) => assert!(l.items.is_empty()),
+            _ => panic!(),
+        }
     }
 
     #[test]
-    fn attach_single_returns_first_or_null() {
+    fn attach_belongs_to_single() {
+        let children = vec![row(&[("id", num(5)), ("user_id", num(1))])];
+        let by_key = group_by_key(&children, &cols(&["user_id"]));
+        let parent = row(&[("id", num(1))]);
+        match attach_to_parent(&parent, &cols(&["id"]), &by_key, true) {
+            WireValue::Row(_) => {}
+            _ => panic!("expected the single child row"),
+        }
+        let parent9 = row(&[("id", num(9))]);
+        assert!(matches!(
+            attach_to_parent(&parent9, &cols(&["id"]), &by_key, true),
+            WireValue::Null
+        ));
+    }
+
+    #[test]
+    fn composite_tuple_key() {
         let children = vec![
-            row(&[("post_id", Value::Int(5)), ("b", Value::Str("first".into()))]),
-            row(&[("post_id", Value::Int(5)), ("b", Value::Str("second".into()))]),
+            row(&[("t", num(1)), ("p", num(9)), ("x", num(100))]),
+            row(&[("t", num(1)), ("p", num(8)), ("x", num(200))]),
         ];
-        let by_key = group_by_key(children.clone(), &cols(&["post_id"]));
-        // single → the FIRST matching child (input order)
-        let one = attach_to_parent(&row(&[("id", Value::Int(5))]), &cols(&["id"]), &by_key, true);
-        // bc `Value` has no PartialEq; probe the field instead of comparing the whole record.
-        assert!(matches!(one.obj_get("b"), Some(Value::Str(s)) if s == "first"));
-        // single, no match → null
-        let none = attach_to_parent(&row(&[("id", Value::Int(6))]), &cols(&["id"]), &by_key, true);
-        assert!(matches!(none, Value::Null));
+        let by_key = group_by_key(&children, &cols(&["t", "p"]));
+        // parent (t=1, p=9) matches only the first child (full tuple, not cartesian).
+        let parent = row(&[("t", num(1)), ("p", num(9))]);
+        match attach_to_parent(&parent, &cols(&["t", "p"]), &by_key, false) {
+            WireValue::List(l) => assert_eq!(l.items.len(), 1),
+            _ => panic!(),
+        }
     }
 }
