@@ -306,32 +306,27 @@ pub fn group_children(
     let value_children: Vec<Value> = children.iter().map(wire_to_value).collect();
     // bc 0.9.0 honors the declared `{arr:'string'}` portSchema: the `fk`/`pk` key-column tuples arrive
     // as owned `Vec<String>` — the exact shape the Value grouping core keys on (the wire↔core adapter
-    // no longer converts).
-    let by_key = crate::grouping::group_by_key(&value_children, fk);
+    // no longer converts). `value_children` is MOVED into the grouping core (each child ends up in exactly
+    // one bucket — no per-child deep clone).
+    let by_key = crate::grouping::group_by_key(value_children, fk);
     let out: Vec<WireValue> = parents
         .iter()
         .map(|p| {
             let par = wire_to_value(p);
-            match par {
-                Value::Obj(pairs) => {
-                    let nested = crate::grouping::attach_to_parent(
-                        &Value::Obj(pairs.clone()),
-                        pk,
-                        &by_key,
-                        single,
-                    );
-                    // {...par, [into]: nested}: an existing key keeps its position (value overwritten),
-                    // a new key is appended — the TS spread / Go `withOwnKey` semantics.
-                    let mut new_pairs = pairs;
-                    match new_pairs.iter_mut().find(|(k, _)| k == into) {
-                        Some(slot) => slot.1 = nested,
-                        None => new_pairs.push((into.to_string(), nested)),
-                    }
-                    value_to_wire(Value::Obj(new_pairs))
-                }
-                // Records are objects by contract (SQL rows); a non-object passes through untouched.
-                _ => p.clone(),
+            // Records are objects by contract (SQL rows); a non-object passes through untouched.
+            if !matches!(par, Value::Obj(_)) {
+                return p.clone();
             }
+            // `attach_to_parent` only READS the parent's `pk` cells — borrow `par`, then MOVE it into
+            // `new_pairs` (no parent-row clone). {...par, [into]: nested}: an existing key keeps its
+            // position (value overwritten), a new key is appended — the TS spread semantics.
+            let nested = crate::grouping::attach_to_parent(&par, pk, &by_key, single);
+            let Value::Obj(mut new_pairs) = par else { unreachable!() };
+            match new_pairs.iter_mut().find(|(k, _)| k == into) {
+                Some(slot) => slot.1 = nested,
+                None => new_pairs.push((into.to_string(), nested)),
+            }
+            value_to_wire(Value::Obj(new_pairs))
         })
         .collect();
     Ok(WireValue::List(WireList { items: out }))

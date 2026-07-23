@@ -80,15 +80,20 @@ pub fn dedupe_key_tuples(rows: &[Value], key_cols: &[String]) -> Vec<Vec<Value>>
 /// Group `children` by their `fk_cols` tuple identity (a null/absent key drops the child). Child list
 /// order within a bucket is the input order (push order). Port of TS `groupByKey`. The bucket keys
 /// are looked up (never iterated) by [`attach_to_parent`], so a `HashMap` is faithful.
-pub fn group_by_key(children: &[Value], fk_cols: &[String]) -> HashMap<String, Vec<Value>> {
+pub fn group_by_key(children: Vec<Value>, fk_cols: &[String]) -> HashMap<String, Vec<Value>> {
     let mut by_key: HashMap<String, Vec<Value>> = HashMap::new();
     for child in children {
-        let cells: Vec<Option<&Value>> = fk_cols.iter().map(|c| field(child, c)).collect();
-        if cells.iter().any(|v| is_missing(*v)) {
-            continue;
-        }
-        let tuple: Vec<Value> = cells.into_iter().map(|v| v.unwrap().clone()).collect();
-        by_key.entry(key_identity(&tuple)).or_default().push(child.clone());
+        // Compute the key from BORROWED cells (only the key columns are cloned — small), then MOVE the
+        // whole child row into its bucket (each child belongs to exactly ONE bucket) — no per-row deep clone.
+        let key = {
+            let cells: Vec<Option<&Value>> = fk_cols.iter().map(|c| field(&child, c)).collect();
+            if cells.iter().any(|v| is_missing(*v)) {
+                continue;
+            }
+            let tuple: Vec<Value> = cells.into_iter().map(|v| v.unwrap().clone()).collect();
+            key_identity(&tuple)
+        };
+        by_key.entry(key).or_default().push(child);
     }
     by_key
 }
@@ -187,7 +192,7 @@ mod tests {
             row(&[("author_id", Value::Int(2)), ("t", Value::Str("c".into()))]),
             row(&[("author_id", Value::Null), ("t", Value::Str("x".into()))]), // dropped
         ];
-        let by_key = group_by_key(&children, &cols(&["author_id"]));
+        let by_key = group_by_key(children.clone(), &cols(&["author_id"]));
         // parent 1 → two children in input order
         let a1 = attach_to_parent(&parents[0], &cols(&["id"]), &by_key, false);
         match a1 {
@@ -208,7 +213,7 @@ mod tests {
             row(&[("post_id", Value::Int(5)), ("b", Value::Str("first".into()))]),
             row(&[("post_id", Value::Int(5)), ("b", Value::Str("second".into()))]),
         ];
-        let by_key = group_by_key(&children, &cols(&["post_id"]));
+        let by_key = group_by_key(children.clone(), &cols(&["post_id"]));
         // single → the FIRST matching child (input order)
         let one = attach_to_parent(&row(&[("id", Value::Int(5))]), &cols(&["id"]), &by_key, true);
         // bc `Value` has no PartialEq; probe the field instead of comparing the whole record.
