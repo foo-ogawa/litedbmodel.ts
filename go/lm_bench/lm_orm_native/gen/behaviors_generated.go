@@ -112,9 +112,9 @@ func deOverflow(model, field, expected, actualWire, raw string) *BehaviorError {
 
 // Typed struct declarations (outType-derived; hash-dedup — shared type plan).
 type T0 struct {
-	Id    *float64 // "id"
-	Email *string  // "email"
-	Name  *string  // "name"
+	Id    float64 // "id"
+	Email *string // "email"
+	Name  *string // "name"
 }
 
 type T1 struct {
@@ -122,7 +122,7 @@ type T1 struct {
 }
 
 type T2 struct {
-	Id         *float64 // "id"
+	Id         float64  // "id"
 	Title      *string  // "title"
 	Content    *string  // "content"
 	Published  *float64 // "published"
@@ -131,10 +131,6 @@ type T2 struct {
 }
 
 type T3 struct {
-	Id *float64 // "id"
-}
-
-type T4 struct {
 	Id float64 // "id"
 }
 
@@ -797,11 +793,15 @@ func RunNativeRawStruct_findAll(in In_findAll) ([]T0, error) {
 				if p2.Kind == probeGot {
 					n2, nErr2 := strconv.ParseFloat(p2.Got, 64)
 					if nErr2 != nil {
-						return nil, deOverflow("T0", "id", "opt(float)", p2.ActualWireType, p2.Got)
+						return nil, deOverflow("T0", "id", "float", p2.ActualWireType, p2.Got)
 					}
-					rec1.Id = &n2
+					rec1.Id = n2
 				} else if p2.Kind == probeWrong {
-					return nil, deTypeMismatch("T0", "id", "opt(float)", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T0", "id", "float", p2.ActualWireType, p2.Raw)
+				} else if p2.Kind == probeNull {
+					return nil, deTypeMismatch("T0", "id", "float", p2.ActualWireType, p2.Raw)
+				} else {
+					return nil, deMissingField("T0", "id", "float")
 				}
 				p3 := p1.Got.ProbeString("email")
 				if p3.Kind == probeGot {
@@ -819,21 +819,21 @@ func RunNativeRawStruct_findAll(in In_findAll) ([]T0, error) {
 				}
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
-				return nil, deTypeMismatch("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
+				return nil, deTypeMismatch("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
 			} else if p1.Kind == probeNull {
-				return nil, deTypeMismatch("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
+				return nil, deTypeMismatch("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
 			} else {
-				return nil, deMissingField("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}")
+				return nil, deMissingField("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}")
 			}
 			list0 = append(list0, el0)
 		}
 		t_n0 = list0
 	} else if p0.Kind == probeWrong {
-		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
+		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
 	} else if p0.Kind == probeNull {
-		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
+		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
 	} else {
-		return nil, deMissingField("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})")
+		return nil, deMissingField("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})")
 	}
 	produced_n0 = true
 	return t_n0, nil
@@ -875,11 +875,15 @@ func RunNativeRawStruct_filterPaginateSort(in In_filterPaginateSort) ([]T2, erro
 				if p2.Kind == probeGot {
 					n2, nErr2 := strconv.ParseFloat(p2.Got, 64)
 					if nErr2 != nil {
-						return nil, deOverflow("T2", "id", "opt(float)", p2.ActualWireType, p2.Got)
+						return nil, deOverflow("T2", "id", "float", p2.ActualWireType, p2.Got)
 					}
-					rec1.Id = &n2
+					rec1.Id = n2
 				} else if p2.Kind == probeWrong {
-					return nil, deTypeMismatch("T2", "id", "opt(float)", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T2", "id", "float", p2.ActualWireType, p2.Raw)
+				} else if p2.Kind == probeNull {
+					return nil, deTypeMismatch("T2", "id", "float", p2.ActualWireType, p2.Raw)
+				} else {
+					return nil, deMissingField("T2", "id", "float")
 				}
 				p3 := p1.Got.ProbeString("title")
 				if p3.Kind == probeGot {
@@ -924,21 +928,21 @@ func RunNativeRawStruct_filterPaginateSort(in In_filterPaginateSort) ([]T2, erro
 				}
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
-				return nil, deTypeMismatch("n0", "n0", "obj{id:opt(float),title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)}", p1.ActualWireType, p1.Raw)
+				return nil, deTypeMismatch("n0", "n0", "obj{id:float,title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)}", p1.ActualWireType, p1.Raw)
 			} else if p1.Kind == probeNull {
-				return nil, deTypeMismatch("n0", "n0", "obj{id:opt(float),title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)}", p1.ActualWireType, p1.Raw)
+				return nil, deTypeMismatch("n0", "n0", "obj{id:float,title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)}", p1.ActualWireType, p1.Raw)
 			} else {
-				return nil, deMissingField("n0", "n0", "obj{id:opt(float),title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)}")
+				return nil, deMissingField("n0", "n0", "obj{id:float,title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)}")
 			}
 			list0 = append(list0, el0)
 		}
 		t_n0 = list0
 	} else if p0.Kind == probeWrong {
-		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:opt(float),title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)})", p0.ActualWireType, p0.Raw)
+		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:float,title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)})", p0.ActualWireType, p0.Raw)
 	} else if p0.Kind == probeNull {
-		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:opt(float),title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)})", p0.ActualWireType, p0.Raw)
+		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:float,title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)})", p0.ActualWireType, p0.Raw)
 	} else {
-		return nil, deMissingField("n0", "n0", "arr(obj{id:opt(float),title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)})")
+		return nil, deMissingField("n0", "n0", "arr(obj{id:float,title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)})")
 	}
 	produced_n0 = true
 	return t_n0, nil
@@ -980,11 +984,15 @@ func RunNativeRawStruct_findFirst(in In_findFirst) ([]T0, error) {
 				if p2.Kind == probeGot {
 					n2, nErr2 := strconv.ParseFloat(p2.Got, 64)
 					if nErr2 != nil {
-						return nil, deOverflow("T0", "id", "opt(float)", p2.ActualWireType, p2.Got)
+						return nil, deOverflow("T0", "id", "float", p2.ActualWireType, p2.Got)
 					}
-					rec1.Id = &n2
+					rec1.Id = n2
 				} else if p2.Kind == probeWrong {
-					return nil, deTypeMismatch("T0", "id", "opt(float)", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T0", "id", "float", p2.ActualWireType, p2.Raw)
+				} else if p2.Kind == probeNull {
+					return nil, deTypeMismatch("T0", "id", "float", p2.ActualWireType, p2.Raw)
+				} else {
+					return nil, deMissingField("T0", "id", "float")
 				}
 				p3 := p1.Got.ProbeString("email")
 				if p3.Kind == probeGot {
@@ -1002,21 +1010,21 @@ func RunNativeRawStruct_findFirst(in In_findFirst) ([]T0, error) {
 				}
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
-				return nil, deTypeMismatch("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
+				return nil, deTypeMismatch("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
 			} else if p1.Kind == probeNull {
-				return nil, deTypeMismatch("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
+				return nil, deTypeMismatch("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
 			} else {
-				return nil, deMissingField("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}")
+				return nil, deMissingField("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}")
 			}
 			list0 = append(list0, el0)
 		}
 		t_n0 = list0
 	} else if p0.Kind == probeWrong {
-		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
+		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
 	} else if p0.Kind == probeNull {
-		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
+		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
 	} else {
-		return nil, deMissingField("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})")
+		return nil, deMissingField("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})")
 	}
 	produced_n0 = true
 	return t_n0, nil
@@ -1058,11 +1066,15 @@ func RunNativeRawStruct_findUnique(in In_findUnique) ([]T0, error) {
 				if p2.Kind == probeGot {
 					n2, nErr2 := strconv.ParseFloat(p2.Got, 64)
 					if nErr2 != nil {
-						return nil, deOverflow("T0", "id", "opt(float)", p2.ActualWireType, p2.Got)
+						return nil, deOverflow("T0", "id", "float", p2.ActualWireType, p2.Got)
 					}
-					rec1.Id = &n2
+					rec1.Id = n2
 				} else if p2.Kind == probeWrong {
-					return nil, deTypeMismatch("T0", "id", "opt(float)", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T0", "id", "float", p2.ActualWireType, p2.Raw)
+				} else if p2.Kind == probeNull {
+					return nil, deTypeMismatch("T0", "id", "float", p2.ActualWireType, p2.Raw)
+				} else {
+					return nil, deMissingField("T0", "id", "float")
 				}
 				p3 := p1.Got.ProbeString("email")
 				if p3.Kind == probeGot {
@@ -1080,21 +1092,21 @@ func RunNativeRawStruct_findUnique(in In_findUnique) ([]T0, error) {
 				}
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
-				return nil, deTypeMismatch("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
+				return nil, deTypeMismatch("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
 			} else if p1.Kind == probeNull {
-				return nil, deTypeMismatch("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
+				return nil, deTypeMismatch("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}", p1.ActualWireType, p1.Raw)
 			} else {
-				return nil, deMissingField("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}")
+				return nil, deMissingField("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}")
 			}
 			list0 = append(list0, el0)
 		}
 		t_n0 = list0
 	} else if p0.Kind == probeWrong {
-		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
+		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
 	} else if p0.Kind == probeNull {
-		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
+		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})", p0.ActualWireType, p0.Raw)
 	} else {
-		return nil, deMissingField("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})")
+		return nil, deMissingField("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})")
 	}
 	produced_n0 = true
 	return t_n0, nil
@@ -1934,29 +1946,33 @@ func RunNativeRawStruct_upsert(in In_upsert) ([]T3, error) {
 				if p2.Kind == probeGot {
 					n2, nErr2 := strconv.ParseFloat(p2.Got, 64)
 					if nErr2 != nil {
-						return nil, deOverflow("T3", "id", "opt(float)", p2.ActualWireType, p2.Got)
+						return nil, deOverflow("T3", "id", "float", p2.ActualWireType, p2.Got)
 					}
-					rec1.Id = &n2
+					rec1.Id = n2
 				} else if p2.Kind == probeWrong {
-					return nil, deTypeMismatch("T3", "id", "opt(float)", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T3", "id", "float", p2.ActualWireType, p2.Raw)
+				} else if p2.Kind == probeNull {
+					return nil, deTypeMismatch("T3", "id", "float", p2.ActualWireType, p2.Raw)
+				} else {
+					return nil, deMissingField("T3", "id", "float")
 				}
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
-				return nil, deTypeMismatch("n0", "n0", "obj{id:opt(float)}", p1.ActualWireType, p1.Raw)
+				return nil, deTypeMismatch("n0", "n0", "obj{id:float}", p1.ActualWireType, p1.Raw)
 			} else if p1.Kind == probeNull {
-				return nil, deTypeMismatch("n0", "n0", "obj{id:opt(float)}", p1.ActualWireType, p1.Raw)
+				return nil, deTypeMismatch("n0", "n0", "obj{id:float}", p1.ActualWireType, p1.Raw)
 			} else {
-				return nil, deMissingField("n0", "n0", "obj{id:opt(float)}")
+				return nil, deMissingField("n0", "n0", "obj{id:float}")
 			}
 			list0 = append(list0, el0)
 		}
 		t_n0 = list0
 	} else if p0.Kind == probeWrong {
-		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:opt(float)})", p0.ActualWireType, p0.Raw)
+		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:float})", p0.ActualWireType, p0.Raw)
 	} else if p0.Kind == probeNull {
-		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:opt(float)})", p0.ActualWireType, p0.Raw)
+		return nil, deTypeMismatch("n0", "n0", "arr(obj{id:float})", p0.ActualWireType, p0.Raw)
 	} else {
-		return nil, deMissingField("n0", "n0", "arr(obj{id:opt(float)})")
+		return nil, deMissingField("n0", "n0", "arr(obj{id:float})")
 	}
 	produced_n0 = true
 	return t_n0, nil
@@ -2138,7 +2154,7 @@ func RunNativeRawStruct_updateMany(in In_updateMany) ([]T1, error) {
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
 func RunNativeRawStruct_nestedCreate(in In_nestedCreate) ([][]T1, error) {
 	_ = in
-	var t_n0 []T4
+	var t_n0 []T3
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
@@ -2154,25 +2170,25 @@ func RunNativeRawStruct_nestedCreate(in In_nestedCreate) ([][]T1, error) {
 	}
 	p0 := wire_n0.AsList()
 	if p0.Kind == probeGot {
-		list0 := make([]T4, 0, p0.Got.Len())
+		list0 := make([]T3, 0, p0.Got.Len())
 		for i0 := 0; i0 < p0.Got.Len(); i0++ {
-			var el0 T4
+			var el0 T3
 			p1 := p0.Got.ElemRow(i0)
 			if p1.Kind == probeGot {
-				var rec1 T4
+				var rec1 T3
 				p2 := p1.Got.ProbeNumber("id")
 				if p2.Kind == probeGot {
 					n2, nErr2 := strconv.ParseFloat(p2.Got, 64)
 					if nErr2 != nil {
-						return nil, deOverflow("T4", "id", "float", p2.ActualWireType, p2.Got)
+						return nil, deOverflow("T3", "id", "float", p2.ActualWireType, p2.Got)
 					}
 					rec1.Id = n2
 				} else if p2.Kind == probeWrong {
-					return nil, deTypeMismatch("T4", "id", "float", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T3", "id", "float", p2.ActualWireType, p2.Raw)
 				} else if p2.Kind == probeNull {
-					return nil, deTypeMismatch("T4", "id", "float", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T3", "id", "float", p2.ActualWireType, p2.Raw)
 				} else {
-					return nil, deMissingField("T4", "id", "float")
+					return nil, deMissingField("T3", "id", "float")
 				}
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
@@ -2252,7 +2268,7 @@ func RunNativeRawStruct_nestedCreate(in In_nestedCreate) ([][]T1, error) {
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
 func RunNativeRawStruct_nestedUpsert(in In_nestedUpsert) ([][]T1, error) {
 	_ = in
-	var t_n0 []T4
+	var t_n0 []T3
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
@@ -2268,25 +2284,25 @@ func RunNativeRawStruct_nestedUpsert(in In_nestedUpsert) ([][]T1, error) {
 	}
 	p0 := wire_n0.AsList()
 	if p0.Kind == probeGot {
-		list0 := make([]T4, 0, p0.Got.Len())
+		list0 := make([]T3, 0, p0.Got.Len())
 		for i0 := 0; i0 < p0.Got.Len(); i0++ {
-			var el0 T4
+			var el0 T3
 			p1 := p0.Got.ElemRow(i0)
 			if p1.Kind == probeGot {
-				var rec1 T4
+				var rec1 T3
 				p2 := p1.Got.ProbeNumber("id")
 				if p2.Kind == probeGot {
 					n2, nErr2 := strconv.ParseFloat(p2.Got, 64)
 					if nErr2 != nil {
-						return nil, deOverflow("T4", "id", "float", p2.ActualWireType, p2.Got)
+						return nil, deOverflow("T3", "id", "float", p2.ActualWireType, p2.Got)
 					}
 					rec1.Id = n2
 				} else if p2.Kind == probeWrong {
-					return nil, deTypeMismatch("T4", "id", "float", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T3", "id", "float", p2.ActualWireType, p2.Raw)
 				} else if p2.Kind == probeNull {
-					return nil, deTypeMismatch("T4", "id", "float", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T3", "id", "float", p2.ActualWireType, p2.Raw)
 				} else {
-					return nil, deMissingField("T4", "id", "float")
+					return nil, deMissingField("T3", "id", "float")
 				}
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
@@ -2366,7 +2382,7 @@ func RunNativeRawStruct_nestedUpsert(in In_nestedUpsert) ([][]T1, error) {
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
 func RunNativeRawStruct_nestedUpdate(in In_nestedUpdate) ([][]T1, error) {
 	_ = in
-	var t_n0 []T4
+	var t_n0 []T3
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
@@ -2382,25 +2398,25 @@ func RunNativeRawStruct_nestedUpdate(in In_nestedUpdate) ([][]T1, error) {
 	}
 	p0 := wire_n0.AsList()
 	if p0.Kind == probeGot {
-		list0 := make([]T4, 0, p0.Got.Len())
+		list0 := make([]T3, 0, p0.Got.Len())
 		for i0 := 0; i0 < p0.Got.Len(); i0++ {
-			var el0 T4
+			var el0 T3
 			p1 := p0.Got.ElemRow(i0)
 			if p1.Kind == probeGot {
-				var rec1 T4
+				var rec1 T3
 				p2 := p1.Got.ProbeNumber("id")
 				if p2.Kind == probeGot {
 					n2, nErr2 := strconv.ParseFloat(p2.Got, 64)
 					if nErr2 != nil {
-						return nil, deOverflow("T4", "id", "float", p2.ActualWireType, p2.Got)
+						return nil, deOverflow("T3", "id", "float", p2.ActualWireType, p2.Got)
 					}
 					rec1.Id = n2
 				} else if p2.Kind == probeWrong {
-					return nil, deTypeMismatch("T4", "id", "float", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T3", "id", "float", p2.ActualWireType, p2.Raw)
 				} else if p2.Kind == probeNull {
-					return nil, deTypeMismatch("T4", "id", "float", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T3", "id", "float", p2.ActualWireType, p2.Raw)
 				} else {
-					return nil, deMissingField("T4", "id", "float")
+					return nil, deMissingField("T3", "id", "float")
 				}
 				el0 = rec1
 			} else if p1.Kind == probeWrong {
@@ -2480,7 +2496,7 @@ func RunNativeRawStruct_nestedUpdate(in In_nestedUpdate) ([][]T1, error) {
 // struct/value assembled by struct literal + field access — the consumer keeps it native.
 func RunNativeRawStruct_delete(in In_delete) ([][]T1, error) {
 	_ = in
-	var t_n0 []T4
+	var t_n0 []T3
 	produced_n0 := false
 	_ = t_n0
 	_ = produced_n0
@@ -2496,25 +2512,25 @@ func RunNativeRawStruct_delete(in In_delete) ([][]T1, error) {
 	}
 	p0 := wire_n0.AsList()
 	if p0.Kind == probeGot {
-		list0 := make([]T4, 0, p0.Got.Len())
+		list0 := make([]T3, 0, p0.Got.Len())
 		for i0 := 0; i0 < p0.Got.Len(); i0++ {
-			var el0 T4
+			var el0 T3
 			p1 := p0.Got.ElemRow(i0)
 			if p1.Kind == probeGot {
-				var rec1 T4
+				var rec1 T3
 				p2 := p1.Got.ProbeNumber("id")
 				if p2.Kind == probeGot {
 					n2, nErr2 := strconv.ParseFloat(p2.Got, 64)
 					if nErr2 != nil {
-						return nil, deOverflow("T4", "id", "float", p2.ActualWireType, p2.Got)
+						return nil, deOverflow("T3", "id", "float", p2.ActualWireType, p2.Got)
 					}
 					rec1.Id = n2
 				} else if p2.Kind == probeWrong {
-					return nil, deTypeMismatch("T4", "id", "float", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T3", "id", "float", p2.ActualWireType, p2.Raw)
 				} else if p2.Kind == probeNull {
-					return nil, deTypeMismatch("T4", "id", "float", p2.ActualWireType, p2.Raw)
+					return nil, deTypeMismatch("T3", "id", "float", p2.ActualWireType, p2.Raw)
 				} else {
-					return nil, deMissingField("T4", "id", "float")
+					return nil, deMissingField("T3", "id", "float")
 				}
 				el0 = rec1
 			} else if p1.Kind == probeWrong {

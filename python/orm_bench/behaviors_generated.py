@@ -4,14 +4,14 @@
 # native dict literal and handed to the EXISTING runtime core (run_behavior) —
 # no execution logic is generated. Handlers are ALWAYS injected at the boundary
 # (IR + {effects,config,hooks}); they are never generated.
-# irFingerprint: fnv1a64:1d6a1e6bd223d4c3
+# irFingerprint: fnv1a64:8f464209911f5a51
 from behavior_contracts import SPEC_VERSIONS, fingerprint_component_graph, run_behavior
 
 # Spec versions baked at generation time (fail-closed constant comparison at load).
 EXPECTED_SPEC_VERSIONS = {"behavior": 5, "expression": 2, "plan": 1}
 
 # FNV-1a 64 fingerprint of the source portable IR (canonical_json discipline, #208).
-IR_FINGERPRINT = "fnv1a64:1d6a1e6bd223d4c3"
+IR_FINGERPRINT = "fnv1a64:8f464209911f5a51"
 
 # Component names exposed by bind(), in IR declaration order.
 COMPONENT_NAMES = ("findAll", "filterPaginateSort", "findFirst", "findUnique", "nestedFindAll", "nestedFindFirst", "nestedFindUnique", "nestedRelations", "compositeRelations", "create", "update", "upsert", "createMany", "upsertMany", "updateMany", "nestedCreate", "nestedUpsert", "nestedUpdate", "delete")
@@ -29,9 +29,7 @@ IR = {
           "outType": {
             "arr": {
               "obj": {
-                "id": {
-                  "opt": "float"
-                },
+                "id": "float",
                 "email": {
                   "opt": "string"
                 },
@@ -100,9 +98,7 @@ IR = {
       "outputType": {
         "arr": {
           "obj": {
-            "id": {
-              "opt": "float"
-            },
+            "id": "float",
             "email": {
               "opt": "string"
             },
@@ -121,9 +117,7 @@ IR = {
           "outType": {
             "arr": {
               "obj": {
-                "id": {
-                  "opt": "float"
-                },
+                "id": "float",
                 "title": {
                   "opt": "string"
                 },
@@ -217,9 +211,7 @@ IR = {
       "outputType": {
         "arr": {
           "obj": {
-            "id": {
-              "opt": "float"
-            },
+            "id": "float",
             "title": {
               "opt": "string"
             },
@@ -247,9 +239,7 @@ IR = {
           "outType": {
             "arr": {
               "obj": {
-                "id": {
-                  "opt": "float"
-                },
+                "id": "float",
                 "email": {
                   "opt": "string"
                 },
@@ -334,9 +324,7 @@ IR = {
       "outputType": {
         "arr": {
           "obj": {
-            "id": {
-              "opt": "float"
-            },
+            "id": "float",
             "email": {
               "opt": "string"
             },
@@ -355,9 +343,7 @@ IR = {
           "outType": {
             "arr": {
               "obj": {
-                "id": {
-                  "opt": "float"
-                },
+                "id": "float",
                 "email": {
                   "opt": "string"
                 },
@@ -442,9 +428,7 @@ IR = {
       "outputType": {
         "arr": {
           "obj": {
-            "id": {
-              "opt": "float"
-            },
+            "id": "float",
             "email": {
               "opt": "string"
             },
@@ -2135,9 +2119,7 @@ IR = {
           "outType": {
             "arr": {
               "obj": {
-                "id": {
-                  "opt": "float"
-                }
+                "id": "float"
               }
             }
           },
@@ -2220,9 +2202,7 @@ IR = {
       "outputType": {
         "arr": {
           "obj": {
-            "id": {
-              "opt": "float"
-            }
+            "id": "float"
           }
         }
       }

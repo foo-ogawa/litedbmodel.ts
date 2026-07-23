@@ -92,7 +92,7 @@ fn de_overflow(model: &str, field: &str, expected: &str, actual_wire: String, ra
 #[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct T0 {
-    pub id: Option<f64>, // "id"
+    pub id: f64, // "id"
     pub email: Option<String>, // "email"
     pub name: Option<String>, // "name"
 }
@@ -106,7 +106,7 @@ pub struct T1 {
 #[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct T2 {
-    pub id: Option<f64>, // "id"
+    pub id: f64, // "id"
     pub title: Option<String>, // "title"
     pub content: Option<String>, // "content"
     pub published: Option<f64>, // "published"
@@ -117,12 +117,6 @@ pub struct T2 {
 #[derive(Clone, Default)]
 #[allow(dead_code)]
 pub struct T3 {
-    pub id: Option<f64>, // "id"
-}
-
-#[derive(Clone, Default)]
-#[allow(dead_code)]
-pub struct T4 {
     pub id: f64, // "id"
 }
 
@@ -868,11 +862,12 @@ pub fn run_native_raw_struct_findAll(
                     Probe::Got(sub1) => T0 {
                         id: match sub1.probe_number("id") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
-                                Ok(n) => Some(n),
-                                Err(_) => return Err(de_overflow("T0", "id", "opt(float)", actual_wire_type, raw)),
+                                Ok(n) => n,
+                                Err(_) => return Err(de_overflow("T0", "id", "float", actual_wire_type, raw)),
                             },
-                            NumProbe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "id", "opt(float)", actual_wire_type, raw_value)),
-                            NumProbe::Null { .. } | NumProbe::Absent => None,
+                            NumProbe::Wrong { actual_wire_type, raw_value }
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "id", "float", actual_wire_type, raw_value)),
+                            NumProbe::Absent => return Err(de_missing_field("T0", "id", "float")),
                         },
                         email: match sub1.probe_string("email") {
                             Probe::Got(v) => Some(v),
@@ -886,15 +881,15 @@ pub fn run_native_raw_struct_findAll(
                         },
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
-                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}", actual_wire_type, raw_value)),
-                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}")),
+                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}", actual_wire_type, raw_value)),
+                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}")),
                 });
             }
             acc0
         },
         Probe::Wrong { actual_wire_type, raw_value }
-        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})", actual_wire_type, raw_value)),
-        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})")),
+        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})", actual_wire_type, raw_value)),
+        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})")),
     };
     produced_n0.set(true);
     let __out = cell_n0.borrow().clone();
@@ -933,11 +928,12 @@ pub fn run_native_raw_struct_filterPaginateSort(
                     Probe::Got(sub1) => T2 {
                         id: match sub1.probe_number("id") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
-                                Ok(n) => Some(n),
-                                Err(_) => return Err(de_overflow("T2", "id", "opt(float)", actual_wire_type, raw)),
+                                Ok(n) => n,
+                                Err(_) => return Err(de_overflow("T2", "id", "float", actual_wire_type, raw)),
                             },
-                            NumProbe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T2", "id", "opt(float)", actual_wire_type, raw_value)),
-                            NumProbe::Null { .. } | NumProbe::Absent => None,
+                            NumProbe::Wrong { actual_wire_type, raw_value }
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T2", "id", "float", actual_wire_type, raw_value)),
+                            NumProbe::Absent => return Err(de_missing_field("T2", "id", "float")),
                         },
                         title: match sub1.probe_string("title") {
                             Probe::Got(v) => Some(v),
@@ -972,15 +968,15 @@ pub fn run_native_raw_struct_filterPaginateSort(
                         },
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
-                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:opt(float),title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)}", actual_wire_type, raw_value)),
-                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:opt(float),title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)}")),
+                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:float,title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)}", actual_wire_type, raw_value)),
+                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:float,title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)}")),
                 });
             }
             acc0
         },
         Probe::Wrong { actual_wire_type, raw_value }
-        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:opt(float),title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)})", actual_wire_type, raw_value)),
-        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:opt(float),title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)})")),
+        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:float,title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)})", actual_wire_type, raw_value)),
+        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:float,title:opt(string),content:opt(string),published:opt(float),author_id:opt(float),created_at:opt(string)})")),
     };
     produced_n0.set(true);
     let __out = cell_n0.borrow().clone();
@@ -1019,11 +1015,12 @@ pub fn run_native_raw_struct_findFirst(
                     Probe::Got(sub1) => T0 {
                         id: match sub1.probe_number("id") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
-                                Ok(n) => Some(n),
-                                Err(_) => return Err(de_overflow("T0", "id", "opt(float)", actual_wire_type, raw)),
+                                Ok(n) => n,
+                                Err(_) => return Err(de_overflow("T0", "id", "float", actual_wire_type, raw)),
                             },
-                            NumProbe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "id", "opt(float)", actual_wire_type, raw_value)),
-                            NumProbe::Null { .. } | NumProbe::Absent => None,
+                            NumProbe::Wrong { actual_wire_type, raw_value }
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "id", "float", actual_wire_type, raw_value)),
+                            NumProbe::Absent => return Err(de_missing_field("T0", "id", "float")),
                         },
                         email: match sub1.probe_string("email") {
                             Probe::Got(v) => Some(v),
@@ -1037,15 +1034,15 @@ pub fn run_native_raw_struct_findFirst(
                         },
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
-                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}", actual_wire_type, raw_value)),
-                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}")),
+                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}", actual_wire_type, raw_value)),
+                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}")),
                 });
             }
             acc0
         },
         Probe::Wrong { actual_wire_type, raw_value }
-        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})", actual_wire_type, raw_value)),
-        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})")),
+        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})", actual_wire_type, raw_value)),
+        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})")),
     };
     produced_n0.set(true);
     let __out = cell_n0.borrow().clone();
@@ -1084,11 +1081,12 @@ pub fn run_native_raw_struct_findUnique(
                     Probe::Got(sub1) => T0 {
                         id: match sub1.probe_number("id") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
-                                Ok(n) => Some(n),
-                                Err(_) => return Err(de_overflow("T0", "id", "opt(float)", actual_wire_type, raw)),
+                                Ok(n) => n,
+                                Err(_) => return Err(de_overflow("T0", "id", "float", actual_wire_type, raw)),
                             },
-                            NumProbe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "id", "opt(float)", actual_wire_type, raw_value)),
-                            NumProbe::Null { .. } | NumProbe::Absent => None,
+                            NumProbe::Wrong { actual_wire_type, raw_value }
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T0", "id", "float", actual_wire_type, raw_value)),
+                            NumProbe::Absent => return Err(de_missing_field("T0", "id", "float")),
                         },
                         email: match sub1.probe_string("email") {
                             Probe::Got(v) => Some(v),
@@ -1102,15 +1100,15 @@ pub fn run_native_raw_struct_findUnique(
                         },
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
-                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}", actual_wire_type, raw_value)),
-                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:opt(float),email:opt(string),name:opt(string)}")),
+                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}", actual_wire_type, raw_value)),
+                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:float,email:opt(string),name:opt(string)}")),
                 });
             }
             acc0
         },
         Probe::Wrong { actual_wire_type, raw_value }
-        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})", actual_wire_type, raw_value)),
-        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:opt(float),email:opt(string),name:opt(string)})")),
+        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})", actual_wire_type, raw_value)),
+        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:float,email:opt(string),name:opt(string)})")),
     };
     produced_n0.set(true);
     let __out = cell_n0.borrow().clone();
@@ -1828,23 +1826,24 @@ pub fn run_native_raw_struct_upsert(
                     Probe::Got(sub1) => T3 {
                         id: match sub1.probe_number("id") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
-                                Ok(n) => Some(n),
-                                Err(_) => return Err(de_overflow("T3", "id", "opt(float)", actual_wire_type, raw)),
+                                Ok(n) => n,
+                                Err(_) => return Err(de_overflow("T3", "id", "float", actual_wire_type, raw)),
                             },
-                            NumProbe::Wrong { actual_wire_type, raw_value } => return Err(de_type_mismatch("T3", "id", "opt(float)", actual_wire_type, raw_value)),
-                            NumProbe::Null { .. } | NumProbe::Absent => None,
+                            NumProbe::Wrong { actual_wire_type, raw_value }
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T3", "id", "float", actual_wire_type, raw_value)),
+                            NumProbe::Absent => return Err(de_missing_field("T3", "id", "float")),
                         },
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
-                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:opt(float)}", actual_wire_type, raw_value)),
-                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:opt(float)}")),
+                    | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "obj{id:float}", actual_wire_type, raw_value)),
+                    Probe::Absent => return Err(de_missing_field("n0", "n0", "obj{id:float}")),
                 });
             }
             acc0
         },
         Probe::Wrong { actual_wire_type, raw_value }
-        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:opt(float)})", actual_wire_type, raw_value)),
-        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:opt(float)})")),
+        | Probe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("n0", "n0", "arr(obj{id:float})", actual_wire_type, raw_value)),
+        Probe::Absent => return Err(de_missing_field("n0", "n0", "arr(obj{id:float})")),
     };
     produced_n0.set(true);
     let __out = cell_n0.borrow().clone();
@@ -2010,7 +2009,7 @@ pub fn run_native_raw_struct_updateMany(
 pub fn run_native_raw_struct_nestedCreate(
     in_: InNRNestedCreate,
 ) -> Result<Vec<Vec<T1>>, BehaviorError> {
-    let cell_n0: RefCell<Vec<T4>> = RefCell::new(Default::default());
+    let cell_n0: RefCell<Vec<T3>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     let cell_n1: RefCell<Vec<Vec<T1>>> = RefCell::new(Default::default());
@@ -2027,15 +2026,15 @@ pub fn run_native_raw_struct_nestedCreate(
             let mut acc0 = Vec::with_capacity(l0.len());
             for i0 in 0..l0.len() {
                 acc0.push(match l0.elem_row(i0) {
-                    Probe::Got(sub1) => T4 {
+                    Probe::Got(sub1) => T3 {
                         id: match sub1.probe_number("id") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
                                 Ok(n) => n,
-                                Err(_) => return Err(de_overflow("T4", "id", "float", actual_wire_type, raw)),
+                                Err(_) => return Err(de_overflow("T3", "id", "float", actual_wire_type, raw)),
                             },
                             NumProbe::Wrong { actual_wire_type, raw_value }
-                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T4", "id", "float", actual_wire_type, raw_value)),
-                            NumProbe::Absent => return Err(de_missing_field("T4", "id", "float")),
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T3", "id", "float", actual_wire_type, raw_value)),
+                            NumProbe::Absent => return Err(de_missing_field("T3", "id", "float")),
                         },
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
@@ -2104,7 +2103,7 @@ pub fn run_native_raw_struct_nestedCreate(
 pub fn run_native_raw_struct_nestedUpsert(
     in_: InNRNestedUpsert,
 ) -> Result<Vec<Vec<T1>>, BehaviorError> {
-    let cell_n0: RefCell<Vec<T4>> = RefCell::new(Default::default());
+    let cell_n0: RefCell<Vec<T3>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     let cell_n1: RefCell<Vec<Vec<T1>>> = RefCell::new(Default::default());
@@ -2121,15 +2120,15 @@ pub fn run_native_raw_struct_nestedUpsert(
             let mut acc0 = Vec::with_capacity(l0.len());
             for i0 in 0..l0.len() {
                 acc0.push(match l0.elem_row(i0) {
-                    Probe::Got(sub1) => T4 {
+                    Probe::Got(sub1) => T3 {
                         id: match sub1.probe_number("id") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
                                 Ok(n) => n,
-                                Err(_) => return Err(de_overflow("T4", "id", "float", actual_wire_type, raw)),
+                                Err(_) => return Err(de_overflow("T3", "id", "float", actual_wire_type, raw)),
                             },
                             NumProbe::Wrong { actual_wire_type, raw_value }
-                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T4", "id", "float", actual_wire_type, raw_value)),
-                            NumProbe::Absent => return Err(de_missing_field("T4", "id", "float")),
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T3", "id", "float", actual_wire_type, raw_value)),
+                            NumProbe::Absent => return Err(de_missing_field("T3", "id", "float")),
                         },
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
@@ -2198,7 +2197,7 @@ pub fn run_native_raw_struct_nestedUpsert(
 pub fn run_native_raw_struct_nestedUpdate(
     in_: InNRNestedUpdate,
 ) -> Result<Vec<Vec<T1>>, BehaviorError> {
-    let cell_n0: RefCell<Vec<T4>> = RefCell::new(Default::default());
+    let cell_n0: RefCell<Vec<T3>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     let cell_n1: RefCell<Vec<Vec<T1>>> = RefCell::new(Default::default());
@@ -2215,15 +2214,15 @@ pub fn run_native_raw_struct_nestedUpdate(
             let mut acc0 = Vec::with_capacity(l0.len());
             for i0 in 0..l0.len() {
                 acc0.push(match l0.elem_row(i0) {
-                    Probe::Got(sub1) => T4 {
+                    Probe::Got(sub1) => T3 {
                         id: match sub1.probe_number("id") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
                                 Ok(n) => n,
-                                Err(_) => return Err(de_overflow("T4", "id", "float", actual_wire_type, raw)),
+                                Err(_) => return Err(de_overflow("T3", "id", "float", actual_wire_type, raw)),
                             },
                             NumProbe::Wrong { actual_wire_type, raw_value }
-                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T4", "id", "float", actual_wire_type, raw_value)),
-                            NumProbe::Absent => return Err(de_missing_field("T4", "id", "float")),
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T3", "id", "float", actual_wire_type, raw_value)),
+                            NumProbe::Absent => return Err(de_missing_field("T3", "id", "float")),
                         },
                     },
                     Probe::Wrong { actual_wire_type, raw_value }
@@ -2292,7 +2291,7 @@ pub fn run_native_raw_struct_nestedUpdate(
 pub fn run_native_raw_struct_delete(
     in_: InNRDelete,
 ) -> Result<Vec<Vec<T1>>, BehaviorError> {
-    let cell_n0: RefCell<Vec<T4>> = RefCell::new(Default::default());
+    let cell_n0: RefCell<Vec<T3>> = RefCell::new(Default::default());
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     let cell_n1: RefCell<Vec<Vec<T1>>> = RefCell::new(Default::default());
@@ -2309,15 +2308,15 @@ pub fn run_native_raw_struct_delete(
             let mut acc0 = Vec::with_capacity(l0.len());
             for i0 in 0..l0.len() {
                 acc0.push(match l0.elem_row(i0) {
-                    Probe::Got(sub1) => T4 {
+                    Probe::Got(sub1) => T3 {
                         id: match sub1.probe_number("id") {
                             NumProbe::Got { raw, actual_wire_type } => match raw.parse::<f64>() {
                                 Ok(n) => n,
-                                Err(_) => return Err(de_overflow("T4", "id", "float", actual_wire_type, raw)),
+                                Err(_) => return Err(de_overflow("T3", "id", "float", actual_wire_type, raw)),
                             },
                             NumProbe::Wrong { actual_wire_type, raw_value }
-                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T4", "id", "float", actual_wire_type, raw_value)),
-                            NumProbe::Absent => return Err(de_missing_field("T4", "id", "float")),
+                            | NumProbe::Null { actual_wire_type, raw_value } => return Err(de_type_mismatch("T3", "id", "float", actual_wire_type, raw_value)),
+                            NumProbe::Absent => return Err(de_missing_field("T3", "id", "float")),
                         },
                     },
                     Probe::Wrong { actual_wire_type, raw_value }

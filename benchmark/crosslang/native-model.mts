@@ -29,8 +29,11 @@ const L = lm.components();
 
 // The merged column SoT — ONE class, ONE outType universe (every table the ops project).
 const COLUMNS = {
-  benchmark_users: { id: 'INTEGER', email: 'TEXT', name: 'TEXT', created_at: 'TEXT', updated_at: 'TEXT' },
-  benchmark_posts: { id: 'INTEGER', title: 'TEXT', content: 'TEXT', published: 'INTEGER', author_id: 'INTEGER', created_at: 'TEXT' },
+  // `id` is `INTEGER NOT NULL` (it IS the PK): the RETURNING-chained tx ops need a non-optional RETURNING
+  // scalar (`$u.id` consumable in the dependent statement's value position, no coalesce). Non-tx ops are
+  // unaffected (id is always present). This lets ALL 19 ops live in ONE class → ONE publish (no hand-merge).
+  benchmark_users: { id: 'INTEGER NOT NULL', email: 'TEXT', name: 'TEXT', created_at: 'TEXT', updated_at: 'TEXT' },
+  benchmark_posts: { id: 'INTEGER NOT NULL', title: 'TEXT', content: 'TEXT', published: 'INTEGER', author_id: 'INTEGER', created_at: 'TEXT' },
   benchmark_comments: { id: 'INTEGER', body: 'TEXT', post_id: 'INTEGER', created_at: 'TEXT' },
   // composite-key (multi-column PK) tables — the compositeRelations 3-level chain projects these.
   benchmark_tenant_users: { tenant_id: 'INTEGER', user_id: 'INTEGER', name: 'TEXT' },
@@ -86,24 +89,16 @@ class Bench extends lm.SemanticBehavior {
   createMany($: { rows: unknown }) { return lm.emitBatchWrite(L, 'Insert', { table: 'benchmark_users', columns: ['email', 'name'], rows: $.rows as never }, 'sqlite'); }
   upsertMany($: { rows: unknown }) { return lm.emitBatchWrite(L, 'Insert', { table: 'benchmark_users', columns: ['email', 'name'], rows: $.rows as never, onConflict: 'email', onConflictAction: 'update' }, 'sqlite'); }
   updateMany($: { rows: unknown }) { return lm.emitBatchWrite(L, 'Update', { table: 'benchmark_users', columns: ['name'], keyColumns: ['id'], rows: $.rows as never }, 'sqlite'); }
-}
 
-// ── nested-write TRANSACTIONS (E5, RETURNING-chained; #142) ────────────────────────────────────────
-// The DB transaction boundary (BEGIN/COMMIT/ROLLBACK + atomicity) is the CONSUMER's (litedbmodel's)
-// responsibility, owned by the runtime `with_ambient_transaction` wrapper (begin_tx → runner →
-// COMMIT/ROLLBACK) — NOT a bc feature and NOT emitted into the generated runner (it runs the body
-// statements via `execute_sql` and returns `Result`). Each op is a COVERED typed-source `.map`:
-// `write RETURNING id → id.map(id => dependent write binding that id)`. `emitWrite` stamps the RETURNING
-// projection as the #59 `readColumns` port, so the source node carries a typed outType and the `.map`
-// de-boxes the row (`$u.id`). `id` is declared `NOT NULL` (it IS the primary key) so the RETURNING cell
-// is a non-optional scalar — consumable in the dependent statement's value position (no coalesce). The
-// map runs the dependent write ONCE per RETURNING row (exactly one), so each tx is exactly 2 statements.
-class BenchTx extends lm.SemanticBehavior {
-  static columns = {
-    benchmark_users: { id: 'INTEGER NOT NULL', email: 'TEXT', name: 'TEXT' },
-    benchmark_posts: { id: 'INTEGER NOT NULL', title: 'TEXT', author_id: 'INTEGER' },
-  } as const;
-
+  // ── nested-write TRANSACTIONS (E5, RETURNING-chained; #142) ──────────────────────────────────────
+  // The DB transaction boundary (BEGIN/COMMIT/ROLLBACK + atomicity) is the CONSUMER's (litedbmodel's)
+  // responsibility, owned by the runtime `with_ambient_transaction` wrapper (begin_tx → runner →
+  // COMMIT/ROLLBACK) — NOT a bc feature and NOT emitted into the generated runner (it runs the body
+  // statements via `execute_sql` and returns `Result`). Each op is a COVERED typed-source `.map`:
+  // `write RETURNING id → id.map(id => dependent write binding that id)`. `emitWrite` stamps the RETURNING
+  // projection as the #59 `readColumns` port, so the source node carries a typed outType and the `.map`
+  // de-boxes the row (`$u.id`); `id` is `NOT NULL` (COLUMNS) so the RETURNING cell is a non-optional
+  // scalar consumable in the dependent statement's value position (no coalesce). Each tx = 2 statements.
   // nestedCreate: INSERT user RETURNING id → INSERT post with author_id = the new user's id.
   nestedCreate($: { email: unknown; name: unknown; title: unknown }) {
     const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id' }, 'sqlite');
@@ -156,20 +151,16 @@ const inputPorts: Record<string, PortDecl> = {
   nestedFindFirst: p({ name: 'string' }), nestedFindUnique: p({ email: 'string' }),
   create: p({ email: 'string', name: 'string' }), update: p({ id: 'int', name: 'string' }), upsert: p({ email: 'string', name: 'string' }),
   createMany: v('rows'), upsertMany: v('rows'), updateMany: v('rows'), // bc#178 待ち — opaque
-};
-const inputPortsTx: Record<string, PortDecl> = {
   nestedCreate: p({ email: 'string', name: 'string', title: 'string' }), nestedUpsert: p({ email: 'string', name: 'string', title: 'string' }),
   nestedUpdate: p({ id: 'int', name: 'string', title: 'string' }), delete: p({ email: 'string', name: 'string' }),
 };
 
 // PUBLISH → the native-clean contract (nativePassthrough expresses #164 + strips `materializers` at the
-// publish layer). The DUMP is verbatim: nothing runs between publish and JSON.stringify. The reads/single
-// writes/batches (Bench) and the RETURNING-chained transactions (BenchTx, NOT NULL id) publish as two
-// contracts and their component lists concat into the ONE dumped IR (byte-identical to a single publish;
-// the two classes only differ in their `static columns` nullability declaration).
+// publish layer). ALL 19 ops are ONE class → ONE `publishBehaviors`; the IR is dumped VERBATIM (no
+// hand-merge, no post-publish transform — nothing runs between publish and JSON.stringify). The IR is
+// exactly what bc's `compileBehaviors` produced; `bc generate` consumes it via the CLI.
 const contract = lm.publishBehaviors(Bench, { dialect: 'sqlite', nativePassthrough: true, inputPorts });
-const contractTx = lm.publishBehaviors(BenchTx, { dialect: 'sqlite', nativePassthrough: true, inputPorts: inputPortsTx });
-const ir = { ...contract.ir, components: [...contract.ir.components, ...contractTx.ir.components] };
+const ir = contract.ir;
 mkdirSync(IR_DIR, { recursive: true });
 writeFileSync(IR_PATH, JSON.stringify(ir));
 console.log(`native.ir.json: ${ir.components.length} components → ${IR_PATH}`);
