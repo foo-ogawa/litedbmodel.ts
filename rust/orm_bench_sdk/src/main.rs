@@ -335,8 +335,13 @@ fn open_db(spec: &str) -> Box<dyn Db> {
             return Box::new(MyDb { conn: mysql::Conn::new(opts).expect("connect mysql") });
         }
     }
+    // sqlite pilot: an IN-MEMORY DB, matching the native cell (`orm_bench` uses
+    // `SqliteDriver::in_memory`). Both surfaces MUST share storage — a file DB would add fsync/WAL the
+    // native in-memory cell never pays, over-crediting native on writes. The `spec` is ignored for
+    // sqlite (only the `pg:` / `mysql:` prefixes consume it).
+    let _ = spec;
     Box::new(SqliteDb {
-        conn: rusqlite::Connection::open(spec).expect("open sqlite db"),
+        conn: rusqlite::Connection::open_in_memory().expect("open in-memory sqlite"),
     })
 }
 
