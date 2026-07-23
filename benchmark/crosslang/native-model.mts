@@ -137,20 +137,24 @@ const TX_DEP = { arr: { obj: {} } } as const;
 // declare their real type (`string`/`int`, per the `COLUMNS` SQL types), so bc emits NATIVE-typed input
 // structs (`InNRCreate { email: String, name: String }`) and the bench harness passes native values —
 // no hand-boxing. `type` follows the column's SQL type: TEXT→`string`, INTEGER→`int`.
-type PortDecl = Record<string, { type: string; required: true }>;
+type PortDecl = Record<string, { type: string; required: true; elemType?: unknown }>;
+// Scalar ports: the SQL type (TEXT→string, INTEGER→int).
 const p = (spec: Record<string, 'string' | 'int'>): PortDecl =>
   Object.fromEntries(Object.entries(spec).map(([k, t]) => [k, { type: t, required: true as const }]));
-// Opaque wire (`value`) — the ONLY remaining non-native input: the batch record set. A typed
-// `arr<obj<…>>` input fails-closed on the op-agnostic `executeSQL` leaf's opaque `params` slot
-// (behavior-contracts#178 Case C — typed→opaque-`value` box not yet covered). Kept `value` (the harness
-// builds the wire record array) until #178 lands; NOT hidden as native.
-const v = (...k: string[]): PortDecl => Object.fromEntries(k.map((x) => [x, { type: 'value', required: true as const }]));
+// The batch record-set port `rows`: the bc-canonical PortableType shape (`type:'array'` + `elemType` the
+// row `obj`). bc emits a native `Vec<Row>` input and boxes typed→wire at the leaf-param boundary (bc#178).
+const rows = (elem: Record<string, 'string' | 'int'>): PortDecl =>
+  ({ rows: { required: true, type: 'array', elemType: { obj: elem } } });
 const inputPorts: Record<string, PortDecl> = {
   filterPaginateSort: p({ published: 'int' }),
   findFirst: p({ name: 'string' }), findUnique: p({ email: 'string' }),
   nestedFindFirst: p({ name: 'string' }), nestedFindUnique: p({ email: 'string' }),
   create: p({ email: 'string', name: 'string' }), update: p({ id: 'int', name: 'string' }), upsert: p({ email: 'string', name: 'string' }),
-  createMany: v('rows'), upsertMany: v('rows'), updateMany: v('rows'), // bc#178 待ち — opaque
+  // batch record-set input: the bc-canonical PortableType shape — `type:'array'` + `elemType` the row
+  // `obj`. bc emits a native `Vec<Row>` input (Row = the elemType struct) and generates the typed→wire
+  // box at the leaf-param boundary itself (bc#178). The harness passes native rows — no wire hand-build.
+  createMany: rows({ email: 'string', name: 'string' }), upsertMany: rows({ email: 'string', name: 'string' }),
+  updateMany: rows({ id: 'int', name: 'string' }),
   nestedCreate: p({ email: 'string', name: 'string', title: 'string' }), nestedUpsert: p({ email: 'string', name: 'string', title: 'string' }),
   nestedUpdate: p({ id: 'int', name: 'string', title: 'string' }), delete: p({ email: 'string', name: 'string' }),
 };

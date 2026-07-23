@@ -27,7 +27,6 @@ import (
 	"time"
 
 	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
-	"github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime/wire"
 	behaviors "github.com/foo-ogawa/litedbmodel/go/lm_bench/lm_orm_native/gen"
 
 	_ "modernc.org/sqlite" // PURE-GO sqlite driver (registered as "sqlite")
@@ -58,31 +57,25 @@ func openSeeded() (*sql.DB, error) {
 // (the json_each/JSON_TABLE batch param). `stable` reuses fixed emails (upsertMany — conflict-updates);
 // else the email varies by iteration so a plain INSERT stays insertable under the UNIQUE(email)
 // constraint. Mirrors the rust `user_rows` / python `_user_rows` batch shape.
-func userRows(it int, stable bool) wire.WireValue {
-	items := make([]wire.WireValue, 10)
+func userRows(it int, stable bool) []behaviors.T4 {
+	rows := make([]behaviors.T4, 10)
 	for i := 0; i < 10; i++ {
 		email := fmt.Sprintf("many%d_%d@bench.com", it, i)
 		if stable {
 			email = fmt.Sprintf("many%d@bench.com", i)
 		}
-		items[i] = wire.WireRowOf([]wire.WireField{
-			{Key: "email", Val: wire.WireStr(email)},
-			{Key: "name", Val: wire.WireStr(fmt.Sprintf("Many %d", i))},
-		})
+		rows[i] = behaviors.T4{Email: email, Name: fmt.Sprintf("Many %d", i)}
 	}
-	return wire.WireListOf(items)
+	return rows
 }
 
 // updateManyRows builds the id-keyed 10-row batch set for updateMany (updates the seeded users 1..10).
-func updateManyRows() wire.WireValue {
-	items := make([]wire.WireValue, 10)
+func updateManyRows() []behaviors.T5 {
+	rows := make([]behaviors.T5, 10)
 	for i := 1; i <= 10; i++ {
-		items[i-1] = wire.WireRowOf([]wire.WireField{
-			{Key: "id", Val: wire.WireInt(int64(i))},
-			{Key: "name", Val: wire.WireStr(fmt.Sprintf("Many %d", i))},
-		})
+		rows[i-1] = behaviors.T5{Id: int64(i), Name: fmt.Sprintf("Many %d", i)}
 	}
-	return wire.WireListOf(items)
+	return rows
 }
 
 // op runs ONE covered op for iteration it and returns its row count (writes report the terminal row

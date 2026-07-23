@@ -134,6 +134,16 @@ type T3 struct {
 	Id float64 // "id"
 }
 
+type T4 struct {
+	Email string // "email"
+	Name  string // "name"
+}
+
+type T5 struct {
+	Id   int64  // "id"
+	Name string // "name"
+}
+
 // Per-component CONCRETE input structs (fields = inputPorts; the consumer builds them natively —
 // no generic *Obj crosses the covered read boundary).
 // In_findAll — the CONCRETE input for 'findAll' (no input ports).
@@ -202,19 +212,19 @@ type In_upsert struct {
 // In_createMany — the CONCRETE input for 'createMany' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_createMany struct {
-	Rows wire.WireValue // "rows"
+	Rows []T4 // "rows"
 }
 
 // In_upsertMany — the CONCRETE input for 'upsertMany' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_upsertMany struct {
-	Rows wire.WireValue // "rows"
+	Rows []T4 // "rows"
 }
 
 // In_updateMany — the CONCRETE input for 'updateMany' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_updateMany struct {
-	Rows wire.WireValue // "rows"
+	Rows []T5 // "rows"
 }
 
 // In_nestedCreate — the CONCRETE input for 'nestedCreate' (fields = inputPorts; typed, consumer-built —
@@ -1997,7 +2007,7 @@ func RunNativeRawStruct_createMany(in In_createMany) ([]T1, error) {
 	_ = t_n0
 	_ = produced_n0
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_createMany_n0{Bigint: false, Params: []wire.WireValue{in.Rows}, Returning: false, Sql: "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?)", Write: true}
+	ports_n0 := PortsNR_createMany_n0{Bigint: false, Params: []wire.WireValue{func() wire.WireValue { it0 := []wire.WireValue{}; for _, e0 := range in.Rows { it0 = append(it0, wire.WireRowOf([]wire.WireField{{Key: "email", Val: wire.WireStr(e0.Email)}, {Key: "name", Val: wire.WireStr(e0.Name)}})) }; return wire.WireListOf(it0) }()}, Returning: false, Sql: "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?)", Write: true}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -2051,7 +2061,7 @@ func RunNativeRawStruct_upsertMany(in In_upsertMany) ([]T1, error) {
 	_ = t_n0
 	_ = produced_n0
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_upsertMany_n0{Bigint: false, Params: []wire.WireValue{in.Rows}, Returning: false, Sql: "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?) WHERE true ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name", Write: true}
+	ports_n0 := PortsNR_upsertMany_n0{Bigint: false, Params: []wire.WireValue{func() wire.WireValue { it0 := []wire.WireValue{}; for _, e0 := range in.Rows { it0 = append(it0, wire.WireRowOf([]wire.WireField{{Key: "email", Val: wire.WireStr(e0.Email)}, {Key: "name", Val: wire.WireStr(e0.Name)}})) }; return wire.WireListOf(it0) }()}, Returning: false, Sql: "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?) WHERE true ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name", Write: true}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -2105,7 +2115,7 @@ func RunNativeRawStruct_updateMany(in In_updateMany) ([]T1, error) {
 	_ = t_n0
 	_ = produced_n0
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_updateMany_n0{Bigint: false, Params: []wire.WireValue{in.Rows, in.Rows}, Returning: false, Sql: "UPDATE benchmark_users SET name = (SELECT json_extract(je.value, '$.name') FROM json_each(?) je WHERE json_extract(je.value, '$.id') = benchmark_users.id LIMIT 1) WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))", Write: true}
+	ports_n0 := PortsNR_updateMany_n0{Bigint: false, Params: []wire.WireValue{func() wire.WireValue { it0 := []wire.WireValue{}; for _, e0 := range in.Rows { it0 = append(it0, wire.WireRowOf([]wire.WireField{{Key: "id", Val: wire.WireInt(e0.Id)}, {Key: "name", Val: wire.WireStr(e0.Name)}})) }; return wire.WireListOf(it0) }(), func() wire.WireValue { it0 := []wire.WireValue{}; for _, e0 := range in.Rows { it0 = append(it0, wire.WireRowOf([]wire.WireField{{Key: "id", Val: wire.WireInt(e0.Id)}, {Key: "name", Val: wire.WireStr(e0.Name)}})) }; return wire.WireListOf(it0) }()}, Returning: false, Sql: "UPDATE benchmark_users SET name = (SELECT json_extract(je.value, '$.name') FROM json_each(?) je WHERE json_extract(je.value, '$.id') = benchmark_users.id LIMIT 1) WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))", Write: true}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)

@@ -17,7 +17,7 @@ mod gen;
 
 use litedbmodel_runtime::driver::{forwarding_tx, forwarding_tx_no_begin, PreparedStatement};
 use litedbmodel_runtime::exec_context::TxConnection;
-use litedbmodel_runtime::{with_ambient_driver, with_ambient_transaction, Driver, SqlFailure, SqliteDriver, WireList, WireRow, WireValue};
+use litedbmodel_runtime::{with_ambient_driver, with_ambient_transaction, Driver, SqlFailure, SqliteDriver};
 #[cfg(feature = "livedb")]
 use litedbmodel_runtime::{MysqlDriver, PostgresDriver};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -163,17 +163,8 @@ fn run_op(d: &dyn Driver, op: &str, it: u64) {
         }
         "updateMany" => {
             // 10 rows keyed on id (1..=10) — updates the seeded users, no-op for absent ids.
-            let items: Vec<WireValue> = (1..=10)
-                .map(|id| {
-                    WireValue::Row(WireRow {
-                        entries: vec![
-                            ("id".to_string(), WireValue::int(id)),
-                            ("name".to_string(), WireValue::Str(format!("Many {id}"))),
-                        ],
-                    })
-                })
-                .collect();
-            bg::run_native_raw_struct_updateMany(bg::InNRUpdateMany { rows: WireValue::List(WireList { items }) }).unwrap();
+            let rows: Vec<bg::T5> = (1..=10).map(|id| bg::T5 { id, name: format!("Many {id}") }).collect();
+            bg::run_native_raw_struct_updateMany(bg::InNRUpdateMany { rows }).unwrap();
         }
         // ── RETURNING-chained transactions (#142): each runs THROUGH the runtime tx scope. The runner
         //    executes its 2 body statements via `execute_sql`; `with_ambient_transaction` brackets them
@@ -227,22 +218,16 @@ fn run_op(d: &dyn Driver, op: &str, it: u64) {
     }
 }
 
-// Build the 10-row batch record set for createMany/upsertMany as ONE opaque `rows` wire array (the
-// json_each/JSON_TABLE batch param). `stable` reuses fixed emails (upsertMany — conflict-updates); else
-// the email varies by iteration so a plain INSERT stays insertable under the UNIQUE(email) constraint.
-fn user_rows(it: u64, stable: bool) -> WireValue {
-    let items: Vec<WireValue> = (0..10)
+// Build the 10-row batch record set for createMany/upsertMany as a NATIVE `Vec<T4>` (bc boxes it to the
+// json_each/JSON_TABLE batch param at the leaf boundary). `stable` reuses fixed emails (upsertMany —
+// conflict-updates); else the email varies by iteration so a plain INSERT stays insertable under UNIQUE.
+fn user_rows(it: u64, stable: bool) -> Vec<bg::T4> {
+    (0..10)
         .map(|i| {
             let email = if stable { format!("many{i}@bench.com") } else { format!("many{it}_{i}@bench.com") };
-            WireValue::Row(WireRow {
-                entries: vec![
-                    ("email".to_string(), WireValue::Str(email)),
-                    ("name".to_string(), WireValue::Str(format!("Many {i}"))),
-                ],
-            })
+            bg::T4 { email, name: format!("Many {i}") }
         })
-        .collect();
-    WireValue::List(WireList { items })
+        .collect()
 }
 
 // The covered ops exposed on the combined struct-native path (bg::COMPONENT_NAMES_NATIVE_RAW).

@@ -120,6 +120,20 @@ pub struct T3 {
     pub id: f64, // "id"
 }
 
+#[derive(Clone, Default)]
+#[allow(dead_code)]
+pub struct T4 {
+    pub email: String, // "email"
+    pub name: String, // "name"
+}
+
+#[derive(Clone, Default)]
+#[allow(dead_code)]
+pub struct T5 {
+    pub id: i64, // "id"
+    pub name: String, // "name"
+}
+
 #[allow(dead_code)]
 fn unknown_component(component: &str) -> BehaviorError {
     BehaviorError::new("UNKNOWN_COMPONENT", format!("component '{component}' has no handler (fail-closed)"))
@@ -757,41 +771,23 @@ pub struct InNRUpsert {
 
 // InNRCreateMany — the CONCRETE input for 'createMany' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRCreateMany {
-    pub rows: WireValue, // "rows"
-}
-impl Default for InNRCreateMany {
-    fn default() -> Self {
-        InNRCreateMany {
-            rows: WireValue::Null,
-        }
-    }
+    pub rows: Vec<T4>, // "rows"
 }
 
 // InNRUpsertMany — the CONCRETE input for 'upsertMany' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRUpsertMany {
-    pub rows: WireValue, // "rows"
-}
-impl Default for InNRUpsertMany {
-    fn default() -> Self {
-        InNRUpsertMany {
-            rows: WireValue::Null,
-        }
-    }
+    pub rows: Vec<T4>, // "rows"
 }
 
 // InNRUpdateMany — the CONCRETE input for 'updateMany' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRUpdateMany {
-    pub rows: WireValue, // "rows"
-}
-impl Default for InNRUpdateMany {
-    fn default() -> Self {
-        InNRUpdateMany {
-            rows: WireValue::Null,
-        }
-    }
+    pub rows: Vec<T5>, // "rows"
 }
 
 // InNRNestedCreate — the CONCRETE input for 'nestedCreate' (fields = inputPorts; typed, consumer-built —
@@ -1869,7 +1865,7 @@ pub fn run_native_raw_struct_createMany(
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRCreateManyN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.rows.clone()]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?)".to_string(), f_write: true };
+    let ports_n0 = PortsNRCreateManyN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::List(WireList { items: in_.rows.clone().into_iter().map(|e0| WireValue::Row(WireRow { entries: vec![("email".to_string(), WireValue::Str(e0.email)), ("name".to_string(), WireValue::Str(e0.name))] })).collect() })]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?)".to_string(), f_write: true };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -1917,7 +1913,7 @@ pub fn run_native_raw_struct_upsertMany(
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRUpsertManyN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.rows.clone()]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?) WHERE true ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name".to_string(), f_write: true };
+    let ports_n0 = PortsNRUpsertManyN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::List(WireList { items: in_.rows.clone().into_iter().map(|e0| WireValue::Row(WireRow { entries: vec![("email".to_string(), WireValue::Str(e0.email)), ("name".to_string(), WireValue::Str(e0.name))] })).collect() })]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_users (email, name) SELECT json_extract(value, '$.email'), json_extract(value, '$.name') FROM json_each(?) WHERE true ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name".to_string(), f_write: true };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -1965,7 +1961,7 @@ pub fn run_native_raw_struct_updateMany(
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRUpdateManyN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.rows.clone(), in_.rows.clone()]; __v }, f_returning: false, f_sql: "UPDATE benchmark_users SET name = (SELECT json_extract(je.value, '$.name') FROM json_each(?) je WHERE json_extract(je.value, '$.id') = benchmark_users.id LIMIT 1) WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))".to_string(), f_write: true };
+    let ports_n0 = PortsNRUpdateManyN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::List(WireList { items: in_.rows.clone().into_iter().map(|e0| WireValue::Row(WireRow { entries: vec![("id".to_string(), WireValue::int(e0.id)), ("name".to_string(), WireValue::Str(e0.name))] })).collect() }), WireValue::List(WireList { items: in_.rows.clone().into_iter().map(|e0| WireValue::Row(WireRow { entries: vec![("id".to_string(), WireValue::int(e0.id)), ("name".to_string(), WireValue::Str(e0.name))] })).collect() })]; __v }, f_returning: false, f_sql: "UPDATE benchmark_users SET name = (SELECT json_extract(je.value, '$.name') FROM json_each(?) je WHERE json_extract(je.value, '$.id') = benchmark_users.id LIMIT 1) WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))".to_string(), f_write: true };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),

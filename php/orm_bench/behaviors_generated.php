@@ -7,7 +7,7 @@
 // (Behavior::runBehavior) — no execution logic is generated. Handlers are ALWAYS
 // injected at the boundary (IR + {effects,config,hooks} — concept.md §4.4); they
 // are never generated.
-// irFingerprint: fnv1a64:8f464209911f5a51
+// irFingerprint: fnv1a64:5e2ad87fb050e695
 
 declare(strict_types=1);
 
@@ -15,7 +15,7 @@ declare(strict_types=1);
 $expectedSpecVersions = ['behavior' => 5, 'expression' => 2, 'plan' => 1];
 
 // FNV-1a 64 fingerprint of the source portable IR (canonical-json discipline, #208).
-$irFingerprint = 'fnv1a64:8f464209911f5a51';
+$irFingerprint = 'fnv1a64:5e2ad87fb050e695';
 
 // Component names exposed by bind(), in IR declaration order.
 $componentNames = ['findAll', 'filterPaginateSort', 'findFirst', 'findUnique', 'nestedFindAll', 'nestedFindFirst', 'nestedFindUnique', 'nestedRelations', 'compositeRelations', 'create', 'update', 'upsert', 'createMany', 'upsertMany', 'updateMany', 'nestedCreate', 'nestedUpsert', 'nestedUpdate', 'delete'];
@@ -2263,8 +2263,14 @@ $ir = (object) [
             ],
             "inputPorts" => (object) [
                 "rows" => (object) [
+                    "elemType" => (object) [
+                        "obj" => (object) [
+                            "email" => "string",
+                            "name" => "string",
+                        ],
+                    ],
                     "required" => true,
-                    "type" => "value",
+                    "type" => "array",
                 ],
             ],
             "name" => "createMany",
@@ -2339,8 +2345,14 @@ $ir = (object) [
             ],
             "inputPorts" => (object) [
                 "rows" => (object) [
+                    "elemType" => (object) [
+                        "obj" => (object) [
+                            "email" => "string",
+                            "name" => "string",
+                        ],
+                    ],
                     "required" => true,
-                    "type" => "value",
+                    "type" => "array",
                 ],
             ],
             "name" => "upsertMany",
@@ -2420,8 +2432,14 @@ $ir = (object) [
             ],
             "inputPorts" => (object) [
                 "rows" => (object) [
+                    "elemType" => (object) [
+                        "obj" => (object) [
+                            "id" => "int",
+                            "name" => "string",
+                        ],
+                    ],
                     "required" => true,
-                    "type" => "value",
+                    "type" => "array",
                 ],
             ],
             "name" => "updateMany",
