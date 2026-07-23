@@ -7,7 +7,7 @@
 // (Behavior::runBehavior) — no execution logic is generated. Handlers are ALWAYS
 // injected at the boundary (IR + {effects,config,hooks} — concept.md §4.4); they
 // are never generated.
-// irFingerprint: fnv1a64:daa25d52cb64d913
+// irFingerprint: fnv1a64:1d6a1e6bd223d4c3
 
 declare(strict_types=1);
 
@@ -15,7 +15,7 @@ declare(strict_types=1);
 $expectedSpecVersions = ['behavior' => 5, 'expression' => 2, 'plan' => 1];
 
 // FNV-1a 64 fingerprint of the source portable IR (canonical-json discipline, #208).
-$irFingerprint = 'fnv1a64:daa25d52cb64d913';
+$irFingerprint = 'fnv1a64:1d6a1e6bd223d4c3';
 
 // Component names exposed by bind(), in IR declaration order.
 $componentNames = ['findAll', 'filterPaginateSort', 'findFirst', 'findUnique', 'nestedFindAll', 'nestedFindFirst', 'nestedFindUnique', 'nestedRelations', 'compositeRelations', 'create', 'update', 'upsert', 'createMany', 'upsertMany', 'updateMany', 'nestedCreate', 'nestedUpsert', 'nestedUpdate', 'delete'];
@@ -201,7 +201,7 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "published" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "int",
                 ],
             ],
             "name" => "filterPaginateSort",
@@ -318,7 +318,7 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "name" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
             ],
             "name" => "findFirst",
@@ -426,7 +426,7 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "email" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
             ],
             "name" => "findUnique",
@@ -901,7 +901,7 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "name" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
             ],
             "name" => "nestedFindFirst",
@@ -1146,7 +1146,7 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "email" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
             ],
             "name" => "nestedFindUnique",
@@ -2014,11 +2014,11 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "email" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
                 "name" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
             ],
             "name" => "create",
@@ -2104,11 +2104,11 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "id" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "int",
                 ],
                 "name" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
             ],
             "name" => "update",
@@ -2200,11 +2200,11 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "email" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
                 "name" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
             ],
             "name" => "upsert",
@@ -2593,15 +2593,15 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "email" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
                 "name" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
                 "title" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
             ],
             "name" => "nestedCreate",
@@ -2758,15 +2758,15 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "email" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
                 "name" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
                 "title" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
             ],
             "name" => "nestedUpsert",
@@ -2933,15 +2933,15 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "id" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "int",
                 ],
                 "name" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
                 "title" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
             ],
             "name" => "nestedUpdate",
@@ -3098,11 +3098,11 @@ $ir = (object) [
             "inputPorts" => (object) [
                 "email" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
                 "name" => (object) [
                     "required" => true,
-                    "type" => "value",
+                    "type" => "string",
                 ],
             ],
             "name" => "delete",

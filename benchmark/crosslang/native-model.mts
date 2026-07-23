@@ -137,19 +137,29 @@ class BenchTx extends lm.SemanticBehavior {
 // the map result is a list-of-lists). The tx result is unused (the tx runs for its effects).
 const TX_DEP = { arr: { obj: {} } } as const;
 
-// Input Port type strings (erased at runtime; bc records the port NAMES from `$` access — these carry
-// the declared type into the IR). All bound values are opaque wire (`value`) — the native leaf binds them.
-const v = (...k: string[]): Record<string, { type: 'value'; required: true }> => Object.fromEntries(k.map((x) => [x, { type: 'value' as const, required: true }]));
-const inputPorts: Record<string, Record<string, { type: 'value'; required: true }>> = {
-  filterPaginateSort: v('published'),
-  findFirst: v('name'), findUnique: v('email'),
-  nestedFindFirst: v('name'), nestedFindUnique: v('email'),
-  create: v('email', 'name'), update: v('id', 'name'), upsert: v('email', 'name'),
-  createMany: v('rows'), upsertMany: v('rows'), updateMany: v('rows'),
+// Input Port type declarations (bc records the port NAMES from `$` access; the TS `In<>` type is erased
+// at runtime, so the DECLARED type is carried into the IR here — the input side's SSoT). Scalar inputs
+// declare their real type (`string`/`int`, per the `COLUMNS` SQL types), so bc emits NATIVE-typed input
+// structs (`InNRCreate { email: String, name: String }`) and the bench harness passes native values —
+// no hand-boxing. `type` follows the column's SQL type: TEXT→`string`, INTEGER→`int`.
+type PortDecl = Record<string, { type: string; required: true }>;
+const p = (spec: Record<string, 'string' | 'int'>): PortDecl =>
+  Object.fromEntries(Object.entries(spec).map(([k, t]) => [k, { type: t, required: true as const }]));
+// Opaque wire (`value`) — the ONLY remaining non-native input: the batch record set. A typed
+// `arr<obj<…>>` input fails-closed on the op-agnostic `executeSQL` leaf's opaque `params` slot
+// (behavior-contracts#178 Case C — typed→opaque-`value` box not yet covered). Kept `value` (the harness
+// builds the wire record array) until #178 lands; NOT hidden as native.
+const v = (...k: string[]): PortDecl => Object.fromEntries(k.map((x) => [x, { type: 'value', required: true as const }]));
+const inputPorts: Record<string, PortDecl> = {
+  filterPaginateSort: p({ published: 'int' }),
+  findFirst: p({ name: 'string' }), findUnique: p({ email: 'string' }),
+  nestedFindFirst: p({ name: 'string' }), nestedFindUnique: p({ email: 'string' }),
+  create: p({ email: 'string', name: 'string' }), update: p({ id: 'int', name: 'string' }), upsert: p({ email: 'string', name: 'string' }),
+  createMany: v('rows'), upsertMany: v('rows'), updateMany: v('rows'), // bc#178 待ち — opaque
 };
-const inputPortsTx: Record<string, Record<string, { type: 'value'; required: true }>> = {
-  nestedCreate: v('email', 'name', 'title'), nestedUpsert: v('email', 'name', 'title'),
-  nestedUpdate: v('id', 'name', 'title'), delete: v('email', 'name'),
+const inputPortsTx: Record<string, PortDecl> = {
+  nestedCreate: p({ email: 'string', name: 'string', title: 'string' }), nestedUpsert: p({ email: 'string', name: 'string', title: 'string' }),
+  nestedUpdate: p({ id: 'int', name: 'string', title: 'string' }), delete: p({ email: 'string', name: 'string' }),
 };
 
 // PUBLISH → the native-clean contract (nativePassthrough expresses #164 + strips `materializers` at the

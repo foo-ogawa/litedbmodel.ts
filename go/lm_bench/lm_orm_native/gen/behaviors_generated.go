@@ -146,19 +146,19 @@ type In_findAll struct{}
 // In_filterPaginateSort — the CONCRETE input for 'filterPaginateSort' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_filterPaginateSort struct {
-	Published wire.WireValue // "published"
+	Published int64 // "published"
 }
 
 // In_findFirst — the CONCRETE input for 'findFirst' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_findFirst struct {
-	Name wire.WireValue // "name"
+	Name string // "name"
 }
 
 // In_findUnique — the CONCRETE input for 'findUnique' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_findUnique struct {
-	Email wire.WireValue // "email"
+	Email string // "email"
 }
 
 // In_nestedFindAll — the CONCRETE input for 'nestedFindAll' (no input ports).
@@ -167,13 +167,13 @@ type In_nestedFindAll struct{}
 // In_nestedFindFirst — the CONCRETE input for 'nestedFindFirst' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_nestedFindFirst struct {
-	Name wire.WireValue // "name"
+	Name string // "name"
 }
 
 // In_nestedFindUnique — the CONCRETE input for 'nestedFindUnique' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_nestedFindUnique struct {
-	Email wire.WireValue // "email"
+	Email string // "email"
 }
 
 // In_nestedRelations — the CONCRETE input for 'nestedRelations' (no input ports).
@@ -185,22 +185,22 @@ type In_compositeRelations struct{}
 // In_create — the CONCRETE input for 'create' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_create struct {
-	Email wire.WireValue // "email"
-	Name  wire.WireValue // "name"
+	Email string // "email"
+	Name  string // "name"
 }
 
 // In_update — the CONCRETE input for 'update' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_update struct {
-	Id   wire.WireValue // "id"
-	Name wire.WireValue // "name"
+	Id   int64  // "id"
+	Name string // "name"
 }
 
 // In_upsert — the CONCRETE input for 'upsert' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_upsert struct {
-	Email wire.WireValue // "email"
-	Name  wire.WireValue // "name"
+	Email string // "email"
+	Name  string // "name"
 }
 
 // In_createMany — the CONCRETE input for 'createMany' (fields = inputPorts; typed, consumer-built —
@@ -224,32 +224,32 @@ type In_updateMany struct {
 // In_nestedCreate — the CONCRETE input for 'nestedCreate' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_nestedCreate struct {
-	Email wire.WireValue // "email"
-	Name  wire.WireValue // "name"
-	Title wire.WireValue // "title"
+	Email string // "email"
+	Name  string // "name"
+	Title string // "title"
 }
 
 // In_nestedUpsert — the CONCRETE input for 'nestedUpsert' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_nestedUpsert struct {
-	Email wire.WireValue // "email"
-	Name  wire.WireValue // "name"
-	Title wire.WireValue // "title"
+	Email string // "email"
+	Name  string // "name"
+	Title string // "title"
 }
 
 // In_nestedUpdate — the CONCRETE input for 'nestedUpdate' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_nestedUpdate struct {
-	Id    wire.WireValue // "id"
-	Name  wire.WireValue // "name"
-	Title wire.WireValue // "title"
+	Id    int64  // "id"
+	Name  string // "name"
+	Title string // "title"
 }
 
 // In_delete — the CONCRETE input for 'delete' (fields = inputPorts; typed, consumer-built —
 // NO generic *Obj, NO per-field boxing crosses the covered read boundary).
 type In_delete struct {
-	Email wire.WireValue // "email"
-	Name  wire.WireValue // "name"
+	Email string // "email"
+	Name  string // "name"
 }
 
 // Probe kind consts (the inline de-box compares against these).
@@ -858,7 +858,7 @@ func RunNativeRawStruct_filterPaginateSort(in In_filterPaginateSort) ([]T2, erro
 	_ = t_n0
 	_ = produced_n0
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_filterPaginateSort_n0{Bigint: false, Params: []wire.WireValue{in.Published}, Returning: false, Sql: "SELECT id, title, content, published, author_id, created_at FROM benchmark_posts WHERE published = ? ORDER BY created_at DESC LIMIT 20 OFFSET 10", Write: false}
+	ports_n0 := PortsNR_filterPaginateSort_n0{Bigint: false, Params: []wire.WireValue{wire.WireInt(in.Published)}, Returning: false, Sql: "SELECT id, title, content, published, author_id, created_at FROM benchmark_posts WHERE published = ? ORDER BY created_at DESC LIMIT 20 OFFSET 10", Write: false}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -963,7 +963,7 @@ func RunNativeRawStruct_findFirst(in In_findFirst) ([]T0, error) {
 	_ = t_n0
 	_ = produced_n0
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_findFirst_n0{Bigint: false, Params: []wire.WireValue{in.Name}, Returning: false, Sql: "SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1", Write: false}
+	ports_n0 := PortsNR_findFirst_n0{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Name)}, Returning: false, Sql: "SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1", Write: false}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -1041,7 +1041,7 @@ func RunNativeRawStruct_findUnique(in In_findUnique) ([]T0, error) {
 	_ = t_n0
 	_ = produced_n0
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_findUnique_n0{Bigint: false, Params: []wire.WireValue{in.Email}, Returning: false, Sql: "SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1", Write: false}
+	ports_n0 := PortsNR_findUnique_n0{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Email)}, Returning: false, Sql: "SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1", Write: false}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -1245,7 +1245,7 @@ func RunNativeRawStruct_nestedFindFirst(in In_nestedFindFirst) ([]T1, error) {
 	_ = t_n3
 	_ = produced_n3
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_nestedFindFirst_n0{Bigint: false, Params: []wire.WireValue{in.Name}, Returning: false, Sql: "SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1", Write: false}
+	ports_n0 := PortsNR_nestedFindFirst_n0{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Name)}, Returning: false, Sql: "SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1", Write: false}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -1359,7 +1359,7 @@ func RunNativeRawStruct_nestedFindUnique(in In_nestedFindUnique) ([]T1, error) {
 	_ = t_n3
 	_ = produced_n3
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_nestedFindUnique_n0{Bigint: false, Params: []wire.WireValue{in.Email}, Returning: false, Sql: "SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1", Write: false}
+	ports_n0 := PortsNR_nestedFindUnique_n0{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Email)}, Returning: false, Sql: "SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1", Write: false}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -1809,7 +1809,7 @@ func RunNativeRawStruct_create(in In_create) ([]T1, error) {
 	_ = t_n0
 	_ = produced_n0
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_create_n0{Bigint: false, Params: []wire.WireValue{in.Email, in.Name}, Returning: false, Sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?)", Write: true}
+	ports_n0 := PortsNR_create_n0{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Email), wire.WireStr(in.Name)}, Returning: false, Sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?)", Write: true}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -1863,7 +1863,7 @@ func RunNativeRawStruct_update(in In_update) ([]T1, error) {
 	_ = t_n0
 	_ = produced_n0
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_update_n0{Bigint: false, Params: []wire.WireValue{in.Name, in.Id}, Returning: false, Sql: "UPDATE benchmark_users SET name = ? WHERE id = ?", Write: true}
+	ports_n0 := PortsNR_update_n0{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Name), wire.WireInt(in.Id)}, Returning: false, Sql: "UPDATE benchmark_users SET name = ? WHERE id = ?", Write: true}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -1917,7 +1917,7 @@ func RunNativeRawStruct_upsert(in In_upsert) ([]T3, error) {
 	_ = t_n0
 	_ = produced_n0
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_upsert_n0{Bigint: false, Params: []wire.WireValue{in.Email, in.Name}, Returning: true, Sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id", Write: true}
+	ports_n0 := PortsNR_upsert_n0{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Email), wire.WireStr(in.Name)}, Returning: true, Sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id", Write: true}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -2147,7 +2147,7 @@ func RunNativeRawStruct_nestedCreate(in In_nestedCreate) ([][]T1, error) {
 	_ = t_n1
 	_ = produced_n1
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_nestedCreate_n0{Bigint: false, Params: []wire.WireValue{in.Email, in.Name}, Returning: true, Sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id", Write: true}
+	ports_n0 := PortsNR_nestedCreate_n0{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Email), wire.WireStr(in.Name)}, Returning: true, Sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id", Write: true}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -2199,7 +2199,7 @@ func RunNativeRawStruct_nestedCreate(in In_nestedCreate) ([][]T1, error) {
 		t_n1 = make([][]T1, 0, len(over_n1))
 		for mk_n1 := range over_n1 {
 			oel_n1 := over_n1[mk_n1]
-			ep_n1 := PortsNR_nestedCreate_n1{Bigint: false, Params: []wire.WireValue{wire.WireFloat(oel_n1.Id), in.Title}, Returning: false, Sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", Write: true}
+			ep_n1 := PortsNR_nestedCreate_n1{Bigint: false, Params: []wire.WireValue{wire.WireFloat(oel_n1.Id), wire.WireStr(in.Title)}, Returning: false, Sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", Write: true}
 			mo_n1, mo_n1Err := litedbmodel_runtime.ExecuteSQL(ep_n1.Bigint, ep_n1.Params, ep_n1.Returning, ep_n1.Sql, ep_n1.Write)
 			if mo_n1Err != nil {
 				return nil, opFailed("n1", "fail", mo_n1Err)
@@ -2261,7 +2261,7 @@ func RunNativeRawStruct_nestedUpsert(in In_nestedUpsert) ([][]T1, error) {
 	_ = t_n1
 	_ = produced_n1
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_nestedUpsert_n0{Bigint: false, Params: []wire.WireValue{in.Email, in.Name}, Returning: true, Sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id", Write: true}
+	ports_n0 := PortsNR_nestedUpsert_n0{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Email), wire.WireStr(in.Name)}, Returning: true, Sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id", Write: true}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -2313,7 +2313,7 @@ func RunNativeRawStruct_nestedUpsert(in In_nestedUpsert) ([][]T1, error) {
 		t_n1 = make([][]T1, 0, len(over_n1))
 		for mk_n1 := range over_n1 {
 			oel_n1 := over_n1[mk_n1]
-			ep_n1 := PortsNR_nestedUpsert_n1{Bigint: false, Params: []wire.WireValue{wire.WireFloat(oel_n1.Id), in.Title}, Returning: false, Sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", Write: true}
+			ep_n1 := PortsNR_nestedUpsert_n1{Bigint: false, Params: []wire.WireValue{wire.WireFloat(oel_n1.Id), wire.WireStr(in.Title)}, Returning: false, Sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)", Write: true}
 			mo_n1, mo_n1Err := litedbmodel_runtime.ExecuteSQL(ep_n1.Bigint, ep_n1.Params, ep_n1.Returning, ep_n1.Sql, ep_n1.Write)
 			if mo_n1Err != nil {
 				return nil, opFailed("n1", "fail", mo_n1Err)
@@ -2375,7 +2375,7 @@ func RunNativeRawStruct_nestedUpdate(in In_nestedUpdate) ([][]T1, error) {
 	_ = t_n1
 	_ = produced_n1
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_nestedUpdate_n0{Bigint: false, Params: []wire.WireValue{in.Name, in.Id}, Returning: true, Sql: "UPDATE benchmark_users SET name = ? WHERE id = ? RETURNING id", Write: true}
+	ports_n0 := PortsNR_nestedUpdate_n0{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Name), wire.WireInt(in.Id)}, Returning: true, Sql: "UPDATE benchmark_users SET name = ? WHERE id = ? RETURNING id", Write: true}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)
@@ -2427,7 +2427,7 @@ func RunNativeRawStruct_nestedUpdate(in In_nestedUpdate) ([][]T1, error) {
 		t_n1 = make([][]T1, 0, len(over_n1))
 		for mk_n1 := range over_n1 {
 			oel_n1 := over_n1[mk_n1]
-			ep_n1 := PortsNR_nestedUpdate_n1{Bigint: false, Params: []wire.WireValue{in.Title, wire.WireFloat(oel_n1.Id)}, Returning: false, Sql: "UPDATE benchmark_posts SET title = ? WHERE author_id = ?", Write: true}
+			ep_n1 := PortsNR_nestedUpdate_n1{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Title), wire.WireFloat(oel_n1.Id)}, Returning: false, Sql: "UPDATE benchmark_posts SET title = ? WHERE author_id = ?", Write: true}
 			mo_n1, mo_n1Err := litedbmodel_runtime.ExecuteSQL(ep_n1.Bigint, ep_n1.Params, ep_n1.Returning, ep_n1.Sql, ep_n1.Write)
 			if mo_n1Err != nil {
 				return nil, opFailed("n1", "fail", mo_n1Err)
@@ -2489,7 +2489,7 @@ func RunNativeRawStruct_delete(in In_delete) ([][]T1, error) {
 	_ = t_n1
 	_ = produced_n1
 	// ── op 'n0' (executeSQL) ──
-	ports_n0 := PortsNR_delete_n0{Bigint: false, Params: []wire.WireValue{in.Email, in.Name}, Returning: true, Sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id", Write: true}
+	ports_n0 := PortsNR_delete_n0{Bigint: false, Params: []wire.WireValue{wire.WireStr(in.Email), wire.WireStr(in.Name)}, Returning: true, Sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id", Write: true}
 	wire_n0, wire_n0Err := litedbmodel_runtime.ExecuteSQL(ports_n0.Bigint, ports_n0.Params, ports_n0.Returning, ports_n0.Sql, ports_n0.Write)
 	if wire_n0Err != nil {
 		return nil, opFailed("n0", "fail", wire_n0Err)

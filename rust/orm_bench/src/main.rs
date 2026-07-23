@@ -112,42 +112,23 @@ fn run_op(d: &dyn Driver, op: &str, it: u64) {
             bg::run_native_raw_struct_findAll(bg::InNRFindAll).unwrap();
         }
         "filterPaginateSort" => {
-            // `published` is BOOLEAN on postgres (native port `bool`) but INTEGER on sqlite/mysql — the
-            // ONE dialect-typed input; select the matching wire literal at compile time via `pg`.
-            #[cfg(feature = "pg")]
-            let published = WireValue::Bool(true);
-            #[cfg(not(feature = "pg"))]
-            let published = WireValue::int(1);
-            bg::run_native_raw_struct_filterPaginateSort(bg::InNRFilterPaginateSort { published }).unwrap();
+            // `published` is INTEGER (native port `int`); the generated input struct field is `i64`.
+            bg::run_native_raw_struct_filterPaginateSort(bg::InNRFilterPaginateSort { published: 1 }).unwrap();
         }
         "findFirst" => {
-            bg::run_native_raw_struct_findFirst(bg::InNRFindFirst {
-                name: WireValue::Str("User%".into()),
-                ..Default::default()
-            })
-            .unwrap();
+            bg::run_native_raw_struct_findFirst(bg::InNRFindFirst { name: "User%".to_string() }).unwrap();
         }
         "findUnique" => {
-            bg::run_native_raw_struct_findUnique(bg::InNRFindUnique {
-                email: WireValue::Str("user1@example.com".into()),
-            })
-            .unwrap();
+            bg::run_native_raw_struct_findUnique(bg::InNRFindUnique { email: "user1@example.com".to_string() }).unwrap();
         }
         "nestedFindAll" => {
             bg::run_native_raw_struct_nestedFindAll(bg::InNRNestedFindAll).unwrap();
         }
         "nestedFindFirst" => {
-            bg::run_native_raw_struct_nestedFindFirst(bg::InNRNestedFindFirst {
-                name: WireValue::Str("User%".into()),
-                ..Default::default()
-            })
-            .unwrap();
+            bg::run_native_raw_struct_nestedFindFirst(bg::InNRNestedFindFirst { name: "User%".to_string() }).unwrap();
         }
         "nestedFindUnique" => {
-            bg::run_native_raw_struct_nestedFindUnique(bg::InNRNestedFindUnique {
-                email: WireValue::Str("user1@example.com".into()),
-            })
-            .unwrap();
+            bg::run_native_raw_struct_nestedFindUnique(bg::InNRNestedFindUnique { email: "user1@example.com".to_string() }).unwrap();
         }
         "nestedRelations" => {
             bg::run_native_raw_struct_nestedRelations(bg::InNRNestedRelations).unwrap();
@@ -157,22 +138,18 @@ fn run_op(d: &dyn Driver, op: &str, it: u64) {
         }
         "create" => {
             bg::run_native_raw_struct_create(bg::InNRCreate {
-                email: WireValue::Str(format!("new{it}@bench.com")),
-                name: WireValue::Str("New".into()),
+                email: format!("new{it}@bench.com"),
+                name: "New".to_string(),
             })
             .unwrap();
         }
         "update" => {
-            bg::run_native_raw_struct_update(bg::InNRUpdate {
-                id: WireValue::int(1),
-                name: WireValue::Str("Updated 1".into()),
-            })
-            .unwrap();
+            bg::run_native_raw_struct_update(bg::InNRUpdate { id: 1, name: "Updated 1".to_string() }).unwrap();
         }
         "upsert" => {
             bg::run_native_raw_struct_upsert(bg::InNRUpsert {
-                email: WireValue::Str("user1@example.com".into()),
-                name: WireValue::Str("Upserted One".into()),
+                email: "user1@example.com".to_string(),
+                name: "Upserted One".to_string(),
             })
             .unwrap();
         }
@@ -206,9 +183,9 @@ fn run_op(d: &dyn Driver, op: &str, it: u64) {
             // → INSERT post (author_id = that id).
             with_ambient_transaction(d, || {
                 bg::run_native_raw_struct_nestedCreate(bg::InNRNestedCreate {
-                    email: WireValue::Str(format!("nc{it}@bench.com")),
-                    name: WireValue::Str("NC".into()),
-                    title: WireValue::Str("NC Post".into()),
+                    email: format!("nc{it}@bench.com"),
+                    name: "NC".to_string(),
+                    title: "NC Post".to_string(),
                 })
             })
             .unwrap();
@@ -217,9 +194,9 @@ fn run_op(d: &dyn Driver, op: &str, it: u64) {
             // Existing email (ON CONFLICT DO UPDATE) → INSERT post keyed on the upserted user's id.
             with_ambient_transaction(d, || {
                 bg::run_native_raw_struct_nestedUpsert(bg::InNRNestedUpsert {
-                    email: WireValue::Str("user1@example.com".into()),
-                    name: WireValue::Str("NUp".into()),
-                    title: WireValue::Str("NUp Post".into()),
+                    email: "user1@example.com".to_string(),
+                    name: "NUp".to_string(),
+                    title: "NUp Post".to_string(),
                 })
             })
             .unwrap();
@@ -228,9 +205,9 @@ fn run_op(d: &dyn Driver, op: &str, it: u64) {
             // UPDATE seeded user 1 RETURNING id → UPDATE that user's posts (author_id = 1 exists in seed).
             with_ambient_transaction(d, || {
                 bg::run_native_raw_struct_nestedUpdate(bg::InNRNestedUpdate {
-                    id: WireValue::int(1),
-                    name: WireValue::Str("NU".into()),
-                    title: WireValue::Str("NU Post".into()),
+                    id: 1,
+                    name: "NU".to_string(),
+                    title: "NU Post".to_string(),
                 })
             })
             .unwrap();
@@ -240,8 +217,8 @@ fn run_op(d: &dyn Driver, op: &str, it: u64) {
             // (its RETURNING id + inserted email). Fresh email per iteration (UNIQUE).
             with_ambient_transaction(d, || {
                 bg::run_native_raw_struct_delete(bg::InNRDelete {
-                    email: WireValue::Str(format!("del{it}@bench.com")),
-                    name: WireValue::Str("Del".into()),
+                    email: format!("del{it}@bench.com"),
+                    name: "Del".to_string(),
                 })
             })
             .unwrap();

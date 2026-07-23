@@ -4,14 +4,14 @@
 # native dict literal and handed to the EXISTING runtime core (run_behavior) —
 # no execution logic is generated. Handlers are ALWAYS injected at the boundary
 # (IR + {effects,config,hooks}); they are never generated.
-# irFingerprint: fnv1a64:daa25d52cb64d913
+# irFingerprint: fnv1a64:1d6a1e6bd223d4c3
 from behavior_contracts import SPEC_VERSIONS, fingerprint_component_graph, run_behavior
 
 # Spec versions baked at generation time (fail-closed constant comparison at load).
 EXPECTED_SPEC_VERSIONS = {"behavior": 5, "expression": 2, "plan": 1}
 
 # FNV-1a 64 fingerprint of the source portable IR (canonical_json discipline, #208).
-IR_FINGERPRINT = "fnv1a64:daa25d52cb64d913"
+IR_FINGERPRINT = "fnv1a64:1d6a1e6bd223d4c3"
 
 # Component names exposed by bind(), in IR declaration order.
 COMPONENT_NAMES = ("findAll", "filterPaginateSort", "findFirst", "findUnique", "nestedFindAll", "nestedFindFirst", "nestedFindUnique", "nestedRelations", "compositeRelations", "create", "update", "upsert", "createMany", "upsertMany", "updateMany", "nestedCreate", "nestedUpsert", "nestedUpdate", "delete")
@@ -197,7 +197,7 @@ IR = {
       "inputPorts": {
         "published": {
           "required": True,
-          "type": "value"
+          "type": "int"
         }
       },
       "name": "filterPaginateSort",
@@ -314,7 +314,7 @@ IR = {
       "inputPorts": {
         "name": {
           "required": True,
-          "type": "value"
+          "type": "string"
         }
       },
       "name": "findFirst",
@@ -422,7 +422,7 @@ IR = {
       "inputPorts": {
         "email": {
           "required": True,
-          "type": "value"
+          "type": "string"
         }
       },
       "name": "findUnique",
@@ -897,7 +897,7 @@ IR = {
       "inputPorts": {
         "name": {
           "required": True,
-          "type": "value"
+          "type": "string"
         }
       },
       "name": "nestedFindFirst",
@@ -1142,7 +1142,7 @@ IR = {
       "inputPorts": {
         "email": {
           "required": True,
-          "type": "value"
+          "type": "string"
         }
       },
       "name": "nestedFindUnique",
@@ -2010,11 +2010,11 @@ IR = {
       "inputPorts": {
         "email": {
           "required": True,
-          "type": "value"
+          "type": "string"
         },
         "name": {
           "required": True,
-          "type": "value"
+          "type": "string"
         }
       },
       "name": "create",
@@ -2100,11 +2100,11 @@ IR = {
       "inputPorts": {
         "id": {
           "required": True,
-          "type": "value"
+          "type": "int"
         },
         "name": {
           "required": True,
-          "type": "value"
+          "type": "string"
         }
       },
       "name": "update",
@@ -2196,11 +2196,11 @@ IR = {
       "inputPorts": {
         "email": {
           "required": True,
-          "type": "value"
+          "type": "string"
         },
         "name": {
           "required": True,
-          "type": "value"
+          "type": "string"
         }
       },
       "name": "upsert",
@@ -2589,15 +2589,15 @@ IR = {
       "inputPorts": {
         "email": {
           "required": True,
-          "type": "value"
+          "type": "string"
         },
         "name": {
           "required": True,
-          "type": "value"
+          "type": "string"
         },
         "title": {
           "required": True,
-          "type": "value"
+          "type": "string"
         }
       },
       "name": "nestedCreate",
@@ -2754,15 +2754,15 @@ IR = {
       "inputPorts": {
         "email": {
           "required": True,
-          "type": "value"
+          "type": "string"
         },
         "name": {
           "required": True,
-          "type": "value"
+          "type": "string"
         },
         "title": {
           "required": True,
-          "type": "value"
+          "type": "string"
         }
       },
       "name": "nestedUpsert",
@@ -2929,15 +2929,15 @@ IR = {
       "inputPorts": {
         "id": {
           "required": True,
-          "type": "value"
+          "type": "int"
         },
         "name": {
           "required": True,
-          "type": "value"
+          "type": "string"
         },
         "title": {
           "required": True,
-          "type": "value"
+          "type": "string"
         }
       },
       "name": "nestedUpdate",
@@ -3094,11 +3094,11 @@ IR = {
       "inputPorts": {
         "email": {
           "required": True,
-          "type": "value"
+          "type": "string"
         },
         "name": {
           "required": True,
-          "type": "value"
+          "type": "string"
         }
       },
       "name": "delete",

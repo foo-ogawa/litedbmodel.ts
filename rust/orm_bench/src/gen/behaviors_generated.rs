@@ -692,41 +692,23 @@ pub struct InNRFindAll;
 
 // InNRFilterPaginateSort — the CONCRETE input for 'filterPaginateSort' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRFilterPaginateSort {
-    pub published: WireValue, // "published"
-}
-impl Default for InNRFilterPaginateSort {
-    fn default() -> Self {
-        InNRFilterPaginateSort {
-            published: WireValue::Null,
-        }
-    }
+    pub published: i64, // "published"
 }
 
 // InNRFindFirst — the CONCRETE input for 'findFirst' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRFindFirst {
-    pub name: WireValue, // "name"
-}
-impl Default for InNRFindFirst {
-    fn default() -> Self {
-        InNRFindFirst {
-            name: WireValue::Null,
-        }
-    }
+    pub name: String, // "name"
 }
 
 // InNRFindUnique — the CONCRETE input for 'findUnique' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRFindUnique {
-    pub email: WireValue, // "email"
-}
-impl Default for InNRFindUnique {
-    fn default() -> Self {
-        InNRFindUnique {
-            email: WireValue::Null,
-        }
-    }
+    pub email: String, // "email"
 }
 
 // InNRNestedFindAll — the CONCRETE input for 'nestedFindAll' (no input ports).
@@ -735,28 +717,16 @@ pub struct InNRNestedFindAll;
 
 // InNRNestedFindFirst — the CONCRETE input for 'nestedFindFirst' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRNestedFindFirst {
-    pub name: WireValue, // "name"
-}
-impl Default for InNRNestedFindFirst {
-    fn default() -> Self {
-        InNRNestedFindFirst {
-            name: WireValue::Null,
-        }
-    }
+    pub name: String, // "name"
 }
 
 // InNRNestedFindUnique — the CONCRETE input for 'nestedFindUnique' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRNestedFindUnique {
-    pub email: WireValue, // "email"
-}
-impl Default for InNRNestedFindUnique {
-    fn default() -> Self {
-        InNRNestedFindUnique {
-            email: WireValue::Null,
-        }
-    }
+    pub email: String, // "email"
 }
 
 // InNRNestedRelations — the CONCRETE input for 'nestedRelations' (no input ports).
@@ -769,47 +739,26 @@ pub struct InNRCompositeRelations;
 
 // InNRCreate — the CONCRETE input for 'create' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRCreate {
-    pub email: WireValue, // "email"
-    pub name: WireValue, // "name"
-}
-impl Default for InNRCreate {
-    fn default() -> Self {
-        InNRCreate {
-            email: WireValue::Null,
-            name: WireValue::Null,
-        }
-    }
+    pub email: String, // "email"
+    pub name: String, // "name"
 }
 
 // InNRUpdate — the CONCRETE input for 'update' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRUpdate {
-    pub id: WireValue, // "id"
-    pub name: WireValue, // "name"
-}
-impl Default for InNRUpdate {
-    fn default() -> Self {
-        InNRUpdate {
-            id: WireValue::Null,
-            name: WireValue::Null,
-        }
-    }
+    pub id: i64, // "id"
+    pub name: String, // "name"
 }
 
 // InNRUpsert — the CONCRETE input for 'upsert' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRUpsert {
-    pub email: WireValue, // "email"
-    pub name: WireValue, // "name"
-}
-impl Default for InNRUpsert {
-    fn default() -> Self {
-        InNRUpsert {
-            email: WireValue::Null,
-            name: WireValue::Null,
-        }
-    }
+    pub email: String, // "email"
+    pub name: String, // "name"
 }
 
 // InNRCreateMany — the CONCRETE input for 'createMany' (fields = inputPorts; typed, consumer-built —
@@ -853,68 +802,37 @@ impl Default for InNRUpdateMany {
 
 // InNRNestedCreate — the CONCRETE input for 'nestedCreate' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRNestedCreate {
-    pub email: WireValue, // "email"
-    pub name: WireValue, // "name"
-    pub title: WireValue, // "title"
-}
-impl Default for InNRNestedCreate {
-    fn default() -> Self {
-        InNRNestedCreate {
-            email: WireValue::Null,
-            name: WireValue::Null,
-            title: WireValue::Null,
-        }
-    }
+    pub email: String, // "email"
+    pub name: String, // "name"
+    pub title: String, // "title"
 }
 
 // InNRNestedUpsert — the CONCRETE input for 'nestedUpsert' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRNestedUpsert {
-    pub email: WireValue, // "email"
-    pub name: WireValue, // "name"
-    pub title: WireValue, // "title"
-}
-impl Default for InNRNestedUpsert {
-    fn default() -> Self {
-        InNRNestedUpsert {
-            email: WireValue::Null,
-            name: WireValue::Null,
-            title: WireValue::Null,
-        }
-    }
+    pub email: String, // "email"
+    pub name: String, // "name"
+    pub title: String, // "title"
 }
 
 // InNRNestedUpdate — the CONCRETE input for 'nestedUpdate' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRNestedUpdate {
-    pub id: WireValue, // "id"
-    pub name: WireValue, // "name"
-    pub title: WireValue, // "title"
-}
-impl Default for InNRNestedUpdate {
-    fn default() -> Self {
-        InNRNestedUpdate {
-            id: WireValue::Null,
-            name: WireValue::Null,
-            title: WireValue::Null,
-        }
-    }
+    pub id: i64, // "id"
+    pub name: String, // "name"
+    pub title: String, // "title"
 }
 
 // InNRDelete — the CONCRETE input for 'delete' (fields = inputPorts; typed, consumer-built —
 // NO generic Value slice, NO per-field boxing crosses the covered read boundary).
+#[derive(Default)]
 pub struct InNRDelete {
-    pub email: WireValue, // "email"
-    pub name: WireValue, // "name"
-}
-impl Default for InNRDelete {
-    fn default() -> Self {
-        InNRDelete {
-            email: WireValue::Null,
-            name: WireValue::Null,
-        }
-    }
+    pub email: String, // "email"
+    pub name: String, // "name"
 }
 
 // Combined read runners (STRUCT-returning — the fully de-plumbed CONCRETE path).
@@ -1002,7 +920,7 @@ pub fn run_native_raw_struct_filterPaginateSort(
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRFilterPaginateSortN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.published.clone()]; __v }, f_returning: false, f_sql: "SELECT id, title, content, published, author_id, created_at FROM benchmark_posts WHERE published = ? ORDER BY created_at DESC LIMIT 20 OFFSET 10".to_string(), f_write: false };
+    let ports_n0 = PortsNRFilterPaginateSortN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::int(in_.published)]; __v }, f_returning: false, f_sql: "SELECT id, title, content, published, author_id, created_at FROM benchmark_posts WHERE published = ? ORDER BY created_at DESC LIMIT 20 OFFSET 10".to_string(), f_write: false };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -1088,7 +1006,7 @@ pub fn run_native_raw_struct_findFirst(
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRFindFirstN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.name.clone()]; __v }, f_returning: false, f_sql: "SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1".to_string(), f_write: false };
+    let ports_n0 = PortsNRFindFirstN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.name.clone())]; __v }, f_returning: false, f_sql: "SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1".to_string(), f_write: false };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -1153,7 +1071,7 @@ pub fn run_native_raw_struct_findUnique(
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRFindUniqueN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.email.clone()]; __v }, f_returning: false, f_sql: "SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1".to_string(), f_write: false };
+    let ports_n0 = PortsNRFindUniqueN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.email.clone())]; __v }, f_returning: false, f_sql: "SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1".to_string(), f_write: false };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -1324,7 +1242,7 @@ pub fn run_native_raw_struct_nestedFindFirst(
     let produced_n3 = std::cell::Cell::new(false);
     let _ = &produced_n3;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRNestedFindFirstN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.name.clone()]; __v }, f_returning: false, f_sql: "SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1".to_string(), f_write: false };
+    let ports_n0 = PortsNRNestedFindFirstN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.name.clone())]; __v }, f_returning: false, f_sql: "SELECT id, email, name FROM benchmark_users WHERE name LIKE ? LIMIT 1".to_string(), f_write: false };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -1421,7 +1339,7 @@ pub fn run_native_raw_struct_nestedFindUnique(
     let produced_n3 = std::cell::Cell::new(false);
     let _ = &produced_n3;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRNestedFindUniqueN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.email.clone()]; __v }, f_returning: false, f_sql: "SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1".to_string(), f_write: false };
+    let ports_n0 = PortsNRNestedFindUniqueN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.email.clone())]; __v }, f_returning: false, f_sql: "SELECT id, email, name FROM benchmark_users WHERE email = ? LIMIT 1".to_string(), f_write: false };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -1801,7 +1719,7 @@ pub fn run_native_raw_struct_create(
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRCreateN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.email.clone(), in_.name.clone()]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?)".to_string(), f_write: true };
+    let ports_n0 = PortsNRCreateN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.email.clone()), WireValue::Str(in_.name.clone())]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?)".to_string(), f_write: true };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -1849,7 +1767,7 @@ pub fn run_native_raw_struct_update(
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRUpdateN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.name.clone(), in_.id.clone()]; __v }, f_returning: false, f_sql: "UPDATE benchmark_users SET name = ? WHERE id = ?".to_string(), f_write: true };
+    let ports_n0 = PortsNRUpdateN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.name.clone()), WireValue::int(in_.id)]; __v }, f_returning: false, f_sql: "UPDATE benchmark_users SET name = ? WHERE id = ?".to_string(), f_write: true };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -1897,7 +1815,7 @@ pub fn run_native_raw_struct_upsert(
     let produced_n0 = std::cell::Cell::new(false);
     let _ = &produced_n0;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRUpsertN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.email.clone(), in_.name.clone()]; __v }, f_returning: true, f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id".to_string(), f_write: true };
+    let ports_n0 = PortsNRUpsertN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.email.clone()), WireValue::Str(in_.name.clone())]; __v }, f_returning: true, f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id".to_string(), f_write: true };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -2099,7 +2017,7 @@ pub fn run_native_raw_struct_nestedCreate(
     let produced_n1 = std::cell::Cell::new(false);
     let _ = &produced_n1;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRNestedCreateN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.email.clone(), in_.name.clone()]; __v }, f_returning: true, f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id".to_string(), f_write: true };
+    let ports_n0 = PortsNRNestedCreateN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.email.clone()), WireValue::Str(in_.name.clone())]; __v }, f_returning: true, f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id".to_string(), f_write: true };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -2137,7 +2055,7 @@ pub fn run_native_raw_struct_nestedCreate(
         let over_n1 = cell_n0.borrow().clone();
         let mut built_n1: Vec<Vec<T1>> = Vec::with_capacity(over_n1.len());
         for oel_n1 in over_n1.iter() {
-            let ep_n1 = PortsNRNestedCreateN1 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::float(oel_n1.id), in_.title.clone()]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)".to_string(), f_write: true };
+            let ep_n1 = PortsNRNestedCreateN1 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::float(oel_n1.id), WireValue::Str(in_.title.clone())]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)".to_string(), f_write: true };
             let er_n1 = match execute_sql(ep_n1.f_bigint, &ep_n1.f_params, ep_n1.f_returning, &ep_n1.f_sql, ep_n1.f_write) {
                 Ok(r) => r,
                 Err(e) => return Err(op_failed("n1", "fail", e)),
@@ -2193,7 +2111,7 @@ pub fn run_native_raw_struct_nestedUpsert(
     let produced_n1 = std::cell::Cell::new(false);
     let _ = &produced_n1;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRNestedUpsertN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.email.clone(), in_.name.clone()]; __v }, f_returning: true, f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id".to_string(), f_write: true };
+    let ports_n0 = PortsNRNestedUpsertN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.email.clone()), WireValue::Str(in_.name.clone())]; __v }, f_returning: true, f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) ON CONFLICT (email) DO UPDATE SET email = excluded.email, name = excluded.name RETURNING id".to_string(), f_write: true };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -2231,7 +2149,7 @@ pub fn run_native_raw_struct_nestedUpsert(
         let over_n1 = cell_n0.borrow().clone();
         let mut built_n1: Vec<Vec<T1>> = Vec::with_capacity(over_n1.len());
         for oel_n1 in over_n1.iter() {
-            let ep_n1 = PortsNRNestedUpsertN1 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::float(oel_n1.id), in_.title.clone()]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)".to_string(), f_write: true };
+            let ep_n1 = PortsNRNestedUpsertN1 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::float(oel_n1.id), WireValue::Str(in_.title.clone())]; __v }, f_returning: false, f_sql: "INSERT INTO benchmark_posts (author_id, title) VALUES (?, ?)".to_string(), f_write: true };
             let er_n1 = match execute_sql(ep_n1.f_bigint, &ep_n1.f_params, ep_n1.f_returning, &ep_n1.f_sql, ep_n1.f_write) {
                 Ok(r) => r,
                 Err(e) => return Err(op_failed("n1", "fail", e)),
@@ -2287,7 +2205,7 @@ pub fn run_native_raw_struct_nestedUpdate(
     let produced_n1 = std::cell::Cell::new(false);
     let _ = &produced_n1;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRNestedUpdateN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.name.clone(), in_.id.clone()]; __v }, f_returning: true, f_sql: "UPDATE benchmark_users SET name = ? WHERE id = ? RETURNING id".to_string(), f_write: true };
+    let ports_n0 = PortsNRNestedUpdateN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.name.clone()), WireValue::int(in_.id)]; __v }, f_returning: true, f_sql: "UPDATE benchmark_users SET name = ? WHERE id = ? RETURNING id".to_string(), f_write: true };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
@@ -2325,7 +2243,7 @@ pub fn run_native_raw_struct_nestedUpdate(
         let over_n1 = cell_n0.borrow().clone();
         let mut built_n1: Vec<Vec<T1>> = Vec::with_capacity(over_n1.len());
         for oel_n1 in over_n1.iter() {
-            let ep_n1 = PortsNRNestedUpdateN1 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.title.clone(), WireValue::float(oel_n1.id)]; __v }, f_returning: false, f_sql: "UPDATE benchmark_posts SET title = ? WHERE author_id = ?".to_string(), f_write: true };
+            let ep_n1 = PortsNRNestedUpdateN1 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.title.clone()), WireValue::float(oel_n1.id)]; __v }, f_returning: false, f_sql: "UPDATE benchmark_posts SET title = ? WHERE author_id = ?".to_string(), f_write: true };
             let er_n1 = match execute_sql(ep_n1.f_bigint, &ep_n1.f_params, ep_n1.f_returning, &ep_n1.f_sql, ep_n1.f_write) {
                 Ok(r) => r,
                 Err(e) => return Err(op_failed("n1", "fail", e)),
@@ -2381,7 +2299,7 @@ pub fn run_native_raw_struct_delete(
     let produced_n1 = std::cell::Cell::new(false);
     let _ = &produced_n1;
     // ── op 'n0' (executeSQL) ──
-    let ports_n0 = PortsNRDeleteN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![in_.email.clone(), in_.name.clone()]; __v }, f_returning: true, f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id".to_string(), f_write: true };
+    let ports_n0 = PortsNRDeleteN0 { f_bigint: false, f_params: { let __v: Vec<WireValue> = vec![WireValue::Str(in_.email.clone()), WireValue::Str(in_.name.clone())]; __v }, f_returning: true, f_sql: "INSERT INTO benchmark_users (email, name) VALUES (?, ?) RETURNING id".to_string(), f_write: true };
     let wire_n0 = match execute_sql(ports_n0.f_bigint, &ports_n0.f_params, ports_n0.f_returning, &ports_n0.f_sql, ports_n0.f_write) {
         Ok(r) => r,
         Err(e) => return Err(BehaviorError { code: "OP_FAILED".to_string(), message: format!("operation '{}' failed under 'fail' policy: {}", "n0", e.message), detail: e.detail }),
