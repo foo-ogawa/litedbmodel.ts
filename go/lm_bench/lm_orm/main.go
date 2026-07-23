@@ -33,7 +33,7 @@ import (
 	"strings"
 	"time"
 
-	behaviors "github.com/foo-ogawa/litedbmodel/go/lm_bench/lm_orm_native/gen"
+	"github.com/foo-ogawa/litedbmodel/go/lm_bench/setup"
 
 	_ "modernc.org/sqlite" // PURE-GO sqlite driver (registered as "sqlite") — the raw baseline
 )
@@ -127,24 +127,25 @@ func asInt(v any) int64 {
 	}
 }
 
-// openSeeded opens a fresh in-memory sqlite (SAME storage as the native cell), applies the codegen-owned
-// schema + seed, and returns the cell. The fixture (STATEMENTS/SEED) is shared setup — it is NOT the
-// generated op runners, which the SDK bypasses entirely.
+// openSeeded opens a fresh in-memory sqlite (SAME storage as the native cell) and applies the ONE seed
+// SSoT (.setup/sqlite.json, from orm-domain.ts) — the SAME fixture the native twin loads. It is shared
+// setup, NOT the generated op runners (which the SDK bypasses entirely).
 func openSeeded() *cell {
+	doc, err := setup.Load("sqlite")
+	if err != nil {
+		panic(err)
+	}
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		panic(err)
 	}
 	db.SetMaxOpenConns(1) // one in-memory connection so schema + seed + ops share the same DB
 	db.SetMaxIdleConns(1)
-	for _, s := range behaviors.STATEMENTS {
-		if _, err := db.Exec(s); err != nil {
-			panic(fmt.Sprintf("ddl %q: %v", s, err))
-		}
-	}
-	for _, s := range behaviors.SEED {
-		if _, err := db.Exec(s.SQL, s.Params...); err != nil {
-			panic(fmt.Sprintf("seed %q: %v", s.SQL, err))
+	for _, group := range [][]string{doc.Schema, doc.Delete, doc.Insert} {
+		for _, s := range group {
+			if _, err := db.Exec(s); err != nil {
+				panic(fmt.Sprintf("setup %q: %v", s, err))
+			}
 		}
 	}
 	return &cell{db: db, stmts: map[string]*sql.Stmt{}}

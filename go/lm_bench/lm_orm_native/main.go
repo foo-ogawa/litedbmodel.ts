@@ -28,26 +28,29 @@ import (
 
 	rt "github.com/foo-ogawa/litedbmodel/go/litedbmodel_runtime"
 	behaviors "github.com/foo-ogawa/litedbmodel/go/lm_bench/lm_orm_native/gen"
+	"github.com/foo-ogawa/litedbmodel/go/lm_bench/setup"
 
 	_ "modernc.org/sqlite" // PURE-GO sqlite driver (registered as "sqlite")
 )
 
-// openSeeded opens a fresh in-memory sqlite, applies the generated schema + seed, and returns it.
+// openSeeded opens a fresh in-memory sqlite and applies the ONE seed SSoT (.setup/sqlite.json, from
+// orm-domain.ts) — schema then the canonical 110-user fixture. No hand-written schema/seed here.
 func openSeeded() (*sql.DB, error) {
+	doc, err := setup.Load("sqlite")
+	if err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // one in-memory connection so schema + seed + ops share the same DB
 	db.SetMaxIdleConns(1)
-	for _, s := range behaviors.STATEMENTS {
-		if _, err := db.Exec(s); err != nil {
-			return nil, fmt.Errorf("ddl %q: %w", s, err)
-		}
-	}
-	for _, s := range behaviors.SEED {
-		if _, err := db.Exec(s.SQL, s.Params...); err != nil {
-			return nil, fmt.Errorf("seed %q: %w", s.SQL, err)
+	for _, group := range [][]string{doc.Schema, doc.Delete, doc.Insert} {
+		for _, s := range group {
+			if _, err := db.Exec(s); err != nil {
+				return nil, fmt.Errorf("setup %q: %w", s, err)
+			}
 		}
 	}
 	return db, nil
