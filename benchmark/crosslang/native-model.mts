@@ -24,8 +24,15 @@ import * as lm from '../../dist/scp/index.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const IR_DIR = join(HERE, '.ir');
-const IR_PATH = join(IR_DIR, 'native.ir.json');
 const L = lm.components();
+
+// The three SQL dialects the bench targets. Per-dialect SQL is authored by passing the dialect into
+// `emitRead`/`emitWrite`/`emitBatchWrite`/`relationReadAuthoring` (byte-golden-verified by
+// test/parity/v2-scp-parity.test.ts — 59 green). Each dialect is authored in ONE class → ONE
+// `publishBehaviors` → verbatim IR, dumped to `.ir/native.<dialect>.ir.json`; sqlite ALSO dumps to
+// `.ir/native.ir.json` for back-compat. `bc generate` (gen-native.sh) emits per-dialect native modules.
+type Dialect = 'sqlite' | 'postgres' | 'mysql';
+const DIALECTS: readonly Dialect[] = ['sqlite', 'postgres', 'mysql'] as const;
 
 // The merged column SoT — ONE class, ONE outType universe (every table the ops project).
 const COLUMNS = {
@@ -45,16 +52,24 @@ const COLUMNS = {
 // relations (compositeRelations) are authored below via the SAME graph: the `pluck`/`group` leaves take
 // the key-column TUPLE (`col`/`pk`/`fk` : `{arr:'string'}`), so a composite parent/target key set groups
 // by the whole tuple identity (NATIVE_RELATION_PLAN.md B-2 — leaf-port widening; NOT a bc gap).
-const postsOfUser = { name: 'posts', kind: 'hasMany', targetTable: 'benchmark_posts', select: ['id', 'title', 'author_id'], parentKey: 'id', targetKey: 'author_id', order: 'id ASC', dialect: 'sqlite' } as const;
-const commentsOfPost = { name: 'comments', kind: 'hasMany', targetTable: 'benchmark_comments', select: ['id', 'body', 'post_id'], parentKey: 'id', targetKey: 'post_id', order: 'id ASC', dialect: 'sqlite' } as const;
+// The relation decls carry NO dialect — the per-op dialect is supplied by `relationReadAuthoring`'s 4th
+// arg (DIALECT below) and overrides any decl field at `compileRelationOp({ ...decl, dialect })`
+// (src/scp/decorator-adapter.ts:480), so a dialect field here would be dead.
+const postsOfUser = { name: 'posts', kind: 'hasMany', targetTable: 'benchmark_posts', select: ['id', 'title', 'author_id'], parentKey: 'id', targetKey: 'author_id', order: 'id ASC' } as const;
+const commentsOfPost = { name: 'comments', kind: 'hasMany', targetTable: 'benchmark_comments', select: ['id', 'body', 'post_id'], parentKey: 'id', targetKey: 'post_id', order: 'id ASC' } as const;
 const postsWithComments = { ...postsOfUser, childRelations: [commentsOfPost] };
 
 // COMPOSITE-key (multi-column) relation chain (#141 B-2): tenant_users → tenant_posts → tenant_comments,
 // keyed on 2-column tuples. The pluck/group leaves now take the key-column TUPLE (widened `{arr:'string'}`
 // ports), so the composite key groups by the WHOLE tuple identity (no `''`-scalar-collapse cartesian).
-const postsComposite = { name: 'posts', kind: 'hasMany', targetTable: 'benchmark_tenant_posts', select: ['tenant_id', 'post_id', 'user_id', 'title'], parentKeys: ['tenant_id', 'user_id'], targetKeys: ['tenant_id', 'user_id'], order: 'post_id ASC', dialect: 'sqlite' } as const;
-const commentsOfTenantPost = { name: 'comments', kind: 'hasMany', targetTable: 'benchmark_tenant_comments', select: ['tenant_id', 'comment_id', 'post_id', 'body'], parentKeys: ['tenant_id', 'post_id'], targetKeys: ['tenant_id', 'post_id'], order: 'comment_id ASC', dialect: 'sqlite' } as const;
+const postsComposite = { name: 'posts', kind: 'hasMany', targetTable: 'benchmark_tenant_posts', select: ['tenant_id', 'post_id', 'user_id', 'title'], parentKeys: ['tenant_id', 'user_id'], targetKeys: ['tenant_id', 'user_id'], order: 'post_id ASC' } as const;
+const commentsOfTenantPost = { name: 'comments', kind: 'hasMany', targetTable: 'benchmark_tenant_comments', select: ['tenant_id', 'comment_id', 'post_id', 'body'], parentKeys: ['tenant_id', 'post_id'], targetKeys: ['tenant_id', 'post_id'], order: 'comment_id ASC' } as const;
 const postsCompositeWithComments = { ...postsComposite, childRelations: [commentsOfTenantPost] };
+
+// The dialect the class authors for — the SINGLE varying parameter across the 3 IR dumps. bc records
+// each method by CALLING it during publish, so the method reads THIS binding's current value (set per
+// dialect in the loop below); the method SOURCE bc scans for native control syntax is unchanged.
+let DIALECT: Dialect = 'sqlite';
 
 // ── The ONE covered behavior class — each method authors one op via emitRead/emitWrite + relations. ──
 // Every method body is a bare op-builder call (no native control syntax); the port assembly + op→sql
@@ -64,31 +79,31 @@ class Bench extends lm.SemanticBehavior {
   static columns = COLUMNS;
 
   // ── reads (single Select) ──
-  findAll() { return lm.emitRead(L, 'Select', { table: 'benchmark_users', select: ['id', 'email', 'name'], order: 'id ASC', limit: 100 }, 'sqlite'); }
-  filterPaginateSort($: { published: unknown }) { return lm.emitRead(L, 'Select', { table: 'benchmark_posts', select: ['id', 'title', 'content', 'published', 'author_id', 'created_at'], where: [lm.whereEq($.published, $.published)], order: 'created_at DESC', limit: 20, offset: 10 }, 'sqlite'); }
-  findFirst($: { name: unknown }) { return lm.emitRead(L, 'Select', { table: 'benchmark_users', select: ['id', 'email', 'name'], where: [lm.whereLike($ as never, 'name', $.name)], limit: 1 }, 'sqlite'); }
-  findUnique($: { email: unknown }) { return lm.emitRead(L, 'Select', { table: 'benchmark_users', select: ['id', 'email', 'name'], where: [lm.whereEq($.email, $.email)], limit: 1 }, 'sqlite'); }
+  findAll() { return lm.emitRead(L, 'Select', { table: 'benchmark_users', select: ['id', 'email', 'name'], order: 'id ASC', limit: 100 }, DIALECT); }
+  filterPaginateSort($: { published: unknown }) { return lm.emitRead(L, 'Select', { table: 'benchmark_posts', select: ['id', 'title', 'content', 'published', 'author_id', 'created_at'], where: [lm.whereEq($.published, $.published)], order: 'created_at DESC', limit: 20, offset: 10 }, DIALECT); }
+  findFirst($: { name: unknown }) { return lm.emitRead(L, 'Select', { table: 'benchmark_users', select: ['id', 'email', 'name'], where: [lm.whereLike($ as never, 'name', $.name)], limit: 1 }, DIALECT); }
+  findUnique($: { email: unknown }) { return lm.emitRead(L, 'Select', { table: 'benchmark_users', select: ['id', 'email', 'name'], where: [lm.whereEq($.email, $.email)], limit: 1 }, DIALECT); }
 
   // ── reads + relation (parent Select + one batched relation level, N+1-free) ──
-  nestedFindAll($: unknown) { return lm.relationReadAuthoring('benchmark_users', { select: ['id', 'email', 'name'], limit: 100 }, [postsOfUser], 'sqlite')($ as never, L); }
-  nestedFindFirst($: { name: unknown }) { return lm.relationReadAuthoring('benchmark_users', { select: ['id', 'email', 'name'], where: (r: never) => [lm.whereLike(r, 'name', ($ as { name: unknown }).name)], limit: 1 }, [postsOfUser], 'sqlite')($ as never, L); }
-  nestedFindUnique($: { email: unknown }) { return lm.relationReadAuthoring('benchmark_users', { select: ['id', 'email', 'name'], where: (r: never) => [lm.whereEq(($ as { email: unknown }).email, ($ as { email: unknown }).email)], limit: 1 }, [postsOfUser], 'sqlite')($ as never, L); }
+  nestedFindAll($: unknown) { return lm.relationReadAuthoring('benchmark_users', { select: ['id', 'email', 'name'], limit: 100 }, [postsOfUser], DIALECT)($ as never, L); }
+  nestedFindFirst($: { name: unknown }) { return lm.relationReadAuthoring('benchmark_users', { select: ['id', 'email', 'name'], where: (r: never) => [lm.whereLike(r, 'name', ($ as { name: unknown }).name)], limit: 1 }, [postsOfUser], DIALECT)($ as never, L); }
+  nestedFindUnique($: { email: unknown }) { return lm.relationReadAuthoring('benchmark_users', { select: ['id', 'email', 'name'], where: (r: never) => [lm.whereEq(($ as { email: unknown }).email, ($ as { email: unknown }).email)], limit: 1 }, [postsOfUser], DIALECT)($ as never, L); }
   // FULL 3-level chain (#119): users→posts→comments (single-key, one batched query per level).
-  nestedRelations($: unknown) { return lm.relationReadAuthoring('benchmark_users', { select: ['id', 'email', 'name'], limit: 100 }, [postsWithComments], 'sqlite')($ as never, L); }
+  nestedRelations($: unknown) { return lm.relationReadAuthoring('benchmark_users', { select: ['id', 'email', 'name'], limit: 100 }, [postsWithComments], DIALECT)($ as never, L); }
   // COMPOSITE-key 3-level chain: tenant_users → tenant_posts → tenant_comments (2-column keys). One
   // batched query per level (N+1-free): compositeRelations = 3 queries; grouped by the full key tuple.
-  compositeRelations($: unknown) { return lm.relationReadAuthoring('benchmark_tenant_users', { select: ['tenant_id', 'user_id', 'name'], order: 'user_id ASC', limit: 100 }, [postsCompositeWithComments], 'sqlite')($ as never, L); }
+  compositeRelations($: unknown) { return lm.relationReadAuthoring('benchmark_tenant_users', { select: ['tenant_id', 'user_id', 'name'], order: 'user_id ASC', limit: 100 }, [postsCompositeWithComments], DIALECT)($ as never, L); }
 
   // ── single writes ──
-  create($: { email: unknown; name: unknown }) { return lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name }, 'sqlite'); }
-  update($: { id: unknown; name: unknown }) { return lm.emitWrite(L, 'Update', { table: 'benchmark_users', 'set.name': $.name, where: [lm.whereEq($.id, $.id)] }, 'sqlite'); }
-  upsert($: { email: unknown; name: unknown }) { return lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, onConflict: 'email', onConflictAction: 'update', returning: 'id', pk: 'id', autoInc: 'id' }, 'sqlite'); }
+  create($: { email: unknown; name: unknown }) { return lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name }, DIALECT); }
+  update($: { id: unknown; name: unknown }) { return lm.emitWrite(L, 'Update', { table: 'benchmark_users', 'set.name': $.name, where: [lm.whereEq($.id, $.id)] }, DIALECT); }
+  upsert($: { email: unknown; name: unknown }) { return lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, onConflict: 'email', onConflictAction: 'update', returning: 'id', pk: 'id', autoInc: 'id' }, DIALECT); }
 
   // ── batch writes (ONE statement per op — the json_each/JSON_TABLE batch form binds the whole record
   //    set as ONE opaque `rows` array value; N+1-free by construction: 1 query). ──
-  createMany($: { rows: unknown }) { return lm.emitBatchWrite(L, 'Insert', { table: 'benchmark_users', columns: ['email', 'name'], rows: $.rows as never }, 'sqlite'); }
-  upsertMany($: { rows: unknown }) { return lm.emitBatchWrite(L, 'Insert', { table: 'benchmark_users', columns: ['email', 'name'], rows: $.rows as never, onConflict: 'email', onConflictAction: 'update' }, 'sqlite'); }
-  updateMany($: { rows: unknown }) { return lm.emitBatchWrite(L, 'Update', { table: 'benchmark_users', columns: ['name'], keyColumns: ['id'], rows: $.rows as never }, 'sqlite'); }
+  createMany($: { rows: unknown }) { return lm.emitBatchWrite(L, 'Insert', { table: 'benchmark_users', columns: ['email', 'name'], rows: $.rows as never }, DIALECT); }
+  upsertMany($: { rows: unknown }) { return lm.emitBatchWrite(L, 'Insert', { table: 'benchmark_users', columns: ['email', 'name'], rows: $.rows as never, onConflict: 'email', onConflictAction: 'update' }, DIALECT); }
+  updateMany($: { rows: unknown }) { return lm.emitBatchWrite(L, 'Update', { table: 'benchmark_users', columns: ['name'], keyColumns: ['id'], rows: $.rows as never }, DIALECT); }
 
   // ── nested-write TRANSACTIONS (E5, RETURNING-chained; #142) ──────────────────────────────────────
   // The DB transaction boundary (BEGIN/COMMIT/ROLLBACK + atomicity) is the CONSUMER's (litedbmodel's)
@@ -101,18 +116,18 @@ class Bench extends lm.SemanticBehavior {
   // scalar consumable in the dependent statement's value position (no coalesce). Each tx = 2 statements.
   // nestedCreate: INSERT user RETURNING id → INSERT post with author_id = the new user's id.
   nestedCreate($: { email: unknown; name: unknown; title: unknown }) {
-    const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id' }, 'sqlite');
-    return user.map(($u: never) => lm.emitWrite(L, 'Insert', { table: 'benchmark_posts', 'values.author_id': ($u as { id: unknown }).id, 'values.title': $.title }, 'sqlite')).as(TX_DEP);
+    const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id' }, DIALECT);
+    return user.map(($u: never) => lm.emitWrite(L, 'Insert', { table: 'benchmark_posts', 'values.author_id': ($u as { id: unknown }).id, 'values.title': $.title }, DIALECT)).as(TX_DEP);
   }
   // nestedUpsert: INSERT user ON CONFLICT DO UPDATE RETURNING id → INSERT post with author_id = that id.
   nestedUpsert($: { email: unknown; name: unknown; title: unknown }) {
-    const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, onConflict: 'email', onConflictAction: 'update', returning: 'id' }, 'sqlite');
-    return user.map(($u: never) => lm.emitWrite(L, 'Insert', { table: 'benchmark_posts', 'values.author_id': ($u as { id: unknown }).id, 'values.title': $.title }, 'sqlite')).as(TX_DEP);
+    const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, onConflict: 'email', onConflictAction: 'update', returning: 'id' }, DIALECT);
+    return user.map(($u: never) => lm.emitWrite(L, 'Insert', { table: 'benchmark_posts', 'values.author_id': ($u as { id: unknown }).id, 'values.title': $.title }, DIALECT)).as(TX_DEP);
   }
   // nestedUpdate: UPDATE user SET name WHERE id RETURNING id → UPDATE that user's posts SET title.
   nestedUpdate($: { id: unknown; name: unknown; title: unknown }) {
-    const user = lm.emitWrite(L, 'Update', { table: 'benchmark_users', 'set.name': $.name, where: [lm.whereEq($.id, $.id)], returning: 'id' }, 'sqlite');
-    return user.map(($u: never) => lm.emitWrite(L, 'Update', { table: 'benchmark_posts', 'set.title': $.title, where: [lm.whereEq(($u as { author_id: unknown }).author_id, ($u as { id: unknown }).id)] }, 'sqlite')).as(TX_DEP);
+    const user = lm.emitWrite(L, 'Update', { table: 'benchmark_users', 'set.name': $.name, where: [lm.whereEq($.id, $.id)], returning: 'id' }, DIALECT);
+    return user.map(($u: never) => lm.emitWrite(L, 'Update', { table: 'benchmark_posts', 'set.title': $.title, where: [lm.whereEq(($u as { author_id: unknown }).author_id, ($u as { id: unknown }).id)] }, DIALECT)).as(TX_DEP);
   }
   // delete: create-then-delete tx — INSERT a fresh user RETURNING id → DELETE the created row by its
   // id ALONE (`DELETE WHERE id = user.id`). Under bc 0.9.0 the port boundary honors the declared
@@ -120,8 +135,8 @@ class Bench extends lm.SemanticBehavior {
   // materializes to `WireValue` in the transport value-position regardless of a `value` input port
   // (bc#172 resolved). The map runs the dependent DELETE once per RETURNING row (exactly one).
   delete($: { email: unknown; name: unknown }) {
-    const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id' }, 'sqlite');
-    return user.map(($u: never) => lm.emitWrite(L, 'Delete', { table: 'benchmark_users', where: [lm.whereEq(($u as { id: unknown }).id, ($u as { id: unknown }).id)] }, 'sqlite')).as(TX_DEP);
+    const user = lm.emitWrite(L, 'Insert', { table: 'benchmark_users', 'values.email': $.email, 'values.name': $.name, returning: 'id' }, DIALECT);
+    return user.map(($u: never) => lm.emitWrite(L, 'Delete', { table: 'benchmark_users', where: [lm.whereEq(($u as { id: unknown }).id, ($u as { id: unknown }).id)] }, DIALECT)).as(TX_DEP);
   }
 }
 
@@ -160,12 +175,16 @@ const inputPorts: Record<string, PortDecl> = {
 };
 
 // PUBLISH → the native-clean contract (nativePassthrough expresses #164 + strips `materializers` at the
-// publish layer). ALL 19 ops are ONE class → ONE `publishBehaviors`; the IR is dumped VERBATIM (no
-// hand-merge, no post-publish transform — nothing runs between publish and JSON.stringify). The IR is
-// exactly what bc's `compileBehaviors` produced; `bc generate` consumes it via the CLI.
-const contract = lm.publishBehaviors(Bench, { dialect: 'sqlite', nativePassthrough: true, inputPorts });
-const ir = contract.ir;
+// publish layer), ONCE PER DIALECT. For each dialect: point DIALECT at it (the class methods read that
+// binding when bc records them), publish ALL 19 ops as ONE class → ONE `publishBehaviors`, and dump the
+// IR VERBATIM (no hand-merge, no post-publish transform — nothing runs between publish and
+// JSON.stringify). sqlite ALSO writes `.ir/native.ir.json` for back-compat.
 mkdirSync(IR_DIR, { recursive: true });
-writeFileSync(IR_PATH, JSON.stringify(ir));
-console.log(`native.ir.json: ${ir.components.length} components → ${IR_PATH}`);
-console.log('components:', ir.components.map((c) => c.name).join(', '));
+for (const dialect of DIALECTS) {
+  DIALECT = dialect;
+  const ir = lm.publishBehaviors(Bench, { dialect, nativePassthrough: true, inputPorts }).ir;
+  const paths = [join(IR_DIR, `native.${dialect}.ir.json`), ...(dialect === 'sqlite' ? [join(IR_DIR, 'native.ir.json')] : [])];
+  for (const p of paths) writeFileSync(p, JSON.stringify(ir));
+  console.log(`native.${dialect}.ir.json: ${ir.components.length} components → ${paths.join(', ')}`);
+  console.log('  components:', ir.components.map((c) => c.name).join(', '));
+}
