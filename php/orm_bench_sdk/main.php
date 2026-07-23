@@ -28,36 +28,23 @@ declare(strict_types=1);
  *   php orm_bench_sdk/main.php safety <dialect> <spec>            # assert + print the safety counts
  */
 
-// ── the canonical fixture, mirrored from the native twin (OrmBench::SCHEMA/SEED). Shared TEST DATA,
-//    not covered code — each isolated SDK cell carries its own copy (as the rust SDK carries its own
-//    generated_setup), so this cell loads NOTHING from the runtime or the generated module. ──────────
-const SCHEMA = [
-    "CREATE TABLE benchmark_users (\n        id INTEGER PRIMARY KEY AUTOINCREMENT,\n        email TEXT NOT NULL UNIQUE,\n        name TEXT,\n        created_at TEXT DEFAULT (datetime('now')),\n        updated_at TEXT DEFAULT (datetime('now'))\n      )",
-    "CREATE TABLE benchmark_posts (\n        id INTEGER PRIMARY KEY AUTOINCREMENT,\n        title TEXT NOT NULL,\n        content TEXT,\n        published INTEGER DEFAULT 0,\n        author_id INTEGER,\n        created_at TEXT DEFAULT (datetime('now'))\n      )",
-    "CREATE TABLE benchmark_comments (\n        id INTEGER PRIMARY KEY AUTOINCREMENT,\n        body TEXT NOT NULL,\n        post_id INTEGER,\n        created_at TEXT DEFAULT (datetime('now'))\n      )",
-    "CREATE TABLE benchmark_tenant_users (\n        tenant_id INTEGER NOT NULL,\n        user_id INTEGER NOT NULL,\n        name TEXT,\n        PRIMARY KEY (tenant_id, user_id)\n      )",
-    "CREATE TABLE benchmark_tenant_posts (\n        tenant_id INTEGER NOT NULL,\n        post_id INTEGER NOT NULL,\n        user_id INTEGER NOT NULL,\n        title TEXT NOT NULL,\n        PRIMARY KEY (tenant_id, post_id)\n      )",
-    "CREATE TABLE benchmark_tenant_comments (\n        tenant_id INTEGER NOT NULL,\n        comment_id INTEGER NOT NULL,\n        post_id INTEGER NOT NULL,\n        body TEXT NOT NULL,\n        PRIMARY KEY (tenant_id, comment_id)\n      )",
-];
-
-const SEED = [
-    'DELETE FROM benchmark_comments',
-    'DELETE FROM benchmark_posts',
-    'DELETE FROM benchmark_users',
-    'DELETE FROM benchmark_tenant_comments',
-    'DELETE FROM benchmark_tenant_posts',
-    'DELETE FROM benchmark_tenant_users',
-    "INSERT INTO benchmark_users (id, email, name) VALUES "
-    . "(1,'user1@example.com','User 1'),(2,'user2@example.com','User 2'),"
-    . "(3,'user3@example.com','User 3'),(4,'user4@example.com','User 4'),(5,'user5@example.com','User 5')",
-    "INSERT INTO benchmark_posts (id, title, content, published, author_id) VALUES "
-    . "(1,'P1','c',1,1),(2,'P2','c',1,1),(3,'P3','c',1,2),(4,'P4','c',1,2),(5,'P5','c',1,3),(6,'P6','c',1,3)",
-    "INSERT INTO benchmark_comments (id, body, post_id) VALUES (1,'b',1),(2,'b',1),(3,'b',2),(4,'b',3),(5,'b',5)",
-    "INSERT INTO benchmark_tenant_users (tenant_id, user_id, name) VALUES (1,1,'TU1'),(1,2,'TU2'),(1,3,'TU3')",
-    "INSERT INTO benchmark_tenant_posts (tenant_id, post_id, user_id, title) VALUES (1,10,1,'TP1'),(1,11,2,'TP2')",
-    "INSERT INTO benchmark_tenant_comments (tenant_id, comment_id, post_id, body) VALUES "
-    . "(1,100,10,'tc'),(1,101,10,'tc'),(1,102,11,'tc')",
-];
+// ── the canonical fixture from the ONE seed SSoT (benchmark/crosslang/.setup/sqlite.json, emitted from
+//    orm-domain.ts) — the SAME fixture the native twin loads. Shared TEST DATA, not covered code. ─────
+require_once __DIR__ . '/../lm_bench_setup.php';
+/**
+ * The cached setup doc: `schema` (drop+create, applied once) + `delete`+`insert` (the canonical
+ * 110-user fixture, per op). Cached so the JSON is read once.
+ *
+ * @return array{schema:list<string>,delete:list<string>,insert:list<string>}
+ */
+function benchSetup(): array
+{
+    static $doc = null;
+    if ($doc === null) {
+        $doc = lm_bench_load_setup('sqlite');
+    }
+    return $doc;
+}
 
 const OPS = [
     'findAll', 'filterPaginateSort', 'findFirst', 'findUnique',
@@ -131,7 +118,7 @@ function openDb(string $spec): Db
     $pdo = new \PDO('sqlite::memory:');
     $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(\PDO::ATTR_STRINGIFY_FETCHES, false);
-    foreach (SCHEMA as $stmt) {
+    foreach (benchSetup()['schema'] as $stmt) {
         $pdo->exec($stmt);
     }
     return new Db($pdo);
@@ -139,7 +126,7 @@ function openDb(string $spec): Db
 
 function seed(Db $db): void
 {
-    foreach (SEED as $stmt) {
+    foreach (array_merge(benchSetup()['delete'], benchSetup()['insert']) as $stmt) {
         $db->pdo->exec($stmt); // runs on the PDO directly (off-seam) → never counted
     }
 }
