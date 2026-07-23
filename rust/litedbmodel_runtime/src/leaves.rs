@@ -305,18 +305,26 @@ pub fn group_children(
     // hold REFERENCES into `children` — no per-child clone; a matched child is cloned exactly once, when
     // `attach_to_parent` nests it into a parent's output.
     let by_key = crate::grouping::group_by_key(children, fk);
+    // Resolve the parent `pk` indices + the `into` insert position ONCE (all parents share column
+    // order) — the per-parent path then carries NO index scan, even when `parents` is a large nested
+    // relation level (a 3-level chain groups the middle level as parents too).
+    let pk_idx = crate::grouping::resolve_key_indices(parents, pk);
+    let into_pos = parents.iter().find_map(|p| match p {
+        WireValue::Row(r) => r.entries.iter().position(|(k, _)| k == into),
+        _ => None,
+    });
     let out: Vec<WireValue> = parents
         .iter()
         .map(|p| {
-            let nested = crate::grouping::attach_to_parent(p, pk, &by_key, single);
+            let nested = crate::grouping::attach_to_parent(p, pk, &pk_idx, &by_key, single);
             match p {
                 // {...p, [into]: nested}: shallow-copy the parent's entries, then set an existing `into`
                 // in place (keeps its position) or append a new one — the TS `{...par, [into]: …}` spread.
                 WireValue::Row(r) => {
                     let mut entries = r.entries.clone();
-                    match entries.iter_mut().find(|(k, _)| k == into) {
-                        Some(slot) => slot.1 = nested,
-                        None => entries.push((into.to_string(), nested)),
+                    match into_pos {
+                        Some(i) if entries.get(i).is_some_and(|(k, _)| k == into) => entries[i].1 = nested,
+                        _ => entries.push((into.to_string(), nested)),
                     }
                     WireValue::Row(WireRow { entries })
                 }

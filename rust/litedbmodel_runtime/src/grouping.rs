@@ -81,6 +81,16 @@ fn resolve_indices(sample: &WireValue, cols: &[String]) -> Option<Vec<usize>> {
     )
 }
 
+/// Resolve the key-column indices from the first `Row` in `rows` (all rows of a result set share the
+/// SAME column order), or all-absent (`usize::MAX`) if none is a `Row`. Callers resolve ONCE and pass
+/// the result to [`attach_to_parent`] so the per-parent path carries NO index scan — even when the
+/// parent set is a large intermediate relation level (a nested chain groups the middle level twice).
+pub fn resolve_key_indices(rows: &[WireValue], cols: &[String]) -> Vec<usize> {
+    rows.iter()
+        .find_map(|r| resolve_indices(r, cols))
+        .unwrap_or_else(|| vec![usize::MAX; cols.len()])
+}
+
 /// The key cells of `row` via precomputed `idx` (O(1) index access; verifies the column name still
 /// matches, else falls back to the linear `field`). `None` if any key column is ABSENT or `Null`
 /// (the no-partial-keys drop) — the same predicate as `field` + `is_missing`.
@@ -151,13 +161,12 @@ pub fn group_by_key<'a>(
 pub fn attach_to_parent(
     parent: &WireValue,
     pk_cols: &[String],
+    pk_idx: &[usize],
     by_key: &HashMap<String, Vec<&WireValue>>,
     single: bool,
 ) -> WireValue {
-    let idx = resolve_indices(parent, pk_cols);
-    let rows: Option<&Vec<&WireValue>> = idx
-        .as_deref()
-        .and_then(|ix| key_cells(parent, pk_cols, ix))
+    // `pk_idx` is resolved ONCE by the caller (all parents share column order) — no per-parent scan.
+    let rows: Option<&Vec<&WireValue>> = key_cells(parent, pk_cols, pk_idx)
         .map(|cells| key_identity(&cells))
         .and_then(|ident| by_key.get(&ident));
     if !single {
@@ -232,14 +241,14 @@ mod tests {
         ];
         let by_key = group_by_key(&children, &cols(&["author_id"]));
         let parent1 = row(&[("id", num(1))]);
-        let nested = attach_to_parent(&parent1, &cols(&["id"]), &by_key, false);
+        let nested = attach_to_parent(&parent1, &cols(&["id"]), &resolve_key_indices(std::slice::from_ref(&parent1), &cols(&["id"])), &by_key, false);
         match nested {
             WireValue::List(l) => assert_eq!(l.items.len(), 2), // posts 10 and 12
             _ => panic!("expected a list"),
         }
         // a parent with no children → empty list
         let parent9 = row(&[("id", num(9))]);
-        match attach_to_parent(&parent9, &cols(&["id"]), &by_key, false) {
+        match attach_to_parent(&parent9, &cols(&["id"]), &resolve_key_indices(std::slice::from_ref(&parent9), &cols(&["id"])), &by_key, false) {
             WireValue::List(l) => assert!(l.items.is_empty()),
             _ => panic!(),
         }
@@ -250,13 +259,13 @@ mod tests {
         let children = vec![row(&[("id", num(5)), ("user_id", num(1))])];
         let by_key = group_by_key(&children, &cols(&["user_id"]));
         let parent = row(&[("id", num(1))]);
-        match attach_to_parent(&parent, &cols(&["id"]), &by_key, true) {
+        match attach_to_parent(&parent, &cols(&["id"]), &resolve_key_indices(std::slice::from_ref(&parent), &cols(&["id"])), &by_key, true) {
             WireValue::Row(_) => {}
             _ => panic!("expected the single child row"),
         }
         let parent9 = row(&[("id", num(9))]);
         assert!(matches!(
-            attach_to_parent(&parent9, &cols(&["id"]), &by_key, true),
+            attach_to_parent(&parent9, &cols(&["id"]), &resolve_key_indices(std::slice::from_ref(&parent9), &cols(&["id"])), &by_key, true),
             WireValue::Null
         ));
     }
@@ -270,7 +279,7 @@ mod tests {
         let by_key = group_by_key(&children, &cols(&["t", "p"]));
         // parent (t=1, p=9) matches only the first child (full tuple, not cartesian).
         let parent = row(&[("t", num(1)), ("p", num(9))]);
-        match attach_to_parent(&parent, &cols(&["t", "p"]), &by_key, false) {
+        match attach_to_parent(&parent, &cols(&["t", "p"]), &resolve_key_indices(std::slice::from_ref(&parent), &cols(&["t", "p"])), &by_key, false) {
             WireValue::List(l) => assert_eq!(l.items.len(), 1),
             _ => panic!(),
         }
